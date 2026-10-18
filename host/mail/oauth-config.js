@@ -5,8 +5,9 @@ const MICROSOFT_CLIENT_ID = fs
   .readFileSync(path.join(__dirname, "..", "..", "shared", "microsoft-client-id.txt"), "utf8")
   .trim();
 
-// IMAP XOAUTH2 stays the mail baseline. Organize and calendar are extra consents.
-// Microsoft organize is Graph-only: Entra invalid_scope if Graph names share an authorize URL with outlook.office.com IMAP/SMTP scopes.
+// Legacy scope sets also describe the minimum permissions for each feature.
+// New Google consent bundles every feature; Microsoft keeps Outlook and Graph
+// on separate authorize URLs, code exchanges, and refreshes.
 const SCOPES = {
   google: "openid email https://mail.google.com/",
   microsoft:
@@ -24,20 +25,23 @@ const CALENDAR_SCOPES = {
   microsoft: "offline_access User.Read Calendars.ReadWrite",
 };
 
-// Filters and inbox rules are their own consent. Gmail settings.basic is not included in gmail.modify.
-// Microsoft message rules need MailboxSettings.ReadWrite, which must not share an authorize URL with outlook.office.com.
+// Gmail settings.basic is not included in gmail.modify.
 const RULES_SCOPES = {
   google:
     "openid email https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels",
   microsoft: "offline_access User.Read MailboxSettings.ReadWrite Mail.Read",
 };
 
-// Vacation is its own consent. It does not include the IMAP or organize scopes,
-// so a partial grant cannot replace the mailbox token.
 const VACATION_SCOPES = {
   google: "openid email https://www.googleapis.com/auth/gmail.settings.basic",
   microsoft: "offline_access User.Read MailboxSettings.ReadWrite",
 };
+
+const BUNDLE_SCOPES = Object.fromEntries(["google", "microsoft"].map((provider) => [
+  provider,
+  [...new Set([ORGANIZE_SCOPES, CALENDAR_SCOPES, RULES_SCOPES, VACATION_SCOPES]
+    .flatMap((scopes) => scopes[provider].split(" ")))].join(" "),
+]));
 
 const MARKERS = {
   imap: {
@@ -158,6 +162,7 @@ function providerKey(provider) {
 function normalizePurpose(input) {
   const raw = typeof input === "object" && input ? input.purpose : input;
   const value = String(raw || "imap").toLowerCase();
+  if (value === "bundle") return "bundle";
   if (value === "calendar") return "calendar";
   if (value === "rules" || value === "filters" || value === "inbox-rules") return "rules";
   if (value === "vacation" || value === "out-of-office" || value === "ooo") return "vacation";
@@ -169,6 +174,7 @@ function scopesFor(provider, purpose) {
   const key = providerKey(provider);
   if (!key) return "";
   const name = normalizePurpose(purpose);
+  if (name === "bundle") return BUNDLE_SCOPES[key];
   if (name === "calendar") return CALENDAR_SCOPES[key];
   if (name === "rules") return RULES_SCOPES[key];
   if (name === "vacation") return VACATION_SCOPES[key];
@@ -194,8 +200,10 @@ function decodeScopeText(value) {
 function normalizeScopeToken(scope) {
   return String(scope || "")
     .trim()
+    .replace(/^(IMAP\.AccessAsUser\.All|SMTP\.Send)$/i, "https://outlook.office.com/$1")
     .replace(/^https:\/\/graph\.microsoft\.com\//i, "")
     .replace(/^00000003-0000-0000-c000-000000000000\//i, "")
+    .replace(/^https:\/\/www\.googleapis\.com\/auth\/userinfo\.email$/i, "email")
     .replace(/\/+$/, "")
     .toLowerCase();
 }
@@ -212,6 +220,37 @@ function hasMarker(granted, provider, purpose) {
     .map(normalizeScopeToken)
     .filter(Boolean)
     .includes(needle);
+}
+
+function hasScopes(granted, required) {
+  const tokens = new Set(decodeScopeText(granted).split(/[\s,]+/).map(normalizeScopeToken));
+  return decodeScopeText(required).split(/[\s,]+/).filter(Boolean).every((scope) => tokens.has(normalizeScopeToken(scope)));
+}
+
+function tokenScopeText(scopes) {
+  return [...new Set(decodeScopeText(scopes).split(/[\s,]+/).filter(Boolean).map((scope) => scope
+    .replace(/^IMAP\.AccessAsUser\.All$/i, "https://outlook.office.com/IMAP.AccessAsUser.All")
+    .replace(/^SMTP\.Send$/i, "https://outlook.office.com/SMTP.Send")))].join(" ");
+}
+
+// Gate the entire feature, not just one marker from a partial consent.
+function hasPurposeScopes(granted, provider, purpose) {
+  const key = providerKey(provider);
+  if (!key) return false;
+  if (purpose === "bundle") return ["organize", "calendar", "rules", "vacation"].every((name) => hasPurposeScopes(granted, key, name));
+  let required = scopesFor(key, purpose).split(" ").filter((scope) => !["openid", "email", "offline_access", "User.Read"].includes(scope));
+  if (purpose === "organize" && key === "google") required = required.filter((scope) => scope !== "https://mail.google.com/");
+  if (purpose === "rules" && key === "microsoft" && hasScopes(granted, "Mail.ReadWrite")) required = required.filter((scope) => scope !== "Mail.Read");
+  return hasScopes(granted, required.join(" "));
+}
+
+function assertResourceScopes(provider, scopes) {
+  if (providerKey(provider) !== "microsoft") return;
+  const tokens = tokenScopeText(scopes).split(" ").filter(Boolean);
+  const outlook = tokens.some((scope) => /^https:\/\/outlook\.office\.com\//i.test(scope));
+  if (outlook && tokens.some((scope) => !/^https:\/\/outlook\.office\.com\//i.test(scope) && !/^(offline_access|openid|profile|email)$/i.test(scope))) {
+    throw new Error("Microsoft Outlook and Graph permissions require separate sign-ins.");
+  }
 }
 
 function redirectPath(provider, purpose) {
@@ -232,7 +271,7 @@ function profileUrl(provider, purpose) {
   const key = providerKey(provider);
   if (!key) return "";
   const name = normalizePurpose(purpose);
-  if (key === "google" && (name === "calendar" || name === "rules" || name === "vacation")) {
+  if (key === "google" && (name === "bundle" || name === "calendar" || name === "rules" || name === "vacation")) {
     return "https://openidconnect.googleapis.com/v1/userinfo";
   }
   return ENDPOINTS[key].profile;
@@ -241,6 +280,7 @@ function profileUrl(provider, purpose) {
 function authorizeUrl(provider, purpose, fields) {
   const key = providerKey(provider);
   const scope = scopesFor(key, purpose);
+  assertResourceScopes(key, scope);
   const redirect = fields && fields.redirectUri;
   if (!key || !scope || !redirect || !fields.clientId || !fields.state || !fields.challenge) {
     throw new Error("OAuth authorize URL is incomplete.");
@@ -283,6 +323,7 @@ module.exports = {
   SCOPES,
   ORGANIZE_SCOPES,
   CALENDAR_SCOPES,
+  BUNDLE_SCOPES,
   RULES_SCOPES,
   VACATION_SCOPES,
   MARKERS,
@@ -297,6 +338,10 @@ module.exports = {
   normalizePurpose,
   scopesFor,
   hasMarker,
+  hasPurposeScopes,
+  hasScopes,
+  tokenScopeText,
+  assertResourceScopes,
   redirectPath,
   redirectUri,
   profileUrl,

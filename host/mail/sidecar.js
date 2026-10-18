@@ -83,40 +83,25 @@ function readJson(key) {
   }
 }
 
+const API_PURPOSES = ["organize", "calendar", "rules", "vacation"];
+
 function scopeText(account, purpose) {
-  if (!account) return "";
-  if (purpose === "calendar" || purpose === "rules") {
-    const blob = readJson(`${account.id}:${purpose}`);
-    return (blob && blob.grantedScopes) || "";
-  }
-  const primary = readJson(account.id);
-  if (purpose === "vacation") {
-    const dedicated = readJson(`${account.id}:vacation`);
-    return (dedicated && dedicated.grantedScopes) || "";
-  }
-  if (purpose === "organize") {
-    const provider = providerOf(account);
-    const dedicated = readJson(`${account.id}:organize`);
-    if (dedicated && config.hasMarker(dedicated.grantedScopes, provider, "organize")) return dedicated.grantedScopes;
-    if (primary && config.hasMarker(primary.grantedScopes, provider, "organize")) return primary.grantedScopes;
-    if (dedicated && dedicated.grantedScopes) return dedicated.grantedScopes;
-  }
-  return (primary && primary.grantedScopes) || "";
+  const blob = account && readJson(secretKey(account, purpose));
+  return (blob && blob.grantedScopes) || "";
 }
 
 function secretKey(account, purpose) {
+  if (purpose === "imap") return account.id;
   const provider = providerOf(account);
-  if (purpose === "calendar" || purpose === "rules" || purpose === "vacation") return `${account.id}:${purpose}`;
-  if (purpose === "organize") {
-    const dedicated = readJson(`${account.id}:organize`);
-    if (dedicated && config.hasMarker(dedicated.grantedScopes, provider, "organize")) {
-      return `${account.id}:organize`;
-    }
-    const primary = readJson(account.id);
-    if (primary && config.hasMarker(primary.grantedScopes, provider, "organize")) return account.id;
-    return `${account.id}:organize`;
+  // One shared API token avoids independent refresh-token rotation for each
+  // feature. Legacy per-purpose grants remain fallbacks after partial consent.
+  const candidates = [`${account.id}:bundle`, `${account.id}:${purpose}`];
+  if (provider === "google") candidates.push(account.id);
+  for (const key of candidates) {
+    const grant = readJson(key);
+    if (grant && grant.refreshToken && config.hasPurposeScopes(grant.grantedScopes, provider, purpose)) return key;
   }
-  return account.id;
+  return `${account.id}:${purpose}`;
 }
 
 function gateMessage(reason, provider, purpose) {
@@ -145,11 +130,14 @@ function missingGrantMessage(provider, purpose) {
   const key = config.providerKey(provider);
   if (purpose === "calendar") {
     if (key === "microsoft") return "Microsoft did not return the Calendars.ReadWrite grant.";
-    return "Google did not return the calendar.events grant.";
+    return "Google did not return both calendar.events and calendar.calendarlist.readonly permissions.";
   }
   if (purpose === "rules") {
-    if (key === "microsoft") return "Microsoft did not return the MailboxSettings.ReadWrite grant.";
-    return "Google did not return the gmail.settings.basic grant.";
+    if (key === "microsoft") return "Microsoft did not return MailboxSettings.ReadWrite and folder read access (Mail.Read or Mail.ReadWrite).";
+    return "Google did not return both gmail.settings.basic and gmail.labels permissions.";
+  }
+  if (purpose === "vacation") {
+    return key === "microsoft" ? "Microsoft did not return the MailboxSettings.ReadWrite grant." : "Google did not return the gmail.settings.basic grant.";
   }
   if (key === "microsoft") return "Microsoft did not return the Mail.ReadWrite grant. This mailbox stays on IMAP until then.";
   return "Google did not return the gmail.modify grant. This mailbox stays on IMAP until then.";
@@ -161,7 +149,7 @@ function gateAccount(account, purpose) {
   if (provider !== "google" && provider !== "microsoft") {
     return { ok: false, reason: "imap_only", provider, scopes, message: gateMessage("imap_only", provider, purpose) };
   }
-  if (!config.hasMarker(scopes, provider, purpose)) {
+  if (!config.hasPurposeScopes(scopes, provider, purpose) || !readJson(secretKey(account, purpose))?.refreshToken) {
     const reason = purpose === "calendar" ? "needs_auth" : "scope_missing";
     let message = gateMessage(reason, provider, purpose);
     if (purpose === "organize" && account.auth_kind !== "oauth2") {
@@ -229,8 +217,8 @@ async function tokenFor(account, purpose) {
     throw error;
   }
   const result = await oauth.accessTokenFor(account, raw);
-  if (purpose === "vacation" && secrets.getPassword(key) !== raw) {
-    const error = new Error("This mailbox connection changed. Refresh settings.");
+  if (secrets.getPassword(key) !== raw) {
+    const error = new Error("This mailbox connection changed. Refresh the feature and try again.");
     error.code = "conflict";
     throw error;
   }
@@ -242,6 +230,11 @@ async function tokenFor(account, purpose) {
     let granted = parsed.grantedScopes || "";
     if (result.store) {
       try { granted = JSON.parse(result.store).grantedScopes || granted; } catch { /* keep the previous scopes */ }
+    }
+    if (!config.hasPurposeScopes(granted, providerOf(account), purpose)) {
+      const error = new Error("The refreshed token is missing permissions. Enable this feature again.");
+      error.code = "scope_missing";
+      throw error;
     }
     return {
       accessToken: result.token,
@@ -290,6 +283,7 @@ function oauthStatus() {
     google: ready.google === true,
     microsoft: ready.microsoft === true,
     purposes: {
+      bundle: { ...config.BUNDLE_SCOPES },
       imap: { google: config.SCOPES.google, microsoft: config.SCOPES.microsoft },
       organize: { google: config.ORGANIZE_SCOPES.google, microsoft: config.ORGANIZE_SCOPES.microsoft },
       calendar: { google: config.CALENDAR_SCOPES.google, microsoft: config.CALENDAR_SCOPES.microsoft },
@@ -319,74 +313,94 @@ function calendarStatus() {
   });
 }
 
-async function saveGrant(account, signed, purpose) {
-  if (!signed.refreshToken) {
-    const existing = readJson(account.id);
-    if (purpose === "organize" && existing && existing.refreshToken) signed.refreshToken = existing.refreshToken;
+function grantResult(account, purpose) {
+  const missing = API_PURPOSES.filter((name) => !gateAccount(account, name).ok);
+  return ok({ accountId: account.id, email: account.email, provider: providerOf(account), purpose,
+    api: purpose === "bundle" ? missing.length === 0 : gateAccount(account, purpose).ok,
+    missing, reason: "", grantedScopes: scopeText(account, purpose) });
+}
+
+function saveBundle(account, signed) {
+  const provider = providerOf(account);
+  if (signed.provider !== provider || !sameEmail(signed.email, account.email)) {
+    return fail("account_mismatch", "Sign in with the selected mailbox. Existing credentials are unchanged.");
   }
-  if (!signed.refreshToken) {
-    return fail("oauth", "Provider did not return a refresh token. Approve offline access and try again.");
+  if (!signed.refreshToken || !signed.accessToken) return fail("oauth", "Provider did not return offline access. Existing credentials are unchanged.");
+  const granted = signed.grantedScopes || "";
+  if (!API_PURPOSES.some((purpose) => config.hasPurposeScopes(granted, provider, purpose))) {
+    return fail("scope_missing", "The provider did not grant the requested feature permissions. Existing credentials are unchanged.");
   }
-  const blob = tokenBlob(signed);
-  try {
-    secrets.setPassword(`${account.id}:${purpose}`, JSON.stringify(blob));
-    if (purpose === "organize" && config.hasMarker(blob.grantedScopes, signed.provider, "imap")) {
-      secrets.setPassword(account.id, JSON.stringify({ ...blob, purpose: "imap" }));
+  const key = `${account.id}:bundle`;
+  const previous = readJson(key);
+  const blob = { ...tokenBlob(signed), purpose: "bundle" };
+  const writes = [];
+  // Retain an older shared token for any feature omitted from the new consent.
+  // Never claim the union of two grants on either token or overwrite mail here.
+  for (const purpose of API_PURPOSES) {
+    if (previous && config.hasPurposeScopes(previous.grantedScopes, provider, purpose) && !config.hasPurposeScopes(granted, provider, purpose)) {
+      writes.push([`${account.id}:${purpose}`, JSON.stringify(previous)]);
     }
-  } catch (error) {
-    return fail("keychain", error instanceof Error ? error.message : "Could not save OAuth tokens.");
   }
-  const api = config.hasMarker(blob.grantedScopes, signed.provider, purpose);
-  if (!api) {
-    const reason = purpose === "calendar" ? "needs_auth" : "scope_missing";
-    return fail(reason, missingGrantMessage(signed.provider, purpose));
+  writes.push([key, JSON.stringify(blob)]);
+  const before = new Map();
+  const written = [];
+  try {
+    for (const [name] of writes) before.set(name, secrets.getPassword(name));
+    for (const [name, value] of writes) {
+      written.push(name);
+      secrets.setPassword(name, value);
+    }
+  } catch {
+    let restored = true;
+    for (const name of written.reverse()) {
+      try {
+        if (before.get(name) == null) secrets.deletePassword(name);
+        else secrets.setPassword(name, before.get(name));
+      } catch { restored = false; }
+    }
+    return fail("keychain", restored ? "Could not save permissions. Previous credentials were restored." : "Could not restore all credentials after a storage failure. Reconnect the affected features.");
   }
-  return ok({
-    accountId: account.id,
-    email: account.email,
-    provider: signed.provider,
-    purpose,
-    api: true,
-    reason: "",
-    grantedScopes: blob.grantedScopes,
-  });
+  return grantResult(account, "bundle");
 }
 
 async function grantPurpose(params, purpose) {
   const account = accountFrom(params);
   if (!account) return fail("no_account", "Connect the mailbox first.");
   const provider = providerOf(account);
-  if (provider !== "google" && provider !== "microsoft") {
-    const message = purpose === "calendar"
-      ? "Calendar needs a Google or Microsoft account."
-      : purpose === "rules"
-        ? "This account stores inbox rules on this computer."
-        : "Labels need a Google or Microsoft account.";
-    return fail("imap_only", message);
-  }
-  if (provider === "google" && !oauth.oauthReady().google) {
-    return fail("oauth_not_ready", "Google Desktop OAuth is not configured.");
-  }
+  if (provider !== "google" && provider !== "microsoft") return fail("imap_only", "These permissions need a Google or Microsoft account.");
+  if (provider === "google" && !oauth.oauthReady().google) return fail("oauth_not_ready", "Google Desktop OAuth is not configured.");
+  const already = grantResult(account, purpose);
+  if (already.data.api) return already;
+  const identity = secrets.getPassword(account.id);
+  const bundle = secrets.getPassword(`${account.id}:bundle`);
   let signed;
   try {
-    signed = await oauth.signIn(provider, purpose);
+    signed = await oauth.signIn(provider, "bundle");
   } catch (error) {
     return failFrom(error);
   }
   let saved;
   try {
-    if (!sameEmail(signed.email, account.email)) {
-      saved = fail("account_mismatch", `That browser signed in ${signed.email}. This mailbox is ${account.email}.`);
+    const current = accountFrom(params);
+    if (!current || !sameEmail(current.email, account.email) || secrets.getPassword(account.id) !== identity || secrets.getPassword(`${account.id}:bundle`) !== bundle) {
+      saved = fail("conflict", "This mailbox connection changed. Try again for the selected account.");
     } else {
-      saved = await saveGrant(account, signed, purpose);
+      saved = saveBundle(account, signed);
+      if (!saved.success && saved.error.code === "scope_missing" && purpose !== "bundle") {
+        saved = fail("scope_missing", missingGrantMessage(provider, purpose));
+      }
+      if (saved.success) {
+        saved = grantResult(account, purpose);
+        if (!saved.data.api) saved = fail("scope_missing", purpose === "bundle"
+          ? "Some feature permissions were not granted. Mail and existing permissions were retained; enable the missing features to try again."
+          : missingGrantMessage(provider, purpose));
+      }
     }
   } catch (error) {
     saved = failFrom(error);
   }
   if (signed.complete) {
-    const okGrant = saved && saved.success === true;
-    const message = okGrant ? "" : (saved && saved.error && saved.error.message) || "Sign-in not finished.";
-    try { signed.complete({ ok: okGrant, message }); } catch { /* the browser already left */ }
+    try { signed.complete({ ok: saved.success, message: saved.error?.message || "" }); } catch { /* the browser already left */ }
   }
   return saved;
 }
@@ -655,7 +669,7 @@ function vacationView(account, extra) {
 function vacationIdentity(account) {
   const provider = providerOf(account);
   if (provider === "google" || provider === "microsoft") {
-    const blob = readJson(`${account.id}:vacation`);
+    const blob = readJson(secretKey(account, "vacation"));
     return blob ? `${blob.refreshToken || ""}\n${blob.grantedScopes || ""}` : "";
   }
   const password = imapPassword(account);
@@ -954,31 +968,6 @@ function rememberVacation(account, signed) {
   });
 }
 
-async function grantVacation(params) {
-  const account = accountFrom(params);
-  if (!account) return fail("no_account", "Connect the mailbox first.");
-  const provider = providerOf(account);
-  if (provider !== "google" && provider !== "microsoft") {
-    return fail("imap_only", "IMAP automatic replies use the server vacation script. There is no extra Google or Microsoft consent for this mailbox.");
-  }
-  if (provider === "google" && !oauth.oauthReady().google) {
-    return fail("oauth_not_ready", "Google Desktop OAuth is not configured.");
-  }
-  let signed;
-  try {
-    signed = await oauth.signIn(provider, "vacation");
-  } catch (error) {
-    return failFrom(error);
-  }
-  const saved = rememberVacation(account, signed);
-  if (signed.complete) {
-    const accepted = saved && saved.success === true;
-    const message = accepted ? "" : (saved && saved.error && saved.error.message) || "Sign-in not finished.";
-    try { signed.complete({ ok: accepted, message }); } catch { /* the browser already left */ }
-  }
-  return saved;
-}
-
 async function createCalendarEvent(params) {
   const ready = await withPurpose(params, "calendar");
   if (ready.error) return ready.error;
@@ -1166,13 +1155,11 @@ function answer(channel, args) {
       case "mail:grantOrganize":
         return grantPurpose(params || {}, "organize");
       case "mail:grantVacation":
-        return grantVacation(params || {});
+        return grantPurpose(params || {}, "vacation");
       case "mail:vacationGet":
         return vacationGet(params || {});
       case "mail:vacationPut":
         return vacationPut(params || {});
-      case "calendar:connect":
-        return grantPurpose(params || {}, "calendar");
       case "mail:listProviderFolders":
         return listProviderFolders(params || {});
       case "mail:createProviderFolder":
@@ -1193,6 +1180,8 @@ function answer(channel, args) {
         return saveInboxRule(params || {});
       case "mail:deleteInboxRule":
         return deleteInboxRule(params || {});
+      case "calendar:connect":
+        return grantPurpose(params || {}, "calendar");
       case "mail:grantRules":
         return grantPurpose(params || {}, "rules");
       case "calendar:list":
@@ -1215,4 +1204,5 @@ module.exports = {
   monthWindow,
   organizeToken,
   rememberVacation,
+  grantPurpose,
 };

@@ -10,6 +10,7 @@ const secrets = process.env.MORROW_MAIL_SECRETS === "memory"
   ? require("./memory-secrets")
   : require("./secrets");
 const oauth = require("./oauth");
+const oauthConfig = require("./oauth-config");
 const sidecar = require("./sidecar");
 const inboxRules = require("./inbox-rules");
 const http = require("./provider-http");
@@ -324,6 +325,11 @@ async function secretFor(account) {
   }
   if (account.auth_kind !== "oauth2") return stored;
   const result = await oauth.accessTokenFor(account, stored);
+  if (secrets.getPassword(account.id) !== stored) {
+    const error = new Error("This mailbox connection changed. Try again with the current connection.");
+    error.code = "conflict";
+    throw error;
+  }
   if (typeof result === "string") return result;
   if (result && result.store) {
     try { secrets.setPassword(account.id, result.store); } catch { /* best effort */ }
@@ -1023,7 +1029,7 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
   const gen = ++oauthGeneration;
   let signed;
   try {
-    signed = await oauth.signIn(providerInput, "imap");
+    signed = await oauth.signIn(providerInput, oauthConfig.providerKey(providerInput) === "google" ? "bundle" : "imap");
   } catch (error) {
     if (error && error.code === "oauth_cancelled") return fail("oauth_cancelled", "Sign-in canceled.");
     return fail("oauth", error instanceof Error ? error.message : String(error));
@@ -1039,6 +1045,12 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
       return fail("account_mismatch", "Sign in with the mailbox named in Reconnect. Existing accounts and credentials are unchanged.");
     }
   }
+  try {
+    oauth.requirePurposeScopes(signed, signed.provider, "imap");
+  } catch (error) {
+    finishOAuthPage(signed, false, error.message);
+    return fail("scope_missing", error.message);
+  }
   const draft = {
     id: `oauth-${crypto.randomBytes(8).toString("hex")}`,
     email: signed.email,
@@ -1052,17 +1064,27 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
     smtp_port: signed.smtp.port,
     smtp_tls: signed.smtp.tls ? 1 : 0,
   };
-  const blob = JSON.stringify({
+  const serialize = (grant, purpose) => JSON.stringify({
     provider: signed.provider,
-    purpose: signed.purpose || "imap",
-    refreshToken: signed.refreshToken,
-    accessToken: signed.accessToken,
-    expiresAt: signed.expiresAt,
-    grantedScopes: signed.grantedScopes,
-    requestedScopes: signed.requestedScopes || signed.grantedScopes,
+    purpose,
+    refreshToken: grant.refreshToken,
+    accessToken: grant.accessToken,
+    expiresAt: grant.expiresAt,
+    grantedScopes: grant.grantedScopes,
+    requestedScopes: grant.requestedScopes || grant.grantedScopes,
   });
   const existing = db.accountByEmail(signed.email);
   const id = existing ? existing.id : draft.id;
+  // A narrower reconnect must never downgrade an existing primary token.
+  if (existing && signed.provider === "google") {
+    let previous;
+    try { previous = JSON.parse(secrets.getPassword(id)); } catch { /* password or no prior grant */ }
+    if (previous?.grantedScopes && !oauthConfig.hasScopes(signed.grantedScopes, previous.grantedScopes)) {
+      const message = "Some previously granted permissions were omitted. Existing credentials were retained; approve the missing permissions and try again.";
+      finishOAuthPage(signed, false, message);
+      return fail("scope_missing", message);
+    }
+  }
   const displayName = signed.displayName || null;
   const login = {
     username: draft.username,
@@ -1076,16 +1098,17 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
     authKind: "oauth2",
     displayName,
   };
+  const writes = [[id, serialize(signed, "imap")]];
+  const previous = new Map();
+  const written = [];
+  let stage = "keychain";
   try {
-    secrets.setPassword(id, blob);
-    oauthCommitted.add(id);
-  } catch (error) {
-    oauthCommitted.delete(id);
-    const message = error instanceof Error ? error.message : "Could not save OAuth tokens.";
-    finishOAuthPage(signed, false, message);
-    return fail("keychain", message);
-  }
-  try {
+    for (const [key] of writes) previous.set(key, secrets.getPassword(key));
+    for (const [key, value] of writes) {
+      written.push(key);
+      secrets.setPassword(key, value);
+    }
+    stage = "storage";
     if (existing) db.updateAccountLogin(id, login);
     else {
       db.insertAccount({
@@ -1096,22 +1119,43 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
         createdAt: Date.now(),
       });
     }
+    oauthCommitted.add(id);
   } catch (error) {
-    if (!existing) {
-      secrets.deletePassword(id);
-      oauthCommitted.delete(id);
+    let restored = true;
+    for (const key of written.reverse()) {
+      try {
+        if (previous.get(key) == null) secrets.deletePassword(key);
+        else secrets.setPassword(key, previous.get(key));
+      } catch { restored = false; }
     }
-    const message = error instanceof Error ? error.message : "Could not save this account.";
+    const message = restored
+      ? (stage === "keychain" ? "Could not save credentials. Previous credentials were restored." : "Could not save this account. Previous credentials were restored.")
+      : "Could not restore all credentials after a storage failure. Reconnect the mailbox.";
     finishOAuthPage(signed, false, message);
-    return fail("storage", message);
+    return fail(stage, message);
   }
   finishOAuthPage(signed, true);
+  let grantWarning = "";
+  if (signed.provider === "microsoft") {
+    // A second, Graph-only consent. Declining it must not undo the saved IMAP
+    // connection; existing Graph grants remain usable and can be extended later.
+    try {
+      const granted = await sidecar.grantPurpose({ accountId: id }, "bundle");
+      if (!granted.success) grantWarning = granted.error.message;
+    } catch {
+      grantWarning = "Could not finish feature sign-in. Mail remains connected; enable the missing features to try again.";
+    }
+  }
+  const current = db.accountById(id);
+  if (!current || gen !== oauthGeneration) return fail("oauth_cancelled", "Sign-in stopped. Any saved mailbox connection was retained.");
+  const missing = ["calendar", "organize", "vacation", "rules"].filter((purpose) => !sidecar.gateAccount(current, purpose).ok);
+  if (missing.length && !grantWarning) grantWarning = "Some feature permissions were not granted. Enable the missing features to try again.";
   emitAccounts({ activeAccountId: id, folderId: "" });
   watchIdle();
   setTimeout(() => {
     settleOAuthMailbox(id).catch(() => {});
   }, 0);
-  return ok(accountView(db.accountById(id), 0));
+  return ok({ ...accountView(current, 0), grantWarning, missingPermissions: missing });
 }
 
 async function connectAccount(params) {
@@ -1228,6 +1272,7 @@ async function removeAccount(params) {
   secrets.deletePassword(`${id}:calendar`);
   secrets.deletePassword(`${id}:rules`);
   secrets.deletePassword(`${id}:vacation`);
+  secrets.deletePassword(`${id}:bundle`);
   if (idleController) {
     try { await idleController.forget(id); } catch { /* the connection is already gone */ }
   }

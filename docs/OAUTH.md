@@ -1,22 +1,38 @@
 # Google / Outlook OAuth
 
-Morrow Mail keeps **IMAP XOAUTH2 as the mail baseline** and adds a provider API side-car. Calendar is a separate OAuth purpose with its own token. No client secret belongs in git.
+Morrow Mail keeps **IMAP XOAUTH2 as the mail baseline**. Google uses **one full consent**. Microsoft uses **two dialogs maximum**: Outlook IMAP/SMTP first, then one Graph bundle. Calendar, organize, Out of Office, and inbox rules reuse the granted permissions without another popup. Bot bridge permissions stay separate. No client secret belongs in git.
 
-## Baseline vs side-car
+## Consent and token scopes
 
-| Purpose | What it unlocks | Google scopes | Microsoft scopes | Redirect path |
-|---------|-----------------|---------------|------------------|---------------|
-| IMAP (first consent, `mail:addAccount`) | IMAP and SMTP XOAUTH2 | `openid email https://mail.google.com/` | `offline_access` `https://outlook.office.com/IMAP.AccessAsUser.All` `https://outlook.office.com/SMTP.Send` | `/api/oauth/{google\|microsoft}/callback` |
-| Organize (second consent, `mail:grantOrganize`) | Gmail labels or Graph mailFolders | IMAP scopes plus `https://www.googleapis.com/auth/gmail.modify` | `offline_access User.Read Mail.ReadWrite Mail.Send` | same `/api/oauth/.../callback` path |
-| Calendar (`calendar:connect`) | Google Calendar or Graph calendars | `openid email https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events` | `offline_access User.Read Calendars.ReadWrite` | `/api/calendar-oauth/{google\|microsoft}/callback` |
-| Inbox rules (`mail:grantRules`) | Gmail filters or Graph inbox message rules | `openid email https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels` | `offline_access User.Read MailboxSettings.ReadWrite Mail.Read` | same `/api/oauth/.../callback` path |
-| Out of Office (`mail:grantVacation`) | Gmail vacation settings or Graph automatic replies | `openid email https://www.googleapis.com/auth/gmail.settings.basic` | `offline_access User.Read MailboxSettings.ReadWrite` | same `/api/oauth/.../callback` path |
+| Connection | Requested scopes | Redirect path |
+|------------|------------------|---------------|
+| Google full bundle | `openid email https://mail.google.com/ https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels` | `/api/oauth/google/callback` |
+| Microsoft A: mail baseline | `offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send` | `/api/oauth/microsoft/callback` |
+| Microsoft B: Graph bundle | `offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite MailboxSettings.ReadWrite Mail.Read` | `/api/oauth/microsoft/callback` |
 
-Google's organize consent asks for the IMAP scopes again so one grant can keep XOAUTH2 when Google returns both. Microsoft organize stays on Graph scopes only. Entra returns `invalid_scope` when that authorize URL also includes `https://outlook.office.com` IMAP or SMTP scopes, so Outlook XOAUTH2 stays on the first consent.
+Google uses `include_granted_scopes=true`, `prompt=consent`, offline access, and the OpenID userinfo profile. Connecting or enabling a missing feature requests the complete bundle. There are no Drive or Contacts scopes. `gmail.settings.basic` covers Out of Office and filters; `gmail.labels` is included for rules label choices.
 
-The IMAP access token's audience is `https://outlook.office.com`, so the first consent does not call Microsoft Graph `/me` (that needs `User.Read`, which is only on the organize and calendar grants). Outlook email and display name come from `https://outlook.office.com/api/v2.0/me`, then from the token's email claims (`preferred_username`, `upn`, `unique_name`, `email`) if that call fails. Graph `/me` still runs for organize and calendar. Cancel, timeout, or closing the connect dialog aborts the loopback flow and does not keep a draft account row. The browser page says Connected only after the account row and mailbox secret are saved. That page and `mail:addAccount` return without waiting for folder listing or the first inbox sync. A second callback with the same state and code shows Connected once that save succeeds, including while the first response is still completing. Cancel after the save does not mark the mailbox as missing its secret. If `gmail.modify` or `Mail.ReadWrite` is missing from `grantedScopes`, label and folder changes stay on the IMAP folder list. Marker checks accept the permission in any case, as a short name or a `https://graph.microsoft.com/` URI, including the percent-encoded `scope` value Microsoft documents and a comma-separated list. The access token `scp` claim is stored with that scope string. If the token response omits `scope`, the scopes requested on the authorize URL are what get saved. A saved organize, calendar, or rules grant that still lacks its marker is not reported as connected: the status names the missing permission and the Grant button stays. Calendar calls run only when the calendar marker is in that purpose's `grantedScopes`.
+### Why Microsoft needs two dialogs
 
-Tokens are stored per account and purpose (`grantedScopes`, refresh token, access token) in the keychain / DPAPI / `MORROW_MAIL_SECRETS=memory`. The renderer receives scope strings, not tokens.
+Outlook IMAP/SMTP and Microsoft Graph are different resources. **Never put Graph scopes on the Outlook authorize URL**: the mixed-resource request can fail with Entra `invalid_scope`. Each dialog has its own PKCE code and code redemption. The Outlook token is never sent to Graph, and the Graph token is never sent to IMAP/SMTP. No Graph-to-IMAP refresh exchange substitutes for the mail dialog.
+
+1. Authorize and redeem the Outlook-only mail scopes. Resolve the mailbox with `https://outlook.office.com/api/v2.0/me` or token email claims. This flow does not call Microsoft Graph with that token. Save mail credentials and the account.
+2. If any API feature is missing, open one Graph-only bundle consent for the same mailbox. Use Graph `/me` for its profile and reject a different mailbox.
+3. Save the Graph token under `<id>:bundle`; keep the Outlook token under the account id. Later refreshes use only scopes actually granted for that resource. Explicit mixed-resource token requests are rejected locally.
+
+`Mail.Read` remains in the Graph bundle for rules folder enumeration; `Mail.ReadWrite` also satisfies that read requirement. Missing admin consent, a declined second dialog, or a partial Graph grant leaves the saved mail connection available. The returned connection warning identifies incomplete feature access. Enabling a missing feature retries only the Graph bundle. A reconnect with all API grants already saved needs only the mail dialog.
+
+### Persistence, partial grants, and migration
+
+Feature gates check the complete required scope set (including Google calendar-list access, Gmail rules labels, and Microsoft rules folder reads). A partial token enables only the features it covers. The renderer receives scope strings and availability, never credentials. A fresh Google grant must cover mail before creating a mailbox; if optional feature scopes are declined, mail still connects and missing features can be enabled later.
+
+Google's primary full token can serve all features. Incremental Google grants and Microsoft Graph grants use one shared `<id>:bundle` record. A feature first selects a sufficient shared grant, then its legacy `<id>:calendar`, `:organize`, `:rules`, or `:vacation` record, then a sufficient Google primary token. Microsoft API calls never fall back to its Outlook primary token. Legacy feature grants remain usable, and an already granted feature returns success without opening a browser.
+
+When a new shared grant omits a previously available feature, preserve the older shared token in that feature's legacy slot before saving the new bundle. Never combine scope strings from separate tokens. A feature consent never replaces the primary mailbox secret. A narrower Google primary reconnect is rejected before changing credentials. Account ids, cached mail, drafts, and other local work survive incremental consent. Removing the account also deletes its shared bundle.
+
+Credential writes restore previous values on storage failure. The callback page reports success only after its connection or requested feature is saved. A partial feature consent may save other usable permissions while reporting that the requested feature is still missing. Account mismatch or removal/reconnection while the feature dialog is pending prevents saving the stale result.
+
+Stored `grantedScopes` and `requestedScopes` distinguish received permissions from the requested bundle. Scope checks accept case differences, fully qualified Graph names, percent encoding, and comma-separated lists. Microsoft `scp` claims supplement token responses. When `scope` is omitted, only the scopes requested for that resource's token exchange are used as fallback. A refresh requests the scopes actually granted, so a partial consent does not request withheld permissions in the background.
 
 Passwords and OAuth tokens are stored under the service name `morrow-mail` only. On macOS that is the Keychain service (`security -s morrow-mail`). On Windows the DPAPI file is `%LOCALAPPDATA%\morrow-mail\secrets\morrow-mail_<account>`. Reads and deletes use that service. `MORROW_MAIL_SECRETS=memory` is the in-process store for tests and does not touch the keychain. This service is not the Swift app's store, and the bundle id is not `org.morrowmail.desktop`. A mailbox whose token is not already under `morrow-mail` needs to be connected again.
 
@@ -35,7 +51,7 @@ Loopback is `http://localhost:<port>` with the port chosen when the browser open
 
 Do this in the same Desktop client Morrow-Mail uses. Do not paste the secret into the repo, a PR, or this doc.
 
-1. OAuth consent screen. Add the scopes above: `openid`, `email` / `userinfo.email`, `https://mail.google.com/`, `https://www.googleapis.com/auth/gmail.modify`, `https://www.googleapis.com/auth/gmail.settings.basic`, `https://www.googleapis.com/auth/gmail.labels`, `https://www.googleapis.com/auth/calendar.calendarlist.readonly`, and `https://www.googleapis.com/auth/calendar.events`. Out of Office asks for `gmail.settings.basic` on its own. It does not replace the IMAP grant.
+1. OAuth consent screen. Add the scopes above: `openid`, `email` / `userinfo.email`, `https://mail.google.com/`, `https://www.googleapis.com/auth/gmail.modify`, `https://www.googleapis.com/auth/gmail.settings.basic`, `https://www.googleapis.com/auth/gmail.labels`, `https://www.googleapis.com/auth/calendar.calendarlist.readonly`, and `https://www.googleapis.com/auth/calendar.events`. The full bundle includes `gmail.settings.basic` for Out of Office and rules.
 2. Enable the Gmail API and the Google Calendar API on the project.
 3. Create an OAuth client of type **Desktop**. Download the JSON (`installed.client_id` and `installed.client_secret`).
 4. Provide it at runtime as `GOOGLE_DESKTOP_OAUTH_JSON`, `MORROW_GOOGLE_OAUTH_JSON`, `MORROW_GOOGLE_OAUTH_FILE`, dev `resources/google-oauth.json` (gitignored), or packaged `process.resourcesPath/google-oauth.json`.
@@ -67,20 +83,25 @@ Work and school mailboxes cannot grant those delegated permissions until an admi
 ## What the UI does when a grant is missing
 
 - No Google Desktop JSON: Google buttons explain that OAuth is not configured. Microsoft can still start.
-- No `gmail.modify` / `Mail.ReadWrite`: the sidebar says so and offers the second consent. IMAP folders stay. No stand-in label list. A consent that does not return that marker keeps the Grant button and says which permission Microsoft or Google left out. It does not say the mail API is connected.
+- No `gmail.modify` / `Mail.ReadWrite`: the sidebar says so and offers the provider bundle consent. IMAP folders stay. No stand-in label list. A consent that does not return that marker keeps the Grant button and says which permission Microsoft or Google left out. It does not say the mail API is connected.
 - No mailbox: the calendar page says to connect a Google or Microsoft account. It does not draw events.
-- No calendar grant: the calendar page says it needs a grant. It does not draw a month of events. After a grant, the month grid and agenda show only events returned by Google Calendar or Graph for that range, including time and location. An empty month says there are no events.
-- No `gmail.settings.basic` / `MailboxSettings.ReadWrite`: Inbox rules says so and offers that consent. It does not invent filters. IMAP accounts that are not Google or Microsoft OAuth keep rules on this computer and run them when new Inbox mail is downloaded. Rules do not forward mail.
+- No calendar grant: the calendar page offers Enable mailbox features for the Google full bundle or Microsoft Graph bundle. It does not draw a month of events. After a grant, the month grid and agenda show only events returned by Google Calendar or Graph for that range, including time and location. An empty month says there are no events.
+- No `gmail.settings.basic` / `MailboxSettings.ReadWrite`: Inbox rules says so and offers the provider bundle consent. It does not invent filters. IMAP accounts that are not Google or Microsoft OAuth keep rules on this computer and run them when new Inbox mail is downloaded. Rules do not forward mail.
 
 ## Wire-up
 
-- `mail:addAccount` is the IMAP baseline.
-- `mail:grantOrganize` stores the organize token on that mailbox after the email matches.
-- `calendar:connect` stores the calendar token the same way.
-- `mail:grantVacation` stores a separate vacation token after the browser account matches. A missing `gmail.settings.basic` or `MailboxSettings.ReadWrite` grant does not replace the mailbox secret. Settings → Out of Office then writes Gmail vacation settings or Graph automatic replies, and only after a second confirmation. IMAP accounts try a ManageSieve vacation script named `morrow-vacation` on port 4190. Morrow does not send local automatic replies, and it does not replace a different active Sieve script.
+- `mail:addAccount` requests the Google full bundle, or Microsoft mail followed by its Graph bundle.
+- `mail:grantOrganize`, `mail:grantRules`, and `calendar:connect` reuse existing access or request the provider bundle after matching the mailbox email.
+- `mail:grantVacation` reuses the bundle or requests the provider bundle after the browser account matches. A missing `gmail.settings.basic` or `MailboxSettings.ReadWrite` grant does not replace the mailbox secret. Settings → Out of Office then writes Gmail vacation settings or Graph automatic replies, and only after a second confirmation. IMAP accounts try a ManageSieve vacation script named `morrow-vacation` on port 4190. Morrow does not send local automatic replies, and it does not replace a different active Sieve script.
 - `mail:listProviderFolders`, create, rename, delete, and move call Gmail labels or Graph `mailFolders` only when the organize marker is granted. Gmail move is `labels.patch` on the label and its descendants. Outlook move is `POST /me/mailFolders/{id}/move`. IMAP folder move uses `RENAME` on the mailbox and does not need that grant.
 - `mail:modifyMessageLabels` and `mail:moveProviderMessage` use the provider message id looked up by RFC Message-ID.
 - `calendar:list` and `calendar:createEvent` call the calendar APIs for a month range.
 - `mail:listInboxRules`, `mail:saveInboxRule`, and `mail:deleteInboxRule` call Gmail `users.settings.filters` or Graph `mailFolders/inbox/messageRules` after `mail:grantRules`. Gmail has no update method, so an edit creates the new filter and then deletes the previous one. Outlook edits do the same with message rules so a cleared condition does not stay behind. Filters and rules already on the server that forward mail, or use an action this client does not represent, can be deleted here and are not rewritten.
 
 Plan My Week and Meeting Prep call `calendar:list` only when that calendar grant is already stored. Organize Inbox proposes a move, then Confirm uses `mail:modifyMessageLabels` or `mail:moveProviderMessage` when the organize grant is present, or an existing IMAP folder of the same name. No grant and no matching folder leaves the proposal pending. Skills never send mail. See [BRAIN_AGENT.md](BRAIN_AGENT.md).
+
+## Mock validation and live smoke notes
+
+`npm run check` includes `scripts/check-mail-calendar-consent.js`: real local loopback callbacks with fake provider token/profile responses, memory-only secrets, and a temporary database. It checks one Google dialog, two Microsoft dialogs with separate code exchanges, resource-specific refreshes, no popup for granted features, partial consent, legacy grants, account mismatch, cancellation, storage rollback, and mail sync/calendar availability. It also rejects mixed-resource Microsoft token requests. No live OAuth credentials, Keychain, or mailbox writes are needed.
+
+Live smoke checks are pending. With an authorized test account, approve the full Google dialog or Microsoft's mail then Graph dialogs, verify mail sync, and open Calendar, organize, Out of Office, and Inbox Rules without another popup. View settings only; this consent change does not authorize a live settings/rules/event write. Repeat Microsoft with a personal account and a work/school account with admin consent. Decline Graph or individual Google permissions, verify mail and existing grants remain, then enable a missing feature and retry. Verify mail-only and calendar-only migration preserves cached work. Bot bridge still uses its separate grants. Mocks cannot verify provider registration, verification, or tenant policy.

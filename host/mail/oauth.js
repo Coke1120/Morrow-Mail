@@ -14,6 +14,9 @@ const {
   authorizeUrl,
   normalizePurpose,
   providerKey,
+  hasPurposeScopes,
+  assertResourceScopes,
+  tokenScopeText,
 } = require("./oauth-config");
 
 function b64url(buf) {
@@ -187,6 +190,7 @@ function waitForCode(server, expectedState, expectedPath, timeoutMs, signal) {
 }
 
 async function exchange(provider, creds, code, redirect, verifier, scope, fetchImpl) {
+  assertResourceScopes(provider, scope || SCOPES[provider]);
   const fetcher = fetchImpl || fetch;
   const body = new URLSearchParams({
     grant_type: "authorization_code",
@@ -196,7 +200,7 @@ async function exchange(provider, creds, code, redirect, verifier, scope, fetchI
     code_verifier: verifier,
   });
   if (creds.clientSecret) body.set("client_secret", creds.clientSecret);
-  if (provider === "microsoft") body.set("scope", scope || SCOPES.microsoft);
+  if (provider === "microsoft") body.set("scope", tokenScopeText(scope || SCOPES.microsoft));
 
   const res = await fetcher(ENDPOINTS[provider].token, {
     method: "POST",
@@ -217,15 +221,16 @@ async function exchange(provider, creds, code, redirect, verifier, scope, fetchI
   };
 }
 
-async function refresh(provider, creds, refreshToken, scope, previousGranted) {
+async function refresh(provider, creds, refreshToken, scope, previousGranted, fetchImpl) {
+  assertResourceScopes(provider, scope || SCOPES[provider]);
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
     client_id: creds.clientId,
   });
   if (creds.clientSecret) body.set("client_secret", creds.clientSecret);
-  if (provider === "microsoft") body.set("scope", scope || SCOPES.microsoft);
-  const res = await fetch(ENDPOINTS[provider].token, {
+  if (provider === "microsoft") body.set("scope", tokenScopeText(scope || SCOPES.microsoft));
+  const res = await (fetchImpl || fetch)(ENDPOINTS[provider].token, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
@@ -305,8 +310,7 @@ async function readBody(res) {
   return {};
 }
 
-// IMAP tokens are issued for outlook.office.com. Graph /me needs User.Read, and Entra
-// rejects that scope on the same authorize URL as the IMAP/SMTP resource scopes.
+// Outlook mail tokens cannot call Graph /me. Graph consent is a second sign-in.
 async function fetchOutlookMailboxProfile(accessToken, idToken, fetchImpl) {
   const fetcher = fetchImpl || fetch;
   const fromId = tokenClaims(idToken);
@@ -338,7 +342,7 @@ async function fetchOutlookMailboxProfile(accessToken, idToken, fetchImpl) {
   throw new Error(
     "Could not read the Outlook account profile after OAuth." +
     statusText +
-    " The IMAP token is for outlook.office.com and cannot call Microsoft Graph /me. User.Read stays on the separate organize grant."
+    " The IMAP token is for outlook.office.com and cannot call Microsoft Graph /me. Reconnect the Outlook mailbox."
   );
 }
 
@@ -492,6 +496,14 @@ async function signIn(providerInput, purposeInput, options) {
   }
 }
 
+function requirePurposeScopes(tokens, provider, purpose) {
+  if (!tokens.accessToken || !tokens.refreshToken || !hasPurposeScopes(tokens.grantedScopes, provider, purpose)) {
+    const error = new Error(`The provider did not grant all ${purpose === "imap" ? "mail" : purpose} permissions. Existing connections are unchanged; approve the missing permissions and try again.`);
+    error.code = "scope_missing";
+    throw error;
+  }
+}
+
 async function accessTokenFor(account, secretBlob) {
   let parsed;
   try {
@@ -513,7 +525,7 @@ async function accessTokenFor(account, secretBlob) {
     throw error;
   }
   const creds = credentials(provider);
-  const scope = parsed.requestedScopes || parsed.grantedScopes || SCOPES[provider];
+  const scope = parsed.grantedScopes || parsed.requestedScopes || SCOPES[provider];
   const next = await refresh(provider, creds, parsed.refreshToken, scope, parsed.grantedScopes);
   return {
     token: next.accessToken,
@@ -537,4 +549,5 @@ module.exports = {
   fetchProfile,
   cancelActive,
   SCOPES,
+  requirePurposeScopes,
 };
