@@ -12,8 +12,8 @@ const { init: initMail, startBackgroundSync } = require("./mail/engine");
 const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
 
-const LOG = path.join(os.homedir(), ".hermes/tmp/genmail-exact/2026-10-16/ipc.log");
-const { preloadPath, migrateLegacyUserData } = require("./paths");
+const LOG = path.join(os.homedir(), ".hermes", "tmp", "morrow-mail", "ipc.log");
+const { preloadPath } = require("./paths");
 const PRELOAD_OUT = preloadPath();
 const FIRST_PARTY_DIR = path.join(__dirname, "..", "renderer");
 const FIRST_PARTY_PRELOAD = path.join(FIRST_PARTY_DIR, "preload.js");
@@ -23,7 +23,6 @@ const APP_ICON = path.join(__dirname, "..", "build", "icon.png");
 
 app.setName("Morrow Mail");
 if (process.platform === "win32") app.setAppUserModelId("com.coke1120.morrow-mail");
-migrateLegacyUserData();
 app.setAboutPanelOptions({
   applicationName: "Morrow Mail",
   applicationVersion: app.getVersion(),
@@ -33,7 +32,7 @@ app.setAboutPanelOptions({
 
 protocol.registerSchemesAsPrivileged([
   {
-    scheme: "genmail",
+    scheme: "morrow",
     privileges: {
       standard: true,
       secure: true,
@@ -79,7 +78,7 @@ function extractPreload() {
 }
 
 function registerProtocol() {
-  protocol.handle("genmail", (request) => {
+  protocol.handle("morrow", (request) => {
     let url;
     try {
       url = new URL(request.url);
@@ -111,7 +110,7 @@ function registerProtocol() {
 }
 
 function externalAsarPath() {
-  return (process.env.GENMAIL_ASAR || "").trim();
+  return (process.env.MORROW_ASAR || "").trim();
 }
 
 function attachIpc(preloadFile) {
@@ -219,8 +218,8 @@ function runAiSelfTest() {
   const pub = publicConfig();
   if (Object.prototype.hasOwnProperty.call(pub, "apiKey")) problems.push("public config includes apiKey");
   if (typeof pub.hasKey !== "boolean") problems.push("public config missing hasKey");
-  if (!process.env.GENMAIL_AI_BASE_URL && pub.baseUrl !== DEFAULTS.baseUrl) problems.push(`base ${pub.baseUrl}`);
-  if (!process.env.GENMAIL_AI_MODEL && pub.model !== DEFAULTS.model) problems.push(`model ${pub.model}`);
+  if (!process.env.MORROW_AI_BASE_URL && pub.baseUrl !== DEFAULTS.baseUrl) problems.push(`base ${pub.baseUrl}`);
+  if (!process.env.MORROW_AI_MODEL && pub.model !== DEFAULTS.model) problems.push(`model ${pub.model}`);
   const snap = brainAnswer("emailBrain:getCached", []);
   const persona = snap && snap.data && snap.data.persona;
   if (!snap || snap.success !== true || !persona || persona.status !== "ready") problems.push("getCached shape");
@@ -300,7 +299,7 @@ async function createWindow(preloadFile, mode) {
   win.on("close", () => {
     try { require("./mail/engine").answer("mail:cancelOAuth", []); } catch { /* mail is not open */ }
   });
-  if (external) await win.loadURL("genmail://local/index.html#/shell");
+  if (external) await win.loadURL("morrow://local/index.html#/shell");
   else await win.loadFile(FIRST_PARTY_HTML);
   if (!external) win.setTitle("Morrow Mail");
   return win;
@@ -322,18 +321,18 @@ app.whenReady().then(async () => {
   registerHostAi();
   updater.registerIpc();
   updater.init();
-  if (process.env.GENMAIL_AI_SELFTEST === "1") {
+  if (process.env.MORROW_AI_SELFTEST === "1") {
     const code = runAiSelfTest();
     app.exit(code);
     return;
   }
   await initMail();
-  if (process.env.GENMAIL_MAIL_SELFTEST === "1") {
+  if (process.env.MORROW_MAIL_SELFTEST === "1") {
     const code = await require("./mail/selftest").run();
     app.exit(code);
     return;
   }
-  if (process.env.GENMAIL_MAIL_LIVE === "1") {
+  if (process.env.MORROW_MAIL_LIVE === "1") {
     const code = await require("./mail/livetest").run();
     app.exit(code);
     return;
@@ -365,7 +364,7 @@ app.whenReady().then(async () => {
     } catch { /* this platform does not emit power events */ }
     try { require("./brain").scheduleLivingRefresh(); } catch { /* brain store is optional at boot */ }
     try { require("./agent").startSkillScheduler(); } catch { /* skill schedules are optional at boot */ }
-    if (process.env.GENMAIL_BOOT_EXIT === "1") {
+    if (process.env.MORROW_BOOT_EXIT === "1") {
       setTimeout(async () => {
         try {
           const info = await win.webContents.executeJavaScript(`({

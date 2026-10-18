@@ -82,8 +82,8 @@ async function run() {
   const remote = require("./remote");
   const savedFind = remote.findText;
   const savedClient = remote.withClient;
-  const prevSecrets = process.env.GENMAIL_MAIL_SECRETS;
-  process.env.GENMAIL_MAIL_SECRETS = "memory";
+  const prevSecrets = process.env.MORROW_MAIL_SECRETS;
+  process.env.MORROW_MAIL_SECRETS = "memory";
   const secrets = require("./secrets");
   secrets.setPassword("imap-test", "secret");
   let served = false;
@@ -119,8 +119,8 @@ async function run() {
   remote.findText = savedFind;
   remote.withClient = savedClient;
   secrets.deletePassword("imap-test");
-  if (prevSecrets === undefined) delete process.env.GENMAIL_MAIL_SECRETS;
-  else process.env.GENMAIL_MAIL_SECRETS = prevSecrets;
+  if (prevSecrets === undefined) delete process.env.MORROW_MAIL_SECRETS;
+  else process.env.MORROW_MAIL_SECRETS = prevSecrets;
 
   const past = answer("mail:snoozeThread", [{ accountId: "imap-test", threadId: "thr-test", snoozedUntil: new Date(Date.now() - 60000).toISOString() }]);
   if (!past || past.success !== false || past.error.code !== "snoozed_until_in_past") problem(problems, "snooze past");

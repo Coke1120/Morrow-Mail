@@ -11,7 +11,7 @@ function restTransform(value) {
 
 async function sample(win) {
   return win.webContents.executeJavaScript(`(async () => {
-    const motion = window.genmailMotion;
+    const motion = window.morrowMotion;
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const rowHost = document.getElementById("messages");
     const row = document.createElement("button");

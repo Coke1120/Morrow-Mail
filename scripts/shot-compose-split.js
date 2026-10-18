@@ -4,8 +4,8 @@ const os = require("os");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
-const outDir = process.env.GENMAIL_SHOT_DIR || "/opt/cursor/artifacts";
-const preloadPath = path.join(os.tmpdir(), "genmail-shot-preload.js");
+const outDir = process.env.MORROW_SHOT_DIR || "/opt/cursor/artifacts";
+const preloadPath = path.join(os.tmpdir(), "morrow-shot-preload.js");
 
 const message = {
   id: "msg-engine",
@@ -60,22 +60,22 @@ function raw(channel) {
     return { enabled: false };
   }
   if (channel === "config:getTheme") return "light";
-  if (channel === "genmail:configGetAccent") return "#7C3AED";
-  if (channel === "genmail:configGetUndoSendDelaySeconds") return 5;
-  if (channel === "genmail:configGetComposeQuoteWidth") return 460;
-  if (channel === "genmail:configSetComposeQuoteWidth") return 460;
-  if (channel === "genmail:configGetAutoLoadRemoteImages") return false;
-  if (channel === "genmail:configGetAiWriteAutoOpenOnReply") return false;
-  if (channel === "genmail:configGetSidebarOutlookFoldersExpanded") return false;
-  if (channel === "genmail:configGetSnoozeEffective") return true;
-  if (channel === "genmail:configGetConversationViewEnabled") return true;
-  if (channel === "genmail:configGetShowFolderChips") return true;
-  if (channel === "genmail:configGetSidebarGmailFoldersExpanded") return true;
+  if (channel === "morrow:configGetAccent") return "#7C3AED";
+  if (channel === "morrow:configGetUndoSendDelaySeconds") return 5;
+  if (channel === "morrow:configGetComposeQuoteWidth") return 460;
+  if (channel === "morrow:configSetComposeQuoteWidth") return 460;
+  if (channel === "morrow:configGetAutoLoadRemoteImages") return false;
+  if (channel === "morrow:configGetAiWriteAutoOpenOnReply") return false;
+  if (channel === "morrow:configGetSidebarOutlookFoldersExpanded") return false;
+  if (channel === "morrow:configGetSnoozeEffective") return true;
+  if (channel === "morrow:configGetConversationViewEnabled") return true;
+  if (channel === "morrow:configGetShowFolderChips") return true;
+  if (channel === "morrow:configGetSidebarGmailFoldersExpanded") return true;
   if (channel.indexOf("configGet") >= 0 || channel.indexOf("config:get") === 0) return false;
   if (channel.indexOf("configSet") >= 0 || channel.indexOf("config:set") === 0) return true;
   return null;
 }
-contextBridge.exposeInMainWorld("genmail", {
+contextBridge.exposeInMainWorld("morrow", {
   invoke(channel, payload) {
     if (channel === "mail:send" || channel === "mail:upsertDraft" || channel === "mail:scheduleSend") {
       sent.push(channel);
@@ -98,7 +98,7 @@ contextBridge.exposeInMainWorld("genmail", {
   },
   on() { return function () {}; },
 });
-contextBridge.exposeInMainWorld("genmailShot", {
+contextBridge.exposeInMainWorld("morrowShot", {
   sent() { return sent.slice(); },
 });
 `);
@@ -162,7 +162,7 @@ function assertState(state, expect) {
 }
 
 app.disableHardwareAcceleration();
-app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "genmail-shot-")));
+app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "morrow-shot-")));
 
 app.whenReady().then(async () => {
   fs.mkdirSync(outDir, { recursive: true });
@@ -317,7 +317,7 @@ app.whenReady().then(async () => {
   win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
   win.webContents.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
   await waitFor(win, `!document.getElementById("compose").open`, "escape close");
-  const sent = await win.webContents.executeJavaScript(`window.genmailShot.sent()`, true);
+  const sent = await win.webContents.executeJavaScript(`window.morrowShot.sent()`, true);
   if (sent.length) throw new Error("close or cancel sent mail: " + sent.join(","));
   const report = {
     shell: shellPath,

@@ -3,10 +3,10 @@ const path = require("path");
 const { userDataDir } = require("./paths");
 
 const GITHUB_OWNER = "Coke1120";
-const GITHUB_REPO = "genmail-rea";
+const GITHUB_REPO = "Morrow-Mail";
 
 function tokenFile() {
-  return path.join(userDataDir("genmail-exact"), "github-update.json");
+  return path.join(userDataDir(), "github-update.json");
 }
 
 function readFileToken() {

@@ -40,16 +40,16 @@ for (const file of syntax) {
 }
 
 const asar = require("../host/asar");
-delete process.env.GENMAIL_ASAR;
+delete process.env.MORROW_ASAR;
 assert.strictEqual(asar.resolveAsarPath(), null);
-assert.throws(() => asar.openAsar(), /GENMAIL_ASAR/);
-process.env.GENMAIL_ASAR = "  /tmp/from-env.asar  ";
+assert.throws(() => asar.openAsar(), /MORROW_ASAR/);
+process.env.MORROW_ASAR = "  /tmp/from-env.asar  ";
 assert.strictEqual(asar.resolveAsarPath(), "/tmp/from-env.asar");
 assert.strictEqual(asar.resolveAsarPath("/tmp/explicit.asar"), "/tmp/explicit.asar");
-process.env.GENMAIL_ASAR = "";
+process.env.MORROW_ASAR = "";
 assert.strictEqual(asar.resolveAsarPath(), null);
 
-const forbidden = "Genspark Super App.app";
+const forbidden = "Super App.app";
 for (const file of ["host/main.js", "host/asar.js"]) {
   const text = fs.readFileSync(path.join(root, file), "utf8");
   assert.ok(!text.includes(forbidden), `${file} still hardcodes the external app path`);
@@ -62,7 +62,7 @@ for (const match of preload.matchAll(/"([a-zA-Z][\w-]*:[^"\n]{1,180})"/g)) {
 }
 const appJs = fs.readFileSync(path.join(root, "renderer/app.js"), "utf8");
 const used = new Set();
-for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config|aiDraftWrite|emailBrain|nativeAgent|calendar):[^"]+)"/g)) used.add(match[1]);
+for (const match of appJs.matchAll(/"((?:mail|app|host|morrow|config|aiDraftWrite|emailBrain|nativeAgent|calendar):[^"]+)"/g)) used.add(match[1]);
 assert.ok(used.size >= 8, "renderer stopped calling mail IPC");
 for (const channel of used) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -96,7 +96,7 @@ assert.deepStrictEqual(
   {
     provider: "github",
     owner: "Coke1120",
-    repo: "genmail-rea",
+    repo: "Morrow-Mail",
     private: true,
     releaseType: "prerelease",
   },
@@ -191,7 +191,6 @@ assert.strictEqual(pkg.version, "0.1.0-alpha.4");
 assert.strictEqual(pkg.build.productName, "Morrow Mail");
 assert.strictEqual(pkg.build.appId, "com.coke1120.morrow-mail");
 assert.notStrictEqual(pkg.build.appId, "org.morrowmail.desktop");
-assert.notStrictEqual(pkg.build.appId, "com.coke1120.genmail-rea");
 assert.strictEqual(pkg.build.mac.icon, "build/icon.icns");
 assert.strictEqual(pkg.build.win.icon, "build/icon.ico");
 assert.strictEqual(pkg.build.linux.icon, "build/icon.png");
@@ -219,51 +218,21 @@ assert.strictEqual(iconIco.readUInt16LE(2), 1);
 const railSvg = fs.readFileSync(path.join(root, "renderer/morrow-icon.svg"), "utf8");
 assert.ok(railSvg.includes("#193c34") && railSvg.includes("Morrow Mail"));
 assert.strictEqual(fs.readFileSync(path.join(root, "build/morrow-icon.svg"), "utf8"), railSvg);
-const { migrateRead, SERVICE, LEGACY_SERVICE } = require("../host/mail/secret-service");
-const secretStore = new Map();
-secretStore.set(LEGACY_SERVICE, "old-secret");
-let removedService = "";
-assert.strictEqual(migrateRead(
-  (service) => (secretStore.has(service) ? secretStore.get(service) : null),
-  (service, secret) => secretStore.set(service, secret),
-  (service) => {
-    removedService = service;
-    secretStore.delete(service);
-  },
-), "old-secret");
-assert.strictEqual(secretStore.get(SERVICE), "old-secret");
-assert.strictEqual(removedService, LEGACY_SERVICE);
-assert.strictEqual(migrateRead(
-  (service) => (secretStore.has(service) ? secretStore.get(service) : null),
-  () => { throw new Error("current secret should win"); },
-  () => { throw new Error("current secret should win"); },
-), "old-secret");
-secretStore.delete(SERVICE);
-secretStore.set(LEGACY_SERVICE, "still-old");
-assert.strictEqual(migrateRead(
-  (service) => (secretStore.has(service) ? secretStore.get(service) : null),
-  () => { throw new Error("copy failed"); },
-  () => { throw new Error("copy failed"); },
-), "still-old");
-assert.strictEqual(secretStore.get(LEGACY_SERVICE), "still-old");
+const { SERVICE } = require("../host/mail/secret-service");
+assert.strictEqual(SERVICE, "morrow-mail");
 const macSecrets = fs.readFileSync(path.join(root, "host/mail/mac-secrets.js"), "utf8");
 const winSecrets = fs.readFileSync(path.join(root, "host/mail/win-secrets.js"), "utf8");
 const serviceSrc = fs.readFileSync(path.join(root, "host/mail/secret-service.js"), "utf8");
-assert.ok(serviceSrc.includes('const SERVICE = "morrow-mail"') && serviceSrc.includes('const LEGACY_SERVICE = "genmail-exact"'));
-assert.ok(macSecrets.includes("migrateRead") && macSecrets.includes('require("./secret-service")'));
-assert.ok(winSecrets.includes("migrateRead") && winSecrets.includes('const STORE_DIR = "morrow-mail"') && winSecrets.includes('const LEGACY_STORE_DIR = "genmail-rea"'));
-const os = require("os");
+assert.ok(serviceSrc.includes('const SERVICE = "morrow-mail"'));
+assert.ok(!serviceSrc.includes("LEGACY_SERVICE"));
+assert.ok(macSecrets.includes("return find(SERVICE, account)") && macSecrets.includes('require("./secret-service")'));
+assert.ok(!macSecrets.includes("migrateRead"));
+assert.ok(winSecrets.includes('const STORE_DIR = "morrow-mail"') && winSecrets.includes("return readPassword(STORE_DIR, SERVICE, account)"));
+assert.ok(!winSecrets.includes("LEGACY_STORE_DIR"));
 const dataPaths = require("../host/paths");
-const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-userdata-"));
-const legacyData = path.join(dataHome, "GenMail REA");
-const nextData = path.join(dataHome, "Morrow Mail");
-fs.mkdirSync(legacyData);
-fs.writeFileSync(path.join(legacyData, "settings.json"), "{\"theme\":\"dark\"}");
-assert.deepStrictEqual(dataPaths.migrateLegacyUserData({ prev: legacyData, next: nextData }).sort(), ["settings.json"]);
-fs.writeFileSync(path.join(nextData, "settings.json"), "{\"theme\":\"light\"}");
-fs.writeFileSync(path.join(legacyData, "extra.txt"), "keep");
-assert.deepStrictEqual(dataPaths.migrateLegacyUserData({ prev: legacyData, next: nextData }), ["extra.txt"]);
-assert.strictEqual(fs.readFileSync(path.join(nextData, "settings.json"), "utf8"), "{\"theme\":\"light\"}");
+assert.strictEqual(dataPaths.PRODUCT_DATA_DIR, "Morrow Mail");
+assert.ok(!Object.prototype.hasOwnProperty.call(dataPaths, "migrateLegacyUserData"));
+assert.ok(!main.includes("migrateLegacyUserData"));
 assert.ok(html.includes('id="search-query"'), "toolbar has no search box");
 assert.ok(html.includes('src="./motion.bundle.js"'), "renderer does not load the Motion bundle");
 assert.ok(pkg.dependencies && pkg.dependencies.motion, "motion is not a dependency");
@@ -271,8 +240,8 @@ const motionSrc = fs.readFileSync(path.join(root, "renderer/motion-ui.js"), "utf
 assert.ok(motionSrc.includes('from "motion"'), "Motion UI does not import motion");
 assert.ok(motionSrc.includes("prefers-reduced-motion: reduce"), "Motion UI ignores reduced motion");
 assert.ok(fs.existsSync(path.join(root, "renderer/motion.bundle.js")), "Motion bundle was not built");
-assert.ok(fs.readFileSync(path.join(root, "renderer/motion.bundle.js"), "utf8").includes("genmailMotion"), "Motion bundle missing genmailMotion");
-assert.ok(appJs.includes("genmailMotion") && appJs.includes("wantsCloseMotion"), "shell does not call Motion");
+assert.ok(fs.readFileSync(path.join(root, "renderer/motion.bundle.js"), "utf8").includes("morrowMotion"), "Motion bundle missing morrowMotion");
+assert.ok(appJs.includes("morrowMotion") && appJs.includes("wantsCloseMotion"), "shell does not call Motion");
 assert.ok(css.includes("margin: 0 auto"), "dialog is not centered without a transform");
 assert.ok(css.includes(".dialog-body") && css.includes(".row-actions"), "shell css missing dialog scroll or row actions");
 assert.ok(html.includes('id="list-filter"') && html.includes("Does not search the server."), "message list has no loaded-mail filter");
@@ -661,10 +630,10 @@ assert.ok(settingsCall > 0 && settingsCall < overrideCall);
 assert.ok(settingsCall < ipcSrc.indexOf("/Effective$|Enabled$/"));
 assert.ok(!ipcSrc.includes('"config:getTheme"'));
 for (const channel of [
-  "genmail:configGetAiWriteAutoOpenOnReply",
-  "genmail:configGetShowFolderChips",
-  "genmail:configGetSidebarGmailFoldersExpanded",
-  "genmail:configGetSidebarOutlookFoldersExpanded",
+  "morrow:configGetAiWriteAutoOpenOnReply",
+  "morrow:configGetShowFolderChips",
+  "morrow:configGetSidebarGmailFoldersExpanded",
+  "morrow:configGetSidebarOutlookFoldersExpanded",
 ]) {
   assert.ok(!ipcSrc.includes('"' + channel + '"'), channel + " still stubbed in ipc");
 }
@@ -673,67 +642,67 @@ checkSettingsRoundTrip();
 function checkSettingsRoundTrip() {
   const os = require("os");
   const prev = {
-    GENMAIL_USER_DATA: process.env.GENMAIL_USER_DATA,
-    GENMAIL_MAIL_DIR: process.env.GENMAIL_MAIL_DIR,
-    GENMAIL_AI_CONFIG_DIR: process.env.GENMAIL_AI_CONFIG_DIR,
+    MORROW_USER_DATA: process.env.MORROW_USER_DATA,
+    MORROW_MAIL_DIR: process.env.MORROW_MAIL_DIR,
+    MORROW_AI_CONFIG_DIR: process.env.MORROW_AI_CONFIG_DIR,
   };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-settings-"));
-  process.env.GENMAIL_USER_DATA = dir;
-  delete process.env.GENMAIL_MAIL_DIR;
-  delete process.env.GENMAIL_AI_CONFIG_DIR;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-settings-"));
+  process.env.MORROW_USER_DATA = dir;
+  delete process.env.MORROW_MAIL_DIR;
+  delete process.env.MORROW_AI_CONFIG_DIR;
   try {
     const { answer } = require("../host/settings");
     const file = path.join(dir, "settings.json");
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:getTheme", []), "light");
-    assert.strictEqual(answer("genmail:configGetAccent", []), "#7C3AED");
-    assert.strictEqual(answer("genmail:configGetConversationViewEnabled", []), true);
-    assert.strictEqual(answer("genmail:configGetAutoLoadRemoteImages", []), false);
-    assert.strictEqual(answer("genmail:configGetUndoSendDelaySeconds", []), 5);
-    assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), true);
-    assert.strictEqual(answer("genmail:configGetAiWriteAutoOpenOnReply", []), false);
-    assert.strictEqual(answer("genmail:configGetShowFolderChips", []), true);
-    assert.strictEqual(answer("genmail:configGetSidebarGmailFoldersExpanded", []), true);
-    assert.strictEqual(answer("genmail:configGetSidebarOutlookFoldersExpanded", []), false);
-    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 420);
+    assert.strictEqual(answer("morrow:configGetAccent", []), "#7C3AED");
+    assert.strictEqual(answer("morrow:configGetConversationViewEnabled", []), true);
+    assert.strictEqual(answer("morrow:configGetAutoLoadRemoteImages", []), false);
+    assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 5);
+    assert.strictEqual(answer("morrow:configGetSnoozeEffective", []), true);
+    assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), false);
+    assert.strictEqual(answer("morrow:configGetShowFolderChips", []), true);
+    assert.strictEqual(answer("morrow:configGetSidebarGmailFoldersExpanded", []), true);
+    assert.strictEqual(answer("morrow:configGetSidebarOutlookFoldersExpanded", []), false);
+    assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
-    assert.strictEqual(answer("genmail:configSetAccent", ["#112233"]), "#112233");
-    assert.strictEqual(answer("genmail:configSetConversationViewEnabled", [false]), false);
-    assert.strictEqual(answer("genmail:configSetAutoLoadRemoteImages", [true]), true);
-    assert.strictEqual(answer("genmail:configSetUndoSendDelaySeconds", [0]), 0);
-    assert.strictEqual(answer("genmail:configSetSnoozeEffective", [false]), false);
-    assert.strictEqual(answer("genmail:configSetAiWriteAutoOpenOnReply", [true]), true);
-    assert.strictEqual(answer("genmail:configSetShowFolderChips", [false]), false);
-    assert.strictEqual(answer("genmail:configSetSidebarGmailFoldersExpanded", [false]), false);
-    assert.strictEqual(answer("genmail:configSetSidebarOutlookFoldersExpanded", [true]), true);
-    assert.strictEqual(answer("genmail:configSetComposeQuoteWidth", [560]), 560);
+    assert.strictEqual(answer("morrow:configSetAccent", ["#112233"]), "#112233");
+    assert.strictEqual(answer("morrow:configSetConversationViewEnabled", [false]), false);
+    assert.strictEqual(answer("morrow:configSetAutoLoadRemoteImages", [true]), true);
+    assert.strictEqual(answer("morrow:configSetUndoSendDelaySeconds", [0]), 0);
+    assert.strictEqual(answer("morrow:configSetSnoozeEffective", [false]), false);
+    assert.strictEqual(answer("morrow:configSetAiWriteAutoOpenOnReply", [true]), true);
+    assert.strictEqual(answer("morrow:configSetShowFolderChips", [false]), false);
+    assert.strictEqual(answer("morrow:configSetSidebarGmailFoldersExpanded", [false]), false);
+    assert.strictEqual(answer("morrow:configSetSidebarOutlookFoldersExpanded", [true]), true);
+    assert.strictEqual(answer("morrow:configSetComposeQuoteWidth", [560]), 560);
     assert.strictEqual(answer("config:getTheme", []), "dark");
-    assert.strictEqual(answer("genmail:configGetAccent", []), "#112233");
-    assert.strictEqual(answer("genmail:configGetConversationViewEnabled", []), false);
-    assert.strictEqual(answer("genmail:configGetAutoLoadRemoteImages", []), true);
-    assert.strictEqual(answer("genmail:configGetUndoSendDelaySeconds", []), 0);
-    assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), false);
-    assert.strictEqual(answer("genmail:configGetAiWriteAutoOpenOnReply", []), true);
-    assert.strictEqual(answer("genmail:configGetShowFolderChips", []), false);
-    assert.strictEqual(answer("genmail:configGetSidebarGmailFoldersExpanded", []), false);
-    assert.strictEqual(answer("genmail:configGetSidebarOutlookFoldersExpanded", []), true);
-    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 560);
-    assert.strictEqual(answer("genmail:configSetAccent", ["#abcdef"]), "#ABCDEF");
+    assert.strictEqual(answer("morrow:configGetAccent", []), "#112233");
+    assert.strictEqual(answer("morrow:configGetConversationViewEnabled", []), false);
+    assert.strictEqual(answer("morrow:configGetAutoLoadRemoteImages", []), true);
+    assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 0);
+    assert.strictEqual(answer("morrow:configGetSnoozeEffective", []), false);
+    assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), true);
+    assert.strictEqual(answer("morrow:configGetShowFolderChips", []), false);
+    assert.strictEqual(answer("morrow:configGetSidebarGmailFoldersExpanded", []), false);
+    assert.strictEqual(answer("morrow:configGetSidebarOutlookFoldersExpanded", []), true);
+    assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 560);
+    assert.strictEqual(answer("morrow:configSetAccent", ["#abcdef"]), "#ABCDEF");
     const reloaded = spawnSync(process.execPath, ["-e", `
       const { answer } = require(${JSON.stringify(path.join(root, "host/settings.js"))});
       process.stdout.write(JSON.stringify({
         theme: answer("config:getTheme", []),
-        accent: answer("genmail:configGetAccent", []),
-        conversation: answer("genmail:configGetConversationViewEnabled", []),
-        images: answer("genmail:configGetAutoLoadRemoteImages", []),
-        undo: answer("genmail:configGetUndoSendDelaySeconds", []),
-        snooze: answer("genmail:configGetSnoozeEffective", []),
-        aiReply: answer("genmail:configGetAiWriteAutoOpenOnReply", []),
-        chips: answer("genmail:configGetShowFolderChips", []),
-        gmailFolders: answer("genmail:configGetSidebarGmailFoldersExpanded", []),
-        outlookFolders: answer("genmail:configGetSidebarOutlookFoldersExpanded", []),
-        quoteWidth: answer("genmail:configGetComposeQuoteWidth", []),
+        accent: answer("morrow:configGetAccent", []),
+        conversation: answer("morrow:configGetConversationViewEnabled", []),
+        images: answer("morrow:configGetAutoLoadRemoteImages", []),
+        undo: answer("morrow:configGetUndoSendDelaySeconds", []),
+        snooze: answer("morrow:configGetSnoozeEffective", []),
+        aiReply: answer("morrow:configGetAiWriteAutoOpenOnReply", []),
+        chips: answer("morrow:configGetShowFolderChips", []),
+        gmailFolders: answer("morrow:configGetSidebarGmailFoldersExpanded", []),
+        outlookFolders: answer("morrow:configGetSidebarOutlookFoldersExpanded", []),
+        quoteWidth: answer("morrow:configGetComposeQuoteWidth", []),
       }));
     `], { encoding: "utf8" });
     assert.strictEqual(reloaded.status, 0, reloaded.stderr);
@@ -752,21 +721,21 @@ function checkSettingsRoundTrip() {
     });
     assert.throws(() => answer("config:setTheme", ["neon"]), /light or dark/);
     assert.strictEqual(answer("config:getTheme", []), "dark");
-    assert.throws(() => answer("genmail:configSetAccent", ["purple"]), /#RRGGBB/);
-    assert.strictEqual(answer("genmail:configGetAccent", []), "#ABCDEF");
-    assert.throws(() => answer("genmail:configSetUndoSendDelaySeconds", [31]), /0 to 30/);
-    assert.strictEqual(answer("genmail:configGetUndoSendDelaySeconds", []), 0);
-    assert.throws(() => answer("genmail:configSetSnoozeEffective", ["yes"]), /on or off/);
-    assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), false);
-    assert.throws(() => answer("genmail:configSetShowFolderChips", ["yes"]), /on or off/);
-    assert.strictEqual(answer("genmail:configGetShowFolderChips", []), false);
-    assert.throws(() => answer("genmail:configSetComposeQuoteWidth", [10]), /220 to 720/);
-    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 560);
-    assert.throws(() => answer("genmail:configSetComposeQuoteWidth", [800]), /220 to 720/);
-    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 560);
+    assert.throws(() => answer("morrow:configSetAccent", ["purple"]), /#RRGGBB/);
+    assert.strictEqual(answer("morrow:configGetAccent", []), "#ABCDEF");
+    assert.throws(() => answer("morrow:configSetUndoSendDelaySeconds", [31]), /0 to 30/);
+    assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 0);
+    assert.throws(() => answer("morrow:configSetSnoozeEffective", ["yes"]), /on or off/);
+    assert.strictEqual(answer("morrow:configGetSnoozeEffective", []), false);
+    assert.throws(() => answer("morrow:configSetShowFolderChips", ["yes"]), /on or off/);
+    assert.strictEqual(answer("morrow:configGetShowFolderChips", []), false);
+    assert.throws(() => answer("morrow:configSetComposeQuoteWidth", [10]), /220 to 720/);
+    assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 560);
+    assert.throws(() => answer("morrow:configSetComposeQuoteWidth", [800]), /220 to 720/);
+    assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 560);
     fs.writeFileSync(file, "{");
     assert.strictEqual(answer("config:getTheme", []), "light");
-    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 420);
+    assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
     assert.strictEqual(answer("config:getTheme", []), "dark");
   } finally {
@@ -1140,7 +1109,7 @@ const wideRule = css.slice(css.indexOf('#compose[data-layout="wide"][data-quote=
 assert.ok(wideRule.slice(0, 240).includes("flex-direction: row"));
 assert.ok(css.includes("--compose-quote") && css.includes("prefers-reduced-motion: reduce"));
 assert.ok(appJs.includes("fadePane") && motionSrc.includes("function fadePane"));
-assert.ok(appJs.includes("genmail:configGetComposeQuoteWidth") && appJs.includes("genmail:configSetComposeQuoteWidth"));
+assert.ok(appJs.includes("morrow:configGetComposeQuoteWidth") && appJs.includes("morrow:configSetComposeQuoteWidth"));
 assert.strictEqual(compose.quoteStateFromSeed({}), null);
 assert.strictEqual(compose.quoteStateFromSeed(null), null);
 assert.ok(appJs.includes("Hide quoted message"));
@@ -1512,8 +1481,8 @@ for (const channel of studioUi.studioLists().map((row) => row[1])) {
 }
 assert.ok(!html.includes('id="tidy"') && !html.includes("One-click tidy") && !html.includes('id="pref-tidy"'));
 assert.ok(!registered.has("mail:tidyInbox") && !used.has("mail:tidyInbox"));
-assert.ok(!registered.has("genmail:configGetShowOneClickTidy") && !registered.has("genmail:configSetShowOneClickTidy"));
-assert.ok(!registered.has("genmail:configGetShowOneClickTidyEffective") && !used.has("genmail:configGetShowOneClickTidyEffective"));
+assert.ok(!registered.has("morrow:configGetShowOneClickTidy") && !registered.has("morrow:configSetShowOneClickTidy"));
+assert.ok(!registered.has("morrow:configGetShowOneClickTidyEffective") && !used.has("morrow:configGetShowOneClickTidyEffective"));
 assert.ok(!appJs.includes("function showTidy") && !appJs.includes("function tidyInbox") && !appJs.includes("mail:tidyInbox"));
 assert.ok(html.includes('id="agent-panel"') && !html.includes('id="agent-open"') && html.includes('id="studio-home"') && html.includes('id="studio-library"'));
 assert.ok(html.includes('id="agent-composer"') && html.includes('id="agent-send"') && html.includes('id="agent-input"'));
@@ -1551,22 +1520,22 @@ assert.ok(brainDoc.includes("Catch Me Up"));
 assert.ok(brainDoc.includes("emailBrain:fixItem") && brainDoc.includes("emailBrain:forgetItem") && brainDoc.includes("emailBrain:fixCategory"));
 assert.ok(parity.includes("emailBrain:fixItem") && parity.includes("emailBrain:forgetItem") && parity.includes("emailBrain:fixCategory"));
 assert.ok(parity.includes("ownerName") && parity.includes("emailsAnalyzed") && parity.includes("factsLearned"));
-assert.ok(parity.includes("genmail:configSetAiWriteAutoOpenOnReply") && parity.includes("genmail:configSetShowFolderChips"));
-assert.ok(parity.includes("genmail:configSetSidebarGmailFoldersExpanded"));
-assert.ok(parity.includes("genmail:configSetSidebarOutlookFoldersExpanded"));
+assert.ok(parity.includes("morrow:configSetAiWriteAutoOpenOnReply") && parity.includes("morrow:configSetShowFolderChips"));
+assert.ok(parity.includes("morrow:configSetSidebarGmailFoldersExpanded"));
+assert.ok(parity.includes("morrow:configSetSidebarOutlookFoldersExpanded"));
 assert.ok(parity.includes("above the message list") && parity.includes("open the compose AI write controls"));
 assert.ok(parity.includes("Brain → Organize Inbox") && independentDoc.includes("Brain → Organize Inbox"));
-assert.ok(!parity.includes("mail:tidyInbox") && !parity.includes("genmail:configSetShowOneClickTidy"));
-assert.ok(!parity.includes("genmail:configGetShowOneClickTidyEffective") && !independentDoc.includes("one-click tidy"));
+assert.ok(!parity.includes("mail:tidyInbox") && !parity.includes("morrow:configSetShowOneClickTidy"));
+assert.ok(!parity.includes("morrow:configGetShowOneClickTidyEffective") && !independentDoc.includes("one-click tidy"));
 assert.ok(!parity.includes("does not add a button"));
 assert.ok(css.includes(".chips") && css.includes("button.account") && css.includes(".ai-write.open"));
-assert.ok(parity.includes("genmail:configGetDogfoodPrefs") && parity.includes("genmail:configGetShowJevClassification"));
-assert.ok(parity.includes("genmail:configGetCalendarSidebarOrder"));
+assert.ok(parity.includes("morrow:configGetDogfoodPrefs") && parity.includes("morrow:configGetShowJevClassification"));
+assert.ok(parity.includes("morrow:configGetCalendarSidebarOrder"));
 assert.ok(!parity.includes("Other host preferences, calendar"));
 assert.ok(!parity.includes("full skills library"));
 assert.ok(!parity.includes("AI Studio, calendar"));
 assert.ok(parity.includes("skills library"));
-assert.ok(parity.includes("config:setTheme") && parity.includes("genmail:configSetSnoozeEffective"));
+assert.ok(parity.includes("config:setTheme") && parity.includes("morrow:configSetSnoozeEffective"));
 assert.ok(!parity.includes("the list is read-only"));
 assert.ok(!parity.includes("full Brain category/skills UI"));
 assert.ok(parity.includes("mail:upsertSignature") && parity.includes("defaultSignaturePerAccount"));
@@ -1838,7 +1807,7 @@ assert.strictEqual(organizeUi.organizeMenu(dragMessage, [{ id: "Notes", name: "N
 }, "outlook").note, "Outlook did not return a folder list.");
 assert.strictEqual(organizeUi.organizeMenu(null, [], null, "gmail").note, "Choose a message first.");
 assert.ok(appJs.includes("contextmenu"));
-assert.ok(appJs.includes("application/x-genmail-message"));
+assert.ok(appJs.includes("application/x-morrow-message"));
 assert.ok(appJs.includes("dropKind"));
 assert.ok(css.includes(".organize-menu") && css.includes(".drop-target"));
 assert.ok(parity.includes("right-click"));
@@ -2699,10 +2668,10 @@ assert.strictEqual(microsoftCalendar.searchParams.get("scope"), oauthConfig.CALE
 assert.strictEqual(oauthConfig.MICROSOFT_CLIENT_ID, "2ca9ca19-add5-4807-bfa1-c2a7ac3cc6bf");
 
 async function checkAiDraft() {
-  delete process.env.GENMAIL_AI_API_KEY;
+  delete process.env.MORROW_AI_API_KEY;
   delete process.env.XAI_API_KEY;
   const os = require("os");
-  process.env.GENMAIL_AI_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-ai-"));
+  process.env.MORROW_AI_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-ai-"));
   const Module = require("module");
   const originalRequire = Module.prototype.require;
   const sent = [];
@@ -2755,7 +2724,7 @@ async function checkAiDraft() {
   assert.strictEqual(loadConfig().apiKey, "");
   const agent = require("../host/agent");
   const agentSrc = fs.readFileSync(path.join(root, "host/agent.js"), "utf8");
-  assert.ok(!agentSrc.includes("mail:send") && !agentSrc.includes("genmailSend"));
+  assert.ok(!agentSrc.includes("mail:send"));
   const brainSrc = fs.readFileSync(path.join(root, "host/brain.js"), "utf8");
   assert.ok(brainSrc.includes("function refreshFromMail") && brainSrc.includes("function rebuildFromMail"));
   assert.ok(!/case "emailBrain:refresh":\s*case "emailBrain:rebuild"/.test(brainSrc));
@@ -2824,7 +2793,7 @@ async function checkAiDraft() {
   );
   assert.strictEqual(dropped.moves.length, 1);
   assert.strictEqual(dropped.moves[0].messageId, "m-live");
-  process.env.GENMAIL_AI_API_KEY = "sk-test";
+  process.env.MORROW_AI_API_KEY = "sk-test";
   const originalFetch = global.fetch;
   global.fetch = async () => { throw new Error("rebuild must not call the model without a mailbox"); };
   try {
@@ -2972,7 +2941,7 @@ async function checkAiDraft() {
     const viaTriage = await agent.answer("nativeAgent:chat", [{ text: "sort the inbox" }]);
     assert.strictEqual(viaTriage.data.intent, "triage");
     assert.ok(viaTriage.data.turn.triage.sections.some((section) => section.items && section.items.length));
-    const chatFile = path.join(process.env.GENMAIL_AI_CONFIG_DIR, "agent-chat.json");
+    const chatFile = path.join(process.env.MORROW_AI_CONFIG_DIR, "agent-chat.json");
     const disk = JSON.parse(fs.readFileSync(chatFile, "utf8"));
     assert.ok(disk.turns.filter((turn) => turn.role === "user").length >= 3);
     const loaded = agent.answer("nativeAgent:chatHistory", []);
@@ -3060,7 +3029,7 @@ async function checkAiDraft() {
     const edited = brain.answer("emailBrain:setSkillSchedule", [{ skillId: "morning-brief", kind: "cron", cron: "0 8 * * 1-5" }]);
     assert.strictEqual(edited.success, true);
     assert.strictEqual(edited.data.schedule.cron, "0 8 * * 1-5");
-    const scheduleFile = path.join(process.env.GENMAIL_AI_CONFIG_DIR, "agent.json");
+    const scheduleFile = path.join(process.env.MORROW_AI_CONFIG_DIR, "agent.json");
     const scheduleDisk = JSON.parse(fs.readFileSync(scheduleFile, "utf8"));
     assert.ok(scheduleDisk.schedules.some((row) => row.skillId === "morning-brief" && row.cron === "0 8 * * 1-5"));
     const paused = brain.answer("emailBrain:setSkillSchedule", [{ skillId: "morning-brief", paused: true }]);
@@ -3096,9 +3065,9 @@ async function checkAiDraft() {
     db.hasAccounts = hadAccounts;
     db.recentInbox = hadInbox;
     db.recentInWellKnown = hadSent;
-    fs.rmSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json"), { force: true });
+    fs.rmSync(path.join(process.env.MORROW_AI_CONFIG_DIR, "brain.json"), { force: true });
     global.fetch = originalFetch;
-    delete process.env.GENMAIL_AI_API_KEY;
+    delete process.env.MORROW_AI_API_KEY;
   }
   const blockedChat = await agent.answer("nativeAgent:chat", [{ text: "Hello from the sidebar" }]);
   assert.strictEqual(blockedChat.data.intent, "chat");
@@ -3108,7 +3077,7 @@ async function checkAiDraft() {
   assert.ok(keptChat.data.turns.some((turn) => turn.text === "Hello from the sidebar"));
   assert.strictEqual(keptChat.data.memory.notes, "Prefer short replies.");
   assert.strictEqual((await agent.answer("nativeAgent:chat", [{ text: "  " }])).success, false);
-  assert.ok(!fs.existsSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json")));
+  assert.ok(!fs.existsSync(path.join(process.env.MORROW_AI_CONFIG_DIR, "brain.json")));
   const cached = brain.answer("emailBrain:getCached", []);
   assert.strictEqual(cached.success, true);
   const cachedSections = brainUi.brainSections(cached.data);
@@ -3143,7 +3112,7 @@ async function checkAiDraft() {
   assert.deepStrictEqual(brainUi.brainUserRules(brainUi.brainSections(after.data)), []);
   const emptyRule = brain.answer("emailBrain:addWritingRule", [{ text: "  " }]);
   assert.strictEqual(emptyRule.success, false);
-  assert.ok(fs.existsSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json")));
+  assert.ok(fs.existsSync(path.join(process.env.MORROW_AI_CONFIG_DIR, "brain.json")));
   const listed = brain.answer("emailBrain:getCategories", []);
   assert.strictEqual(listed.success, true);
   assert.ok(listed.data.categories.some((row) => row.id === "needs-you" && row.name === "Needs You"));
@@ -3202,7 +3171,7 @@ async function checkAiDraft() {
   const keptAfterForget = brain.answer("emailBrain:getCached", []);
   assert.ok(brainUi.brainUserRules(brainUi.brainSections(keptAfterForget.data)).some((row) => row.value === "Keep categories apart."));
   const { createIpc } = require("../host/ipc");
-  const ipc = createIpc(path.join(os.tmpdir(), "genmail-studio-ipc.log"));
+  const ipc = createIpc(path.join(os.tmpdir(), "morrow-studio-ipc.log"));
   const homeSkills = ipc.handle({}, "nativeAgent:home:skills");
   const librarySkills = ipc.handle({}, "nativeAgent:home:librarySkills");
   const otherAgent = ipc.handle({}, "nativeAgent:home");
@@ -3489,27 +3458,27 @@ async function checkComposeMailbox() {
 async function checkTidy() {
   const os = require("os");
   const prev = {
-    GENMAIL_USER_DATA: process.env.GENMAIL_USER_DATA,
-    GENMAIL_MAIL_DIR: process.env.GENMAIL_MAIL_DIR,
-    GENMAIL_AI_CONFIG_DIR: process.env.GENMAIL_AI_CONFIG_DIR,
-    GENMAIL_MAIL_SECRETS: process.env.GENMAIL_MAIL_SECRETS,
+    MORROW_USER_DATA: process.env.MORROW_USER_DATA,
+    MORROW_MAIL_DIR: process.env.MORROW_MAIL_DIR,
+    MORROW_AI_CONFIG_DIR: process.env.MORROW_AI_CONFIG_DIR,
+    MORROW_MAIL_SECRETS: process.env.MORROW_MAIL_SECRETS,
   };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-sync-window-"));
-  process.env.GENMAIL_USER_DATA = dir;
-  process.env.GENMAIL_MAIL_DIR = dir;
-  process.env.GENMAIL_AI_CONFIG_DIR = dir;
-  process.env.GENMAIL_MAIL_SECRETS = "memory";
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-sync-window-"));
+  process.env.MORROW_USER_DATA = dir;
+  process.env.MORROW_MAIL_DIR = dir;
+  process.env.MORROW_AI_CONFIG_DIR = dir;
+  process.env.MORROW_MAIL_SECRETS = "memory";
   let savedRemote = null;
   try {
     const { answer: settingsAnswer } = require("../host/settings");
-    assert.strictEqual(settingsAnswer("genmail:configGetShowOneClickTidy", []), undefined);
-    assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [true]), undefined);
+    assert.strictEqual(settingsAnswer("morrow:configGetShowOneClickTidy", []), undefined);
+    assert.strictEqual(settingsAnswer("morrow:configSetShowOneClickTidy", [true]), undefined);
     const engine = require("../host/mail/engine");
     const db = require("../host/mail/db");
     const { createIpc } = require("../host/ipc");
     await engine.init();
     assert.strictEqual(engine.answer("mail:tidyInbox", []), undefined);
-    assert.strictEqual(engine.answer("genmail:configGetShowOneClickTidyEffective", []), undefined);
+    assert.strictEqual(engine.answer("morrow:configGetShowOneClickTidyEffective", []), undefined);
     const ipc = createIpc(path.join(dir, "ipc.log"));
     const emptyAccounts = ipc.handle({}, "mail:listAccounts");
     assert.strictEqual(emptyAccounts.success, true);
@@ -3548,7 +3517,7 @@ async function checkTidy() {
     });
     assert.strictEqual(engine.answer("mail:tidyInbox", [{ accountId: "imap-test" }]), undefined);
 
-    process.env.GENMAIL_PAGE_DELAY_MS = "0";
+    process.env.MORROW_PAGE_DELAY_MS = "0";
     const remote = require("../host/mail/remote");
     const secrets = require("../host/mail/secrets");
     savedRemote = {
@@ -4295,7 +4264,7 @@ async function checkTidy() {
       remote.findText = savedRemote.findText;
       remote.renameBox = savedRemote.renameBox;
     }
-    delete process.env.GENMAIL_PAGE_DELAY_MS;
+    delete process.env.MORROW_PAGE_DELAY_MS;
     for (const [key, value] of Object.entries(prev)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -4378,17 +4347,17 @@ async function checkProviderApi() {
   const calendarApi = require("../host/mail/calendar-api");
   const sidecar = require("../host/mail/sidecar");
   const envKeys = [
-    "GENMAIL_GOOGLE_OAUTH_JSON",
-    "GENMAIL_GOOGLE_OAUTH_FILE",
+    "MORROW_GOOGLE_OAUTH_JSON",
+    "MORROW_GOOGLE_OAUTH_FILE",
     "MORROW_GOOGLE_OAUTH_JSON",
     "MORROW_GOOGLE_OAUTH_FILE",
     "GOOGLE_DESKTOP_OAUTH_JSON",
-    "GENMAIL_MAIL_SECRETS",
+    "MORROW_MAIL_SECRETS",
   ];
   const prev = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
   const originalFetch = global.fetch;
   for (const key of envKeys) delete process.env[key];
-  process.env.GENMAIL_MAIL_SECRETS = "memory";
+  process.env.MORROW_MAIL_SECRETS = "memory";
   const seen = [];
   global.fetch = async (url, init) => {
     seen.push({ url: String(url), body: init && init.body ? String(init.body) : "" });
@@ -4870,7 +4839,7 @@ async function checkProviderApi() {
       assert.strictEqual(blocked.data.reason, "oauth_not_ready");
       assert.strictEqual(calls.length, 0);
     }
-    process.env.GENMAIL_GOOGLE_OAUTH_JSON = JSON.stringify({
+    process.env.MORROW_GOOGLE_OAUTH_JSON = JSON.stringify({
       installed: {
         client_id: "check-provider.apps.googleusercontent.com",
         client_secret: "check-provider-secret",
@@ -5399,8 +5368,8 @@ async function checkProviderApi() {
 function checkGoogleOauthAlias() {
   const oauth = require("../host/mail/oauth-config");
   const keys = [
-    "GENMAIL_GOOGLE_OAUTH_JSON",
-    "GENMAIL_GOOGLE_OAUTH_FILE",
+    "MORROW_GOOGLE_OAUTH_JSON",
+    "MORROW_GOOGLE_OAUTH_FILE",
     "MORROW_GOOGLE_OAUTH_JSON",
     "MORROW_GOOGLE_OAUTH_FILE",
     "GOOGLE_DESKTOP_OAUTH_JSON",
@@ -5420,16 +5389,16 @@ function checkGoogleOauthAlias() {
       clientSecret: "desktop-alias-secret",
     });
     assert.strictEqual(oauth.credentials("google").clientId, "desktop-alias.apps.googleusercontent.com");
-    process.env.GENMAIL_GOOGLE_OAUTH_JSON = JSON.stringify({
+    process.env.MORROW_GOOGLE_OAUTH_JSON = JSON.stringify({
       installed: {
-        client_id: "genmail-primary.apps.googleusercontent.com",
-        client_secret: "genmail-primary-secret",
+        client_id: "morrow-primary.apps.googleusercontent.com",
+        client_secret: "morrow-primary-secret",
       },
     });
-    assert.strictEqual(oauth.loadGoogleClient().clientId, "genmail-primary.apps.googleusercontent.com");
+    assert.strictEqual(oauth.loadGoogleClient().clientId, "morrow-primary.apps.googleusercontent.com");
     for (const key of keys) delete process.env[key];
     const os = require("os");
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-gclient-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-gclient-"));
     fs.writeFileSync(path.join(dir, "google-oauth.json"), JSON.stringify({
       installed: {
         client_id: "packaged-desktop.apps.googleusercontent.com",
@@ -5473,12 +5442,12 @@ async function checkAiModels() {
     ["grok-4.7", "grok-4"],
   );
   assert.deepStrictEqual(modelIds(null), []);
-  const keys = ["GENMAIL_AI_CONFIG_DIR", "GENMAIL_AI_API_KEY", "GENMAIL_AI_BASE_URL", "GENMAIL_AI_MODEL", "XAI_API_KEY"];
+  const keys = ["MORROW_AI_CONFIG_DIR", "MORROW_AI_API_KEY", "MORROW_AI_BASE_URL", "MORROW_AI_MODEL", "XAI_API_KEY"];
   const prev = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-ai-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-ai-"));
   const originalFetch = global.fetch;
   try {
-    process.env.GENMAIL_AI_CONFIG_DIR = dir;
+    process.env.MORROW_AI_CONFIG_DIR = dir;
     for (const key of keys.slice(1)) delete process.env[key];
     const empty = publicConfig();
     assert.strictEqual(empty.hasKey, false);
@@ -5522,7 +5491,7 @@ async function checkAiModels() {
     assert.ok(!Object.prototype.hasOwnProperty.call(failed, "models"));
     assert.strictEqual(seen.auth, "Bearer sk-file-key");
     assert.strictEqual(seen.url, "https://example.test/v1/models");
-    process.env.GENMAIL_AI_API_KEY = "sk-env-override-zz";
+    process.env.MORROW_AI_API_KEY = "sk-env-override-zz";
     const hinted = publicConfig();
     assert.strictEqual(hinted.hasKey, true);
     assert.strictEqual(hinted.keyHint, "••••e-zz");
@@ -5555,18 +5524,18 @@ function checkUpdateAuth() {
   const prev = {
     GH_TOKEN: process.env.GH_TOKEN,
     GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-    GENMAIL_USER_DATA: process.env.GENMAIL_USER_DATA,
-    GENMAIL_MAIL_DIR: process.env.GENMAIL_MAIL_DIR,
-    GENMAIL_AI_CONFIG_DIR: process.env.GENMAIL_AI_CONFIG_DIR,
+    MORROW_USER_DATA: process.env.MORROW_USER_DATA,
+    MORROW_MAIL_DIR: process.env.MORROW_MAIL_DIR,
+    MORROW_AI_CONFIG_DIR: process.env.MORROW_AI_CONFIG_DIR,
   };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-update-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-update-"));
   const secret = "ghp_supersecretvalue1234567890";
   try {
     delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
-    process.env.GENMAIL_USER_DATA = dir;
-    process.env.GENMAIL_MAIL_DIR = dir;
-    process.env.GENMAIL_AI_CONFIG_DIR = dir;
+    process.env.MORROW_USER_DATA = dir;
+    process.env.MORROW_MAIL_DIR = dir;
+    process.env.MORROW_AI_CONFIG_DIR = dir;
     assert.strictEqual(auth.resolveGithubToken(), "");
     const missing = auth.missingTokenMessage();
     assert.ok(missing.includes("github-update.json"));
@@ -5576,7 +5545,7 @@ function checkUpdateAuth() {
     assert.ok(!missing.includes("releases.atom"));
     assert.ok(!missing.includes(secret));
     const explained = auth.explainUpdateError(new Error(
-      '404 "method: GET url: https://github.com/Coke1120/genmail-rea/releases.atom token ' + secret + '"'
+      '404 "method: GET url: https://github.com/Coke1120/Morrow-Mail/releases.atom token ' + secret + '"'
     ));
     assert.ok(!explained.includes("releases.atom"));
     assert.ok(!explained.includes(secret));
@@ -5998,8 +5967,8 @@ async function checkInboxRules() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-rules-"));
   const prevFetch = global.fetch;
   const prevJson = process.env.GOOGLE_DESKTOP_OAUTH_JSON;
-  const prevSecrets = process.env.GENMAIL_MAIL_SECRETS;
-  process.env.GENMAIL_MAIL_SECRETS = "memory";
+  const prevSecrets = process.env.MORROW_MAIL_SECRETS;
+  process.env.MORROW_MAIL_SECRETS = "memory";
   delete process.env.GOOGLE_DESKTOP_OAUTH_JSON;
   const calls = [];
   const remote = {
@@ -6372,8 +6341,8 @@ async function checkInboxRules() {
     global.fetch = prevFetch;
     if (prevJson === undefined) delete process.env.GOOGLE_DESKTOP_OAUTH_JSON;
     else process.env.GOOGLE_DESKTOP_OAUTH_JSON = prevJson;
-    if (prevSecrets === undefined) delete process.env.GENMAIL_MAIL_SECRETS;
-    else process.env.GENMAIL_MAIL_SECRETS = prevSecrets;
+    if (prevSecrets === undefined) delete process.env.MORROW_MAIL_SECRETS;
+    else process.env.MORROW_MAIL_SECRETS = prevSecrets;
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -1,7 +1,7 @@
 {
   "name": "morrow-mail",
   "version": "0.1.0-alpha.4",
-  "description": "Morrow Mail. Private Electron client. The GitHub repo may still be genmail-rea.",
+  "description": "Morrow Mail. Private Electron client.",
   "main": "host/main.js",
   "private": true,
   "author": "Leo Ho",
@@ -64,7 +64,7 @@
       {
         "provider": "github",
         "owner": "Coke1120",
-        "repo": "genmail-rea",
+        "repo": "Morrow-Mail",
         "private": true,
         "releaseType": "prerelease"
       }

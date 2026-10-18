@@ -6,7 +6,7 @@ const db = require("./db");
 const presets = require("./presets");
 const remote = require("./remote");
 
-const secrets = process.env.GENMAIL_MAIL_SECRETS === "memory"
+const secrets = process.env.MORROW_MAIL_SECRETS === "memory"
   ? require("./memory-secrets")
   : require("./secrets");
 const oauth = require("./oauth");
@@ -58,7 +58,7 @@ function fail(code, message) {
 }
 
 function dataFile() {
-  const override = (process.env.GENMAIL_MAIL_DIR || "").trim();
+  const override = (process.env.MORROW_MAIL_DIR || "").trim();
   if (override) return path.join(override, "mail.sqlite");
   let dir = "";
   try {
@@ -67,7 +67,7 @@ function dataFile() {
   } catch {
     dir = "";
   }
-  if (!dir) dir = require("../paths").userDataDir("genmail-exact");
+  if (!dir) dir = require("../paths").userDataDir();
   return path.join(dir, "mail.sqlite");
 }
 
@@ -382,7 +382,7 @@ function windowStart(now) {
 }
 
 function pageDelayMs() {
-  const raw = process.env.GENMAIL_PAGE_DELAY_MS;
+  const raw = process.env.MORROW_PAGE_DELAY_MS;
   if (raw != null && raw !== "" && Number.isFinite(Number(raw)) && Number(raw) >= 0) return Number(raw);
   return PAGE_DELAY_MS;
 }
@@ -2227,7 +2227,7 @@ function answer(channel, args) {
           const file = await bytesFor(params || {});
           if (!file) return fail("not-found", "That attachment is no longer available.");
           const { shell } = require("electron");
-          const dir = path.join(os.tmpdir(), "genmail-exact-attachments");
+          const dir = path.join(os.tmpdir(), "morrow-mail-attachments");
           fs.mkdirSync(dir, { recursive: true });
           const safe = file.filename.replace(/[^\w.\- ()[\]]+/g, "_").slice(0, 120) || "attachment";
           const target = path.join(dir, `${Date.now()}-${safe}`);

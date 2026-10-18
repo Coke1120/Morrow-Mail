@@ -1,5 +1,5 @@
 {
-  "name": "genmail-rea",
+  "name": "morrow-mail",
   "user": "ubuntu",
   "install": "bash .cursor/install-cbm.sh"
 }

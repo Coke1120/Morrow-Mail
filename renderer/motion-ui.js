@@ -129,7 +129,7 @@ function bindChrome(root) {
   });
 }
 
-window.genmailMotion = {
+window.morrowMotion = {
   rows,
   prepare,
   enter,
