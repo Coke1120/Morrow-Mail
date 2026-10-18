@@ -338,10 +338,11 @@ function emitFolderSync(accountId, folderPath, okFlag) {
 
 const activeFolder = new Map();
 const syncGates = new Map();
+const syncScopes = new Map();
 let syncState = {
-  state: "done",
-  phase: "done",
-  message: "Sync done",
+  state: "idle",
+  phase: "idle",
+  message: "Not synced yet",
   accountId: null,
   accountLabel: "",
   folderId: null,
@@ -380,7 +381,8 @@ function syncLabels(extra) {
 
 function emitSync(state, extra) {
   const now = Date.now();
-  const prev = syncState || {};
+  const scopeKey = JSON.stringify([(extra && extra.accountId) || "", (extra && extra.folderId) || ""]);
+  const prev = syncScopes.get(scopeKey) || {};
   const message = debugLog.redactDebugText((extra && extra.message) || (
     state === "syncing" ? "Syncing…"
       : state === "paused" ? "Paused for rate limit"
@@ -403,10 +405,11 @@ function emitSync(state, extra) {
     folderId: place.folderId,
     folderLabel: place.folderLabel,
     updatedAt: now,
-    lastSuccessAt: state === "done" ? now : (prev.lastSuccessAt || null),
+    lastSuccessAt: state === "done" && place.accountId && place.folderId ? now : (prev.lastSuccessAt || null),
     lastError: state === "error" ? message : (prev.lastError || ""),
     lastErrorAt: state === "error" ? now : (prev.lastErrorAt || null),
   };
+  syncScopes.set(scopeKey, syncState);
   debugLog.note("sync", [state, phase, place.accountLabel, place.folderLabel, message].filter(Boolean).join(" · "));
   broadcast("mail:syncStatus", syncState);
   const accountId = syncState.accountId;
@@ -420,8 +423,19 @@ function emitSync(state, extra) {
   });
 }
 
-function publicSync() {
-  return { ...syncState };
+function publicSync(params) {
+  if (!db.listAccountRows().length) return { state: "idle", message: "No account connected", lastSuccessAt: null };
+  const accountId = params && params.accountId;
+  const folderId = params && params.folderId;
+  if (!accountId || !folderId) return { ...syncState };
+  const saved = syncScopes.get(JSON.stringify([accountId, folderId]));
+  const gate = syncGates.get(accountId);
+  if (gate && gate.until > Date.now()) return { ...(saved || {}), ...syncLabels(params), state: "paused", message: "Paused by the provider", retryAt: gate.until };
+  if (saved) return { ...saved };
+  const folder = db.folderByPath(accountId, folderId);
+  const lastSuccessAt = folder && windowOpen(folder) ? folder.synced_at : null;
+  return { ...syncLabels(params), state: lastSuccessAt ? "done" : "idle", lastSuccessAt,
+    message: lastSuccessAt ? "Folder checked" : "Not synced yet" };
 }
 
 function noteActive(accountId, folderId) {
@@ -653,6 +667,7 @@ async function syncFolderPolicy(client, account, folderPath) {
       ? await warmFolder(client, account, folder, started)
       : await bootstrapFolder(client, account, folderPath, started);
     if (!result.paused) clearStrikes(account.id);
+    if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
   } catch (error) {
     if (http.isRateLimit(error)) {
@@ -1219,7 +1234,7 @@ function remember(moves) {
 
 async function moveRow(row, destination, wellKnown) {
   const account = db.accountById(row.account_id);
-  if (!account) return;
+  if (!account) throw new Error("That account is no longer connected.");
   if (!row.uid) {
     db.updateMessage(row.id, {
       folder_path: destination,
@@ -1239,26 +1254,44 @@ async function moveRow(row, destination, wellKnown) {
   });
 }
 
-async function moveIds(ids, targetWell, targetPath) {
-  const snapshots = [];
-  for (const id of ids) {
+// A thrown remote operation may have reached the server. Never infer rollback.
+async function messageChanges(ids, change) {
+  const outcomes = [];
+  let stopped = false;
+  for (const id of [...new Set(ids)]) {
+    if (stopped) { outcomes.push({ id, status: "not_attempted" }); continue; }
     const row = db.messageById(id);
-    if (!row) continue;
+    if (!row || !db.accountById(row.account_id)) {
+      outcomes.push({ id, status: "failed", error: "Message or account is no longer available." });
+      stopped = true;
+      continue;
+    }
+    try {
+      outcomes.push({ id, status: "completed", ...(await change(row)) });
+    } catch (error) {
+      outcomes.push({ id, status: error.beforeWrite ? "failed" : "unknown", error: remote.explain(error) });
+      stopped = true;
+    }
+  }
+  emitAccounts();
+  return { outcomes, opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId) };
+}
+
+async function moveIds(ids, targetWell, targetPath) {
+  return messageChanges(ids, async (row) => {
     const destFolder = targetPath
       ? db.folderByPath(row.account_id, targetPath)
       : db.folderByWellKnown(row.account_id, targetWell);
-    if (!destFolder) throw new Error("That folder is not on this account.");
-    snapshots.push({
-      id: row.id,
-      folderPath: row.folder_path,
-      uid: row.uid,
-      uidValidity: row.uid_validity,
-    });
+    if (!destFolder) throw Object.assign(new Error("That folder is not on this account."), { beforeWrite: true });
+    const snapshot = { id: row.id, accountId: row.account_id, folderPath: row.folder_path, uid: row.uid,
+      uidValidity: row.uid_validity, isDraft: row.is_draft };
     await moveRow(row, destFolder.path, destFolder.well_known);
-  }
-  const opId = remember(snapshots);
-  emitAccounts();
-  return opId;
+    const moved = db.messageById(row.id);
+    // Without a destination UID a remote move cannot safely be reversed.
+    if (row.uid && !moved.uid) return {};
+    snapshot.destination = { folderPath: moved.folder_path, uid: moved.uid, uidValidity: moved.uid_validity };
+    return { opId: remember([snapshot]) };
+  });
 }
 
 async function ensureBody(row) {
@@ -1784,9 +1817,9 @@ function answer(channel, args) {
     case "mail:listWindowRead":
     case "mail:loadMoreAggregate":
       if (params && params.accountId && params.folderId) noteActive(params.accountId, params.folderId);
-      return ok(listPayload(params));
+      return ok({ ...listPayload(params), sync: publicSync(params) });
     case "mail:getSyncStatus":
-      return ok(publicSync());
+      return ok(publicSync(params));
     case "mail:listFromNetwork":
       return (async () => {
         const query = params || {};
@@ -1803,7 +1836,7 @@ function answer(channel, args) {
           else if (db.countMessages(queryFrom(query)) === 0) return fail("sync", remote.explain(error));
         }
         emitAccounts();
-        return ok({ ...listPayload(query), sync: publicSync() });
+        return ok({ ...listPayload(query), sync: publicSync(query) });
       })();
     case "mail:kickoffAggregateSync":
       setTimeout(() => { syncAll({ folderKey: params && params.folderKey }).catch(() => {}); }, 0);
@@ -1891,14 +1924,9 @@ function answer(channel, args) {
     case "mail:markReadBatch":
       return (async () => {
         const isRead = params && params.isRead !== false;
-        for (const item of (params && params.items) || []) {
-          const row = db.messageById(item.emailId || item.id);
-          if (!row) continue;
-          const message = await applyFlags(row, isRead ? ["\\Seen"] : [], isRead ? [] : ["\\Seen"], { unread: isRead ? 0 : 1 });
-          if (message) return fail("flags", message);
-        }
-        emitAccounts();
-        return ok(true);
+        return ok(await messageChanges(((params && params.items) || []).map((item) => item.emailId || item.id), async (row) => {
+          await mutateFlags(row, isRead ? ["\\Seen"] : [], isRead ? [] : ["\\Seen"], { unread: isRead ? 0 : 1 });
+        }));
       })();
     case "mail:toggleStar":
       return (async () => {
@@ -1913,14 +1941,9 @@ function answer(channel, args) {
     case "mail:toggleStarBatch":
       return (async () => {
         const starred = !!(params && params.isStarred);
-        for (const item of (params && params.items) || []) {
-          const row = db.messageById(item.emailId || item.id);
-          if (!row) continue;
-          const message = await applyFlags(row, starred ? ["\\Flagged"] : [], starred ? [] : ["\\Flagged"], { starred: starred ? 1 : 0 });
-          if (message) return fail("flags", message);
-        }
-        emitAccounts();
-        return ok(true);
+        return ok(await messageChanges(((params && params.items) || []).map((item) => item.emailId || item.id), async (row) => {
+          await mutateFlags(row, starred ? ["\\Flagged"] : [], starred ? [] : ["\\Flagged"], { starred: starred ? 1 : 0 });
+        }));
       })();
     case "mail:archive":
     case "mail:threadArchive":
@@ -1946,25 +1969,20 @@ function answer(channel, args) {
           const permanent = channel === "mail:deleteBatch"
             && (params.folderWellKnownName === "deleteditems" || params.folderWellKnownName === "trash");
           if (permanent) {
-            for (const id of unique) {
-              const row = db.messageById(id);
-              if (!row) continue;
+            return ok(await messageChanges(unique, async (row) => {
               const account = db.accountById(row.account_id);
               if (account && row.uid) {
                 const password = await secretFor(account);
                 await remote.withClient(account, password, (client) => remote.removeUid(client, row.folder_path, row.uid));
               }
-              db.deleteMessage(id);
-            }
-            emitAccounts();
-            return ok({ opIds: [] });
+              db.deleteMessage(row.id);
+            }));
           }
           let well = "archive";
           if (channel === "mail:delete" || channel === "mail:threadTrash" || channel === "mail:deleteBatch") well = "deleteditems";
           if (channel === "mail:markSpam") well = "junkemail";
           if (channel === "mail:markNotSpam") well = "inbox";
-          const opId = await moveIds(unique, well, null);
-          return ok({ opIds: opId ? [opId] : [] });
+          return ok(await moveIds(unique, well, null));
         } catch (error) {
           return fail("move", remote.explain(error));
         }
@@ -1986,8 +2004,7 @@ function answer(channel, args) {
           for (const item of params.items || []) ids.push(item.emailId || item.id);
           const unique = [...new Set(ids)];
           if (!unique.length) return ok({ opIds: [] });
-          const opId = await moveIds(unique, null, target);
-          return ok({ opIds: opId ? [opId] : [] });
+          return ok(await moveIds(unique, null, target));
         } catch (error) {
           return fail("move", remote.explain(error));
         }
@@ -1995,20 +2012,32 @@ function answer(channel, args) {
     case "mail:undoRemoval":
       return (async () => {
         const opIds = (params && params.opIds) || [];
+        const outcomes = [];
         for (const opId of opIds) {
           const saved = db.readOp(opId);
+          // Consume before attempting: an uncertain reverse move must not be replayed.
+          db.saveOp(opId, { moves: [] });
+          if (!saved || !saved.moves || !saved.moves.length) {
+            outcomes.push({ id: opId, status: "failed", error: "This Undo is no longer available." });
+          }
           for (const snap of (saved && saved.moves) || []) {
             const row = db.messageById(snap.id);
-            if (!row) continue;
+            const dest = snap.destination;
+            if (!row || !dest || row.account_id !== snap.accountId || row.folder_path !== dest.folderPath
+                || row.uid !== dest.uid || row.uid_validity !== dest.uidValidity) {
+              outcomes.push({ id: snap.id, status: "failed", error: "Message changed since this operation. Refresh before acting again." });
+              continue;
+            }
             try {
-              await moveRow(row, snap.folderPath, null);
-            } catch {
-              db.updateMessage(snap.id, { folder_path: snap.folderPath, uid: snap.uid, uid_validity: snap.uidValidity || 0 });
+              await moveRow(row, snap.folderPath, snap.isDraft ? "drafts" : null);
+              outcomes.push({ id: snap.id, status: "completed" });
+            } catch (error) {
+              outcomes.push({ id: snap.id, status: "unknown", error: remote.explain(error) });
             }
           }
         }
         emitAccounts();
-        return { ok: true, success: true, data: true };
+        return ok({ outcomes, opIds: [] });
       })();
     case "mail:snoozeThread": {
       const when = Date.parse(params && params.snoozedUntil);
@@ -2156,6 +2185,7 @@ function answer(channel, args) {
         if (!drafts) return fail("not-found", "This account has no Drafts folder.");
         const emailId = (params && params.emailId) || db.newMessageId();
         const existing = db.messageById(emailId);
+        if (existing && (existing.account_id !== account.id || !existing.is_draft)) return fail("invalid", "That draft does not belong to this mailbox.");
         const files = attachmentFiles(params && params.attachments);
         const html = typeof params.body === "string" ? params.body : "";
         const when = new Date();
@@ -2207,6 +2237,7 @@ function answer(channel, args) {
         } else {
           db.insertMessage(record);
         }
+        let remoteSaved = false;
         try {
           await exclusive(account.id, async () => {
             const password = await secretFor(account);
@@ -2225,12 +2256,13 @@ function answer(channel, args) {
             } else {
               db.updateMessage(emailId, { uid: 0 });
             }
+            remoteSaved = true;
           });
         } catch {
           // The draft remains in the local cache when the server append fails.
         }
         emitAccounts();
-        return ok({ emailId, draftId: emailId });
+        return ok({ emailId, draftId: emailId, remoteSaved });
       })();
     case "mail:deleteDraft":
       return (async () => {

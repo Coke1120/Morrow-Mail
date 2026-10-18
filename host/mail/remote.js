@@ -488,7 +488,8 @@ async function moveUid(client, folderPath, uid, destination) {
     } catch {
       validity = null;
     }
-    return { uid: next ? Number(next) : Number(uid), uidValidity: validity };
+    if (!next || !validity) throw new Error("Move outcome is unknown: the server did not confirm the destination identity. Refresh before acting again.");
+    return { uid: Number(next), uidValidity: validity };
   } finally {
     lock.release();
   }

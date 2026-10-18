@@ -890,12 +890,12 @@ assert.ok(parityDoc.includes("Older than 180 days is not downloaded."));
 assert.ok(!parityDoc.includes("30-day window"));
 assert.ok(!parityDoc.includes("Older than 30 days"));
 assert.ok(parityDoc.includes("does not call `mail:search`"));
-assert.ok(appJs.includes("Searching all mail"));
-assert.ok(html.includes("Search all mail"));
+assert.ok(appJs.includes("Searching downloaded mail"));
+assert.ok(html.includes("Search downloaded mail"));
 assert.ok(registered.has("mail:syncStatus"));
 const syncStatusLabel = loadFunctions(appJs, ["redactDebugText", "syncStatusLabel"]).syncStatusLabel;
 assert.strictEqual(syncStatusLabel({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
-assert.strictEqual(syncStatusLabel({ state: "done" }), "Sync done");
+assert.strictEqual(syncStatusLabel({ state: "done" }), "Not synced yet");
 assert.strictEqual(syncStatusLabel(null), "");
 assert.strictEqual(syncStatusLabel({ state: "error", message: "password: hunter2" }), "password [redacted]");
 const syncUi = loadFunctions(appJs, ["redactDebugText", "phaseWord", "syncClock", "syncDetail", "syncButtonLabel"]);
@@ -918,8 +918,8 @@ assert.ok(syncUi.syncDetail({
 }).includes("Fetching mail"));
 assert.ok(syncUi.syncDetail({ state: "error", accountLabel: "ada@example.com", folderLabel: "Inbox", lastError: "Sync failed" }).includes("Sync failed"));
 assert.ok(!syncUi.syncDetail({ state: "error", lastError: "password: hunter2 ya29.secrettoken" }).includes("hunter2"));
-assert.strictEqual(syncUi.syncDetail({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
-assert.ok(syncUi.syncDetail({ state: "done", lastSuccessAt: Date.UTC(2026, 0, 2, 15, 4) }).startsWith("Last success "));
+assert.strictEqual(syncUi.syncDetail({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit · Waiting before retrying");
+assert.ok(syncUi.syncDetail({ state: "done", accountId: "a", folderId: "inbox", accountLabel: "Ada", folderLabel: "Inbox", lastSuccessAt: Date.UTC(2026, 0, 2, 15, 4) }).startsWith("Ada · Inbox · Last checked "));
 assert.strictEqual(syncUi.syncButtonLabel({ state: "syncing" }), "Syncing");
 assert.strictEqual(syncUi.syncButtonLabel({ state: "error" }), "Sync failed");
 assert.strictEqual(syncUi.redactDebugText("bearer ya29.secretvalue password: hunter2"), "bearer [redacted] password [redacted]");
@@ -1076,7 +1076,7 @@ assert.strictEqual(forwarded.quoteShown, false);
 assert.ok(forwarded.quote.includes("---------- Forwarded message ----------"));
 assert.ok(forwarded.quote.includes("From: Grace Hopper <grace.hopper@example.com>"));
 assert.ok(forwarded.quote.includes("Once the machine can read its own instructions, the rest follows."));
-assert.ok(forwarded.quote.includes("Attachments: notes.txt"));
+assert.ok(forwarded.quote.includes("Original attachment names: notes.txt"));
 assert.ok(compose.outgoingBody("Please see this.", forwarded.quote).startsWith("Please see this.\n\n"));
 assert.ok(compose.outgoingBody("", forwarded.quote).includes("Forwarded message"));
 assert.strictEqual(forwarded.inReplyTo, undefined);
@@ -1112,9 +1112,9 @@ const namedOnly = compose.composeSeed({
   textBody: "See attached",
   hasAttachments: true,
 }, "forward", "");
-assert.ok(namedOnly.quote.includes("This message has attachments."));
+assert.ok(namedOnly.quote.includes("The original message has attachments. Files are not included in this forward."));
 assert.ok(!namedOnly.quote.includes("Attachments:"));
-assert.strictEqual(compose.attachmentNote({ attachments: [{ id: "x" }] }), "Attachments: attachment");
+assert.strictEqual(compose.attachmentNote({ attachments: [{ id: "x" }] }), "Original attachment names: attachment. Files are not included in this forward.");
 assert.strictEqual(compose.composeSeed({ subject: "Hi" }, "reply", ada).to, "");
 assert.strictEqual(compose.composeSeed({ subject: "Hi" }, "forward", ada).quote.includes("Forwarded message"), true);
 assert.strictEqual(compose.quoteShownDefault("reply"), true);
@@ -1181,10 +1181,10 @@ assert.ok(!bodyPaint.includes("innerHTML"));
 assert.ok(functionSource(appJs, "renderBody").includes("appendMessageBody"));
 assert.ok(functionSource(appJs, "composePayload").includes("outgoingBody"));
 assert.ok(!functionSource(appJs, "dismissCompose").includes("mail:send"));
-assert.ok(appJs.includes('dismissCompose("close")') && appJs.includes('dismissCompose("cancel")'));
+assert.ok(appJs.includes("requestComposeClose()") && html.includes('id="compose-close-review"'));
 assert.ok(html.includes('id="compose-quote"') && html.includes('id="compose-split-handle"') && html.includes('id="compose-quote-toggle"'));
 assert.ok(html.includes('id="compose-quote-collapse"') && html.includes("Hide quoted message") === false);
-assert.ok(html.includes("Show quoted message") && html.includes("The quoted message is included when you save or send."));
+assert.ok(html.includes("Show quoted message") && html.includes("The quoted original is still included when you save, send, or schedule."));
 assert.ok(html.includes("M1 12s4-8 11-8") && html.includes("M17.94 17.94A10.07") && html.includes('points="6 9 12 15 18 9"'));
 assert.ok(css.includes('#compose[data-layout="wide"][data-quote="shown"] .compose-split'));
 assert.ok(css.includes('#compose[data-layout="narrow"][data-quote="shown"] .compose-quote'));
@@ -1195,7 +1195,7 @@ assert.ok(appJs.includes("fadePane") && motionSrc.includes("function fadePane"))
 assert.ok(appJs.includes("morrow:configGetComposeQuoteWidth") && appJs.includes("morrow:configSetComposeQuoteWidth"));
 assert.strictEqual(compose.quoteStateFromSeed({}), null);
 assert.strictEqual(compose.quoteStateFromSeed(null), null);
-assert.ok(appJs.includes("Hide quoted message"));
+assert.ok(appJs.includes("Hide original preview"));
 assert.strictEqual(replyAll.quoteShown, true);
 assert.strictEqual(compose.quoteStateFromSeed(reply).shown, true);
 assert.strictEqual(compose.quoteStateFromSeed(forwarded).shown, false);
@@ -2219,7 +2219,7 @@ const acceptedMove = selection.confirmedCalls("move", { ok: true, name: "" }, bu
 assert.strictEqual(acceptedMove.length, 1);
 assert.strictEqual(acceptedMove[0].channel, "mail:moveToFolder");
 const moveCopyBulk = selection.bulkConfirmCopy("move", 2, { target: "Notes" });
-assert.strictEqual(moveCopyBulk.confirm, "Confirm");
+assert.strictEqual(moveCopyBulk.confirm, "Move");
 assert.strictEqual(moveCopyBulk.cancel, "Cancel");
 assert.match(moveCopyBulk.body, /2/);
 assert.match(moveCopyBulk.body, /Notes/);
@@ -2561,8 +2561,15 @@ assert.strictEqual(providerUi.vacationView({
   settings: { mode: "always" },
   scheduleWarning: "",
 }).canDisable, true);
-assert.match(providerUi.vacationConfirm("save", "ada@example.com", { provider: "imap", mode: "always" }).body, /No mail is sent by this button/);
+assert.match(providerUi.vacationConfirm("save", "ada@example.com", { provider: "imap", mode: "always" }).body, /Your mail server will send these automatic replies/);
 assert.strictEqual(providerUi.vacationConfirm("disable", "ada@example.com", { provider: "google" }).needsName, false);
+const oooReview = providerUi.vacationConfirm("save", "ada@example.com", { provider: "imap", mode: "scheduled", start: "2090-03-10T10:30:00.000Z", end: "2090-03-11T12:00:00.000Z", message: "Away today" }).body;
+assert.match(oooReview, /2090-03-10 00:00 UTC/);
+assert.match(oooReview, /2090-03-12 00:00 UTC \(exclusive\)/);
+assert.match(oooReview, /All senders.*[\s\S]*Away today/);
+assert.match(providerUi.vacationConfirm("disable", "ada@example.com", { provider: "google" }).body, /New automatic replies will stop/);
+assert.doesNotMatch(providerUi.vacationConfirm("disable", "ada@example.com", { provider: "google" }).body, /continue while Morrow/);
+
 for (const channel of [
   "mail:oauthStatus",
   "mail:grantOrganize",
@@ -3525,10 +3532,14 @@ async function checkComposeMailbox() {
     "compose-subject": "Reply", "compose-body": "Thanks", "schedule-preset": "1h", "schedule-at": "",
   }).map(([id, value]) => [id, { value }]));
   const calls = [];
-  const call = async (channel, payload) => { calls.push({ channel, payload }); return {}; };
+  const call = async (channel, payload) => { calls.push({ channel, payload }); return {draftId:"saved"}; };
   const syncNames = ["selectedAccount", "composeAccount", "isLive", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml"];
   const asyncNames = ["saveDraft", "scheduleMail", "sendMail"];
   const methods = new Function("state", "$", "call", "showStatus", "scheduleAt", "loadScheduled", "sendDelayMs", "hideUndoSend", "deliverMail", `
+    const composeOperation = async work => { await work(); return true; };
+    const composeSnapshot = () => "fixture";
+    const setComposeStatus = () => {};
+    const sendTimer = null;
     ${syncNames.map((name) => functionSource(appJs, name)).join("\n")}
     ${asyncNames.map((name) => "async " + functionSource(appJs, name)).join("\n")}
     return { saveDraft, scheduleMail, sendMail };
@@ -3540,6 +3551,8 @@ async function checkComposeMailbox() {
     state.composeMeta = { accountId: seed.accountId };
     await methods.saveDraft();
     await methods.scheduleMail();
+    // Each action below represents a fresh composition with the same source.
+    state.composeQueued = false;
     await methods.sendMail();
   }
   assert.strictEqual(calls.length, 9);
@@ -6586,7 +6599,7 @@ checkGoogleOauthAlias();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 
-checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => {
+checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

@@ -93,8 +93,8 @@
         <p id="sync-detail" class="sync-detail" hidden></p>
         </div>
         <form id="search-form" role="search">
-          <label class="sr" for="search-query">Search all mail</label>
-          <input id="search-query" type="search" placeholder="Search all mail" title="Search synced subject, from, and body" autocomplete="off" spellcheck="false" />
+          <label class="sr" for="search-query">Search downloaded mail</label>
+          <input id="search-query" type="search" placeholder="Search downloaded mail" title="Search downloaded subject, sender, and available message text" autocomplete="off" spellcheck="false" />
         </form>
       </div>
     </header>
@@ -124,8 +124,15 @@
         <div class="list-head" id="list-head">
           <div class="list-tools">
             <h2 class="list-title" id="list-title">Messages</h2>
-            <button type="button" class="select-visible" id="select-visible" aria-label="Select all visible messages">Select all</button>
+            <button type="button" class="select-visible" id="select-visible" aria-label="Select shown messages">Select shown (0)</button>
           </div>
+          <p id="list-coverage" class="list-filter-note" role="status"></p>
+          <div id="search-scope" hidden>
+            <label class="sr" for="search-account">Search account</label>
+            <select id="search-account" aria-label="Search account"></select>
+            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Normal sync covers about 180 days; older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched.</p></details>
+          </div>
+          <button type="button" class="ghost" id="filter-chip" hidden></button>
           <div id="selection-bar" class="selection-bar" hidden>
             <p id="selection-count">0 selected</p>
             <div id="selection-actions" class="selection-actions" role="toolbar" aria-label="Selected messages"></div>
@@ -133,8 +140,8 @@
           <div id="list-chips" class="chips" role="group" aria-label="Primary folders" hidden></div>
           <div class="list-filter">
             <label class="sr" for="list-filter">Filter loaded messages</label>
-            <input id="list-filter" data-testid="list-filter" type="search" placeholder="Filter subject, from, snippet" autocomplete="off" spellcheck="false" />
-            <p class="list-filter-note">Loaded messages only. Does not search the server. Toolbar search uses the local index.</p>
+            <input id="list-filter" data-testid="list-filter" type="search" placeholder="Filter this list" autocomplete="off" spellcheck="false" />
+            <p class="list-filter-note">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>
         </div>
       </div>
@@ -301,6 +308,9 @@
       </section>
       <section id="brain-rules" role="tabpanel" aria-labelledby="brain-tab-rules" hidden>
         <h3 id="brain-rules-title">Inbox rules</h3>
+        <label for="inbox-rules-account">Mailbox for these rules</label>
+        <select id="inbox-rules-account"></select>
+        <p id="inbox-rules-owner" class="hint"></p>
         <p class="hint" id="inbox-rules-note">Match mail, then mark it, file it, or trash it. Gmail and Outlook keep the rule on the provider. Other accounts run it here when new Inbox mail arrives.</p>
         <p id="inbox-rules-status" role="status"></p>
         <div id="inbox-rules-list"></div>
@@ -369,7 +379,15 @@
     <dialog id="connect" aria-labelledby="connect-title">
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
-        <p class="hint">IMAP password, or Google / Microsoft in the browser. Labels, inbox rules, and calendar each ask for their own consent. The password stays in this app's keychain.</p>
+        <p class="hint">Sign in through your browser. Labels, inbox rules, and calendar each ask for their own consent.</p>
+        <div class="row">
+          <button type="button" class="primary" id="oauth-google">Continue with Google</button>
+          <button type="button" class="ghost" id="oauth-microsoft">Continue with Microsoft</button>
+        </div>
+        <p id="oauth-unavailable" class="hint"></p>
+        <p id="connect-status" class="hint" role="status" aria-live="polite"></p>
+        <details><summary>Use IMAP / app password</summary>
+        <p class="hint">The password stays in this app's keychain.</p>
         <label for="profile">Provider</label>
         <select id="profile" name="profile"></select>
         <div id="custom-fields" hidden>
@@ -392,13 +410,21 @@
         <input id="password" name="password" type="password" autocomplete="current-password" required />
         <div class="row">
           <button type="submit" class="primary" id="connect-submit">Connect</button>
-          <button type="button" class="ghost" id="oauth-google">Google</button>
-          <button type="button" class="ghost" id="oauth-microsoft">Microsoft</button>
-          <button type="button" class="ghost" id="connect-close">Cancel</button>
         </div>
+        </details>
+        <button type="button" class="ghost" id="connect-close">Cancel</button>
       </form>
     </dialog>
 
+    <dialog id="compose-close-review" aria-labelledby="draft-close-title">
+      <h2 id="draft-close-title">Save this draft before closing?</h2>
+      <p>Discard leaves the last saved copy unchanged. Keep editing to return to this text.</p>
+      <div class="row">
+        <button type="button" class="primary" id="draft-close-save">Save draft</button>
+        <button type="button" class="ghost" id="draft-close-discard">Discard</button>
+        <button type="button" class="ghost" id="draft-close-keep">Keep editing</button>
+      </div>
+    </dialog>
     <dialog id="compose" aria-labelledby="compose-title" data-quote="off" data-layout="" data-quote-collapsed="false">
       <form id="compose-form">
         <div class="compose-head">
@@ -431,7 +457,7 @@
           </section>
           <div id="compose-split-handle" class="compose-split-handle" role="separator" aria-orientation="vertical" aria-label="Resize quoted message" aria-valuemin="220" aria-valuemax="720" aria-valuenow="420" tabindex="0" hidden></div>
           <div class="compose-draft">
-            <p id="compose-quote-note" class="hint" hidden>The quoted message is included when you save or send.</p>
+            <p id="compose-quote-note" class="hint" hidden>The quoted original is still included when you save, send, or schedule.</p>
         <div class="compose-fields">
           <div class="field-row">
             <label for="compose-to">To</label>
@@ -485,6 +511,7 @@
         <p class="hint" id="schedule-note">Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.</p>
           </div>
         </div>
+        <p id="compose-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>
           <button type="button" class="ghost" id="compose-schedule">Schedule send</button>
@@ -650,21 +677,12 @@
         </section>
         <section id="settings-bot" aria-labelledby="settings-bot-title">
           <h3 id="settings-bot-title">Bot access</h3>
-          <p class="hint">The local bridge is off until you mint a grant and turn it on. A grant can read cached mail for the accounts you select, including Sent and Drafts. Message text is untrusted. Nothing is sent from the bridge. Tailscale Serve may forward 127.0.0.1:47831. Do not enable Funnel.</p>
+          <button type="button" class="ghost" id="bot-review-link">Review draft proposals</button>
+          <p class="hint">The local bridge starts off. Create a grant, copy its secret once, then enable and verify the listener. A grant can read cached mail for the accounts you select, including Sent and Drafts. Message text is untrusted. Nothing is sent from the bridge. Tailscale Serve may forward 127.0.0.1:47831. Do not enable Funnel.</p>
           <p id="bot-listen" class="hint"></p>
           <p id="bot-install" class="hint"></p>
-          <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" /> Enable the loopback bridge</label>
-          <label for="bot-serve-host">Serve host
-            <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="hostname:8443" />
-          </label>
-          <div class="row">
-            <button type="button" class="ghost icon-label" id="bot-serve-save">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-              </svg>
-              <span>Save Serve host</span>
-            </button>
-          </div>
+          <h4>1. Choose permissions and create a grant</h4>
+          <p class="hint">Included access: account details, cached mail headers (including Sent and Drafts), sync health, and pending Agent proposals. Choose the accounts this client may read. New accounts are not added automatically.</p>
           <form id="bot-mint">
             <label for="bot-label">Client name
               <input id="bot-label" type="text" maxlength="60" autocomplete="off" spellcheck="false" />
@@ -673,7 +691,7 @@
               <legend>Accounts</legend>
             </fieldset>
             <fieldset id="bot-caps">
-              <legend>Extra capabilities</legend>
+              <legend>Optional access</legend>
               <label class="check"><input type="checkbox" data-cap="mail.bodies.read" /> Read cached message text</label>
               <label class="check"><input type="checkbox" data-cap="mail.attachments.read" /> Read attachment names</label>
               <label class="check"><input type="checkbox" data-cap="draft.proposals.create" /> Submit draft proposals</label>
@@ -686,12 +704,33 @@
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
                 </svg>
-                <span>Mint grant</span>
+                <span>Create access grant</span>
               </button>
             </div>
           </form>
+          <h4>2. Enable and verify</h4>
+          <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" /> Enable the loopback bridge</label>
+          <p id="bot-enable-help" class="hint">Create an unexpired grant before enabling the bridge.</p>
+          <p id="bot-intent" class="hint"></p>
+          <p class="hint">Disabling stops the listener for every client. Grants remain valid until they expire or you revoke them.</p>
+          <div class="row"><button type="button" class="ghost" id="bot-verify">Verify listener status</button><button type="button" class="ghost" id="bot-retry">Retry listener</button></div>
+          <details><summary>Optional: allowed Tailscale Serve host</summary>
+          <p class="hint">Saving a host does not install or configure Tailscale Serve. Keep Funnel off.</p>
+          <label for="bot-serve-host">Serve host
+            <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="hostname:8443" />
+          </label>
+          <div class="row">
+            <button type="button" class="ghost icon-label" id="bot-serve-save">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+              <span>Save allowed Serve host</span>
+            </button>
+          </div>
+          </details>
+          <h4>Access grants</h4>
           <ul id="bot-grants" aria-label="Bot grants"></ul>
-          <h4>Draft proposals</h4>
+          <h4 id="bot-draft-heading" tabindex="-1">Draft proposals</h4>
           <ul id="bot-drafts" aria-label="Draft proposals"></ul>
           <p id="bot-status" role="status"></p>
         </section>
@@ -722,8 +761,9 @@
     <dialog id="bot-secret" aria-labelledby="bot-secret-title">
       <form>
         <h2 id="bot-secret-title">Grant secret</h2>
-        <p class="hint">Shown once. Copy it into the credential file on the shared box. Morrow stores only a verifier.</p>
+        <p class="hint">Copy this secret now. It cannot be shown again. Store it in your bot client’s private credential file. If you lose it, replace this grant’s secret to create a new one. Morrow stores only a verifier.</p>
         <pre id="bot-secret-value"></pre>
+        <p id="bot-secret-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
           <button type="button" class="primary icon-label" id="bot-secret-copy">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

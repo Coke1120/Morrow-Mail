@@ -8,8 +8,13 @@ const state = {
   email: null,
   thread: [],
   query: "",
+  searchAccountId: "",
   draftId: null,
   composeMeta: null,
+  composeBaseline: "",
+  composePending: false,
+  composeQueued: false,
+  composeInitializing: false,
   composeQuote: null,
   botDraftReview: null,
   botAccess: null,
@@ -40,6 +45,7 @@ const state = {
   selectedIds: [],
   selectionAnchor: "",
   sync: null,
+  syncScopes: new Map(),
   oauthStatus: null,
   oauthPending: false,
   view: "mail",
@@ -57,6 +63,8 @@ let listGen = 0;
 let openGen = 0;
 let reloadTimer = null;
 let undoOpIds = null;
+let undoReceipt = "";
+let undoReceiptError = false;
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
@@ -102,8 +110,9 @@ function $(id) {
 
 function showStatus(text, isError) {
   const el = $("status");
-  el.textContent = text || "";
-  el.classList.toggle("error", !!isError && !!text);
+  const kept = undoOpIds && undoReceipt;
+  el.textContent = kept && text !== undoReceipt ? undoReceipt + (text ? "\n" + text : "") : (text || "");
+  el.classList.toggle("error", !!(isError || (kept && undoReceiptError)) && !!el.textContent);
 }
 
 function selectedAccount() {
@@ -1016,7 +1025,7 @@ function vacationView(payload) {
     canDisable: row.supported === true && row.requiresReconnect !== true && ((mode && mode !== "disabled") || !!row.scheduleWarning),
     note: row.detail || row.scheduleWarning || "",
     help: provider === "imap"
-      ? "Plain text only. Morrow installs one script named morrow-vacation and will not replace a different active Sieve script."
+      ? "Plain text only. Dates take effect on whole UTC days: start rounds down, end rounds up unless already midnight UTC. The final review shows effective dates. Morrow installs only morrow-vacation and will not replace a different active Sieve script."
       : "Plain text only. Save replaces rich formatting. Outlook keeps separate internal and external messages. Disable keeps the provider’s existing templates.",
   };
 }
@@ -1024,7 +1033,7 @@ function vacationView(payload) {
 function vacationConfirm(kind, owner, options) {
   const who = owner || "this mailbox";
   const provider = options && options.provider;
-  const closed = "Enabled replies continue while Morrow is closed. No mail is sent by this button.";
+  const closed = "Your mail server will send these automatic replies to the audience below, including while Morrow is closed.";
   if (kind === "grant") {
     const scope = options && options.scope ? options.scope : "the provider settings permission";
     return {
@@ -1039,19 +1048,38 @@ function vacationConfirm(kind, owner, options) {
     const kept = provider === "imap" ? "Only Morrow’s own vacation script is removed." : "Existing templates are retained.";
     return {
       title: "Disable automatic replies",
-      body: "Disable automatic replies for " + who + "?\n\n" + kept + "\n\n" + closed,
+      body: "Disable automatic replies for " + who + "?\n\nNew automatic replies will stop after the provider applies this change. " + kept,
       confirm: "Disable",
       cancel: "Cancel",
       needsName: false,
     };
   }
   const mode = options && options.mode ? options.mode : "disabled";
-  const where = provider === "imap"
-    ? "The IMAP server stores a ManageSieve vacation script if it offers one. Every sender can receive a reply. Dates use whole UTC days."
-    : "The provider stores these plain-text replies.";
+  const row = options || {};
+  const audience = provider === "imap" ? "All senders" : provider === "microsoft"
+    ? "Internal senders; external: " + ({ none: "no external replies", contacts: "contacts only", all: "all senders" }[row.audience] || "all senders")
+    : (row.audience === "contacts" ? "Contacts only" : "All senders") + (row.restrictToDomain ? "; within your Google Workspace domain only" : "");
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const date = (value, end) => {
+    if (!value) return end ? "No end" : "Immediately";
+    const time = new Date(value);
+    if (!Number.isFinite(time.getTime())) return "Unknown";
+    if (provider !== "imap") return time.toLocaleString() + " (" + zone + ")";
+    const midnight = Date.parse(time.toISOString().slice(0, 10) + "T00:00:00.000Z");
+    return new Date(midnight + (end && time.getTime() > midnight ? 86400000 : 0)).toISOString().slice(0, 10) + " 00:00 UTC" + (end ? " (exclusive)" : "");
+  };
+  const dates = mode === "scheduled" ? "Effective start: " + date(row.start, false) + "\nEffective end: " + date(row.end, true) : mode === "always" ? "Effective: immediately, until disabled." : "Automatic replies stay disabled.";
+  const excerpt = (text) => String(text || "").slice(0, 240) + (String(text || "").length > 240 ? "…" : "");
+  const where = "Provider: " + (provider === "imap" ? "IMAP / ManageSieve" : provider === "microsoft" ? "Microsoft" : "Google")
+    + ". Mode: " + mode + ".\n" + dates + "\nAudience: " + audience
+    + (provider === "imap" ? "\nDates use whole UTC days." : mode === "disabled" ? "\nExisting provider templates are retained." : "\nSaving plain text replaces rich formatting.")
+    + (mode !== "disabled" ? (row.subject ? "\nSubject: " + excerpt(row.subject) : "")
+      + "\n" + (provider === "microsoft" ? "Internal reply: " : "Reply: ") + excerpt(row.message)
+      + (provider === "microsoft" ? "\nExternal reply: " + excerpt(row.externalMessage) : "") : "");
   return {
     title: mode === "disabled" ? "Save disabled settings" : "Save and enable",
-    body: "Save automatic replies for " + who + "?\n\n" + where + " Mode: " + mode + ".\n\n" + closed,
+    body: (mode === "disabled" ? "Save disabled settings for " : "Enable automatic replies for ") + who + "?\n\n"
+      + (mode === "disabled" ? "These settings will not enable automatic replies." : closed) + "\n\n" + where,
     confirm: "Save",
     cancel: "Cancel",
     needsName: false,
@@ -1162,7 +1190,7 @@ function closeDialog(id) {
     return;
   }
   dialog.dataset.closing = "1";
-  motion.dialogOut(dialog).then(() => {
+  return motion.dialogOut(dialog).then(() => {
     if (dialog.open) dialog.close();
     if (dialog.getAnimations) {
       for (const animation of dialog.getAnimations()) animation.cancel();
@@ -1588,9 +1616,9 @@ function replyBody(email) {
 function attachmentNote(email) {
   const files = ((email && email.attachments) || []).filter((item) => item && (item.filename || item.id));
   if (files.length) {
-    return `Attachments: ${files.map((item) => item.filename || "attachment").join(", ")}`;
+    return `Original attachment names: ${files.map((item) => item.filename || "attachment").join(", ")}. Files are not included in this forward.`;
   }
-  if (email && email.hasAttachments) return "This message has attachments.";
+  if (email && email.hasAttachments) return "The original message has attachments. Files are not included in this forward.";
   return "";
 }
 
@@ -2400,31 +2428,33 @@ function bulkConfirmCopy(action, count, detail) {
   const n = Math.max(0, Number(count) || 0);
   const noun = n === 1 ? "message" : "messages";
   const row = detail || {};
-  const base = { confirm: "Confirm", cancel: "Cancel", needsName: false, name: "" };
+  const base = { confirm: action === "archive" ? "Archive" : action === "trash" ? "Move to Trash" : action === "move" ? "Move" : "Apply label", cancel: "Cancel", needsName: false, name: "" };
+  const scope = row.scope ? " " + row.scope : "";
   if (action === "archive") {
     return Object.assign({}, base, {
       title: "Archive",
-      body: "Archive " + n + " " + noun + "? This removes them from the current list.",
+      body: "Archive " + n + " " + noun + "?" + scope,
     });
   }
   if (action === "trash") {
     return Object.assign({}, base, {
       title: "Trash",
-      body: "Move " + n + " " + noun + " to Trash? This removes them from the current list.",
+      body: "Move " + n + " " + noun + " to Trash?" + scope,
     });
   }
   if (action === "move") {
     const target = String(row.target || "that folder");
     return Object.assign({}, base, {
       title: "Move",
-      body: "Move " + n + " " + noun + " to “" + target + "”? This moves them on the provider.",
+      body: "Move " + n + " " + noun + " to “" + target + "”? This moves them on the provider." + scope,
     });
   }
+  if (action === "add-label") return Object.assign({}, base, { title: "Add Gmail label", body: "Add “" + String(row.label || "that label") + "” to " + n + " " + noun + "? Existing labels remain." + scope });
   if (action === "remove-label") {
     const label = String(row.label || "that label");
     return Object.assign({}, base, {
       title: "Remove label",
-      body: "Remove “" + label + "” from " + n + " " + noun + "? This removes them from the current list.",
+      body: "Remove “" + label + "” from " + n + " " + noun + "?" + scope,
     });
   }
   return null;
@@ -2554,7 +2584,7 @@ function syncStatusLabel(sync) {
   if (sync.message) return redactDebugText(sync.message);
   if (sync.state === "syncing") return "Syncing…";
   if (sync.state === "paused") return "Paused for rate limit";
-  if (sync.state === "done") return "Sync done";
+  if (sync.state === "done") return sync.lastSuccessAt ? "Folder checked" : "Not synced yet";
   if (sync.state === "error") return "Sync failed";
   return "";
 }
@@ -2595,12 +2625,12 @@ function syncDetail(sync) {
   if (!sync || !sync.state) return "";
   const where = [sync.accountLabel, sync.folderLabel].filter(Boolean).join(" · ");
   const phase = phaseWord(sync.phase);
-  const success = syncClock(sync.lastSuccessAt);
-  const successLine = success ? `Last success ${success}` : "";
-  if (sync.state === "syncing") return [where, phase, successLine].filter(Boolean).join(" · ");
+  const success = sync.lastSuccessAt && sync.accountId && sync.folderId ? new Date(sync.lastSuccessAt).toLocaleString() : "";
+  const successLine = success ? `${where} · Last checked ${success}` : "";
+  if (sync.state === "syncing") return [where, phase || "Downloading recent mail", successLine].filter(Boolean).join(" · ");
   if (sync.state === "error") return [where, redactDebugText(sync.lastError || sync.message || "Sync failed")].filter(Boolean).join(" · ");
-  if (sync.state === "paused") return [sync.message || "Paused for rate limit", where].filter(Boolean).join(" · ");
-  if (sync.state === "done") return successLine || sync.message || "Sync done";
+  if (sync.state === "paused") return [sync.message || "Paused for rate limit", where, sync.retryAt ? "Retrying at " + new Date(sync.retryAt).toLocaleString() : "Waiting before retrying"].filter(Boolean).join(" · ");
+  if (sync.state === "done") return successLine || [where, "Not synced yet"].filter(Boolean).join(" · ");
   return sync.message || "";
 }
 
@@ -2622,64 +2652,59 @@ function pushDebug(source, text) {
   if (state.view === "log") refreshLog().catch(() => paintLog(debugLines));
 }
 
+function rememberSyncStatus(sync) {
+  if (!sync) return;
+  state.sync = sync;
+  if (sync.accountId) state.syncScopes.set(JSON.stringify([sync.accountId, sync.folderId || ""]), sync);
+}
+
+function currentFolderSync() {
+  const key = JSON.stringify([state.accountId, state.folderId]);
+  const folder = state.syncScopes.get(key);
+  const account = state.syncScopes.get(JSON.stringify([state.accountId, ""]));
+  if (account && (account.state === "paused" || account.state === "error") && (!folder || (account.updatedAt || 0) >= (folder.updatedAt || 0))) return account;
+  return folder || null;
+}
+
 function paintSyncControl() {
   const button = $("refresh");
   const label = $("sync-label");
   const detail = $("sync-detail");
-  const sync = state.sync;
-  const word = syncButtonLabel(sync);
-  const text = syncDetail(sync);
+  const sync = currentFolderSync();
+  const mail = state.view === "mail";
+  const word = mail ? syncButtonLabel(sync) : "Refresh";
+  const text = !mail ? "Refresh this page" : !state.accounts.length ? "No account connected"
+    : syncDetail(sync) || "Not synced yet";
   if (label) label.textContent = word;
   if (button) {
-    const busy = !!(sync && sync.state === "syncing");
+    const busy = mail && !!(sync && sync.state === "syncing");
+    button.disabled = mail && (!state.accounts.length || busy);
     button.classList.toggle("is-syncing", busy);
     button.setAttribute("aria-busy", busy ? "true" : "false");
-    button.setAttribute("aria-label", text ? `${word}. ${text}` : "Sync mail");
+    button.setAttribute("aria-label", `${word}. ${text}`);
+    button.title = !state.accounts.length && mail ? "Connect an account to sync mail." : text;
   }
-  if (detail) {
-    detail.textContent = text;
-    detail.hidden = !text;
-  }
+  if (detail) { detail.textContent = text; detail.hidden = !text; detail.title = text; }
 }
 
 function beginSync(extra) {
-  const prev = state.sync || {};
-  state.sync = Object.assign({}, prev, extra || {}, {
+  const prev = currentFolderSync() || {};
+  rememberSyncStatus(Object.assign({}, prev, extra || {}, {
     state: "syncing",
     message: "Syncing…",
     updatedAt: Date.now(),
-  });
+  }));
   paintSyncControl();
-  showStatus("Syncing…");
   pushDebug("sync", syncDetail(state.sync) || "Syncing…");
 }
 
 function finishLocalSync(kind, error) {
-  const prev = state.sync || {};
-  const now = Date.now();
   if (kind === "error") {
-    const message = redactDebugText(error instanceof Error ? error.message : String(error || "Sync failed"));
-    state.sync = Object.assign({}, prev, {
-      state: "error",
-      phase: "error",
-      message: message || "Sync failed",
-      lastError: message || "Sync failed",
-      lastErrorAt: now,
-      updatedAt: now,
-    });
-    showStatus(state.sync.message, true);
-  } else {
-    state.sync = Object.assign({}, prev, {
-      state: "done",
-      phase: "done",
-      message: "Sync done",
-      lastSuccessAt: now,
-      updatedAt: now,
-    });
-    showStatus("");
+    const message = redactDebugText(error.message || String(error));
+    rememberSyncStatus({ ...(currentFolderSync() || {}), accountId: state.accountId, folderId: state.folderId,
+      state: "error", lastError: message, message });
   }
   paintSyncControl();
-  pushDebug("sync", syncDetail(state.sync));
 }
 
 function paintLog(lines) {
@@ -2870,7 +2895,8 @@ function messageRow(email) {
   subjectLine.append(subject, when);
   const snippet = document.createElement("span");
   snippet.className = "snippet";
-  snippet.textContent = email.snippet || "";
+  const mailbox = state.accounts.find((row) => row.id === email.accountId);
+  snippet.textContent = (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "") + (email.snippet || "");
   main.append(from, subjectLine, snippet);
   button.append(gutter, avatar, main);
   button.addEventListener("click", (event) => {
@@ -2968,7 +2994,11 @@ function paintSelectionBar(shown) {
   const selectAll = $("select-visible");
   const list = $("messages");
   if (list) list.classList.toggle("has-selection", state.selectedIds.length > 0);
-  if (selectAll) selectAll.hidden = !shown.length;
+  if (selectAll) {
+    selectAll.hidden = !shown.length;
+    selectAll.textContent = "Select shown (" + shown.length + ")";
+    selectAll.setAttribute("aria-label", selectAll.textContent);
+  }
   if (!bar) return;
   const wasHidden = bar.hidden;
   if (!state.selectedIds.length) {
@@ -2978,10 +3008,11 @@ function paintSelectionBar(shown) {
   bar.hidden = false;
   if (count) {
     const n = state.selectedIds.length;
-    count.textContent = n === 1 ? "1 selected" : n + " selected";
+    const hidden = state.selectedIds.filter((id) => !shown.some((row) => row.id === id)).length;
+    count.textContent = n + " selected" + (hidden ? " · " + hidden + " hidden by this filter" : "");
   }
-  const messages = selectedMessages();
-  const starred = messages.length > 0 && messages.every((email) => email.isStarred);
+  const messages = selectionMoveMessages();
+  const starred = selectedMessages().length > 0 && selectedMessages().every((email) => email.isStarred);
   setSelectionLabel("selection-star", starred ? "Unstar" : "Star");
   const account = messages[0]
     ? (state.accounts.find((item) => item.id === messages[0].accountId) || selectedAccount())
@@ -3006,7 +3037,59 @@ function paintSelectionBar(shown) {
   }
 }
 
+function paintSearchCoverage(shown) {
+  const filter = $("list-filter").value.trim();
+  const scope = $("search-scope");
+  scope.hidden = !state.query;
+  const picker = $("search-account");
+  picker.replaceChildren(option("", "All connected accounts"));
+  for (const account of state.accounts) picker.appendChild(option(account.id, accountLabel(account)));
+  picker.value = state.searchAccountId;
+  const account = state.accounts.find((row) => row.id === state.searchAccountId);
+  $("list-coverage").textContent = state.query
+    ? `Search downloaded mail · ${account ? accountLabel(account) : "All connected accounts"} · ${state.emails.length} returned (up to 100) · ${shown.length} shown`
+    : `${shown.length} shown of ${state.emails.length} loaded (up to 500)`;
+  const chip = $("filter-chip");
+  chip.hidden = !filter;
+  chip.textContent = "Filter: " + filter + " × Clear filter";
+}
+
+function selectionScopeCopy(messages, source) {
+  const rows = messages || [];
+  const selected = source || selectedMessages();
+  const ids = new Set(rows.map((row) => row.id));
+  const excluded = selected.filter((row) => !ids.has(row.id)).length;
+  const names = [...new Set(rows.map((row) => {
+    const account = state.accounts.find((item) => item.id === row.accountId);
+    return account ? accountLabel(account) : "Disconnected mailbox";
+  }))];
+  return `${rows.length} messages from ${names.join(", ")}.` + (excluded ? ` ${excluded} excluded messages in other accounts or outside this action will stay selected.` : "");
+}
+
+async function reviewedRemoval(messages, kind) {
+  const planned = bulkRemovalCalls(messages, kind, state.prefs.conversation);
+  const affected = new Map(messages.map((row) => [row.id, row]));
+  let expanded = false;
+  for (const spec of planned) {
+    if (!spec.params.threadId) continue;
+    const rows = await call("mail:listThreadMessages", { accountId: spec.params.accountId, threadId: spec.params.threadId, headersOnly: true });
+    if (!Array.isArray(rows)) throw new Error("Conversation scope could not be loaded. Refresh before trying again.");
+    for (const row of rows) {
+      if (row.accountId !== spec.params.accountId) throw new Error("Conversation account did not match.");
+      affected.set(row.id, row);
+    }
+    expanded = true;
+  }
+  const rows = [...affected.values()];
+  const detail = { scope: selectionScopeCopy(rows, messages) + (expanded
+    ? ` Conversation view expands this action to ${rows.length} downloaded messages, including unselected members in other folders.`
+    : " Only these messages are included.") };
+  // Freeze the reviewed message IDs; a newly arriving thread member is not authorized.
+  return { rows, detail, calls: bulkRemovalCalls(rows, kind, false) };
+}
+
 function renderList() {
+  paintSyncControl();
   rememberLoadedSelection();
   const list = $("messages");
   const head = $("list-head");
@@ -3022,13 +3105,15 @@ function renderList() {
   renderChips(account);
   const shown = filteredEmails(state.emails, $("list-filter") ? $("list-filter").value : "");
   paintSelectionBar(shown);
+  paintSearchCoverage(shown);
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
     if (!state.accounts.length && !state.query) {
       empty.textContent = "No messages yet.";
     } else if (!state.emails.length) {
-      empty.textContent = state.query ? "No messages match that search." : "No messages in this folder.";
+      empty.textContent = state.query ? `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.` : currentFolderSync()?.lastSuccessAt
+        ? "No messages in this folder." : "Mail has not been downloaded for this folder yet. Use Sync to download recent mail.";
     } else {
       empty.textContent = "No loaded messages match that filter.";
     }
@@ -3140,6 +3225,14 @@ function renderActions(pane, email) {
   menus.className = "reader-menus";
   menus.append(move, organizeButton(email));
   if (snooze) menus.append(snooze);
+  if (email.isDraft) {
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.className = "primary";
+    resume.textContent = "Resume draft";
+    resume.addEventListener("click", () => guard(() => resumeDraft(email)));
+    bar.appendChild(resume);
+  }
   bar.append(reply, replyAll, forward, star, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
@@ -3664,14 +3757,19 @@ async function useAttachment(channel, email, file) {
   showStatus(channel === "mail:downloadAttachment" ? "Saved." : "Opened.");
 }
 
-function showUndo(text, opIds) {
+function showUndo(text, opIds, isError) {
+  undoReceipt = text;
+  undoReceiptError = !!isError;
   undoOpIds = opIds && opIds.length ? opIds.slice() : null;
   $("undo").hidden = !undoOpIds;
-  showStatus(text);
+  $("undo").textContent = "Undo " + (undoOpIds ? undoOpIds.length : 0) + " completed changes";
+  showStatus(text, isError);
 }
 
 function clearUndo() {
   undoOpIds = null;
+  undoReceipt = "";
+  undoReceiptError = false;
   $("undo").hidden = true;
 }
 
@@ -3703,7 +3801,9 @@ async function setRead(email, isRead) {
 }
 
 async function deleteFromList(email) {
-  await finishRemoval(email, "Moved to Trash.", await call("mail:delete", removalPayload(email, false)));
+  const answer = await askConfirm(bulkConfirmCopy("trash", 1, { scope: selectionScopeCopy([email], [email]) }));
+  if (!answer || !answer.ok) return;
+  await finishRemoval(email, "Move to Trash", await call("mail:delete", removalPayload(email, false)));
 }
 
 async function replyFromList(email, kind) {
@@ -3719,23 +3819,21 @@ async function replyFromList(email, kind) {
 }
 
 async function finishRemoval(email, label, data) {
-  const opIds = data && Array.isArray(data.opIds) ? data.opIds.filter(Boolean) : [];
-  if (state.email && state.email.id === email.id) {
-    state.email = null;
-    state.thread = [];
-  }
-  renderReader(false);
-  if (opIds.length) showUndo(label, opIds);
-  else {
-    clearUndo();
-    showStatus(label);
-  }
-  await loadList();
+  const outcomes = receiptRows(data, { params: { emailId: email.id } });
+  return finishBulkRemoval(label, {
+    outcomes,
+    opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId),
+    error: outcomes.some((row) => row.status !== "completed") ? "Some changes could not be verified." : "",
+  }, [email.id]);
 }
 
+
 async function removeOpen(email, channel, label) {
-  const threaded = channel === "mail:threadArchive" || channel === "mail:threadTrash";
-  await finishRemoval(email, label, await call(channel, removalPayload(email, threaded)));
+  const kind = channel === "mail:threadTrash" || channel === "mail:delete" ? "trash" : "archive";
+  const review = await reviewedRemoval([withSelectionMembers(email)], kind);
+  const answer = await askConfirm(bulkConfirmCopy(kind, review.rows.length, review.detail));
+  if (!answer || !answer.ok) return;
+  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls), review.rows.map((row) => row.id));
 }
 
 async function archiveOpen(email) {
@@ -3781,10 +3879,17 @@ async function moveOpen(email, targetFolderId) {
 async function undoRemoval() {
   const opIds = undoOpIds;
   if (!opIds || !opIds.length) return;
+  const prior = undoReceipt || $("status").textContent;
   clearUndo();
-  await call("mail:undoRemoval", { opIds, kind: "move" });
-  showStatus("Undone.");
-  await loadList();
+  try {
+    const data = await call("mail:undoRemoval", { opIds, kind: "move" });
+    const outcomes = data && Array.isArray(data.outcomes) ? data.outcomes : [{ status: "unknown" }];
+    const incomplete = outcomes.some((row) => row.status !== "completed");
+    showStatus(prior + " " + receiptText("Restore", { outcomes }), incomplete);
+    await loadList();
+  } catch (error) {
+    showStatus(prior + " Restore outcome is unknown. " + error.message + " Refresh before retrying.", true);
+  }
 }
 
 async function snoozeOpen(email, preset) {
@@ -3852,7 +3957,7 @@ function rememberSelection(preferredId) {
 async function loadList(fromNetwork) {
   const gen = ++listGen;
   if (state.query) {
-    const data = await call("mail:searchLocal", { query: state.query, limit: 100 });
+    const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
     if (gen !== listGen) return null;
     state.emails = Array.isArray(data) ? data : [];
     renderList();
@@ -3872,7 +3977,7 @@ async function loadList(fromNetwork) {
   });
   if (gen !== listGen) return data;
   state.emails = (data && data.emails) || [];
-  if (data && data.sync) state.sync = Object.assign({ accountId: account.id }, data.sync);
+  if (data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
   renderList();
   return data;
 }
@@ -4558,73 +4663,102 @@ function refusePaused(messages) {
   return true;
 }
 
+function operationIds(spec) {
+  const params = spec.params || {};
+  return params.items ? params.items.map((item) => item.emailId || item.id) : (params.emailId ? [params.emailId] : []);
+}
+
+function receiptRows(data, spec) {
+  if (data && Array.isArray(data.outcomes)) return data.outcomes;
+  const ids = operationIds(spec);
+  // Legacy multi-message/thread responses do not establish per-message outcomes.
+  const verified = ids.length === 1 && !spec.params.threadId && data != null;
+  return ids.map((id) => ({ id, status: verified ? "completed" : "unknown" }));
+}
+
+function receiptText(label, outcome) {
+  const rows = outcome.outcomes || [];
+  const count = (status) => rows.filter((row) => row.status === status).length;
+  const parts = [count("completed") + " completed", count("failed") + " failed", count("unknown") + " unknown", count("not_attempted") + " not attempted"];
+  const errors = [...new Set(rows.map((row) => row.error).filter(Boolean))];
+  if (outcome.error && !errors.includes(outcome.error)) errors.push(outcome.error);
+  return label.replace(/[.]$/, "") + ": " + parts.join(" · ") + "." + (errors.length ? " " + errors.join(" ") : "")
+    + (count("unknown") ? " Refresh before retrying unknown changes." : "");
+}
+
 async function runBulk(calls) {
-  let outcome = { opIds: [], paused: false, error: "" };
-  let done = 0;
+  const outcome = { opIds: [], outcomes: [], done: 0, paused: false, error: "" };
+  let stopped = false;
   for (const spec of calls) {
+    if (stopped) {
+      outcome.outcomes.push(...operationIds(spec).map((id) => ({ id, status: "not_attempted" })));
+      continue;
+    }
+    let rows;
     try {
       const data = await call(spec.channel, spec.params);
-      outcome = collectBulkOutcome(outcome, data, null);
-      done += 1;
+      rows = receiptRows(data, spec);
     } catch (error) {
-      outcome = collectBulkOutcome(outcome, null, error);
-      break;
+      const message = error.message || String(error);
+      rows = operationIds(spec).map((id) => ({ id, status: "unknown", error: message }));
+      outcome.error = message;
+    }
+    outcome.outcomes.push(...rows);
+    const unresolved = rows.find((row) => row.status !== "completed");
+    if (unresolved) {
+      stopped = true;
+      outcome.error = unresolved.error || outcome.error || "Some changes could not be verified.";
     }
   }
-  outcome.done = done;
+  outcome.done = outcome.outcomes.filter((row) => row.status === "completed").length;
+  outcome.opIds = outcome.outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId);
+  outcome.paused = /rate limit|rate_limit|\b429\b/i.test(outcome.error);
   return outcome;
 }
 
 async function finishBulkRemoval(label, outcome, ids) {
-  const acted = Array.isArray(ids) ? ids : [];
-  if (outcome.done > 0 && state.email && acted.indexOf(state.email.id) >= 0) {
+  const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => row.id));
+  if (state.email && completed.has(state.email.id)) {
     state.email = null;
     state.thread = [];
     renderReader(false);
   }
-  if (outcome.done > 0) {
-    state.selectedIds = [];
-    state.selectionAnchor = "";
-  }
-  if (outcome.opIds.length) showUndo(outcome.paused ? "Paused for rate limit." : label, outcome.opIds);
-  else if (outcome.paused || outcome.error) showStatus(outcome.error || "Paused for rate limit", true);
-  else if (outcome.done > 0) showStatus(label);
-  if (outcome.done > 0) await loadList();
+  state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
+  const text = receiptText(label, outcome);
+  if (outcome.opIds.length) showUndo(text, outcome.opIds, !!outcome.error);
+  else { clearUndo(); showStatus(text, !!outcome.error); }
+  if (completed.size) await loadList();
+  else renderList();
 }
 
 async function bulkArchive() {
   const messages = selectedMessages().map(withSelectionMembers);
   if (!messages.length || refusePaused(messages)) return;
-  const calls = bulkRemovalCalls(messages, "archive", state.prefs.conversation);
-  const answer = await askConfirm(bulkConfirmCopy("archive", messages.length, {}));
-  const gated = confirmedCalls("archive", answer, calls, {});
+  const review = await reviewedRemoval(messages, "archive");
+  const answer = await askConfirm(bulkConfirmCopy("archive", review.rows.length, review.detail));
+  const gated = confirmedCalls("archive", answer, review.calls, review.detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  const n = messages.length;
-  await finishBulkRemoval(n === 1 ? "Archived." : "Archived " + n + " messages.", outcome, messages.map((item) => item.id));
+  await finishBulkRemoval("Archive", outcome, messages.map((item) => item.id));
 }
 
 async function bulkTrash() {
   const messages = selectedMessages().map(withSelectionMembers);
   if (!messages.length || refusePaused(messages)) return;
-  const calls = bulkRemovalCalls(messages, "trash", state.prefs.conversation);
-  const answer = await askConfirm(bulkConfirmCopy("trash", messages.length, {}));
-  const gated = confirmedCalls("trash", answer, calls, {});
+  const review = await reviewedRemoval(messages, "trash");
+  const answer = await askConfirm(bulkConfirmCopy("trash", review.rows.length, review.detail));
+  const gated = confirmedCalls("trash", answer, review.calls, review.detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  const n = messages.length;
-  await finishBulkRemoval(n === 1 ? "Moved to Trash." : "Moved " + n + " messages to Trash.", outcome, messages.map((item) => item.id));
+  await finishBulkRemoval("Move to Trash", outcome, messages.map((item) => item.id));
 }
 
 async function bulkSetRead(isRead) {
   const messages = selectedMessages();
   if (!messages.length || refusePaused(messages)) return;
   const outcome = await runBulk(bulkFlagCalls(messages, isRead ? "read" : "unread"));
-  if (outcome.error) {
-    showStatus(outcome.error, true);
-    return;
-  }
-  for (const email of messages) {
+  const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
+  for (const email of messages.filter((row) => completed.has(row.id))) {
     email.unread = !isRead;
     email.isRead = isRead;
     if (state.email && state.email.id === email.id) {
@@ -4634,24 +4768,21 @@ async function bulkSetRead(isRead) {
   }
   renderList();
   renderReader(false);
-  showStatus(isRead ? "Marked read." : "Marked unread.");
+  showStatus(receiptText(isRead ? "Mark read" : "Mark unread", outcome), !!outcome.error);
 }
 
 async function bulkStar(isStarred) {
   const messages = selectedMessages();
   if (!messages.length || refusePaused(messages)) return;
   const outcome = await runBulk(bulkFlagCalls(messages, isStarred ? "star" : "unstar"));
-  if (outcome.error) {
-    showStatus(outcome.error, true);
-    return;
-  }
-  for (const email of messages) {
+  const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
+  for (const email of messages.filter((row) => completed.has(row.id))) {
     email.isStarred = isStarred;
     if (state.email && state.email.id === email.id) state.email.isStarred = isStarred;
   }
   renderList();
   renderReader(false);
-  showStatus(isStarred ? "Starred." : "Unstarred.");
+  showStatus(receiptText(isStarred ? "Star" : "Unstar", outcome), !!outcome.error);
 }
 
 async function applySelectionLabels(label, mode) {
@@ -4660,31 +4791,18 @@ async function applySelectionLabels(label, mode) {
   const name = label.label || label.name || label.id;
   const removes = mode === "remove" && labelRemovesFromView(state.folderId, label.id);
   const action = mode === "remove" ? "remove-label" : "add-label";
-  const detail = { removesFromView: removes, label: name };
+  const detail = { removesFromView: removes, label: name, scope: selectionScopeCopy(messages) };
   const calls = bulkLabelCalls(messages, label.id, mode);
   let answer = { ok: true };
-  if (bulkNeedsConfirm(action, detail)) {
+  if (bulkNeedsConfirm(action, detail) || selectedMessages().length !== messages.length) {
     answer = await askConfirm(bulkConfirmCopy(action, messages.length, detail));
+    if (!answer || !answer.ok) return;
   }
   const gated = confirmedCalls(action, answer, calls, detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  if (outcome.paused || outcome.error) {
-    showStatus(outcome.error || "Paused for rate limit", true);
-    if (outcome.done > 0 && removes) await loadList();
-    return;
-  }
-  showStatus(mode === "add" ? "Label added in Gmail." : "Label removed in Gmail.");
-  if (removes) {
-    state.selectedIds = [];
-    state.selectionAnchor = "";
-    if (state.email && messages.some((item) => item.id === state.email.id)) {
-      state.email = null;
-      state.thread = [];
-      renderReader(false);
-    }
-    await loadList();
-  }
+  if (removes) await finishBulkRemoval("Remove label", outcome, messages.map((row) => row.id));
+  else showStatus(receiptText(mode === "add" ? "Add label" : "Remove label", outcome), !!outcome.error);
 }
 
 function dropTargetName(target) {
@@ -4709,10 +4827,13 @@ async function applyBulkMove(messages, target, targetName) {
     removesFromView: action === "remove-label" && labelRemovesFromView(state.folderId, target.id),
     target: name,
     label: name,
+    scope: selectionScopeCopy(rows.filter((row) => planned.some((spec) => operationIds(spec).includes(row.id))),
+      rows.every((row) => state.selectedIds.includes(row.id)) ? selectedMessages() : rows),
   };
   let answer = { ok: true };
-  if (bulkNeedsConfirm(action, detail)) {
+  if (bulkNeedsConfirm(action, detail) || detail.scope.includes("excluded")) {
     answer = await askConfirm(bulkConfirmCopy(action, callCount(planned), detail));
+    if (!answer || !answer.ok) return;
   }
   const gated = confirmedCalls(action, answer, planned, detail);
   if (!gated.length) return;
@@ -4724,14 +4845,11 @@ async function applyBulkMove(messages, target, targetName) {
     } else if (spec.params && spec.params.emailId) acted.push(spec.params.emailId);
   }
   if (action === "add-label") {
-    if (outcome.paused || outcome.error) showStatus(outcome.error || "Paused for rate limit", true);
-    else showStatus("Label added in Gmail.");
+    showStatus(receiptText("Add label", outcome), !!outcome.error);
     return;
   }
   const count = callCount(gated);
-  const label = action === "move"
-    ? (count === 1 ? "Moved." : "Moved " + count + " messages.")
-    : "Label removed in Gmail.";
+  const label = action === "move" ? "Move" : "Remove label";
   await finishBulkRemoval(label, outcome, acted);
 }
 
@@ -4753,8 +4871,7 @@ function openSelectionMove(kind) {
   paintMoveTree();
   const source = $("move-picker-source");
   if (!source) return;
-  if (messages.length === 1) source.textContent = "Message: " + (messages[0].subject || "this message");
-  else source.textContent = "Messages: " + messages.length;
+  source.textContent = selectionScopeCopy(messages);
 }
 
 function openSelectionLabelMenu(mode, anchor) {
@@ -4769,6 +4886,10 @@ function openSelectionLabelMenu(mode, anchor) {
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", mode === "add" ? "Add Gmail label" : "Remove Gmail label");
   menu.replaceChildren();
+  const scope = document.createElement("p");
+  scope.className = "organize-note";
+  scope.textContent = selectionScopeCopy(messages);
+  menu.appendChild(scope);
   appendMenuGroup(menu, mode === "add" ? "Add Gmail label" : "Remove Gmail label", items, (item) => applySelectionLabels(item, mode));
   if (!items.length) {
     const note = document.createElement("p");
@@ -4830,6 +4951,8 @@ function selectionButton(id, label, paths, run) {
 }
 
 function wireSelection() {
+  $("filter-chip").addEventListener("click", () => { $("list-filter").value = ""; renderList(); });
+  $("search-account").addEventListener("change", () => { state.searchAccountId = $("search-account").value; guard(applySearch); });
   const bar = $("selection-actions");
   if (!bar || bar.childElementCount) return;
   const mail = ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M22 6l-10 7L2 6"];
@@ -5098,7 +5221,11 @@ async function openMessage(emailId, focus) {
 async function applySearch() {
   const query = $("search-query").value.trim();
   state.query = query;
-  if (query) showStatus("Searching all mail…");
+  state.email = null;
+  state.thread = [];
+  state.selectedIds = [];
+  renderReader(false);
+  if (query) showStatus("Searching downloaded mail…");
   try {
     await loadList();
   } catch (error) {
@@ -5114,7 +5241,7 @@ function scheduleReload(preferredId) {
   const preferred = typeof preferredId === "string" && preferredId ? preferredId : "";
   clearTimeout(reloadTimer);
   reloadTimer = setTimeout(() => {
-    loadAccounts(preferred || undefined).catch((error) => showStatus(error.message, true));
+    loadAccounts(preferred || undefined).catch((error) => pushDebug("sync", error.message));
   }, 150);
 }
 
@@ -5131,7 +5258,7 @@ function onAccountsUpdated(payload) {
       const view = accounts.find((account) => account.id === preferred);
       if (view && view.email) {
         closeDialog("connect");
-        showStatus(`Connected ${view.email}`);
+        showStatus(`Connected ${view.email}. Downloading recent Inbox mail…`);
       }
     }
   }
@@ -5164,36 +5291,55 @@ function connectPayload() {
   return payload;
 }
 
+function setConnectStatus(text, isError) {
+  $("connect-status").textContent = text || "";
+  $("connect-status").classList.toggle("error", !!isError);
+}
+
+function paintConnectPending() {
+  const busy = state.oauthPending || state.connectPending;
+  const google = oauthButtonState(state.oauthStatus, "google");
+  $("oauth-google").disabled = !!busy || google.disabled;
+  $("oauth-microsoft").disabled = !!busy;
+  $("connect-submit").disabled = !!busy;
+  $("connect-close").textContent = state.oauthPending ? "Cancel sign-in" : "Cancel";
+  $("connect-form").setAttribute("aria-busy", busy ? "true" : "false");
+  $("oauth-unavailable").textContent = google.disabled
+    ? "Google sign-in is unavailable in this installation. Use an installation configured for Google sign-in, or use an app password if your provider permits it." : "";
+}
+
 async function connectImap() {
-  clearUndo();
-  showStatus("Connecting…");
-  const view = await call("mail:connectImapSmtp", connectPayload());
-  $("password").value = "";
-  closeDialog("connect");
-  showStatus(view && view.email ? `Connected ${view.email}` : "Connected.");
-  await loadAccounts(view && view.id);
+  if (state.connectPending || state.oauthPending) return;
+  state.connectPending = true;
+  paintConnectPending();
+  setConnectStatus("Connecting…");
+  try {
+    const view = await call("mail:connectImapSmtp", connectPayload());
+    $("password").value = "";
+    closeDialog("connect");
+    showStatus(view && view.email ? `Connected ${view.email}. Downloading recent Inbox mail…` : "Connected.");
+    await loadAccounts(view && view.id);
+  } catch (error) { setConnectStatus("Could not connect. " + error.message, true); }
+  finally { state.connectPending = false; paintConnectPending(); }
 }
 
 async function connectOAuth(provider) {
-  clearUndo();
+  if (state.oauthPending || state.connectPending) return;
   state.oauthPending = true;
-  showStatus("Waiting for the browser sign-in…");
+  paintConnectPending();
+  setConnectStatus("Finish signing in in your browser. You can return here when it completes.");
   try {
     const view = await call("mail:addAccount", { provider });
     if (!view || !view.id || !view.email) throw new Error("Sign-in did not return an account.");
     closeDialog("connect");
-    showStatus(`Connected ${view.email}`);
+    showStatus(`Connected ${view.email}. Downloading recent Inbox mail…`);
     await loadAccounts(view.id);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/cancel/i.test(message)) {
-      showStatus("Sign-in canceled.");
-      await loadAccounts();
-      return;
-    }
-    throw error;
+    const message = error.message || String(error);
+    setConnectStatus(/cancel/i.test(message) ? "Sign-in canceled." : "Could not finish sign-in. " + message + " Try the provider button again.", !/cancel/i.test(message));
   } finally {
     state.oauthPending = false;
+    paintConnectPending();
   }
 }
 
@@ -5226,9 +5372,11 @@ function composePayload(account) {
 function syncCompose() {
   const account = composeAccount();
   const live = isLive(account);
-  $("compose-save").disabled = !live;
-  $("compose-send").disabled = !live;
-  $("compose-schedule").disabled = !live;
+  const locked = state.composePending || state.composeQueued || state.composeInitializing;
+  for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked;
+  $("compose-schedule").disabled = !live || locked || !!state.botDraftReview;
+  $("compose-close").disabled = state.composePending || state.composeInitializing;
+  for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body", "signature", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
   paintComposeNote();
 }
 
@@ -5250,6 +5398,9 @@ function paintComposeNote() {
     text += same
       ? " Reviewing a draft proposal. Nothing is sent until you press Send."
       : " This compose no longer matches the reviewed draft. Nothing is sent until you press Send.";
+  }
+  if (state.composeQuote && state.composeQuote.kind === "forward" && attachmentNote(state.composeQuote.email)) {
+    text += " Attachments are not included in this forward. This composer cannot attach the original files.";
   }
   $("compose-note").textContent = text;
 }
@@ -5298,7 +5449,7 @@ function showSignatureEmpty(message) {
   empty.textContent = message;
 }
 
-async function fillSignatures() {
+async function fillSignatures(preserveBody) {
   const gen = signatureGen += 1;
   const accountId = composeAccount()?.id;
   let pack = null;
@@ -5325,6 +5476,7 @@ async function fillSignatures() {
   select.replaceChildren();
   select.append(option("", "No signature"));
   for (const row of rows) select.append(option(String(row.id), signatureName(row)));
+  if (preserveBody) { select.value = ""; return; }
   const id = chosenSignatureId(pack, accountId);
   const match = rows.find((row) => String(row.id) === id);
   select.value = match ? String(match.id) : "";
@@ -5733,11 +5885,11 @@ function paintComposeChrome() {
   dialog.dataset.quoteCollapsed = collapsed ? "true" : "false";
   toggle.setAttribute("aria-pressed", shown ? "true" : "false");
   const toggleLabel = $("compose-quote-toggle-label");
-  if (toggleLabel) toggleLabel.textContent = shown ? "Hide quoted message" : "Show quoted message";
+  if (toggleLabel) toggleLabel.textContent = shown ? "Hide original preview" : "Show original preview";
   pane.hidden = !shown;
   pane.setAttribute("aria-hidden", shown ? "false" : "true");
   handle.hidden = !(shown && wide);
-  note.hidden = shown;
+  note.hidden = false;
   if (collapse) {
     collapse.hidden = !shown || wide;
     collapse.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -5794,9 +5946,16 @@ function toggleComposeQuoteCollapse() {
 }
 
 async function openCompose(seed) {
+  if (sendTimer || state.composePending || state.composeInitializing) {
+    showStatus("Finish the pending message first. Use Undo send to resume editing during the send delay.");
+    return;
+  }
+  if ($("compose").open && !(await requestComposeClose())) return;
   const fields = seed || {};
+  state.composeInitializing = true;
   resetDraftWrite();
-  state.draftId = null;
+  state.draftId = fields.draftId || null;
+  state.composeQueued = false;
   state.signatureText = "";
   state.composeMeta = {
     accountId: fields.accountId || state.accountId,
@@ -5813,6 +5972,7 @@ async function openCompose(seed) {
     subject: fields.subject || "",
     body: fields.body || "",
   } : null;
+  setComposeStatus("");
   $("compose-title").textContent = fields.title || "New message";
   $("compose-to").value = fields.to || "";
   $("compose-cc").value = fields.cc || "";
@@ -5828,7 +5988,14 @@ async function openCompose(seed) {
   paintQuoteBody();
   openDialog("compose");
   scheduleComposeLayout();
-  await Promise.all([fillSignatures(), loadScheduled()]);
+  const initial = composeSnapshot();
+  await Promise.all([fillSignatures(!!fields.draftId), loadScheduled()]);
+  state.composeInitializing = false;
+  // A supplied proposal is unsaved work; an untouched new message is not.
+  const baseline = JSON.parse(initial);
+  baseline.body = fields.draftId ? baseline.body : applySignature(baseline.body, "", state.signatureText);
+  state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
+  syncCompose();
   paintComposeNote();
   if (!$("compose").open) return;
   scheduleComposeLayout();
@@ -5852,53 +6019,117 @@ async function openCompose(seed) {
   }
 }
 
+function setComposeStatus(text, isError) {
+  const el = $("compose-status");
+  el.textContent = text || "";
+  el.classList.toggle("error", !!isError);
+}
+
+function composeSnapshot() {
+  return JSON.stringify({ accountId: state.composeMeta && state.composeMeta.accountId,
+    to: $("compose-to").value, cc: $("compose-cc").value, bcc: $("compose-bcc").value,
+    subject: $("compose-subject").value, body: $("compose-body").value,
+    quote: state.composeQuote && state.composeQuote.text });
+}
+
+async function requestComposeClose() {
+  if (state.composePending || state.composeInitializing) return false;
+  if (!state.composeQueued && composeSnapshot() !== state.composeBaseline) {
+    const choice = await new Promise((resolve) => {
+      const dialog = $("compose-close-review");
+      const finish = (value) => { dialog.close(); resolve(value); };
+      $("draft-close-save").onclick = () => finish("save");
+      $("draft-close-discard").onclick = () => finish("discard");
+      $("draft-close-keep").onclick = () => finish("keep");
+      dialog.oncancel = (event) => { event.preventDefault(); finish("keep"); };
+      openDialog("compose-close-review");
+    });
+    if (choice === "keep") return false;
+    if (choice === "save" && !(await saveDraft())) return false;
+  }
+  // Await the exit before another composition reuses this dialog.
+  await closeDialog("compose");
+  return true;
+}
+
+async function resumeDraft(email) {
+  const data = await call("mail:openEmail", { emailId: email.id });
+  const draft = data && data.email;
+  if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
+  await openCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
+    to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
+    body: readable(draft), inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "" });
+}
+
 async function loadScheduled() {
   const gen = scheduledGen += 1;
   const account = composeAccount();
-  let data = null;
   try {
-    data = await call("mail:listScheduled", account ? { accountId: account.id } : {});
+    const data = await call("mail:listScheduled", account ? { accountId: account.id } : {});
+    if (gen === scheduledGen) renderScheduled(scheduledRows(data));
   } catch (error) {
     if (gen !== scheduledGen) return;
-    renderScheduled([]);
-    showStatus(error instanceof Error ? error.message : String(error), true);
-    return;
+    $("scheduled").replaceChildren();
+    const item = document.createElement("li");
+    item.textContent = "Scheduled mail could not be loaded. ";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "ghost";
+    retry.textContent = "Retry";
+    retry.onclick = () => loadScheduled();
+    item.appendChild(retry);
+    $("scheduled").appendChild(item);
   }
-  if (gen !== scheduledGen) return;
-  renderScheduled(scheduledRows(data));
 }
 
 async function cancelScheduled(id) {
   await call("mail:cancelScheduled", { id });
-  showStatus("Scheduled send canceled.");
+  setComposeStatus("Scheduled send canceled. Start a new message to compose again.");
   await loadScheduled();
 }
 
+async function composeOperation(work) {
+  if (state.composePending || state.composeQueued || state.composeInitializing) return false;
+  state.composePending = true;
+  syncCompose();
+  try { await work(); return true; }
+  catch (error) { setComposeStatus(error.message || String(error), true); return false; }
+  finally { state.composePending = false; syncCompose(); }
+}
+
 async function scheduleMail() {
+  if (state.botDraftReview) { setComposeStatus("Review this Bot proposal and use Send when ready. It cannot be scheduled from proposal review."); return false; }
   const account = composeAccount();
-  if (!isLive(account)) return;
+  if (!isLive(account)) return false;
   if (!composeHasRecipient()) {
-    showStatus("Add a recipient.", true);
-    return;
+    setComposeStatus("Add at least one recipient.", true);
+    $("compose-to").focus();
+    return false;
   }
   const when = scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
-  if (!when) {
-    showStatus("Pick a time in the future.", true);
-    return;
-  }
-  showStatus("Scheduling…");
-  await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
-  showStatus(`Scheduled for ${when.toLocaleString()}.`);
-  await loadScheduled();
+  if (!when) { setComposeStatus("Pick a time in the future.", true); $("schedule-at").focus(); return false; }
+  return composeOperation(async () => {
+    setComposeStatus("Scheduling…");
+    await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
+    state.composeQueued = true;
+    state.composeBaseline = composeSnapshot();
+    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${account.email}. See Scheduled below. Close to start a new message.`);
+    await loadScheduled();
+  });
 }
 
 async function saveDraft() {
   const account = composeAccount();
-  if (!isLive(account)) return;
-  showStatus("Saving draft…");
-  const saved = await call("mail:upsertDraft", composePayload(account));
-  state.draftId = (saved && (saved.emailId || saved.draftId)) || state.draftId;
-  showStatus("Draft saved.");
+  if (!isLive(account)) return false;
+  return composeOperation(async () => {
+    setComposeStatus("Saving draft…");
+    const snapshot = composeSnapshot();
+    const saved = await call("mail:upsertDraft", composePayload(account));
+    state.draftId = (saved && (saved.emailId || saved.draftId)) || state.draftId;
+    if (!state.draftId) throw new Error("Draft could not be saved. Your text is still here.");
+    state.composeBaseline = snapshot;
+    setComposeStatus(saved && saved.remoteSaved === false ? "Draft saved on this computer. Server copy could not be updated." : "Draft saved.");
+  });
 }
 
 function hideUndoSend() {
@@ -5912,44 +6143,61 @@ function hideUndoSend() {
 function cancelUndoSend() {
   if (!sendTimer) return false;
   hideUndoSend();
-  showStatus("Send canceled.");
+  openDialog("compose");
+  scheduleComposeLayout();
+  setComposeStatus("Send canceled. Your draft is ready to edit.");
+  showStatus("Send canceled. Your draft is ready to edit.");
+  $("compose-body").focus();
   return true;
 }
 
 async function deliverMail(payload) {
+  state.composePending = true;
+  syncCompose();
+  setComposeStatus("Sending…");
   showStatus("Sending…");
-  await call("mail:send", payload);
-  state.draftId = null;
-  closeDialog("compose");
-  showStatus("Sent.");
+  try {
+    await call("mail:send", payload);
+    state.draftId = null;
+    state.composeBaseline = composeSnapshot();
+    await closeDialog("compose");
+    showStatus("Sent.");
+  } catch (error) {
+    openDialog("compose");
+    scheduleComposeLayout();
+    const message = "Delivery was not confirmed. Your draft is ready to edit. Check Sent before retrying. " + (error.message || String(error));
+    setComposeStatus(message, true);
+    showStatus(message, true);
+    return;
+  } finally { state.composePending = false; syncCompose(); }
   await loadList();
 }
 
-// shortcut: the wait is local; mail:send is immediate once it starts, upgrade when the host can recall a send
+// The local delay can be canceled only before mail:send begins.
 async function sendMail() {
   const account = composeAccount();
-  if (!isLive(account)) return;
+  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || sendTimer) return;
   if (!composeHasRecipient()) {
-    showStatus("Add a recipient.", true);
+    setComposeStatus("Add at least one recipient.", true);
+    $("compose-to").focus();
     return;
   }
   const payload = composePayload(account);
   const delay = sendDelayMs(state.prefs.undoSend);
-  hideUndoSend();
-  if (!delay) {
-    await deliverMail(payload);
-    return;
-  }
-  closeDialog("compose");
+  if (!delay) { await deliverMail(payload); return; }
+  state.composePending = true;
+  syncCompose();
+  await closeDialog("compose");
+  state.composePending = false;
+  syncCompose();
   const gen = ++sendGen;
   showStatus(`Undo send for ${delay / 1000}s.`);
   $("undo-send").hidden = false;
   sendTimer = setTimeout(() => {
     sendTimer = null;
-    const button = $("undo-send");
-    if (button) button.hidden = true;
+    $("undo-send").hidden = true;
     if (gen !== sendGen) return;
-    guard(() => deliverMail(payload));
+    deliverMail(payload).catch((error) => showStatus(error.message, true));
   }, delay);
 }
 
@@ -5975,48 +6223,12 @@ async function removeAccount() {
 }
 
 async function refresh() {
-  if (state.view === "calendar") {
-    beginSync({ phase: "calendar", accountLabel: "", folderLabel: "" });
-    try {
-      await loadCalendar();
-      finishLocalSync("done");
-    } catch (error) {
-      finishLocalSync("error", error);
-      throw error;
-    }
-    return;
-  }
-  if (state.view === "agent") {
-    beginSync({ phase: "agent", accountLabel: "", folderLabel: "" });
-    try {
-      await loadAgent();
-      finishLocalSync("done");
-    } catch (error) {
-      finishLocalSync("error", error);
-      throw error;
-    }
-    return;
-  }
-  if (state.view === "brain") {
-    beginSync({ phase: "brain", accountLabel: "", folderLabel: "" });
-    try {
-      await loadBrain();
-      finishLocalSync("done");
-    } catch (error) {
-      finishLocalSync("error", error);
-      throw error;
-    }
-    return;
-  }
-  if (state.view === "log") {
-    beginSync({ phase: "fetching", accountLabel: "Log", folderLabel: "" });
-    try {
-      await refreshLog();
-      finishLocalSync("done");
-    } catch (error) {
-      finishLocalSync("error", error);
-      throw error;
-    }
+  const pages = { calendar: [loadCalendar, "Calendar refreshed."], agent: [loadAgent, "Agent refreshed."],
+    brain: [loadBrain, "Profile reloaded."], log: [refreshLog, "Log refreshed."] };
+  if (pages[state.view]) {
+    const [load, receipt] = pages[state.view];
+    await load();
+    showStatus(receipt);
     return;
   }
   const account = selectedAccount();
@@ -6034,7 +6246,7 @@ async function refresh() {
       folderId: state.folderId,
       limit: 500,
     });
-    if (data && data.sync) state.sync = data.sync;
+    if (data && data.sync) rememberSyncStatus(data.sync);
     await loadAccounts();
     paintSyncControl();
     showStatus(syncStatusLabel(data && data.sync));
@@ -6636,8 +6848,8 @@ async function saveVacation(kind) {
     if (draft.error) throw new Error(draft.error);
   }
   const answer = await askConfirm(vacationConfirm(kind === "disable" ? "disable" : "save", account.email || account.id, {
+    ...body,
     provider: vacationCache.provider,
-    mode: body.mode,
   }));
   if (!answer || !answer.ok) return;
   const current = selectedAccount();
@@ -6891,7 +7103,7 @@ function inboxRuleSummary(rule) {
   if (actions.trash) verbs.push("Trash");
   if (actions.moveToId) verbs.push("Move");
   if (Array.isArray(actions.addLabelIds) && actions.addLabelIds.length) verbs.push("Label");
-  const left = parts.join(", ") || "Match";
+  const left = parts.join(", ") || "All new Inbox mail";
   const right = verbs.join(", ") || "No action";
   const name = String(rule.name || "").trim();
   const line = name ? name + " — " + left + " → " + right : left + " → " + right;
@@ -6903,6 +7115,9 @@ function inboxRuleSummary(rule) {
 let inboxRulesState = { api: false, backend: "", rules: [], destinations: [], reason: "", message: "" };
 let inboxRuleEditId = "";
 let inboxRulesBusy = false;
+let inboxRulesAccountId = "";
+let inboxRulesGen = 0;
+let inboxRuleBaseline = "";
 
 function brainPaneIds() {
   return [
@@ -7051,6 +7266,7 @@ function clearInboxRuleForm() {
   $("inbox-rule-move").value = "";
   $("inbox-rule-label").value = "";
   paintInboxRuleForm();
+  inboxRuleBaseline = JSON.stringify(inboxRuleFieldsFromForm());
 }
 
 function paintInboxRuleForm() {
@@ -7073,10 +7289,22 @@ function paintInboxRuleForm() {
 
 function paintInboxRules() {
   const data = inboxRulesState || {};
+  const picker = $("inbox-rules-account");
+  picker.replaceChildren();
+  for (const account of state.accounts) picker.appendChild(option(account.id, accountLabel(account)));
+  picker.value = inboxRulesAccountId;
+  picker.disabled = inboxRulesBusy;
+  const owner = state.accounts.find((row) => row.id === inboxRulesAccountId);
+  $("inbox-rules-owner").textContent = owner ? accountLabel(owner) + " · " + (data.backend === "imap"
+    ? "Local rules apply to newly downloaded Inbox mail while Morrow is open."
+    : data.backend ? "Rules run on the " + (data.backend === "gmail" ? "Gmail" : "Microsoft") + " server." : "Loading rules…") : "Connect a mailbox to manage its rules.";
   const note = $("inbox-rules-note");
   if (note && data.message) note.textContent = data.message;
-  fillInboxRuleSelect("inbox-rule-move", data.destinations, "Do not move");
-  fillInboxRuleSelect("inbox-rule-label", data.destinations, "No extra label");
+  const dirty = inboxRuleBaseline && JSON.stringify(inboxRuleFieldsFromForm()) !== inboxRuleBaseline;
+  if (!dirty) {
+    fillInboxRuleSelect("inbox-rule-move", data.destinations, "Do not move");
+    fillInboxRuleSelect("inbox-rule-label", data.destinations, "No extra label");
+  }
   const root = $("inbox-rules-list");
   root.replaceChildren();
   const rows = Array.isArray(data.rules) ? data.rules : [];
@@ -7144,69 +7372,100 @@ function startInboxRuleEdit(row) {
   }
   $("inbox-rule-save").textContent = "Save rule";
   $("inbox-rule-cancel").hidden = false;
+  inboxRuleBaseline = JSON.stringify(inboxRuleFieldsFromForm());
+}
+
+function inboxRuleAccount() {
+  return state.accounts.find((row) => row.id === inboxRulesAccountId && row.id === inboxRulesState.accountId) || null;
+}
+
+function setInboxRulesBusy(value) {
+  inboxRulesBusy = value;
+  $("inbox-rules-account").disabled = value;
+  for (const node of $("inbox-rule-form").querySelectorAll("input, select, button")) node.disabled = value;
+}
+
+async function changeInboxRulesAccount(id) {
+  if (inboxRulesBusy || id === inboxRulesAccountId) return;
+  if (inboxRuleBaseline && JSON.stringify(inboxRuleFieldsFromForm()) !== inboxRuleBaseline) {
+    const answer = await askConfirm({ title: "Change rules mailbox?", body: "Discard unsaved rule edits before switching mailboxes?", confirm: "Discard edits", cancel: "Keep editing" });
+    if (!answer || !answer.ok) { $("inbox-rules-account").value = inboxRulesAccountId; return; }
+  }
+  inboxRulesAccountId = id;
+  clearInboxRuleForm();
+  await loadInboxRules();
 }
 
 async function loadInboxRules() {
-  const account = selectedAccount();
-  if (!account) {
-    inboxRulesState = {
-      api: false,
-      backend: "",
-      reason: "no_account",
-      message: "Connect an account to add inbox rules.",
-      rules: [],
-      destinations: [],
-    };
-    paintInboxRules();
-    return;
-  }
-  const data = await call("mail:listInboxRules", { accountId: account.id });
-  inboxRulesState = data || inboxRulesState;
+  const gen = ++inboxRulesGen;
+  if (!inboxRulesAccountId) inboxRulesAccountId = state.accountId || "";
+  const account = state.accounts.find((row) => row.id === inboxRulesAccountId);
+  const previous = inboxRulesState.accountId === (account && account.id) ? inboxRulesState : {};
+  inboxRulesState = { backend: "", rules: [], destinations: [], ...previous, accountId: account && account.id, api: false,
+    message: account ? "Loading rules…" : "Connect an account to add inbox rules." };
   paintInboxRules();
+  if (!account) return;
+  const data = await call("mail:listInboxRules", { accountId: account.id });
+  if (gen !== inboxRulesGen || account.id !== inboxRulesAccountId) return;
+  if (!data || data.accountId !== account.id) throw new Error("Rules did not match the selected mailbox. Reload before editing.");
+  inboxRulesState = data;
+  paintInboxRules();
+  if (!inboxRuleBaseline) inboxRuleBaseline = JSON.stringify(inboxRuleFieldsFromForm());
 }
 
 async function submitInboxRule(event) {
   event.preventDefault();
   if (inboxRulesBusy) return;
-  const account = selectedAccount();
-  if (!account) {
-    showInboxRuleStatus("Connect an account to add inbox rules.", true);
-    return;
-  }
-  const draft = readInboxRuleForm(inboxRuleFieldsFromForm(), inboxRulesState && inboxRulesState.backend);
+  const account = inboxRuleAccount();
+  if (!account || !inboxRulesState.api) { showInboxRuleStatus("Load rules for a connected mailbox before saving.", true); return; }
+  const backend = inboxRulesState.backend;
+  const draft = readInboxRuleForm(inboxRuleFieldsFromForm(), backend);
   if (inboxRuleEditId) draft.id = inboxRuleEditId;
-  inboxRulesBusy = true;
-  showInboxRuleStatus("Saving…", false);
+  setInboxRulesBusy(true);
   try {
+    const actions = draft.actions || {};
+    if (actions.trash || actions.archive || actions.moveToId || !Object.values(draft.match || {}).some((value) => value !== "" && value != null)) {
+      const answer = await askConfirm({ title: "Save rule for " + accountLabel(account) + "?", body: inboxRuleSummary(draft)
+        + (actions.moveToId ? " Destination: " + ((inboxRulesState.destinations || []).find((row) => row.id === actions.moveToId)?.name || "selected folder") + "." : "")
+        + (backend === "imap" ? " This local rule applies only to newly downloaded Inbox mail while Morrow is open." : " This rule runs on your mail provider."), confirm: "Save rule", cancel: "Cancel" });
+      if (!answer || !answer.ok) return;
+    }
+    if (inboxRuleAccount()?.id !== account.id || inboxRulesState.backend !== backend) throw new Error("The rules mailbox changed. Review the rule again.");
+    showInboxRuleStatus("Saving…", false);
     await call("mail:saveInboxRule", { accountId: account.id, rule: draft });
+    if (inboxRulesAccountId !== account.id) return;
     clearInboxRuleForm();
-    showInboxRuleStatus("Saved.", false);
     await loadInboxRules();
-  } catch (error) {
-    showInboxRuleStatus(error instanceof Error ? error.message : String(error), true);
-    try { await loadInboxRules(); } catch { /* keep the save error */ }
-  } finally {
-    inboxRulesBusy = false;
-  }
+    showInboxRuleStatus(backend === "imap" ? "Local rule saved for " + accountLabel(account) + ". It applies to newly downloaded Inbox mail while Morrow is open."
+      : "Rule saved on " + (backend === "gmail" ? "Gmail" : "Microsoft") + " for " + accountLabel(account) + ".", false);
+  } catch (error) { showInboxRuleStatus(error.message || String(error), true); }
+  finally { setInboxRulesBusy(false); }
 }
 
 async function deleteInboxRule(id) {
-  const account = selectedAccount();
-  if (!account || !id) return;
-  if (!window.confirm("Delete this inbox rule?")) return;
-  await call("mail:deleteInboxRule", { accountId: account.id, ruleId: id });
-  if (inboxRuleEditId === id) clearInboxRuleForm();
-  showInboxRuleStatus("Deleted.", false);
-  await loadInboxRules();
+  const account = inboxRuleAccount();
+  const rule = (inboxRulesState.rules || []).find((row) => row.id === id);
+  if (!account || !rule || inboxRulesBusy) return;
+  if (!window.confirm("Delete “" + (rule.name || inboxRuleSummary(rule)) + "” for " + accountLabel(account) + "?")) return;
+  setInboxRulesBusy(true);
+  try {
+    await call("mail:deleteInboxRule", { accountId: account.id, ruleId: id });
+    if (inboxRuleEditId === id) clearInboxRuleForm();
+    await loadInboxRules();
+    showInboxRuleStatus("Rule deleted for " + accountLabel(account) + ".", false);
+  } finally { setInboxRulesBusy(false); }
 }
 
 async function grantInboxRules() {
-  const account = selectedAccount();
-  if (!account) throw new Error("Connect an account to add inbox rules.");
-  showInboxRuleStatus("Waiting for the browser…", false);
-  await call("mail:grantRules", { accountId: account.id });
-  showInboxRuleStatus("Granted.", false);
-  await loadInboxRules();
+  const account = inboxRuleAccount();
+  if (!account || inboxRulesBusy) throw new Error("Choose a connected rules mailbox.");
+  setInboxRulesBusy(true);
+  try {
+    showInboxRuleStatus("Waiting for the browser for " + accountLabel(account) + "…", false);
+    await call("mail:grantRules", { accountId: account.id });
+    await loadInboxRules();
+    showInboxRuleStatus("Granted for " + accountLabel(account) + ".", false);
+  } finally { setInboxRulesBusy(false); }
 }
 
 function openInboxRules() {
@@ -8624,19 +8883,17 @@ function paintBrainSkills(lists, errorText) {
 async function reviewDraft(draft) {
   const body = String((draft && (draft.body || draft.text)) || "").trim();
   if (!body) throw new Error("That draft is empty.");
-  const email = state.email;
-  const account = email
-    ? (state.accounts.find((item) => item.id === email.accountId) || selectedAccount())
-    : selectedAccount();
-  const self = (account && (account.preferredFromAddress || account.email)) || "";
-  const seed = email && email.id
-    ? composeSeed(email, "reply", self)
-    : {
-      title: "New message",
-      to: (draft && draft.to) || "",
-      subject: (draft && draft.subject) || "",
-      body: "",
-    };
+  const messageId = draft && draft.messageId;
+  if (!messageId) throw new Error("This proposal has no source message. Open the intended message and request a new draft.");
+  const data = await call("mail:openEmail", { emailId: messageId });
+  const email = data && data.email;
+  if (!email || email.id !== messageId || !email.accountId || (draft.accountId && draft.accountId !== email.accountId)) {
+    throw new Error("The proposal's source message or account is unavailable. Open the intended message and request a new draft.");
+  }
+  const account = state.accounts.find((item) => item.id === email.accountId);
+  if (!account) throw new Error("The proposal's mailbox is no longer connected. Reconnect it before reviewing this reply.");
+  const self = account.preferredFromAddress || account.email || "";
+  const seed = composeSeed(email, "reply", self);
   await openCompose(withSuggestion(seed, body));
 }
 
@@ -9083,6 +9340,7 @@ function startAgentPoll() {
 function markRail(view) {
   state.view = view;
   state.side = view === "mail" ? "folders" : view;
+  paintSyncControl();
   const workspace = document.querySelector(".workspace");
   if (workspace) workspace.dataset.view = view;
   const shell = $("shell");
@@ -9406,8 +9664,8 @@ async function loadOauthStatus() {
     state.oauthStatus = null;
   }
   const google = oauthButtonState(state.oauthStatus, "google");
-  $("oauth-google").disabled = google.disabled;
   $("oauth-google").title = google.reason;
+  paintConnectPending();
 }
 
 function setBotStatus(text, isError) {
@@ -9420,10 +9678,17 @@ function setBotStatus(text, isError) {
 function clearBotSecret() {
   const value = $("bot-secret-value");
   if (value) value.textContent = "";
+  $("bot-secret-status").textContent = "";
+}
+
+function setBotSecretStatus(text, isError) {
+  $("bot-secret-status").textContent = text;
+  $("bot-secret-status").classList.toggle("error", !!isError);
 }
 
 function showBotSecret(secret) {
   $("bot-secret-value").textContent = secret || "";
+  setBotSecretStatus("Copy now, then close this dialog to enable or verify the listener.");
   openDialog("bot-secret");
 }
 
@@ -9477,7 +9742,7 @@ function paintBotAccounts(accounts) {
   if (!accounts.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = "Connect an account before minting a grant.";
+    empty.textContent = "Connect an account before creating a grant.";
     box.append(empty);
     return;
   }
@@ -9493,6 +9758,21 @@ function paintBotAccounts(accounts) {
   }
 }
 
+function botPermissionNames(capabilities) {
+  const names = { "accounts.read": "account details", "mail.headers.read": "cached mail headers",
+    "health.read": "sync health", "agent.proposals.read": "Agent proposals", "mail.bodies.read": "message text",
+    "mail.attachments.read": "attachment names", "draft.proposals.create": "draft proposals" };
+  return (capabilities || []).map((cap) => names[cap] || cap).join(", ");
+}
+
+function botListenerStatus(access) {
+  const listen = (access && access.listen) || {};
+  if (listen.listening) return `Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}. Client connectivity is shown by last successful use below.`;
+  if (listen.error === "port_in_use") return "Could not start the bridge: port 47831 is in use. This bridge is not listening.";
+  if (listen.error) return "The bridge could not start. " + listen.error;
+  return "The bridge is not listening.";
+}
+
 function paintBotGrants(grants) {
   const list = $("bot-grants");
   list.replaceChildren();
@@ -9506,26 +9786,35 @@ function paintBotGrants(grants) {
     const item = document.createElement("li");
     item.className = "bot-grant";
     const title = document.createElement("p");
-    const when = grant.revokedAt ? "revoked" : (grant.expired ? "expired" : "live");
-    title.textContent = `${grant.label} · ${grant.keyId} · ${when}`;
+    const when = grant.revokedAt ? "revoked" : (grant.expired ? "expired" : "access valid");
+    title.textContent = `${grant.label} · ${when}`;
     const meta = document.createElement("p");
     meta.className = "hint";
-    meta.textContent = `${(grant.accountIds || []).join(", ")} · ${(grant.capabilities || []).join(", ")} · until ${grant.expiresAt}`;
+    const accounts = (state.botAccess && state.botAccess.accounts) || [];
+    const names = (grant.accountIds || []).map((id) => {
+      const account = accounts.find((row) => row.accountId === id);
+      return account ? account.email || account.displayName : "Disconnected mailbox";
+    });
+    meta.textContent = `${names.join(", ")} · ${botPermissionNames(grant.capabilities)} · Expires ${new Date(grant.expiresAt).toLocaleString()}`;
     const used = document.createElement("p");
     used.className = "hint";
     used.textContent = grant.lastUsedAt
-      ? `Last used ${grant.lastUsedAt}. ${grant.bytesToday} bytes today.`
-      : "Not used yet.";
+      ? `Last successful use ${new Date(grant.lastUsedAt).toLocaleString()}. ${grant.bytesToday || 0} bytes today.`
+      : "No successful client use recorded.";
     const row = document.createElement("div");
     row.className = "row";
     const rotate = document.createElement("button");
     rotate.type = "button";
     rotate.className = "ghost icon-label";
     rotate.append(botIcon("refresh"), document.createElement("span"));
-    rotate.lastChild.textContent = "Rotate";
+    rotate.lastChild.textContent = "Replace secret…";
+    rotate.title = "The current secret will stop working immediately.";
     rotate.disabled = !!grant.revokedAt || !!grant.expired;
     rotate.addEventListener("click", () => {
       botGuard(async () => {
+        const answer = await askConfirm({ title: "Replace secret for " + grant.label + "?",
+          body: "The current secret will stop working immediately. Copy the replacement once and update your client’s private credential file.", confirm: "Replace secret", cancel: "Cancel" });
+        if (!answer || !answer.ok) return;
         const rotated = await call("bot:rotateGrant", { clientId: grant.clientId });
         showBotSecret(rotated.secret);
         paintBotAccess(rotated.access);
@@ -9541,7 +9830,7 @@ function paintBotGrants(grants) {
     revoke.addEventListener("click", () => {
       botGuard(async () => {
         paintBotAccess(await call("bot:revokeGrant", { clientId: grant.clientId }));
-        setBotStatus("Grant revoked.");
+        setBotStatus(`Access revoked for ${grant.label}. Other grants are unchanged.`);
       });
     });
     row.append(rotate, revoke);
@@ -9604,15 +9893,11 @@ function paintBotDrafts(rows) {
 
 function paintBotAccess(data) {
   const access = data || {};
-  const listen = access.listen || {};
-  const listenLine = $("bot-listen");
-  if (listen.listening) {
-    listenLine.textContent = `Listening on ${listen.address}:${listen.port}. Sending stays in Morrow.`;
-  } else if (listen.error === "port_in_use") {
-    listenLine.textContent = "The bridge is off. Port 47831 is already in use on this computer.";
-  } else {
-    listenLine.textContent = "The bridge is not listening.";
-  }
+  state.botAccess = access;
+  $("bot-listen").textContent = botListenerStatus(access);
+  $("bot-intent").textContent = access.enabled ? "Configured intent: enabled." : "Configured intent: disabled.";
+  $("bot-retry").hidden = !access.enabled || !!(access.listen && access.listen.listening);
+  $("bot-review-link").textContent = "Review draft proposals (" + ((access.drafts || []).length) + ")";
   $("bot-install").textContent = access.installationId
     ? `Installation ${access.installationId}`
     : "The installation id is created with the first grant.";
@@ -9621,6 +9906,7 @@ function paintBotAccess(data) {
   const enabled = $("bot-enabled");
   enabled.checked = access.enabled === true;
   enabled.disabled = access.enabled !== true && !live;
+  $("bot-enable-help").textContent = live ? "After copying your secret, enable the listener and verify its status." : "Create an unexpired grant before enabling the bridge.";
   $("bot-serve-host").value = access.serveHost || "";
   paintBotAccounts(access.accounts || []);
   paintBotGrants(grants);
@@ -9677,12 +9963,23 @@ function selectedBotCaps() {
 }
 
 function wireBot() {
+  $("bot-review-link").addEventListener("click", () => { $("bot-draft-heading").scrollIntoView({ block: "start" }); $("bot-draft-heading").focus(); });
+  $("bot-verify").addEventListener("click", () => botGuard(async () => {
+    const access = await loadBotAccess();
+    setBotStatus(botListenerStatus(access), !!(access.listen && access.listen.error));
+  }));
+  $("bot-retry").addEventListener("click", () => botGuard(async () => {
+    const access = await call("bot:setEnabled", { enabled: true });
+    paintBotAccess(access);
+    setBotStatus(botListenerStatus(access), !(access.listen && access.listen.listening));
+  }));
   $("bot-enabled").addEventListener("change", () => {
     const want = $("bot-enabled").checked === true;
     botGuard(async () => {
       try {
-        paintBotAccess(await call("bot:setEnabled", { enabled: want }));
-        setBotStatus(want ? "Bridge enabled on 127.0.0.1." : "Bridge disabled.");
+        const access = await call("bot:setEnabled", { enabled: want });
+        paintBotAccess(access);
+        setBotStatus(want ? botListenerStatus(access) : "Bridge disabled. Existing grants were not revoked.", want && !(access.listen && access.listen.listening));
       } catch (error) {
         await loadBotAccess().catch(() => {});
         throw error;
@@ -9692,7 +9989,7 @@ function wireBot() {
   $("bot-serve-save").addEventListener("click", () => {
     botGuard(async () => {
       paintBotAccess(await call("bot:setServeHost", { serveHost: $("bot-serve-host").value }));
-      setBotStatus("Serve host saved.");
+      setBotStatus("Allowed Serve host saved. This does not configure Tailscale Serve.");
     });
   });
   $("bot-mint").addEventListener("submit", (event) => {
@@ -9707,19 +10004,20 @@ function wireBot() {
       showBotSecret(minted.secret);
       paintBotAccess(minted.access);
       $("bot-label").value = "";
-      setBotStatus("Grant minted. Copy the secret now. The bridge stays off until you enable it.");
+      const access = minted.access || {};
+      setBotStatus("Grant created. " + (access.listen && access.listen.listening ? "The bridge is already listening." : access.enabled ? "Enable is configured, but the bridge is not listening." : "The bridge is still off."));
     });
   });
   $("bot-secret-copy").addEventListener("click", () => {
     const value = $("bot-secret-value").textContent;
     if (!value || !navigator.clipboard) {
-      setBotStatus("Copy the secret from the dialog.", true);
+      setBotSecretStatus("Could not copy. Select and copy the secret here before closing.", true);
       return;
     }
     navigator.clipboard.writeText(value).then(() => {
-      setBotStatus("Secret copied.");
+      setBotSecretStatus("Copied. Close this dialog, then enable or verify the listener.");
     }).catch(() => {
-      setBotStatus("Copy the secret from the dialog.", true);
+      setBotSecretStatus("Could not copy. Select and copy the secret here before closing.", true);
     });
   });
   $("bot-secret-close").addEventListener("click", () => closeDialog("bot-secret"));
@@ -9730,6 +10028,7 @@ function wireBot() {
 }
 
 function wire() {
+  $("inbox-rules-account").addEventListener("change", () => changeInboxRulesAccount($("inbox-rules-account").value).catch((error) => showInboxRuleStatus(error.message, true)));
   document.addEventListener("keydown", onShellKey);
   wireBot();
   document.addEventListener("keydown", onSelectionKey);
@@ -9739,12 +10038,17 @@ function wire() {
   if (motion) motion.bindChrome(document);
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "compose-close-review") return;
       if (dialog.id === "connect") {
         event.preventDefault();
         dismissConnect();
         return;
       }
-      if (dialog.id === "compose" && !dismissCompose("cancel")) return;
+      if (dialog.id === "compose") {
+        event.preventDefault();
+        requestComposeClose();
+        return;
+      }
       const apiMotion = motionApi();
       if (!apiMotion || !apiMotion.wantsCloseMotion()) return;
       event.preventDefault();
@@ -9982,10 +10286,10 @@ function wire() {
   $("connect-close").addEventListener("click", () => dismissConnect());
   $("connect-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    guard(connectImap);
+    connectImap();
   });
-  $("oauth-google").addEventListener("click", () => guard(() => connectOAuth("google")));
-  $("oauth-microsoft").addEventListener("click", () => guard(() => connectOAuth("microsoft")));
+  $("oauth-google").addEventListener("click", () => connectOAuth("google"));
+  $("oauth-microsoft").addEventListener("click", () => connectOAuth("microsoft"));
   $("remove").addEventListener("click", () => guard(removeAccount));
   $("compose-open").addEventListener("click", () => {
     openCompose().catch((error) => showStatus(error.message, true));
@@ -9995,7 +10299,7 @@ function wire() {
   $("schedule-preset").addEventListener("change", syncScheduleFields);
   $("compose").addEventListener("close", () => stopDraftWrite());
   $("compose-close").addEventListener("click", () => {
-    if (dismissCompose("close")) closeDialog("compose");
+    requestComposeClose();
   });
   $("ai-generate").addEventListener("click", () => {
     startDraftWrite().catch((error) => showStatus(error.message, true));
@@ -10037,13 +10341,10 @@ async function boot() {
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:syncStatus", (payload) => {
-    state.sync = payload || null;
+    rememberSyncStatus(payload);
     paintSyncControl();
     pushDebug("sync", syncDetail(payload) || syncStatusLabel(payload));
-    if (state.query) return;
-    const label = syncStatusLabel(payload);
-    if (!label) return;
-    showStatus(label, !!(payload && payload.state === "error"));
+    // Background sync updates its own control; action receipts stay readable.
   });
   api.on("mail:translate:event", onTranslateEvent);
   api.on("aiDraftWrite:event", onDraftEvent);
@@ -10064,7 +10365,7 @@ async function boot() {
   }
   await loadLook();
   try {
-    state.sync = await call("mail:getSyncStatus");
+    rememberSyncStatus(await call("mail:getSyncStatus"));
     paintSyncControl();
   } catch { /* the button stays on Sync until the next status */ }
   await loadPresets();

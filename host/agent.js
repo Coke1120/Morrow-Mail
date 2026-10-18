@@ -444,6 +444,7 @@ function normalizeSkillResult(skill, parsed, ctx) {
     if (!body) return null;
     return {
       messageId,
+      accountId: ((ctx.messages || []).find((message) => message.id === messageId) || {}).accountId || "",
       to: clip(draft && draft.to, 200),
       subject: clip(draft && draft.subject, 200),
       body,
@@ -1100,6 +1101,7 @@ async function draftReply(params) {
       summary: clip(parsed.summary, 400) || "Draft ready for review in compose.",
       drafts: [{
         messageId: selected && selected.id || "",
+        accountId: selected && selected.accountId || "",
         to: clip(parsed.to, 200) || (selected && addressIn(selected.from)) || "",
         subject: clip(parsed.subject, 200) || (selected && selected.subject ? `Re: ${selected.subject}` : ""),
         body,

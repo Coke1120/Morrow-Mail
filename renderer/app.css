@@ -527,6 +527,9 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
   gap: 8px;
 }
 #settings-bot label { display: grid; gap: 4px; font-size: 13px; }
+#settings-bot label.check { display: flex; align-items: center; gap: 8px; }
+#settings-bot label.check input { flex: 0 0 auto; width: auto; margin: 0; }
+#bot-secret-status.error, #compose-status.error, #connect-status.error { color: var(--danger); }
 #settings-bot fieldset {
   margin: 0;
   border: 1px solid var(--line);
@@ -2443,3 +2446,12 @@ textarea { min-height: 140px; resize: vertical; }
   .split { display: none; }
   #notice { left: 50%; }
 }
+
+#search-scope { display: grid; gap: 6px; margin: 6px 0; }
+#search-scope[hidden] { display: none; }
+#list-coverage { margin: 4px 0; }
+#filter-chip { margin: 4px 0; white-space: normal; text-align: left; }
+
+#compose-close-review { padding: 22px; width: min(560px, calc(100vw - 32px)); }
+#compose-close-review .row { flex-wrap: wrap; }
+#compose-status { margin: 8px 0; }
