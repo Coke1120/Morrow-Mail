@@ -15,6 +15,8 @@ const DEFAULTS = {
   sidebarOutlookFoldersExpanded: false,
   composeQuoteWidth: 420,
   brainCompose: { ccByDomain: {}, accounts: {} },
+  syncHorizonDays: 180, // 0 means all available history.
+  compactMessageList: false,
 };
 
 const GET = {
@@ -30,6 +32,8 @@ const GET = {
   "morrow:configGetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
   "morrow:configGetComposeQuoteWidth": "composeQuoteWidth",
   "emailBrain:getComposeSettings": "brainCompose",
+  "morrow:configGetSyncHorizonDays": "syncHorizonDays",
+  "morrow:configGetCompactMessageList": "compactMessageList",
 };
 
 const SET = {
@@ -45,6 +49,8 @@ const SET = {
   "morrow:configSetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
   "morrow:configSetComposeQuoteWidth": "composeQuoteWidth",
   "emailBrain:saveComposeSettings": "brainCompose",
+  "morrow:configSetSyncHorizonDays": "syncHorizonDays",
+  "morrow:configSetCompactMessageList": "compactMessageList",
 };
 
 const BOOLS = new Set([
@@ -55,6 +61,7 @@ const BOOLS = new Set([
   "showFolderChips",
   "sidebarGmailFoldersExpanded",
   "sidebarOutlookFoldersExpanded",
+  "compactMessageList",
 ]);
 
 function storePath() {
@@ -66,6 +73,7 @@ function reject(key) {
   if (key === "accent") throw new Error("Accent must be a #RRGGBB color");
   if (key === "undoSendDelaySeconds") throw new Error("Undo send delay must be 0 to 30 seconds");
   if (key === "composeQuoteWidth") throw new Error("Quote pane width must be 220 to 720");
+  if (key === "syncHorizonDays") throw new Error("Sync history must be 180 days, 365 days, or All");
   throw new Error("Expected on or off");
 }
 
@@ -85,6 +93,8 @@ function cast(key, value, loose) {
     if (Number.isInteger(value) && value >= 0 && value <= 30) return value;
   } else if (key === "composeQuoteWidth") {
     if (Number.isInteger(value) && value >= 220 && value <= 720) return value;
+  } else if (key === "syncHorizonDays") {
+    if ([0, 180, 365].includes(value)) return value;
   } else if (BOOLS.has(key) && typeof value === "boolean") {
     return value;
   }
@@ -126,4 +136,8 @@ function answer(channel, args) {
   return store[setKey];
 }
 
-module.exports = { answer };
+function syncHorizonDays() {
+  return readStore().syncHorizonDays;
+}
+
+module.exports = { answer, syncHorizonDays };

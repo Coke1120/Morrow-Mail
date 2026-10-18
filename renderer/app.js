@@ -7,6 +7,11 @@ const state = {
   reconnectAccountId: null,
   folderId: null,
   emails: [],
+  listOffset: 0,
+  listTotal: 0,
+  listSyncDone: true,
+  listLoading: false,
+  listScope: "",
   email: null,
   thread: [],
   query: "",
@@ -41,6 +46,8 @@ const state = {
     undoSend: 5,
     snooze: true,
     quoteWidth: 420,
+    syncHorizon: 180,
+    compactList: false,
   },
   providerFolders: null,
   dragMessage: null,
@@ -63,6 +70,7 @@ const state = {
 
 let accountGen = 0;
 let listGen = 0;
+const LIST_PAGE_SIZE = 200;
 let openGen = 0;
 let reloadTimer = null;
 let undoOpIds = null;
@@ -3378,7 +3386,7 @@ function paintSearchCoverage(shown) {
   const account = state.accounts.find((row) => row.id === state.searchAccountId);
   $("list-coverage").textContent = state.query
     ? `Search downloaded mail · ${account ? accountLabel(account) : "All connected accounts"} · ${state.emails.length} returned (up to 100) · ${shown.length} shown`
-    : `${shown.length} shown of ${state.emails.length} loaded (up to 500)`;
+    : `${shown.length} shown of ${state.emails.length} on this page`;
   const chip = $("filter-chip");
   chip.hidden = !filter;
   chip.textContent = "Filter: " + filter + " × Clear filter";
@@ -3420,8 +3428,10 @@ async function reviewedRemoval(messages, kind) {
 
 function renderList() {
   paintSyncControl();
+  paintListPaging();
   rememberLoadedSelection();
   const list = $("messages");
+  list.classList.toggle("compact-list", state.prefs.compactList === true);
   const head = $("list-head");
   const account = selectedAccount();
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
@@ -3494,7 +3504,7 @@ function renderList() {
       previous = row;
     }
   }
-  const motionKey = [state.accountId || "", state.folderId || "", state.query].join("\0");
+  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset].join("\0");
   if (motionKey !== listMotionKey) {
     listMotionKey = motionKey;
     const motion = motionApi();
@@ -4391,32 +4401,83 @@ function rememberSelection(preferredId) {
   }
 }
 
-async function loadList(fromNetwork) {
+function paintListPaging() {
+  const pager = $("list-paging");
+  if (!pager) return;
+  pager.hidden = !!state.query || !state.accountId || !state.folderId;
+  const end = state.listOffset + state.emails.length;
+  $("list-prev").disabled = state.listLoading || state.listOffset === 0;
+  $("list-next").disabled = state.listLoading || end >= state.listTotal;
+  $("list-sync-more").hidden = state.listSyncDone || isStarredFolder(state.folderId);
+  $("list-sync-more").disabled = state.listLoading;
+  $("list-page-status").textContent = state.listLoading ? "Loading messages…"
+    : (state.emails.length ? `${state.listOffset + 1}–${end} of ${state.listTotal} downloaded`
+      : "0 downloaded") + (state.listSyncDone ? "" : " · More history to sync");
+}
+
+async function changeListPage(direction) {
+  if (state.listLoading || state.query) return;
+  const offset = Math.max(0, state.listOffset + direction * LIST_PAGE_SIZE);
+  if (direction > 0 && offset >= state.listTotal) return;
+  const data = await loadList(false, offset);
+  if (data) {
+    state.selectedIds = [];
+    state.selectionAnchor = "";
+    renderList();
+    $("messages").scrollTop = 0;
+  }
+}
+
+async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
-  if (state.query) {
-    const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
+  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.searchAccountId]);
+  if (state.listScope !== scope) {
+    state.listScope = scope;
+    state.listOffset = 0;
+    state.listTotal = 0;
+  }
+  state.listLoading = true;
+  paintListPaging();
+  try {
+    if (state.query) {
+      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
+      if (gen !== listGen) return null;
+      state.emails = Array.isArray(data) ? data : [];
+      renderList();
+      return null;
+    }
+    const account = selectedAccount();
+    if (!account || !state.folderId) {
+      state.emails = [];
+      renderList();
+      return null;
+    }
+    const channel = fromNetwork && isLive(account) ? "mail:listFromNetwork" : "mail:listFromCache";
+    let offset = requestedOffset == null ? state.listOffset : requestedOffset;
+    const params = {
+      accountId: account.id,
+      folderId: state.folderId,
+      limit: LIST_PAGE_SIZE,
+      offset,
+    };
+    let data = await call(channel, params);
     if (gen !== listGen) return null;
-    state.emails = Array.isArray(data) ? data : [];
+    // Deleting the last page or provider changes can shrink the cached list.
+    if (offset > 0 && Number.isFinite(data?.total) && offset >= data.total) {
+      offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
+      data = await call("mail:listFromCache", { ...params, offset });
+      if (gen !== listGen) return null;
+    }
+    state.listOffset = offset;
+    state.emails = (data && data.emails) || [];
+    state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
+    state.listSyncDone = data?.initialSyncDone !== false;
+    if (data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
     renderList();
-    return null;
+    return data;
+  } finally {
+    if (gen === listGen) { state.listLoading = false; paintListPaging(); }
   }
-  const account = selectedAccount();
-  if (!account || !state.folderId) {
-    state.emails = [];
-    renderList();
-    return null;
-  }
-  const channel = fromNetwork && isLive(account) ? "mail:listFromNetwork" : "mail:listFromCache";
-  const data = await call(channel, {
-    accountId: account.id,
-    folderId: state.folderId,
-    limit: 500,
-  });
-  if (gen !== listGen) return data;
-  state.emails = (data && data.emails) || [];
-  if (data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
-  renderList();
-  return data;
 }
 
 async function loadAccounts(preferredId) {
@@ -5815,6 +5876,7 @@ function wireOrganize() {
 
 async function selectFolder(accountId, folderId) {
   const previous = state.accountId;
+  state.listScope = "";
   state.accountId = accountId;
   state.folderId = folderId;
   state.query = "";
@@ -7040,7 +7102,8 @@ async function refresh() {
     const data = await call("mail:listFromNetwork", {
       accountId: account.id,
       folderId: state.folderId,
-      limit: 500,
+      limit: LIST_PAGE_SIZE,
+      offset: state.listOffset,
     });
     if (data && data.sync) rememberSyncStatus(data.sync);
     await loadAccounts();
@@ -7340,6 +7403,7 @@ function sendDelayMs(seconds) {
 }
 
 const SHELL_PREFS = {
+  "morrow:configGetCompactMessageList": "compactList",
   "morrow:configGetShowFolderChips": "chips",
   "morrow:configGetAiWriteAutoOpenOnReply": "aiReply",
   "morrow:configGetSidebarGmailFoldersExpanded": "gmailOpen",
@@ -7379,6 +7443,7 @@ async function loadShellPrefs() {
     }
     next.undoSend = sendDelayMs(await api.invoke("morrow:configGetUndoSendDelaySeconds")) / 1000;
     next.quoteWidth = quoteWidthPref(await api.invoke("morrow:configGetComposeQuoteWidth"));
+    next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
@@ -7423,6 +7488,10 @@ function takePref(getChannel, kind, control) {
     state.prefs.undoSend = sendDelayMs(readPref(kind, control)) / 1000;
     return true;
   }
+  if (getChannel === "morrow:configGetSyncHorizonDays") {
+    state.prefs.syncHorizon = readPref(kind, control);
+    return false; // The sync policy is read on the next host sync.
+  }
   return false;
 }
 
@@ -7457,6 +7526,8 @@ function prefRows() {
     ["pref-conversation", "morrow:configGetConversationViewEnabled", "morrow:configSetConversationViewEnabled", "bool"],
     ["pref-images", "morrow:configGetAutoLoadRemoteImages", "morrow:configSetAutoLoadRemoteImages", "bool"],
     ["pref-undo", "morrow:configGetUndoSendDelaySeconds", "morrow:configSetUndoSendDelaySeconds", "seconds"],
+    ["pref-sync-horizon", "morrow:configGetSyncHorizonDays", "morrow:configSetSyncHorizonDays", "days"],
+    ["pref-compact-list", "morrow:configGetCompactMessageList", "morrow:configSetCompactMessageList", "bool"],
     ["pref-snooze", "morrow:configGetSnoozeEffective", "morrow:configSetSnoozeEffective", "bool"],
     ["pref-ai-reply", "morrow:configGetAiWriteAutoOpenOnReply", "morrow:configSetAiWriteAutoOpenOnReply", "bool"],
     ["pref-folder-chips", "morrow:configGetShowFolderChips", "morrow:configSetShowFolderChips", "bool"],
@@ -7467,7 +7538,7 @@ function prefRows() {
 
 function readPref(kind, control) {
   if (kind === "bool") return control.checked === true;
-  if (kind === "seconds") {
+  if (kind === "seconds" || kind === "days") {
     const raw = String(control.value).trim();
     if (!/^-?\d+$/.test(raw)) return raw;
     return Number(raw);
@@ -7488,9 +7559,10 @@ async function loadSettings() {
   status.textContent = "";
   status.classList.remove("error");
   // Boot and preference writes already maintain this snapshot. Opening a dialog
-  // must not repeat ten IPC reads or load the closed provider/AI/Bot folds.
+  // must not repeat preference IPC reads or load closed provider/AI/Bot tabs.
   const keys = { ...SHELL_PREFS, ...READER_PREFS, "config:getTheme": "theme",
-    "morrow:configGetAccent": "accent", "morrow:configGetUndoSendDelaySeconds": "undoSend" };
+    "morrow:configGetAccent": "accent", "morrow:configGetUndoSendDelaySeconds": "undoSend",
+    "morrow:configGetSyncHorizonDays": "syncHorizon" };
   for (const [id, channel, , kind] of prefRows()) {
     applyPref(kind, $(id), state.prefs[keys[channel]]);
   }
@@ -7513,8 +7585,8 @@ function loadSettingsFold(name) {
     if (!$("settings").open || !fold.classList.contains("is-open") || key !== settingsFoldKey(name)) return;
     panel.inert = true;
     panel.setAttribute("aria-busy", "true");
-    if (name === "prefs") await loadSettings();
-    else if (name === "ai") await loadAiSettings();
+    if (name === "prefs" || name === "mail") await loadSettings();
+    else if (name === "ai") { await loadSettings(); await loadAiSettings(); }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); }
     else if (name === "ooo" && !oooDirty()) await loadVacation();
     else if (name === "bot") await loadBotAccess();
@@ -7807,6 +7879,10 @@ async function savePref(row) {
     status.textContent = "";
     status.classList.remove("error");
     if (takePref(getChannel, kind, $(id))) paintPrefs();
+    if (id === "pref-sync-horizon") {
+      status.textContent = "Sync history saved. It takes effect on the next sync; downloaded mail stays.";
+      await loadList();
+    }
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
     status.classList.add("error");
@@ -7825,9 +7901,8 @@ function settingsFolds() {
 
 function applySettingsFold(fold, open, animate) {
   const panel = fold.querySelector(".fold-panel");
-  const toggle = fold.querySelector(".fold-toggle");
   fold.classList.toggle("is-open", open);
-  if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  fold.hidden = !open;
   const motion = motionApi();
   const live = !!(animate && !$("settings").dataset.motion && motion && typeof motion.fold === "function" && !(typeof motion.reduced === "function" && motion.reduced()));
   if (panel && live) motion.fold(panel, open);
@@ -7838,38 +7913,32 @@ function applySettingsFold(fold, open, animate) {
 }
 
 function setSettingsFold(name, open, animate) {
-  const want = open !== false;
+  // Tab state stays in the DOM for this renderer session, including reopen.
+  if (![...settingsFolds()].some(fold => fold.dataset.fold === name)) return;
   for (const fold of settingsFolds()) {
-    const next = fold.getAttribute("data-fold") === name ? want : false;
+    const next = fold.getAttribute("data-fold") === name;
     if (fold.classList.contains("is-open") === next) continue;
     applySettingsFold(fold, next, animate !== false);
   }
   const nav = $("settings-nav");
   if (!nav) return;
   for (const button of nav.querySelectorAll("[data-fold]")) {
-    button.setAttribute("aria-current", want && button.getAttribute("data-fold") === name ? "true" : "false");
+    const selected = button.getAttribute("data-fold") === name;
+    button.setAttribute("aria-current", String(selected));
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
   }
-  if (want) loadSettingsFold(name);
+  document.querySelector("#settings .settings-account-context").hidden = !["mailbox", "ooo"].includes(name);
+  $("settings").querySelector(".dialog-body").scrollTop = 0;
+  loadSettingsFold(name);
 }
 
 function revealSettingsFold(name) {
   setSettingsFold(name, true, false);
-  const fold = document.querySelector('#settings .fold[data-fold="' + name + '"]');
-  if (fold) fold.scrollIntoView({ block: "start" });
+  $("settings-tab-" + name)?.focus({ preventScroll: true });
 }
 
 function wireSettingsFolds() {
-  const root = document.querySelector("#settings .settings-folds");
-  if (root && root.dataset.wired !== "1") {
-    root.dataset.wired = "1";
-    root.addEventListener("click", (event) => {
-      const toggle = event.target.closest && event.target.closest(".fold-toggle");
-      if (!toggle || !root.contains(toggle)) return;
-      const fold = toggle.closest(".fold");
-      if (!fold) return;
-      setSettingsFold(fold.getAttribute("data-fold"), !fold.classList.contains("is-open"), true);
-    });
-  }
   const nav = $("settings-nav");
   if (!nav || nav.dataset.wired === "1") return;
   nav.dataset.wired = "1";
@@ -7878,8 +7947,16 @@ function wireSettingsFolds() {
     if (!button || !nav.contains(button)) return;
     const name = button.getAttribute("data-fold");
     setSettingsFold(name, true, true);
-    const fold = document.querySelector('#settings .fold[data-fold="' + name + '"]');
-    if (fold) fold.scrollIntoView({ block: "nearest" });
+  });
+  nav.addEventListener("keydown", event => {
+    const tabs = [...nav.querySelectorAll('[role="tab"]')];
+    const current = tabs.indexOf(document.activeElement);
+    if (current < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    setSettingsFold(tabs[next].dataset.fold, true, true);
+    tabs[next].focus({ preventScroll: true });
   });
 }
 
@@ -11454,6 +11531,9 @@ function wire() {
     listFilter.addEventListener("search", () => renderList());
   }
   $("refresh").addEventListener("click", () => guard(refresh));
+  $("list-prev").addEventListener("click", () => guard(() => changeListPage(-1)));
+  $("list-next").addEventListener("click", () => guard(() => changeListPage(1)));
+  $("list-sync-more").addEventListener("click", () => guard(() => loadList(true)));
   $("scheduled-open").addEventListener("click", () => showScheduled());
   $("compose-view-scheduled").addEventListener("click", () => showScheduled());
   $("scheduled-refresh").addEventListener("click", () => loadScheduled());
@@ -11470,8 +11550,6 @@ function wire() {
     showCalendar();
   });
   $("settings-capabilities-refresh").addEventListener("click", loadSettingsCapabilities);
-  $("settings-log").addEventListener("click", async () => { await closeDialog("settings"); showLog(); });
-  $("settings-about").addEventListener("click", openAbout);
   $("about-close").addEventListener("click", () => closeDialog("about-dialog"));
   $("about-update-check").addEventListener("click", checkForUpdates);
   $("about-update-install").addEventListener("click", installUpdate);

@@ -18,6 +18,7 @@ const providerApi = require("./provider-api");
 const idle = require("./idle");
 const debugLog = require("../debug-log");
 const composeIdentity = require("./compose-identity");
+const { syncHorizonDays } = require("../settings");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
 // Not an IMAP mailbox. List queries with this id return starred rows for one account.
@@ -32,10 +33,9 @@ const KEY_TO_WELL = {
 };
 const SNOOZE_MAX_MS = 365 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-// Download bound. Mail older than this stays on the server.
-// A folder records sync_horizon_days when the bound is finished, so raising
-// SYNC_DAYS catches up in place and leaves mail already in mail.sqlite.
-const SYNC_DAYS = 180;
+// A completed folder records its horizon: 0 is unlimited, NULL is unknown.
+// Read Settings once per sync so a mid-flight change cannot mark a shorter
+// download as complete for a larger horizon. Existing cached mail stays.
 const HEADER_BATCH = 100;
 const OUTLOOK_BATCH = 50;
 const REFRESH_PAGES = [20, 30, 30];
@@ -274,44 +274,47 @@ function queryFrom(params) {
   return out;
 }
 
-function windowOpen(folder) {
+function windowOpen(folder, days = syncHorizonDays()) {
   if (!folder || Number(folder.window_done) !== 1) return false;
+  if (folder.sync_horizon_days == null) return false;
   const horizon = Number(folder.sync_horizon_days);
-  return Number.isFinite(horizon) && horizon >= SYNC_DAYS;
+  return Number.isFinite(horizon) && (horizon === 0 || (days !== 0 && horizon >= days));
 }
 
-function serverHasMore(query) {
+function serverHasMore(query, days) {
   const folders = query.folderKey
     ? db.pathsForKey(query.accountId, query.folderKey).map((entry) => db.folderByPath(entry.account_id, entry.path))
     : (query.accountId && query.folderId ? [db.folderByPath(query.accountId, query.folderId)] : []);
-  return folders.some((folder) => folder && !windowOpen(folder));
+  return folders.some((folder) => folder && !windowOpen(folder, days));
 }
 
-function synced(query) {
+function synced(query, days) {
   const folders = query.folderKey
     ? db.pathsForKey(query.accountId, query.folderKey).map((entry) => db.folderByPath(entry.account_id, entry.path))
     : (query.accountId && query.folderId ? [db.folderByPath(query.accountId, query.folderId)] : []);
   if (!folders.length) return true;
-  return folders.every((folder) => windowOpen(folder));
+  return folders.every((folder) => windowOpen(folder, days));
 }
 
 function listPayload(params) {
   const query = queryFrom(params);
   const rows = db.selectMessages(query).map(listRow);
   const total = db.countMessages(query);
-  const offset = Math.max(Number(query.offset) || 0, 0);
+  const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
+  const days = syncHorizonDays();
   const oldest = db.oldestTs(query);
   const moreInCache = offset + rows.length < total;
-  const more = moreInCache || serverHasMore(query);
+  const more = moreInCache || serverHasMore(query, days);
   return {
     emails: rows,
     threads: threadMeta(rows),
     hasMore: more,
     hasMoreBelow: more,
+    hasMoreInCache: moreInCache,
     truncated: false,
     total,
     syncedOldestDateTs: oldest,
-    initialSyncDone: synced(query),
+    initialSyncDone: synced(query, days),
     pageToken: more ? String(oldest || offset) : null,
     geometry: { total, aboveTop: offset },
   };
@@ -501,8 +504,8 @@ function maxUid(uids, floor = 0) {
   return cursor;
 }
 
-function windowStart(now) {
-  return (Number.isFinite(now) ? now : Date.now()) - SYNC_DAYS * DAY_MS;
+function windowStart(days, now = Date.now()) {
+  return days === 0 ? null : now - days * DAY_MS;
 }
 
 function pageDelayMs() {
@@ -571,12 +574,13 @@ function resetWindow(accountId, folderPath, found) {
   if (folder && folder.well_known === "inbox") db.resetInboxRuleWatermarks(accountId);
 }
 
-async function bootstrapFolder(client, account, folderPath, started) {
-  const since = new Date(windowStart());
+async function bootstrapFolder(client, account, folderPath, started, days) {
+  const start = windowStart(days, started);
+  const criteria = start == null ? { all: true } : { since: new Date(start) };
   const size = batchSize(account);
   let pages = 0;
   while (pages < MAX_PAGES && Date.now() - started < TICK_MS) {
-    const found = await remote.searchUids(client, folderPath, { since });
+    const found = await remote.searchUids(client, folderPath, criteria);
     const folder = db.folderByPath(account.id, folderPath);
     if (folder && folder.uid_validity && found.validity && folder.uid_validity !== found.validity) {
       resetWindow(account.id, folderPath, found);
@@ -593,9 +597,9 @@ async function bootstrapFolder(client, account, folderPath, started) {
         exists: found.exists,
         unseen: found.unseen,
         uids: found.uids,
-        retainOlderThan: windowStart(),
+        retainOlderThan: start,
         windowDone: true,
-        horizonDays: SYNC_DAYS,
+        horizonDays: days,
         uidCursor: cursor,
       });
       return { paused: false, bootstrapped: true };
@@ -616,9 +620,9 @@ async function bootstrapFolder(client, account, folderPath, started) {
       exists: found.exists,
       unseen: found.unseen,
       uids: found.uids,
-      retainOlderThan: windowStart(),
+      retainOlderThan: start,
       windowDone: finished,
-      ...(finished ? { horizonDays: SYNC_DAYS } : {}),
+      ...(finished ? { horizonDays: days } : {}),
       uidCursor: finished ? cursor : highest,
     });
     emitFolderSync(account.id, folderPath, true);
@@ -629,12 +633,13 @@ async function bootstrapFolder(client, account, folderPath, started) {
   return { paused: false, bootstrapped: false };
 }
 
-async function warmFolder(client, account, folder, started) {
+async function warmFolder(client, account, folder, started, days) {
   let next = Number(folder.uid_cursor) || 0;
-  const since = new Date(windowStart());
+  const start = windowStart(days, started);
+  const criteria = start == null ? {} : { since: new Date(start) };
   for (let index = 0; index < REFRESH_PAGES.length; index += 1) {
     if (Date.now() - started >= TICK_MS) break;
-    const found = await remote.searchUids(client, folder.path, { uid: `${next + 1}:*`, since });
+    const found = await remote.searchUids(client, folder.path, { uid: `${next + 1}:*`, ...criteria });
     if (folder.uid_validity && found.validity && folder.uid_validity !== found.validity) {
       resetWindow(account.id, folder.path, found);
       noteStorm(account.id);
@@ -675,7 +680,7 @@ async function warmFolder(client, account, folder, started) {
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
     if (fresh.length <= REFRESH_PAGES[index]) break;
   }
-  const live = await remote.searchUids(client, folder.path, { since });
+  const live = await remote.searchUids(client, folder.path, criteria);
   if (folder.uid_validity && live.validity && folder.uid_validity !== live.validity) {
     resetWindow(account.id, folder.path, live);
     noteStorm(account.id);
@@ -688,15 +693,16 @@ async function warmFolder(client, account, folder, started) {
     exists: live.exists,
     unseen: live.unseen,
     uids: live.uids,
-    retainOlderThan: windowStart(),
+    retainOlderThan: start,
     windowDone: true,
-    horizonDays: SYNC_DAYS,
+    horizonDays: days,
     uidCursor: next,
   });
   return { paused: false, bootstrapped: true };
 }
 
 async function syncFolderPolicy(client, account, folderPath) {
+  const days = syncHorizonDays();
   if (!gateOpen(account.id)) {
     emitSync("paused", { accountId: account.id, folderId: folderPath, message: "Paused for rate limit" });
     return { paused: true, bootstrapped: false };
@@ -704,7 +710,7 @@ async function syncFolderPolicy(client, account, folderPath) {
   let phase = "fetching";
   try {
     const known = db.folderByPath(account.id, folderPath);
-    if (known && windowOpen(known)) phase = "refreshing";
+    if (known && windowOpen(known, days)) phase = "refreshing";
   } catch {
     phase = "fetching";
   }
@@ -712,9 +718,9 @@ async function syncFolderPolicy(client, account, folderPath) {
   const started = Date.now();
   try {
     const folder = db.folderByPath(account.id, folderPath);
-    const result = folder && windowOpen(folder)
-      ? await warmFolder(client, account, folder, started)
-      : await bootstrapFolder(client, account, folderPath, started);
+    const result = folder && windowOpen(folder, days)
+      ? await warmFolder(client, account, folder, started, days)
+      : await bootstrapFolder(client, account, folderPath, started, days);
     if (!result.paused) clearStrikes(account.id);
     if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
@@ -2564,7 +2570,7 @@ module.exports = {
   noteActive,
   syncAccountById,
   syncPolicy: {
-    syncDays: SYNC_DAYS,
+    get syncDays() { return syncHorizonDays(); },
     headerBatch: HEADER_BATCH,
     outlookBatch: OUTLOOK_BATCH,
     refreshPages: REFRESH_PAGES.slice(),

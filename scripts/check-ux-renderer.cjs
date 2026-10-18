@@ -173,13 +173,13 @@ app.whenReady().then(async()=>{
  assert.match(await run(`$('agent-result').textContent`),/Account: b@example.test.*Source: Beta report/s);
  assert.match(await run(`$('agent-result').textContent`),/Destination: Archive.*pending/s);
  await shot('agent-proposals');
- await run(`openSettings();uxFixture.readyUpdate();$('settings-about').click()`);await waitFor(`!$('about-update-install').hidden`);
+ await run(`uxFixture.readyUpdate();$('rail-about').click()`);await waitFor(`!$('about-update-install').hidden`);
  assert.match(await run(`$('about-update-status').textContent`),/9.9.9-fixture.*Last checked/);
  assert.equal(await run(`$('updates')`),null);
  assert.equal(await run(`$('update-check')`),null);
  assert.equal(await run(`$('rail-log').nextElementSibling.id`),'rail-about');
  assert.equal(await run(`$('about-update-install').textContent`),'Restart and install');assert.equal(await run(`$('about-update-quit').hidden`),false);
- await shot('about-updates');await run(`$('about-dialog').close();$('settings-log').click()`);await waitFor(`state.view==='log'`);
+ await shot('about-updates');await run(`$('about-dialog').close();$('rail-log').click()`);await waitFor(`state.view==='log'`);
  await run(`refreshLog();`);await run(`$('log-preview').click()`);
  const support=await run(`$('support-preview').value`);assert.doesNotMatch(support,/fixture-private-value/);assert.match(support,/addresses.*may remain/);assert.match(support,/2026/);assert.match(support,/address@example.test/);
  await shot('support-preview');await run(`$('support-dialog').close();showMail();uxFixture.failRead();openMessage('one',false)`);

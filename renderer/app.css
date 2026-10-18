@@ -663,7 +663,7 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 
 .fold.is-open .fold-toggle svg { transform: rotate(180deg); }
 
-.fold-panel { padding: 0 12px 12px; }
+.fold-panel { padding: 16px; }
 
 .fold-panel[hidden] { display: none; }
 
@@ -675,6 +675,16 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
   text-transform: uppercase;
   color: var(--muted);
 }
+
+#settings-nav button { min-height: 34px; }
+#settings .fold:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+#settings-mail .field + .field { margin-top: 16px; }
+#settings-mail .checks { margin-top: 16px; }
+#settings-mail .hint { line-height: 1.5; }
+#settings .settings-account-context { margin: 0 0 12px; }
+.list-paging { margin-top: 8px; }
+.list-paging .row { gap: 6px; margin-top: 4px; }
+.list-paging button { padding: 4px 8px; font-size: 12px; }
 
 #settings .fold-toggle h3 {
   margin: 0;
@@ -1817,6 +1827,31 @@ button.message:focus-visible { outline-offset: -2px; }
 .message-row:hover .when,
 .message-row:focus-within .when { display: none; }
 
+/* Compact is opt-in; retain the same row buttons, selection, and actions. */
+#messages.compact-list .message-row { contain-intrinsic-size: auto 32px; }
+#messages.compact-list button.message {
+  min-height: 32px;
+  height: 32px;
+  align-items: center;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  gap: 4px;
+}
+#messages.compact-list .avatar,
+#messages.compact-list .snippet { display: none; }
+#messages.compact-list .gutter { width: 10px; padding-top: 0; }
+#messages.compact-list .row-main {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+#messages.compact-list .from { flex: 0 1 28%; font-size: 12px; }
+#messages.compact-list .subject-line { flex: 1; align-items: center; }
+#messages.compact-list .when { flex: none; }
+#messages.compact-list .row-action { width: 24px; height: 24px; }
+#messages.compact-list .message-row:hover .row-main,
+#messages.compact-list .message-row:focus-within .row-main { padding-right: 108px; }
+
 .row-action {
   width: 28px;
   height: 28px;
@@ -2660,6 +2695,8 @@ textarea { min-height: 140px; resize: vertical; }
 }
 
 @media (max-width: 800px) {
+  /* The stacked list can be shorter than its controls. Let them scroll away. */
+  .list-head { position: static; }
   .app { flex-direction: row; }
   .rail {
     flex-direction: column;

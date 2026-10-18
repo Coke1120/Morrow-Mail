@@ -135,12 +135,20 @@
           <div id="search-scope" hidden>
             <label class="sr" for="search-account">Search account</label>
             <select id="search-account" aria-label="Search account"></select>
-            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Normal sync covers about 180 days; older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched.</p></details>
+            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Sync history is set in Settings → Mail &amp; Sync (180 days, 365 days, or All); older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched.</p></details>
           </div>
           <button type="button" class="ghost" id="filter-chip" hidden></button>
           <div id="selection-bar" class="selection-bar" hidden>
             <p id="selection-count">0 selected</p>
             <div id="selection-actions" class="selection-actions" role="toolbar" aria-label="Selected messages"></div>
+          </div>
+          <div id="list-paging" class="list-paging" role="group" aria-label="Message pages" hidden>
+            <p id="list-page-status" class="list-filter-note" role="status"></p>
+            <div class="row">
+              <button type="button" class="ghost icon-label" id="list-prev" aria-label="Previous message page"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>Previous</button>
+              <button type="button" class="ghost icon-label" id="list-next" aria-label="Next message page">Next<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg></button>
+              <button type="button" class="ghost" id="list-sync-more" hidden>Sync more</button>
+            </div>
           </div>
           <div id="list-chips" class="chips" role="group" aria-label="Primary folders" hidden></div>
           <div class="list-filter">
@@ -639,27 +647,24 @@
         <h2 id="settings-title">Settings</h2>
         <button type="button" class="ghost" id="settings-close">Close</button>
       </div>
-      <div class="row"><button type="button" class="ghost" id="settings-log">Debug log</button><button type="button" class="ghost" id="settings-about">About &amp; updates</button></div>
-      <nav class="section-nav" id="settings-nav" aria-label="Settings sections">
-        <button type="button" data-fold="prefs" aria-current="true">Preferences</button>
-        <button type="button" data-fold="ai">AI</button>
-        <button type="button" data-fold="mailbox">Mailbox</button>
-        <button type="button" data-fold="ooo">Out of Office</button>
-        <button type="button" data-fold="bot">Bot</button>
+      <nav class="section-nav" id="settings-nav" role="tablist" aria-label="Settings sections">
+        <button type="button" id="settings-tab-prefs" data-fold="prefs" role="tab" aria-controls="settings-prefs" aria-selected="true" aria-current="true" tabindex="0">General</button>
+        <button type="button" id="settings-tab-mail" data-fold="mail" role="tab" aria-controls="settings-mail" aria-selected="false" aria-current="false" tabindex="-1">Mail &amp; Sync</button>
+        <button type="button" id="settings-tab-mailbox" data-fold="mailbox" role="tab" aria-controls="settings-mailbox" aria-selected="false" aria-current="false" tabindex="-1">Accounts</button>
+        <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" aria-current="false" tabindex="-1">AI</button>
+        <button type="button" id="settings-tab-ooo" data-fold="ooo" role="tab" aria-controls="settings-ooo" aria-selected="false" aria-current="false" tabindex="-1">Out of Office</button>
+        <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
       </nav>
-      <section class="settings-account-context" aria-label="Settings mailbox">
+      <section class="settings-account-context" aria-label="Settings mailbox" hidden>
           <label for="settings-account">Selected mailbox</label>
           <select id="settings-account"></select>
           <p id="settings-mailbox-note" class="hint"></p>
           <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
       </section>
       <div class="settings-folds">
-        <section class="fold is-open" data-fold="prefs" aria-labelledby="settings-prefs-title">
-          <button type="button" class="fold-toggle" aria-expanded="true" aria-controls="settings-prefs-panel">
-            <h3 id="settings-prefs-title">Preferences</h3>
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-          </button>
+        <section class="fold is-open" id="settings-prefs" data-fold="prefs" role="tabpanel" aria-labelledby="settings-tab-prefs" tabindex="0">
           <div class="fold-panel" id="settings-prefs-panel">
+          <h3 id="settings-prefs-title">General</h3>
           <div id="prefs">
             <div class="field">
               <label for="pref-theme">Theme</label>
@@ -672,6 +677,27 @@
               <label for="pref-accent">Accent</label>
               <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" />
             </div>
+            <div class="checks">
+              <label class="check" for="pref-folder-chips"><input id="pref-folder-chips" type="checkbox" /> Folder chips</label>
+              <label class="check" for="pref-gmail-folders"><input id="pref-gmail-folders" type="checkbox" /> Gmail folders expanded</label>
+              <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Outlook folders expanded</label>
+            </div>
+          </div>
+          </div>
+        </section>
+        <section class="fold" id="settings-mail" data-fold="mail" role="tabpanel" aria-labelledby="settings-tab-mail" tabindex="0" hidden>
+          <div class="fold-panel" id="settings-mail-panel" hidden>
+            <h3>Mail &amp; Sync</h3>
+            <label class="check" for="pref-compact-list"><input id="pref-compact-list" type="checkbox" /> Compact message list (one line per message)</label>
+            <div class="field">
+              <label for="pref-sync-horizon">Sync history</label>
+              <select id="pref-sync-horizon" aria-describedby="sync-horizon-help">
+                <option value="180">Last 180 days</option>
+                <option value="365">Last 365 days</option>
+                <option value="0">All (unlimited)</option>
+              </select>
+              <p class="hint" id="sync-horizon-help">Applies to every account on this computer. Inbox and the open folder catch up on their next sync; open other folders to sync them. Shortening history keeps downloaded mail. All can take longer and use much more disk space. Messages are shown 200 at a time; use Previous and Next for older downloaded mail.</p>
+            </div>
             <div class="field">
               <label for="pref-undo">Undo send (seconds)</label>
               <input id="pref-undo" type="number" min="0" max="30" step="1" />
@@ -680,21 +706,13 @@
               <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
               <label class="check" for="pref-images"><input id="pref-images" type="checkbox" /> Load remote images</label>
               <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
-              <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
-              <label class="check" for="pref-folder-chips"><input id="pref-folder-chips" type="checkbox" /> Folder chips</label>
-              <label class="check" for="pref-gmail-folders"><input id="pref-gmail-folders" type="checkbox" /> Gmail folders expanded</label>
-              <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Outlook folders expanded</label>
             </div>
-            <p id="settings-status" role="status"></p>
-          </div>
           </div>
         </section>
-        <section class="fold" data-fold="ai" aria-labelledby="settings-ai-title">
-          <button type="button" class="fold-toggle" aria-expanded="false" aria-controls="settings-ai-panel">
-            <h3 id="settings-ai-title">AI</h3>
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-          </button>
+        <section class="fold" id="settings-ai" data-fold="ai" role="tabpanel" aria-labelledby="settings-tab-ai" tabindex="0" hidden>
           <div class="fold-panel" id="settings-ai-panel" hidden>
+          <h3 id="settings-ai-title">AI</h3>
+          <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
           <div id="ai-fields">
             <label for="ai-base">Base URL</label>
             <input id="ai-base" type="text" spellcheck="false" autocomplete="off" />
@@ -709,18 +727,16 @@
               <button type="button" class="ghost" id="ai-test">Test connection</button>
             </div>
             <p id="ai-status" role="status"></p>
+            <p class="hint">The API key stays in local AI config, the same store as Morrow Mail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields.</p>
           </div>
           </div>
         </section>
-        <section class="fold" data-fold="mailbox" aria-labelledby="settings-mailbox-title">
-          <button type="button" class="fold-toggle" aria-expanded="false" aria-controls="settings-mailbox-panel">
-            <h3 id="settings-mailbox-title">Mailbox</h3>
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-          </button>
+        <section class="fold" id="settings-mailbox" data-fold="mailbox" role="tabpanel" aria-labelledby="settings-tab-mailbox" tabindex="0" hidden>
           <div class="fold-panel" id="settings-mailbox-panel" hidden>
+          <h3 id="settings-mailbox-title">Accounts</h3>
           <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
           <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
-          <details id="account-recovery"><summary>Existing user? Recover access or find missing data</summary><p>If your mailbox is listed, reconnect the same address to keep its cached work. Do not remove the account to fix sign-in.</p><p>If this profile is empty, confirm you opened the expected app and operating-system user. Back up the old app’s data before changing folders. Morrow has not verified or migrated an older profile or its credentials. Reconnecting downloads available server mail; it does not recover unsynced local drafts from another profile.</p><p>For help, open Debug log from Settings and review a redacted support preview. Do not share passwords, OAuth files, or database files.</p></details>
+          <details id="account-recovery"><summary>Existing user? Recover access or find missing data</summary><p>If your mailbox is listed, reconnect the same address to keep its cached work. Do not remove the account to fix sign-in.</p><p>If this profile is empty, confirm you opened the expected app and operating-system user. Back up the old app’s data before changing folders. Morrow has not verified or migrated an older profile or its credentials. Reconnecting downloads available server mail; it does not recover unsynced local drafts from another profile.</p><p>For help, open Debug log from the app sidebar and review a redacted support preview. Do not share passwords, OAuth files, or database files.</p></details>
           <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
           <div class="row mailbox-actions" role="group" aria-labelledby="settings-mailbox-title">
             <button type="button" class="ghost icon-label" id="inbox-rules-open">
@@ -755,12 +771,9 @@
           </div>
           </div>
         </section>
-        <section class="fold" id="settings-ooo" data-fold="ooo" aria-labelledby="settings-ooo-title">
-          <button type="button" class="fold-toggle" aria-expanded="false" aria-controls="settings-ooo-panel">
-            <h3 id="settings-ooo-title">Out of Office</h3>
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-          </button>
+        <section class="fold" id="settings-ooo" data-fold="ooo" role="tabpanel" aria-labelledby="settings-tab-ooo" tabindex="0" hidden>
           <div class="fold-panel" id="settings-ooo-panel" hidden>
+          <h3 id="settings-ooo-title">Out of Office</h3>
           <p id="ooo-account" class="hint"></p>
           <p id="ooo-note" class="hint"></p>
           <div class="row">
@@ -800,12 +813,9 @@
           <p id="ooo-status" role="status"></p>
           </div>
         </section>
-        <section class="fold" id="settings-bot" data-fold="bot" aria-labelledby="settings-bot-title">
-          <button type="button" class="fold-toggle" aria-expanded="false" aria-controls="settings-bot-panel">
-            <h3 id="settings-bot-title">Bot access</h3>
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-          </button>
+        <section class="fold" id="settings-bot" data-fold="bot" role="tabpanel" aria-labelledby="settings-tab-bot" tabindex="0" hidden>
           <div class="fold-panel" id="settings-bot-panel" hidden>
+          <h3 id="settings-bot-title">Bot access</h3>
           <button type="button" class="ghost" id="bot-review-link">Review draft proposals</button>
           <p class="hint">The local bridge starts off. Create a grant, copy its secret once, then enable and verify the listener. A grant can read cached mail for the accounts you select, including Sent and Drafts. Message text is untrusted. Nothing is sent from the bridge. Tailscale Serve may forward 127.0.0.1:47831. Do not enable Funnel.</p>
           <p id="bot-listen" class="hint"></p>
@@ -865,7 +875,8 @@
           </div>
         </section>
       </div>
-      <p class="hint">The API key stays in local AI config, the same store as Morrow Mail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
+      <p id="settings-status" role="status"></p>
+      <p class="hint">Preferences are saved automatically on this computer.</p>
       </div>
     </dialog>
     <dialog id="move-picker" aria-labelledby="move-picker-title">
