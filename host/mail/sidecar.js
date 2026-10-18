@@ -5,10 +5,16 @@ const config = require("./oauth-config");
 const gmail = require("./provider-api");
 const calendar = require("./calendar-api");
 const inboxRules = require("./inbox-rules");
+const vacationApi = require("./vacation-api");
+const sieve = require("./sieve-vacation");
+const crypto = require("node:crypto");
 
 const CHANNELS = new Set([
   "mail:oauthStatus",
   "mail:grantOrganize",
+  "mail:grantVacation",
+  "mail:vacationGet",
+  "mail:vacationPut",
   "mail:listProviderFolders",
   "mail:createProviderFolder",
   "mail:renameProviderFolder",
@@ -47,7 +53,7 @@ function publicError(error) {
 function failFrom(error) {
   const code = error && error.code;
   if (code === "provider_network") return fail("provider", publicError(error));
-  if (code === "oauth_not_ready" || code === "scope_missing" || code === "needs_auth" || code === "invalid" || code === "not-found" || code === "too_many" || code === "account_mismatch" || code === "oauth" || code === "imap_only" || code === "no_account" || code === "collision" || code === "partial") {
+  if (code === "oauth_not_ready" || code === "scope_missing" || code === "needs_auth" || code === "invalid" || code === "not-found" || code === "too_many" || code === "account_mismatch" || code === "oauth" || code === "imap_only" || code === "no_account" || code === "collision" || code === "partial" || code === "conflict" || code === "unsupported") {
     return fail(code, publicError(error));
   }
   return fail("provider", publicError(error));
@@ -84,6 +90,10 @@ function scopeText(account, purpose) {
     return (blob && blob.grantedScopes) || "";
   }
   const primary = readJson(account.id);
+  if (purpose === "vacation") {
+    const dedicated = readJson(`${account.id}:vacation`);
+    return (dedicated && dedicated.grantedScopes) || "";
+  }
   if (purpose === "organize") {
     const provider = providerOf(account);
     const dedicated = readJson(`${account.id}:organize`);
@@ -96,7 +106,7 @@ function scopeText(account, purpose) {
 
 function secretKey(account, purpose) {
   const provider = providerOf(account);
-  if (purpose === "calendar" || purpose === "rules") return `${account.id}:${purpose}`;
+  if (purpose === "calendar" || purpose === "rules" || purpose === "vacation") return `${account.id}:${purpose}`;
   if (purpose === "organize") {
     const dedicated = readJson(`${account.id}:organize`);
     if (dedicated && config.hasMarker(dedicated.grantedScopes, provider, "organize")) {
@@ -120,6 +130,11 @@ function gateMessage(reason, provider, purpose) {
   if (purpose === "rules") {
     if (provider === "microsoft") return "Outlook rules need the MailboxSettings.ReadWrite grant.";
     return "Gmail filters need the gmail.settings.basic grant.";
+  }
+  if (purpose === "vacation") {
+    if (provider === "microsoft") return "Automatic replies need the MailboxSettings.ReadWrite grant. The existing mailbox stays connected.";
+    if (provider === "google") return "Automatic replies need the gmail.settings.basic grant. The existing mailbox stays connected.";
+    return "This mailbox uses a server vacation script when the IMAP server offers one. Morrow will not send local automatic replies.";
   }
   if (purpose === "calendar") return "Calendar needs a calendar grant.";
   if (provider === "microsoft") return "Outlook folders need the Mail.ReadWrite grant. This mailbox stays on IMAP until then.";
@@ -221,6 +236,7 @@ function accountGrants() {
     const organize = gateAccount(row, "organize");
     const calendarGate = gateAccount(row, "calendar");
     const rulesGate = gateAccount(row, "rules");
+    const vacationGate = gateAccount(row, "vacation");
     return {
       id: row.id,
       email: row.email,
@@ -229,14 +245,17 @@ function accountGrants() {
       organize: organize.ok,
       calendar: calendarGate.ok,
       rules: rulesGate.ok,
+      vacation: vacationGate.ok,
       organizeReason: organize.reason,
       calendarReason: calendarGate.reason,
       rulesReason: rulesGate.reason,
+      vacationReason: vacationGate.reason,
       grantedScopes: {
         imap: scopeText(row, "imap"),
         organize: scopeText(row, "organize"),
         calendar: scopeText(row, "calendar"),
         rules: scopeText(row, "rules"),
+        vacation: scopeText(row, "vacation"),
       },
     };
   });
@@ -252,6 +271,7 @@ function oauthStatus() {
       organize: { google: config.ORGANIZE_SCOPES.google, microsoft: config.ORGANIZE_SCOPES.microsoft },
       calendar: { google: config.CALENDAR_SCOPES.google, microsoft: config.CALENDAR_SCOPES.microsoft },
       rules: { google: config.RULES_SCOPES.google, microsoft: config.RULES_SCOPES.microsoft },
+      vacation: { google: config.VACATION_SCOPES.google, microsoft: config.VACATION_SCOPES.microsoft },
     },
     redirects: {
       imap: {
@@ -554,6 +574,381 @@ async function listCalendar(params) {
   }
 }
 
+const VACATION_LINKS = {
+  google: "https://mail.google.com/mail/u/0/#settings/general",
+  microsoft: "https://outlook.office.com/mail/options/mail/automaticReplies",
+  "imap.gmail.com": "https://mail.google.com/mail/u/0/#settings/general",
+  "imap.googlemail.com": "https://mail.google.com/mail/u/0/#settings/general",
+  "outlook.office365.com": "https://outlook.office.com/mail/options/mail/automaticReplies",
+  "imap-mail.outlook.com": "https://outlook.office.com/mail/options/mail/automaticReplies",
+  "imap.mail.yahoo.com": "https://mail.yahoo.com/",
+  "imap.mail.me.com": "https://www.icloud.com/mail",
+};
+const EMPTY_VACATION = {
+  mode: "disabled",
+  start: "",
+  end: "",
+  subject: "",
+  message: "",
+  externalMessage: "",
+  audience: "all",
+  restrictToDomain: false,
+};
+const vacationBusy = new Set();
+
+function vacationLink(account) {
+  const provider = providerOf(account);
+  if (provider === "google" || provider === "microsoft") return VACATION_LINKS[provider];
+  return VACATION_LINKS[String(account.imap_host || "").toLowerCase()] || "";
+}
+
+function vacationView(account, extra) {
+  const provider = providerOf(account);
+  const named = provider === "google" || provider === "microsoft" ? provider : "imap";
+  return {
+    accountId: account.id,
+    email: account.email,
+    provider: named,
+    supported: false,
+    canRead: false,
+    canWrite: false,
+    requiresReconnect: false,
+    requiredScope: (config.MARKERS.vacation && config.MARKERS.vacation[provider]) || "",
+    providerUrl: vacationLink(account),
+    transport: "",
+    extensions: [],
+    detail: "",
+    scheduleWarning: "",
+    revision: "",
+    settings: null,
+    ...extra,
+  };
+}
+
+function vacationIdentity(account) {
+  const provider = providerOf(account);
+  if (provider === "google" || provider === "microsoft") {
+    const blob = readJson(`${account.id}:vacation`);
+    return blob ? `${blob.refreshToken || ""}\n${blob.grantedScopes || ""}` : "";
+  }
+  const password = imapPassword(account);
+  return password ? crypto.createHash("sha256").update(password).digest("hex") : "";
+}
+
+function imapPassword(account) {
+  if (!account || account.auth_kind === "oauth2") return "";
+  const raw = secrets.getPassword(account.id);
+  if (!raw || raw[0] === "{") return "";
+  return raw;
+}
+
+function plainField(value, limit, name) {
+  if (typeof value !== "string" || [...value].length > limit || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) {
+    const error = new Error(`Enter a plain-text ${name} of at most ${limit} characters.`);
+    error.code = "invalid";
+    throw error;
+  }
+  return value.replace(/\r\n?/g, "\n");
+}
+
+function sieveChange(body, extensions) {
+  if (!body || typeof body !== "object" || body.confirmed !== true || !["save", "disable"].includes(body.action)) {
+    const error = new Error("Review and confirm Save or Disable before changing provider settings.");
+    error.code = "invalid";
+    throw error;
+  }
+  if (body.action === "disable" || body.mode === "disabled") return { action: "disable" };
+  if (!["always", "scheduled"].includes(body.mode)) {
+    const error = new Error("Choose Disabled, Always, or Scheduled.");
+    error.code = "invalid";
+    throw error;
+  }
+  const subject = plainField(body.subject || "", 200, "subject");
+  const message = plainField(body.message || "", 10000, "reply");
+  if (subject.includes("\n")) {
+    const error = new Error("The subject must fit on one line.");
+    error.code = "invalid";
+    throw error;
+  }
+  if (body.audience !== "all" || body.restrictToDomain !== false) {
+    const error = new Error("IMAP vacation replies go to every sender. Contacts-only and domain limits are not available.");
+    error.code = "invalid";
+    throw error;
+  }
+  let start = "";
+  let end = "";
+  if (body.mode === "scheduled") {
+    if (!extensions.includes("date") || !extensions.includes("relational")) {
+      const error = new Error("This IMAP server cannot schedule vacation replies. Choose Always, or use your provider’s webmail settings.");
+      error.code = "unsupported";
+      throw error;
+    }
+    try {
+      const schedule = vacationApi.scheduleOf(body, false);
+      start = schedule.start;
+      end = schedule.end;
+    } catch (error) {
+      error.code = "invalid";
+      throw error;
+    }
+  }
+  if (!message.trim()) {
+    const error = new Error("Enter a reply message for each enabled audience.");
+    error.code = "invalid";
+    throw error;
+  }
+  return {
+    action: "put",
+    script: sieve.buildVacation({ subject, message, start, end, useDate: body.mode === "scheduled" }),
+  };
+}
+
+function projectSieve(account, remote) {
+  const parsed = remote.script ? sieve.parseVacation(remote.script) : { ...EMPTY_VACATION };
+  const blocked = !!(remote.active && remote.active !== sieve.SCRIPT_NAME);
+  return vacationView(account, {
+    supported: true,
+    canRead: true,
+    canWrite: !blocked,
+    transport: "sieve",
+    extensions: remote.extensions || [],
+    revision: vacationApi.revisionOf(remote.script || ""),
+    detail: blocked
+      ? "This IMAP server already has an active Sieve script. Morrow will not replace it."
+      : "Best-effort ManageSieve vacation. Replies continue while Morrow is closed. IMAP dates use whole UTC days, and every sender can receive a reply.",
+    scheduleWarning: remote.script && !parsed
+      ? "The server has a vacation script Morrow cannot edit safely. Disable remains available."
+      : "",
+    settings: parsed
+      ? { ...EMPTY_VACATION, ...parsed, externalMessage: "", audience: "all", restrictToDomain: false }
+      : { ...EMPTY_VACATION },
+  });
+}
+
+async function sieveCall(account, operation) {
+  const password = imapPassword(account);
+  if (!password) {
+    const error = new Error("This mailbox has no password Morrow can use for a vacation script. Morrow will not send local automatic replies.");
+    error.safe = true;
+    throw error;
+  }
+  return sieve.manageSieve({
+    email: account.email || account.username,
+    password,
+    imapHost: account.imap_host,
+  }, operation);
+}
+
+function sieveFailure(error) {
+  if (error && error.safe) {
+    const code = error.status === 409 ? "conflict" : error.status === 403 ? "scope_missing" : "provider";
+    return fail(code, error.message);
+  }
+  if (error && error.code === "invalid") return fail("invalid", error.message);
+  if (error && error.code === "unsupported") return fail("unsupported", error.message);
+  if (error && error.code === "conflict") return fail("conflict", error.message);
+  return fail("provider", vacationApi.WRITE_FAILED);
+}
+
+async function withVacation(account, work) {
+  if (vacationBusy.has(account.id)) {
+    return fail("conflict", "Automatic reply settings are already being saved. Wait for that to finish.");
+  }
+  vacationBusy.add(account.id);
+  try {
+    return await work();
+  } finally {
+    vacationBusy.delete(account.id);
+  }
+}
+
+async function providerVacation(account, body) {
+  const gate = gateAccount(account, "vacation");
+  if (!gate.ok) {
+    if (body) return fail(gate.reason, gate.message);
+    return ok(vacationView(account, {
+      supported: true,
+      requiresReconnect: gate.reason === "scope_missing",
+      detail: gate.message,
+    }));
+  }
+  const before = vacationIdentity(account);
+  let token;
+  try {
+    token = await tokenFor(account, "vacation");
+  } catch (error) {
+    return failFrom(error);
+  }
+  if (vacationIdentity(account) !== before) {
+    return fail("conflict", "This mailbox connection changed. Refresh settings.");
+  }
+  try {
+    const described = body
+      ? await vacationApi.apply(gate.provider, token.accessToken, body)
+      : await vacationApi.read(gate.provider, token.accessToken);
+    if (vacationIdentity(account) !== before) {
+      return fail("conflict", "This mailbox connection changed. Refresh provider settings to check the result.");
+    }
+    return ok(vacationView(account, {
+      supported: true,
+      canRead: true,
+      canWrite: true,
+      transport: gate.provider === "google" ? "gmail" : "graph",
+      ...described,
+    }));
+  } catch (error) {
+    return failFrom(error);
+  }
+}
+
+async function imapVacation(account, body) {
+  const before = vacationIdentity(account);
+  let current;
+  try {
+    current = await sieveCall(account, { action: "read" });
+  } catch (error) {
+    if (body) return sieveFailure(error);
+    const detail = error && error.safe
+      ? error.message
+      : "This IMAP server does not offer server-managed vacation replies. Morrow will not send local automatic replies.";
+    return ok(vacationView(account, { supported: false, detail }));
+  }
+  if (vacationIdentity(account) !== before) return fail("conflict", "This mailbox connection changed. Refresh settings.");
+  const viewed = projectSieve(account, current);
+  if (!body) return ok(viewed);
+  if (typeof body.revision !== "string" || !/^[a-f0-9]{64}$/.test(body.revision)) {
+    return fail("conflict", "Refresh provider settings before saving.");
+  }
+  if (vacationApi.revisionOf(current.script || "") !== body.revision) {
+    return fail("conflict", "Provider settings changed since you opened this page. Refresh and review them before saving.");
+  }
+  let change;
+  try {
+    change = sieveChange(body, current.extensions || []);
+  } catch (error) {
+    return sieveFailure(error);
+  }
+  if (change.action !== "disable" && viewed.canWrite !== true) {
+    return fail("conflict", viewed.detail || "This IMAP server already has an active Sieve script. Morrow will not replace it.");
+  }
+  let again;
+  try {
+    again = await sieveCall(account, { action: "read" });
+  } catch (error) {
+    return sieveFailure(error);
+  }
+  if (vacationApi.revisionOf(again.script || "") !== body.revision || vacationIdentity(account) !== before) {
+    return fail("conflict", "Provider settings changed while you were saving. Refresh and review them before trying again.");
+  }
+  let updated;
+  try {
+    updated = await sieveCall(account, change.action === "disable" ? { action: "disable" } : { action: "put", script: change.script });
+  } catch (error) {
+    return sieveFailure(error);
+  }
+  if (vacationIdentity(account) !== before) {
+    return fail("conflict", "This mailbox connection changed. Refresh provider settings to check the result.");
+  }
+  return ok(projectSieve(account, updated));
+}
+
+async function vacationGet(params) {
+  const account = accountFrom(params);
+  if (!account) return fail("no_account", "Choose a connected mailbox.");
+  return withVacation(account, () => {
+    const provider = providerOf(account);
+    if (provider === "google" || provider === "microsoft") return providerVacation(account);
+    return imapVacation(account);
+  });
+}
+
+async function vacationPut(params) {
+  const account = accountFrom(params);
+  if (!account) return fail("no_account", "Choose a connected mailbox.");
+  return withVacation(account, () => {
+    const provider = providerOf(account);
+    if (provider === "google" || provider === "microsoft") return providerVacation(account, params || {});
+    return imapVacation(account, params || {});
+  });
+}
+
+function rememberVacation(account, signed) {
+  if (!account || !signed) return fail("no_account", "Choose a connected mailbox.");
+  const provider = providerOf(account);
+  if (provider !== "google" && provider !== "microsoft") {
+    return fail("imap_only", "IMAP automatic replies use the server vacation script. There is no extra consent for this mailbox.");
+  }
+  if (!sameEmail(signed.email, account.email)) {
+    return fail("account_mismatch", `That browser signed in ${signed.email}. This mailbox is ${account.email}.`);
+  }
+  const current = accountFrom({ accountId: account.id });
+  if (!current || !sameEmail(current.email, account.email)) {
+    return fail("account_mismatch", "The mailbox changed. Authorize automatic replies again for the original account.");
+  }
+  const previous = readJson(`${account.id}:vacation`);
+  const granted = signed.grantedScopes || "";
+  if (!config.hasMarker(granted, provider, "vacation")) {
+    return fail("partial", "Automatic reply permissions were not fully granted. The existing mail connection was retained.");
+  }
+  if (!signed.refreshToken && !(previous && previous.refreshToken)) {
+    return fail("oauth", "Provider did not return a refresh token. Approve offline access and try again.");
+  }
+  const blob = {
+    provider,
+    purpose: "vacation",
+    refreshToken: signed.refreshToken || previous.refreshToken,
+    accessToken: signed.accessToken || "",
+    expiresAt: signed.expiresAt || 0,
+    grantedScopes: granted,
+    requestedScopes: signed.requestedScopes || config.VACATION_SCOPES[provider],
+  };
+  const mailboxSecret = secrets.getPassword(account.id);
+  try {
+    secrets.setPassword(`${account.id}:vacation`, JSON.stringify(blob));
+  } catch (error) {
+    return fail("keychain", error instanceof Error ? error.message : "Could not save OAuth tokens.");
+  }
+  if (secrets.getPassword(account.id) !== mailboxSecret) {
+    secrets.setPassword(account.id, mailboxSecret);
+    secrets.deletePassword(`${account.id}:vacation`);
+    return fail("partial", "Automatic reply permissions were not fully granted. The existing mail connection was retained.");
+  }
+  return ok({
+    accountId: account.id,
+    email: account.email,
+    provider,
+    purpose: "vacation",
+    api: true,
+    reason: "",
+    grantedScopes: granted,
+  });
+}
+
+async function grantVacation(params) {
+  const account = accountFrom(params);
+  if (!account) return fail("no_account", "Connect the mailbox first.");
+  const provider = providerOf(account);
+  if (provider !== "google" && provider !== "microsoft") {
+    return fail("imap_only", "IMAP automatic replies use the server vacation script. There is no extra Google or Microsoft consent for this mailbox.");
+  }
+  if (provider === "google" && !oauth.oauthReady().google) {
+    return fail("oauth_not_ready", "Google Desktop OAuth is not configured.");
+  }
+  let signed;
+  try {
+    signed = await oauth.signIn(provider, "vacation");
+  } catch (error) {
+    return failFrom(error);
+  }
+  const saved = rememberVacation(account, signed);
+  if (signed.complete) {
+    const accepted = saved && saved.success === true;
+    const message = accepted ? "" : (saved && saved.error && saved.error.message) || "Sign-in not finished.";
+    try { signed.complete({ ok: accepted, message }); } catch { /* the browser already left */ }
+  }
+  return saved;
+}
+
 async function createCalendarEvent(params) {
   const ready = await withPurpose(params, "calendar");
   if (ready.error) return ready.error;
@@ -740,6 +1135,12 @@ function answer(channel, args) {
         return calendarStatus();
       case "mail:grantOrganize":
         return grantPurpose(params || {}, "organize");
+      case "mail:grantVacation":
+        return grantVacation(params || {});
+      case "mail:vacationGet":
+        return vacationGet(params || {});
+      case "mail:vacationPut":
+        return vacationPut(params || {});
       case "calendar:connect":
         return grantPurpose(params || {}, "calendar");
       case "mail:listProviderFolders":
@@ -783,4 +1184,5 @@ module.exports = {
   gateAccount,
   monthWindow,
   organizeToken,
+  rememberVacation,
 };

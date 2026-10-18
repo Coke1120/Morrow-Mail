@@ -10,6 +10,7 @@ Morrow Mail keeps **IMAP XOAUTH2 as the mail baseline** and adds a provider API 
 | Organize (second consent, `mail:grantOrganize`) | Gmail labels or Graph mailFolders | IMAP scopes plus `https://www.googleapis.com/auth/gmail.modify` | `offline_access User.Read Mail.ReadWrite Mail.Send` | same `/api/oauth/.../callback` path |
 | Calendar (`calendar:connect`) | Google Calendar or Graph calendars | `openid email https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events` | `offline_access User.Read Calendars.ReadWrite` | `/api/calendar-oauth/{google\|microsoft}/callback` |
 | Inbox rules (`mail:grantRules`) | Gmail filters or Graph inbox message rules | `openid email https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels` | `offline_access User.Read MailboxSettings.ReadWrite Mail.Read` | same `/api/oauth/.../callback` path |
+| Out of Office (`mail:grantVacation`) | Gmail vacation settings or Graph automatic replies | `openid email https://www.googleapis.com/auth/gmail.settings.basic` | `offline_access User.Read MailboxSettings.ReadWrite` | same `/api/oauth/.../callback` path |
 
 Google's organize consent asks for the IMAP scopes again so one grant can keep XOAUTH2 when Google returns both. Microsoft organize stays on Graph scopes only. Entra returns `invalid_scope` when that authorize URL also includes `https://outlook.office.com` IMAP or SMTP scopes, so Outlook XOAUTH2 stays on the first consent.
 
@@ -34,7 +35,7 @@ Loopback is `http://localhost:<port>` with the port chosen when the browser open
 
 Do this in the same Desktop client Morrow-Mail uses. Do not paste the secret into the repo, a PR, or this doc.
 
-1. OAuth consent screen. Add the scopes above: `openid`, `email` / `userinfo.email`, `https://mail.google.com/`, `https://www.googleapis.com/auth/gmail.modify`, `https://www.googleapis.com/auth/gmail.settings.basic`, `https://www.googleapis.com/auth/gmail.labels`, `https://www.googleapis.com/auth/calendar.calendarlist.readonly`, and `https://www.googleapis.com/auth/calendar.events`.
+1. OAuth consent screen. Add the scopes above: `openid`, `email` / `userinfo.email`, `https://mail.google.com/`, `https://www.googleapis.com/auth/gmail.modify`, `https://www.googleapis.com/auth/gmail.settings.basic`, `https://www.googleapis.com/auth/gmail.labels`, `https://www.googleapis.com/auth/calendar.calendarlist.readonly`, and `https://www.googleapis.com/auth/calendar.events`. Out of Office asks for `gmail.settings.basic` on its own. It does not replace the IMAP grant.
 2. Enable the Gmail API and the Google Calendar API on the project.
 3. Create an OAuth client of type **Desktop**. Download the JSON (`installed.client_id` and `installed.client_secret`).
 4. Provide it at runtime as `GOOGLE_DESKTOP_OAUTH_JSON`, `GENMAIL_GOOGLE_OAUTH_JSON`, `GENMAIL_GOOGLE_OAUTH_FILE`, dev `resources/google-oauth.json` (gitignored), or packaged `process.resourcesPath/google-oauth.json`. `MORROW_GOOGLE_OAUTH_JSON` / `MORROW_GOOGLE_OAUTH_FILE` are accepted aliases.
@@ -74,6 +75,7 @@ Work and school mailboxes cannot grant those delegated permissions until an admi
 - `mail:addAccount` is the IMAP baseline.
 - `mail:grantOrganize` stores the organize token on that mailbox after the email matches.
 - `calendar:connect` stores the calendar token the same way.
+- `mail:grantVacation` stores a separate vacation token after the browser account matches. A missing `gmail.settings.basic` or `MailboxSettings.ReadWrite` grant does not replace the mailbox secret. Settings → Out of Office then writes Gmail vacation settings or Graph automatic replies, and only after a second confirmation. IMAP accounts try a ManageSieve vacation script named `morrow-vacation` on port 4190. Morrow does not send local automatic replies, and it does not replace a different active Sieve script.
 - `mail:listProviderFolders`, create, rename, delete, and move call Gmail labels or Graph `mailFolders` only when the organize marker is granted. Gmail move is `labels.patch` on the label and its descendants. Outlook move is `POST /me/mailFolders/{id}/move`. IMAP folder move uses `RENAME` on the mailbox and does not need that grant.
 - `mail:modifyMessageLabels` and `mail:moveProviderMessage` use the provider message id looked up by RFC Message-ID.
 - `calendar:list` and `calendar:createEvent` call the calendar APIs for a month range.

@@ -783,10 +783,12 @@ function purgeAbandonedAccounts() {
     if (secrets.getPassword(`${row.id}:organize`)) continue;
     if (secrets.getPassword(`${row.id}:calendar`)) continue;
     if (secrets.getPassword(`${row.id}:rules`)) continue;
+    if (secrets.getPassword(`${row.id}:vacation`)) continue;
     secrets.deletePassword(row.id);
     secrets.deletePassword(`${row.id}:organize`);
     secrets.deletePassword(`${row.id}:calendar`);
     secrets.deletePassword(`${row.id}:rules`);
+    secrets.deletePassword(`${row.id}:vacation`);
     db.removeAccount(row.id);
     if (idleController) idleController.forget(row.id).catch(() => {});
     idleSafetyAt.delete(row.id);
@@ -1072,6 +1074,7 @@ async function removeAccount(params) {
   secrets.deletePassword(`${id}:organize`);
   secrets.deletePassword(`${id}:calendar`);
   secrets.deletePassword(`${id}:rules`);
+  secrets.deletePassword(`${id}:vacation`);
   if (idleController) {
     try { await idleController.forget(id); } catch { /* the connection is already gone */ }
   }

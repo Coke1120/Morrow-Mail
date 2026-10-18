@@ -23,6 +23,8 @@ const syntax = [
   "host/mail/provider-http.js",
   "host/mail/provider-api.js",
   "host/mail/inbox-rules.js",
+  "host/mail/vacation-api.js",
+  "host/mail/sieve-vacation.js",
   "host/mail/calendar-api.js",
   "host/mail/sidecar.js",
   "host/brain.js",
@@ -30,6 +32,7 @@ const syntax = [
   "renderer/preload.js",
   "renderer/app.js",
   "renderer/motion-ui.js",
+  "scripts/check-vacation.js",
 ];
 for (const file of syntax) {
   const result = spawnSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
@@ -1603,6 +1606,11 @@ const providerUi = loadFunctions(appJs, [
   "agendaLine",
   "sameDay",
   "calendarDraft",
+  "vacationProvider",
+  "vacationLink",
+  "vacationDraft",
+  "vacationView",
+  "vacationConfirm",
 ]);
 assert.deepStrictEqual(providerUi.oauthButtonState(null, "google"), { disabled: false, reason: "" });
 assert.deepStrictEqual(providerUi.oauthButtonState({ google: true }, "google"), { disabled: false, reason: "" });
@@ -2437,9 +2445,49 @@ assert.strictEqual(providerUi.calendarDraft({
   start: "2026-10-17T10:00",
   end: "2026-10-17T11:00",
 }).location, "Room 2");
+assert.strictEqual(providerUi.vacationProvider({ imapSmtpProfile: "gmail" }), "google");
+assert.strictEqual(providerUi.vacationProvider({ profile: "outlook" }), "microsoft");
+assert.strictEqual(providerUi.vacationProvider({ imapSmtpProfile: "custom" }), "imap");
+assert.strictEqual(providerUi.vacationLink("https://mail.yahoo.com/"), "https://mail.yahoo.com/");
+assert.strictEqual(providerUi.vacationLink("https://evil.example/settings"), "");
+assert.strictEqual(providerUi.vacationDraft({ provider: "imap", mode: "always", audience: "contacts", message: "Hi", restrictToDomain: false }).error, "IMAP vacation replies go to every sender.");
+assert.strictEqual(providerUi.vacationDraft({ provider: "google", mode: "always", audience: "all", message: "  ", subject: "Away", restrictToDomain: false }).error, "Enter a reply message.");
+const vacationSaved = providerUi.vacationDraft({
+  provider: "microsoft",
+  mode: "scheduled",
+  audience: "none",
+  message: "Inside",
+  externalMessage: "",
+  subject: "",
+  start: "2090-10-01T00:00:00.000Z",
+  end: "2090-10-02T00:00:00.000Z",
+  restrictToDomain: false,
+});
+assert.strictEqual(vacationSaved.error, "");
+assert.strictEqual(vacationSaved.audience, "none");
+assert.strictEqual(providerUi.vacationView(null).showForm, false);
+assert.strictEqual(providerUi.vacationView({
+  provider: "google",
+  supported: true,
+  requiresReconnect: true,
+  canWrite: false,
+  detail: "Automatic replies need the gmail.settings.basic grant. The existing mailbox stays connected.",
+}).showGrant, true);
+assert.strictEqual(providerUi.vacationView({
+  provider: "imap",
+  supported: true,
+  canWrite: false,
+  settings: { mode: "always" },
+  scheduleWarning: "",
+}).canDisable, true);
+assert.match(providerUi.vacationConfirm("save", "ada@example.com", { provider: "imap", mode: "always" }).body, /No mail is sent by this button/);
+assert.strictEqual(providerUi.vacationConfirm("disable", "ada@example.com", { provider: "google" }).needsName, false);
 for (const channel of [
   "mail:oauthStatus",
   "mail:grantOrganize",
+  "mail:grantVacation",
+  "mail:vacationGet",
+  "mail:vacationPut",
   "mail:listProviderFolders",
   "mail:createProviderFolder",
   "mail:renameProviderFolder",
@@ -2462,6 +2510,9 @@ for (const channel of [
 for (const channel of [
   "mail:oauthStatus",
   "mail:grantOrganize",
+  "mail:grantVacation",
+  "mail:vacationGet",
+  "mail:vacationPut",
   "mail:listProviderFolders",
   "mail:createProviderFolder",
   "mail:renameProviderFolder",
@@ -2483,6 +2534,9 @@ for (const channel of [
 }
 assert.ok(html.includes('id="rail-calendar"') && html.includes('id="calendar-panel"'));
 assert.ok(html.includes('id="calendar-grant"') && html.includes("Grant calendar access"));
+assert.ok(html.includes('id="settings-ooo"') && html.includes("Allow Out of Office settings"));
+assert.ok(appJs.includes("mail:vacationGet") && appJs.includes("mail:vacationPut") && appJs.includes("mail:grantVacation"));
+assert.ok(appJs.includes("morrow-vacation") && appJs.includes("will not replace a different active Sieve script"));
 assert.ok(html.includes('id="calendar-create"') && html.includes('id="calendar-pick"'));
 assert.ok(html.includes('id="calendar-today"') && html.includes('id="calendar-agenda"') && html.includes('id="calendar-location"'));
 assert.ok(html.includes('id="agent-contact"') && html.includes('id="agent-context"'));
@@ -2564,6 +2618,19 @@ assert.strictEqual(oauthConfig.scopesFor("outlook", "organize"), oauthConfig.ORG
 assert.strictEqual(oauthConfig.scopesFor("google", "calendar"), oauthConfig.CALENDAR_SCOPES.google);
 assert.strictEqual(oauthConfig.normalizePurpose("mail-api"), "organize");
 assert.strictEqual(oauthConfig.normalizePurpose("api"), "organize");
+assert.strictEqual(oauthConfig.normalizePurpose("vacation"), "vacation");
+assert.strictEqual(oauthConfig.normalizePurpose("out-of-office"), "vacation");
+assert.strictEqual(oauthConfig.scopesFor("google", "vacation"), oauthConfig.VACATION_SCOPES.google);
+assert.strictEqual(oauthConfig.scopesFor("microsoft", "ooo"), oauthConfig.VACATION_SCOPES.microsoft);
+assert.ok(!oauthConfig.VACATION_SCOPES.google.includes("gmail.modify"));
+assert.ok(!oauthConfig.VACATION_SCOPES.google.includes("mail.google.com"));
+assert.ok(!oauthConfig.VACATION_SCOPES.microsoft.includes("Mail.ReadWrite"));
+assert.ok(!oauthConfig.VACATION_SCOPES.microsoft.includes("outlook.office"));
+assert.strictEqual(oauthConfig.redirectPath("google", "vacation"), "/api/oauth/google/callback");
+assert.strictEqual(oauthConfig.redirectPath("microsoft", "vacation"), "/api/oauth/microsoft/callback");
+assert.strictEqual(oauthConfig.profileUrl("google", "vacation"), "https://openidconnect.googleapis.com/v1/userinfo");
+assert.strictEqual(oauthConfig.hasMarker(`https://graph.microsoft.com/${oauthConfig.MARKERS.vacation.microsoft}`, "microsoft", "vacation"), true);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "vacation"), false);
 assert.strictEqual(oauthConfig.hasMarker("Mail.Read", "microsoft", "organize"), false);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.ORGANIZE_SCOPES.microsoft, "outlook", "organize"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.ORGANIZE_SCOPES.google, "gmail", "organize"), true);
@@ -4567,10 +4634,49 @@ async function checkProviderApi() {
     ];
     const gmailPatchFail = new Set();
     const providerCalls = [];
+    let gmailVacation = {
+      enableAutoReply: false,
+      responseSubject: "Away",
+      responseBodyPlainText: "Back soon",
+      restrictToContacts: false,
+      restrictToDomain: false,
+    };
+    let graphVacation = {
+      status: "disabled",
+      internalReplyMessage: "Inside",
+      externalReplyMessage: "Outside",
+      externalAudience: "all",
+    };
+    let gmailVacationReads = 0;
+    let gmailVacationFlip = false;
+    let gmailVacationFail = false;
     function route(url, init) {
       const href = String(url);
       const method = (init && init.method) || "GET";
       calls.push({ href, method });
+      if (href === "https://gmail.googleapis.com/gmail/v1/users/me/settings/vacation") {
+        if (method === "GET") {
+          gmailVacationReads += 1;
+          if (gmailVacationFlip && gmailVacationReads % 2 === 0) {
+            return jsonResponse({ ...gmailVacation, responseSubject: "Changed" });
+          }
+          return jsonResponse(gmailVacation);
+        }
+        if (method === "PUT") {
+          if (gmailVacationFail) return jsonResponse({}, 500);
+          gmailVacation = JSON.parse(init.body);
+          return jsonResponse(gmailVacation);
+        }
+      }
+      if (href === "https://graph.microsoft.com/v1.0/me/mailboxSettings/automaticRepliesSetting" && method === "GET") {
+        return jsonResponse(graphVacation);
+      }
+      if (href === "https://graph.microsoft.com/v1.0/me/mailboxSettings" && method === "PATCH") {
+        const body = JSON.parse(init.body);
+        assert.deepStrictEqual(Object.keys(body), ["automaticRepliesSetting"]);
+        graphVacation = { ...graphVacation, ...body.automaticRepliesSetting };
+        return jsonResponse({ automaticRepliesSetting: graphVacation });
+      }
       if (href.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/labels") && method === "GET" && !href.includes("/labels/")) {
         return jsonResponse({ labels: gmailLabels.map((label) => ({ ...label })) });
       }
@@ -4906,11 +5012,286 @@ async function checkProviderApi() {
     assert.ok(db.accountById("named-oauth"));
     assert.ok(db.accountById("outlook-live"));
     secrets.setPassword("gmail-live", "imap-secret");
+    const beforeVacation = calls.length;
+    const locked = await engine.answer("mail:vacationGet", [{ accountId: "gmail-live" }]);
+    assert.strictEqual(locked.success, true);
+    assert.strictEqual(locked.data.requiresReconnect, true);
+    assert.strictEqual(locked.data.canWrite, false);
+    assert.match(locked.data.detail, /gmail.settings.basic/);
+    assert.strictEqual(calls.length, beforeVacation);
+    const unconfirmed = await engine.answer("mail:vacationPut", [{
+      accountId: "gmail-live",
+      action: "save",
+      confirmed: false,
+      mode: "always",
+      subject: "Away",
+      message: "Back soon",
+      externalMessage: "",
+      audience: "all",
+      restrictToDomain: false,
+      revision: "a".repeat(64),
+    }]);
+    assert.strictEqual(unconfirmed.success, false);
+    assert.strictEqual(calls.length, beforeVacation);
+    const keptMailbox = secrets.getPassword("gmail-live");
+    const wrongPerson = sidecar.rememberVacation(db.accountById("gmail-live"), {
+      provider: "google",
+      email: "other@example.com",
+      refreshToken: "vacation-new",
+      grantedScopes: oauthConfig.VACATION_SCOPES.google,
+      accessToken: "vacation-access",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    });
+    assert.strictEqual(wrongPerson.success, false);
+    assert.strictEqual(wrongPerson.error.code, "account_mismatch");
+    assert.strictEqual(secrets.getPassword("gmail-live:vacation"), null);
+    assert.strictEqual(secrets.getPassword("gmail-live"), keptMailbox);
+    const partialGrant = sidecar.rememberVacation(db.accountById("gmail-live"), {
+      provider: "google",
+      email: "ada.live@example.com",
+      refreshToken: "vacation-new",
+      grantedScopes: "openid email",
+      accessToken: "vacation-access",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    });
+    assert.strictEqual(partialGrant.success, false);
+    assert.strictEqual(partialGrant.error.code, "partial");
+    assert.strictEqual(secrets.getPassword("gmail-live:vacation"), null);
+    assert.strictEqual(secrets.getPassword("gmail-live"), keptMailbox);
+    const granted = sidecar.rememberVacation(db.accountById("gmail-live"), {
+      provider: "google",
+      email: "ada.live@example.com",
+      refreshToken: "vacation-refresh",
+      grantedScopes: oauthConfig.VACATION_SCOPES.google,
+      requestedScopes: oauthConfig.VACATION_SCOPES.google,
+      accessToken: "vacation-access",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    });
+    assert.strictEqual(granted.success, true);
+    assert.ok(!JSON.stringify(granted).includes("vacation-refresh"));
+    assert.strictEqual(secrets.getPassword("gmail-live"), keptMailbox);
+    const loaded = await engine.answer("mail:vacationGet", [{ accountId: "gmail-live" }]);
+    assert.strictEqual(loaded.success, true);
+    assert.strictEqual(loaded.data.canWrite, true);
+    assert.strictEqual(loaded.data.settings.subject, "Away");
+    assert.strictEqual(loaded.data.settings.mode, "disabled");
+    const quietAfterLoad = calls.length;
+    const noConfirm = await engine.answer("mail:vacationPut", [{
+      accountId: "gmail-live",
+      action: "save",
+      confirmed: false,
+      revision: loaded.data.revision,
+      mode: "always",
+      subject: "Away",
+      message: "Back soon",
+      externalMessage: "",
+      audience: "all",
+      restrictToDomain: false,
+      start: "",
+      end: "",
+    }]);
+    assert.strictEqual(noConfirm.success, false);
+    assert.strictEqual(noConfirm.error.code, "invalid");
+    assert.strictEqual(calls.length, quietAfterLoad);
+    const stale = await engine.answer("mail:vacationPut", [{
+      accountId: "gmail-live",
+      confirmed: true,
+      action: "save",
+      revision: "b".repeat(64),
+      mode: "always",
+      subject: "Away",
+      message: "Back soon",
+      externalMessage: "",
+      audience: "all",
+      restrictToDomain: false,
+      start: "",
+      end: "",
+    }]);
+    assert.strictEqual(stale.success, false);
+    assert.strictEqual(stale.error.code, "conflict");
+    assert.strictEqual(calls.filter((call) => call.method === "PUT" && call.href.includes("/settings/vacation")).length, 0);
+    gmailVacationFlip = true;
+    gmailVacationReads = 0;
+    const raced = await engine.answer("mail:vacationPut", [{
+      accountId: "gmail-live",
+      confirmed: true,
+      action: "save",
+      revision: loaded.data.revision,
+      mode: "always",
+      subject: "Away",
+      message: "Back soon",
+      externalMessage: "",
+      audience: "all",
+      restrictToDomain: false,
+      start: "",
+      end: "",
+    }]);
+    assert.strictEqual(raced.success, false);
+    assert.strictEqual(raced.error.code, "conflict");
+    assert.strictEqual(calls.filter((call) => call.method === "PUT" && call.href.includes("/settings/vacation")).length, 0);
+    gmailVacationFlip = false;
+    const current = await engine.answer("mail:vacationGet", [{ accountId: "gmail-live" }]);
+    const enabled = await engine.answer("mail:vacationPut", [{
+      accountId: "gmail-live",
+      confirmed: true,
+      action: "save",
+      revision: current.data.revision,
+      mode: "always",
+      subject: "Away",
+      message: "Back soon",
+      externalMessage: "",
+      audience: "contacts",
+      restrictToDomain: false,
+      start: "",
+      end: "",
+    }]);
+    assert.strictEqual(enabled.success, true);
+    assert.strictEqual(enabled.data.settings.mode, "always");
+    assert.strictEqual(enabled.data.settings.audience, "contacts");
+    assert.strictEqual(gmailVacation.responseBodyPlainText, "Back soon");
+    const putsBeforeFail = calls.filter((call) => call.method === "PUT" && call.href.includes("/settings/vacation")).length;
+    gmailVacationFail = true;
+    const failedWrite = await engine.answer("mail:vacationPut", [{
+      accountId: "gmail-live",
+      confirmed: true,
+      action: "disable",
+      revision: enabled.data.revision,
+    }]);
+    assert.strictEqual(failedWrite.success, false);
+    assert.match(failedWrite.error.message, /will not retry automatically/);
+    assert.doesNotMatch(failedWrite.error.message, /500|responseBody/);
+    assert.strictEqual(calls.filter((call) => call.method === "PUT" && call.href.includes("/settings/vacation")).length, putsBeforeFail + 1);
+    assert.strictEqual(gmailVacation.enableAutoReply, true);
+    gmailVacationFail = false;
+    const freshVacation = await engine.answer("mail:vacationGet", [{ accountId: "gmail-live" }]);
+    const disabled = await engine.answer("mail:vacationPut", [{
+      accountId: "gmail-live",
+      confirmed: true,
+      action: "disable",
+      revision: freshVacation.data.revision,
+    }]);
+    assert.strictEqual(disabled.success, true);
+    assert.strictEqual(disabled.data.settings.mode, "disabled");
+    assert.strictEqual(gmailVacation.enableAutoReply, false);
+    assert.strictEqual(gmailVacation.responseSubject, "Away");
+    assert.strictEqual(gmailVacation.responseBodyPlainText, "Back soon");
+    secrets.setPassword("outlook-live:vacation", JSON.stringify({
+      provider: "microsoft",
+      purpose: "vacation",
+      refreshToken: "vacation-ms",
+      accessToken: "access-ms-vacation",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      grantedScopes: oauthConfig.VACATION_SCOPES.microsoft,
+      requestedScopes: oauthConfig.VACATION_SCOPES.microsoft,
+    }));
+    const outlookLoaded = await engine.answer("mail:vacationGet", [{ accountId: "outlook-live" }]);
+    assert.strictEqual(outlookLoaded.data.provider, "microsoft");
+    assert.strictEqual(outlookLoaded.data.settings.message, "Inside");
+    const outlookSaved = await engine.answer("mail:vacationPut", [{
+      accountId: "outlook-live",
+      confirmed: true,
+      action: "save",
+      revision: outlookLoaded.data.revision,
+      mode: "always",
+      subject: "",
+      message: "Inside <safe>",
+      externalMessage: "Outside",
+      audience: "all",
+      restrictToDomain: false,
+      start: "",
+      end: "",
+    }]);
+    assert.strictEqual(outlookSaved.success, true);
+    assert.ok(graphVacation.internalReplyMessage.includes("&lt;safe&gt;"));
+    assert.ok(!JSON.stringify(outlookSaved).includes("vacation-ms"));
+    secrets.setPassword("imap-test", "pw");
+    const sieve = require("../host/mail/sieve-vacation");
+    const originalSieve = sieve.manageSieve;
+    try {
+      sieve.manageSieve = async () => {
+        throw new Error("SECRET-SOCKET connect ECONNREFUSED");
+      };
+      const unreachable = await engine.answer("mail:vacationGet", [{ accountId: "imap-test" }]);
+      assert.strictEqual(unreachable.success, true);
+      assert.strictEqual(unreachable.data.supported, false);
+      assert.match(unreachable.data.detail, /will not send local automatic replies/);
+      assert.doesNotMatch(unreachable.data.detail, /SECRET|ECONNREFUSED/);
+      const unreachablePut = await engine.answer("mail:vacationPut", [{
+        accountId: "imap-test",
+        confirmed: true,
+        action: "disable",
+        revision: "c".repeat(64),
+      }]);
+      assert.strictEqual(unreachablePut.success, false);
+      assert.match(unreachablePut.error.message, /will not retry automatically/);
+      assert.doesNotMatch(unreachablePut.error.message, /SECRET|ECONNREFUSED/);
+      const sieveState = { extensions: ["vacation", "date", "relational"], active: "", script: "" };
+      sieve.manageSieve = async (mail, operation) => {
+        assert.strictEqual(mail.imapHost, "imap.example.test");
+        assert.strictEqual(mail.password, "pw");
+        if (operation.action === "read") return { extensions: sieveState.extensions.slice(), active: sieveState.active, script: sieveState.script };
+        if (operation.action === "disable") {
+          if (sieveState.active === "morrow-vacation") sieveState.active = "";
+          sieveState.script = "";
+          return { extensions: sieveState.extensions.slice(), active: sieveState.active, script: "" };
+        }
+        if (sieveState.active && sieveState.active !== "morrow-vacation") {
+          const error = new Error("This IMAP server already has an active Sieve script. Morrow will not replace it.");
+          error.safe = true;
+          error.status = 409;
+          throw error;
+        }
+        sieveState.script = operation.script;
+        sieveState.active = "morrow-vacation";
+        return { extensions: sieveState.extensions.slice(), active: sieveState.active, script: sieveState.script };
+      };
+      const imapLoaded = await engine.answer("mail:vacationGet", [{ accountId: "imap-test" }]);
+      assert.strictEqual(imapLoaded.data.transport, "sieve");
+      assert.strictEqual(imapLoaded.data.settings.mode, "disabled");
+      const imapSaved = await engine.answer("mail:vacationPut", [{
+        accountId: "imap-test",
+        confirmed: true,
+        action: "save",
+        revision: imapLoaded.data.revision,
+        mode: "always",
+        subject: "Away",
+        message: "Hello",
+        externalMessage: "",
+        audience: "all",
+        restrictToDomain: false,
+        start: "",
+        end: "",
+      }]);
+      assert.strictEqual(imapSaved.success, true);
+      assert.match(sieveState.script, /vacation :days 1 :subject "Away" "Hello";/);
+      assert.doesNotMatch(sieveState.script, /date/);
+      sieveState.active = "other-filters";
+      const blockedScript = await engine.answer("mail:vacationPut", [{
+        accountId: "imap-test",
+        confirmed: true,
+        action: "save",
+        revision: imapSaved.data.revision,
+        mode: "always",
+        subject: "Away",
+        message: "Hello",
+        externalMessage: "",
+        audience: "all",
+        restrictToDomain: false,
+        start: "",
+        end: "",
+      }]);
+      assert.strictEqual(blockedScript.success, false);
+      assert.match(blockedScript.error.message, /will not replace/);
+      assert.strictEqual(sieveState.active, "other-filters");
+    } finally {
+      sieve.manageSieve = originalSieve;
+    }
     const removed = await engine.answer("mail:removeAccount", [{ accountId: "gmail-live" }]);
     assert.strictEqual(removed.success, true);
     assert.strictEqual(secrets.getPassword("gmail-live"), null);
     assert.strictEqual(secrets.getPassword("gmail-live:organize"), null);
     assert.strictEqual(secrets.getPassword("gmail-live:calendar"), null);
+    assert.strictEqual(secrets.getPassword("gmail-live:vacation"), null);
   } finally {
     global.fetch = originalFetch;
     for (const key of envKeys) {
@@ -5861,7 +6242,7 @@ async function checkInboxRules() {
 checkGoogleOauthAlias();
 checkUpdateAuth();
 
-checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
+checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);
