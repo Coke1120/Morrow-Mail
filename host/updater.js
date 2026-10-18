@@ -30,15 +30,14 @@ function setError(err) {
   state.downloading = false;
   state.installing = false;
   if (!state.downloaded) state.available = false;
-  state.needsToken = auth.authFailureKind(state.error) !== "";
+  state.needsToken = false;
 }
 
-function applyFeed(updater, token) {
-  updater.setFeedURL(auth.githubFeed(token));
+function applyFeed(updater) {
+  updater.setFeedURL(auth.githubFeed());
 }
 
 function prepareUpdater() {
-  const token = auth.resolveGithubToken();
   state.needsToken = false;
   if (!autoUpdater) {
     ({ autoUpdater } = require("electron-updater"));
@@ -47,7 +46,7 @@ function prepareUpdater() {
     autoUpdater.allowPrerelease = true;
     bind(autoUpdater);
   }
-  applyFeed(autoUpdater, token);
+  applyFeed(autoUpdater);
   state.enabled = true;
   state.error = null;
   return autoUpdater;

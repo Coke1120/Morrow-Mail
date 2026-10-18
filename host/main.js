@@ -21,6 +21,13 @@ const FIRST_PARTY_HTML = path.join(FIRST_PARTY_DIR, "index.html");
 const updater = require("./updater");
 
 function resolveAppIcon() {
+  // Windows needs native small icon sizes for the titlebar and taskbar.
+  if (process.platform === "win32") {
+    const ico = process.resourcesPath && path.join(process.resourcesPath, "icon.ico");
+    if (ico && fs.existsSync(ico)) return ico;
+    const source = path.join(__dirname, "..", "build", "icon.ico");
+    if (fs.existsSync(source)) return source;
+  }
   // Packaged apps copy build/icon.png to resources/icon.png. A dev checkout
   // still reads the source file; Electron's own resources directory does not have it.
   const packaged = process.resourcesPath ? path.join(process.resourcesPath, "icon.png") : "";

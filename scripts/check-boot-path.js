@@ -253,6 +253,9 @@ assert.strictEqual(fs.readFileSync(path.join(root, "build/icon.icns")).slice(0, 
 const iconIco = fs.readFileSync(path.join(root, "build/icon.ico"));
 assert.strictEqual(iconIco.readUInt16LE(0), 0);
 assert.strictEqual(iconIco.readUInt16LE(2), 1);
+const iconSizes = Array.from({ length: iconIco.readUInt16LE(4) }, (_, i) => iconIco[6 + i * 16] || 256);
+for (const size of [16, 20, 24, 32, 40, 48, 64, 128, 256]) assert.ok(iconSizes.includes(size), `Windows ICO missing ${size}px`);
+assert.ok(pkg.build.extraResources.some(item => item.from === "build/icon.ico" && item.to === "icon.ico"));
 const railSvg = fs.readFileSync(path.join(root, "renderer/morrow-icon.svg"), "utf8");
 assert.ok(railSvg.includes("#193c34") && railSvg.includes("Morrow Mail"));
 assert.strictEqual(fs.readFileSync(path.join(root, "build/morrow-icon.svg"), "utf8"), railSvg);
@@ -621,7 +624,7 @@ const needsToken = updateView({
   available: true,
   error: "404 releases.atom",
 }, "0.1.0");
-assert.strictEqual(needsToken.status, "Updates need a GitHub token.");
+assert.strictEqual(needsToken.status, "Update failed.");
 assert.ok(!needsToken.status.includes("available"));
 assert.ok(!needsToken.status.includes("Private"));
 const rejectedToken = updateView({
@@ -629,7 +632,7 @@ const rejectedToken = updateView({
   available: true,
   error: "The GitHub token configured for Coke1120/Morrow-Mail was rejected.",
 }, "0.1.0");
-assert.strictEqual(rejectedToken.status, "GitHub token was rejected.");
+assert.strictEqual(rejectedToken.status, "Update failed.");
 assert.ok(!rejectedToken.status.includes("available"));
 assert.ok(!appJs.includes("Private updates"));
 assert.ok(!appJs.includes("private repo"));
@@ -821,7 +824,7 @@ const updaterSrc = fs.readFileSync(path.join(root, "host/updater.js"), "utf8");
 assert.ok(updaterSrc.includes("CHANNELS"));
 assert.ok(updaterSrc.includes("setFeedURL"));
 assert.ok(updaterSrc.includes("githubFeed"));
-assert.ok(updaterSrc.includes("resolveGithubToken"));
+assert.ok(!updaterSrc.includes("resolveGithubToken"));
 assert.ok(updaterSrc.includes("needsToken"));
 assert.ok(!updaterSrc.includes("private: true"));
 assert.ok(!updaterSrc.includes("missingTokenMessage"));
@@ -5971,25 +5974,20 @@ async function checkPackagedPublicFeed(secret) {
     const authed = await handlers["host:updateCheck"]();
     assert.strictEqual(checks, 2);
     assert.strictEqual(authed.needsToken, false);
-    assert.deepStrictEqual(feeds[1], {
-      provider: "github",
-      owner: "Coke1120",
-      repo: "Morrow-Mail",
-      private: false,
-      token: secret,
-    });
+    assert.deepStrictEqual(feeds[1], feeds[0], "environment tokens must not select the private provider");
     events.error(new Error("401 Bad credentials " + secret));
     const rejected = updater.snapshot();
-    assert.strictEqual(rejected.needsToken, true);
-    assert.match(rejected.error, /was rejected/);
+    assert.strictEqual(rejected.needsToken, false);
+    assert.match(rejected.error, /No GitHub token is required/);
     assert.ok(!rejected.error.includes(secret));
-    assert.ok(!rejected.error.includes("private"));
     delete process.env.GH_TOKEN;
     events.error(new Error("403 Forbidden"));
-    const required = updater.snapshot();
-    assert.strictEqual(required.needsToken, true);
-    assert.match(required.error, /requires a GitHub token/);
-    assert.ok(!required.error.includes("private"));
+    const blocked = updater.snapshot();
+    assert.strictEqual(blocked.needsToken, false);
+    assert.match(blocked.error, /public GitHub update request was blocked/);
+    events.error(Object.assign(new Error("API rate limit exceeded"), {statusCode:403}));
+    assert.strictEqual(updater.snapshot().needsToken, false);
+    assert.match(updater.snapshot().error, /limiting update requests/);
     events.error(new Error("404 missing latest-mac.yml"));
     const missingFile = updater.snapshot();
     assert.strictEqual(missingFile.needsToken, false);
@@ -6028,64 +6026,30 @@ async function checkUpdateAuth() {
     process.env.MORROW_USER_DATA = dir;
     process.env.MORROW_MAIL_DIR = dir;
     process.env.MORROW_AI_CONFIG_DIR = dir;
-    assert.strictEqual(auth.resolveGithubToken(), "");
-    const openFeed = auth.githubFeed("");
-    assert.deepStrictEqual(openFeed, {
-      provider: "github",
-      owner: "Coke1120",
-      repo: "Morrow-Mail",
-      private: false,
-    });
-    assert.ok(!Object.prototype.hasOwnProperty.call(openFeed, "token"));
-    assert.deepStrictEqual(auth.githubFeed("   "), openFeed);
-    assert.deepStrictEqual(auth.githubFeed(null), openFeed);
-    const withToken = auth.githubFeed(" " + secret + " ");
-    assert.strictEqual(withToken.private, false);
-    assert.strictEqual(withToken.token, secret);
-    const needed = auth.feedNeedsAuthMessage();
-    assert.strictEqual(auth.authFailureKind(needed), "required");
-    assert.ok(needed.includes("github-update.json"));
-    assert.ok(needed.includes(dir));
-    assert.ok(needed.includes("GH_TOKEN"));
-    assert.ok(!needed.includes("private"));
-    assert.ok(!needed.includes("404"));
-    assert.ok(!needed.includes("releases.atom"));
-    assert.ok(!needed.includes(secret));
-    const notFound = auth.explainUpdateError(new Error(
-      '404 "method: GET url: https://github.com/Coke1120/Morrow-Mail/releases.atom token ' + secret + '"'
-    ));
-    assert.ok(notFound.includes("404"));
-    assert.ok(notFound.includes("releases.atom"));
+    const openFeed = { provider: "github", owner: "Coke1120", repo: "Morrow-Mail", private: false };
+    assert.deepStrictEqual(auth.githubFeed(), openFeed);
+    fs.writeFileSync(path.join(dir, "github-update.json"), JSON.stringify({token:secret}));
+    process.env.GH_TOKEN = secret;
+    process.env.GITHUB_TOKEN = secret;
+    assert.deepStrictEqual(auth.githubFeed(secret), openFeed);
+    // Exercise the dependency's real provider factory, not just our config shape.
+    const {createClient} = require("electron-updater/out/providerFactory");
+    const provider = createClient(auth.githubFeed(secret), {allowPrerelease:true}, {executor:{},platform:"win32"});
+    assert.strictEqual(provider.constructor.name, "GitHubProvider");
+    for (const status of [401,403,429]) {
+      const explained = auth.explainUpdateError(Object.assign(new Error("HTTP " + status), {statusCode:status}));
+      assert.match(explained, /[Nn]o GitHub token|do not require a GitHub token/);
+    }
+    assert.match(auth.explainUpdateError(new Error("403 API rate limit exceeded")), /limiting update requests/);
+    assert.match(auth.explainUpdateError(new Error("429 Too Many Requests")), /limiting update requests/);
+    assert.match(auth.explainUpdateError(new Error("net::ERR_INTERNET_DISCONNECTED")), /ERR_INTERNET_DISCONNECTED/);
+    const notFound = auth.explainUpdateError(new Error('404 missing latest.yml ' + secret));
+    assert.match(notFound, /404 missing latest.yml/);
     assert.ok(!notFound.includes(secret));
-    assert.ok(!notFound.includes("private"));
-    assert.ok(!/GH_TOKEN/.test(notFound));
-    assert.strictEqual(auth.authFailureKind(notFound), "");
-    assert.strictEqual(auth.explainUpdateError(new Error("403 Forbidden")), needed);
-    const statusErr = new Error("nope");
-    statusErr.statusCode = 401;
-    assert.strictEqual(auth.explainUpdateError(statusErr), needed);
+    assert.ok(!notFound.includes("required"));
     assert.strictEqual(auth.explainUpdateError(new Error("Could not reach the mail server.")), "Could not reach the mail server.");
-    fs.writeFileSync(auth.tokenFile(), JSON.stringify({ token: secret }));
-    assert.strictEqual(auth.resolveGithubToken(), secret);
-    const rejected = auth.explainUpdateError(new Error("401 Bad credentials " + secret));
-    assert.strictEqual(rejected, auth.tokenRejectedMessage());
-    assert.strictEqual(auth.authFailureKind(rejected), "rejected");
-    assert.ok(rejected.includes("was rejected"));
-    assert.ok(rejected.includes("github-update.json"));
-    assert.ok(rejected.includes(dir));
-    assert.match(rejected, /GH_TOKEN/);
-    assert.ok(!rejected.includes(secret));
-    assert.ok(!rejected.includes("private"));
-    assert.ok(!rejected.includes("releases.atom"));
-    assert.ok(!rejected.includes("404"));
-    process.env.GITHUB_TOKEN = "env-token-wins";
-    assert.strictEqual(auth.resolveGithubToken(), "env-token-wins");
-    const fromEnv = auth.githubFeed(auth.resolveGithubToken());
-    assert.strictEqual(fromEnv.token, "env-token-wins");
-    assert.strictEqual(fromEnv.private, false);
-    fs.writeFileSync(auth.tokenFile(), "{");
+    delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
-    assert.strictEqual(auth.resolveGithubToken(), "");
     await checkPackagedPublicFeed(secret);
   } finally {
     for (const [key, value] of Object.entries(prev)) {

@@ -49,6 +49,7 @@ async function sample(win) {
     const agent = document.getElementById("agent-panel");
     await sleep(40);
     const agentOpacity = Number(getComputedStyle(agent).opacity);
+    const agentSectionOpacity = Number(getComputedStyle(agent.querySelector(":scope > .motion-block")).opacity);
     return {
       reduced: matchMedia("(prefers-reduced-motion: reduce)").matches,
       rowEarly,
@@ -67,6 +68,7 @@ async function sample(win) {
       closeMs: performance.now() - closeStarted,
       closed: !dialog.open,
       agentOpacity,
+      agentSectionOpacity,
       agentHidden: agent.hidden,
       shellHidden: document.getElementById("shell").hidden,
     };
@@ -87,7 +89,8 @@ function checkNormal(data) {
   assert(data.closed === true, "dialog did not close");
   assert(data.agentHidden === false, "agent panel stayed hidden");
   assert(data.shellHidden === true, "Agent must replace the mail shell");
-  assert(data.agentOpacity < 0.98, `agent panel did not enter, opacity ${data.agentOpacity}`);
+  assert(data.agentOpacity === 1, "the page and its sections must not fade on top of each other");
+  assert(data.agentSectionOpacity < 0.99, `Agent sections did not enter, opacity ${data.agentSectionOpacity}`);
 }
 
 function checkReduced(data) {
@@ -98,7 +101,7 @@ function checkReduced(data) {
   assert(data.closed === true, "reduced dialog did not close");
   assert(data.hoverTransform === "none" || data.hoverTransform === data.beforeHover, `reduced hover changed transform (${data.hoverTransform})`);
   assert(data.shellHidden === true, "Agent must replace the mail shell with reduced motion too");
-  assert(data.agentHidden === false && data.agentOpacity === 1, `reduced agent opacity ${data.agentOpacity}`);
+  assert(data.agentHidden === false && data.agentOpacity === 1 && data.agentSectionOpacity === 1, `reduced agent opacity ${data.agentOpacity}/${data.agentSectionOpacity}`);
 }
 
 async function openWindow() {

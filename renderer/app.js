@@ -99,6 +99,11 @@ let agentProposalIds = null;
 let agentPoll = null;
 let brainDragIndex = -1;
 let listMotionKey = "";
+let listOpenKey = "";
+let folderRenderKey = "";
+let chipRenderKey = "";
+let searchAccountKey = "";
+const messageRows = new Map();
 let brainView = {
   accepted: null,
   refreshing: false,
@@ -1302,6 +1307,7 @@ function setPageBusy(panel, on, label) {
 }
 
 let agentLoadOverlay = false;
+let agentLoaded = false;
 
 function syncAgentPageBusy() {
   setPageBusy("agent-panel", !!(agentChatBusy || agentLoadOverlay), "Working…");
@@ -1310,7 +1316,11 @@ function syncAgentPageBusy() {
 function hidePane(id) {
   const el = $(id);
   el.hidden = true;
-  if (el.getAnimations) {
+  const motion = motionApi();
+  if (motion && typeof motion.reset === "function") {
+    motion.reset(el);
+    for (const child of el.querySelectorAll("[data-motion]")) motion.reset(child);
+  } else if (el.getAnimations) {
     for (const animation of el.getAnimations()) animation.cancel();
   }
   el.style.opacity = "";
@@ -2120,6 +2130,17 @@ function renderAccounts() {
   renderSettingsAccounts();
   refreshMailVacation();
   const nav = $("folders");
+  // Sync status and folder selection do not change the folder tree.
+  const key = JSON.stringify([state.accounts, state.accountId, state.providerFolders, state.prefs.gmailOpen, state.prefs.outlookOpen]);
+  if (key === folderRenderKey) {
+    for (const button of nav.querySelectorAll("button.folder")) {
+      const current = button.dataset.accountId === state.accountId && button.dataset.folderId === state.folderId;
+      if (current) button.setAttribute("aria-current", "true");
+      else button.removeAttribute("aria-current");
+    }
+    return;
+  }
+  folderRenderKey = key;
   nav.replaceChildren();
   if (!state.accounts.length) {
     const empty = document.createElement("p");
@@ -2165,6 +2186,8 @@ function renderAccounts() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "folder";
+      button.dataset.accountId = account.id;
+      button.dataset.folderId = folder.id;
       const virtual = isVirtualMailbox(folder);
       if (!virtual) {
         button.dataset.dropKind = "imap";
@@ -2332,8 +2355,11 @@ function threadMembers(fromOpen, listed) {
 function renderChips(account) {
   const row = $("list-chips");
   if (!row) return;
-  row.replaceChildren();
   const folders = state.prefs.chips && account ? chipFolders(account) : [];
+  const key = JSON.stringify([account?.id, state.folderId, folders]);
+  if (key === chipRenderKey) return;
+  chipRenderKey = key;
+  row.replaceChildren();
   row.hidden = folders.length === 0;
   for (const folder of folders) {
     const button = document.createElement("button");
@@ -2855,13 +2881,20 @@ function syncButtonLabel(sync) {
 }
 
 const debugLines = [];
+let logRefreshTimer = null;
+let logRefreshPending = null;
 
 function pushDebug(source, text) {
   const line = redactDebugText(text);
   if (!line) return;
   debugLines.push({ at: Date.now(), source: String(source || "app").slice(0, 40), text: line });
   if (debugLines.length > 200) debugLines.splice(0, debugLines.length - 200);
-  if (state.view === "log") refreshLog().catch(() => paintLog(debugLines));
+  if (state.view === "log" && !logRefreshTimer) {
+    logRefreshTimer = setTimeout(() => {
+      logRefreshTimer = null;
+      if (state.view === "log") refreshLog();
+    }, 150);
+  }
 }
 
 function rememberSyncStatus(sync) {
@@ -2920,9 +2953,11 @@ function finishLocalSync(kind, error) {
 }
 
 let supportLogLines = [];
+const logTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
+const logTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 function logLine(row) {
   const at = new Date(row && row.at);
-  const when = Number.isFinite(+at) ? at.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")" : "Unknown time";
+  const when = Number.isFinite(+at) ? logTimeFormat.format(at) + " (" + logTimeZone + ")" : "Unknown time";
   return [when, redactDebugText(row && row.source), redactDebugText(row && row.text)].filter(Boolean).join(" · ");
 }
 function paintLog(lines) {
@@ -2946,7 +2981,11 @@ function filterSupportLog() {
   for (const row of rows) { const item = document.createElement("li"); item.textContent = logLine(row); list.append(item); }
   if (!rows.length) { const item = document.createElement("li"); item.textContent = "No recent session lines for this source."; list.append(item); }
 }
-async function refreshLog() {
+function refreshLog() {
+  if (!logRefreshPending) logRefreshPending = readSupportLog().finally(() => { logRefreshPending = null; });
+  return logRefreshPending;
+}
+async function readSupportLog() {
   const status = $("log-status");
   try {
     const data = await call("host:getDebugLog", { limit: 200 });
@@ -3067,6 +3106,7 @@ function rowCheck(email, selected) {
 function messageRow(email) {
   const row = document.createElement("div");
   row.className = "message-row";
+  row.mailMessage = email;
   row.dataset.emailId = email.id || "";
   row.dataset.accountId = email.accountId || "";
   row.dataset.folderId = email.folderId || "";
@@ -3150,10 +3190,10 @@ function messageRow(email) {
   actions.setAttribute("data-testid", "mail-row-actions");
   const unread = !!email.unread;
   actions.append(
-    rowAction("read", unread ? "Mark read" : "Mark unread", () => setRead(email, unread)),
-    rowAction("delete", "Delete", () => deleteFromList(email)),
-    rowAction("reply", "Reply", () => replyFromList(email, "reply")),
-    rowAction("reply-all", "Reply All", () => replyFromList(email, "all")),
+    rowAction("read", unread ? "Mark read" : "Mark unread", () => setRead(row.mailMessage, !!row.mailMessage.unread)),
+    rowAction("delete", "Delete", () => deleteFromList(row.mailMessage)),
+    rowAction("reply", "Reply", () => replyFromList(row.mailMessage, "reply")),
+    rowAction("reply-all", "Reply All", () => replyFromList(row.mailMessage, "all")),
   );
   row.append(rowCheck(email, selected), button, actions);
   return row;
@@ -3283,8 +3323,12 @@ function paintSearchCoverage(shown) {
   const scope = $("search-scope");
   scope.hidden = !state.query;
   const picker = $("search-account");
-  picker.replaceChildren(option("", "All connected accounts"));
-  for (const account of state.accounts) picker.appendChild(option(account.id, accountLabel(account)));
+  const key = JSON.stringify(state.accounts.map(account => [account.id, accountLabel(account)]));
+  if (key !== searchAccountKey) {
+    searchAccountKey = key;
+    picker.replaceChildren(option("", "All connected accounts"));
+    for (const account of state.accounts) picker.appendChild(option(account.id, accountLabel(account)));
+  }
   picker.value = state.searchAccountId;
   const account = state.accounts.find((row) => row.id === state.searchAccountId);
   $("list-coverage").textContent = state.query
@@ -3334,9 +3378,6 @@ function renderList() {
   rememberLoadedSelection();
   const list = $("messages");
   const head = $("list-head");
-  for (const node of [...list.children]) {
-    if (node !== head) node.remove();
-  }
   const account = selectedAccount();
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = $("list-title");
@@ -3347,6 +3388,11 @@ function renderList() {
   const shown = shownEmails();
   paintSelectionBar(shown);
   paintSearchCoverage(shown);
+  const keys = new Set(shown.map(email => email.accountId + "\0" + email.id));
+  for (const [key, cached] of messageRows) {
+    if (!keys.has(key)) { cached.row.remove(); messageRows.delete(key); }
+  }
+  list.querySelector(":scope > .empty")?.remove();
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -3366,14 +3412,44 @@ function renderList() {
     }
     list.appendChild(empty);
   } else {
-    for (const email of shown) list.appendChild(messageRow(email));
+    let previous = head;
+    const selected = new Set(state.selectedIds);
+    for (const email of shown) {
+      const key = email.accountId + "\0" + email.id;
+      // Compare displayed fields only: bodies and attachments can be large.
+      // Retained rows keep keyboard focus and read the latest message for actions.
+      const stamp = JSON.stringify([email.folderId, email.from, email.subject, email.snippet, email.date,
+        email.unread, email.isStarred, !!state.query, state.query ? state.accounts.find(a => a.id === email.accountId)?.email : ""]);
+      let cached = messageRows.get(key);
+      if (!cached || cached.stamp !== stamp) {
+        const row = messageRow(email);
+        if (cached) cached.row.replaceWith(row);
+        cached = { row, stamp, selected: selected.has(email.id), current: state.email?.id === email.id };
+        messageRows.set(key, cached);
+      }
+      const row = cached.row;
+      row.mailMessage = email;
+      const isSelected = selected.has(email.id);
+      if (cached.selected !== isSelected) {
+        cached.selected = isSelected;
+        row.classList.toggle("selected", isSelected);
+        row.setAttribute("aria-selected", String(isSelected));
+        const check = row.querySelector(".row-check");
+        check.setAttribute("aria-checked", String(isSelected));
+        check.replaceChildren(strokeIcon(isSelected ? [CHECK_BOX, CHECK_MARK] : [CHECK_BOX], 16));
+      }
+      const current = state.email?.id === email.id;
+      if (cached.current !== current) {
+        cached.current = current;
+        const button = row.querySelector("button.message");
+        if (current) button.setAttribute("aria-current", "true");
+        else button.removeAttribute("aria-current");
+      }
+      if (previous.nextElementSibling !== row) list.insertBefore(row, previous.nextElementSibling);
+      previous = row;
+    }
   }
-  const motionKey = [
-    state.accountId || "",
-    state.folderId || "",
-    state.query,
-    state.emails.map((email) => (email && email.id) || "").join("\n"),
-  ].join("\0");
+  const motionKey = [state.accountId || "", state.folderId || "", state.query].join("\0");
   if (motionKey !== listMotionKey) {
     listMotionKey = motionKey;
     const motion = motionApi();
@@ -3381,7 +3457,9 @@ function renderList() {
   }
   const current = list.querySelector('[aria-current="true"]');
   const filtering = document.activeElement && document.activeElement.id === "list-filter";
-  if (current && !filtering) current.scrollIntoView({ block: "nearest" });
+  const openKey = state.email ? state.email.accountId + "\0" + state.email.id : "";
+  if (current && !filtering && openKey !== listOpenKey) current.scrollIntoView({ block: "nearest" });
+  listOpenKey = openKey;
 }
 
 function snoozedUntilOf(email) {
@@ -4235,6 +4313,7 @@ async function loadSnoozed() {
   }
   try {
     const data = await call("mail:listSnoozed", { accountId: account.id });
+    if (state.accountId !== account.id) return;
     const records = data && Array.isArray(data.records) ? data.records : [];
     const next = new Map();
     for (const row of records) {
@@ -5349,10 +5428,19 @@ async function dropOrganized(target, message) {
   await moveOutlook(message, plan.params.destinationId);
 }
 
+let dropTarget = null;
+let dropTargetClass = "";
 function clearDropTargets() {
-  for (const node of document.querySelectorAll(".drop-target, .drop-reject")) {
-    node.classList.remove("drop-target", "drop-reject");
-  }
+  if (dropTarget) dropTarget.classList.remove("drop-target", "drop-reject");
+  dropTarget = null;
+  dropTargetClass = "";
+}
+function paintDropTarget(node, kind) {
+  if (dropTarget === node && dropTargetClass === kind) return;
+  clearDropTargets();
+  dropTarget = node;
+  dropTargetClass = kind;
+  if (node) node.classList.add(kind);
 }
 
 function onListContext(event) {
@@ -5585,20 +5673,18 @@ function onFolderDragOver(event) {
   if (state.dragFolder) {
     const origin = eventElement(event);
     const node = origin && origin.closest && origin.closest("[data-nest-kind]");
-    clearDropTargets();
-    if (!node) return;
+    if (!node) { clearDropTargets(); return; }
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     const hover = nestHover(state.dragFolder, node);
-    node.classList.add(hover.ok ? "drop-target" : "drop-reject");
+    paintDropTarget(node, hover.ok ? "drop-target" : "drop-reject");
     return;
   }
   const node = event.target.closest && event.target.closest("[data-drop-kind]");
-  if (!node || !state.dragMessage) return;
+  if (!node || !state.dragMessage) { clearDropTargets(); return; }
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = node.dataset.dropKind === "gmail" ? "copy" : "move";
-  clearDropTargets();
-  node.classList.add("drop-target");
+  paintDropTarget(node, "drop-target");
 }
 
 function onFolderDrop(event) {
@@ -5692,10 +5778,18 @@ async function selectFolder(accountId, folderId) {
   const live = isLive(selectedAccount()) && !isStarredFolder(folderId);
   if (live) showStatus("Syncing…");
   else if (!undoOpIds && !sendTimer) showStatus("");
-  await loadSnoozed();
-  const data = await loadList(live);
-  if (live && !undoOpIds && !sendTimer) showStatus(syncStatusLabel(data && data.sync));
-  if (previous !== accountId) await loadProviderFolders(accountGen);
+  // Paint downloaded mail before waiting for IMAP or provider APIs.
+  await loadList();
+  if (state.accountId !== accountId || state.folderId !== folderId) return;
+  if (live) loadList(true).then((data) => {
+    if (state.accountId === accountId && state.folderId === folderId && !undoOpIds && !sendTimer) showStatus(syncStatusLabel(data && data.sync));
+  }).catch((error) => {
+    if (state.accountId === accountId && state.folderId === folderId) showStatus(error.message, true);
+  });
+  if (previous !== accountId) {
+    loadSnoozed();
+    loadProviderFolders(accountGen);
+  }
   refreshMailVacation();
 }
 
@@ -5750,11 +5844,29 @@ async function applySearch() {
   showStatus("");
 }
 
-function scheduleReload(preferredId) {
-  const preferred = typeof preferredId === "string" && preferredId ? preferredId : "";
-  clearTimeout(reloadTimer);
-  reloadTimer = setTimeout(() => {
-    loadAccounts(preferred || undefined).catch((error) => pushDebug("sync", error.message));
+let reloadAccounts = false;
+let reloadPreferred = "";
+let reloadRunning = false;
+let reloadAgain = false;
+function scheduleReload(preferredId, accountsChanged = false) {
+  reloadAccounts ||= accountsChanged;
+  if (typeof preferredId === "string" && preferredId) reloadPreferred = preferredId;
+  reloadAgain = true;
+  if (reloadTimer || reloadRunning) return;
+  reloadTimer = setTimeout(async () => {
+    reloadTimer = null;
+    reloadRunning = true;
+    reloadAgain = false;
+    const accounts = reloadAccounts, preferred = reloadPreferred;
+    reloadAccounts = false; reloadPreferred = "";
+    try {
+      if (accounts) await loadAccounts(preferred || undefined);
+      else await loadList();
+    } catch (error) { pushDebug("sync", error.message); }
+    finally {
+      reloadRunning = false;
+      if (reloadAgain) scheduleReload();
+    }
   }, 150);
 }
 
@@ -5777,7 +5889,7 @@ function onAccountsUpdated(payload) {
       }
     }
   }
-  scheduleReload(preferred);
+  scheduleReload(preferred, true);
 }
 
 function connectPayload() {
@@ -6974,9 +7086,7 @@ function updateView(snapshot, version) {
   let install = false;
   let busy = false;
   const error = snap.error ? String(snap.error) : "";
-  if (snap.needsToken) {
-    status = /was rejected/i.test(error) ? "GitHub token was rejected." : "Updates need a GitHub token.";
-  } else if (error) {
+  if (error) {
     status = "Update failed.";
   } else if (snap.installing) {
     status = "Installing…";
@@ -7562,7 +7672,10 @@ function applySettingsFold(fold, open, animate) {
   const motion = motionApi();
   const live = !!(animate && motion && typeof motion.fold === "function" && !(typeof motion.reduced === "function" && motion.reduced()));
   if (panel && live) motion.fold(panel, open);
-  else if (panel) panel.hidden = !open;
+  else if (panel) {
+    if (motion && typeof motion.reset === "function") motion.reset(panel);
+    panel.hidden = !open;
+  }
 }
 
 function setSettingsFold(name, open, animate) {
@@ -7654,8 +7767,6 @@ function openSettings() {
   paintSettingsMailbox();
   openDialog("settings");
   wireSettingsFolds();
-  const motion = motionApi();
-  if (motion && typeof motion.sections === "function") motion.sections(document.querySelectorAll("#settings .fold"));
   loadSettings();
 }
 
@@ -7690,8 +7801,15 @@ function paintMailVacation() {
   box.hidden = !account;
   if (!account) return;
   const entry = mailVacation.get(account.id);
-  $("mail-ooo-status").textContent = account.email + " · " + (entry?.error ? "Out of Office: unknown — refresh to retry" : vacationSummary(entry?.data)) + (entry?.at ? " · Checked " + new Date(entry.at).toLocaleString() : "");
-  $("mail-ooo-manage").textContent = "Manage / disable";
+  const compact = !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
+  const summary = entry?.error ? "Out of Office: unknown — refresh to retry" : vacationSummary(entry?.data);
+  const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + new Date(entry.at).toLocaleString() : "");
+  box.classList.toggle("is-off", !!compact);
+  box.title = detail;
+  $("mail-ooo-status").textContent = compact ? "Out of Office: off" : detail;
+  $("mail-ooo-status").setAttribute("aria-label", detail);
+  $("mail-ooo-manage").textContent = compact ? "Manage" : "Manage / disable";
+  $("mail-ooo-refresh").hidden = !!compact;
 }
 async function refreshMailVacation(force = false) {
   const account = selectedAccount();
@@ -10197,6 +10315,7 @@ async function loadAgent(options) {
     const runs = history && Array.isArray(history.runs) ? history.runs : triage && triage.runs;
     const payload = Object.assign({}, triage, { runs });
     paintAgent(payload, "");
+    agentLoaded = true;
     await loadStudio();
     if (gen !== agentGen || state.view !== "agent") return;
     const reason = triage && triage.reason;
@@ -10269,9 +10388,11 @@ function showPrimary(view, id) {
   }
   if (id !== "log-panel") hidePane("log-panel");
   if (swap) {
-    armPageMotion(view);
-    revealPanel(id);
-    playPageSections(id);
+    const node = $(id);
+    if (node.querySelector(":scope > .motion-block")) {
+      node.hidden = false;
+      playPageSections(id);
+    } else revealPanel(id);
   } else {
     const node = $(id);
     if (node) node.hidden = false;
@@ -10283,7 +10404,7 @@ function showAgent() {
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
   startAgentPoll();
-  loadAgent().catch((error) => {
+  loadAgent({ overlay: !agentLoaded }).catch((error) => {
     paintAgent(null, error instanceof Error ? error.message : String(error));
   });
 }
