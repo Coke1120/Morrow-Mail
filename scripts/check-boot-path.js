@@ -187,7 +187,7 @@ assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell doe
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.1.0-alpha.5");
+assert.strictEqual(pkg.version, "0.1.0-alpha.6");
 assert.strictEqual(pkg.build.productName, "Morrow Mail");
 assert.strictEqual(pkg.build.appId, "com.coke1120.morrow-mail");
 assert.notStrictEqual(pkg.build.appId, "org.morrowmail.desktop");
@@ -568,8 +568,18 @@ const needsToken = updateView({
   available: true,
   error: "404 releases.atom",
 }, "0.1.0");
-assert.strictEqual(needsToken.status, "Private updates need a GitHub token.");
+assert.strictEqual(needsToken.status, "Updates need a GitHub token.");
 assert.ok(!needsToken.status.includes("available"));
+assert.ok(!needsToken.status.includes("Private"));
+const rejectedToken = updateView({
+  needsToken: true,
+  available: true,
+  error: "The GitHub token configured for Coke1120/Morrow-Mail was rejected.",
+}, "0.1.0");
+assert.strictEqual(rejectedToken.status, "GitHub token was rejected.");
+assert.ok(!rejectedToken.status.includes("available"));
+assert.ok(!appJs.includes("Private updates"));
+assert.ok(!appJs.includes("private repo"));
 assert.strictEqual(updateView(null, 12).version, "");
 assert.strictEqual(updateView(null, 12).status, "Up to date.");
 assert.strictEqual(updateView({ downloading: true, progress: "nope" }, "").status, "Downloading 0%…");
@@ -754,13 +764,30 @@ assert.ok(main.includes("directHost.has(channel)"), "attachIpc would register up
 const updaterSrc = fs.readFileSync(path.join(root, "host/updater.js"), "utf8");
 assert.ok(updaterSrc.includes("CHANNELS"));
 assert.ok(updaterSrc.includes("setFeedURL"));
+assert.ok(updaterSrc.includes("githubFeed"));
 assert.ok(updaterSrc.includes("resolveGithubToken"));
 assert.ok(updaterSrc.includes("needsToken"));
+assert.ok(!updaterSrc.includes("private: true"));
+assert.ok(!updaterSrc.includes("missingTokenMessage"));
 assert.ok(!updaterSrc.includes("releases.atom"));
 assert.ok(!updaterSrc.includes("requestHeaders"));
 assert.ok(!/ghp_[A-Za-z0-9]{20,}/.test(updaterSrc));
-assert.ok(fs.readFileSync(path.join(root, "docs/PACKAGING.md"), "utf8").includes("github-update.json"));
-assert.ok(fs.readFileSync(path.join(root, "docs/UPDATER_TEST.md"), "utf8").includes("github-update.json"));
+const prepareUpdater = functionSource(updaterSrc, "prepareUpdater");
+assert.ok(!prepareUpdater.includes("return null"));
+assert.ok(!prepareUpdater.includes("if (!token)"));
+const authSrc = fs.readFileSync(path.join(root, "host/update-auth.js"), "utf8");
+assert.ok(authSrc.includes("private: false"));
+assert.ok(!authSrc.includes("private repo"));
+assert.ok(!authSrc.includes("returns 404"));
+assert.ok(!authSrc.includes("missingTokenMessage"));
+for (const doc of ["docs/PACKAGING.md", "docs/UPDATER_TEST.md"]) {
+  const text = fs.readFileSync(path.join(root, doc), "utf8");
+  assert.ok(text.includes("github-update.json"), doc);
+  assert.ok(text.includes("private: false"), doc);
+  assert.ok(!text.includes("private: true"), doc);
+  assert.ok(!text.includes("private repo"), doc);
+  assert.ok(!text.includes("returns 404"), doc);
+}
 for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateInstall"]) {
   const count = updaterSrc.split('"' + channel + '"').length - 1;
   assert.ok(count >= 2, channel + " must be registered and listed");
@@ -5519,7 +5546,106 @@ async function checkAiModels() {
   }
 }
 
-function checkUpdateAuth() {
+async function checkPackagedPublicFeed(secret) {
+  const Module = require("module");
+  const feeds = [];
+  const events = {};
+  const handlers = {};
+  let checks = 0;
+  const fakeApp = { isPackaged: true };
+  const fakeAuto = {
+    autoDownload: false,
+    autoInstallOnAppQuit: false,
+    allowPrerelease: false,
+    setFeedURL(feed) {
+      feeds.push({ ...feed });
+    },
+    on(name, fn) {
+      events[name] = fn;
+    },
+    checkForUpdates() {
+      checks += 1;
+      if (events["checking-for-update"]) events["checking-for-update"]();
+      return Promise.resolve(null);
+    },
+  };
+  const originalLoad = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === "electron") {
+      return { app: fakeApp, ipcMain: { handle(name, fn) { handlers[name] = fn; } } };
+    }
+    if (request === "electron-updater") return { autoUpdater: fakeAuto };
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  const updaterPath = require.resolve("../host/updater");
+  delete require.cache[updaterPath];
+  for (const name of ["electron", "electron-updater"]) {
+    try {
+      delete require.cache[require.resolve(name)];
+    } catch {
+      // optional dependency during the feed test
+    }
+  }
+  try {
+    const updater = require("../host/updater");
+    updater.registerIpc();
+    const open = await handlers["host:updateCheck"]();
+    assert.strictEqual(checks, 1);
+    assert.strictEqual(fakeAuto.allowPrerelease, true);
+    assert.strictEqual(fakeAuto.autoDownload, true);
+    assert.strictEqual(open.enabled, true);
+    assert.strictEqual(open.needsToken, false);
+    assert.strictEqual(open.error, null);
+    assert.deepStrictEqual(feeds[0], {
+      provider: "github",
+      owner: "Coke1120",
+      repo: "Morrow-Mail",
+      private: false,
+    });
+    process.env.GH_TOKEN = secret;
+    const authed = await handlers["host:updateCheck"]();
+    assert.strictEqual(checks, 2);
+    assert.strictEqual(authed.needsToken, false);
+    assert.deepStrictEqual(feeds[1], {
+      provider: "github",
+      owner: "Coke1120",
+      repo: "Morrow-Mail",
+      private: false,
+      token: secret,
+    });
+    events.error(new Error("401 Bad credentials " + secret));
+    const rejected = updater.snapshot();
+    assert.strictEqual(rejected.needsToken, true);
+    assert.match(rejected.error, /was rejected/);
+    assert.ok(!rejected.error.includes(secret));
+    assert.ok(!rejected.error.includes("private"));
+    delete process.env.GH_TOKEN;
+    events.error(new Error("403 Forbidden"));
+    const required = updater.snapshot();
+    assert.strictEqual(required.needsToken, true);
+    assert.match(required.error, /requires a GitHub token/);
+    assert.ok(!required.error.includes("private"));
+    events.error(new Error("404 missing latest-mac.yml"));
+    const missingFile = updater.snapshot();
+    assert.strictEqual(missingFile.needsToken, false);
+    assert.match(missingFile.error, /404 missing latest-mac.yml/);
+    const again = await handlers["host:updateCheck"]();
+    assert.strictEqual(checks, 3);
+    assert.strictEqual(again.needsToken, false);
+    assert.strictEqual(again.error, null);
+    assert.ok(!Object.prototype.hasOwnProperty.call(feeds[feeds.length - 1], "token"));
+    fakeApp.isPackaged = false;
+    const dev = updater.init();
+    assert.strictEqual(dev.enabled, false);
+    assert.strictEqual(dev.needsToken, false);
+  } finally {
+    delete process.env.GH_TOKEN;
+    Module._load = originalLoad;
+    delete require.cache[updaterPath];
+  }
+}
+
+async function checkUpdateAuth() {
   const os = require("os");
   const auth = require("../host/update-auth");
   const prev = {
@@ -5538,28 +5664,64 @@ function checkUpdateAuth() {
     process.env.MORROW_MAIL_DIR = dir;
     process.env.MORROW_AI_CONFIG_DIR = dir;
     assert.strictEqual(auth.resolveGithubToken(), "");
-    const missing = auth.missingTokenMessage();
-    assert.ok(missing.includes("github-update.json"));
-    assert.ok(missing.includes(dir));
-    assert.ok(missing.includes("GH_TOKEN"));
-    assert.ok(missing.includes("private"));
-    assert.ok(!missing.includes("releases.atom"));
-    assert.ok(!missing.includes(secret));
-    const explained = auth.explainUpdateError(new Error(
+    const openFeed = auth.githubFeed("");
+    assert.deepStrictEqual(openFeed, {
+      provider: "github",
+      owner: "Coke1120",
+      repo: "Morrow-Mail",
+      private: false,
+    });
+    assert.ok(!Object.prototype.hasOwnProperty.call(openFeed, "token"));
+    assert.deepStrictEqual(auth.githubFeed("   "), openFeed);
+    assert.deepStrictEqual(auth.githubFeed(null), openFeed);
+    const withToken = auth.githubFeed(" " + secret + " ");
+    assert.strictEqual(withToken.private, false);
+    assert.strictEqual(withToken.token, secret);
+    const needed = auth.feedNeedsAuthMessage();
+    assert.strictEqual(auth.authFailureKind(needed), "required");
+    assert.ok(needed.includes("github-update.json"));
+    assert.ok(needed.includes(dir));
+    assert.ok(needed.includes("GH_TOKEN"));
+    assert.ok(!needed.includes("private"));
+    assert.ok(!needed.includes("404"));
+    assert.ok(!needed.includes("releases.atom"));
+    assert.ok(!needed.includes(secret));
+    const notFound = auth.explainUpdateError(new Error(
       '404 "method: GET url: https://github.com/Coke1120/Morrow-Mail/releases.atom token ' + secret + '"'
     ));
-    assert.ok(!explained.includes("releases.atom"));
-    assert.ok(!explained.includes(secret));
-    assert.ok(!explained.includes("available"));
-    assert.match(explained, /GH_TOKEN/);
+    assert.ok(notFound.includes("404"));
+    assert.ok(notFound.includes("releases.atom"));
+    assert.ok(!notFound.includes(secret));
+    assert.ok(!notFound.includes("private"));
+    assert.ok(!/GH_TOKEN/.test(notFound));
+    assert.strictEqual(auth.authFailureKind(notFound), "");
+    assert.strictEqual(auth.explainUpdateError(new Error("403 Forbidden")), needed);
+    const statusErr = new Error("nope");
+    statusErr.statusCode = 401;
+    assert.strictEqual(auth.explainUpdateError(statusErr), needed);
     assert.strictEqual(auth.explainUpdateError(new Error("Could not reach the mail server.")), "Could not reach the mail server.");
     fs.writeFileSync(auth.tokenFile(), JSON.stringify({ token: secret }));
     assert.strictEqual(auth.resolveGithubToken(), secret);
+    const rejected = auth.explainUpdateError(new Error("401 Bad credentials " + secret));
+    assert.strictEqual(rejected, auth.tokenRejectedMessage());
+    assert.strictEqual(auth.authFailureKind(rejected), "rejected");
+    assert.ok(rejected.includes("was rejected"));
+    assert.ok(rejected.includes("github-update.json"));
+    assert.ok(rejected.includes(dir));
+    assert.match(rejected, /GH_TOKEN/);
+    assert.ok(!rejected.includes(secret));
+    assert.ok(!rejected.includes("private"));
+    assert.ok(!rejected.includes("releases.atom"));
+    assert.ok(!rejected.includes("404"));
     process.env.GITHUB_TOKEN = "env-token-wins";
     assert.strictEqual(auth.resolveGithubToken(), "env-token-wins");
+    const fromEnv = auth.githubFeed(auth.resolveGithubToken());
+    assert.strictEqual(fromEnv.token, "env-token-wins");
+    assert.strictEqual(fromEnv.private, false);
     fs.writeFileSync(auth.tokenFile(), "{");
     delete process.env.GITHUB_TOKEN;
     assert.strictEqual(auth.resolveGithubToken(), "");
+    await checkPackagedPublicFeed(secret);
   } finally {
     for (const [key, value] of Object.entries(prev)) {
       if (value === undefined) delete process.env[key];
@@ -6350,10 +6512,9 @@ async function checkInboxRules() {
 }
 
 checkGoogleOauthAlias();
-checkUpdateAuth();
 require("./check-win-secrets").run();
 
-checkAiDraft().then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
+checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

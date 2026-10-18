@@ -20,7 +20,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win -- --publish always
 
 `dist:win` is `electron-builder --win nsis portable --x64`. `build.win.signAndEditExecutable` is `false`. Authenticode is not configured.
 
-4. The job uploads the NSIS setup exe, its `.blockmap`, the portable exe, and `latest.yml` to a **prerelease** on private `Coke1120/Morrow-Mail`. `latest.yml` is the Windows electron-updater feed and names the NSIS setup. The portable exe is a no-install download. `detectUpdateChannel` is `false`, so `0.1.0-alpha.N` still publishes `latest.yml`.
+4. The job uploads the NSIS setup exe, its `.blockmap`, the portable exe, and `latest.yml` to a **prerelease** on public `Coke1120/Morrow-Mail`. `latest.yml` is the Windows electron-updater feed and names the NSIS setup. The portable exe is a no-install download. `detectUpdateChannel` is `false`, so `0.1.0-alpha.N` still publishes `latest.yml`.
 
 The feed URL uses dashes (`Morrow-Mail-Setup-0.1.0-alpha.4.exe`). That is the GitHub Release asset name. The copy in `dist/` keeps the spaces in `Morrow Mail Setup 0.1.0-alpha.4.exe`. This rename does not republish `0.1.0-alpha.4`; electron-builder will not replace assets already uploaded for that tag.
 
@@ -55,19 +55,21 @@ Apple codesign and notarization stay on the MBA, locally, for a later step. Unsi
 CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
 ```
 
-## Updater reads (private repo)
+## Updater reads
 
-`build.publish` is GitHub `Coke1120/Morrow-Mail`, `private: true`, `releaseType: prerelease`. The packaged app writes that into `resources/app-update.yml`. With `private: true` and a token in the environment, `electron-updater` uses the GitHub API and reads `latest.yml` (macOS: `latest-mac.yml`) from the newest prerelease.
+`build.publish` is GitHub `Coke1120/Morrow-Mail`, `private: false`, `releaseType: prerelease`. The packaged app writes that into `resources/app-update.yml`. With `allowPrerelease` on, electron-updater reads the public prerelease feed (`https://github.com/Coke1120/Morrow-Mail/releases.atom`, then `alpha.yml` or `alpha-mac.yml` for an alpha tag, and `latest.yml` or `latest-mac.yml` when that channel file is absent).
 
-The installed app needs `GH_TOKEN` or `GITHUB_TOKEN` set to a PAT that can read this private repo (`repo` scope, or contents read). The Actions token that uploads the release is not shipped inside the app. `npm start` leaves the updater off.
+A packaged install checks and downloads that feed with no GitHub token. `npm start` leaves the updater off.
 
-A Finder or Start Menu launch does not see a shell export. The same PAT can live in the app userData file `github-update.json` (the folder that holds `settings.json`):
+`GH_TOKEN`, `GITHUB_TOKEN`, or the userData file `github-update.json` (the folder that holds `settings.json`) is optional:
 
 ```json
 { "token": "github_pat_..." }
 ```
 
-Do not commit that file. The environment variable wins when both are set. With no token, the updater does not request `https://github.com/Coke1120/Morrow-Mail/releases.atom` (a private repo returns 404 there) and the shell says how to set the token. A token that cannot read the repo fails with that same explanation instead of an update-available state. `build.publish` stays `provider: github`, `private: true`, `releaseType: prerelease`. The token is passed to `electron-updater` in memory (`setFeedURL`); it is not written into `app-update.yml`.
+The environment variable wins when both are set. `setFeedURL` passes that token only when one is configured, and keeps `private: false`. electron-updater then uses the GitHub API for that check. With no token it stays on the public feed. The token stays in memory. It is not written into `app-update.yml`. Do not commit `github-update.json`. The Actions token that uploads the release is not shipped inside the app.
+
+A configured token that GitHub rejects is reported as rejected. A feed response that requires authentication (HTTP 401 or 403) explains how to set the token. The check runs when no token is configured.
 
 ## Product name, icon, and app id
 
@@ -83,4 +85,4 @@ Mail, settings, and `ai.json` follow Electron's userData path for Morrow Mail on
 
 ## Version
 
-`package.json` version drives the app and the release tag `v${version}`. Stay on `0.1.0-alpha.N`. This rename keeps `0.1.0-alpha.4`.
+`package.json` version drives the app and the release tag `v${version}`. Stay on `0.1.0-alpha.N`. The current version is `0.1.0-alpha.6`.
