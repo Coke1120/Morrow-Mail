@@ -916,6 +916,25 @@ button.provider-mini {
   white-space: nowrap;
 }
 
+.provider-row {
+  min-height: 32px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  padding-right: 8px;
+  border-radius: 6px;
+  cursor: context-menu;
+}
+
+.provider-row:hover,
+.provider-row:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.provider-row:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.7);
+  outline-offset: -2px;
+}
+
 .provider-icon { flex: none; opacity: 0.92; }
 
 .provider-create.stacked {
@@ -1604,6 +1623,15 @@ dialog h2 {
   font-size: 18px;
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+
+#confirm { width: min(440px, calc(100vw - 24px)); }
+
+#confirm-body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
 }
 
 dialog button.primary,

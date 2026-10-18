@@ -33,7 +33,6 @@ const state = {
     tidy: false,
   },
   providerFolders: null,
-  providerRename: "",
   dragMessage: null,
   oauthStatus: null,
   oauthPending: false,
@@ -417,6 +416,80 @@ function organizeMenu(email, imapFolders, providerPayload, provider) {
   return { move: move, add: [], remove: [], outlook: labels, note: "" };
 }
 
+function folderActionMenu(folder, provider) {
+  const outlook = provider === "outlook";
+  const name = String((folder && (folder.name || folder.id)) || (outlook ? "Folder" : "Label"));
+  const editable = !!(folder && folder.editable);
+  const items = [];
+  if (editable) {
+    items.push({ id: "rename", label: "Rename" });
+    items.push({ id: "delete", label: "Delete" });
+  }
+  items.push({ id: "create", label: outlook ? "Add folder" : "Add label" });
+  return {
+    name: name,
+    editable: editable,
+    items: items,
+    note: editable ? "" : (outlook
+      ? "This Outlook folder cannot be renamed or deleted."
+      : "This Gmail label cannot be renamed or deleted."),
+  };
+}
+
+function actionConfirm(kind, detail) {
+  const row = detail && typeof detail === "object" ? detail : {};
+  const outlook = row.provider === "outlook";
+  const where = outlook ? "Outlook" : "Gmail";
+  if (kind === "rename") {
+    const from = String(row.name || (outlook ? "Folder" : "Label"));
+    return {
+      title: outlook ? "Rename folder" : "Rename label",
+      body: "Rename “" + from + "” on " + where + "? The name below replaces it. Messages stay in the mailbox.",
+      confirm: "Confirm",
+      cancel: "Cancel",
+      needsName: true,
+      name: from,
+    };
+  }
+  if (kind === "delete") {
+    const label = String(row.name || (outlook ? "Folder" : "Label"));
+    const body = outlook
+      ? "Delete “" + label + "” on Outlook? This deletes the folder, including the messages in it."
+      : "Delete “" + label + "” on Gmail? This removes the label. Messages that had it stay in the mailbox.";
+    return {
+      title: outlook ? "Delete folder" : "Delete label",
+      body: body,
+      confirm: "Confirm",
+      cancel: "Cancel",
+      needsName: false,
+      name: "",
+    };
+  }
+  if (kind === "move") {
+    const subject = String(row.subject || "(no subject)");
+    const target = String(row.target || "that folder");
+    const outlookMove = row.channel === "outlook" || row.channel === "mail:moveProviderMessage";
+    return {
+      title: "Move message",
+      body: outlookMove
+        ? "Move “" + subject + "” to “" + target + "” in Outlook? This moves the message on the provider."
+        : "Move “" + subject + "” to “" + target + "”? This moves the message into that folder.",
+      confirm: "Confirm",
+      cancel: "Cancel",
+      needsName: false,
+      name: "",
+    };
+  }
+  return null;
+}
+
+function confirmsBefore(channel) {
+  return channel === "mail:moveToFolder"
+    || channel === "mail:moveProviderMessage"
+    || channel === "mail:renameProviderFolder"
+    || channel === "mail:deleteProviderFolder";
+}
+
 function calendarMode(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload) || payload.api !== true) {
     return {
@@ -686,6 +759,71 @@ function closeDialog(id) {
     dialog.style.transformOrigin = "";
     delete dialog.dataset.closing;
   });
+}
+
+let confirmResult = null;
+let confirmCopy = null;
+
+function paintConfirm(copy) {
+  $("confirm-title").textContent = copy.title;
+  $("confirm-body").textContent = copy.body;
+  const field = $("confirm-field");
+  const input = $("confirm-name");
+  field.hidden = !copy.needsName;
+  input.value = copy.needsName ? (copy.name || "") : "";
+  $("confirm-ok").textContent = copy.confirm || "Confirm";
+  $("confirm-cancel").textContent = copy.cancel || "Cancel";
+}
+
+function focusConfirm(copy) {
+  if (copy && copy.needsName) {
+    const input = $("confirm-name");
+    input.focus();
+    input.select();
+    return;
+  }
+  $("confirm-ok").focus();
+}
+
+function askConfirm(copy) {
+  const dialog = $("confirm");
+  if (!copy || !dialog) return Promise.resolve({ ok: false, name: "" });
+  if (confirmResult) {
+    const previous = confirmResult;
+    confirmResult = null;
+    previous({ ok: false, name: "" });
+  }
+  confirmCopy = copy;
+  paintConfirm(copy);
+  const pending = new Promise((resolve) => {
+    confirmResult = resolve;
+  });
+  if (!dialog.open) openDialog("confirm");
+  focusConfirm(copy);
+  return pending;
+}
+
+function finishConfirm(result) {
+  const pending = confirmResult;
+  confirmResult = null;
+  confirmCopy = null;
+  if (pending) pending(result);
+  closeDialog("confirm");
+}
+
+function submitConfirm() {
+  if (!confirmResult) return;
+  const name = $("confirm-name").value.trim();
+  if (confirmCopy && confirmCopy.needsName && !name) {
+    $("confirm-body").textContent = "Enter a name.";
+    $("confirm-name").focus();
+    return;
+  }
+  finishConfirm({ ok: true, name: name });
+}
+
+function cancelConfirm() {
+  finishConfirm({ ok: false, name: "" });
 }
 
 function toHtml(text) {
@@ -1343,46 +1481,22 @@ function appendProviderBlock(nav, account) {
     row.dataset.dropKind = provider === "outlook" ? "outlook" : "gmail";
     row.dataset.dropId = folder.id;
     row.title = folder.name;
+    row.tabIndex = 0;
+    row.setAttribute("aria-haspopup", "menu");
+    const shown = folder.label || folder.name;
+    row.setAttribute("aria-label", folder.editable
+      ? shown + ". Right-click for Rename and Delete."
+      : shown);
     row.style.paddingLeft = (folder.depth * 14) + "px";
-    if (state.providerRename === folder.id && folder.editable) {
-      const form = document.createElement("form");
-      form.className = "provider-create";
-      const input = document.createElement("input");
-      input.value = folder.name;
-      input.setAttribute("aria-label", "Rename");
-      input.maxLength = 200;
-      const save = document.createElement("button");
-      save.type = "submit";
-      save.className = "provider-mini";
-      save.textContent = "Save";
-      form.append(input, save);
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        guard(() => renameProviderFolder(folder.id, input.value));
-      });
-      row.appendChild(form);
-    } else {
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = folder.label || folder.name;
-      row.append(providerMark(provider), name);
-      if (folder.editable) {
-        const rename = document.createElement("button");
-        rename.type = "button";
-        rename.className = "provider-mini";
-        rename.textContent = "Rename";
-        rename.addEventListener("click", () => {
-          state.providerRename = folder.id;
-          renderAccounts();
-        });
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "provider-mini";
-        remove.textContent = "Delete";
-        remove.addEventListener("click", () => guard(() => deleteProviderFolder(folder.id)));
-        row.append(rename, remove);
-      }
-    }
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = shown;
+    row.append(providerMark(provider), name);
+    row.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openFolderMenu(folder, provider, event.clientX, event.clientY);
+    });
     block.appendChild(row);
   }
   const form = document.createElement("form");
@@ -2360,7 +2474,28 @@ async function trashOpen(email) {
   await removeOpen(email, threaded ? "mail:threadTrash" : "mail:delete", "Moved to Trash.");
 }
 
+function folderTitle(folders, id) {
+  const rows = Array.isArray(folders) ? folders : [];
+  const found = rows.find((folder) => folder && String(folder.id) === String(id));
+  if (!found) return String(id || "that folder");
+  return String(found.name || found.label || found.id);
+}
+
+async function confirmRelocation(channel, email, target) {
+  if (!confirmsBefore(channel)) return true;
+  const answer = await askConfirm(actionConfirm("move", {
+    subject: email && email.subject,
+    target: target,
+    channel: channel === "mail:moveProviderMessage" ? "outlook" : "imap",
+    provider: channel === "mail:moveProviderMessage" ? "outlook" : "",
+  }));
+  return !!(answer && answer.ok);
+}
+
 async function moveOpen(email, targetFolderId) {
+  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const target = folderTitle(foldersOf(account), targetFolderId);
+  if (!(await confirmRelocation("mail:moveToFolder", email, target))) return;
   await finishRemoval(email, "Moved.", await call("mail:moveToFolder", {
     emailId: email.id,
     accountId: email.accountId,
@@ -2489,7 +2624,6 @@ async function loadProviderFolders(gen) {
   const account = selectedAccount();
   if (!isLive(account)) {
     state.providerFolders = null;
-    state.providerRename = "";
     renderAccounts();
     return;
   }
@@ -2522,23 +2656,46 @@ async function grantOrganize() {
 
 async function createProviderFolder(name, parentId) {
   await call("mail:createProviderFolder", { accountId: state.accountId, name, parentId: parentId || "" });
-  state.providerRename = "";
   showStatus("Saved on the provider.");
   await loadProviderFolders(accountGen);
 }
 
 async function renameProviderFolder(folderId, name) {
   await call("mail:renameProviderFolder", { accountId: state.accountId, folderId, name });
-  state.providerRename = "";
   showStatus("Saved on the provider.");
   await loadProviderFolders(accountGen);
 }
 
 async function deleteProviderFolder(folderId) {
   await call("mail:deleteProviderFolder", { accountId: state.accountId, folderId });
-  state.providerRename = "";
   showStatus("Removed on the provider.");
   await loadProviderFolders(accountGen);
+}
+
+async function confirmRenameFolder(folder, provider) {
+  const name = String((folder && folder.name) || "");
+  if (confirmsBefore("mail:renameProviderFolder")) {
+    const answer = await askConfirm(actionConfirm("rename", { provider: provider, name: name }));
+    if (!answer || !answer.ok) return;
+    const next = String(answer.name || "").trim();
+    if (!next) return;
+    if (next === name.trim()) {
+      showStatus("Name is unchanged.");
+      return;
+    }
+    await renameProviderFolder(folder.id, next);
+    return;
+  }
+  await renameProviderFolder(folder.id, name);
+}
+
+async function confirmDeleteFolder(folder, provider) {
+  const name = String((folder && (folder.name || folder.id)) || "");
+  if (confirmsBefore("mail:deleteProviderFolder")) {
+    const answer = await askConfirm(actionConfirm("delete", { provider: provider, name: name }));
+    if (!answer || !answer.ok) return;
+  }
+  await deleteProviderFolder(folder.id);
 }
 
 async function changeLabels(email, addLabelIds, removeLabelIds) {
@@ -2552,6 +2709,10 @@ async function changeLabels(email, addLabelIds, removeLabelIds) {
 }
 
 async function moveOutlook(email, destinationId) {
+  const payload = state.providerFolders;
+  const folders = payload && Array.isArray(payload.folders) ? payload.folders : [];
+  const target = folderTitle(folders, destinationId);
+  if (!(await confirmRelocation("mail:moveProviderMessage", email, target))) return;
   await call("mail:moveProviderMessage", {
     accountId: email.accountId,
     emailId: email.id,
@@ -2603,6 +2764,65 @@ function appendMenuGroup(menu, title, items, run) {
   }
 }
 
+function placeMenu(menu, x, y) {
+  menu.hidden = false;
+  menu.dataset.open = "";
+  menu.style.left = "8px";
+  menu.style.top = "8px";
+  const rect = menu.getBoundingClientRect();
+  const maxX = Math.max(8, window.innerWidth - rect.width - 8);
+  const maxY = Math.max(8, window.innerHeight - rect.height - 8);
+  menu.style.left = Math.min(Math.max(8, x), maxX) + "px";
+  menu.style.top = Math.min(Math.max(8, y), maxY) + "px";
+  setTimeout(() => {
+    if (menu.hidden) return;
+    menu.dataset.open = "1";
+    const first = menu.querySelector("[role='menuitem']");
+    if (first) first.focus();
+  }, 0);
+}
+
+function focusProviderCreate() {
+  const input = document.querySelector("#provider-folders .provider-create input");
+  if (!input) return;
+  input.focus();
+  if (input.scrollIntoView) input.scrollIntoView({ block: "nearest" });
+}
+
+function openFolderMenu(folder, provider, x, y) {
+  const model = folderActionMenu(folder, provider);
+  const menu = ensureOrganizeMenu();
+  menu.setAttribute("aria-label", provider === "outlook" ? "Folder" : "Label");
+  menu.replaceChildren();
+  for (const item of model.items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "menuitem";
+    button.setAttribute("role", "menuitem");
+    button.textContent = item.label;
+    button.addEventListener("click", () => {
+      closeOrganizeMenu();
+      if (item.id === "create") {
+        focusProviderCreate();
+        return;
+      }
+      if (item.id === "rename") {
+        guard(() => confirmRenameFolder(folder, provider));
+        return;
+      }
+      guard(() => confirmDeleteFolder(folder, provider));
+    });
+    menu.appendChild(button);
+  }
+  if (model.note) {
+    const note = document.createElement("p");
+    note.className = "organize-note";
+    note.textContent = model.note;
+    menu.appendChild(note);
+  }
+  placeMenu(menu, x, y);
+}
+
 function openOrganizeMenu(email, x, y) {
   if (!email) return;
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
@@ -2610,6 +2830,7 @@ function openOrganizeMenu(email, x, y) {
   const listed = account ? providerPayloadFor(account) : null;
   const model = organizeMenu(email, foldersOf(account), listed, provider);
   const menu = ensureOrganizeMenu();
+  menu.setAttribute("aria-label", "Move and labels");
   menu.replaceChildren();
   appendMenuGroup(menu, "Move to folder", model.move, (item) => moveOpen(email, item.id));
   appendMenuGroup(menu, "Add Gmail label", model.add, (item) => changeLabels(email, [item.id], []));
@@ -2627,21 +2848,7 @@ function openOrganizeMenu(email, x, y) {
     note.textContent = "No folders to show.";
     menu.appendChild(note);
   }
-  menu.hidden = false;
-  menu.dataset.open = "";
-  menu.style.left = "8px";
-  menu.style.top = "8px";
-  const rect = menu.getBoundingClientRect();
-  const maxX = Math.max(8, window.innerWidth - rect.width - 8);
-  const maxY = Math.max(8, window.innerHeight - rect.height - 8);
-  menu.style.left = Math.min(Math.max(8, x), maxX) + "px";
-  menu.style.top = Math.min(Math.max(8, y), maxY) + "px";
-  setTimeout(() => {
-    if (menu.hidden) return;
-    menu.dataset.open = "1";
-    const first = menu.querySelector("[role='menuitem']");
-    if (first) first.focus();
-  }, 0);
+  placeMenu(menu, x, y);
 }
 
 function emailFromRow(row) {
@@ -2765,6 +2972,7 @@ function wireOrganize() {
   folders.addEventListener("dragover", onFolderDragOver);
   folders.addEventListener("drop", onFolderDrop);
   document.addEventListener("click", (event) => {
+    if (event.button !== 0) return;
     const menu = $("organize-menu");
     if (!menu || menu.hidden || menu.dataset.open !== "1") return;
     if (menu.contains(event.target)) return;
@@ -6242,6 +6450,18 @@ function wire() {
   $("tidy").addEventListener("click", () => guard(tidyInbox));
   $("settings-open").addEventListener("click", openSettings);
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
+  $("confirm-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitConfirm();
+  });
+  $("confirm-cancel").addEventListener("click", () => cancelConfirm());
+  $("confirm").addEventListener("close", () => {
+    if (!confirmResult) return;
+    const pending = confirmResult;
+    confirmResult = null;
+    confirmCopy = null;
+    pending({ ok: false, name: "" });
+  });
   $("ai-save").addEventListener("click", () => {
     saveAiSettings().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
   });

@@ -1593,6 +1593,65 @@ assert.ok(parity.includes("Multi-select"));
 assert.ok(parity.includes("one message"));
 assert.ok(independentDoc.includes("Right-click"));
 assert.ok(independentDoc.includes("Drag a message row"));
+const folderChrome = loadFunctions(appJs, ["folderActionMenu", "actionConfirm", "confirmsBefore"]);
+const travelMenu = folderChrome.folderActionMenu({ id: "Label_9", name: "Work/Travel", editable: true }, "gmail");
+assert.deepStrictEqual(travelMenu.items.map((item) => item.id), ["rename", "delete", "create"]);
+assert.deepStrictEqual(travelMenu.items.map((item) => item.label), ["Rename", "Delete", "Add label"]);
+assert.strictEqual(travelMenu.note, "");
+const systemMenu = folderChrome.folderActionMenu({ id: "INBOX", name: "Inbox", editable: false }, "gmail");
+assert.deepStrictEqual(systemMenu.items.map((item) => item.id), ["create"]);
+assert.match(systemMenu.note, /cannot be renamed or deleted/);
+const outlookMenuRow = folderChrome.folderActionMenu({ id: "f1", name: "Receipts", editable: true }, "outlook");
+assert.strictEqual(outlookMenuRow.items[2].label, "Add folder");
+const renameCopy = folderChrome.actionConfirm("rename", { provider: "gmail", name: "Work/Travel" });
+assert.strictEqual(renameCopy.title, "Rename label");
+assert.strictEqual(renameCopy.confirm, "Confirm");
+assert.strictEqual(renameCopy.cancel, "Cancel");
+assert.strictEqual(renameCopy.needsName, true);
+assert.strictEqual(renameCopy.name, "Work/Travel");
+assert.match(renameCopy.body, /Work\/Travel/);
+assert.match(renameCopy.body, /Gmail/);
+const deleteCopy = folderChrome.actionConfirm("delete", { provider: "outlook", name: "Receipts" });
+assert.strictEqual(deleteCopy.title, "Delete folder");
+assert.match(deleteCopy.body, /Receipts/);
+assert.match(deleteCopy.body, /including the messages/);
+assert.strictEqual(deleteCopy.confirm, "Confirm");
+const gmailDelete = folderChrome.actionConfirm("delete", { provider: "gmail", name: "Work/Travel" });
+assert.match(gmailDelete.body, /removes the label/);
+assert.match(gmailDelete.body, /stay in the mailbox/);
+const moveCopy = folderChrome.actionConfirm("move", { subject: "Travel plans", target: "Notes", channel: "imap" });
+assert.strictEqual(moveCopy.title, "Move message");
+assert.match(moveCopy.body, /Travel plans/);
+assert.match(moveCopy.body, /Notes/);
+assert.match(moveCopy.body, /into that folder/);
+assert.strictEqual(moveCopy.confirm, "Confirm");
+const outlookMoveCopy = folderChrome.actionConfirm("move", {
+  subject: "Travel plans",
+  target: "Receipts",
+  channel: "mail:moveProviderMessage",
+});
+assert.match(outlookMoveCopy.body, /Outlook/);
+assert.match(outlookMoveCopy.body, /Receipts/);
+assert.strictEqual(folderChrome.actionConfirm("label", { name: "Travel" }), null);
+assert.strictEqual(folderChrome.confirmsBefore("mail:moveToFolder"), true);
+assert.strictEqual(folderChrome.confirmsBefore("mail:moveProviderMessage"), true);
+assert.strictEqual(folderChrome.confirmsBefore("mail:renameProviderFolder"), true);
+assert.strictEqual(folderChrome.confirmsBefore("mail:deleteProviderFolder"), true);
+assert.strictEqual(folderChrome.confirmsBefore("mail:modifyMessageLabels"), false);
+assert.strictEqual(folderChrome.confirmsBefore("mail:createProviderFolder"), false);
+assert.ok(appJs.includes('confirmRelocation("mail:moveToFolder"'));
+assert.ok(appJs.includes('confirmRelocation("mail:moveProviderMessage"'));
+assert.ok(appJs.includes('confirmsBefore("mail:renameProviderFolder")'));
+assert.ok(appJs.includes('confirmsBefore("mail:deleteProviderFolder")'));
+assert.ok(!appJs.includes('confirmsBefore("mail:modifyMessageLabels")'));
+assert.ok(!appJs.includes("state.providerRename"));
+assert.ok(!appJs.includes('rename.textContent = "Rename"'));
+assert.ok(appJs.includes("openFolderMenu"));
+assert.ok(appJs.includes("focusProviderCreate"));
+assert.ok(html.includes('id="confirm"'));
+assert.ok(html.includes('id="confirm-ok">Confirm'));
+assert.ok(html.includes('id="confirm-cancel">Cancel'));
+assert.ok(css.includes("#confirm-body"));
 assert.strictEqual(
   providerUi.providerCopy("scope_missing", "gmail"),
   "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.",

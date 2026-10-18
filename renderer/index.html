@@ -480,6 +480,20 @@
       <p class="hint">The API key stays in local AI config, the same store as GenMail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
       </div>
     </dialog>
+    <dialog id="confirm" aria-labelledby="confirm-title">
+      <form id="confirm-form">
+        <h2 id="confirm-title">Confirm</h2>
+        <p id="confirm-body"></p>
+        <div id="confirm-field" hidden>
+          <label for="confirm-name">Name</label>
+          <input id="confirm-name" type="text" maxlength="200" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="row">
+          <button type="submit" class="primary" id="confirm-ok">Confirm</button>
+          <button type="button" class="ghost" id="confirm-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
     <script src="./motion.bundle.js"></script>
     <script src="./app.js"></script>
   </body>
