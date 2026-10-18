@@ -2075,13 +2075,6 @@ function connectButton() {
   return button;
 }
 
-function renderBanner() {
-  const banner = $("banner");
-  banner.textContent = state.accounts.length ? "" : "No mailbox yet. Connect an account.";
-  banner.hidden = !banner.textContent;
-  banner.title = banner.textContent;
-}
-
 function syncRemove() {
   const button = $("remove");
   const live = isLive(settingsAccount());
@@ -2131,7 +2124,7 @@ function renderAccounts() {
   refreshMailVacation();
   const nav = $("folders");
   // Sync status and folder selection do not change the folder tree.
-  const key = JSON.stringify([state.accounts, state.accountId, state.providerFolders, state.prefs.gmailOpen, state.prefs.outlookOpen]);
+  const key = JSON.stringify([state.accounts, state.accountId, state.prefs.gmailOpen, state.prefs.outlookOpen]);
   if (key === folderRenderKey) {
     for (const button of nav.querySelectorAll("button.folder")) {
       const current = button.dataset.accountId === state.accountId && button.dataset.folderId === state.folderId;
@@ -2241,8 +2234,43 @@ function renderAccounts() {
       nav.appendChild(button);
     }
     }
-    appendProviderBlock(nav, account);
   }
+}
+
+function fillAccountOptions(select, rows, selected, emptyLabel = "No mailbox") {
+  const key = JSON.stringify(rows.map(account => [account.id, account.email]));
+  if (select.dataset.optionsKey !== key) {
+    select.dataset.optionsKey = key;
+    select.replaceChildren(...(rows.length ? rows.map(account => option(account.id, account.email || account.id)) : [option("", emptyLabel)]));
+  }
+  select.disabled = !rows.length;
+  select.value = selected || "";
+}
+
+let providerPageKey = "";
+function paintProviderPage() {
+  const account = selectedAccount();
+  fillAccountOptions($("provider-account"), state.accounts, account?.id);
+  const key = JSON.stringify([account?.id, account && folderProvider(account), state.providerFolders]);
+  if (key === providerPageKey) return;
+  providerPageKey = key;
+  const root = $("provider-content");
+  root.replaceChildren();
+  if (account && isLive(account) && ["gmail", "outlook"].includes(folderProvider(account))) {
+    appendProviderBlock(root, account);
+  } else {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = account ? "This mailbox uses IMAP folders. Open Mail to browse and organize them." : "Connect a Google or Microsoft mailbox to manage labels and folders.";
+    root.append(note);
+    if (!account) root.append(connectButton());
+  }
+}
+
+function showProviderPage() {
+  showPrimary("folders", "provider-panel");
+  paintProviderPage();
+  loadProviderFolders(accountGen);
 }
 
 function providerPayloadFor(account) {
@@ -4381,27 +4409,31 @@ async function loadAccounts(preferredId) {
   state.accounts = Array.isArray(data) ? data : [];
   rememberSelection(preferredId);
   renderAccounts();
-  renderBanner();
   syncRemove();
   await loadSnoozed();
   if (gen !== accountGen) return;
   await loadList();
   if (gen !== accountGen) return;
-  await loadProviderFolders(gen);
-  if (gen !== accountGen) return;
+  loadProviderFolders(gen);
+  if (state.view === "folders") paintProviderPage();
   renderReader(false);
 }
 
+const providerFolderPending = new Map();
 async function loadProviderFolders(gen) {
   const account = selectedAccount();
   if (!isLive(account)) {
     state.providerFolders = null;
-    renderAccounts();
+    paintProviderPage();
     return;
   }
   const requestId = account.id;
   try {
-    const payload = await call("mail:listProviderFolders", { accountId: requestId });
+    if (!providerFolderPending.has(requestId)) {
+      const pending = call("mail:listProviderFolders", { accountId: requestId }).finally(() => providerFolderPending.delete(requestId));
+      providerFolderPending.set(requestId, pending);
+    }
+    const payload = await providerFolderPending.get(requestId);
     if (gen !== accountGen || state.accountId !== requestId) return;
     state.providerFolders = { ...(payload || {}), accountId: requestId };
   } catch (error) {
@@ -4414,7 +4446,7 @@ async function loadProviderFolders(gen) {
       folders: [],
     };
   }
-  renderAccounts();
+  if (state.view === "folders") paintProviderPage();
 }
 
 async function grantOrganize() {
@@ -5733,11 +5765,12 @@ function wireOrganize() {
   $("messages").addEventListener("pointerdown", onMessagePointerDown, true);
   $("messages").addEventListener("dragstart", onMessageDragStart);
   $("messages").addEventListener("dragend", onMessageDragEnd);
-  const folders = $("folders");
-  folders.addEventListener("dragstart", onFolderDragStart);
-  folders.addEventListener("dragend", onFolderDragEnd);
-  folders.addEventListener("dragover", onFolderDragOver);
-  folders.addEventListener("drop", onFolderDrop);
+  for (const folders of [$("folders"), $("provider-content")]) {
+    folders.addEventListener("dragstart", onFolderDragStart);
+    folders.addEventListener("dragend", onFolderDragEnd);
+    folders.addEventListener("dragover", onFolderDragOver);
+    folders.addEventListener("drop", onFolderDrop);
+  }
   document.addEventListener("click", (event) => {
     if (event.button !== 0) return;
     const menu = $("organize-menu");
@@ -5877,7 +5910,6 @@ function onAccountsUpdated(payload) {
     state.accounts = accounts;
     rememberSelection(preferred);
     renderAccounts();
-    renderBanner();
     syncRemove();
     if (preferred && state.oauthPending) {
       const view = accounts.find((account) => account.id === preferred);
@@ -6897,7 +6929,8 @@ async function removeAccount() {
 
 async function refresh() {
   const pages = { calendar: [loadCalendar, "Calendar refreshed."], agent: [loadAgent, "Agent refreshed."],
-    brain: [loadBrain, "Profile reloaded."], log: [refreshLog, "Log refreshed."] };
+    brain: [loadBrain, "Profile reloaded."], log: [refreshLog, "Log refreshed."],
+    folders: [() => loadProviderFolders(accountGen), "Folders and labels refreshed."] };
   if (pages[state.view]) {
     const [load, receipt] = pages[state.view];
     await load();
@@ -7110,7 +7143,7 @@ function updateView(snapshot, version) {
 }
 
 function paintUpdate(view) {
-  for (const prefix of ["", "about-"]) {
+  for (const prefix of ["about-"]) {
     $(prefix + "version").textContent = view.version ? "Version " + view.version : "";
     const status = $(prefix + "update-status");
     status.textContent = (view.error ? view.status + " " + view.error : view.status) + (view.lastCheckedAt ? " Last checked " + new Date(view.lastCheckedAt).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : "");
@@ -7122,7 +7155,11 @@ function paintUpdate(view) {
     install.disabled = !!view.busy;
   }
   $("about-update-quit").hidden = !view.install;
-  $("update-quit-note").hidden = !view.install;
+}
+
+function openAbout() {
+  openDialog("about-dialog");
+  api.invoke("host:updateGetState").then(bumpUpdate).catch(error => bumpUpdate({ error: error.message }));
 }
 
 function showUpdate(snapshot) {
@@ -7148,7 +7185,7 @@ function bumpUpdate(snapshot) {
 }
 
 async function checkForUpdates() {
-  $("update-check").disabled = true;
+  $("about-update-check").disabled = true;
   try {
     bumpUpdate(await api.invoke("host:updateCheck"));
   } catch (error) {
@@ -7157,7 +7194,7 @@ async function checkForUpdates() {
 }
 
 async function installUpdate() {
-  $("update-install").disabled = true;
+  $("about-update-install").disabled = true;
   try {
     bumpUpdate(await api.invoke("host:updateInstall"));
   } catch (error) {
@@ -10370,8 +10407,9 @@ function markRail(view) {
     calendar: "rail-calendar",
     brain: "rail-brain",
     log: "rail-log",
+    folders: "rail-folders",
   }[view];
-  for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-log"]) {
+  for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-log", "rail-folders"]) {
     const node = $(id);
     if (node) node.setAttribute("aria-current", id === current ? "page" : "false");
   }
@@ -10382,7 +10420,7 @@ function showPrimary(view, id) {
   const swap = state.view !== view;
   if (view !== "agent") stopAgentPoll();
   markRail(view);
-  for (const pane of ["shell", "calendar-panel", "agent-panel", "brain"]) {
+  for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel"]) {
     if (pane === id) continue;
     hidePane(pane);
   }
@@ -11147,7 +11185,15 @@ function wire() {
     });
   });
   $("rail-calendar").addEventListener("click", showCalendar);
+  $("rail-folders").addEventListener("click", showProviderPage);
+  $("provider-account").addEventListener("change", () => guard(async () => {
+    const account = state.accounts.find(row => row.id === $("provider-account").value);
+    if (!account) return;
+    await selectFolder(account.id, foldersOf(account)[0]?.id || "INBOX");
+    paintProviderPage();
+  }));
   $("rail-log").addEventListener("click", showLog);
+  $("rail-about").addEventListener("click", openAbout);
   $("log-refresh").addEventListener("click", () => {
     refreshLog().catch((error) => {
       const status = $("log-status");
@@ -11203,7 +11249,7 @@ function wire() {
   $("settings-calendar").addEventListener("click", () => { state.calendarAccountId = settingsAccount()?.id || ""; closeDialog("settings"); showCalendar(); });
   $("settings-capabilities-refresh").addEventListener("click", loadSettingsCapabilities);
   $("settings-log").addEventListener("click", async () => { await closeDialog("settings"); showLog(); });
-  $("settings-about").addEventListener("click", () => { openDialog("about-dialog"); api.invoke("host:updateGetState").then(bumpUpdate).catch(error => bumpUpdate({ error: error.message })); });
+  $("settings-about").addEventListener("click", openAbout);
   $("about-close").addEventListener("click", () => closeDialog("about-dialog"));
   $("about-update-check").addEventListener("click", checkForUpdates);
   $("about-update-install").addEventListener("click", installUpdate);
@@ -11357,12 +11403,6 @@ function wire() {
       brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
       paintBrain(brainSnapshot, brainView);
     });
-  });
-  $("update-check").addEventListener("click", () => {
-    checkForUpdates();
-  });
-  $("update-install").addEventListener("click", () => {
-    installUpdate();
   });
   $("connect-open").addEventListener("click", () => openConnectFor(null));
   $("connect").addEventListener("close", () => { state.reconnectAccountId = null; $("email").readOnly = false; $("connect-title").textContent = "Connect account"; $("connect-recovery-note").textContent = ""; });
