@@ -18,6 +18,16 @@ async function run(){
   assert.match(get('connect-status').textContent,/Could not finish sign-in.*Fixture consent rejected/);
   assert.equal(get('oauth-microsoft').disabled,false);
   assert.equal(get('oauth-google').disabled,true);
+  ui.run(`calls.length=0; call=async(channel)=>{calls.push(channel); if(channel==='mail:addAccount') return {id:'box',email:'ada@example.com'}; return [];};
+    loadAccounts=()=>new Promise((resolve)=>setTimeout(resolve,40));`);
+  const connected=ui.run(`connectOAuth('microsoft')`);
+  await new Promise((resolve)=>setTimeout(resolve,15));
+  assert.equal(ui.run('state.oauthPending'),false);
+  assert.equal(get('connect-close').textContent,'Cancel');
+  ui.run('dismissConnect()');
+  assert.equal(ui.run(`calls.includes('mail:cancelOAuth')`),false);
+  await connected;
+  assert.match(get('status').textContent,/Connected ada@example.com/);
   ui.run('paintSyncControl()');
   assert.equal(get('sync-detail').textContent,'No account connected');
   assert.equal(get('refresh').disabled,true);

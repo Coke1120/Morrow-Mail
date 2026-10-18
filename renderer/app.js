@@ -5283,7 +5283,9 @@ function onAccountsUpdated(payload) {
     syncRemove();
     if (preferred && state.oauthPending) {
       const view = accounts.find((account) => account.id === preferred);
-      if (view && view.email) {
+      if (view && view.email && !view.needsReauth) {
+        state.oauthPending = false;
+        paintConnectPending();
         closeDialog("connect");
         showStatus(`Connected ${view.email}. Downloading recent Inbox mail…`);
       }
@@ -5358,6 +5360,8 @@ async function connectOAuth(provider) {
   try {
     const view = await call("mail:addAccount", { provider, expectedAccountId: state.reconnectAccountId || undefined });
     if (!view || !view.id || !view.email) throw new Error("Sign-in did not return an account.");
+    state.oauthPending = false;
+    paintConnectPending();
     closeDialog("connect");
     showStatus(`Connected ${view.email}. Downloading recent Inbox mail…`);
     await loadAccounts(view.id);

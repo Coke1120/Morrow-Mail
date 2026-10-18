@@ -786,6 +786,7 @@ let scheduleTimer = null;
 let syncing = false;
 let pumping = false;
 let oauthGeneration = 0;
+const oauthCommitted = new Set();
 let idleController = null;
 const idleSafetyAt = new Map();
 const idleReported = new Map();
@@ -865,7 +866,15 @@ function markMissingOAuthSecrets() {
   let changed = false;
   for (const row of db.listAccountRows()) {
     if (row.auth_kind !== "oauth2") continue;
-    if (secrets.getPassword(row.id)) continue;
+    let secret = null;
+    try {
+      secret = secrets.getPassword(row.id);
+    } catch (error) {
+      // A just-saved mailbox stays connected if the key store read fails.
+      if (oauthCommitted.has(row.id)) continue;
+      throw error;
+    }
+    if (secret) continue;
     // A purged or unavailable key store is not evidence of abandoned sign-in.
     // New OAuth accounts are inserted only after authentication succeeds.
     // Keep local mail and purpose-specific grants so re-login can reuse the id.
@@ -911,6 +920,63 @@ function finishOAuthPage(signed, okFlag, message) {
   try { signed.complete({ ok: okFlag === true, message: message || "" }); } catch { /* the browser already left */ }
 }
 
+function noteOAuthSyncFailure(id, error, secret) {
+  if (http.isRateLimit(error)) {
+    noteRateLimit(id, error);
+    return;
+  }
+  const message = remote.explain(error, secret);
+  if (/password|keychain|rejected/i.test(message)) db.setAuthError(id, message);
+}
+
+async function settleOAuthMailbox(id) {
+  const row = db.accountById(id);
+  if (!row) return;
+  let token = "";
+  try {
+    token = await secretFor(row);
+  } catch (error) {
+    noteOAuthSyncFailure(id, error, "");
+    emitAccounts();
+    return;
+  }
+  try {
+    await remote.withClient(row, token, async (client) => {
+      const listed = await remote.listFolderRecords(client);
+      db.replaceFolders(id, listed.folders || [], listed.delimiter || "/");
+    });
+  } catch (error) {
+    noteOAuthSyncFailure(id, error, token);
+  }
+  try {
+    const current = db.accountById(id);
+    if (current) await remote.verifySmtp(current, token);
+  } catch (error) {
+    const message = remote.explain(error, token);
+    if (/rejected/i.test(message)) db.setAuthError(id, message);
+  }
+  const account = db.accountById(id);
+  if (!account) return;
+  const inbox = db.folderByWellKnown(id, "inbox");
+  if (inbox) noteActive(id, inbox.path);
+  if (inbox) {
+    try {
+      await syncFolderPath(account, inbox.path);
+    } catch (error) {
+      if (!error || !error.syncReported) noteOAuthSyncFailure(id, error, token);
+    }
+  }
+  emitAccounts({ activeAccountId: id, folderId: inbox ? inbox.path : "" });
+  const fresh = db.accountById(id);
+  if (!fresh) return;
+  try {
+    await syncAccount(fresh, { background: true });
+  } catch (error) {
+    if (!error || !error.syncReported) noteOAuthSyncFailure(id, error, token);
+  }
+  emitAccounts();
+}
+
 async function connectOAuthAccount(providerInput, expectedAccountId) {
   const gen = ++oauthGeneration;
   let signed;
@@ -953,99 +1019,56 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
     grantedScopes: signed.grantedScopes,
     requestedScopes: signed.requestedScopes || signed.grantedScopes,
   });
-  try {
-    await remote.withClient(draft, signed.accessToken, async (client) => {
-      const listed = await remote.listFolderRecords(client);
-      draft.folders = listed.folders;
-      draft.delimiter = listed.delimiter;
-    });
-    try {
-      await remote.verifySmtp(draft, signed.accessToken);
-    } catch (error) {
-      const message = remote.explain(error, signed.accessToken);
-      if (/rejected/i.test(message)) throw error;
-    }
-  } catch (error) {
-    const message = remote.explain(error, signed.accessToken);
-    finishOAuthPage(signed, false, message);
-    return fail("auth", message);
-  }
-  if (gen !== oauthGeneration) {
-    finishOAuthPage(signed, false, "Sign-in canceled.");
-    return fail("oauth_cancelled", "Sign-in canceled.");
-  }
   const existing = db.accountByEmail(signed.email);
   const id = existing ? existing.id : draft.id;
   const displayName = signed.displayName || null;
-  if (existing) {
-    db.updateAccountLogin(id, {
-      username: draft.username,
-      profile: draft.profile,
-      imapHost: draft.imap_host,
-      imapPort: draft.imap_port,
-      imapTls: draft.imap_tls === 1,
-      smtpHost: draft.smtp_host,
-      smtpPort: draft.smtp_port,
-      smtpTls: draft.smtp_tls === 1,
-      authKind: "oauth2",
-      displayName,
-    });
-  } else {
-    db.insertAccount({
-      id,
-      email: draft.email,
-      username: draft.username,
-      profile: draft.profile,
-      imapHost: draft.imap_host,
-      imapPort: draft.imap_port,
-      imapTls: draft.imap_tls === 1,
-      smtpHost: draft.smtp_host,
-      smtpPort: draft.smtp_port,
-      smtpTls: draft.smtp_tls === 1,
-      delimiter: draft.delimiter || "/",
-      createdAt: Date.now(),
-      authKind: "oauth2",
-      displayName,
-    });
-  }
+  const login = {
+    username: draft.username,
+    profile: draft.profile,
+    imapHost: draft.imap_host,
+    imapPort: draft.imap_port,
+    imapTls: draft.imap_tls === 1,
+    smtpHost: draft.smtp_host,
+    smtpPort: draft.smtp_port,
+    smtpTls: draft.smtp_tls === 1,
+    authKind: "oauth2",
+    displayName,
+  };
   try {
     secrets.setPassword(id, blob);
+    oauthCommitted.add(id);
   } catch (error) {
-    if (!existing) db.removeAccount(id);
+    oauthCommitted.delete(id);
     const message = error instanceof Error ? error.message : "Could not save OAuth tokens.";
     finishOAuthPage(signed, false, message);
     return fail("keychain", message);
   }
-  db.replaceFolders(id, draft.folders || [], draft.delimiter || "/");
-  finishOAuthPage(signed, true);
-  const inbox = db.folderByWellKnown(id, "inbox");
-  if (inbox) noteActive(id, inbox.path);
-  const account = db.accountById(id);
-  if (inbox && account) {
-    try {
-      await syncFolderPath(account, inbox.path);
-    } catch (error) {
-      if (http.isRateLimit(error)) noteRateLimit(id, error);
-      else {
-        const message = remote.explain(error, signed.accessToken);
-        if (/password|keychain|rejected/i.test(message)) db.setAuthError(id, message);
-      }
+  try {
+    if (existing) db.updateAccountLogin(id, login);
+    else {
+      db.insertAccount({
+        id,
+        email: draft.email,
+        ...login,
+        delimiter: "/",
+        createdAt: Date.now(),
+      });
     }
+  } catch (error) {
+    if (!existing) {
+      secrets.deletePassword(id);
+      oauthCommitted.delete(id);
+    }
+    const message = error instanceof Error ? error.message : "Could not save this account.";
+    finishOAuthPage(signed, false, message);
+    return fail("storage", message);
   }
-  emitAccounts({ activeAccountId: id, folderId: inbox ? inbox.path : "" });
+  finishOAuthPage(signed, true);
+  emitAccounts({ activeAccountId: id, folderId: "" });
   watchIdle();
   setTimeout(() => {
-    const row = db.accountById(id);
-    if (!row) return;
-    syncAccount(row, { background: true }).then(() => emitAccounts()).catch((error) => {
-      if (http.isRateLimit(error)) noteRateLimit(id, error);
-      else {
-        const message = remote.explain(error, signed.accessToken);
-        if (/password|keychain|rejected/i.test(message)) db.setAuthError(id, message);
-      }
-      emitAccounts();
-    });
-  }, 200);
+    settleOAuthMailbox(id).catch(() => {});
+  }, 0);
   return ok(accountView(db.accountById(id), 0));
 }
 
