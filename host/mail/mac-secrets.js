@@ -1,15 +1,14 @@
 const { spawnSync } = require("child_process");
-
-const SERVICE = "genmail-exact";
+const { SERVICE, LEGACY_SERVICE, migrateRead } = require("./secret-service");
 
 function run(args) {
   return spawnSync("security", args, { encoding: "utf8" });
 }
 
-function setPassword(account, password) {
+function write(service, account, password) {
   const result = run([
     "add-generic-password",
-    "-s", SERVICE,
+    "-s", service,
     "-a", account,
     "-U",
     "-w", password,
@@ -20,14 +19,31 @@ function setPassword(account, password) {
   }
 }
 
-function getPassword(account) {
-  const result = run(["find-generic-password", "-s", SERVICE, "-a", account, "-w"]);
+function find(service, account) {
+  const result = run(["find-generic-password", "-s", service, "-a", account, "-w"]);
   if (result.status !== 0) return null;
   return result.stdout.replace(/\n$/, "");
 }
 
-function deletePassword(account) {
-  run(["delete-generic-password", "-s", SERVICE, "-a", account]);
+function remove(service, account) {
+  run(["delete-generic-password", "-s", service, "-a", account]);
 }
 
-module.exports = { setPassword, getPassword, deletePassword, SERVICE };
+function setPassword(account, password) {
+  write(SERVICE, account, password);
+}
+
+function getPassword(account) {
+  return migrateRead(
+    (service) => find(service, account),
+    (service, password) => write(service, account, password),
+    (service) => remove(service, account),
+  );
+}
+
+function deletePassword(account) {
+  remove(SERVICE, account);
+  remove(LEGACY_SERVICE, account);
+}
+
+module.exports = { setPassword, getPassword, deletePassword, SERVICE, LEGACY_SERVICE };

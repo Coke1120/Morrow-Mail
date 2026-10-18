@@ -4,13 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data: https: http:;" />
-    <title>GenMail REA</title>
+    <title>Morrow Mail</title>
+    <link rel="icon" href="./morrow-icon.svg" />
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body data-ui="first-party">
     <div class="app">
-    <nav class="rail" aria-label="GenMail">
-      <div class="rail-logo" aria-hidden="true">G</div>
+    <nav class="rail" aria-label="Morrow Mail">
+      <img class="rail-logo" src="./morrow-icon.svg" width="36" height="36" alt="" aria-hidden="true" />
       <div class="rail-rule" aria-hidden="true"></div>
       <button type="button" class="rail-btn" id="rail-agent" aria-current="false" aria-label="Agent" title="Agent">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -39,7 +40,7 @@
     </nav>
     <div class="workspace">
     <header>
-      <h1 class="sr">GenMail REA</h1>
+      <h1 class="sr">Morrow Mail</h1>
       <div class="leading">
         <button type="button" class="primary" id="compose-open">
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
@@ -153,7 +154,7 @@
     <section id="agent-panel" class="primary-space" hidden aria-label="Agent">
       <div class="space-head">
         <div>
-          <p class="space-kicker">GenMail Agent</p>
+          <p class="space-kicker">Morrow Mail</p>
           <h2 id="agent-greeting">Agent</h2>
         </div>
         <div class="row space-actions">
@@ -195,7 +196,7 @@
       </details>
       <form id="agent-composer" class="agent-composer">
         <label class="sr" for="agent-input">Message the agent</label>
-        <textarea id="agent-input" rows="2" maxlength="2000" placeholder="Ask GenMail Agent…"></textarea>
+        <textarea id="agent-input" rows="2" maxlength="2000" placeholder="Ask Morrow Mail…"></textarea>
         <button type="submit" class="primary" id="agent-send">Ask</button>
       </form>
     </section>
@@ -233,7 +234,7 @@
         </form>
         <label for="brain-fix-note">Fix note <span class="optional">(optional)</span></label>
         <input id="brain-fix-note" type="text" autocomplete="off" />
-        <p class="hint">Fix rewrites a learned row. Forget removes it. A missing AI key points to GenMail → AI Setup. Rebuild uses a connected mailbox and never sample mail.</p>
+        <p class="hint">Fix rewrites a learned row. Forget removes it. A missing AI key points to Morrow Mail → AI Setup. Rebuild uses a connected mailbox and never sample mail.</p>
       </section>
       <section id="brain-categories" role="tabpanel" aria-labelledby="brain-tab-categories" hidden>
         <h3 id="brain-categories-title">Categories</h3>
@@ -394,7 +395,7 @@
         <input id="schedule-at" type="datetime-local" hidden />
         <p id="scheduled-heading" class="hint">Scheduled</p>
         <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
-        <p class="hint" id="schedule-note">Sends while the app is open. If GenMail is closed at that time, it sends the next time you open it.</p>
+        <p class="hint" id="schedule-note">Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.</p>
           </div>
         </div>
         <div class="row">
@@ -516,7 +517,7 @@
           </div>
         </section>
       </div>
-      <p class="hint">The API key stays in local AI config, the same store as GenMail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
+      <p class="hint">The API key stays in local AI config, the same store as Morrow Mail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
       </div>
     </dialog>
     <dialog id="move-picker" aria-labelledby="move-picker-title">

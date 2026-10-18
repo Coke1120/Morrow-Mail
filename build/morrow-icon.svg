@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Morrow Mail</title>
+  <desc id="desc">A pale envelope beneath a rising sun on a forest green rounded square.</desc>
+  <rect width="1024" height="1024" rx="224" fill="#193c34"/>
+  <path d="M380 396a132 132 0 0 1 264 0Z" fill="#b9d5ad"/>
+  <rect x="224" y="420" width="576" height="348" rx="60" fill="#f1f1df"/>
+  <path d="m254 453 222 157a62 62 0 0 0 72 0l222-157" fill="none" stroke="#193c34" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

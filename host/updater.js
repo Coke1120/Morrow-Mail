@@ -95,7 +95,7 @@ function bind(updater) {
 }
 
 function init() {
-  // Dev / unpackaged: keep stub state so GenMail UI update:getState stays safe.
+  // Dev / unpackaged: keep stub state so the shell update:getState stays safe.
   if (!app.isPackaged) {
     state.enabled = false;
     state.needsToken = false;

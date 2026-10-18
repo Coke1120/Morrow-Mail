@@ -1,6 +1,6 @@
-# genmail-rea
+# Morrow Mail
 
-Private Electron rewrite of GenMail Exact (pre-rebrand). Not the public [Morrow-Mail](https://github.com/Coke1120/Morrow-Mail) line.
+Private Electron mail client. The npm package is `morrow-mail`. The GitHub repository may still be named `genmail-rea` until Leo renames it. This is not the public [Morrow-Mail](https://github.com/Coke1120/Morrow-Mail) Swift and Rust app (`org.morrowmail.desktop`).
 
 ## Run (dev)
 
@@ -13,7 +13,7 @@ npm start
 
 Optional: set `GENMAIL_ASAR` to an `app.asar` path to load that external UI instead (for example Genspark Super App's `Contents/Resources/app.asar`). Leave the variable unset for the first-party shell. See [docs/INDEPENDENT_UI.md](docs/INDEPENDENT_UI.md).
 
-Secrets: macOS Keychain / Windows DPAPI (`genmail-exact` service), or env `GENMAIL_AI_API_KEY` / `XAI_API_KEY`. OAuth: see [docs/OAUTH.md](docs/OAUTH.md). Packaging: [docs/PACKAGING.md](docs/PACKAGING.md).
+Secrets: macOS Keychain / Windows DPAPI. New items use the `morrow-mail` service and reads still accept `genmail-exact`. Env `GENMAIL_AI_API_KEY` / `XAI_API_KEY` still overrides the AI key. OAuth: see [docs/OAUTH.md](docs/OAUTH.md). Packaging and the app id: [docs/PACKAGING.md](docs/PACKAGING.md).
 
 ## Status
 

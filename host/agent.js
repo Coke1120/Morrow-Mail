@@ -4,7 +4,7 @@ const { userDataDir, loadConfig } = require("./ai-config");
 const { complete, extractJson } = require("./openai-client");
 const { writingBrief, taxonomy } = require("./brain");
 
-const KEY_ERROR = "Add an API key in GenMail → AI Setup.";
+const KEY_ERROR = "Add an API key in Morrow Mail → AI Setup.";
 const MAIL_ERROR = "Connect a mailbox. Sample mail is not used.";
 const PERSON_ERROR = "Select a message or pass a contact email.";
 const CAL_NOTE = "No calendar grant. This plan uses mail only.";
@@ -60,7 +60,7 @@ const CATALOG = [
 ];
 
 const SYSTEM = [
-  "You are the local GenMail assistant.",
+  "You are the local Morrow Mail assistant.",
   "Use only the JSON in the user message.",
   "Never invent messages, people, or events.",
   "Never send mail.",
@@ -861,7 +861,7 @@ async function applyMove(message, labelName) {
 }
 
 const CHAT_SYSTEM = [
-  "You are the local GenMail assistant.",
+  "You are the local Morrow Mail assistant.",
   "Use only the JSON in the user message.",
   "Never invent messages, people, or events.",
   "Never send mail. Never claim a message was sent.",

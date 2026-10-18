@@ -115,7 +115,7 @@ function personaFrom(store) {
       kind: "rows",
       rows: [row("ai-setup", 0, {
         label: "Not configured",
-        value: "Open GenMail → AI Setup and enter an OpenAI-compatible base URL, API key, and model id.",
+        value: "Open Morrow Mail → AI Setup and enter an OpenAI-compatible base URL, API key, and model id.",
         source: "auto",
       })],
     });

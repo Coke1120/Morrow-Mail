@@ -3,7 +3,7 @@ const { loadConfig, completionsUrl, modelsUrl } = require("./ai-config");
 function requireConfig() {
   const cfg = loadConfig();
   if (!cfg.apiKey) {
-    const error = new Error("Add an API key in GenMail → AI Setup.");
+    const error = new Error("Add an API key in Morrow Mail → AI Setup.");
     error.code = "ai-unconfigured";
     throw error;
   }
@@ -148,7 +148,7 @@ async function listModels(input) {
   const apiKey = typeof draft.apiKey === "string" && draft.apiKey.trim()
     ? draft.apiKey.trim()
     : saved.apiKey;
-  if (!apiKey) return { ok: false, message: "Add an API key in GenMail → AI Setup." };
+  if (!apiKey) return { ok: false, message: "Add an API key in Morrow Mail → AI Setup." };
   if (!baseUrl) return { ok: false, message: "Base URL is required" };
   let response;
   try {

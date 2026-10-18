@@ -1,6 +1,6 @@
 # Brain skills and Agent triage
 
-GenMail REA runs these on the mailbox cache and your OpenAI-compatible key (`GenMail → AI Setup`). It does not call Genspark. The host has no sample mailbox.
+Morrow Mail runs these on the mailbox cache and your OpenAI-compatible key (`Morrow Mail → AI Setup`). It does not call Genspark. The host has no sample mailbox.
 
 ## Skills
 
@@ -24,7 +24,7 @@ No API key returns `accepted: false` with the AI Setup error. No connected mailb
 
 ## Agent
 
-Agent opens from the leftmost rail, in the same strip as Mail, Calendar, and Brain, and from the toolbar Agent button. It replaces the mail shell with the full Agent page: a greeting, category todo stacks, skill chips, Manage Skills, and a composer that says Ask GenMail Agent. The folder column and message list are the Mail page. Home todos come from `nativeAgent:home:todosCached`. Opening Agent paints that cache, then runs `nativeAgent:triage` when the cache is stale. Saving Brain categories calls `nativeAgent:home:refreshTaxonomy` so the stacks follow the new order. Done and Dismiss call `nativeAgent:home:todoUpdate` and stay on this computer. The transcript and standing notes stay on that page.
+Agent opens from the leftmost rail, in the same strip as Mail, Calendar, and Brain, and from the toolbar Agent button. It replaces the mail shell with the full Agent page: a greeting, category todo stacks, skill chips, Manage Skills, and a composer that says Ask Morrow Mail. The folder column and message list are the Mail page. Home todos come from `nativeAgent:home:todosCached`. Opening Agent paints that cache, then runs `nativeAgent:triage` when the cache is stale. Saving Brain categories calls `nativeAgent:home:refreshTaxonomy` so the stacks follow the new order. Done and Dismiss call `nativeAgent:home:todoUpdate` and stay on this computer. The transcript and standing notes stay on that page.
 
 A message is routed on the host. Naming a home skill runs that skill. "Triage inbox" (or "sort the inbox") runs triage. "Draft a reply" proposes a draft. Anything else is a question. Each question sends a system prompt that must not invent mail and must not send, the last few turns, standing notes, and snippets from the cached inbox and calendar. There is no sample mailbox to include. The transcript is `agent-chat.json` in the AI config directory. Standing notes are `agent-memory.json` in that same directory. Both survive a relaunch.
 
@@ -36,7 +36,7 @@ Needs an AI key, needs a mailbox, and an empty inbox cache are empty states. The
 
 Email Brain is the leftmost rail entry after Calendar, with Profile, Categories, and Skills. It opens from that rail button and the toolbar Brain button, and replaces the mail shell. Mail returns to folders, the message list, and the reader. Opening loads the cached persona, categories, and home and library skills, then calls `emailBrain:refresh` with source `open` (a fresh cache does not call the model).
 
-Profile shows `ownerName`, `emailsAnalyzed`, `factsLearned`, and `updatedAt` when the cached persona includes them, plus recent updates from local activity. Writing rules are added, edited, and deleted there. Learned rows (source `auto`) use Fix and Forget. Fix calls the model and replaces that stored row. Forget asks, then removes the row. Refresh calls `emailBrain:refresh` with source `manual` and updates the living profile from sent mail first, then inbox mail. Rebuild asks, then calls `emailBrain:rebuild` and replaces the generated persona from a larger sent-and-inbox sample. User writing rules stay. Progress is the refresh and rebuild events. Rebuild and Fix call the model when a key is set. Rebuild needs a connected mailbox. No mailbox and an empty cache are host errors, not stand-in mail. A missing key tells you to open GenMail → AI Setup.
+Profile shows `ownerName`, `emailsAnalyzed`, `factsLearned`, and `updatedAt` when the cached persona includes them, plus recent updates from local activity. Writing rules are added, edited, and deleted there. Learned rows (source `auto`) use Fix and Forget. Fix calls the model and replaces that stored row. Forget asks, then removes the row. Refresh calls `emailBrain:refresh` with source `manual` and updates the living profile from sent mail first, then inbox mail. Rebuild asks, then calls `emailBrain:rebuild` and replaces the generated persona from a larger sent-and-inbox sample. User writing rules stay. Progress is the refresh and rebuild events. Rebuild and Fix call the model when a key is set. Rebuild needs a connected mailbox. No mailbox and an empty cache are host errors, not stand-in mail. A missing key tells you to open Morrow Mail → AI Setup.
 
 Categories edit locally until Save, which replaces the stored list. That list is the taxonomy the next Agent triage uses. Add with AI and Fix category stay local until Save. They need an API key and show the host error when the key is missing. Use defaults copies the host defaults into the list, still unsaved until Save.
 

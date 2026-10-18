@@ -1,7 +1,7 @@
 {
-  "name": "genmail-rea",
+  "name": "morrow-mail",
   "version": "0.1.0-alpha.4",
-  "description": "GenMail Exact Electron host rewrite (pre-rebrand). Private.",
+  "description": "Morrow Mail. Private Electron client. The GitHub repo may still be genmail-rea.",
   "main": "host/main.js",
   "private": true,
   "author": "Leo Ho",
@@ -32,8 +32,8 @@
     "esbuild": "^0.28.2"
   },
   "build": {
-    "appId": "com.coke1120.genmail-rea",
-    "productName": "GenMail REA",
+    "appId": "com.coke1120.morrow-mail",
+    "productName": "Morrow Mail",
     "copyright": "Copyright © Leo Ho",
     "directories": {
       "output": "dist",
@@ -72,11 +72,17 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": ["dir", "zip"],
+      "icon": "build/icon.icns",
       "identity": null,
       "hardenedRuntime": false,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "CFBundleDisplayName": "Morrow Mail",
+        "CFBundleName": "Morrow Mail"
+      }
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         { "target": "nsis", "arch": ["x64"] },
         { "target": "portable", "arch": ["x64"] }
@@ -89,6 +95,7 @@
       "createDesktopShortcut": true
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": ["AppImage"],
       "category": "Office"
     }

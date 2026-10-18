@@ -1,6 +1,8 @@
 const { spawnSync } = require("child_process");
+const { SERVICE, LEGACY_SERVICE, migrateRead } = require("./secret-service");
 
-const SERVICE = "genmail-exact";
+const STORE_DIR = "morrow-mail";
+const LEGACY_STORE_DIR = "genmail-rea";
 
 function ps(script) {
   return spawnSync(
@@ -10,16 +12,20 @@ function ps(script) {
   );
 }
 
-function setPassword(account, password) {
+function targetOf(service, account) {
   const a = String(account).replace(/'/g, "''");
+  return `${service}:${a}`.replace(/'/g, "''");
+}
+
+function writePassword(dirName, service, account, password) {
   const p = String(password).replace(/'/g, "''");
-  const target = `${SERVICE}:${a}`.replace(/'/g, "''");
+  const target = targetOf(service, account);
+  const dir = String(dirName).replace(/'/g, "''");
   const script = `
 \$ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Security
 \$bytes = [Text.Encoding]::UTF8.GetBytes('${p}')
-[Security.Cryptography.ProtectedData]::Protect(\$bytes, \$null, 'CurrentUser') | Out-Null
-\$dir = Join-Path \$env:LOCALAPPDATA 'genmail-rea\\secrets'
+\$dir = Join-Path \$env:LOCALAPPDATA '${dir}\\secrets'
 New-Item -ItemType Directory -Force -Path \$dir | Out-Null
 \$path = Join-Path \$dir ('${target}' -replace '[^A-Za-z0-9._:-]','_')
 \$prot = [Security.Cryptography.ProtectedData]::Protect(\$bytes, \$null, 'CurrentUser')
@@ -32,13 +38,13 @@ New-Item -ItemType Directory -Force -Path \$dir | Out-Null
   }
 }
 
-function getPassword(account) {
-  const a = String(account).replace(/'/g, "''");
-  const target = `${SERVICE}:${a}`.replace(/'/g, "''");
+function readPassword(dirName, service, account) {
+  const target = targetOf(service, account);
+  const dir = String(dirName).replace(/'/g, "''");
   const script = `
 \$ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Security
-\$dir = Join-Path \$env:LOCALAPPDATA 'genmail-rea\\secrets'
+\$dir = Join-Path \$env:LOCALAPPDATA '${dir}\\secrets'
 \$path = Join-Path \$dir ('${target}' -replace '[^A-Za-z0-9._:-]','_')
 if (-not (Test-Path -LiteralPath \$path)) { exit 2 }
 \$prot = [IO.File]::ReadAllBytes(\$path)
@@ -51,15 +57,40 @@ if (-not (Test-Path -LiteralPath \$path)) { exit 2 }
   return result.stdout;
 }
 
-function deletePassword(account) {
-  const a = String(account).replace(/'/g, "''");
-  const target = `${SERVICE}:${a}`.replace(/'/g, "''");
+function deleteAt(dirName, service, account) {
+  const target = targetOf(service, account);
+  const dir = String(dirName).replace(/'/g, "''");
   const script = `
-\$dir = Join-Path \$env:LOCALAPPDATA 'genmail-rea\\secrets'
+\$dir = Join-Path \$env:LOCALAPPDATA '${dir}\\secrets'
 \$path = Join-Path \$dir ('${target}' -replace '[^A-Za-z0-9._:-]','_')
 if (Test-Path -LiteralPath \$path) { Remove-Item -LiteralPath \$path -Force }
 `;
   ps(script);
 }
 
-module.exports = { setPassword, getPassword, deletePassword, SERVICE };
+function setPassword(account, password) {
+  writePassword(STORE_DIR, SERVICE, account, password);
+}
+
+function getPassword(account) {
+  return migrateRead(
+    (service) => readPassword(service === SERVICE ? STORE_DIR : LEGACY_STORE_DIR, service, account),
+    (service, password) => writePassword(STORE_DIR, service, account, password),
+    (service) => deleteAt(LEGACY_STORE_DIR, service, account),
+  );
+}
+
+function deletePassword(account) {
+  deleteAt(STORE_DIR, SERVICE, account);
+  deleteAt(LEGACY_STORE_DIR, LEGACY_SERVICE, account);
+}
+
+module.exports = {
+  setPassword,
+  getPassword,
+  deletePassword,
+  SERVICE,
+  LEGACY_SERVICE,
+  STORE_DIR,
+  LEGACY_STORE_DIR,
+};

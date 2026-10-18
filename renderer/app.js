@@ -5577,7 +5577,7 @@ async function removeAccount() {
   const account = selectedAccount();
   if (!isLive(account)) return;
   const label = account.email || account.id;
-  if (!window.confirm(`Remove ${label} from GenMail REA? Messages stay on the server.`)) return;
+  if (!window.confirm(`Remove ${label} from Morrow Mail? Messages stay on the server.`)) return;
   hideUndoSend();
   clearUndo();
   showStatus("Removing account…");
@@ -6213,7 +6213,7 @@ function brainMessage(view) {
     const label = state.rebuilding ? "Rebuilding" : "Refreshing";
     return { text: label + pct + "…", error: false };
   }
-  if (state.accepted === false) return { text: "Needs an AI key. Open GenMail → AI Setup.", error: true };
+  if (state.accepted === false) return { text: "Needs an AI key. Open Morrow Mail → AI Setup.", error: true };
   return { text: "", error: false };
 }
 
@@ -7024,7 +7024,7 @@ function agentItemLine(item) {
 function agentStatusCopy(payload) {
   const data = payload && typeof payload === "object" ? payload : {};
   if (data.reason === "needs_key") {
-    return { text: String(data.error || "Add an API key in GenMail → AI Setup."), error: true };
+    return { text: String(data.error || "Add an API key in Morrow Mail → AI Setup."), error: true };
   }
   if (data.reason === "needs_mailbox") {
     return { text: String(data.error || "Connect a mailbox. Sample mail is not used."), error: true };
@@ -7774,7 +7774,7 @@ function paintThread() {
   if (!agentTurns.length) {
     const empty = document.createElement("p");
     empty.className = "agent-empty hint";
-    empty.textContent = "No messages yet. Ask GenMail Agent, or run a skill. Nothing is sent.";
+    empty.textContent = "No messages yet. Ask Morrow Mail, or run a skill. Nothing is sent.";
     root.appendChild(empty);
     return;
   }

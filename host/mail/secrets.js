@@ -1,4 +1,4 @@
-const SERVICE = "genmail-exact";
+const { SERVICE } = require("./secret-service");
 
 function backend() {
   if (process.env.GENMAIL_MAIL_SECRETS === "memory") {

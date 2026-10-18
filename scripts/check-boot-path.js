@@ -17,6 +17,9 @@ const syntax = [
   "host/update-auth.js",
   "host/updater.js",
   "host/mail/secrets.js",
+  "host/mail/secret-service.js",
+  "host/mail/mac-secrets.js",
+  "host/mail/win-secrets.js",
   "host/mail/provider-http.js",
   "host/mail/provider-api.js",
   "host/mail/calendar-api.js",
@@ -171,10 +174,82 @@ assert.ok(appJs.includes('className = "when"'), "message list does not render a 
 assert.ok(appJs.includes("ArrowDown") && appJs.includes("moveCursor"), "message list has no arrow-key cursor");
 const css = fs.readFileSync(path.join(root, "renderer/app.css"), "utf8");
 assert.ok(css.includes(".list-title") && css.includes(".when"), "shell css missing dense list styles");
-assert.ok(css.includes("#410c42") && css.includes("#572658") && css.includes("[data-theme=\"dark\"]"), "shell css missing GenMail plum tokens");
+assert.ok(css.includes("#410c42") && css.includes("#572658") && css.includes("[data-theme=\"dark\"]"), "shell css missing plum tokens");
 assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell does not paint theme or accent");
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
+assert.strictEqual(pkg.name, "morrow-mail");
+assert.strictEqual(pkg.version, "0.1.0-alpha.4");
+assert.strictEqual(pkg.build.productName, "Morrow Mail");
+assert.strictEqual(pkg.build.appId, "com.coke1120.morrow-mail");
+assert.notStrictEqual(pkg.build.appId, "org.morrowmail.desktop");
+assert.notStrictEqual(pkg.build.appId, "com.coke1120.genmail-rea");
+assert.strictEqual(pkg.build.mac.icon, "build/icon.icns");
+assert.strictEqual(pkg.build.win.icon, "build/icon.ico");
+assert.strictEqual(pkg.build.linux.icon, "build/icon.png");
+assert.strictEqual(pkg.build.mac.extendInfo.CFBundleDisplayName, "Morrow Mail");
+assert.strictEqual(pkg.build.mac.extendInfo.CFBundleName, "Morrow Mail");
+assert.ok(main.includes('title: "Morrow Mail"') && main.includes('label: "Morrow Mail"'));
+assert.ok(main.includes('applicationName: "Morrow Mail"') && main.includes("com.coke1120.morrow-mail"));
+assert.ok(html.includes("<title>Morrow Mail</title>"));
+assert.ok(html.includes('src="./morrow-icon.svg"') && html.includes('class="rail-logo"'));
+assert.ok(!html.includes(">G</div>") && !html.includes("GenMail"));
+const iconPng = fs.readFileSync(path.join(root, "build/icon.png"));
+assert.ok(iconPng.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])));
+assert.strictEqual(iconPng.readUInt32BE(16), 1024);
+assert.strictEqual(iconPng.readUInt32BE(20), 1024);
+assert.strictEqual(fs.readFileSync(path.join(root, "build/icon.icns")).slice(0, 4).toString(), "icns");
+const iconIco = fs.readFileSync(path.join(root, "build/icon.ico"));
+assert.strictEqual(iconIco.readUInt16LE(0), 0);
+assert.strictEqual(iconIco.readUInt16LE(2), 1);
+const railSvg = fs.readFileSync(path.join(root, "renderer/morrow-icon.svg"), "utf8");
+assert.ok(railSvg.includes("#193c34") && railSvg.includes("Morrow Mail"));
+assert.strictEqual(fs.readFileSync(path.join(root, "build/morrow-icon.svg"), "utf8"), railSvg);
+const { migrateRead, SERVICE, LEGACY_SERVICE } = require("../host/mail/secret-service");
+const secretStore = new Map();
+secretStore.set(LEGACY_SERVICE, "old-secret");
+let removedService = "";
+assert.strictEqual(migrateRead(
+  (service) => (secretStore.has(service) ? secretStore.get(service) : null),
+  (service, secret) => secretStore.set(service, secret),
+  (service) => {
+    removedService = service;
+    secretStore.delete(service);
+  },
+), "old-secret");
+assert.strictEqual(secretStore.get(SERVICE), "old-secret");
+assert.strictEqual(removedService, LEGACY_SERVICE);
+assert.strictEqual(migrateRead(
+  (service) => (secretStore.has(service) ? secretStore.get(service) : null),
+  () => { throw new Error("current secret should win"); },
+  () => { throw new Error("current secret should win"); },
+), "old-secret");
+secretStore.delete(SERVICE);
+secretStore.set(LEGACY_SERVICE, "still-old");
+assert.strictEqual(migrateRead(
+  (service) => (secretStore.has(service) ? secretStore.get(service) : null),
+  () => { throw new Error("copy failed"); },
+  () => { throw new Error("copy failed"); },
+), "still-old");
+assert.strictEqual(secretStore.get(LEGACY_SERVICE), "still-old");
+const macSecrets = fs.readFileSync(path.join(root, "host/mail/mac-secrets.js"), "utf8");
+const winSecrets = fs.readFileSync(path.join(root, "host/mail/win-secrets.js"), "utf8");
+const serviceSrc = fs.readFileSync(path.join(root, "host/mail/secret-service.js"), "utf8");
+assert.ok(serviceSrc.includes('const SERVICE = "morrow-mail"') && serviceSrc.includes('const LEGACY_SERVICE = "genmail-exact"'));
+assert.ok(macSecrets.includes("migrateRead") && macSecrets.includes('require("./secret-service")'));
+assert.ok(winSecrets.includes("migrateRead") && winSecrets.includes('const STORE_DIR = "morrow-mail"') && winSecrets.includes('const LEGACY_STORE_DIR = "genmail-rea"'));
+const os = require("os");
+const dataPaths = require("../host/paths");
+const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-userdata-"));
+const legacyData = path.join(dataHome, "GenMail REA");
+const nextData = path.join(dataHome, "Morrow Mail");
+fs.mkdirSync(legacyData);
+fs.writeFileSync(path.join(legacyData, "settings.json"), "{\"theme\":\"dark\"}");
+assert.deepStrictEqual(dataPaths.migrateLegacyUserData({ prev: legacyData, next: nextData }).sort(), ["settings.json"]);
+fs.writeFileSync(path.join(nextData, "settings.json"), "{\"theme\":\"light\"}");
+fs.writeFileSync(path.join(legacyData, "extra.txt"), "keep");
+assert.deepStrictEqual(dataPaths.migrateLegacyUserData({ prev: legacyData, next: nextData }), ["extra.txt"]);
+assert.strictEqual(fs.readFileSync(path.join(nextData, "settings.json"), "utf8"), "{\"theme\":\"light\"}");
 assert.ok(html.includes('id="search-query"'), "toolbar has no search box");
 assert.ok(html.includes('src="./motion.bundle.js"'), "renderer does not load the Motion bundle");
 assert.ok(pkg.dependencies && pkg.dependencies.motion, "motion is not a dependency");
@@ -387,9 +462,9 @@ const missingKey = {
   error: "",
   pending: true,
 };
-applyTranslate(missingKey, { reqId: "t", type: "error", message: "Add an API key in GenMail → AI Setup." });
+applyTranslate(missingKey, { reqId: "t", type: "error", message: "Add an API key in Morrow Mail → AI Setup." });
 assert.strictEqual(missingKey.pending, false);
-assert.strictEqual(missingKey.error, "Add an API key in GenMail → AI Setup.");
+assert.strictEqual(missingKey.error, "Add an API key in Morrow Mail → AI Setup.");
 assert.strictEqual(translationText(missingKey), "");
 
 const signatureRows = extractFunction(appJs, "signatureRows");
@@ -1111,9 +1186,9 @@ assert.strictEqual(streamed.pending, false);
 ai.applyDraftEvent(streamed, { reqId: "d", type: "chunk", data: "late" });
 assert.strictEqual(streamed.text.endsWith("Next"), true);
 const failedDraft = { reqId: "d", pending: true, error: "", text: "Hi", base: "" };
-ai.applyDraftEvent(failedDraft, { reqId: "d", type: "error", message: "Add an API key in GenMail → AI Setup." });
+ai.applyDraftEvent(failedDraft, { reqId: "d", type: "error", message: "Add an API key in Morrow Mail → AI Setup." });
 assert.strictEqual(failedDraft.pending, false);
-assert.strictEqual(failedDraft.error, "Add an API key in GenMail → AI Setup.");
+assert.strictEqual(failedDraft.error, "Add an API key in Morrow Mail → AI Setup.");
 assert.strictEqual(failedDraft.text, "Hi");
 ai.applyDraftEvent(failedDraft, { reqId: "d", type: "chunk", data: "more" });
 assert.strictEqual(failedDraft.text, "Hi");
@@ -1192,7 +1267,7 @@ assert.strictEqual(brainUi.brainRowText({ label: "Tone", value: "Warm" }), "Tone
 assert.strictEqual(brainUi.brainRowText({ value: "Short" }), "Short");
 assert.strictEqual(brainUi.brainRowText(null), "");
 assert.strictEqual(brainUi.brainMessage(null).text, "");
-assert.strictEqual(brainUi.brainMessage({ accepted: false }).text, "Needs an AI key. Open GenMail → AI Setup.");
+assert.strictEqual(brainUi.brainMessage({ accepted: false }).text, "Needs an AI key. Open Morrow Mail → AI Setup.");
 assert.strictEqual(brainUi.brainMessage({ accepted: false }).error, true);
 assert.strictEqual(brainUi.brainMessage({ fixing: true }).text, "Fixing…");
 assert.deepStrictEqual(brainUi.brainProfileMeta(null), []);
@@ -1288,8 +1363,8 @@ assert.strictEqual(brainUi.skillIdOf("Match my tone"), "");
 assert.strictEqual(brainUi.skillIdOf(null), "");
 assert.deepStrictEqual(brainUi.skillResultMessage({ accepted: true, text: " Hi " }), { text: "Hi", error: false });
 assert.deepStrictEqual(
-  brainUi.skillResultMessage({ accepted: false, error: "Add an API key in GenMail → AI Setup." }),
-  { text: "Add an API key in GenMail → AI Setup.", error: true },
+  brainUi.skillResultMessage({ accepted: false, error: "Add an API key in Morrow Mail → AI Setup." }),
+  { text: "Add an API key in Morrow Mail → AI Setup.", error: true },
 );
 assert.strictEqual(brainUi.skillResultMessage(null).error, true);
 assert.strictEqual(brainUi.skillResultMessage({ accepted: true, text: "  " }).text, "Done.");
@@ -1309,7 +1384,7 @@ assert.deepStrictEqual(agentUi.skillBlocks({ accepted: false, summary: "nope" })
 assert.strictEqual(agentUi.skillBlocks({ accepted: true, summary: "Hi", note: "Mail only", sections: [{ title: "Today", items: ["Ada"] }] })[2].title, "Today");
 assert.deepStrictEqual(agentUi.agentSections(null), []);
 assert.strictEqual(agentUi.agentItemLine({ from: "Ada", subject: "Hi", summary: "Reply" }), "Ada — Hi — Reply");
-assert.strictEqual(agentUi.agentStatusCopy({ reason: "needs_key", error: "Add an API key in GenMail → AI Setup." }).error, true);
+assert.strictEqual(agentUi.agentStatusCopy({ reason: "needs_key", error: "Add an API key in Morrow Mail → AI Setup." }).error, true);
 assert.match(agentUi.agentStatusCopy({ reason: "needs_mailbox" }).text, /Connect a mailbox/);
 assert.strictEqual(agentUi.agentStatusCopy({ reason: "empty" }).error, false);
 assert.strictEqual(agentUi.agentStatusCopy({ reason: "idle" }).text, "");
@@ -1400,8 +1475,8 @@ assert.strictEqual(studioUi.skillLine(null), "");
 assert.strictEqual(studioUi.envelopeError({ success: true, data: null }), null);
 assert.strictEqual(studioUi.envelopeError(null), "No response from the mail host.");
 assert.strictEqual(
-  studioUi.envelopeError({ success: false, error: { message: "Add an API key in GenMail → AI Setup." } }),
-  "Add an API key in GenMail → AI Setup.",
+  studioUi.envelopeError({ success: false, error: { message: "Add an API key in Morrow Mail → AI Setup." } }),
+  "Add an API key in Morrow Mail → AI Setup.",
 );
 for (const channel of studioUi.studioLists().map((row) => row[1])) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -1416,7 +1491,7 @@ assert.ok(html.includes('id="agent-composer"') && html.includes('id="agent-send"
 assert.ok(html.includes('id="agent-memory"') && html.includes('id="rail-brain"') && html.includes('id="agent-home"') && html.includes('id="side-mail"'));
 assert.ok(!html.includes('id="side-agent"') && !html.includes('id="side-brain"') && !html.includes("side-switch"));
 assert.ok(!html.includes('id="chrome-panel"') && !html.includes('id="agent-mail"') && !html.includes("Triage inbox"));
-assert.ok(html.includes("Ask GenMail Agent") && html.includes("Manage Skills") && html.includes("Refresh todos"));
+assert.ok(html.includes("Ask Morrow Mail") && html.includes("Manage Skills") && html.includes("Refresh todos"));
 assert.ok(html.indexOf('id="rail-agent"') < html.indexOf('id="rail-mail"'));
 assert.ok(html.indexOf('id="rail-mail"') < html.indexOf('id="rail-calendar"'));
 assert.ok(html.indexOf('id="rail-calendar"') < html.indexOf('id="rail-brain"'));
@@ -4642,7 +4717,7 @@ async function checkAiModels() {
     assert.strictEqual(empty.keyHint, "");
     assert.ok(!Object.prototype.hasOwnProperty.call(empty, "apiKey"));
     const missing = await listModels({ baseUrl: "https://api.x.ai/v1", apiKey: "" });
-    assert.deepStrictEqual(missing, { ok: false, message: "Add an API key in GenMail → AI Setup." });
+    assert.deepStrictEqual(missing, { ok: false, message: "Add an API key in Morrow Mail → AI Setup." });
     let seen = null;
     global.fetch = async (url, opts) => {
       seen = { url, auth: opts.headers.authorization };

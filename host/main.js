@@ -13,12 +13,23 @@ const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
 
 const LOG = path.join(os.homedir(), ".hermes/tmp/genmail-exact/2026-10-16/ipc.log");
-const { preloadPath } = require("./paths");
+const { preloadPath, migrateLegacyUserData } = require("./paths");
 const PRELOAD_OUT = preloadPath();
 const FIRST_PARTY_DIR = path.join(__dirname, "..", "renderer");
 const FIRST_PARTY_PRELOAD = path.join(FIRST_PARTY_DIR, "preload.js");
 const FIRST_PARTY_HTML = path.join(FIRST_PARTY_DIR, "index.html");
 const updater = require("./updater");
+const APP_ICON = path.join(__dirname, "..", "build", "icon.png");
+
+app.setName("Morrow Mail");
+if (process.platform === "win32") app.setAppUserModelId("com.coke1120.morrow-mail");
+migrateLegacyUserData();
+app.setAboutPanelOptions({
+  applicationName: "Morrow Mail",
+  applicationVersion: app.getVersion(),
+  copyright: "Copyright © Leo Ho",
+  iconPath: APP_ICON,
+});
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -139,7 +150,8 @@ function openAiSetup() {
   setupWindow = new BrowserWindow({
     width: 560,
     height: 520,
-    title: "AI Setup",
+    title: "AI Setup — Morrow Mail",
+    icon: APP_ICON,
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -160,8 +172,10 @@ function openAiSetup() {
 function installMenu() {
   const template = [
     {
-      label: "GenMail",
+      label: "Morrow Mail",
       submenu: [
+        { role: "about" },
+        { type: "separator" },
         { label: "AI Setup…", click: () => openAiSetup() },
         { type: "separator" },
         { role: "services" },
@@ -256,7 +270,8 @@ async function createWindow(preloadFile, mode) {
   const winOpts = {
     width: external ? 1720 : 1200,
     height: external ? 1040 : 800,
-    title: "GenMail REA",
+    title: "Morrow Mail",
+    icon: APP_ICON,
     backgroundColor: external ? "#4c1d95" : "#f6f3fb",
     webPreferences: {
       preload: preloadFile,

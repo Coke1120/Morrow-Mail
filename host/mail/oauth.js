@@ -141,7 +141,7 @@ function waitForCode(server, expectedState, expectedPath, timeoutMs, signal) {
             res,
             ok ? 200 : 400,
             ok ? "Connected" : "Sign-in not finished",
-            ok ? "Return to GenMail REA." : (detail || "GenMail did not save this account.")
+            ok ? "Return to Morrow Mail." : (detail || "Morrow Mail did not save this account.")
           );
           shutdown();
         };

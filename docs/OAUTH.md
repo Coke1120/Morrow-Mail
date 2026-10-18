@@ -1,6 +1,6 @@
 # Google / Outlook OAuth
 
-GenMail REA keeps **IMAP XOAUTH2 as the mail baseline** and adds a provider API side-car. Calendar is a separate OAuth purpose with its own token. No client secret belongs in git.
+Morrow Mail keeps **IMAP XOAUTH2 as the mail baseline** and adds a provider API side-car. Calendar is a separate OAuth purpose with its own token. No client secret belongs in git.
 
 ## Baseline vs side-car
 
@@ -15,6 +15,8 @@ Google's organize consent asks for the IMAP scopes again so one grant can keep X
 The IMAP access token's audience is `https://outlook.office.com`, so the first consent does not call Microsoft Graph `/me` (that needs `User.Read`, which is only on the organize and calendar grants). Outlook email and display name come from `https://outlook.office.com/api/v2.0/me`, then from the token's email claims (`preferred_username`, `upn`, `unique_name`, `email`) if that call fails. Graph `/me` still runs for organize and calendar. Cancel, timeout, or closing the connect dialog aborts the loopback flow and does not keep a draft account row. The browser page says Connected only after the account row is saved. If `gmail.modify` or `Mail.ReadWrite` is missing from `grantedScopes`, label and folder changes stay on the IMAP folder list. Calendar calls run only when the calendar marker is in that purpose's `grantedScopes`.
 
 Tokens are stored per account and purpose (`grantedScopes`, refresh token, access token) in the keychain / DPAPI / `GENMAIL_MAIL_SECRETS=memory`. The renderer receives scope strings, not tokens.
+
+New writes use the service name `morrow-mail`. On macOS that is the Keychain service (`security -s morrow-mail`). On Windows the DPAPI file is `%LOCALAPPDATA%\morrow-mail\secrets\morrow-mail_<account>`. A read that misses `morrow-mail` tries the previous service `genmail-exact` (Windows directory `%LOCALAPPDATA%\genmail-rea\secrets`) and, when that item exists, copies it to `morrow-mail` and deletes the old item. Delete removes both. If the copy fails, the old item stays and the password is still returned. `GENMAIL_MAIL_SECRETS=memory` is the in-process store for tests and does not touch the keychain. This service is not the Swift app's store, and the bundle id is not `org.morrowmail.desktop`.
 
 `oauthReady().google` is false until a Desktop client JSON is available. The app and `npm run check` run without that file. Live Google calls are refused with `oauth_not_ready` until it is set. A packaged build also reads `google-oauth.json` from `process.resourcesPath` (`Contents/Resources` next to `app.asar`). Microsoft uses the public client id in `shared/microsoft-client-id.txt` and has no client secret.
 
