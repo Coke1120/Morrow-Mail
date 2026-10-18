@@ -2793,8 +2793,8 @@ function readNavCollapsed() {
     const stored = localStorage.getItem("morrow.navCollapsed");
     if (stored === "0") return false;
     if (stored === "1") return true;
-  } catch { /* keep the compact rail */ }
-  return true;
+  } catch { /* labels remain visible for a new profile */ }
+  return false;
 }
 
 const ROW_ICON = {
@@ -3138,10 +3138,10 @@ function renderList() {
     const empty = document.createElement("p");
     empty.className = "empty";
     if (!state.accounts.length && !state.query) {
-      empty.textContent = "No messages yet.";
+      empty.textContent = "Connect a mailbox to download messages here.";
     } else if (!state.emails.length) {
       empty.textContent = state.query ? `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.` : currentFolderSync()?.lastSuccessAt
-        ? "No messages in this folder." : "Mail has not been downloaded for this folder yet. Use Sync to download recent mail.";
+        ? "No downloaded messages in this folder. Sync checks recent mail; older mail may be outside the download window." : "Mail has not been downloaded for this folder yet. Use Sync to download recent mail.";
     } else {
       empty.textContent = "No loaded messages match that filter.";
     }
@@ -5238,8 +5238,8 @@ async function openMessage(emailId, focus) {
   if (!email.unread) return;
   try {
     await call("mail:markRead", { emailId, isRead: true });
-  } catch {
-    // The message is already on screen.
+  } catch (error) {
+    if (gen === openGen) showStatus("Message opened, but marking it read was not confirmed. Other clients may still show it unread. " + (error.message || String(error)), true);
   }
 }
 
@@ -5434,6 +5434,8 @@ function syncScheduleFields() {
   const custom = $("schedule-preset").value === "custom";
   $("schedule-at").hidden = !custom;
   $("schedule-at-label").hidden = !custom;
+  const when = scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
+  $("schedule-note").textContent = (when ? "Scheduled time: " + when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + "). " : "Choose a future local time. ") + "Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.";
 }
 
 function renderScheduled(rows) {
@@ -6034,6 +6036,8 @@ async function openCompose(seed) {
   const write = document.querySelector(".ai-write");
   const openWrite = opensAiWrite(fields, state.prefs);
   if (write) write.classList.toggle("open", openWrite);
+  $("compose-ai-tools").open = openWrite;
+  $("compose-schedule-tools").open = false;
   if (openWrite) {
     const body = $("compose-body");
     body.setSelectionRange(0, 0);
@@ -10579,6 +10583,7 @@ function wire() {
   $("signature").addEventListener("change", onSignatureChange);
   $("signatures-from-compose").addEventListener("click", openSignatures);
   $("schedule-preset").addEventListener("change", syncScheduleFields);
+  $("schedule-at").addEventListener("change", syncScheduleFields);
   $("compose").addEventListener("close", () => stopDraftWrite());
   $("compose-close").addEventListener("click", () => {
     requestComposeClose();

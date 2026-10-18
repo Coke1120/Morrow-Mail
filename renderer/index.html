@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-nav="collapsed">
+<html lang="en" data-theme="light" data-nav="expanded">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -49,7 +49,7 @@
       </button>
       </div>
       <div class="rail-foot">
-      <button type="button" class="rail-btn nav-item" id="rail-log" aria-current="false" aria-label="Log" data-label="Log" title="Log">
+      <button type="button" class="rail-btn nav-item" id="rail-log" aria-current="false" aria-label="Debug log" data-label="Debug log" title="Debug log">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
           <polyline points="14 2 14 8 20 8"></polyline>
@@ -57,7 +57,7 @@
           <line x1="16" y1="17" x2="8" y2="17"></line>
           <polyline points="10 9 9 9 8 9"></polyline>
         </svg>
-        <span class="nav-label">Log</span>
+        <span class="nav-label">Debug log</span>
       </button>
       <button type="button" class="rail-btn nav-item" id="settings-open" aria-label="Settings" data-label="Settings" title="Settings">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -94,7 +94,7 @@
         </div>
         <form id="search-form" role="search">
           <label class="sr" for="search-query">Search downloaded mail</label>
-          <input id="search-query" type="search" placeholder="Search downloaded mail" title="Search downloaded subject, sender, and available message text" autocomplete="off" spellcheck="false" />
+          <input id="search-query" type="search" placeholder="Search downloaded mail" title="Matches all typed word prefixes in downloaded subject, sender, and available message text. Gmail query operators are not supported." autocomplete="off" spellcheck="false" />
         </form>
       </div>
     </header>
@@ -468,7 +468,7 @@
               <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
               <circle cx="12" cy="12" r="3"></circle>
             </svg>
-            <span id="compose-quote-toggle-label">Show quoted message</span>
+            <span id="compose-quote-toggle-label">Show original preview</span>
           </button>
         </div>
         <p id="compose-note" class="hint"></p>
@@ -508,6 +508,7 @@
         </div>
         <label class="sr" for="compose-body">Message</label>
         <textarea id="compose-body" placeholder="Message"></textarea>
+        <details id="compose-ai-tools"><summary>AI write</summary>
         <div class="ai-write">
           <label for="ai-mode">AI write</label>
           <select id="ai-mode">
@@ -521,13 +522,15 @@
           <button type="button" class="ghost" id="ai-cancel" hidden>Cancel</button>
           <p id="ai-write-error" class="error" role="status" hidden></p>
         </div>
+        </details>
         <div class="signature-head">
           <label for="signature">Signature</label>
           <button type="button" class="ghost" id="signatures-from-compose">Signatures</button>
         </div>
         <select id="signature" hidden></select>
         <p id="signature-empty" class="hint" hidden>No signatures.</p>
-        <label for="schedule-preset">Send later</label>
+        <details id="compose-schedule-tools"><summary>Send later</summary>
+        <label for="schedule-preset">When</label>
         <select id="schedule-preset">
           <option value="1h">In 1 hour</option>
           <option value="tonight">Tonight</option>
@@ -537,13 +540,14 @@
         <label for="schedule-at" id="schedule-at-label" hidden>Date and time</label>
         <input id="schedule-at" type="datetime-local" hidden />
         <p class="hint" id="schedule-note">Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.</p>
+        <button type="button" class="primary" id="compose-schedule">Schedule send</button>
+        </details>
           </div>
         </div>
         <button type="button" class="ghost" id="compose-view-scheduled">View scheduled mail</button>
         <p id="compose-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>
-          <button type="button" class="ghost" id="compose-schedule">Schedule send</button>
           <button type="button" class="ghost" id="compose-save">Save draft</button>
           <button type="button" class="ghost" id="compose-close">Close</button>
         </div>

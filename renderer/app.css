@@ -2467,3 +2467,7 @@ textarea { min-height: 140px; resize: vertical; }
 
 #support-dialog { width: min(840px, calc(100vw - 32px)); }
 #support-preview { width: 100%; min-height: 280px; font-family: monospace; font-size: 12px; }
+
+#compose-ai-tools, #compose-schedule-tools { margin-top: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+#compose details > summary { cursor: pointer; color: var(--accent-ink); }
+#compose details > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 4px; }
