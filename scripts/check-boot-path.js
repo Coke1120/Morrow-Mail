@@ -587,8 +587,7 @@ assert.ok(appJs.includes("mail:cancelScheduled"));
 assert.ok(functionSource(appJs, "connectButton").includes("Connect account"));
 assert.ok(functionSource(appJs, "renderReader").includes("connectButton()"));
 assert.ok(functionSource(appJs, "renderAccounts").includes("connectButton()"));
-assert.ok(functionSource(appJs, "renderBanner").includes("No mailbox yet"));
-assert.ok(!functionSource(appJs, "renderBanner").includes("Sample"));
+assert.ok(!html.includes('id="banner"'));
 assert.ok(appJs.includes('"Add a name."') && appJs.includes('"Add signature text."'));
 assert.ok(css.includes(".signature-row") && css.includes("#signatures-status") && css.includes("#signature-form textarea"));
 
@@ -851,10 +850,12 @@ for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateIn
   const count = updaterSrc.split('"' + channel + '"').length - 1;
   assert.ok(count >= 2, channel + " must be registered and listed");
 }
-assert.ok(html.includes('id="updates"') && html.includes('id="update-check"') && html.includes('id="update-install"'));
-assert.ok(html.includes("Check for updates") && html.includes(">Install<"));
+assert.ok(!html.includes('id="updates"') && !html.includes('id="update-check"'));
+assert.ok(html.includes('id="rail-about"') && html.includes('id="about-update-install"'));
+assert.ok(html.includes('id="rail-folders"') && html.includes('id="provider-panel"'));
+assert.ok(html.includes("Check for updates") && html.includes("Restart and install"));
 assert.ok(html.includes('id="settings"') && html.includes('id="prefs"') && html.includes("AI Setup"));
-assert.ok(css.includes("#updates") && css.includes("#prefs") && css.includes("#settings-status"));
+assert.ok(css.includes("#about-version") && css.includes("#prefs") && css.includes("#settings-status"));
 
 const timing = loadFunctions(appJs, ["snoozeUntil", "scheduleAt"]);
 const laterAfternoon = new Date("2026-10-16T15:00:00");
@@ -1618,7 +1619,7 @@ assert.ok(html.indexOf('id="rail-mail"') < html.indexOf('id="rail-calendar"'));
 assert.ok(html.indexOf('id="rail-calendar"') < html.indexOf('id="rail-brain"'));
 assert.ok(html.indexOf('id="shell"') < html.indexOf('id="agent-panel"'));
 assert.ok(html.indexOf('id="calendar-panel"') < html.indexOf('id="brain"'));
-assert.ok(appJs.includes('["shell", "calendar-panel", "agent-panel", "brain"]') && appJs.includes("nativeAgent:home:todosCached"));
+assert.ok(appJs.includes('["shell", "calendar-panel", "agent-panel", "brain", "provider-panel"]') && appJs.includes("nativeAgent:home:todosCached"));
 assert.ok(appJs.includes("nativeAgent:home:refreshTaxonomy") && appJs.includes("nativeAgent:home:todoUpdate"));
 assert.ok(appJs.includes('source: "manual"') && appJs.includes('source: "open"'));
 assert.ok(appJs.includes("nativeAgent:chat") && appJs.includes("nativeAgent:memorySet") && appJs.includes("nativeAgent:chatHistory"));

@@ -38,6 +38,10 @@
         </svg>
         <span class="nav-label">Mail</span>
       </button>
+      <button type="button" class="rail-btn nav-item" id="rail-folders" aria-current="false" aria-label="Folders &amp; labels" data-label="Folders &amp; labels" title="Folders &amp; labels">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+        <span class="nav-label">Folders &amp; labels</span>
+      </button>
       <button type="button" class="rail-btn nav-item" id="rail-calendar" aria-current="false" aria-label="Calendar" data-label="Calendar" title="Calendar">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <path fill="currentColor" d="M7 2h2v2h6V2h2v2h3v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4h3V2Zm11 8H6v10h12V10Z" />
@@ -61,6 +65,10 @@
           <polyline points="10 9 9 9 8 9"></polyline>
         </svg>
         <span class="nav-label">Debug log</span>
+      </button>
+      <button type="button" class="rail-btn nav-item" id="rail-about" aria-label="About &amp; updates" data-label="About &amp; updates" title="About &amp; updates">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg>
+        <span class="nav-label">About &amp; updates</span>
       </button>
       <button type="button" class="rail-btn nav-item" id="settings-open" aria-label="Settings" data-label="Settings" title="Settings">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -93,7 +101,7 @@
           </svg>
           <span id="sync-label">Sync</span>
         </button>
-        <p id="sync-detail" class="sync-detail" hidden></p>
+        <p id="sync-detail" class="sync-detail" role="status" hidden></p>
         </div>
         <form id="search-form" role="search">
           <label class="sr" for="search-query">Search downloaded mail</label>
@@ -114,15 +122,6 @@
           <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled</button>
           <section id="mail-ooo" class="mail-ooo" aria-label="Mailbox automatic replies" hidden><p id="mail-ooo-status" class="hint" role="status"></p><div class="row"><button type="button" class="ghost" id="mail-ooo-manage">Manage / disable</button><button type="button" class="ghost" id="mail-ooo-refresh">Refresh status</button></div></section>
           <nav id="folders" aria-label="Folders"></nav>
-        <div id="updates" role="region" aria-label="Updates">
-          <p id="product-name" class="product-name">Morrow Mail</p>
-          <p id="banner"></p>
-          <p id="version"></p>
-          <p id="update-quit-note" hidden>Ready updates also install automatically when you quit.</p>
-          <p id="update-status" role="status"></p>
-          <button type="button" class="ghost" id="update-check">Check for updates</button>
-            <button type="button" class="ghost" id="update-install" hidden>Install</button>
-          </div>
         </div>
       </div>
       <div class="split" data-split="folders" role="separator" aria-orientation="vertical" aria-label="Resize folders" tabindex="0"></div>
@@ -154,6 +153,13 @@
       <div class="split" data-split="messages" role="separator" aria-orientation="vertical" aria-label="Resize message list" tabindex="0"></div>
       <article id="reader" aria-label="Message"></article>
     </div>
+    <section id="provider-panel" class="primary-space" hidden aria-labelledby="provider-title">
+      <div class="space-head motion-block"><h2 id="provider-title">Folders &amp; labels</h2></div>
+      <p class="hint">Manage Gmail labels and Outlook folders. Right-click a row to rename, delete, or move it. Drag a row onto another folder to nest it, or onto Top level to unnest it.</p>
+      <label for="provider-account">Mailbox</label>
+      <select id="provider-account"></select>
+      <div id="provider-content"></div>
+    </section>
     <section id="calendar-panel" hidden aria-label="Calendar">
       <div class="calendar-bar motion-block">
         <button type="button" class="ghost" id="calendar-prev">Previous month</button>
@@ -206,22 +212,26 @@
         </div>
       </div>
       <p class="hint motion-block">Agent helps you ask questions about downloaded mail and review suggested tasks, drafts, and filing actions.</p>
-      <nav class="section-nav" id="agent-nav" aria-label="Agent sections">
-        <button type="button" data-scroll="agent-home" aria-current="true">Todos</button>
-        <button type="button" data-scroll="agent-sections">Conversation</button>
-        <button type="button" data-scroll="agent-tools">Skills</button>
+      <nav class="section-nav" id="agent-nav" role="tablist" aria-label="Agent sections">
+        <button type="button" id="agent-tab-home" data-agent-tab="home" role="tab" aria-controls="agent-home" aria-selected="true" aria-current="true">Todos</button>
+        <button type="button" id="agent-tab-conversation" data-agent-tab="conversation" role="tab" aria-controls="agent-conversation" aria-selected="false" tabindex="-1">Conversation</button>
+        <button type="button" id="agent-tab-tools" data-agent-tab="tools" role="tab" aria-controls="agent-tools" aria-selected="false" tabindex="-1">Skills</button>
       </nav>
       <div id="agent-setup" class="setup-state motion-block" hidden><p id="agent-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="agent-setup-ai">Set up AI</button><button type="button" class="ghost" id="agent-setup-connect">Connect an account</button></div></div>
       <p id="agent-status" role="status"></p>
       <p id="agent-context" class="hint"></p>
-      <div class="agent-scroll motion-block">
-        <div id="agent-home" aria-label="Suggested todos"></div>
+      <div id="agent-home" class="motion-block" role="tabpanel" aria-labelledby="agent-tab-home" aria-label="Suggested todos"></div>
+      <div id="agent-skill-chips" aria-label="Home skill shortcuts"></div>
+      <section id="agent-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden>
         <div id="agent-sections" class="agent-thread" role="log" aria-live="polite"></div>
-      </div>
-      <div id="agent-skill-chips" class="motion-block" aria-label="Home skill shortcuts"></div>
-      <details id="agent-tools" class="motion-fold motion-block">
-        <summary>Skills and history</summary>
-        <div class="fold-panel">
+      <form id="agent-composer" class="agent-composer">
+        <label class="sr" for="agent-input">Message the agent</label>
+        <textarea id="agent-input" rows="2" maxlength="2000" placeholder="Ask Morrow Mail…"></textarea>
+        <button type="submit" class="primary" id="agent-send">Ask</button>
+      </form>
+      </section>
+      <section id="agent-tools" role="tabpanel" aria-labelledby="agent-tab-tools" hidden>
+        <h3>Skills and history</h3>
         <p class="hint">Skills are on demand unless their schedule is enabled below. Scheduled runs need Morrow open; a missed run fires once on relaunch. Pause stops scheduled runs. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="agent-skill-status" role="status"></p>
         <div id="agent-result" hidden></div>
@@ -244,13 +254,8 @@
           <button type="button" class="ghost" id="agent-memory-save">Save notes</button>
         </div>
         <p id="agent-memory-status" role="status"></p>
-        </div>
-      </details>
-      <form id="agent-composer" class="agent-composer motion-block">
-        <label class="sr" for="agent-input">Message the agent</label>
-        <textarea id="agent-input" rows="2" maxlength="2000" placeholder="Ask Morrow Mail…"></textarea>
-        <button type="submit" class="primary" id="agent-send">Ask</button>
-      </form>
+      </section>
+
     </section>
     <section id="brain" class="primary-space" hidden aria-labelledby="brain-title">
       <div class="brain-head motion-block">
@@ -402,7 +407,7 @@
 
     <dialog id="about-dialog" aria-labelledby="about-title"><div class="dialog-body">
       <div class="sheet-head"><h2 id="about-title">About &amp; updates</h2><button type="button" class="ghost" id="about-close">Close</button></div>
-      <p>Morrow Mail</p><p id="about-version"></p><p id="about-update-status" role="status">Updates have not been checked yet.</p>
+      <p id="product-name" class="product-name">Morrow Mail</p><p id="about-version"></p><p id="about-update-status" role="status">Updates have not been checked yet.</p>
       <p id="about-update-quit" class="hint" hidden>This update will also install automatically when you quit Morrow. Restart and install closes the app now.</p>
       <div class="row"><button type="button" class="ghost" id="about-update-check">Check for updates</button><button type="button" class="primary" id="about-update-install" hidden>Restart and install</button></div>
     </div></dialog>
