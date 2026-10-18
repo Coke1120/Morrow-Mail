@@ -900,6 +900,7 @@ function calendarCopy(reason, email) {
   if (reason === "imap_only") return "Calendar needs a Google or Microsoft account.";
   if (reason === "no_account") return "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.";
   if (reason === "error") return "Calendar could not be loaded.";
+  if (reason === "loading") return "Loading calendar…";
   const who = email ? ` for ${email}` : "";
   return `Enable calendar and mailbox features${who}. Google uses one consent; Microsoft uses a separate feature consent after mail sign-in.`;
 }
@@ -1277,7 +1278,12 @@ function playPageSections(id) {
   const motion = motionApi();
   const node = $(id);
   if (!motion || !node || typeof motion.sections !== "function") return;
-  motion.sections(node.querySelectorAll(":scope > .motion-block"));
+  motion.sections(node.querySelectorAll(id === "calendar-panel" ? ":scope > .calendar-bar" : ":scope > .motion-block"));
+}
+
+function afterPaint(task) {
+  // Yield through a frame and a task so the visible shell can paint before work starts.
+  requestAnimationFrame(() => setTimeout(task, 0));
 }
 
 function setPageBusy(panel, on, label) {
@@ -2811,7 +2817,9 @@ function pushIcon() {
 }
 
 function renderSettingsAccounts() {
+  if (!$("settings").open) return;
   paintSettingsMailbox();
+  if (!document.querySelector('#settings .fold[data-fold="mailbox"].is-open')) return;
   const list = $("settings-accounts");
   if (!list) return;
   const rows = state.accounts.map((account) => `${account.id}\t${pushStatusLabel(account)}`);
@@ -2839,9 +2847,6 @@ function renderSettingsAccounts() {
     row.append(name, status);
     list.appendChild(row);
   }
-  const motion = motionApi();
-  const dialog = $("settings");
-  if (motion && dialog && dialog.open) motion.rows(list.querySelectorAll(".settings-account"));
 }
 
 function syncStatusLabel(sync) {
@@ -2939,7 +2944,9 @@ function currentFolderSync() {
   return folder || null;
 }
 
+let syncDetailTimer = null;
 function paintSyncControl() {
+  clearTimeout(syncDetailTimer);
   const button = $("refresh");
   const label = $("sync-label");
   const detail = $("sync-detail");
@@ -2957,7 +2964,16 @@ function paintSyncControl() {
     button.setAttribute("aria-label", `${word}. ${text}`);
     button.title = !state.accounts.length && mail ? "Connect an account to sync mail." : text;
   }
-  if (detail) { detail.textContent = text; detail.hidden = !text; detail.title = text; }
+  if (detail) {
+    const active = mail && ["syncing", "error", "paused"].includes(sync?.state);
+    const remaining = sync?.state === "done" && sync.lastSuccessAt ? 5000 - (Date.now() - Number(sync.updatedAt || sync.lastSuccessAt)) : 0;
+    const brief = active ? (sync.state === "syncing" ? phaseWord(sync.phase) || "Downloading…" : syncStatusLabel(sync))
+      : mail && remaining > 0 ? "Synced " + syncClock(sync.lastSuccessAt) : "";
+    detail.textContent = brief;
+    detail.hidden = !brief;
+    detail.title = text;
+    if (mail && remaining > 0) syncDetailTimer = setTimeout(paintSyncControl, remaining + 1);
+  }
 }
 
 function beginSync(extra) {
@@ -5809,13 +5825,12 @@ async function selectFolder(accountId, folderId) {
   syncRemove();
   renderReader(false);
   const live = isLive(selectedAccount()) && !isStarredFolder(folderId);
-  if (live) showStatus("Syncing…");
-  else if (!undoOpIds && !sendTimer) showStatus("");
+  if (!undoOpIds && !sendTimer) showStatus("");
   // Paint downloaded mail before waiting for IMAP or provider APIs.
   await loadList();
   if (state.accountId !== accountId || state.folderId !== folderId) return;
-  if (live) loadList(true).then((data) => {
-    if (state.accountId === accountId && state.folderId === folderId && !undoOpIds && !sendTimer) showStatus(syncStatusLabel(data && data.sync));
+  if (live) loadList(true).then(() => {
+    if (state.accountId === accountId && state.folderId === folderId) paintSyncControl();
   }).catch((error) => {
     if (state.accountId === accountId && state.folderId === folderId) showStatus(error.message, true);
   });
@@ -6955,7 +6970,6 @@ async function refresh() {
     if (data && data.sync) rememberSyncStatus(data.sync);
     await loadAccounts();
     paintSyncControl();
-    showStatus(syncStatusLabel(data && data.sync));
     pushDebug("sync", syncDetail(state.sync) || syncStatusLabel(data && data.sync));
   } catch (error) {
     finishLocalSync("error", error);
@@ -7400,18 +7414,53 @@ async function loadSettings() {
   const status = $("settings-status");
   status.textContent = "";
   status.classList.remove("error");
-  try {
-    for (const [id, channel, , kind] of prefRows()) {
-      applyPref(kind, $(id), await api.invoke(channel));
-    }
-  } catch (error) {
-    status.textContent = error instanceof Error ? error.message : String(error);
-    status.classList.add("error");
+  // Boot and preference writes already maintain this snapshot. Opening a dialog
+  // must not repeat ten IPC reads or load the closed provider/AI/Bot folds.
+  const keys = { ...SHELL_PREFS, ...READER_PREFS, "config:getTheme": "theme",
+    "morrow:configGetAccent": "accent", "morrow:configGetUndoSendDelaySeconds": "undoSend" };
+  for (const [id, channel, , kind] of prefRows()) {
+    applyPref(kind, $(id), state.prefs[keys[channel]]);
   }
-  loadAiSettings();
-  if (!oooDirty()) loadVacation().catch((error) => setOooStatus(error instanceof Error ? error.message : String(error), true));
-  loadSettingsCapabilities();
-  loadBotAccess().catch((error) => setBotStatus(error instanceof Error ? error.message : String(error), true));
+}
+
+const settingsFoldPending = new Map();
+const settingsFoldLoaded = new Set();
+function settingsFoldKey(name) {
+  return name + ":" + (["mailbox", "ooo"].includes(name) ? settingsAccount()?.id || "" : "");
+}
+function loadSettingsFold(name) {
+  if (!$("settings").open) return Promise.resolve();
+  const key = settingsFoldKey(name);
+  if (settingsFoldLoaded.has(key)) return Promise.resolve();
+  if (settingsFoldPending.has(key)) return settingsFoldPending.get(key);
+  const fold = document.querySelector('#settings .fold[data-fold="' + name + '"]');
+  if (!fold) return Promise.resolve();
+  const panel = fold.querySelector(".fold-panel");
+  const pending = new Promise(resolve => afterPaint(resolve)).then(async () => {
+    if (!$("settings").open || !fold.classList.contains("is-open") || key !== settingsFoldKey(name)) return;
+    panel.inert = true;
+    panel.setAttribute("aria-busy", "true");
+    if (name === "prefs") await loadSettings();
+    else if (name === "ai") await loadAiSettings();
+    else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); }
+    else if (name === "ooo" && !oooDirty()) await loadVacation();
+    else if (name === "bot") await loadBotAccess();
+    settingsFoldLoaded.add(key);
+  }).catch(error => {
+    if (key !== settingsFoldKey(name)) return;
+    const message = error instanceof Error ? error.message : String(error);
+    if (name === "ooo") setOooStatus(message, true);
+    else if (name === "bot") setBotStatus(message, true);
+    else { $("settings-status").textContent = message; $("settings-status").classList.add("error"); }
+  }).finally(() => {
+    settingsFoldPending.delete(key);
+    if (key === settingsFoldKey(name)) {
+      panel.inert = false;
+      panel.removeAttribute("aria-busy");
+    }
+  });
+  settingsFoldPending.set(key, pending);
+  return pending;
 }
 
 function setOooStatus(text, isError) {
@@ -7707,7 +7756,7 @@ function applySettingsFold(fold, open, animate) {
   fold.classList.toggle("is-open", open);
   if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
   const motion = motionApi();
-  const live = !!(animate && motion && typeof motion.fold === "function" && !(typeof motion.reduced === "function" && motion.reduced()));
+  const live = !!(animate && !$("settings").dataset.motion && motion && typeof motion.fold === "function" && !(typeof motion.reduced === "function" && motion.reduced()));
   if (panel && live) motion.fold(panel, open);
   else if (panel) {
     if (motion && typeof motion.reset === "function") motion.reset(panel);
@@ -7727,6 +7776,7 @@ function setSettingsFold(name, open, animate) {
   for (const button of nav.querySelectorAll("[data-fold]")) {
     button.setAttribute("aria-current", want && button.getAttribute("data-fold") === name ? "true" : "false");
   }
+  if (want) loadSettingsFold(name);
 }
 
 function revealSettingsFold(name) {
@@ -7776,35 +7826,51 @@ function wireSectionNav(id) {
   });
 }
 
-function bindAgentToolsMotion() {
-  const details = $("agent-tools");
-  if (!details || details.dataset.motionWired === "1") return;
-  details.dataset.motionWired = "1";
-  const summary = details.querySelector("summary");
-  const panel = details.querySelector(".fold-panel");
-  if (!summary || !panel) return;
-  summary.addEventListener("click", (event) => {
-    const motion = motionApi();
-    if (!motion || typeof motion.fold !== "function" || (typeof motion.reduced === "function" && motion.reduced())) return;
+let agentTab = "home";
+function showAgentTab(name) {
+  if (!["home", "conversation", "tools"].includes(name)) return;
+  agentTab = name;
+  for (const tab of $("agent-nav").querySelectorAll("[data-agent-tab]")) {
+    const active = tab.dataset.agentTab === name;
+    tab.setAttribute("aria-selected", String(active));
+    tab.setAttribute("aria-current", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    $(tab.getAttribute("aria-controls")).hidden = !active;
+  }
+  $("agent-skill-chips").hidden = name !== "home";
+  // Switching sections should never scroll two competing containers.
+  $("agent-panel").scrollTop = 0;
+}
+
+function wireAgentTabs() {
+  const nav = $("agent-nav");
+  nav.addEventListener("click", event => {
+    const tab = event.target.closest("[data-agent-tab]");
+    if (tab) showAgentTab(tab.dataset.agentTab);
+  });
+  nav.addEventListener("keydown", event => {
+    const tabs = [...nav.querySelectorAll("[data-agent-tab]")];
+    const current = tabs.indexOf(document.activeElement);
+    if (current < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    if (!details.open) {
-      details.open = true;
-      motion.fold(panel, true);
-      return;
-    }
-    Promise.resolve(motion.fold(panel, false)).then(() => {
-      details.open = false;
-      panel.hidden = false;
-    });
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    showAgentTab(tabs[next].dataset.agentTab);
+    tabs[next].focus({ preventScroll: true });
   });
 }
 
 function openSettings() {
+  if ($("settings").open) return;
   if (!state.settingsAccountId) state.settingsAccountId = state.accountId;
-  paintSettingsMailbox();
   openDialog("settings");
-  wireSettingsFolds();
-  loadSettings();
+  settingsFoldLoaded.clear();
+  afterPaint(() => {
+    if (!$("settings").open) return;
+    paintSettingsMailbox();
+    const fold = document.querySelector("#settings .fold.is-open");
+    if (fold) loadSettingsFold(fold.dataset.fold);
+  });
 }
 
 const mailVacation = new Map();
@@ -7890,9 +7956,7 @@ function paintSettingsMailbox() {
   if (!select) return;
   if (state.settingsAccountId && !state.accounts.some(a => a.id === state.settingsAccountId)) state.settingsAccountId = null;
   const account = settingsAccount();
-  select.replaceChildren(...state.accounts.map(a => { const option = document.createElement("option"); option.value = a.id; option.textContent = a.email; return option; }));
-  select.value = account?.id || "";
-  select.disabled = !account;
+  fillAccountOptions(select, state.accounts, account?.id);
   $("settings-reconnect").disabled = !account;
   $("settings-reconnect").textContent = account ? "Reconnect " + account.email : "Reconnect mailbox";
   $("settings-mailbox-note").textContent = account ? "Signatures, rules, Out of Office, and Remove apply to " + account.email + ". Cached mail and local work remain when you reconnect this address." : "Connect an account to configure mailbox features.";
@@ -7911,8 +7975,9 @@ async function changeSettingsMailbox(id) {
   oooBaseline = "";
   paintVacation(null);
   paintSettingsMailbox();
-  loadSettingsCapabilities();
-  await loadVacation().catch(error => setOooStatus(error.message, true));
+  for (const key of settingsFoldLoaded) if (key.startsWith("mailbox:") || key.startsWith("ooo:")) settingsFoldLoaded.delete(key);
+  const fold = document.querySelector("#settings .fold.is-open");
+  if (fold) await loadSettingsFold(fold.dataset.fold);
   return true;
 }
 async function loadSettingsCapabilities() {
@@ -9941,6 +10006,7 @@ async function openFollowUp(messageId) {
 }
 
 async function showStoredRun(run) {
+  if (state.view === "agent") showAgentTab("conversation");
   if (run && run.id) {
     applyChatPayload(await call("nativeAgent:chatShow", { runId: run.id }));
     return;
@@ -10134,9 +10200,13 @@ function paintTurn(turn) {
   return article;
 }
 
+let agentThreadKey = "";
 function paintThread() {
   const root = $("agent-sections");
   if (!root) return;
+  const key = JSON.stringify([agentTurns, agentProposalIds]);
+  if (key === agentThreadKey) return;
+  agentThreadKey = key;
   root.replaceChildren();
   if (!agentTurns.length) {
     const empty = document.createElement("p");
@@ -10146,7 +10216,6 @@ function paintThread() {
     return;
   }
   for (const turn of agentTurns) root.appendChild(paintTurn(turn));
-  root.scrollTop = root.scrollHeight;
 }
 
 function paintAgent(payload, errorText) {
@@ -10302,6 +10371,7 @@ function setAgentBusy(busy) {
 async function sendAgentText(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed || agentChatBusy) return;
+  showAgentTab("conversation");
   setAgentBusy(true);
   const input = $("agent-input");
   if (input && input.value.trim() === trimmed) input.value = "";
@@ -10464,29 +10534,18 @@ function calendarAccount() {
 }
 
 function fillCalendarAccounts() {
-  const select = $("calendar-account");
-  const rows = state.accounts.filter(isLive);
-  select.replaceChildren();
-  if (!rows.length) {
-    select.append(option("", "No mailbox"));
-    select.disabled = true;
-    return;
-  }
-  select.disabled = false;
-  for (const account of rows) select.append(option(account.id, account.email || account.id));
-  const current = calendarAccount();
-  if (current) select.value = current.id;
+  fillAccountOptions($("calendar-account"), state.accounts.filter(isLive), calendarAccount()?.id);
 }
 
 function fillCalendarPick(calendars) {
   const select = $("calendar-pick");
-  select.replaceChildren();
-  for (const calendar of calendars) select.append(option(calendar.id, calendar.name || calendar.id));
-  if (state.calendarId && calendars.some((calendar) => calendar.id === state.calendarId)) {
-    select.value = state.calendarId;
-  } else if (select.value) {
-    state.calendarId = select.value;
+  const key = JSON.stringify(calendars.map(row => [row.id, row.name]));
+  if (select.dataset.optionsKey !== key) {
+    select.dataset.optionsKey = key;
+    select.replaceChildren(...calendars.map(calendar => option(calendar.id, calendar.name || calendar.id)));
   }
+  if (state.calendarId && calendars.some(calendar => calendar.id === state.calendarId)) select.value = state.calendarId;
+  else if (select.value) state.calendarId = select.value;
 }
 
 function selectedCalendarEvent(payload) {
@@ -10494,9 +10553,13 @@ function selectedCalendarEvent(payload) {
   return events.find((event) => event && event.id === state.calendarEventId) || null;
 }
 
+let calendarDetailKey = "";
 function paintCalendarDetail(event, calendarName) {
   const root = $("calendar-detail");
   if (!root) return;
+  const key = JSON.stringify([event, calendarName]);
+  if (calendarDetailKey === key) return;
+  calendarDetailKey = key;
   root.replaceChildren();
   if (!event) {
     root.hidden = true;
@@ -10538,6 +10601,7 @@ function paintAgenda(events) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "agenda-item";
+    button.dataset.eventId = event.id;
     if (event.id === state.calendarEventId) button.classList.add("is-selected");
     button.textContent = agendaLine(event);
     button.addEventListener("click", () => selectCalendarEvent(event));
@@ -10547,9 +10611,21 @@ function paintAgenda(events) {
 
 function selectCalendarEvent(event) {
   state.calendarEventId = event && event.id ? event.id : "";
-  if (state.calendarPayload) paintCalendar(state.calendarPayload);
+  if (state.calendarPayload) paintCalendarSelection(state.calendarPayload);
 }
 
+function paintCalendarSelection(payload) {
+  for (const node of $("calendar-layout").querySelectorAll("[data-event-id]")) {
+    const selected = node.dataset.eventId === state.calendarEventId;
+    node.classList.toggle("is-selected", selected);
+    node.setAttribute("aria-pressed", String(selected));
+  }
+  const selected = selectedCalendarEvent(payload);
+  paintCalendarDetail(selected, calendarNameOf(payload?.calendars || [], selected?.calendarId || state.calendarId));
+}
+
+let calendarGridKey = "";
+let calendarEventsKey = "";
 function paintCalendar(payload) {
   const view = calendarView(payload);
   const cursor = state.calendarCursor || new Date();
@@ -10576,57 +10652,62 @@ function paintCalendar(payload) {
   const layout = $("calendar-layout");
   if (layout) layout.hidden = !view.showGrid;
   const body = $("calendar-body");
-  body.replaceChildren();
   if (!view.showGrid) {
     paintCalendarDetail(null, "");
     return;
   }
   fillCalendarPick(view.calendars);
-  const grid = document.createElement("div");
-  grid.className = "calendar-grid";
-  grid.setAttribute("role", "grid");
-  grid.setAttribute("aria-label", range.label);
-  for (const name of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
-    const head = document.createElement("div");
-    head.className = "calendar-dow";
-    head.textContent = name;
-    grid.appendChild(head);
-  }
-  for (const day of monthCells(year, month)) {
-    const cell = document.createElement("div");
-    cell.className = "calendar-day";
-    if (!day) {
-      cell.classList.add("pad");
-      grid.appendChild(cell);
-      continue;
+  if (calendarGridKey !== range.timeMin) {
+    calendarGridKey = range.timeMin;
+    calendarEventsKey = "";
+    const grid = document.createElement("div");
+    grid.className = "calendar-grid";
+    grid.setAttribute("role", "grid");
+    grid.setAttribute("aria-label", range.label);
+    for (const name of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
+      const head = document.createElement("div");
+      head.className = "calendar-dow";
+      head.textContent = name;
+      grid.appendChild(head);
     }
-    if (sameDay(year, month, day)) cell.classList.add("today");
-    const num = document.createElement("span");
-    num.className = "calendar-num";
-    num.textContent = String(day);
-    cell.appendChild(num);
+    for (const day of monthCells(year, month)) {
+      const cell = document.createElement("div");
+      cell.className = "calendar-day";
+      if (!day) cell.classList.add("pad");
+      else {
+        cell.dataset.day = day;
+        const num = document.createElement("span");
+        num.className = "calendar-num";
+        num.textContent = String(day);
+        cell.appendChild(num);
+      }
+      grid.appendChild(cell);
+    }
+    body.replaceChildren(grid);
+  }
+  const eventsKey = JSON.stringify([account?.id, state.calendarId, view.events]);
+  const changed = eventsKey !== calendarEventsKey;
+  for (const cell of body.querySelectorAll("[data-day]")) {
+    const day = Number(cell.dataset.day);
+    cell.classList.toggle("today", sameDay(year, month, day));
+    if (!changed) continue;
+    for (const item of cell.querySelectorAll(".calendar-event")) item.remove();
     for (const event of eventsOnDay(view.events, dayKey(year, month, day))) {
       const item = document.createElement("button");
       item.type = "button";
       item.className = "calendar-event";
-      if (event.id === state.calendarEventId) item.classList.add("is-selected");
+      item.dataset.eventId = event.id;
       item.textContent = eventChip(event);
-      const tip = [event.title || "(no title)", event.location].filter(Boolean).join(" — ");
-      if (tip) item.title = tip;
+      item.title = [event.title || "(no title)", event.location].filter(Boolean).join(" — ");
       item.addEventListener("click", () => selectCalendarEvent(event));
       cell.appendChild(item);
     }
-    grid.appendChild(cell);
   }
-  body.appendChild(grid);
-  paintAgenda(view.events);
-  const selected = selectedCalendarEvent(payload);
-  paintCalendarDetail(selected, calendarNameOf(view.calendars, (selected && selected.calendarId) || state.calendarId));
-  const motionNodes = [];
-  grid.querySelectorAll(".calendar-day:not(.pad)").forEach((node) => motionNodes.push(node));
-  const agenda = $("calendar-agenda");
-  if (agenda) agenda.querySelectorAll(".agenda-item").forEach((node) => motionNodes.push(node));
-  paintMotionRows("calendar", motionNodes);
+  if (changed) {
+    calendarEventsKey = eventsKey;
+    paintAgenda(view.events);
+  }
+  paintCalendarSelection(payload);
 }
 
 function syncCalendarNav(view) {
@@ -10644,46 +10725,83 @@ function syncCalendarNav(view) {
   }
 }
 
-async function loadCalendar() {
+const calendarCache = new Map();
+const calendarPending = new Map();
+let calendarStatusPending = null;
+function calendarCacheKey(account, range, calendarId) {
+  return JSON.stringify([account?.id || "", range.timeMin, calendarId || ""]);
+}
+function rememberCalendar(key, payload) {
+  calendarCache.delete(key);
+  calendarCache.set(key, { payload, at: Date.now() });
+  while (calendarCache.size > 8) calendarCache.delete(calendarCache.keys().next().value);
+}
+function applyCalendarPayload(payload) {
+  if (payload?.calendarId) state.calendarId = payload.calendarId;
+  if (!(payload?.events || []).some(event => event?.id === state.calendarEventId)) state.calendarEventId = "";
+  state.calendarPayload = payload;
+  if (state.view === "calendar") paintCalendar(payload);
+}
+
+async function loadCalendar({ preferCache = false, fresh = false } = {}) {
   const gen = ++calendarGen;
   fillCalendarAccounts();
   const account = calendarAccount();
-  let calStatus = state.oauthStatus;
-  try {
-    calStatus = await call("calendar:status");
-  } catch {
-    // The month list still says when the grant is missing.
-  }
-  if (gen !== calendarGen) return;
-  state.calendarStatus = calStatus;
   if (!account) {
-    state.calendarPayload = { api: false, reason: "no_account", events: [], calendars: [] };
-    paintCalendar(state.calendarPayload);
+    calendarCache.clear();
+    applyCalendarPayload({ api: false, reason: "no_account", events: [], calendars: [] });
+    $("calendar-panel").removeAttribute("aria-busy");
     return;
   }
   state.calendarAccountId = account.id;
   const cursor = state.calendarCursor || new Date();
   state.calendarCursor = cursor;
   const range = monthRange(cursor.getFullYear(), cursor.getMonth());
-  try {
-    const payload = await call("calendar:list", {
-      accountId: account.id,
-      timeMin: range.timeMin,
-      timeMax: range.timeMax,
-      calendarId: state.calendarId || undefined,
-    });
+  const requestedId = state.calendarId;
+  const key = calendarCacheKey(account, range, requestedId);
+  const cached = calendarCache.get(key);
+  if (cached) {
+    applyCalendarPayload(cached.payload);
+    if (preferCache && Date.now() - cached.at < 60000) {
+      $("calendar-panel").removeAttribute("aria-busy");
+      return;
+    }
+  } else {
+    applyCalendarPayload({ api: false, reason: "loading", events: [], calendars: [] });
+  }
+  $("calendar-panel").setAttribute("aria-busy", "true");
+  // Status does not gate the event list. Coalesce this account-wide read too.
+  if (!calendarStatusPending) calendarStatusPending = call("calendar:status").finally(() => { calendarStatusPending = null; });
+  calendarStatusPending.then(status => {
     if (gen !== calendarGen) return;
-    if (payload && payload.calendarId) state.calendarId = payload.calendarId;
-    const events = Array.isArray(payload && payload.events) ? payload.events : [];
-    if (!events.some((event) => event && event.id === state.calendarEventId)) state.calendarEventId = "";
-    state.calendarPayload = payload;
-    paintCalendar(payload);
+    state.calendarStatus = status;
+    const connection = calendarConnection(status, calendarAccount(), state.calendarPayload);
+    $("calendar-grant").disabled = !connection.canGrant;
+    $("calendar-grant").textContent = connection.label;
+    $("calendar-grant").title = connection.reason;
+  }).catch(() => {});
+  try {
+    if (fresh || !calendarPending.has(key)) {
+      const pending = call("calendar:list", { accountId: account.id, timeMin: range.timeMin,
+        timeMax: range.timeMax, calendarId: requestedId || undefined }).finally(() => {
+        if (calendarPending.get(key) === pending) calendarPending.delete(key);
+      });
+      calendarPending.set(key, pending);
+    }
+    const payload = await calendarPending.get(key);
+    if (gen !== calendarGen) return;
+    applyCalendarPayload(payload);
+    rememberCalendar(key, payload);
+    rememberCalendar(calendarCacheKey(account, range, state.calendarId), payload);
   } catch (error) {
     if (gen !== calendarGen) return;
     const message = error instanceof Error ? error.message : String(error);
-    state.calendarEventId = "";
-    state.calendarPayload = { api: false, reason: "error", message, events: [], calendars: [] };
-    paintCalendar(state.calendarPayload);
+    if (cached?.payload?.api) {
+      $("calendar-status").textContent = "Could not refresh. Showing the saved month. " + message;
+      $("calendar-status").classList.add("error");
+    } else applyCalendarPayload({ api: false, reason: "error", message, events: [], calendars: [] });
+  } finally {
+    if (gen === calendarGen) $("calendar-panel").removeAttribute("aria-busy");
   }
 }
 
@@ -10691,10 +10809,16 @@ function showMail() {
   showPrimary("mail", "shell");
 }
 
+let calendarOpenScheduled = false;
 function showCalendar() {
   if (!state.calendarCursor) state.calendarCursor = new Date();
   showPrimary("calendar", "calendar-panel");
-  loadCalendar().catch((error) => showStatus(error.message, true));
+  if (calendarOpenScheduled) return;
+  calendarOpenScheduled = true;
+  afterPaint(() => {
+    calendarOpenScheduled = false;
+    if (state.view === "calendar") loadCalendar({ preferCache: true }).catch(error => showStatus(error.message, true));
+  });
 }
 
 async function grantCalendar() {
@@ -10707,7 +10831,7 @@ async function grantCalendar() {
     if (!outcome.ok) throw new Error(outcome.message);
     showStatus(outcome.message);
   } finally {
-    await loadCalendar();
+    await loadCalendar({ fresh: true });
   }
 }
 
@@ -10731,18 +10855,17 @@ async function submitCalendarEvent(event) {
   $("calendar-event-title").value = "";
   $("calendar-location").value = "";
   showStatus("Event saved on the calendar.");
-  await loadCalendar();
+  calendarCache.clear();
+  await loadCalendar({ fresh: true });
 }
 
 function shiftMonth(delta) {
-  armPageMotion("calendar");
   const cursor = state.calendarCursor || new Date();
   state.calendarCursor = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
 
 function showCalendarToday() {
-  armPageMotion("calendar");
   state.calendarCursor = new Date();
   state.calendarEventId = "";
   loadCalendar().catch((error) => showStatus(error.message, true));
@@ -11128,9 +11251,8 @@ function wire() {
   const motion = motionApi();
   if (motion) motion.bindChrome(document);
   wireSettingsFolds();
-  wireSectionNav("agent-nav");
+  wireAgentTabs();
   wireSectionNav("calendar-nav");
-  bindAgentToolsMotion();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
       if (dialog.id === "compose-close-review") return;

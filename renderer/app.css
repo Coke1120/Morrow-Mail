@@ -478,14 +478,14 @@ button.icon-label svg { display: block; flex: none; }
 
 .sync-slot {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
   max-width: min(420px, 46vw);
 }
 
 .sync-detail {
-  max-width: 100%;
+  max-width: min(220px, 22vw);
   margin: 0;
   overflow: hidden;
   color: rgba(255, 255, 255, 0.78);
@@ -935,10 +935,10 @@ button.brain-skill {
 
 #agent-panel.primary-space {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  display: block;
+  overflow: auto;
   padding: 20px 20px 12px;
+  scrollbar-gutter: stable;
 }
 
 .page-busy {
@@ -1004,13 +1004,6 @@ button.brain-skill {
 
 .space-actions { margin-top: 0; }
 
-.agent-scroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding-right: 4px;
-}
-
 #agent-home {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -1069,19 +1062,10 @@ button.brain-skill {
   font-size: 12px;
 }
 
-#agent-tools {
-  flex: 0 1 auto;
-  max-height: 42%;
-  overflow: auto;
-  padding: 0 10px 8px;
-  border-top: 1px solid var(--line);
-}
-
-#agent-tools summary {
-  cursor: pointer;
-  padding: 8px 0;
-  font-weight: 600;
-}
+#agent-tools { padding: 8px 0; }
+#agent-tools > h3 { margin-top: 0; }
+#agent-panel .agent-thread,
+#agent-tools { overflow: visible; max-height: none; }
 
 .agent-composer {
   flex: 0 0 auto;

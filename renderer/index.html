@@ -101,7 +101,7 @@
           </svg>
           <span id="sync-label">Sync</span>
         </button>
-        <p id="sync-detail" class="sync-detail" hidden></p>
+        <p id="sync-detail" class="sync-detail" role="status" hidden></p>
         </div>
         <form id="search-form" role="search">
           <label class="sr" for="search-query">Search downloaded mail</label>
@@ -212,22 +212,26 @@
         </div>
       </div>
       <p class="hint motion-block">Agent helps you ask questions about downloaded mail and review suggested tasks, drafts, and filing actions.</p>
-      <nav class="section-nav" id="agent-nav" aria-label="Agent sections">
-        <button type="button" data-scroll="agent-home" aria-current="true">Todos</button>
-        <button type="button" data-scroll="agent-sections">Conversation</button>
-        <button type="button" data-scroll="agent-tools">Skills</button>
+      <nav class="section-nav" id="agent-nav" role="tablist" aria-label="Agent sections">
+        <button type="button" id="agent-tab-home" data-agent-tab="home" role="tab" aria-controls="agent-home" aria-selected="true" aria-current="true">Todos</button>
+        <button type="button" id="agent-tab-conversation" data-agent-tab="conversation" role="tab" aria-controls="agent-conversation" aria-selected="false" tabindex="-1">Conversation</button>
+        <button type="button" id="agent-tab-tools" data-agent-tab="tools" role="tab" aria-controls="agent-tools" aria-selected="false" tabindex="-1">Skills</button>
       </nav>
       <div id="agent-setup" class="setup-state motion-block" hidden><p id="agent-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="agent-setup-ai">Set up AI</button><button type="button" class="ghost" id="agent-setup-connect">Connect an account</button></div></div>
       <p id="agent-status" role="status"></p>
       <p id="agent-context" class="hint"></p>
-      <div class="agent-scroll motion-block">
-        <div id="agent-home" aria-label="Suggested todos"></div>
+      <div id="agent-home" class="motion-block" role="tabpanel" aria-labelledby="agent-tab-home" aria-label="Suggested todos"></div>
+      <div id="agent-skill-chips" aria-label="Home skill shortcuts"></div>
+      <section id="agent-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden>
         <div id="agent-sections" class="agent-thread" role="log" aria-live="polite"></div>
-      </div>
-      <div id="agent-skill-chips" class="motion-block" aria-label="Home skill shortcuts"></div>
-      <details id="agent-tools" class="motion-fold motion-block">
-        <summary>Skills and history</summary>
-        <div class="fold-panel">
+      <form id="agent-composer" class="agent-composer">
+        <label class="sr" for="agent-input">Message the agent</label>
+        <textarea id="agent-input" rows="2" maxlength="2000" placeholder="Ask Morrow Mail…"></textarea>
+        <button type="submit" class="primary" id="agent-send">Ask</button>
+      </form>
+      </section>
+      <section id="agent-tools" role="tabpanel" aria-labelledby="agent-tab-tools" hidden>
+        <h3>Skills and history</h3>
         <p class="hint">Skills are on demand unless their schedule is enabled below. Scheduled runs need Morrow open; a missed run fires once on relaunch. Pause stops scheduled runs. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="agent-skill-status" role="status"></p>
         <div id="agent-result" hidden></div>
@@ -250,13 +254,8 @@
           <button type="button" class="ghost" id="agent-memory-save">Save notes</button>
         </div>
         <p id="agent-memory-status" role="status"></p>
-        </div>
-      </details>
-      <form id="agent-composer" class="agent-composer motion-block">
-        <label class="sr" for="agent-input">Message the agent</label>
-        <textarea id="agent-input" rows="2" maxlength="2000" placeholder="Ask Morrow Mail…"></textarea>
-        <button type="submit" class="primary" id="agent-send">Ask</button>
-      </form>
+      </section>
+
     </section>
     <section id="brain" class="primary-space" hidden aria-labelledby="brain-title">
       <div class="brain-head motion-block">
