@@ -2451,3 +2451,7 @@ textarea { min-height: 140px; resize: vertical; }
 #search-scope[hidden] { display: none; }
 #list-coverage { margin: 4px 0; }
 #filter-chip { margin: 4px 0; white-space: normal; text-align: left; }
+
+#compose-close-review { padding: 22px; width: min(560px, calc(100vw - 32px)); }
+#compose-close-review .row { flex-wrap: wrap; }
+#compose-status { margin: 8px 0; }

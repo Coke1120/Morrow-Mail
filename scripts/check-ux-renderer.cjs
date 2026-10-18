@@ -87,7 +87,7 @@ app.whenReady().then(async()=>{
  await run(`$('compose-save').click()`);await waitFor(`$('compose-status').textContent.includes('Fixture save failed')`);
  assert.equal(await run(`$('compose-body').value`),'Beta reply');await shot('compose-local-error');
  await run(`uxFixture.saveWorks();saveDraft()`);assert.equal(await run('state.draftId'),'saved-draft');
- await run(`sendMail();cancelUndoSend()`);assert.equal(await run(`$('compose').open`),true);assert.equal(await run('state.draftId'),'saved-draft');
+ await run(`(async()=>{await sendMail();cancelUndoSend();})()`);assert.equal(await run(`$('compose').open`),true);assert.equal(await run('state.draftId'),'saved-draft');
  assert.equal((await run('uxFixture.counts()'))['mail:send']||0,0);
  await run(`state.prefs.undoSend=0;sendMail()`);assert.equal(await run(`$('compose').open`),true);assert.equal(await run('state.draftId'),'saved-draft');
  assert.match(await run(`$('compose-status').textContent`),/Delivery was not confirmed/);

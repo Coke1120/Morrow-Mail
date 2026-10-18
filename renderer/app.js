@@ -1187,7 +1187,7 @@ function closeDialog(id) {
     return;
   }
   dialog.dataset.closing = "1";
-  motion.dialogOut(dialog).then(() => {
+  return motion.dialogOut(dialog).then(() => {
     if (dialog.open) dialog.close();
     if (dialog.getAnimations) {
       for (const animation of dialog.getAnimations()) animation.cancel();
@@ -6037,8 +6037,8 @@ async function requestComposeClose() {
     if (choice === "keep") return false;
     if (choice === "save" && !(await saveDraft())) return false;
   }
-  // Close immediately so a new compose cannot be closed by the previous animation.
-  $("compose").close();
+  // Await the exit before another composition reuses this dialog.
+  await closeDialog("compose");
   return true;
 }
 
@@ -6150,7 +6150,7 @@ async function deliverMail(payload) {
     await call("mail:send", payload);
     state.draftId = null;
     state.composeBaseline = composeSnapshot();
-    closeDialog("compose");
+    await closeDialog("compose");
     showStatus("Sent.");
   } catch (error) {
     openDialog("compose");
@@ -6175,7 +6175,11 @@ async function sendMail() {
   const payload = composePayload(account);
   const delay = sendDelayMs(state.prefs.undoSend);
   if (!delay) { await deliverMail(payload); return; }
-  $("compose").close();
+  state.composePending = true;
+  syncCompose();
+  await closeDialog("compose");
+  state.composePending = false;
+  syncCompose();
   const gen = ++sendGen;
   showStatus(`Undo send for ${delay / 1000}s.`);
   $("undo-send").hidden = false;
@@ -10023,6 +10027,7 @@ function wire() {
   if (motion) motion.bindChrome(document);
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "compose-close-review") return;
       if (dialog.id === "connect") {
         event.preventDefault();
         dismissConnect();
