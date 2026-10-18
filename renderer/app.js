@@ -10,6 +10,10 @@ const state = {
   query: "",
   draftId: null,
   composeMeta: null,
+  composeBaseline: "",
+  composePending: false,
+  composeQueued: false,
+  composeInitializing: false,
   composeQuote: null,
   botDraftReview: null,
   botAccess: null,
@@ -1588,9 +1592,9 @@ function replyBody(email) {
 function attachmentNote(email) {
   const files = ((email && email.attachments) || []).filter((item) => item && (item.filename || item.id));
   if (files.length) {
-    return `Attachments: ${files.map((item) => item.filename || "attachment").join(", ")}`;
+    return `Original attachment names: ${files.map((item) => item.filename || "attachment").join(", ")}. Files are not included in this forward.`;
   }
-  if (email && email.hasAttachments) return "This message has attachments.";
+  if (email && email.hasAttachments) return "The original message has attachments. Files are not included in this forward.";
   return "";
 }
 
@@ -3140,6 +3144,14 @@ function renderActions(pane, email) {
   menus.className = "reader-menus";
   menus.append(move, organizeButton(email));
   if (snooze) menus.append(snooze);
+  if (email.isDraft) {
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.className = "primary";
+    resume.textContent = "Resume draft";
+    resume.addEventListener("click", () => guard(() => resumeDraft(email)));
+    bar.appendChild(resume);
+  }
   bar.append(reply, replyAll, forward, star, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
@@ -5143,7 +5155,7 @@ function onAccountsUpdated(payload) {
       const view = accounts.find((account) => account.id === preferred);
       if (view && view.email) {
         closeDialog("connect");
-        showStatus(`Connected ${view.email}`);
+        showStatus(`Connected ${view.email}. Downloading recent Inbox mail…`);
       }
     }
   }
@@ -5176,36 +5188,55 @@ function connectPayload() {
   return payload;
 }
 
+function setConnectStatus(text, isError) {
+  $("connect-status").textContent = text || "";
+  $("connect-status").classList.toggle("error", !!isError);
+}
+
+function paintConnectPending() {
+  const busy = state.oauthPending || state.connectPending;
+  const google = oauthButtonState(state.oauthStatus, "google");
+  $("oauth-google").disabled = !!busy || google.disabled;
+  $("oauth-microsoft").disabled = !!busy;
+  $("connect-submit").disabled = !!busy;
+  $("connect-close").textContent = state.oauthPending ? "Cancel sign-in" : "Cancel";
+  $("connect-form").setAttribute("aria-busy", busy ? "true" : "false");
+  $("oauth-unavailable").textContent = google.disabled
+    ? "Google sign-in is unavailable in this installation. Use an installation configured for Google sign-in, or use an app password if your provider permits it." : "";
+}
+
 async function connectImap() {
-  clearUndo();
-  showStatus("Connecting…");
-  const view = await call("mail:connectImapSmtp", connectPayload());
-  $("password").value = "";
-  closeDialog("connect");
-  showStatus(view && view.email ? `Connected ${view.email}` : "Connected.");
-  await loadAccounts(view && view.id);
+  if (state.connectPending || state.oauthPending) return;
+  state.connectPending = true;
+  paintConnectPending();
+  setConnectStatus("Connecting…");
+  try {
+    const view = await call("mail:connectImapSmtp", connectPayload());
+    $("password").value = "";
+    closeDialog("connect");
+    showStatus(view && view.email ? `Connected ${view.email}. Downloading recent Inbox mail…` : "Connected.");
+    await loadAccounts(view && view.id);
+  } catch (error) { setConnectStatus("Could not connect. " + error.message, true); }
+  finally { state.connectPending = false; paintConnectPending(); }
 }
 
 async function connectOAuth(provider) {
-  clearUndo();
+  if (state.oauthPending || state.connectPending) return;
   state.oauthPending = true;
-  showStatus("Waiting for the browser sign-in…");
+  paintConnectPending();
+  setConnectStatus("Finish signing in in your browser. You can return here when it completes.");
   try {
     const view = await call("mail:addAccount", { provider });
     if (!view || !view.id || !view.email) throw new Error("Sign-in did not return an account.");
     closeDialog("connect");
-    showStatus(`Connected ${view.email}`);
+    showStatus(`Connected ${view.email}. Downloading recent Inbox mail…`);
     await loadAccounts(view.id);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/cancel/i.test(message)) {
-      showStatus("Sign-in canceled.");
-      await loadAccounts();
-      return;
-    }
-    throw error;
+    const message = error.message || String(error);
+    setConnectStatus(/cancel/i.test(message) ? "Sign-in canceled." : "Could not finish sign-in. " + message + " Try the provider button again.", !/cancel/i.test(message));
   } finally {
     state.oauthPending = false;
+    paintConnectPending();
   }
 }
 
@@ -5238,9 +5269,10 @@ function composePayload(account) {
 function syncCompose() {
   const account = composeAccount();
   const live = isLive(account);
-  $("compose-save").disabled = !live;
-  $("compose-send").disabled = !live;
-  $("compose-schedule").disabled = !live;
+  const locked = state.composePending || state.composeQueued || state.composeInitializing;
+  for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked;
+  $("compose-close").disabled = state.composePending || state.composeInitializing;
+  for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body", "signature", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
   paintComposeNote();
 }
 
@@ -5262,6 +5294,9 @@ function paintComposeNote() {
     text += same
       ? " Reviewing a draft proposal. Nothing is sent until you press Send."
       : " This compose no longer matches the reviewed draft. Nothing is sent until you press Send.";
+  }
+  if (state.composeQuote && state.composeQuote.kind === "forward" && attachmentNote(state.composeQuote.email)) {
+    text += " Attachments are not included in this forward. This composer cannot attach the original files.";
   }
   $("compose-note").textContent = text;
 }
@@ -5310,7 +5345,7 @@ function showSignatureEmpty(message) {
   empty.textContent = message;
 }
 
-async function fillSignatures() {
+async function fillSignatures(preserveBody) {
   const gen = signatureGen += 1;
   const accountId = composeAccount()?.id;
   let pack = null;
@@ -5337,6 +5372,7 @@ async function fillSignatures() {
   select.replaceChildren();
   select.append(option("", "No signature"));
   for (const row of rows) select.append(option(String(row.id), signatureName(row)));
+  if (preserveBody) { select.value = ""; return; }
   const id = chosenSignatureId(pack, accountId);
   const match = rows.find((row) => String(row.id) === id);
   select.value = match ? String(match.id) : "";
@@ -5745,11 +5781,11 @@ function paintComposeChrome() {
   dialog.dataset.quoteCollapsed = collapsed ? "true" : "false";
   toggle.setAttribute("aria-pressed", shown ? "true" : "false");
   const toggleLabel = $("compose-quote-toggle-label");
-  if (toggleLabel) toggleLabel.textContent = shown ? "Hide quoted message" : "Show quoted message";
+  if (toggleLabel) toggleLabel.textContent = shown ? "Hide original preview" : "Show original preview";
   pane.hidden = !shown;
   pane.setAttribute("aria-hidden", shown ? "false" : "true");
   handle.hidden = !(shown && wide);
-  note.hidden = shown;
+  note.hidden = false;
   if (collapse) {
     collapse.hidden = !shown || wide;
     collapse.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -5806,9 +5842,16 @@ function toggleComposeQuoteCollapse() {
 }
 
 async function openCompose(seed) {
+  if (sendTimer || state.composePending || state.composeInitializing) {
+    showStatus("Finish the pending message first. Use Undo send to resume editing during the send delay.");
+    return;
+  }
+  if ($("compose").open && !(await requestComposeClose())) return;
   const fields = seed || {};
+  state.composeInitializing = true;
   resetDraftWrite();
-  state.draftId = null;
+  state.draftId = fields.draftId || null;
+  state.composeQueued = false;
   state.signatureText = "";
   state.composeMeta = {
     accountId: fields.accountId || state.accountId,
@@ -5825,6 +5868,7 @@ async function openCompose(seed) {
     subject: fields.subject || "",
     body: fields.body || "",
   } : null;
+  setComposeStatus("");
   $("compose-title").textContent = fields.title || "New message";
   $("compose-to").value = fields.to || "";
   $("compose-cc").value = fields.cc || "";
@@ -5840,7 +5884,14 @@ async function openCompose(seed) {
   paintQuoteBody();
   openDialog("compose");
   scheduleComposeLayout();
-  await Promise.all([fillSignatures(), loadScheduled()]);
+  const initial = composeSnapshot();
+  await Promise.all([fillSignatures(!!fields.draftId), loadScheduled()]);
+  state.composeInitializing = false;
+  // A supplied proposal is unsaved work; an untouched new message is not.
+  const baseline = JSON.parse(initial);
+  baseline.body = fields.draftId ? baseline.body : applySignature(baseline.body, "", state.signatureText);
+  state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
+  syncCompose();
   paintComposeNote();
   if (!$("compose").open) return;
   scheduleComposeLayout();
@@ -5864,53 +5915,116 @@ async function openCompose(seed) {
   }
 }
 
+function setComposeStatus(text, isError) {
+  const el = $("compose-status");
+  el.textContent = text || "";
+  el.classList.toggle("error", !!isError);
+}
+
+function composeSnapshot() {
+  return JSON.stringify({ accountId: state.composeMeta && state.composeMeta.accountId,
+    to: $("compose-to").value, cc: $("compose-cc").value, bcc: $("compose-bcc").value,
+    subject: $("compose-subject").value, body: $("compose-body").value,
+    quote: state.composeQuote && state.composeQuote.text });
+}
+
+async function requestComposeClose() {
+  if (state.composePending || state.composeInitializing) return false;
+  if (!state.composeQueued && composeSnapshot() !== state.composeBaseline) {
+    const choice = await new Promise((resolve) => {
+      const dialog = $("compose-close-review");
+      const finish = (value) => { dialog.close(); resolve(value); };
+      $("draft-close-save").onclick = () => finish("save");
+      $("draft-close-discard").onclick = () => finish("discard");
+      $("draft-close-keep").onclick = () => finish("keep");
+      dialog.oncancel = (event) => { event.preventDefault(); finish("keep"); };
+      openDialog("compose-close-review");
+    });
+    if (choice === "keep") return false;
+    if (choice === "save" && !(await saveDraft())) return false;
+  }
+  // Close immediately so a new compose cannot be closed by the previous animation.
+  $("compose").close();
+  return true;
+}
+
+async function resumeDraft(email) {
+  const data = await call("mail:openEmail", { emailId: email.id });
+  const draft = data && data.email;
+  if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
+  await openCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
+    to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
+    body: readable(draft), inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "" });
+}
+
 async function loadScheduled() {
   const gen = scheduledGen += 1;
   const account = composeAccount();
-  let data = null;
   try {
-    data = await call("mail:listScheduled", account ? { accountId: account.id } : {});
+    const data = await call("mail:listScheduled", account ? { accountId: account.id } : {});
+    if (gen === scheduledGen) renderScheduled(scheduledRows(data));
   } catch (error) {
     if (gen !== scheduledGen) return;
-    renderScheduled([]);
-    showStatus(error instanceof Error ? error.message : String(error), true);
-    return;
+    $("scheduled").replaceChildren();
+    const item = document.createElement("li");
+    item.textContent = "Scheduled mail could not be loaded. ";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "ghost";
+    retry.textContent = "Retry";
+    retry.onclick = () => loadScheduled();
+    item.appendChild(retry);
+    $("scheduled").appendChild(item);
   }
-  if (gen !== scheduledGen) return;
-  renderScheduled(scheduledRows(data));
 }
 
 async function cancelScheduled(id) {
   await call("mail:cancelScheduled", { id });
-  showStatus("Scheduled send canceled.");
+  setComposeStatus("Scheduled send canceled. Start a new message to compose again.");
   await loadScheduled();
+}
+
+async function composeOperation(work) {
+  if (state.composePending || state.composeQueued || state.composeInitializing) return false;
+  state.composePending = true;
+  syncCompose();
+  try { await work(); return true; }
+  catch (error) { setComposeStatus(error.message || String(error), true); return false; }
+  finally { state.composePending = false; syncCompose(); }
 }
 
 async function scheduleMail() {
   const account = composeAccount();
-  if (!isLive(account)) return;
+  if (!isLive(account)) return false;
   if (!composeHasRecipient()) {
-    showStatus("Add a recipient.", true);
-    return;
+    setComposeStatus("Add at least one recipient.", true);
+    $("compose-to").focus();
+    return false;
   }
   const when = scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
-  if (!when) {
-    showStatus("Pick a time in the future.", true);
-    return;
-  }
-  showStatus("Scheduling…");
-  await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
-  showStatus(`Scheduled for ${when.toLocaleString()}.`);
-  await loadScheduled();
+  if (!when) { setComposeStatus("Pick a time in the future.", true); $("schedule-at").focus(); return false; }
+  return composeOperation(async () => {
+    setComposeStatus("Scheduling…");
+    await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
+    state.composeQueued = true;
+    state.composeBaseline = composeSnapshot();
+    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${account.email}. See Scheduled below. Close to start a new message.`);
+    await loadScheduled();
+  });
 }
 
 async function saveDraft() {
   const account = composeAccount();
-  if (!isLive(account)) return;
-  showStatus("Saving draft…");
-  const saved = await call("mail:upsertDraft", composePayload(account));
-  state.draftId = (saved && (saved.emailId || saved.draftId)) || state.draftId;
-  showStatus("Draft saved.");
+  if (!isLive(account)) return false;
+  return composeOperation(async () => {
+    setComposeStatus("Saving draft…");
+    const snapshot = composeSnapshot();
+    const saved = await call("mail:upsertDraft", composePayload(account));
+    state.draftId = (saved && (saved.emailId || saved.draftId)) || state.draftId;
+    if (!state.draftId) throw new Error("Draft could not be saved. Your text is still here.");
+    state.composeBaseline = snapshot;
+    setComposeStatus(saved && saved.remoteSaved === false ? "Draft saved on this computer. Server copy could not be updated." : "Draft saved.");
+  });
 }
 
 function hideUndoSend() {
@@ -5924,44 +6038,57 @@ function hideUndoSend() {
 function cancelUndoSend() {
   if (!sendTimer) return false;
   hideUndoSend();
-  showStatus("Send canceled.");
+  openDialog("compose");
+  scheduleComposeLayout();
+  setComposeStatus("Send canceled. Your draft is ready to edit.");
+  showStatus("Send canceled. Your draft is ready to edit.");
+  $("compose-body").focus();
   return true;
 }
 
 async function deliverMail(payload) {
+  state.composePending = true;
+  syncCompose();
+  setComposeStatus("Sending…");
   showStatus("Sending…");
-  await call("mail:send", payload);
-  state.draftId = null;
-  closeDialog("compose");
-  showStatus("Sent.");
+  try {
+    await call("mail:send", payload);
+    state.draftId = null;
+    state.composeBaseline = composeSnapshot();
+    closeDialog("compose");
+    showStatus("Sent.");
+  } catch (error) {
+    openDialog("compose");
+    scheduleComposeLayout();
+    const message = "Delivery was not confirmed. Your draft is ready to edit. Check Sent before retrying. " + (error.message || String(error));
+    setComposeStatus(message, true);
+    showStatus(message, true);
+    return;
+  } finally { state.composePending = false; syncCompose(); }
   await loadList();
 }
 
-// shortcut: the wait is local; mail:send is immediate once it starts, upgrade when the host can recall a send
+// The local delay can be canceled only before mail:send begins.
 async function sendMail() {
   const account = composeAccount();
-  if (!isLive(account)) return;
+  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || sendTimer) return;
   if (!composeHasRecipient()) {
-    showStatus("Add a recipient.", true);
+    setComposeStatus("Add at least one recipient.", true);
+    $("compose-to").focus();
     return;
   }
   const payload = composePayload(account);
   const delay = sendDelayMs(state.prefs.undoSend);
-  hideUndoSend();
-  if (!delay) {
-    await deliverMail(payload);
-    return;
-  }
-  closeDialog("compose");
+  if (!delay) { await deliverMail(payload); return; }
+  $("compose").close();
   const gen = ++sendGen;
   showStatus(`Undo send for ${delay / 1000}s.`);
   $("undo-send").hidden = false;
   sendTimer = setTimeout(() => {
     sendTimer = null;
-    const button = $("undo-send");
-    if (button) button.hidden = true;
+    $("undo-send").hidden = true;
     if (gen !== sendGen) return;
-    guard(() => deliverMail(payload));
+    deliverMail(payload).catch((error) => showStatus(error.message, true));
   }, delay);
 }
 
@@ -9416,8 +9543,8 @@ async function loadOauthStatus() {
     state.oauthStatus = null;
   }
   const google = oauthButtonState(state.oauthStatus, "google");
-  $("oauth-google").disabled = google.disabled;
   $("oauth-google").title = google.reason;
+  paintConnectPending();
 }
 
 function setBotStatus(text, isError) {
@@ -9754,7 +9881,11 @@ function wire() {
         dismissConnect();
         return;
       }
-      if (dialog.id === "compose" && !dismissCompose("cancel")) return;
+      if (dialog.id === "compose") {
+        event.preventDefault();
+        requestComposeClose();
+        return;
+      }
       const apiMotion = motionApi();
       if (!apiMotion || !apiMotion.wantsCloseMotion()) return;
       event.preventDefault();
@@ -9992,10 +10123,10 @@ function wire() {
   $("connect-close").addEventListener("click", () => dismissConnect());
   $("connect-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    guard(connectImap);
+    connectImap();
   });
-  $("oauth-google").addEventListener("click", () => guard(() => connectOAuth("google")));
-  $("oauth-microsoft").addEventListener("click", () => guard(() => connectOAuth("microsoft")));
+  $("oauth-google").addEventListener("click", () => connectOAuth("google"));
+  $("oauth-microsoft").addEventListener("click", () => connectOAuth("microsoft"));
   $("remove").addEventListener("click", () => guard(removeAccount));
   $("compose-open").addEventListener("click", () => {
     openCompose().catch((error) => showStatus(error.message, true));
@@ -10005,7 +10136,7 @@ function wire() {
   $("schedule-preset").addEventListener("change", syncScheduleFields);
   $("compose").addEventListener("close", () => stopDraftWrite());
   $("compose-close").addEventListener("click", () => {
-    if (dismissCompose("close")) closeDialog("compose");
+    requestComposeClose();
   });
   $("ai-generate").addEventListener("click", () => {
     startDraftWrite().catch((error) => showStatus(error.message, true));

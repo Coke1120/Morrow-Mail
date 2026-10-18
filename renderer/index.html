@@ -369,7 +369,15 @@
     <dialog id="connect" aria-labelledby="connect-title">
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
-        <p class="hint">IMAP password, or Google / Microsoft in the browser. Labels, inbox rules, and calendar each ask for their own consent. The password stays in this app's keychain.</p>
+        <p class="hint">Sign in through your browser. Labels, inbox rules, and calendar each ask for their own consent.</p>
+        <div class="row">
+          <button type="button" class="primary" id="oauth-google">Continue with Google</button>
+          <button type="button" class="ghost" id="oauth-microsoft">Continue with Microsoft</button>
+        </div>
+        <p id="oauth-unavailable" class="hint"></p>
+        <p id="connect-status" class="hint" role="status" aria-live="polite"></p>
+        <details><summary>Use IMAP / app password</summary>
+        <p class="hint">The password stays in this app's keychain.</p>
         <label for="profile">Provider</label>
         <select id="profile" name="profile"></select>
         <div id="custom-fields" hidden>
@@ -392,13 +400,21 @@
         <input id="password" name="password" type="password" autocomplete="current-password" required />
         <div class="row">
           <button type="submit" class="primary" id="connect-submit">Connect</button>
-          <button type="button" class="ghost" id="oauth-google">Google</button>
-          <button type="button" class="ghost" id="oauth-microsoft">Microsoft</button>
-          <button type="button" class="ghost" id="connect-close">Cancel</button>
         </div>
+        </details>
+        <button type="button" class="ghost" id="connect-close">Cancel</button>
       </form>
     </dialog>
 
+    <dialog id="compose-close-review" aria-labelledby="draft-close-title">
+      <h2 id="draft-close-title">Save this draft before closing?</h2>
+      <p>Discard leaves the last saved copy unchanged. Keep editing to return to this text.</p>
+      <div class="row">
+        <button type="button" class="primary" id="draft-close-save">Save draft</button>
+        <button type="button" class="ghost" id="draft-close-discard">Discard</button>
+        <button type="button" class="ghost" id="draft-close-keep">Keep editing</button>
+      </div>
+    </dialog>
     <dialog id="compose" aria-labelledby="compose-title" data-quote="off" data-layout="" data-quote-collapsed="false">
       <form id="compose-form">
         <div class="compose-head">
@@ -431,7 +447,7 @@
           </section>
           <div id="compose-split-handle" class="compose-split-handle" role="separator" aria-orientation="vertical" aria-label="Resize quoted message" aria-valuemin="220" aria-valuemax="720" aria-valuenow="420" tabindex="0" hidden></div>
           <div class="compose-draft">
-            <p id="compose-quote-note" class="hint" hidden>The quoted message is included when you save or send.</p>
+            <p id="compose-quote-note" class="hint" hidden>The quoted original is still included when you save, send, or schedule.</p>
         <div class="compose-fields">
           <div class="field-row">
             <label for="compose-to">To</label>
@@ -485,6 +501,7 @@
         <p class="hint" id="schedule-note">Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.</p>
           </div>
         </div>
+        <p id="compose-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>
           <button type="button" class="ghost" id="compose-schedule">Schedule send</button>

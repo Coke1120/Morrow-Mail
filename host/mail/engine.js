@@ -2170,6 +2170,7 @@ function answer(channel, args) {
         if (!drafts) return fail("not-found", "This account has no Drafts folder.");
         const emailId = (params && params.emailId) || db.newMessageId();
         const existing = db.messageById(emailId);
+        if (existing && (existing.account_id !== account.id || !existing.is_draft)) return fail("invalid", "That draft does not belong to this mailbox.");
         const files = attachmentFiles(params && params.attachments);
         const html = typeof params.body === "string" ? params.body : "";
         const when = new Date();
@@ -2221,6 +2222,7 @@ function answer(channel, args) {
         } else {
           db.insertMessage(record);
         }
+        let remoteSaved = false;
         try {
           await exclusive(account.id, async () => {
             const password = await secretFor(account);
@@ -2239,12 +2241,13 @@ function answer(channel, args) {
             } else {
               db.updateMessage(emailId, { uid: 0 });
             }
+            remoteSaved = true;
           });
         } catch {
           // The draft remains in the local cache when the server append fails.
         }
         emitAccounts();
-        return ok({ emailId, draftId: emailId });
+        return ok({ emailId, draftId: emailId, remoteSaved });
       })();
     case "mail:deleteDraft":
       return (async () => {
