@@ -7082,6 +7082,9 @@ function inboxRuleSummary(rule) {
 let inboxRulesState = { api: false, backend: "", rules: [], destinations: [], reason: "", message: "" };
 let inboxRuleEditId = "";
 let inboxRulesBusy = false;
+let inboxRulesAccountId = "";
+let inboxRulesGen = 0;
+let inboxRuleBaseline = "";
 
 function brainPaneIds() {
   return [
@@ -7230,6 +7233,7 @@ function clearInboxRuleForm() {
   $("inbox-rule-move").value = "";
   $("inbox-rule-label").value = "";
   paintInboxRuleForm();
+  inboxRuleBaseline = JSON.stringify(inboxRuleFieldsFromForm());
 }
 
 function paintInboxRuleForm() {
@@ -7252,10 +7256,22 @@ function paintInboxRuleForm() {
 
 function paintInboxRules() {
   const data = inboxRulesState || {};
+  const picker = $("inbox-rules-account");
+  picker.replaceChildren();
+  for (const account of state.accounts) picker.appendChild(option(account.id, accountLabel(account)));
+  picker.value = inboxRulesAccountId;
+  picker.disabled = inboxRulesBusy;
+  const owner = state.accounts.find((row) => row.id === inboxRulesAccountId);
+  $("inbox-rules-owner").textContent = owner ? accountLabel(owner) + " · " + (data.backend === "imap"
+    ? "Local rules apply to newly downloaded Inbox mail while Morrow is open."
+    : data.backend ? "Rules run on the " + (data.backend === "gmail" ? "Gmail" : "Microsoft") + " server." : "Loading rules…") : "Connect a mailbox to manage its rules.";
   const note = $("inbox-rules-note");
   if (note && data.message) note.textContent = data.message;
-  fillInboxRuleSelect("inbox-rule-move", data.destinations, "Do not move");
-  fillInboxRuleSelect("inbox-rule-label", data.destinations, "No extra label");
+  const dirty = inboxRuleBaseline && JSON.stringify(inboxRuleFieldsFromForm()) !== inboxRuleBaseline;
+  if (!dirty) {
+    fillInboxRuleSelect("inbox-rule-move", data.destinations, "Do not move");
+    fillInboxRuleSelect("inbox-rule-label", data.destinations, "No extra label");
+  }
   const root = $("inbox-rules-list");
   root.replaceChildren();
   const rows = Array.isArray(data.rules) ? data.rules : [];
@@ -7323,69 +7339,99 @@ function startInboxRuleEdit(row) {
   }
   $("inbox-rule-save").textContent = "Save rule";
   $("inbox-rule-cancel").hidden = false;
+  inboxRuleBaseline = JSON.stringify(inboxRuleFieldsFromForm());
+}
+
+function inboxRuleAccount() {
+  return state.accounts.find((row) => row.id === inboxRulesAccountId && row.id === inboxRulesState.accountId) || null;
+}
+
+function setInboxRulesBusy(value) {
+  inboxRulesBusy = value;
+  $("inbox-rules-account").disabled = value;
+  for (const node of $("inbox-rule-form").querySelectorAll("input, select, button")) node.disabled = value;
+}
+
+async function changeInboxRulesAccount(id) {
+  if (inboxRulesBusy || id === inboxRulesAccountId) return;
+  if (inboxRuleBaseline && JSON.stringify(inboxRuleFieldsFromForm()) !== inboxRuleBaseline) {
+    const answer = await askConfirm({ title: "Change rules mailbox?", body: "Discard unsaved rule edits before switching mailboxes?", confirm: "Discard edits", cancel: "Keep editing" });
+    if (!answer || !answer.ok) { $("inbox-rules-account").value = inboxRulesAccountId; return; }
+  }
+  inboxRulesAccountId = id;
+  clearInboxRuleForm();
+  await loadInboxRules();
 }
 
 async function loadInboxRules() {
-  const account = selectedAccount();
-  if (!account) {
-    inboxRulesState = {
-      api: false,
-      backend: "",
-      reason: "no_account",
-      message: "Connect an account to add inbox rules.",
-      rules: [],
-      destinations: [],
-    };
-    paintInboxRules();
-    return;
-  }
-  const data = await call("mail:listInboxRules", { accountId: account.id });
-  inboxRulesState = data || inboxRulesState;
+  const gen = ++inboxRulesGen;
+  if (!inboxRulesAccountId) inboxRulesAccountId = state.accountId || "";
+  const account = state.accounts.find((row) => row.id === inboxRulesAccountId);
+  const previous = inboxRulesState.accountId === (account && account.id) ? inboxRulesState : {};
+  inboxRulesState = { backend: "", rules: [], destinations: [], ...previous, accountId: account && account.id, api: false,
+    message: account ? "Loading rules…" : "Connect an account to add inbox rules." };
   paintInboxRules();
+  if (!account) return;
+  const data = await call("mail:listInboxRules", { accountId: account.id });
+  if (gen !== inboxRulesGen || account.id !== inboxRulesAccountId) return;
+  if (!data || data.accountId !== account.id) throw new Error("Rules did not match the selected mailbox. Reload before editing.");
+  inboxRulesState = data;
+  paintInboxRules();
+  if (!inboxRuleBaseline) inboxRuleBaseline = JSON.stringify(inboxRuleFieldsFromForm());
 }
 
 async function submitInboxRule(event) {
   event.preventDefault();
   if (inboxRulesBusy) return;
-  const account = selectedAccount();
-  if (!account) {
-    showInboxRuleStatus("Connect an account to add inbox rules.", true);
-    return;
-  }
-  const draft = readInboxRuleForm(inboxRuleFieldsFromForm(), inboxRulesState && inboxRulesState.backend);
+  const account = inboxRuleAccount();
+  if (!account || !inboxRulesState.api) { showInboxRuleStatus("Load rules for a connected mailbox before saving.", true); return; }
+  const backend = inboxRulesState.backend;
+  const draft = readInboxRuleForm(inboxRuleFieldsFromForm(), backend);
   if (inboxRuleEditId) draft.id = inboxRuleEditId;
-  inboxRulesBusy = true;
-  showInboxRuleStatus("Saving…", false);
+  setInboxRulesBusy(true);
   try {
+    const actions = draft.actions || {};
+    if (actions.trash || actions.archive || actions.moveToId || !Object.values(draft.match || {}).some((value) => value !== "" && value != null)) {
+      const answer = await askConfirm({ title: "Save rule for " + accountLabel(account) + "?", body: inboxRuleSummary(draft)
+        + (backend === "imap" ? " This local rule applies only to newly downloaded Inbox mail while Morrow is open." : " This rule runs on your mail provider."), confirm: "Save rule", cancel: "Cancel" });
+      if (!answer || !answer.ok) return;
+    }
+    if (inboxRuleAccount()?.id !== account.id || inboxRulesState.backend !== backend) throw new Error("The rules mailbox changed. Review the rule again.");
+    showInboxRuleStatus("Saving…", false);
     await call("mail:saveInboxRule", { accountId: account.id, rule: draft });
+    if (inboxRulesAccountId !== account.id) return;
     clearInboxRuleForm();
-    showInboxRuleStatus("Saved.", false);
     await loadInboxRules();
-  } catch (error) {
-    showInboxRuleStatus(error instanceof Error ? error.message : String(error), true);
-    try { await loadInboxRules(); } catch { /* keep the save error */ }
-  } finally {
-    inboxRulesBusy = false;
-  }
+    showInboxRuleStatus(backend === "imap" ? "Local rule saved for " + accountLabel(account) + ". It applies to newly downloaded Inbox mail while Morrow is open."
+      : "Rule saved on " + (backend === "gmail" ? "Gmail" : "Microsoft") + " for " + accountLabel(account) + ".", false);
+  } catch (error) { showInboxRuleStatus(error.message || String(error), true); }
+  finally { setInboxRulesBusy(false); }
 }
 
 async function deleteInboxRule(id) {
-  const account = selectedAccount();
-  if (!account || !id) return;
-  if (!window.confirm("Delete this inbox rule?")) return;
-  await call("mail:deleteInboxRule", { accountId: account.id, ruleId: id });
-  if (inboxRuleEditId === id) clearInboxRuleForm();
-  showInboxRuleStatus("Deleted.", false);
-  await loadInboxRules();
+  const account = inboxRuleAccount();
+  const rule = (inboxRulesState.rules || []).find((row) => row.id === id);
+  if (!account || !rule || inboxRulesBusy) return;
+  if (!window.confirm("Delete “" + (rule.name || inboxRuleSummary(rule)) + "” for " + accountLabel(account) + "?")) return;
+  setInboxRulesBusy(true);
+  try {
+    await call("mail:deleteInboxRule", { accountId: account.id, ruleId: id });
+    if (inboxRuleEditId === id) clearInboxRuleForm();
+    await loadInboxRules();
+    showInboxRuleStatus("Rule deleted for " + accountLabel(account) + ".", false);
+  } finally { setInboxRulesBusy(false); }
 }
 
 async function grantInboxRules() {
-  const account = selectedAccount();
-  if (!account) throw new Error("Connect an account to add inbox rules.");
-  showInboxRuleStatus("Waiting for the browser…", false);
-  await call("mail:grantRules", { accountId: account.id });
-  showInboxRuleStatus("Granted.", false);
-  await loadInboxRules();
+  const account = inboxRuleAccount();
+  if (!account || inboxRulesBusy) throw new Error("Choose a connected rules mailbox.");
+  setInboxRulesBusy(true);
+  try {
+    showInboxRuleStatus("Waiting for the browser for " + accountLabel(account) + "…", false);
+    await call("mail:grantRules", { accountId: account.id });
+    await loadInboxRules();
+    showInboxRuleStatus("Granted for " + accountLabel(account) + ".", false);
+  } finally { setInboxRulesBusy(false); }
 }
 
 function openInboxRules() {
@@ -9948,6 +9994,7 @@ function wireBot() {
 }
 
 function wire() {
+  $("inbox-rules-account").addEventListener("change", () => changeInboxRulesAccount($("inbox-rules-account").value).catch((error) => showInboxRuleStatus(error.message, true)));
   document.addEventListener("keydown", onShellKey);
   wireBot();
   document.addEventListener("keydown", onSelectionKey);
