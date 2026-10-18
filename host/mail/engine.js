@@ -74,27 +74,14 @@ function dataFile() {
 async function init() {
   await db.open(dataFile());
   ready = true;
-  purgeAbandonedAccounts();
+  markMissingOAuthSecrets();
 }
 
-const depths = new Map();
-
 function exclusive(accountId, fn) {
-  const entry = depths.get(accountId) || { depth: 0 };
-  depths.set(accountId, entry);
-  if (entry.depth > 0) {
-    entry.depth += 1;
-    return Promise.resolve().then(fn).finally(() => {
-      entry.depth -= 1;
-    });
-  }
+  // Every call site enters once. A concurrent IPC/sync request is not a nested
+  // call and must wait for the preceding operation on this account.
   const prev = tails.get(accountId) || Promise.resolve();
-  const run = prev.catch(() => {}).then(() => {
-    entry.depth = 1;
-    return Promise.resolve().then(fn).finally(() => {
-      entry.depth = 0;
-    });
-  });
+  const run = prev.catch(() => {}).then(fn);
   tails.set(accountId, run.catch(() => {}));
   return run;
 }
@@ -774,35 +761,26 @@ async function stopIdle() {
   await controller.stop();
 }
 
-function purgeAbandonedAccounts() {
+function markMissingOAuthSecrets() {
   if (!ready) return false;
-  let removed = false;
+  let changed = false;
   for (const row of db.listAccountRows()) {
     if (row.auth_kind !== "oauth2") continue;
     if (secrets.getPassword(row.id)) continue;
-    if (secrets.getPassword(`${row.id}:organize`)) continue;
-    if (secrets.getPassword(`${row.id}:calendar`)) continue;
-    if (secrets.getPassword(`${row.id}:rules`)) continue;
-    if (secrets.getPassword(`${row.id}:vacation`)) continue;
-    secrets.deletePassword(row.id);
-    secrets.deletePassword(`${row.id}:organize`);
-    secrets.deletePassword(`${row.id}:calendar`);
-    secrets.deletePassword(`${row.id}:rules`);
-    secrets.deletePassword(`${row.id}:vacation`);
-    db.removeAccount(row.id);
-    if (idleController) idleController.forget(row.id).catch(() => {});
-    idleSafetyAt.delete(row.id);
-    idleReported.delete(row.id);
-    removed = true;
+    // A purged or unavailable key store is not evidence of abandoned sign-in.
+    // New OAuth accounts are inserted only after authentication succeeds.
+    // Keep local mail and purpose-specific grants so re-login can reuse the id.
+    if (row.auth_error) continue;
+    db.setAuthError(row.id, "Mailbox credentials are unavailable. Sign in again to reconnect. Local mail is retained.");
+    changed = true;
   }
-  return removed;
+  return changed;
 }
 
 function cancelOAuth() {
   oauthGeneration += 1;
   try { oauth.cancelActive(); } catch { /* no browser flow is waiting */ }
-  const removed = purgeAbandonedAccounts();
-  if (removed) emitAccounts();
+  if (markMissingOAuthSecrets()) emitAccounts();
   return ok({ canceled: true });
 }
 
@@ -2271,7 +2249,7 @@ module.exports = {
   idleOnline,
   accountViews,
   dataFile,
-  purgeAbandonedAccounts,
+  markMissingOAuthSecrets,
   syncGates,
   noteActive,
   syncAccountById,

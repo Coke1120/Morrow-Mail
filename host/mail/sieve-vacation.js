@@ -25,8 +25,8 @@ function buildVacation({ subject, message, start = '', end = '', useDate = false
   const command = `vacation :days 1${subject ? ` :subject ${quoteSieve(subject)}` : ''} ${sieveString(message)};`;
   if (!useDate) return `require ["vacation"];\n${command}\n`;
   const tests = [];
-  if (start) tests.push(`currentdate :value "ge" "date" ${quoteSieve(start.slice(0, 10))}`);
-  if (end) tests.push(`currentdate :value "lt" "date" ${quoteSieve(exclusiveDay(end))}`);
+  if (start) tests.push(`currentdate :value "ge" :zone "+0000" "date" ${quoteSieve(start.slice(0, 10))}`);
+  if (end) tests.push(`currentdate :value "lt" :zone "+0000" "date" ${quoteSieve(exclusiveDay(end))}`);
   const test = tests.length === 1 ? tests[0] : `allof (\n  ${tests.join(',\n  ')}\n)`;
   return `require ["vacation", "date", "relational"];\nif ${test} {\n  ${command}\n}\n`;
 }
@@ -77,12 +77,14 @@ function parseVacation(script) {
   const plain = normalized.startsWith('require ["vacation"];\n');
   if (dated === plain) return null;
   const body = normalized.slice(plain ? 'require ["vacation"];\n'.length : 'require ["vacation", "date", "relational"];\n'.length);
-  const dates = [...body.matchAll(/currentdate :value "(ge|lt)" "date" "([0-9]{4}-[0-9]{2}-[0-9]{2})"/g)];
+  // Unzoned legacy scripts use the server's local timezone, which is unknown.
+  // Do not present those dates as UTC; the editor will ask for fresh dates.
+  const dates = [...body.matchAll(/currentdate :value "(ge|lt)" :zone "\+0000" "date" "([0-9]{4}-[0-9]{2}-[0-9]{2})"/g)];
   if (plain && dates.length) return null;
   let command = body;
   if (dated) {
     if (!dates.length || dates.length > 2) return null;
-    const block = body.match(/^if (?:allof \(\n  currentdate :value "(?:ge|lt)" "date" "[0-9-]+",\n  currentdate :value "(?:ge|lt)" "date" "[0-9-]+"\n\)|currentdate :value "(?:ge|lt)" "date" "[0-9-]+") \{\n([\s\S]*)\}\n$/);
+    const block = body.match(/^if (?:allof \(\n  currentdate :value "(?:ge|lt)" :zone "\+0000" "date" "[0-9-]+",\n  currentdate :value "(?:ge|lt)" :zone "\+0000" "date" "[0-9-]+"\n\)|currentdate :value "(?:ge|lt)" :zone "\+0000" "date" "[0-9-]+") \{\n([\s\S]*)\}\n$/);
     if (!block) return null;
     command = block[1].replace(/^ {2}/, '');
   }

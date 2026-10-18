@@ -26,7 +26,7 @@ Add-Type -AssemblyName System.Security
 \$bytes = [Text.Encoding]::UTF8.GetBytes('${p}')
 \$dir = Join-Path \$env:LOCALAPPDATA '${dir}\\secrets'
 New-Item -ItemType Directory -Force -Path \$dir | Out-Null
-\$path = Join-Path \$dir ('${target}' -replace '[^A-Za-z0-9._:-]','_')
+\$path = Join-Path \$dir ('${target}' -replace '[^A-Za-z0-9._-]','_')
 \$prot = [Security.Cryptography.ProtectedData]::Protect(\$bytes, \$null, 'CurrentUser')
 [IO.File]::WriteAllBytes(\$path, \$prot)
 `;
@@ -44,7 +44,7 @@ function readPassword(dirName, service, account) {
 \$ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Security
 \$dir = Join-Path \$env:LOCALAPPDATA '${dir}\\secrets'
-\$path = Join-Path \$dir ('${target}' -replace '[^A-Za-z0-9._:-]','_')
+\$path = Join-Path \$dir ('${target}' -replace '[^A-Za-z0-9._-]','_')
 if (-not (Test-Path -LiteralPath \$path)) { exit 2 }
 \$prot = [IO.File]::ReadAllBytes(\$path)
 \$bytes = [Security.Cryptography.ProtectedData]::Unprotect(\$prot, \$null, 'CurrentUser')
@@ -61,7 +61,7 @@ function deleteAt(dirName, service, account) {
   const dir = String(dirName).replace(/'/g, "''");
   const script = `
 \$dir = Join-Path \$env:LOCALAPPDATA '${dir}\\secrets'
-\$path = Join-Path \$dir ('${target}' -replace '[^A-Za-z0-9._:-]','_')
+\$path = Join-Path \$dir ('${target}' -replace '[^A-Za-z0-9._-]','_')
 if (Test-Path -LiteralPath \$path) { Remove-Item -LiteralPath \$path -Force }
 `;
   ps(script);
