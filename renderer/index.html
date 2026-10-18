@@ -93,8 +93,8 @@
         <p id="sync-detail" class="sync-detail" hidden></p>
         </div>
         <form id="search-form" role="search">
-          <label class="sr" for="search-query">Search all mail</label>
-          <input id="search-query" type="search" placeholder="Search all mail" title="Search synced subject, from, and body" autocomplete="off" spellcheck="false" />
+          <label class="sr" for="search-query">Search downloaded mail</label>
+          <input id="search-query" type="search" placeholder="Search downloaded mail" title="Search downloaded subject, sender, and available message text" autocomplete="off" spellcheck="false" />
         </form>
       </div>
     </header>
@@ -124,8 +124,15 @@
         <div class="list-head" id="list-head">
           <div class="list-tools">
             <h2 class="list-title" id="list-title">Messages</h2>
-            <button type="button" class="select-visible" id="select-visible" aria-label="Select all visible messages">Select all</button>
+            <button type="button" class="select-visible" id="select-visible" aria-label="Select shown messages">Select shown (0)</button>
           </div>
+          <p id="list-coverage" class="list-filter-note" role="status"></p>
+          <div id="search-scope" hidden>
+            <label class="sr" for="search-account">Search account</label>
+            <select id="search-account" aria-label="Search account"></select>
+            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Normal sync covers about 180 days; older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched.</p></details>
+          </div>
+          <button type="button" class="ghost" id="filter-chip" hidden></button>
           <div id="selection-bar" class="selection-bar" hidden>
             <p id="selection-count">0 selected</p>
             <div id="selection-actions" class="selection-actions" role="toolbar" aria-label="Selected messages"></div>
@@ -133,8 +140,8 @@
           <div id="list-chips" class="chips" role="group" aria-label="Primary folders" hidden></div>
           <div class="list-filter">
             <label class="sr" for="list-filter">Filter loaded messages</label>
-            <input id="list-filter" data-testid="list-filter" type="search" placeholder="Filter subject, from, snippet" autocomplete="off" spellcheck="false" />
-            <p class="list-filter-note">Loaded messages only. Does not search the server. Toolbar search uses the local index.</p>
+            <input id="list-filter" data-testid="list-filter" type="search" placeholder="Filter this list" autocomplete="off" spellcheck="false" />
+            <p class="list-filter-note">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>
         </div>
       </div>

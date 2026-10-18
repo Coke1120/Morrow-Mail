@@ -2446,3 +2446,8 @@ textarea { min-height: 140px; resize: vertical; }
   .split { display: none; }
   #notice { left: 50%; }
 }
+
+#search-scope { display: grid; gap: 6px; margin: 6px 0; }
+#search-scope[hidden] { display: none; }
+#list-coverage { margin: 4px 0; }
+#filter-chip { margin: 4px 0; white-space: normal; text-align: left; }

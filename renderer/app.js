@@ -8,6 +8,7 @@ const state = {
   email: null,
   thread: [],
   query: "",
+  searchAccountId: "",
   draftId: null,
   composeMeta: null,
   composeBaseline: "",
@@ -2405,31 +2406,33 @@ function bulkConfirmCopy(action, count, detail) {
   const n = Math.max(0, Number(count) || 0);
   const noun = n === 1 ? "message" : "messages";
   const row = detail || {};
-  const base = { confirm: "Confirm", cancel: "Cancel", needsName: false, name: "" };
+  const base = { confirm: action === "archive" ? "Archive" : action === "trash" ? "Move to Trash" : action === "move" ? "Move" : "Apply label", cancel: "Cancel", needsName: false, name: "" };
+  const scope = row.scope ? " " + row.scope : "";
   if (action === "archive") {
     return Object.assign({}, base, {
       title: "Archive",
-      body: "Archive " + n + " " + noun + "? This removes them from the current list.",
+      body: "Archive " + n + " " + noun + "?" + scope,
     });
   }
   if (action === "trash") {
     return Object.assign({}, base, {
       title: "Trash",
-      body: "Move " + n + " " + noun + " to Trash? This removes them from the current list.",
+      body: "Move " + n + " " + noun + " to Trash?" + scope,
     });
   }
   if (action === "move") {
     const target = String(row.target || "that folder");
     return Object.assign({}, base, {
       title: "Move",
-      body: "Move " + n + " " + noun + " to “" + target + "”? This moves them on the provider.",
+      body: "Move " + n + " " + noun + " to “" + target + "”? This moves them on the provider." + scope,
     });
   }
+  if (action === "add-label") return Object.assign({}, base, { title: "Add Gmail label", body: "Add “" + String(row.label || "that label") + "” to " + n + " " + noun + "? Existing labels remain." + scope });
   if (action === "remove-label") {
     const label = String(row.label || "that label");
     return Object.assign({}, base, {
       title: "Remove label",
-      body: "Remove “" + label + "” from " + n + " " + noun + "? This removes them from the current list.",
+      body: "Remove “" + label + "” from " + n + " " + noun + "?" + scope,
     });
   }
   return null;
@@ -2867,7 +2870,8 @@ function messageRow(email) {
   subjectLine.append(subject, when);
   const snippet = document.createElement("span");
   snippet.className = "snippet";
-  snippet.textContent = email.snippet || "";
+  const mailbox = state.accounts.find((row) => row.id === email.accountId);
+  snippet.textContent = (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "") + (email.snippet || "");
   main.append(from, subjectLine, snippet);
   button.append(gutter, avatar, main);
   button.addEventListener("click", (event) => {
@@ -2965,7 +2969,11 @@ function paintSelectionBar(shown) {
   const selectAll = $("select-visible");
   const list = $("messages");
   if (list) list.classList.toggle("has-selection", state.selectedIds.length > 0);
-  if (selectAll) selectAll.hidden = !shown.length;
+  if (selectAll) {
+    selectAll.hidden = !shown.length;
+    selectAll.textContent = "Select shown (" + shown.length + ")";
+    selectAll.setAttribute("aria-label", selectAll.textContent);
+  }
   if (!bar) return;
   const wasHidden = bar.hidden;
   if (!state.selectedIds.length) {
@@ -2975,10 +2983,11 @@ function paintSelectionBar(shown) {
   bar.hidden = false;
   if (count) {
     const n = state.selectedIds.length;
-    count.textContent = n === 1 ? "1 selected" : n + " selected";
+    const hidden = state.selectedIds.filter((id) => !shown.some((row) => row.id === id)).length;
+    count.textContent = n + " selected" + (hidden ? " · " + hidden + " hidden by this filter" : "");
   }
-  const messages = selectedMessages();
-  const starred = messages.length > 0 && messages.every((email) => email.isStarred);
+  const messages = selectionMoveMessages();
+  const starred = selectedMessages().length > 0 && selectedMessages().every((email) => email.isStarred);
   setSelectionLabel("selection-star", starred ? "Unstar" : "Star");
   const account = messages[0]
     ? (state.accounts.find((item) => item.id === messages[0].accountId) || selectedAccount())
@@ -3003,6 +3012,57 @@ function paintSelectionBar(shown) {
   }
 }
 
+function paintSearchCoverage(shown) {
+  const filter = $("list-filter").value.trim();
+  const scope = $("search-scope");
+  scope.hidden = !state.query;
+  const picker = $("search-account");
+  picker.replaceChildren(option("", "All connected accounts"));
+  for (const account of state.accounts) picker.appendChild(option(account.id, accountLabel(account)));
+  picker.value = state.searchAccountId;
+  const account = state.accounts.find((row) => row.id === state.searchAccountId);
+  $("list-coverage").textContent = state.query
+    ? `Search downloaded mail · ${account ? accountLabel(account) : "All connected accounts"} · ${state.emails.length} returned (up to 100) · ${shown.length} shown`
+    : `${shown.length} shown of ${state.emails.length} loaded (up to 500)`;
+  const chip = $("filter-chip");
+  chip.hidden = !filter;
+  chip.textContent = "Filter: " + filter + " × Clear filter";
+}
+
+function selectionScopeCopy(messages, source) {
+  const rows = messages || [];
+  const selected = source || selectedMessages();
+  const ids = new Set(rows.map((row) => row.id));
+  const excluded = selected.filter((row) => !ids.has(row.id)).length;
+  const names = [...new Set(rows.map((row) => {
+    const account = state.accounts.find((item) => item.id === row.accountId);
+    return account ? accountLabel(account) : "Disconnected mailbox";
+  }))];
+  return `${rows.length} messages from ${names.join(", ")}.` + (excluded ? ` ${excluded} excluded messages in other accounts or outside this action will stay selected.` : "");
+}
+
+async function reviewedRemoval(messages, kind) {
+  const planned = bulkRemovalCalls(messages, kind, state.prefs.conversation);
+  const affected = new Map(messages.map((row) => [row.id, row]));
+  let expanded = false;
+  for (const spec of planned) {
+    if (!spec.params.threadId) continue;
+    const rows = await call("mail:listThreadMessages", { accountId: spec.params.accountId, threadId: spec.params.threadId, headersOnly: true });
+    if (!Array.isArray(rows)) throw new Error("Conversation scope could not be loaded. Refresh before trying again.");
+    for (const row of rows) {
+      if (row.accountId !== spec.params.accountId) throw new Error("Conversation account did not match.");
+      affected.set(row.id, row);
+    }
+    expanded = true;
+  }
+  const rows = [...affected.values()];
+  const detail = { scope: selectionScopeCopy(rows, messages) + (expanded
+    ? ` Conversation view expands this action to ${rows.length} downloaded messages, including unselected members in other folders.`
+    : " Only these messages are included.") };
+  // Freeze the reviewed message IDs; a newly arriving thread member is not authorized.
+  return { rows, detail, calls: bulkRemovalCalls(rows, kind, false) };
+}
+
 function renderList() {
   paintSyncControl();
   rememberLoadedSelection();
@@ -3020,13 +3080,14 @@ function renderList() {
   renderChips(account);
   const shown = filteredEmails(state.emails, $("list-filter") ? $("list-filter").value : "");
   paintSelectionBar(shown);
+  paintSearchCoverage(shown);
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
     if (!state.accounts.length && !state.query) {
       empty.textContent = "No messages yet.";
     } else if (!state.emails.length) {
-      empty.textContent = state.query ? "No messages match that search." : currentFolderSync()?.lastSuccessAt
+      empty.textContent = state.query ? `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.` : currentFolderSync()?.lastSuccessAt
         ? "No messages in this folder." : "Mail has not been downloaded for this folder yet. Use Sync to download recent mail.";
     } else {
       empty.textContent = "No loaded messages match that filter.";
@@ -3711,7 +3772,9 @@ async function setRead(email, isRead) {
 }
 
 async function deleteFromList(email) {
-  await finishRemoval(email, "Moved to Trash.", await call("mail:delete", removalPayload(email, false)));
+  const answer = await askConfirm(bulkConfirmCopy("trash", 1, { scope: selectionScopeCopy([email], [email]) }));
+  if (!answer || !answer.ok) return;
+  await finishRemoval(email, "Move to Trash", await call("mail:delete", removalPayload(email, false)));
 }
 
 async function replyFromList(email, kind) {
@@ -3737,8 +3800,11 @@ async function finishRemoval(email, label, data) {
 
 
 async function removeOpen(email, channel, label) {
-  const threaded = channel === "mail:threadArchive" || channel === "mail:threadTrash";
-  await finishRemoval(email, label, await call(channel, removalPayload(email, threaded)));
+  const kind = channel === "mail:threadTrash" || channel === "mail:delete" ? "trash" : "archive";
+  const review = await reviewedRemoval([withSelectionMembers(email)], kind);
+  const answer = await askConfirm(bulkConfirmCopy(kind, review.rows.length, review.detail));
+  if (!answer || !answer.ok) return;
+  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls), review.rows.map((row) => row.id));
 }
 
 async function archiveOpen(email) {
@@ -3862,7 +3928,7 @@ function rememberSelection(preferredId) {
 async function loadList(fromNetwork) {
   const gen = ++listGen;
   if (state.query) {
-    const data = await call("mail:searchLocal", { query: state.query, limit: 100 });
+    const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
     if (gen !== listGen) return null;
     state.emails = Array.isArray(data) ? data : [];
     renderList();
@@ -4639,9 +4705,9 @@ async function finishBulkRemoval(label, outcome, ids) {
 async function bulkArchive() {
   const messages = selectedMessages().map(withSelectionMembers);
   if (!messages.length || refusePaused(messages)) return;
-  const calls = bulkRemovalCalls(messages, "archive", state.prefs.conversation);
-  const answer = await askConfirm(bulkConfirmCopy("archive", messages.length, {}));
-  const gated = confirmedCalls("archive", answer, calls, {});
+  const review = await reviewedRemoval(messages, "archive");
+  const answer = await askConfirm(bulkConfirmCopy("archive", review.rows.length, review.detail));
+  const gated = confirmedCalls("archive", answer, review.calls, review.detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
   await finishBulkRemoval("Archive", outcome, messages.map((item) => item.id));
@@ -4650,9 +4716,9 @@ async function bulkArchive() {
 async function bulkTrash() {
   const messages = selectedMessages().map(withSelectionMembers);
   if (!messages.length || refusePaused(messages)) return;
-  const calls = bulkRemovalCalls(messages, "trash", state.prefs.conversation);
-  const answer = await askConfirm(bulkConfirmCopy("trash", messages.length, {}));
-  const gated = confirmedCalls("trash", answer, calls, {});
+  const review = await reviewedRemoval(messages, "trash");
+  const answer = await askConfirm(bulkConfirmCopy("trash", review.rows.length, review.detail));
+  const gated = confirmedCalls("trash", answer, review.calls, review.detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
   await finishBulkRemoval("Move to Trash", outcome, messages.map((item) => item.id));
@@ -4696,11 +4762,12 @@ async function applySelectionLabels(label, mode) {
   const name = label.label || label.name || label.id;
   const removes = mode === "remove" && labelRemovesFromView(state.folderId, label.id);
   const action = mode === "remove" ? "remove-label" : "add-label";
-  const detail = { removesFromView: removes, label: name };
+  const detail = { removesFromView: removes, label: name, scope: selectionScopeCopy(messages) };
   const calls = bulkLabelCalls(messages, label.id, mode);
   let answer = { ok: true };
-  if (bulkNeedsConfirm(action, detail)) {
+  if (bulkNeedsConfirm(action, detail) || selectedMessages().length !== messages.length) {
     answer = await askConfirm(bulkConfirmCopy(action, messages.length, detail));
+    if (!answer || !answer.ok) return;
   }
   const gated = confirmedCalls(action, answer, calls, detail);
   if (!gated.length) return;
@@ -4731,10 +4798,13 @@ async function applyBulkMove(messages, target, targetName) {
     removesFromView: action === "remove-label" && labelRemovesFromView(state.folderId, target.id),
     target: name,
     label: name,
+    scope: selectionScopeCopy(rows.filter((row) => planned.some((spec) => operationIds(spec).includes(row.id))),
+      rows.every((row) => state.selectedIds.includes(row.id)) ? selectedMessages() : rows),
   };
   let answer = { ok: true };
-  if (bulkNeedsConfirm(action, detail)) {
+  if (bulkNeedsConfirm(action, detail) || detail.scope.includes("excluded")) {
     answer = await askConfirm(bulkConfirmCopy(action, callCount(planned), detail));
+    if (!answer || !answer.ok) return;
   }
   const gated = confirmedCalls(action, answer, planned, detail);
   if (!gated.length) return;
@@ -4772,8 +4842,7 @@ function openSelectionMove(kind) {
   paintMoveTree();
   const source = $("move-picker-source");
   if (!source) return;
-  if (messages.length === 1) source.textContent = "Message: " + (messages[0].subject || "this message");
-  else source.textContent = "Messages: " + messages.length;
+  source.textContent = selectionScopeCopy(messages);
 }
 
 function openSelectionLabelMenu(mode, anchor) {
@@ -4788,6 +4857,10 @@ function openSelectionLabelMenu(mode, anchor) {
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", mode === "add" ? "Add Gmail label" : "Remove Gmail label");
   menu.replaceChildren();
+  const scope = document.createElement("p");
+  scope.className = "organize-note";
+  scope.textContent = selectionScopeCopy(messages);
+  menu.appendChild(scope);
   appendMenuGroup(menu, mode === "add" ? "Add Gmail label" : "Remove Gmail label", items, (item) => applySelectionLabels(item, mode));
   if (!items.length) {
     const note = document.createElement("p");
@@ -4849,6 +4922,8 @@ function selectionButton(id, label, paths, run) {
 }
 
 function wireSelection() {
+  $("filter-chip").addEventListener("click", () => { $("list-filter").value = ""; renderList(); });
+  $("search-account").addEventListener("change", () => { state.searchAccountId = $("search-account").value; guard(applySearch); });
   const bar = $("selection-actions");
   if (!bar || bar.childElementCount) return;
   const mail = ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M22 6l-10 7L2 6"];
@@ -5117,7 +5192,11 @@ async function openMessage(emailId, focus) {
 async function applySearch() {
   const query = $("search-query").value.trim();
   state.query = query;
-  if (query) showStatus("Searching all mail…");
+  state.email = null;
+  state.thread = [];
+  state.selectedIds = [];
+  renderReader(false);
+  if (query) showStatus("Searching downloaded mail…");
   try {
     await loadList();
   } catch (error) {

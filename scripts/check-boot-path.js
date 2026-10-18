@@ -890,8 +890,8 @@ assert.ok(parityDoc.includes("Older than 180 days is not downloaded."));
 assert.ok(!parityDoc.includes("30-day window"));
 assert.ok(!parityDoc.includes("Older than 30 days"));
 assert.ok(parityDoc.includes("does not call `mail:search`"));
-assert.ok(appJs.includes("Searching all mail"));
-assert.ok(html.includes("Search all mail"));
+assert.ok(appJs.includes("Searching downloaded mail"));
+assert.ok(html.includes("Search downloaded mail"));
 assert.ok(registered.has("mail:syncStatus"));
 const syncStatusLabel = loadFunctions(appJs, ["redactDebugText", "syncStatusLabel"]).syncStatusLabel;
 assert.strictEqual(syncStatusLabel({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
@@ -2219,7 +2219,7 @@ const acceptedMove = selection.confirmedCalls("move", { ok: true, name: "" }, bu
 assert.strictEqual(acceptedMove.length, 1);
 assert.strictEqual(acceptedMove[0].channel, "mail:moveToFolder");
 const moveCopyBulk = selection.bulkConfirmCopy("move", 2, { target: "Notes" });
-assert.strictEqual(moveCopyBulk.confirm, "Confirm");
+assert.strictEqual(moveCopyBulk.confirm, "Move");
 assert.strictEqual(moveCopyBulk.cancel, "Cancel");
 assert.match(moveCopyBulk.body, /2/);
 assert.match(moveCopyBulk.body, /Notes/);
@@ -6592,7 +6592,7 @@ checkGoogleOauthAlias();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 
-checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => {
+checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);
