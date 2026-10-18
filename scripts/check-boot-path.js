@@ -341,13 +341,6 @@ assert.strictEqual(opensAiWrite({ aiWrite: true }, { aiReply: true }), true);
 assert.strictEqual(opensAiWrite({ aiWrite: true }, { aiReply: false }), false);
 assert.strictEqual(opensAiWrite({ aiWrite: true }, null), false);
 assert.strictEqual(opensAiWrite({}, { aiReply: true }), false);
-const showTidy = extractFunction(appJs, "showTidy");
-assert.strictEqual(showTidy({ tidy: true }, "inbox", ""), true);
-assert.strictEqual(showTidy({ tidy: true }, "Inbox", ""), true);
-assert.strictEqual(showTidy({ tidy: false }, "inbox", ""), false);
-assert.strictEqual(showTidy({ tidy: true }, "archive", ""), false);
-assert.strictEqual(showTidy({ tidy: true }, "inbox", "promo"), false);
-assert.strictEqual(showTidy(null, "inbox", ""), false);
 
 const shellLook = extractFunction(appJs, "shellLook");
 const shouldListThread = extractFunction(appJs, "shouldListThread");
@@ -613,7 +606,7 @@ assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
 const settingsSrc = fs.readFileSync(path.join(root, "host/settings.js"), "utf8");
 const prefs = prefRows();
-assert.strictEqual(prefs.length, 11);
+assert.strictEqual(prefs.length, 10);
 const prefKinds = new Set();
 for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(html.includes('id="' + id + '"'), `settings control missing ${id}`);
@@ -648,7 +641,6 @@ assert.ok(!ipcSrc.includes('"config:getTheme"'));
 for (const channel of [
   "genmail:configGetAiWriteAutoOpenOnReply",
   "genmail:configGetShowFolderChips",
-  "genmail:configGetShowOneClickTidy",
   "genmail:configGetSidebarGmailFoldersExpanded",
   "genmail:configGetSidebarOutlookFoldersExpanded",
 ]) {
@@ -679,7 +671,6 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), true);
     assert.strictEqual(answer("genmail:configGetAiWriteAutoOpenOnReply", []), false);
     assert.strictEqual(answer("genmail:configGetShowFolderChips", []), true);
-    assert.strictEqual(answer("genmail:configGetShowOneClickTidy", []), false);
     assert.strictEqual(answer("genmail:configGetSidebarGmailFoldersExpanded", []), true);
     assert.strictEqual(answer("genmail:configGetSidebarOutlookFoldersExpanded", []), false);
     assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 420);
@@ -692,7 +683,6 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configSetSnoozeEffective", [false]), false);
     assert.strictEqual(answer("genmail:configSetAiWriteAutoOpenOnReply", [true]), true);
     assert.strictEqual(answer("genmail:configSetShowFolderChips", [false]), false);
-    assert.strictEqual(answer("genmail:configSetShowOneClickTidy", [true]), true);
     assert.strictEqual(answer("genmail:configSetSidebarGmailFoldersExpanded", [false]), false);
     assert.strictEqual(answer("genmail:configSetSidebarOutlookFoldersExpanded", [true]), true);
     assert.strictEqual(answer("genmail:configSetComposeQuoteWidth", [560]), 560);
@@ -704,7 +694,6 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), false);
     assert.strictEqual(answer("genmail:configGetAiWriteAutoOpenOnReply", []), true);
     assert.strictEqual(answer("genmail:configGetShowFolderChips", []), false);
-    assert.strictEqual(answer("genmail:configGetShowOneClickTidy", []), true);
     assert.strictEqual(answer("genmail:configGetSidebarGmailFoldersExpanded", []), false);
     assert.strictEqual(answer("genmail:configGetSidebarOutlookFoldersExpanded", []), true);
     assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 560);
@@ -720,7 +709,6 @@ function checkSettingsRoundTrip() {
         snooze: answer("genmail:configGetSnoozeEffective", []),
         aiReply: answer("genmail:configGetAiWriteAutoOpenOnReply", []),
         chips: answer("genmail:configGetShowFolderChips", []),
-        tidy: answer("genmail:configGetShowOneClickTidy", []),
         gmailFolders: answer("genmail:configGetSidebarGmailFoldersExpanded", []),
         outlookFolders: answer("genmail:configGetSidebarOutlookFoldersExpanded", []),
         quoteWidth: answer("genmail:configGetComposeQuoteWidth", []),
@@ -736,7 +724,6 @@ function checkSettingsRoundTrip() {
       snooze: false,
       aiReply: true,
       chips: false,
-      tidy: true,
       gmailFolders: false,
       outlookFolders: true,
       quoteWidth: 560,
@@ -1488,9 +1475,11 @@ for (const channel of studioUi.studioLists().map((row) => row[1])) {
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
   assert.ok(ipcSrc.includes('"' + channel + '"'), `host stub missing ${channel}`);
 }
-assert.ok(html.includes('id="tidy"') && html.includes("One-click tidy"));
-assert.ok(registered.has("mail:tidyInbox") && used.has("mail:tidyInbox"));
-assert.ok(registered.has("genmail:configGetShowOneClickTidyEffective") && used.has("genmail:configGetShowOneClickTidyEffective"));
+assert.ok(!html.includes('id="tidy"') && !html.includes("One-click tidy") && !html.includes('id="pref-tidy"'));
+assert.ok(!registered.has("mail:tidyInbox") && !used.has("mail:tidyInbox"));
+assert.ok(!registered.has("genmail:configGetShowOneClickTidy") && !registered.has("genmail:configSetShowOneClickTidy"));
+assert.ok(!registered.has("genmail:configGetShowOneClickTidyEffective") && !used.has("genmail:configGetShowOneClickTidyEffective"));
+assert.ok(!appJs.includes("function showTidy") && !appJs.includes("function tidyInbox") && !appJs.includes("mail:tidyInbox"));
 assert.ok(html.includes('id="agent-panel"') && html.includes('id="agent-open"') && html.includes('id="studio-home"') && html.includes('id="studio-library"'));
 assert.ok(html.includes('id="agent-composer"') && html.includes('id="agent-send"') && html.includes('id="agent-input"'));
 assert.ok(html.includes('id="agent-memory"') && html.includes('id="rail-brain"') && html.includes('id="agent-home"') && html.includes('id="side-mail"'));
@@ -1528,15 +1517,16 @@ assert.ok(brainDoc.includes("emailBrain:fixItem") && brainDoc.includes("emailBra
 assert.ok(parity.includes("emailBrain:fixItem") && parity.includes("emailBrain:forgetItem") && parity.includes("emailBrain:fixCategory"));
 assert.ok(parity.includes("ownerName") && parity.includes("emailsAnalyzed") && parity.includes("factsLearned"));
 assert.ok(parity.includes("genmail:configSetAiWriteAutoOpenOnReply") && parity.includes("genmail:configSetShowFolderChips"));
-assert.ok(parity.includes("genmail:configSetShowOneClickTidy") && parity.includes("genmail:configSetSidebarGmailFoldersExpanded"));
+assert.ok(parity.includes("genmail:configSetSidebarGmailFoldersExpanded"));
 assert.ok(parity.includes("genmail:configSetSidebarOutlookFoldersExpanded"));
 assert.ok(parity.includes("above the message list") && parity.includes("open the compose AI write controls"));
-assert.ok(parity.includes("mail:tidyInbox") && parity.includes("accepted: false"));
-assert.ok(parity.includes("genmail:configGetShowOneClickTidyEffective"));
+assert.ok(parity.includes("Brain → Organize Inbox") && independentDoc.includes("Brain → Organize Inbox"));
+assert.ok(!parity.includes("mail:tidyInbox") && !parity.includes("genmail:configSetShowOneClickTidy"));
+assert.ok(!parity.includes("genmail:configGetShowOneClickTidyEffective") && !independentDoc.includes("one-click tidy"));
 assert.ok(!parity.includes("does not add a button"));
 assert.ok(css.includes(".chips") && css.includes("button.account") && css.includes(".ai-write.open"));
 assert.ok(parity.includes("genmail:configGetDogfoodPrefs") && parity.includes("genmail:configGetShowJevClassification"));
-assert.ok(parity.includes("genmail:configGetShowOneClickTidyEffective") && parity.includes("genmail:configGetCalendarSidebarOrder"));
+assert.ok(parity.includes("genmail:configGetCalendarSidebarOrder"));
 assert.ok(!parity.includes("Other host preferences, calendar"));
 assert.ok(!parity.includes("full skills library"));
 assert.ok(!parity.includes("AI Studio, calendar"));
@@ -3276,7 +3266,7 @@ async function checkTidy() {
     GENMAIL_AI_CONFIG_DIR: process.env.GENMAIL_AI_CONFIG_DIR,
     GENMAIL_MAIL_SECRETS: process.env.GENMAIL_MAIL_SECRETS,
   };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-tidy-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-sync-window-"));
   process.env.GENMAIL_USER_DATA = dir;
   process.env.GENMAIL_MAIL_DIR = dir;
   process.env.GENMAIL_AI_CONFIG_DIR = dir;
@@ -3284,22 +3274,15 @@ async function checkTidy() {
   let savedRemote = null;
   try {
     const { answer: settingsAnswer } = require("../host/settings");
-    assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [true]), true);
-    assert.strictEqual(settingsAnswer("genmail:configGetShowOneClickTidy", []), true);
-    assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [false]), false);
-    assert.strictEqual(settingsAnswer("genmail:configGetShowOneClickTidy", []), false);
-    assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [true]), true);
+    assert.strictEqual(settingsAnswer("genmail:configGetShowOneClickTidy", []), undefined);
+    assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [true]), undefined);
     const engine = require("../host/mail/engine");
     const db = require("../host/mail/db");
     const { createIpc } = require("../host/ipc");
     await engine.init();
-    assert.strictEqual(engine.answer("genmail:configGetShowOneClickTidyEffective", []), false);
-    const emptyTidy = engine.answer("mail:tidyInbox", []);
-    assert.strictEqual(emptyTidy.success, true);
-    assert.strictEqual(emptyTidy.data.accepted, false);
-    assert.deepStrictEqual(emptyTidy.data.ids, []);
+    assert.strictEqual(engine.answer("mail:tidyInbox", []), undefined);
+    assert.strictEqual(engine.answer("genmail:configGetShowOneClickTidyEffective", []), undefined);
     const ipc = createIpc(path.join(dir, "ipc.log"));
-    assert.strictEqual(ipc.handle({}, "genmail:configGetShowOneClickTidyEffective"), false);
     const emptyAccounts = ipc.handle({}, "mail:listAccounts");
     assert.strictEqual(emptyAccounts.success, true);
     assert.deepStrictEqual(emptyAccounts.data, []);
@@ -3335,12 +3318,7 @@ async function checkTidy() {
       delimiter: "/",
       createdAt: Date.now(),
     });
-    assert.strictEqual(engine.answer("genmail:configGetShowOneClickTidyEffective", []), false);
-    assert.strictEqual(ipc.handle({}, "genmail:configGetShowOneClickTidyEffective"), false);
-    const live = await ipc.handle({}, "mail:tidyInbox", { accountId: "imap-test" });
-    assert.strictEqual(live.success, true);
-    assert.strictEqual(live.data.accepted, false);
-    assert.deepStrictEqual(live.data.opIds, []);
+    assert.strictEqual(engine.answer("mail:tidyInbox", [{ accountId: "imap-test" }]), undefined);
 
     process.env.GENMAIL_PAGE_DELAY_MS = "0";
     const remote = require("../host/mail/remote");
