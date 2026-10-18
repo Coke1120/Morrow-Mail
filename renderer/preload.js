@@ -105,6 +105,8 @@ const INVOKE = [
   "emailBrain:installSkill",
   "emailBrain:removeSkill",
   "emailBrain:runSkill",
+  "emailBrain:setSkillSchedule",
+  "emailBrain:deleteSkillSchedule",
   "emailBrain:confirmProposal",
   "emailBrain:dismissProposal",
   "nativeAgent:home",
@@ -132,6 +134,7 @@ const EVENTS = [
   "emailBrain:updated",
   "emailBrain:refreshState",
   "emailBrain:rebuildState",
+  "emailBrain:scheduleFired",
 ];
 
 const invokeSet = new Set(INVOKE);

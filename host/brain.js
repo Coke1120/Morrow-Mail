@@ -398,7 +398,7 @@ function onDemandRefusal() {
   return ok({
     accepted: false,
     runMode: "on_demand",
-    error: "Skills run only when you ask. Auto-run and scheduled send stay off.",
+    error: "That action runs only when you ask. Auto-execute stays off, and a schedule never sends mail.",
   });
 }
 
@@ -531,10 +531,12 @@ function answer(channel, args) {
     case "emailBrain:setLearningToastSilenced":
     case "emailBrain:previewRuleMatches":
     case "emailBrain:setSkillAutoExecute":
+      return onDemandRefusal();
     case "emailBrain:setSkillSchedule":
     case "emailBrain:setSkillTrigger":
+      return require("./agent").setSkillSchedule(params);
     case "emailBrain:deleteSkillSchedule":
-      return onDemandRefusal();
+      return require("./agent").deleteSkillSchedule(params);
     default:
       if (channel.startsWith("emailBrain:")) {
         return fail(new Error("This Email Brain action is not available on a local model."));
@@ -634,4 +636,4 @@ async function fixItem(params) {
   }
 }
 
-module.exports = { answer, personaFrom, writingBrief, taxonomy, scheduleLivingRefresh, refreshFromMail, rebuildFromMail };
+module.exports = { answer, emit, personaFrom, writingBrief, taxonomy, scheduleLivingRefresh, refreshFromMail, rebuildFromMail };

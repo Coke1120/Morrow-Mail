@@ -170,7 +170,7 @@
       <div id="agent-skill-chips" aria-label="Home skill shortcuts"></div>
       <details id="agent-tools">
         <summary>Skills and history</summary>
-        <p class="hint">Only when I ask. Auto-run is off. Drafts stay in compose until you send them yourself.</p>
+        <p class="hint">Only when I ask, or on a saved interval or cron schedule. Auto-execute is off. A schedule runs in the background and does not send mail. Pause stops it. Drafts stay in compose until you send them yourself.</p>
         <p id="agent-skill-status" role="status"></p>
         <div id="agent-result" hidden></div>
         <label for="agent-contact">Person <span class="optional">(Brief This Person)</span></label>
@@ -264,7 +264,7 @@
       </section>
       <section id="brain-skills" role="tabpanel" aria-labelledby="brain-tab-skills" hidden>
         <h3 id="brain-skills-title">Skills</h3>
-        <p class="hint">Only when I ask. Auto-run is off. A skill needs an API key and a connected mailbox. Nothing is sent.</p>
+        <p class="hint">Only when I ask, unless you save an interval or cron schedule. A schedule runs in the background while Morrow Mail is open and does not block the window. Pause keeps it from firing. Nothing is sent.</p>
         <p id="brain-skill-status" role="status"></p>
         <div id="brain-skill-result"></div>
         <h3>Home skills</h3>

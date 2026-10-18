@@ -1370,6 +1370,7 @@ const agentUi = loadFunctions(appJs, [
   "historyLine",
   "proposalLine",
   "runModeLabel",
+  "scheduleFormValue",
 ]);
 assert.deepStrictEqual(agentUi.skillBlocks(null), []);
 assert.deepStrictEqual(agentUi.skillBlocks({ accepted: false, summary: "nope" }), []);
@@ -1387,6 +1388,18 @@ assert.strictEqual(agentUi.sectionEmptyCopy("idle"), "Nothing suggested yet.");
 assert.strictEqual(agentUi.historyLine({ name: "Morning Brief", summary: "Two notes" }), "Morning Brief — Two notes");
 assert.strictEqual(agentUi.proposalLine({ subject: "Hello", labelName: "FYI" }), "Hello → FYI");
 assert.match(agentUi.runModeLabel({ schedule: "disabled", runMode: "on_demand" }), /Auto-run is off/);
+assert.match(agentUi.runModeLabel({ schedule: "interval", everyMinutes: 30 }), /Every 30 min/);
+assert.match(agentUi.runModeLabel({ schedule: "paused", paused: true, kind: "cron", cron: "0 8 * * 1" }), /Paused/);
+assert.match(agentUi.runModeLabel({ schedule: "cron", cron: "0 8 * * 1-5" }), /0 8 \* \* 1-5/);
+assert.strictEqual(agentUi.scheduleFormValue({ kind: "off" }).action, "delete");
+assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 15 }).everyMinutes, 15);
+assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 0 }).error.includes("10080"), true);
+assert.strictEqual(agentUi.scheduleFormValue({ kind: "cron", cron: "  0   8 * * 1-5  " }).cron, "0 8 * * 1-5");
+assert.ok(agentUi.scheduleFormValue({ kind: "cron", cron: "   " }).error);
+assert.ok(appJs.includes("emailBrain:setSkillSchedule") && appJs.includes("emailBrain:deleteSkillSchedule"));
+assert.ok(appJs.includes("emailBrain:scheduleFired") && appJs.includes('textContent = paused ? "Resume" : "Pause"'));
+assert.ok(appJs.includes('textContent = "Save schedule"'));
+assert.ok(main.includes("startSkillScheduler"));
 const requestUi = loadFunctions(appJs, [
   "skillIdOf",
   "isLive",
@@ -2903,11 +2916,64 @@ async function checkAiDraft() {
     assert.strictEqual(drafted.data.intent, "draft");
     assert.strictEqual(drafted.data.turn.drafts[0].body, "Draft only.");
     assert.ok(!JSON.stringify(drafted.data).includes("Analytical Engine"));
-    for (const channel of ["emailBrain:setSkillAutoExecute", "emailBrain:setSkillSchedule", "emailBrain:previewRuleMatches"]) {
+    for (const channel of ["emailBrain:setSkillAutoExecute", "emailBrain:previewRuleMatches"]) {
       const refused = brain.answer(channel, [{ skillId: "morning-brief", enabled: true }]);
       assert.strictEqual(refused.data.accepted, false);
       assert.match(refused.data.error, /only when you ask/i);
     }
+    assert.strictEqual(agent.cronMatches("0 8 * * 1", new Date(2026, 9, 19, 8, 0, 0)), true);
+    assert.strictEqual(agent.cronMatches("0 8 * * 1", new Date(2026, 9, 19, 9, 0, 0)), false);
+    const nextMonday = agent.nextCron("0 8 * * 1-5", new Date(2026, 9, 17, 9, 0, 0));
+    assert.strictEqual(nextMonday.getDay(), 1);
+    assert.strictEqual(nextMonday.getHours(), 8);
+    assert.strictEqual(nextMonday.getDate(), 19);
+    assert.strictEqual(brain.answer("emailBrain:setSkillSchedule", [{ skillId: "morning-brief", kind: "interval", everyMinutes: 0 }]).success, false);
+    assert.strictEqual(brain.answer("emailBrain:setSkillSchedule", [{ skillId: "nope", kind: "interval", everyMinutes: 15 }]).success, false);
+    assert.strictEqual(brain.answer("emailBrain:setSkillSchedule", [{ skillId: "morning-brief", kind: "cron", cron: "not cron" }]).success, false);
+    assert.strictEqual(brain.answer("emailBrain:setSkillSchedule", [{ skillId: "brief-this-person", kind: "interval", everyMinutes: 30 }]).success, false);
+    const interval = brain.answer("emailBrain:setSkillSchedule", [{ skillId: "morning-brief", kind: "interval", everyMinutes: 15 }]);
+    assert.strictEqual(interval.success, true);
+    assert.strictEqual(interval.data.schedule.kind, "interval");
+    assert.strictEqual(interval.data.schedule.paused, false);
+    const scheduledRow = brain.answer("emailBrain:getSkills", []).data.find((row) => row.id === "morning-brief");
+    assert.strictEqual(scheduledRow.schedule, "interval");
+    assert.strictEqual(scheduledRow.runMode, "scheduled");
+    assert.strictEqual(scheduledRow.everyMinutes, 15);
+    const edited = brain.answer("emailBrain:setSkillSchedule", [{ skillId: "morning-brief", kind: "cron", cron: "0 8 * * 1-5" }]);
+    assert.strictEqual(edited.success, true);
+    assert.strictEqual(edited.data.schedule.cron, "0 8 * * 1-5");
+    const scheduleFile = path.join(process.env.GENMAIL_AI_CONFIG_DIR, "agent.json");
+    const scheduleDisk = JSON.parse(fs.readFileSync(scheduleFile, "utf8"));
+    assert.ok(scheduleDisk.schedules.some((row) => row.skillId === "morning-brief" && row.cron === "0 8 * * 1-5"));
+    const paused = brain.answer("emailBrain:setSkillSchedule", [{ skillId: "morning-brief", paused: true }]);
+    assert.strictEqual(paused.success, true);
+    assert.strictEqual(paused.data.schedule.paused, true);
+    assert.strictEqual(paused.data.schedule.cron, "0 8 * * 1-5");
+    const pausedRow = brain.answer("emailBrain:getSkills", []).data.find((row) => row.id === "morning-brief");
+    assert.strictEqual(pausedRow.schedule, "paused");
+    assert.strictEqual(agent.pumpDueSkills(new Date(Date.parse(paused.data.schedule.nextRunAt) + 1000)).queued, 0);
+    const resumed = brain.answer("emailBrain:setSkillSchedule", [{ skillId: "morning-brief", paused: false }]);
+    assert.strictEqual(resumed.data.schedule.paused, false);
+    const fetchesBefore = seenBodies.length;
+    const dueAt = new Date(Date.parse(resumed.data.schedule.nextRunAt) + 1000);
+    const started = Date.now();
+    const pumped = agent.pumpDueSkills(dueAt);
+    assert.strictEqual(pumped.queued, 1);
+    assert.ok(Date.now() - started < 200);
+    assert.strictEqual(seenBodies.length, fetchesBefore);
+    assert.strictEqual(agent.pumpDueSkills(dueAt).queued, 0);
+    assert.ok(!functionSource(agentSrc, "pumpDueSkills").includes("await"));
+    for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(seenBodies.length > fetchesBefore);
+    const afterFire = brain.answer("emailBrain:getSkills", []).data.find((row) => row.id === "morning-brief");
+    assert.ok(afterFire.lastRunAt);
+    assert.strictEqual(afterFire.lastError, "");
+    assert.ok(sent.some((row) => row.channel === "emailBrain:scheduleFired" && row.payload && row.payload.skillId === "morning-brief" && row.payload.accepted === true));
+    brain.answer("emailBrain:removeSkill", [{ skillId: "morning-brief" }]);
+    const removedSchedule = JSON.parse(fs.readFileSync(scheduleFile, "utf8"));
+    assert.ok(!removedSchedule.schedules.some((row) => row.skillId === "morning-brief"));
+    const restored = brain.answer("emailBrain:installSkill", [{ skillId: "morning-brief" }]);
+    assert.ok(restored.data.skills.some((row) => row.id === "morning-brief" && row.schedule === "disabled"));
   } finally {
     db.hasAccounts = hadAccounts;
     db.recentInbox = hadInbox;
