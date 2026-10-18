@@ -88,7 +88,7 @@ function storePath() {
 const STALE_MS = 5 * 60 * 1000;
 
 function emptyStore() {
-  return { installedSkillIds: null, runs: [], triage: null, proposals: [], todos: {} };
+  return { installedSkillIds: null, runs: [], triage: null, proposals: [], todos: {}, schedules: [] };
 }
 
 function readStore() {
@@ -100,6 +100,7 @@ function readStore() {
       triage: parsed.triage && typeof parsed.triage === "object" ? parsed.triage : null,
       proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
       todos: parsed.todos && typeof parsed.todos === "object" && !Array.isArray(parsed.todos) ? parsed.todos : {},
+      schedules: normalizeSchedules(parsed.schedules),
     };
   } catch {
     return emptyStore();
@@ -132,14 +133,34 @@ function skillById(skillId) {
   return CATALOG.find((skill) => skill.id === skillId) || null;
 }
 
-function publicSkill(skill) {
+function scheduleNoteFor(schedule) {
+  if (!schedule) return SCHEDULE_NOTE;
+  if (schedule.paused) return "Paused. This skill runs only when you ask.";
+  if (schedule.kind === "interval") {
+    return `Every ${schedule.everyMinutes} minutes while Morrow Mail is open. Nothing is sent.`;
+  }
+  return `Cron ${schedule.cron} while Morrow Mail is open. Nothing is sent.`;
+}
+
+function publicSkill(skill, schedule) {
+  const active = !!(schedule && schedule.paused !== true);
+  let scheduleMode = "disabled";
+  if (schedule) scheduleMode = schedule.paused ? "paused" : schedule.kind;
   return {
     id: skill.id,
     name: skill.name,
     description: skill.description,
-    runMode: "on_demand",
-    schedule: "disabled",
-    scheduleNote: SCHEDULE_NOTE,
+    runMode: active && schedule ? "scheduled" : "on_demand",
+    schedule: scheduleMode,
+    kind: schedule ? schedule.kind : "",
+    everyMinutes: schedule && schedule.kind === "interval" ? schedule.everyMinutes : null,
+    cron: schedule && schedule.kind === "cron" ? schedule.cron : "",
+    paused: !!(schedule && schedule.paused),
+    nextRunAt: schedule ? schedule.nextRunAt || null : null,
+    lastRunAt: schedule ? schedule.lastRunAt || null : null,
+    lastError: schedule ? schedule.lastError || "" : "",
+    contactEmail: schedule ? schedule.contactEmail || "" : "",
+    scheduleNote: scheduleNoteFor(schedule),
   };
 }
 
@@ -150,8 +171,9 @@ function installedIds(store) {
 }
 
 function listHomeSkills() {
-  const ids = installedIds(readStore());
-  return ids.map((id) => skillById(id)).filter(Boolean).map(publicSkill);
+  const store = readStore();
+  const saved = new Map((store.schedules || []).map((row) => [row.skillId, row]));
+  return installedIds(store).map((id) => skillById(id)).filter(Boolean).map((skill) => publicSkill(skill, saved.get(skill.id) || null));
 }
 
 function listLibrarySkills() {
@@ -175,6 +197,7 @@ function removeSkill(params) {
   if (!skillById(skillId)) return fail(new Error("That skill is not on this host."));
   const store = readStore();
   store.installedSkillIds = installedIds(store).filter((id) => id !== skillId);
+  store.schedules = (store.schedules || []).filter((row) => row.skillId !== skillId);
   writeStore(store);
   return ok({ skills: listHomeSkills(), library: listLibrarySkills() });
 }
@@ -565,12 +588,15 @@ async function runSkill(params) {
   if (!skillId) return fail(new Error("A skill id is required."));
   const skill = skillById(skillId);
   if (!skill) return fail(new Error("That skill is not on this host."));
+  const scheduledRun = params.source === "schedule";
+  const runMode = scheduledRun ? "scheduled" : "on_demand";
+  const scheduleState = scheduledRun ? "fired" : "disabled";
   const blocked = gate();
-  if (blocked) return ok({ accepted: false, skillId, runMode: "on_demand", error: blocked.error });
+  if (blocked) return ok({ accepted: false, skillId, runMode, schedule: scheduleState, error: blocked.error });
   const ctx = contextForSkill(skill, params);
-  if (ctx.error) return ok({ accepted: false, skillId, runMode: "on_demand", error: ctx.error });
+  if (ctx.error) return ok({ accepted: false, skillId, runMode, schedule: scheduleState, error: ctx.error });
   if (!ctx.messages.length) {
-    return ok({ accepted: false, skillId, runMode: "on_demand", error: "The inbox cache is empty. Refresh mail, then run this skill again." });
+    return ok({ accepted: false, skillId, runMode, schedule: scheduleState, error: "The inbox cache is empty. Refresh mail, then run this skill again." });
   }
   const calendar = skill.calendar ? await calendarContext(accountIdFor(params)) : null;
   const note = calendar && !calendar.available ? calendar.note : "";
@@ -597,8 +623,8 @@ async function runSkill(params) {
       accepted: true,
       skillId,
       name: skill.name,
-      runMode: "on_demand",
-      schedule: "disabled",
+      runMode,
+      schedule: scheduleState,
       title: normalized.title,
       summary: normalized.summary,
       note,
@@ -655,7 +681,7 @@ async function runSkill(params) {
       at: new Date().toISOString(),
       accepted: false,
     });
-    return ok({ accepted: false, skillId, runMode: "on_demand", error: message });
+    return ok({ accepted: false, skillId, runMode, schedule: scheduleState, error: message });
   }
 }
 
@@ -1184,6 +1210,304 @@ function chatShow(params) {
   return ok({ intent: "history", turn, turns: publicTurns() });
 }
 
+const MIN_INTERVAL_MINUTES = 1;
+const MAX_INTERVAL_MINUTES = 10080;
+const inflightSkills = new Set();
+let skillTimer = null;
+
+function fieldValid(field, min, max) {
+  if (field === "*") return true;
+  const bits = String(field || "").split(",");
+  if (!bits.length || bits.some((bit) => bit === "")) return false;
+  return bits.every((bit) => {
+    const step = bit.match(/^\*\/(\d+)$/);
+    if (step) return Number(step[1]) >= 1;
+    const range = bit.match(/^(\d+)-(\d+)(?:\/(\d+))?$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      const stride = range[3] ? Number(range[3]) : 1;
+      return stride >= 1 && start >= min && end <= max && start <= end;
+    }
+    if (!/^\d+$/.test(bit)) return false;
+    const value = Number(bit);
+    return value >= min && value <= max;
+  });
+}
+
+function fieldMatch(field, value) {
+  if (field === "*") return true;
+  return String(field || "").split(",").some((bit) => {
+    const step = bit.match(/^\*\/(\d+)$/);
+    if (step) return value % Number(step[1]) === 0;
+    const range = bit.match(/^(\d+)-(\d+)(?:\/(\d+))?$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      const stride = range[3] ? Number(range[3]) : 1;
+      return value >= start && value <= end && (value - start) % stride === 0;
+    }
+    return Number(bit) === value;
+  });
+}
+
+function parseCron(expr) {
+  const parts = String(expr || "").trim().replace(/\s+/g, " ").split(" ");
+  if (parts.length !== 5) return null;
+  const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
+  for (let i = 0; i < ranges.length; i += 1) {
+    if (!fieldValid(parts[i], ranges[i][0], ranges[i][1])) return null;
+  }
+  return { minute: parts[0], hour: parts[1], dom: parts[2], month: parts[3], dow: parts[4] };
+}
+
+function dowMatch(field, date) {
+  const dow = date.getDay();
+  if (fieldMatch(field, dow)) return true;
+  return dow === 0 && fieldMatch(field, 7);
+}
+
+function cronMatches(expr, date) {
+  const fields = typeof expr === "string" || expr == null ? parseCron(expr) : expr;
+  if (!fields || !(date instanceof Date) || Number.isNaN(date.getTime())) return false;
+  if (!fieldMatch(fields.minute, date.getMinutes())) return false;
+  if (!fieldMatch(fields.hour, date.getHours())) return false;
+  if (!fieldMatch(fields.month, date.getMonth() + 1)) return false;
+  const domRestricted = fields.dom !== "*";
+  const dowRestricted = fields.dow !== "*";
+  const domOk = fieldMatch(fields.dom, date.getDate());
+  const dowOk = dowMatch(fields.dow, date);
+  if (domRestricted && dowRestricted) return domOk || dowOk;
+  if (domRestricted) return domOk;
+  if (dowRestricted) return dowOk;
+  return true;
+}
+
+function nextCron(expr, from) {
+  const fields = parseCron(expr);
+  if (!fields) return null;
+  const cursor = new Date(from instanceof Date ? from.getTime() : Date.now());
+  if (Number.isNaN(cursor.getTime())) return null;
+  cursor.setSeconds(0, 0);
+  cursor.setMinutes(cursor.getMinutes() + 1);
+  const end = cursor.getTime() + 366 * 24 * 60 * 60 * 1000;
+  while (cursor.getTime() <= end) {
+    if (cronMatches(fields, cursor)) return new Date(cursor.getTime());
+    cursor.setMinutes(cursor.getMinutes() + 1);
+  }
+  return null;
+}
+
+function normalizeSchedules(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const rows = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const skillId = String(raw.skillId || "").trim();
+    if (!skillById(skillId) || seen.has(skillId)) continue;
+    const kind = raw.kind === "cron" || raw.kind === "interval" ? raw.kind : "";
+    if (!kind) continue;
+    const everyMinutes = Number(raw.everyMinutes);
+    const cron = String(raw.cron || "").trim().replace(/\s+/g, " ");
+    if (kind === "interval" && (!Number.isInteger(everyMinutes) || everyMinutes < MIN_INTERVAL_MINUTES || everyMinutes > MAX_INTERVAL_MINUTES)) continue;
+    if (kind === "cron" && !parseCron(cron)) continue;
+    seen.add(skillId);
+    rows.push({
+      skillId,
+      kind,
+      everyMinutes: kind === "interval" ? everyMinutes : null,
+      cron: kind === "cron" ? cron : "",
+      paused: raw.paused === true,
+      nextRunAt: typeof raw.nextRunAt === "string" ? raw.nextRunAt : "",
+      lastRunAt: typeof raw.lastRunAt === "string" ? raw.lastRunAt : "",
+      lastError: typeof raw.lastError === "string" ? raw.lastError.slice(0, 300) : "",
+      contactEmail: addressIn(raw.contactEmail),
+      updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "",
+    });
+  }
+  return rows;
+}
+
+function publicSchedule(row) {
+  return {
+    skillId: row.skillId,
+    kind: row.kind,
+    everyMinutes: row.kind === "interval" ? row.everyMinutes : null,
+    cron: row.kind === "cron" ? row.cron : "",
+    paused: row.paused === true,
+    nextRunAt: row.nextRunAt || null,
+    lastRunAt: row.lastRunAt || null,
+    lastError: row.lastError || "",
+    contactEmail: row.contactEmail || "",
+  };
+}
+
+function nextSlot(schedule, from) {
+  if (schedule.kind === "interval") {
+    return new Date(from.getTime() + schedule.everyMinutes * 60 * 1000);
+  }
+  return nextCron(schedule.cron, from);
+}
+
+function setSkillSchedule(params) {
+  const skillId = params && typeof params.skillId === "string" ? params.skillId.trim() : "";
+  const skill = skillById(skillId);
+  if (!skill) return fail(new Error("That skill is not on this host."));
+  const store = readStore();
+  if (!installedIds(store).includes(skillId)) return fail(new Error("Install the skill before scheduling it."));
+  const schedules = store.schedules.slice();
+  const index = schedules.findIndex((row) => row.skillId === skillId);
+  const existing = index >= 0 ? schedules[index] : null;
+  const hasKind = params && (params.kind != null || params.trigger != null || params.cron != null || params.everyMinutes != null);
+  if (!hasKind) {
+    if (!existing) return fail(new Error("That skill has no schedule to pause."));
+    if (typeof params.paused !== "boolean") return fail(new Error("Say whether the schedule is paused."));
+    existing.paused = params.paused;
+    existing.updatedAt = new Date().toISOString();
+    schedules[index] = existing;
+    store.schedules = schedules;
+    writeStore(store);
+    return ok({ schedule: publicSchedule(existing), skills: listHomeSkills() });
+  }
+  const kind = String((params && (params.kind || params.trigger)) || "").trim();
+  if (kind !== "interval" && kind !== "cron") return fail(new Error("Pick an interval or a cron schedule."));
+  let everyMinutes = null;
+  let cron = "";
+  if (kind === "interval") {
+    everyMinutes = Number(params.everyMinutes);
+    if (!Number.isInteger(everyMinutes) || everyMinutes < MIN_INTERVAL_MINUTES || everyMinutes > MAX_INTERVAL_MINUTES) {
+      return fail(new Error("Use 1 to 10080 minutes."));
+    }
+  } else {
+    cron = String(params.cron || "").trim().replace(/\s+/g, " ");
+    if (!parseCron(cron)) return fail(new Error("A cron schedule needs five fields."));
+    if (!nextCron(cron, new Date())) return fail(new Error("That cron has no upcoming time."));
+  }
+  let contactEmail = existing ? existing.contactEmail : "";
+  if (params && Object.prototype.hasOwnProperty.call(params, "contactEmail")) contactEmail = addressIn(params.contactEmail);
+  if (skill.person && !contactEmail) return fail(new Error("A schedule for Brief This Person needs a contact email."));
+  const now = new Date();
+  const row = {
+    skillId,
+    kind,
+    everyMinutes,
+    cron,
+    paused: typeof params.paused === "boolean" ? params.paused : !!(existing && existing.paused),
+    nextRunAt: "",
+    lastRunAt: existing ? existing.lastRunAt || "" : "",
+    lastError: "",
+    contactEmail,
+    updatedAt: now.toISOString(),
+  };
+  const upcoming = nextSlot(row, now);
+  if (!upcoming) return fail(new Error("That cron has no upcoming time."));
+  row.nextRunAt = upcoming.toISOString();
+  if (index >= 0) schedules[index] = row;
+  else schedules.push(row);
+  store.schedules = schedules;
+  writeStore(store);
+  return ok({ schedule: publicSchedule(row), skills: listHomeSkills() });
+}
+
+function deleteSkillSchedule(params) {
+  const skillId = params && typeof params.skillId === "string" ? params.skillId.trim() : "";
+  if (!skillById(skillId)) return fail(new Error("That skill is not on this host."));
+  const store = readStore();
+  const next = (store.schedules || []).filter((row) => row.skillId !== skillId);
+  if (next.length === (store.schedules || []).length) return fail(new Error("That skill has no schedule."));
+  store.schedules = next;
+  writeStore(store);
+  return ok({ skills: listHomeSkills() });
+}
+
+function notifySchedule(payload) {
+  try {
+    require("./brain").emit("emailBrain:scheduleFired", payload);
+  } catch {
+    /* the window list is optional when the host is under test */
+  }
+}
+
+async function runScheduled(skillId, contactEmail) {
+  const params = { skillId, source: "schedule" };
+  if (contactEmail) params.contactEmail = contactEmail;
+  let result;
+  try {
+    result = await runSkill(params);
+  } catch (error) {
+    result = fail(error);
+  }
+  const data = result && result.success ? result.data : null;
+  const accepted = !!(data && data.accepted !== false && !data.error);
+  const errorText = accepted ? "" : String((data && data.error) || (result && result.error && result.error.message) || "That skill did not finish.").slice(0, 300);
+  const store = readStore();
+  const schedule = (store.schedules || []).find((row) => row.skillId === skillId);
+  if (schedule) {
+    schedule.lastRunAt = new Date().toISOString();
+    schedule.lastError = errorText;
+    writeStore(store);
+  }
+  const skill = skillById(skillId);
+  notifySchedule({
+    skillId,
+    name: skill ? skill.name : skillId,
+    accepted,
+    summary: accepted ? String((data && data.summary) || "").slice(0, 240) : "",
+    error: errorText,
+    runMode: "scheduled",
+  });
+}
+
+function pumpDueSkills(now) {
+  const clock = now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date();
+  const store = readStore();
+  const installed = new Set(installedIds(store));
+  let queued = 0;
+  let changed = false;
+  for (const schedule of store.schedules || []) {
+    if (!schedule || schedule.paused || !installed.has(schedule.skillId)) continue;
+    const due = Date.parse(schedule.nextRunAt);
+    if (Number.isFinite(due) && due > clock.getTime()) continue;
+    if (inflightSkills.has(schedule.skillId)) continue;
+    const upcoming = nextSlot(schedule, clock);
+    if (!upcoming) {
+      schedule.paused = true;
+      schedule.lastError = "That cron has no upcoming time.";
+      changed = true;
+      continue;
+    }
+    inflightSkills.add(schedule.skillId);
+    schedule.nextRunAt = upcoming.toISOString();
+    changed = true;
+    queued += 1;
+    const skillId = schedule.skillId;
+    const contactEmail = schedule.contactEmail || "";
+    setImmediate(() => {
+      runScheduled(skillId, contactEmail).catch(() => {}).finally(() => {
+        inflightSkills.delete(skillId);
+      });
+    });
+  }
+  if (changed) writeStore(store);
+  return { queued };
+}
+
+function startSkillScheduler() {
+  if (skillTimer) return;
+  const tick = () => {
+    try {
+      pumpDueSkills(new Date());
+    } catch {
+      /* the next tick reads the store again */
+    }
+  };
+  const first = setTimeout(tick, 1500);
+  if (first && first.unref) first.unref();
+  skillTimer = setInterval(tick, 20000);
+  if (skillTimer.unref) skillTimer.unref();
+}
+
 function dismissProposal(params) {
   const proposalId = params && typeof params.proposalId === "string" ? params.proposalId.trim() : "";
   const store = readStore();
@@ -1251,5 +1575,11 @@ module.exports = {
   refreshTaxonomy,
   setTodo,
   normalizeSkillResult,
+  setSkillSchedule,
+  deleteSkillSchedule,
+  pumpDueSkills,
+  startSkillScheduler,
+  cronMatches,
+  nextCron,
   CATALOG,
 };

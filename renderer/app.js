@@ -7093,9 +7093,47 @@ function proposalLine(proposal) {
 }
 
 function runModeLabel(row) {
-  if (row && row.schedule === "disabled") return "Only when I ask. Auto-run is off.";
-  if (row && row.runMode === "on_demand") return "Only when I ask.";
-  return "";
+  let text = "";
+  if (row && (row.schedule === "paused" || row.paused === true)) text = "Paused. It runs only when you ask.";
+  else if (row && (row.schedule === "interval" || row.kind === "interval") && Number(row.everyMinutes) > 0) {
+    text = "Every " + Number(row.everyMinutes) + " min. Nothing is sent.";
+  } else if (row && (row.schedule === "cron" || row.kind === "cron") && row.cron) {
+    text = "Cron " + String(row.cron) + ". Nothing is sent.";
+  } else if (row && row.schedule === "disabled") text = "Only when I ask. Auto-run is off.";
+  else if (row && row.runMode === "on_demand") text = "Only when I ask.";
+  if (text && row && row.lastError) return text + " Last run: " + String(row.lastError);
+  return text;
+}
+
+function scheduleFormValue(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const kind = String(source.kind || "off").trim();
+  if (kind === "off" || kind === "disabled") return { action: "delete" };
+  if (kind === "interval") {
+    const everyMinutes = Number(source.everyMinutes);
+    if (!Number.isInteger(everyMinutes) || everyMinutes < 1 || everyMinutes > 10080) {
+      return { error: "Use 1 to 10080 minutes." };
+    }
+    return {
+      action: "save",
+      kind: "interval",
+      everyMinutes: everyMinutes,
+      paused: source.paused === true,
+      contactEmail: String(source.contactEmail || "").trim(),
+    };
+  }
+  if (kind === "cron") {
+    const cron = String(source.cron || "").trim().replace(/\s+/g, " ");
+    if (!cron) return { error: "A cron schedule needs five fields." };
+    return {
+      action: "save",
+      kind: "cron",
+      cron: cron,
+      paused: source.paused === true,
+      contactEmail: String(source.contactEmail || "").trim(),
+    };
+  }
+  return { error: "Pick an interval or a cron schedule." };
 }
 
 function skillRequest(row, options) {
@@ -7363,6 +7401,144 @@ function paintHistory(root, runs) {
   }
 }
 
+function scheduleChoice(row) {
+  if (!row || row.schedule === "disabled" || !row.schedule) return "off";
+  if (row.schedule === "paused") return row.kind === "cron" ? "cron" : "interval";
+  if (row.schedule === "cron" || row.schedule === "interval") return row.schedule;
+  return "off";
+}
+
+function appendSkillSchedule(parent, row) {
+  const skillId = skillIdOf(row);
+  if (!parent || !skillId) return;
+  const name = skillName(row) || skillId;
+  const box = document.createElement("div");
+  box.className = "skill-schedule";
+  const kind = document.createElement("select");
+  kind.setAttribute("aria-label", "Schedule " + name);
+  const choices = [["off", "Only when I ask"], ["interval", "Every N minutes"], ["cron", "Cron"]];
+  for (const choice of choices) {
+    const option = document.createElement("option");
+    option.value = choice[0];
+    option.textContent = choice[1];
+    kind.appendChild(option);
+  }
+  kind.value = scheduleChoice(row);
+  const minutes = document.createElement("input");
+  minutes.type = "number";
+  minutes.min = "1";
+  minutes.max = "10080";
+  minutes.step = "1";
+  minutes.value = row && row.everyMinutes ? String(row.everyMinutes) : "60";
+  minutes.setAttribute("aria-label", "Minutes between runs");
+  const cron = document.createElement("input");
+  cron.type = "text";
+  cron.value = row && row.cron ? String(row.cron) : "0 8 * * 1-5";
+  cron.spellcheck = false;
+  cron.placeholder = "0 8 * * 1-5";
+  cron.setAttribute("aria-label", "Cron schedule");
+  const contact = document.createElement("input");
+  contact.type = "email";
+  contact.value = row && row.contactEmail ? String(row.contactEmail) : "";
+  contact.spellcheck = false;
+  contact.placeholder = "name@example.com";
+  contact.setAttribute("aria-label", "Contact email for this schedule");
+  const syncFields = () => {
+    minutes.hidden = kind.value !== "interval";
+    cron.hidden = kind.value !== "cron";
+    contact.hidden = skillId !== "brief-this-person" || kind.value === "off";
+  };
+  kind.addEventListener("change", syncFields);
+  syncFields();
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "ghost";
+  save.textContent = "Save schedule";
+  save.setAttribute("aria-label", "Save schedule for " + name);
+  save.addEventListener("click", () => {
+    saveSkillSchedule(row, {
+      kind: kind.value,
+      everyMinutes: Number(minutes.value),
+      cron: cron.value,
+      contactEmail: contact.value,
+    }).catch((error) => {
+      setSkillStatus(error instanceof Error ? error.message : String(error), true);
+    });
+  });
+  box.append(kind, minutes, cron, contact, save);
+  if (row && row.schedule && row.schedule !== "disabled") {
+    const pause = document.createElement("button");
+    pause.type = "button";
+    pause.className = "ghost";
+    const paused = row.paused === true || row.schedule === "paused";
+    pause.textContent = paused ? "Resume" : "Pause";
+    pause.setAttribute("aria-label", (paused ? "Resume " : "Pause ") + name);
+    pause.addEventListener("click", () => {
+      pauseSkillSchedule(row, !paused).catch((error) => {
+        setSkillStatus(error instanceof Error ? error.message : String(error), true);
+      });
+    });
+    box.appendChild(pause);
+  }
+  parent.appendChild(box);
+}
+
+async function saveSkillSchedule(row, input) {
+  const skillId = skillIdOf(row);
+  if (!skillId) throw new Error("That skill has no id.");
+  const draft = scheduleFormValue(input);
+  if (draft.error) throw new Error(draft.error);
+  const name = skillName(row) || skillId;
+  if (draft.action === "delete") {
+    if (!row || row.schedule === "disabled" || !row.schedule) {
+      setSkillStatus(name + " already runs only when you ask.", false);
+      return;
+    }
+    await call("emailBrain:deleteSkillSchedule", { skillId });
+    setSkillStatus("Schedule removed. " + name + " runs only when you ask.", false);
+  } else {
+    const payload = { skillId, kind: draft.kind };
+    if (draft.kind === "interval") payload.everyMinutes = draft.everyMinutes;
+    if (draft.kind === "cron") payload.cron = draft.cron;
+    if (skillId === "brief-this-person") payload.contactEmail = draft.contactEmail;
+    await call("emailBrain:setSkillSchedule", payload);
+    setSkillStatus("Saved the schedule for " + name + ".", false);
+  }
+  await Promise.all([loadBrainSkills(), loadStudio()]);
+}
+
+async function pauseSkillSchedule(row, paused) {
+  const skillId = skillIdOf(row);
+  if (!skillId) throw new Error("That skill has no id.");
+  await call("emailBrain:setSkillSchedule", { skillId, paused: paused === true });
+  const name = skillName(row) || skillId;
+  setSkillStatus((paused ? "Paused " : "Resumed ") + name + ".", false);
+  await Promise.all([loadBrainSkills(), loadStudio()]);
+}
+
+function scheduleEditorFocused() {
+  const active = document.activeElement;
+  return !!(active && active.closest && active.closest(".skill-schedule"));
+}
+
+function onScheduleFired(payload) {
+  const name = payload && payload.name ? String(payload.name) : "Skill";
+  const accepted = !!(payload && payload.accepted === true);
+  const summary = payload && payload.summary ? String(payload.summary) : "";
+  const text = accepted
+    ? name + " finished in the background." + (summary ? " " + summary : "")
+    : String((payload && payload.error) || (name + " did not finish."));
+  setSkillStatus(text, !accepted);
+  const panel = $("agent-panel");
+  if (panel && !panel.hidden) {
+    call("nativeAgent:history").then((history) => {
+      paintHistory($("agent-history"), history && history.runs);
+    }).catch(() => {});
+  }
+  if (scheduleEditorFocused()) return;
+  Promise.all([loadBrainSkills(), loadStudio()]).catch(() => {});
+}
+
 function paintSkillList(root, rows, empty, mode) {
   root.replaceChildren();
   if (!rows.length) {
@@ -7423,6 +7599,7 @@ function paintSkillList(root, rows, empty, mode) {
       actions.appendChild(remove);
     }
     wrap.appendChild(actions);
+    if (mode === "run") appendSkillSchedule(wrap, row);
     root.appendChild(wrap);
   }
 }
@@ -7497,6 +7674,7 @@ function paintBrainSkillList(root, rows, empty, mode) {
       actions.append(run, remove);
     }
     card.appendChild(actions);
+    if (mode !== "install") appendSkillSchedule(card, row);
     root.appendChild(card);
   }
 }
@@ -8577,6 +8755,7 @@ async function boot() {
   api.on("emailBrain:updated", onBrainUpdated);
   api.on("emailBrain:refreshState", onBrainRefreshState);
   api.on("emailBrain:rebuildState", onBrainRebuildState);
+  api.on("emailBrain:scheduleFired", onScheduleFired);
   try {
     const version = await api.invoke("app:getVersion");
     appVersion = typeof version === "string" ? version : "";

@@ -361,6 +361,7 @@ app.whenReady().then(async () => {
       });
     } catch { /* this platform does not emit power events */ }
     try { require("./brain").scheduleLivingRefresh(); } catch { /* brain store is optional at boot */ }
+    try { require("./agent").startSkillScheduler(); } catch { /* skill schedules are optional at boot */ }
     if (process.env.GENMAIL_BOOT_EXIT === "1") {
       setTimeout(async () => {
         try {

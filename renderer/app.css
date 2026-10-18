@@ -524,6 +524,26 @@ button.brain-skill {
 
 .brain-skill-card .hint { margin: 4px 0 0; }
 
+.skill-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.skill-schedule select,
+.skill-schedule input {
+  height: 28px;
+  font-size: 12px;
+}
+
+.skill-schedule input[type="number"] { width: 88px; }
+
+.skill-schedule input[type="text"],
+.skill-schedule input[type="email"] { width: 168px; flex: 1 1 140px; }
+
 .brain-row,
 .signature-row {
   display: flex;
