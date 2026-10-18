@@ -4,6 +4,7 @@ const oauth = require("./oauth");
 const config = require("./oauth-config");
 const gmail = require("./provider-api");
 const calendar = require("./calendar-api");
+const inboxRules = require("./inbox-rules");
 
 const CHANNELS = new Set([
   "mail:oauthStatus",
@@ -15,6 +16,10 @@ const CHANNELS = new Set([
   "mail:moveProviderFolder",
   "mail:modifyMessageLabels",
   "mail:moveProviderMessage",
+  "mail:listInboxRules",
+  "mail:saveInboxRule",
+  "mail:deleteInboxRule",
+  "mail:grantRules",
   "calendar:status",
   "calendar:connect",
   "calendar:list",
@@ -74,8 +79,8 @@ function readJson(key) {
 
 function scopeText(account, purpose) {
   if (!account) return "";
-  if (purpose === "calendar") {
-    const blob = readJson(`${account.id}:calendar`);
+  if (purpose === "calendar" || purpose === "rules") {
+    const blob = readJson(`${account.id}:${purpose}`);
     return (blob && blob.grantedScopes) || "";
   }
   const primary = readJson(account.id);
@@ -91,7 +96,7 @@ function scopeText(account, purpose) {
 
 function secretKey(account, purpose) {
   const provider = providerOf(account);
-  if (purpose === "calendar") return `${account.id}:calendar`;
+  if (purpose === "calendar" || purpose === "rules") return `${account.id}:${purpose}`;
   if (purpose === "organize") {
     const dedicated = readJson(`${account.id}:organize`);
     if (dedicated && config.hasMarker(dedicated.grantedScopes, provider, "organize")) {
@@ -112,6 +117,10 @@ function gateMessage(reason, provider, purpose) {
       : "Labels stay on IMAP for this account.";
   }
   if (reason === "needs_auth") return "Calendar needs a calendar grant.";
+  if (purpose === "rules") {
+    if (provider === "microsoft") return "Outlook rules need the MailboxSettings.ReadWrite grant.";
+    return "Gmail filters need the gmail.settings.basic grant.";
+  }
   if (purpose === "calendar") return "Calendar needs a calendar grant.";
   if (provider === "microsoft") return "Outlook folders need the Mail.ReadWrite grant. This mailbox stays on IMAP until then.";
   return "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.";
@@ -180,8 +189,14 @@ async function tokenFor(account, purpose) {
   const raw = secrets.getPassword(key);
   const parsed = readJson(key);
   if (!raw || !parsed || !parsed.refreshToken) {
-    const error = new Error(purpose === "calendar" ? "Calendar needs a calendar grant." : "That mail API grant is not saved.");
-    error.code = purpose === "calendar" ? "needs_auth" : "scope_missing";
+    const error = new Error(
+      purpose === "calendar"
+        ? "Calendar needs a calendar grant."
+        : purpose === "rules"
+          ? "Inbox rules need a provider grant."
+          : "That mail API grant is not saved."
+    );
+    error.code = purpose === "calendar" || purpose === "rules" ? "needs_auth" : "scope_missing";
     throw error;
   }
   const result = await oauth.accessTokenFor(account, raw);
@@ -205,6 +220,7 @@ function accountGrants() {
   return db.listAccountRows().map((row) => {
     const organize = gateAccount(row, "organize");
     const calendarGate = gateAccount(row, "calendar");
+    const rulesGate = gateAccount(row, "rules");
     return {
       id: row.id,
       email: row.email,
@@ -212,12 +228,15 @@ function accountGrants() {
       authKind: row.auth_kind || "password",
       organize: organize.ok,
       calendar: calendarGate.ok,
+      rules: rulesGate.ok,
       organizeReason: organize.reason,
       calendarReason: calendarGate.reason,
+      rulesReason: rulesGate.reason,
       grantedScopes: {
         imap: scopeText(row, "imap"),
         organize: scopeText(row, "organize"),
         calendar: scopeText(row, "calendar"),
+        rules: scopeText(row, "rules"),
       },
     };
   });
@@ -232,6 +251,7 @@ function oauthStatus() {
       imap: { google: config.SCOPES.google, microsoft: config.SCOPES.microsoft },
       organize: { google: config.ORGANIZE_SCOPES.google, microsoft: config.ORGANIZE_SCOPES.microsoft },
       calendar: { google: config.CALENDAR_SCOPES.google, microsoft: config.CALENDAR_SCOPES.microsoft },
+      rules: { google: config.RULES_SCOPES.google, microsoft: config.RULES_SCOPES.microsoft },
     },
     redirects: {
       imap: {
@@ -290,9 +310,12 @@ async function grantPurpose(params, purpose) {
   if (!account) return fail("no_account", "Connect the mailbox first.");
   const provider = providerOf(account);
   if (provider !== "google" && provider !== "microsoft") {
-    return fail("imap_only", purpose === "calendar"
+    const message = purpose === "calendar"
       ? "Calendar needs a Google or Microsoft account."
-      : "Labels need a Google or Microsoft account.");
+      : purpose === "rules"
+        ? "This account stores inbox rules on this computer."
+        : "Labels need a Google or Microsoft account.";
+    return fail("imap_only", message);
   }
   if (provider === "google" && !oauth.oauthReady().google) {
     return fail("oauth_not_ready", "Google Desktop OAuth is not configured.");
@@ -547,6 +570,165 @@ async function createCalendarEvent(params) {
   }
 }
 
+function rulesMessage(backend) {
+  if (backend === "gmail") {
+    return "Gmail stores these filters and applies them to mail that arrives after you save. Morrow Mail does not forward mail.";
+  }
+  if (backend === "microsoft") {
+    return "Outlook stores these rules on the mailbox and applies them to mail that arrives after you save. Morrow Mail does not forward mail.";
+  }
+  return "These rules run in Morrow Mail when new Inbox mail is downloaded. They are not stored on the mail server. Mail already stored stays where it is.";
+}
+
+function destinationRows(rows) {
+  return (rows || []).filter((row) => row && row.id && row.name).map((row) => ({
+    id: row.id,
+    name: row.name,
+    wellKnown: row.wellKnown || "",
+  }));
+}
+
+function imapDestinations(accountId) {
+  return db.foldersFor(accountId)
+    .filter((folder) => folder && folder.path && folder.well_known !== "inbox")
+    .map((folder) => ({
+      id: folder.path,
+      name: folder.name || folder.path,
+      wellKnown: folder.well_known || "",
+    }));
+}
+
+function archiveFolderId(folders) {
+  const found = (folders || []).find((folder) => folder && folder.wellKnown === "archive" && folder.id);
+  return found ? found.id : "";
+}
+
+async function listInboxRules(params) {
+  const account = accountFrom(params);
+  if (!account) {
+    return ok({
+      api: false,
+      backend: "",
+      reason: "no_account",
+      message: "Connect an account to add inbox rules.",
+      rules: [],
+      destinations: [],
+      accountId: null,
+    });
+  }
+  const backend = inboxRules.backendFor(account);
+  if (backend === "imap") {
+    return ok({
+      api: true,
+      backend,
+      reason: "",
+      message: rulesMessage(backend),
+      rules: db.listInboxRules(account.id),
+      destinations: imapDestinations(account.id),
+      accountId: account.id,
+    });
+  }
+  const gate = gateAccount(account, "rules");
+  if (!gate.ok) {
+    return ok({
+      api: false,
+      backend,
+      reason: gate.reason,
+      message: gate.message,
+      rules: [],
+      destinations: [],
+      accountId: account.id,
+      grantedScopes: gate.scopes || "",
+    });
+  }
+  try {
+    const token = await tokenFor(account, "rules");
+    if (backend === "gmail") {
+      const labels = await gmail.listLabels(token.accessToken);
+      const rules = await inboxRules.listGmail(token.accessToken);
+      return ok({
+        api: true,
+        backend,
+        reason: "",
+        message: rulesMessage(backend),
+        rules,
+        destinations: destinationRows(labels.filter((label) => label.editable)),
+        accountId: account.id,
+        grantedScopes: token.grantedScopes || gate.scopes,
+      });
+    }
+    const folders = await gmail.listMailFolders(token.accessToken);
+    const rules = await inboxRules.listGraph(token.accessToken, archiveFolderId(folders));
+    return ok({
+      api: true,
+      backend,
+      reason: "",
+      message: rulesMessage(backend),
+      rules,
+      destinations: destinationRows(folders.filter((folder) => folder.wellKnown !== "inbox")),
+      accountId: account.id,
+      grantedScopes: token.grantedScopes || gate.scopes,
+    });
+  } catch (error) {
+    return failFrom(error);
+  }
+}
+
+async function saveInboxRule(params) {
+  const account = accountFrom(params);
+  if (!account) return fail("no_account", "Connect the mailbox first.");
+  const backend = inboxRules.backendFor(account);
+  let normalized;
+  try {
+    normalized = inboxRules.normalizeDraft(params && params.rule, backend);
+  } catch (error) {
+    return failFrom(error);
+  }
+  if (backend === "imap") {
+    const existing = normalized.id ? db.inboxRuleById(account.id, normalized.id) : null;
+    if (normalized.id && !existing) return fail("not-found", "That inbox rule is no longer on this computer.");
+    if (!existing && db.countInboxRules(account.id) >= inboxRules.MAX_LOCAL) {
+      return fail("too_many", "This mailbox already has 100 inbox rules.");
+    }
+    try {
+      inboxRules.assertLocalDestination(normalized, db.foldersFor(account.id));
+    } catch (error) {
+      return failFrom(error);
+    }
+    return ok(db.saveInboxRule(account.id, { ...normalized, id: normalized.id || db.newInboxRuleId() }));
+  }
+  const ready = await withPurpose({ accountId: account.id }, "rules");
+  if (ready.error) return ready.error;
+  try {
+    if (backend === "gmail") return ok(await inboxRules.saveGmail(ready.token.accessToken, normalized));
+    const folders = await gmail.listMailFolders(ready.token.accessToken);
+    return ok(await inboxRules.saveGraph(ready.token.accessToken, normalized, archiveFolderId(folders)));
+  } catch (error) {
+    return failFrom(error);
+  }
+}
+
+async function deleteInboxRule(params) {
+  const account = accountFrom(params);
+  if (!account) return fail("no_account", "Connect the mailbox first.");
+  const id = params && (params.ruleId || params.id);
+  if (!id) return fail("invalid", "Choose a rule.");
+  const backend = inboxRules.backendFor(account);
+  if (backend === "imap") {
+    if (!db.deleteInboxRule(account.id, id)) return fail("not-found", "That inbox rule is no longer on this computer.");
+    return ok({ id, deleted: true });
+  }
+  const ready = await withPurpose({ accountId: account.id }, "rules");
+  if (ready.error) return ready.error;
+  try {
+    if (backend === "gmail") await inboxRules.deleteGmail(ready.token.accessToken, id);
+    else await inboxRules.deleteGraph(ready.token.accessToken, id);
+    return ok({ id, deleted: true });
+  } catch (error) {
+    return failFrom(error);
+  }
+}
+
 function answer(channel, args) {
   if (!handles(channel)) return undefined;
   const params = args && args.length ? args[0] : undefined;
@@ -574,6 +756,14 @@ function answer(channel, args) {
         return modifyMessageLabels(params || {});
       case "mail:moveProviderMessage":
         return moveProviderMessage(params || {});
+      case "mail:listInboxRules":
+        return listInboxRules(params || {});
+      case "mail:saveInboxRule":
+        return saveInboxRule(params || {});
+      case "mail:deleteInboxRule":
+        return deleteInboxRule(params || {});
+      case "mail:grantRules":
+        return grantPurpose(params || {}, "rules");
       case "calendar:list":
         return listCalendar(params || {});
       case "calendar:createEvent":

@@ -400,6 +400,7 @@ button.icon-label svg { display: block; flex: none; }
 #brain-status.error,
 #brain-category-status.error,
 #brain-skill-status.error,
+#inbox-rules-status.error,
 #agent-status.error,
 #agent-skill-status.error,
 #calendar-status.error,
@@ -412,6 +413,7 @@ button.icon-label svg { display: block; flex: none; }
 #brain-status:empty,
 #brain-category-status:empty,
 #brain-skill-status:empty,
+#inbox-rules-status:empty,
 #agent-status:empty,
 #agent-skill-status:empty,
 #studio-status:empty,
@@ -430,6 +432,7 @@ button.icon-label svg { display: block; flex: none; }
 
 .brain-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   margin: 8px 0 6px;
   padding: 2px;
@@ -438,7 +441,7 @@ button.icon-label svg { display: block; flex: none; }
 }
 
 .brain-tabs button {
-  flex: 1;
+  flex: 1 1 72px;
   height: 28px;
   border: 0;
   border-radius: 8px;
@@ -545,7 +548,8 @@ button.brain-skill {
 .skill-schedule input[type="email"] { width: 168px; flex: 1 1 140px; }
 
 .brain-row,
-.signature-row {
+.signature-row,
+.inbox-rule-row {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -553,7 +557,17 @@ button.brain-skill {
 }
 
 .brain-row p,
-.signature-row p { flex: 1; margin: 0; overflow-wrap: anywhere; }
+.signature-row p,
+.inbox-rule-row p { flex: 1; margin: 0; overflow-wrap: anywhere; }
+
+#inbox-rule-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  margin-top: 8px;
+}
+
+#inbox-rule-actions label.check { margin: 0; }
 
 #signature-form textarea { min-height: 88px; }
 

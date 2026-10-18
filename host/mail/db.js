@@ -162,6 +162,19 @@ function migrate() {
     created_at INTEGER NOT NULL
   )`);
   run(`CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_sends(status, send_at)`);
+  run(`CREATE TABLE IF NOT EXISTS inbox_rules (
+    account_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    match_json TEXT NOT NULL,
+    actions_json TEXT NOT NULL,
+    since_uid INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, id)
+  )`);
+  run(`CREATE INDEX IF NOT EXISTS inbox_rules_account ON inbox_rules(account_id, position)`);
   ensureSearchIndex();
 }
 
@@ -260,6 +273,7 @@ function removeAccount(id) {
     run("DELETE FROM snooze WHERE account_id = ?", [id]);
     run("DELETE FROM signatures WHERE account_id = ?", [id]);
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
+    run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
@@ -326,6 +340,116 @@ function pathsForKey(accountId, folderKey) {
 
 function newMessageId() {
   return `m-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function newInboxRuleId() {
+  return `rule-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function decodeInboxRule(row) {
+  if (!row) return null;
+  let match = {};
+  let actions = {};
+  try {
+    match = JSON.parse(row.match_json || "{}");
+    actions = JSON.parse(row.actions_json || "{}");
+  } catch {
+    return null;
+  }
+  if (!match || typeof match !== "object" || !actions || typeof actions !== "object") return null;
+  const labels = Array.isArray(actions.addLabelIds) ? actions.addLabelIds.map((item) => String(item || "")).filter(Boolean) : [];
+  return {
+    id: row.id,
+    name: row.name || "",
+    enabled: row.enabled === 1,
+    editable: true,
+    unsupported: "",
+    sequence: Number(row.position) || 0,
+    sinceUid: Number(row.since_uid) || 0,
+    position: Number(row.position) || 0,
+    match: {
+      from: String(match.from || ""),
+      to: String(match.to || ""),
+      subject: String(match.subject || ""),
+      text: String(match.text || ""),
+      hasAttachment: match.hasAttachment === true ? true : match.hasAttachment === false ? false : null,
+    },
+    actions: {
+      markRead: actions.markRead === true,
+      star: actions.star === true,
+      archive: actions.archive === true,
+      trash: actions.trash === true,
+      moveToId: String(actions.moveToId || ""),
+      addLabelIds: labels,
+      stopProcessing: actions.stopProcessing !== false,
+    },
+  };
+}
+
+function listInboxRules(accountId) {
+  return all(
+    "SELECT * FROM inbox_rules WHERE account_id = ? ORDER BY position ASC, id ASC",
+    [accountId]
+  ).map(decodeInboxRule).filter(Boolean);
+}
+
+function inboxRuleById(accountId, id) {
+  if (!accountId || !id) return null;
+  return decodeInboxRule(get(
+    "SELECT * FROM inbox_rules WHERE account_id = ? AND id = ?",
+    [accountId, id]
+  ));
+}
+
+function countInboxRules(accountId) {
+  const row = get("SELECT COUNT(*) AS n FROM inbox_rules WHERE account_id = ?", [accountId]);
+  return row ? Number(row.n) || 0 : 0;
+}
+
+function nextInboxRulePosition(accountId) {
+  const row = get("SELECT COALESCE(MAX(position), 0) AS n FROM inbox_rules WHERE account_id = ?", [accountId]);
+  return (row ? Number(row.n) || 0 : 0) + 1;
+}
+
+function saveInboxRule(accountId, rule) {
+  const existing = get(
+    "SELECT since_uid, position FROM inbox_rules WHERE account_id = ? AND id = ?",
+    [accountId, rule.id]
+  );
+  const inbox = folderByWellKnown(accountId, "inbox");
+  const sinceUid = existing ? Number(existing.since_uid) || 0 : (inbox ? Number(inbox.uid_cursor) || 0 : 0);
+  const position = existing ? Number(existing.position) || 0 : nextInboxRulePosition(accountId);
+  const now = new Date().toISOString();
+  const matchJson = JSON.stringify(rule.match || {});
+  const actionsJson = JSON.stringify(rule.actions || {});
+  transaction(() => {
+    if (existing) {
+      run(
+        `UPDATE inbox_rules
+         SET name = ?, enabled = ?, match_json = ?, actions_json = ?, updated_at = ?
+         WHERE account_id = ? AND id = ?`,
+        [rule.name || "", rule.enabled ? 1 : 0, matchJson, actionsJson, now, accountId, rule.id]
+      );
+    } else {
+      run(
+        `INSERT INTO inbox_rules (
+          account_id, id, name, enabled, match_json, actions_json, since_uid, position, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [accountId, rule.id, rule.name || "", rule.enabled ? 1 : 0, matchJson, actionsJson, sinceUid, position, now]
+      );
+    }
+  });
+  return inboxRuleById(accountId, rule.id);
+}
+
+function deleteInboxRule(accountId, id) {
+  if (!inboxRuleById(accountId, id)) return false;
+  transaction(() => run("DELETE FROM inbox_rules WHERE account_id = ? AND id = ?", [accountId, id]));
+  return true;
+}
+
+function resetInboxRuleWatermarks(accountId) {
+  transaction(() => run("UPDATE inbox_rules SET since_uid = 0 WHERE account_id = ?", [accountId]));
 }
 
 function horizonWrite(report) {
@@ -1288,6 +1412,13 @@ module.exports = {
   setScheduledSendAt,
   jsonList,
   newMessageId,
+  newInboxRuleId,
+  listInboxRules,
+  inboxRuleById,
+  countInboxRules,
+  saveInboxRule,
+  deleteInboxRule,
+  resetInboxRuleWatermarks,
   WELL_TO_KEY,
   file: () => filePath,
 };
