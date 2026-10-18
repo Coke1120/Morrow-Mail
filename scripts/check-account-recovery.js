@@ -71,13 +71,13 @@ async function run() {
     retained();
 
     let completed = false;
-    oauth.signIn = async () => ({
-      provider: "microsoft", profile: "outlook", purpose: "imap",
+    oauth.signIn = async (provider, purpose) => ({
+      provider: "microsoft", profile: "outlook", purpose,
       email: "recovery@example.invalid", username: "recovery@example.invalid",
       imap: { host: "imap.example.invalid", port: 993, tls: true },
       smtp: { host: "smtp.example.invalid", port: 587, tls: true },
       refreshToken: "fixture-refresh", accessToken: "fixture-access", expiresAt: Date.now() + 3600000,
-      grantedScopes: require("../host/mail/oauth-config").SCOPES.microsoft,
+      grantedScopes: require("../host/mail/oauth-config")[purpose === "bundle" ? "BUNDLE_SCOPES" : "SCOPES"].microsoft,
       complete(result) { completed = result.ok; },
     });
     const mocks = {
@@ -134,6 +134,7 @@ async function run() {
     Object.assign(remote, savedRemote);
     secrets.deletePassword(accountId);
     secrets.deletePassword(`${accountId}:vacation`);
+    secrets.deletePassword(`${accountId}:bundle`);
     db.close();
     for (const [key, value] of Object.entries(env)) {
       if (value === undefined) delete process.env[key];

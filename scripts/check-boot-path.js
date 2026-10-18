@@ -14,6 +14,7 @@ const syntax = [
   "host/mail/remote.js",
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
+  "scripts/check-mail-calendar-consent.js",
   "host/update-auth.js",
   "host/updater.js",
   "host/mail/secrets.js",
@@ -2537,19 +2538,19 @@ assert.strictEqual(providerUi.calendarView({ api: false, reason: "error" }).erro
 assert.strictEqual(providerUi.calendarView({ api: false, reason: "no_account" }).showGrid, false);
 assert.strictEqual(
   needsAuth.status,
-  "Calendar needs a calendar grant. This view does not keep events of its own.",
+  "Enable calendar and mailbox features. Google uses one consent; Microsoft uses a separate feature consent after mail sign-in.",
 );
 assert.strictEqual(providerUi.calendarCopy("oauth_not_ready"), "Google Desktop OAuth is not configured, so calendar stays offline.");
 assert.strictEqual(providerUi.calendarCopy("no_account"), "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.");
 assert.strictEqual(
   providerUi.calendarCopy("needs_auth", "ada@example.com"),
-  "Calendar needs a calendar grant for ada@example.com. This view does not keep events of its own.",
+  "Enable calendar and mailbox features for ada@example.com. Google uses one consent; Microsoft uses a separate feature consent after mail sign-in.",
 );
 assert.deepStrictEqual(providerUi.calendarConnection(null, null), {
   connected: false,
   canGrant: false,
   reason: "Connect a Google or Microsoft mailbox first.",
-  label: "Grant calendar access",
+  label: "Enable mailbox features",
 });
 assert.deepStrictEqual(providerUi.calendarConnection({
   accounts: [{ id: "a", calendar: true }],
@@ -2557,11 +2558,11 @@ assert.deepStrictEqual(providerUi.calendarConnection({
   connected: true,
   canGrant: true,
   reason: "",
-  label: "Update calendar access",
+  label: "Refresh calendar",
 });
 assert.strictEqual(providerUi.calendarConnection({
   accounts: [{ id: "a", calendar: false, calendarReason: "needs_auth" }],
-}, { id: "a", platform: "imap", profile: "outlook" }).label, "Grant calendar access");
+}, { id: "a", platform: "imap", profile: "outlook" }).label, "Enable mailbox features");
 assert.strictEqual(providerUi.calendarConnection(null, {
   id: "a",
   platform: "imap",
@@ -2770,7 +2771,7 @@ for (const channel of [
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
 assert.ok(html.includes('id="rail-calendar"') && html.includes('id="calendar-panel"'));
-assert.ok(html.includes('id="calendar-grant"') && html.includes("Grant calendar access"));
+assert.ok(html.includes('id="calendar-grant"') && html.includes("Enable mailbox features"));
 assert.ok(html.includes('id="settings-ooo"') && html.includes("Allow Out of Office settings"));
 assert.ok(appJs.includes("mail:vacationGet") && appJs.includes("mail:vacationPut") && appJs.includes("mail:grantVacation"));
 assert.ok(appJs.includes("morrow-vacation") && appJs.includes("will not replace a different active Sieve script"));
@@ -5362,8 +5363,7 @@ async function checkProviderApi() {
       assert.strictEqual(missing.error.code, "scope_missing");
       assert.match(missing.error.message, /Mail\.ReadWrite/);
       assert.strictEqual(browser && browser.ok, false);
-      const partial = JSON.parse(secrets.getPassword("outlook-grant:organize"));
-      assert.strictEqual(oauthConfig.hasMarker(partial.grantedScopes, "microsoft", "organize"), false);
+      assert.strictEqual(secrets.getPassword("outlook-grant:bundle"), null);
       assert.strictEqual(secrets.getPassword("outlook-grant"), mailboxSecret);
       const stillImap = await sidecar.answer("mail:listProviderFolders", [{ accountId: "outlook-grant" }]);
       assert.strictEqual(stillImap.success, true);
@@ -5376,7 +5376,7 @@ async function checkProviderApi() {
       assert.strictEqual(granted.success, true);
       assert.strictEqual(granted.data.api, true);
       assert.strictEqual(browser && browser.ok, true);
-      const saved = JSON.parse(secrets.getPassword("outlook-grant:organize"));
+      const saved = JSON.parse(secrets.getPassword("outlook-grant:bundle"));
       assert.match(saved.grantedScopes, /mail\.readwrite/i);
       assert.strictEqual(secrets.getPassword("outlook-grant"), mailboxSecret);
       assert.strictEqual(sidecar.gateAccount(db.accountById("outlook-grant"), "organize").ok, true);
@@ -5390,9 +5390,9 @@ async function checkProviderApi() {
       const storedRequest = await sidecar.answer("mail:grantOrganize", [{ accountId: "outlook-grant" }]);
       assert.strictEqual(storedRequest.success, true);
       assert.strictEqual(storedRequest.data.api, true);
-      const requestedBlob = JSON.parse(secrets.getPassword("outlook-grant:organize"));
-      assert.strictEqual(requestedBlob.grantedScopes, oauthConfig.ORGANIZE_SCOPES.microsoft);
-      assert.ok(requestedBlob.grantedScopes.includes("Mail.ReadWrite"));
+      const requestedBlob = JSON.parse(secrets.getPassword("outlook-grant:bundle"));
+      assert.strictEqual(browser, null, "saved organize access must be reused without another consent");
+      assert.strictEqual(oauthConfig.hasMarker(requestedBlob.grantedScopes, "microsoft", "organize"), true);
       assert.strictEqual(secrets.getPassword("outlook-grant"), mailboxSecret);
     } finally {
       oauthMod.signIn = originalSignIn;
@@ -6910,7 +6910,7 @@ require("./check-bake-google-oauth").run();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 
-checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => {
+checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

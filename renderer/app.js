@@ -896,13 +896,13 @@ function calendarCopy(reason, email) {
   if (reason === "no_account") return "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.";
   if (reason === "error") return "Calendar could not be loaded.";
   const who = email ? ` for ${email}` : "";
-  return `Calendar needs a calendar grant${who}. This view does not keep events of its own.`;
+  return `Enable calendar and mailbox features${who}. Google uses one consent; Microsoft uses a separate feature consent after mail sign-in.`;
 }
 
 function calendarConnection(status, account, listed) {
   const grant = calendarGrantState(status, account);
   if (!account || grant.disabled) {
-    return { connected: false, canGrant: false, reason: grant.reason, label: "Grant calendar access" };
+    return { connected: false, canGrant: false, reason: grant.reason, label: "Enable mailbox features" };
   }
   const rows = status && Array.isArray(status.accounts) ? status.accounts : [];
   const row = rows.find((item) => item && item.id === account.id);
@@ -911,7 +911,7 @@ function calendarConnection(status, account, listed) {
     connected,
     canGrant: true,
     reason: connected ? "" : ((row && row.calendarReason) || "needs_auth"),
-    label: connected ? "Update calendar access" : "Grant calendar access",
+    label: connected ? "Refresh calendar" : "Enable mailbox features",
   };
 }
 
@@ -1133,7 +1133,7 @@ function vacationConfirm(kind, owner, options) {
     const scope = options && options.scope ? options.scope : "the provider settings permission";
     return {
       title: "Allow Out of Office settings",
-      body: "Allow Out of Office settings access for " + who + "?\n\nThe browser will request " + scope + ". Enabling replies still needs a separate Save confirmation. The existing mailbox connection stays if consent is incomplete.",
+      body: "Allow Out of Office settings access for " + who + "?\n\nThe browser will request " + scope + " as part of the calendar, organize, Out of Office, and inbox rules bundle" + (provider === "google" ? ", together with mail access" : "") + ". Enabling replies still needs a separate Save confirmation. The existing mailbox connection stays if consent is incomplete.",
       confirm: "Continue",
       cancel: "Cancel",
       needsName: false,
@@ -4341,7 +4341,7 @@ async function loadProviderFolders(gen) {
 async function grantOrganize() {
   const account = selectedAccount();
   if (!isLive(account)) throw new Error("Connect a Google or Microsoft mailbox first.");
-  showStatus("Waiting for the mail API consent…");
+  showStatus("Waiting for mailbox feature permissions…");
   const provider = folderProvider(account) === "gmail" ? "gmail" : "outlook";
   try {
     const saved = await call("mail:grantOrganize", { accountId: account.id });
@@ -5773,7 +5773,7 @@ function onAccountsUpdated(payload) {
         state.oauthPending = false;
         paintConnectPending();
         closeDialog("connect");
-        showStatus(`Connected ${view.email}. Downloading recent Inbox mail…`);
+        showStatus(`Connected ${view.email}. ${view.grantWarning || "Downloading recent Inbox mail…"}`);
       }
     }
   }
@@ -5842,14 +5842,16 @@ async function connectOAuth(provider) {
   if (state.oauthPending || state.connectPending) return;
   state.oauthPending = true;
   paintConnectPending();
-  setConnectStatus("Finish signing in in your browser. You can return here when it completes.");
+  setConnectStatus(provider === "microsoft"
+    ? "Sign in for mail in your browser, then approve calendar, organize, Out of Office, and inbox rules in a second consent."
+    : "Approve mail, calendar, organize, Out of Office, and inbox rules in one browser consent.");
   try {
     const view = await call("mail:addAccount", { provider, expectedAccountId: state.reconnectAccountId || undefined });
     if (!view || !view.id || !view.email) throw new Error("Sign-in did not return an account.");
     state.oauthPending = false;
     paintConnectPending();
     closeDialog("connect");
-    showStatus(`Connected ${view.email}. Downloading recent Inbox mail…`);
+    showStatus(`Connected ${view.email}. ${view.grantWarning || "Downloading recent Inbox mail…"}`);
     await loadAccounts(view.id);
   } catch (error) {
     const message = error.message || String(error);
@@ -7442,7 +7444,7 @@ async function grantVacationAccess() {
   }));
   if (!answer || !answer.ok) return;
   if (!settingsAccount() || settingsAccount().id !== account.id) throw new Error("Choose a connected mailbox.");
-  setOooStatus("Waiting for Out of Office settings consent…", false);
+  setOooStatus("Waiting for mailbox feature permissions…", false);
   await call("mail:grantVacation", { accountId: account.id });
   await loadVacation();
   setOooStatus("Out of Office settings permission saved.", false);
@@ -7777,7 +7779,7 @@ function openConnectFor(account) {
   if (state.oauthPending || state.connectPending) return;
   state.reconnectAccountId = account?.id || null;
   $("connect-title").textContent = account ? "Reconnect " + account.email : "Connect account";
-  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Optional grants are separate." : "";
+  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
   $("email").value = account?.email || "";
   $("email").readOnly = !!account;
   $("username").value = account?.imapUsername || "";
@@ -10539,10 +10541,10 @@ function showCalendar() {
 async function grantCalendar() {
   const account = calendarAccount();
   if (!account) throw new Error("Connect a Google or Microsoft mailbox first.");
-  showStatus("Waiting for the calendar consent…");
+  showStatus("Enabling mailbox features…");
   try {
     const saved = await call("calendar:connect", { accountId: account.id });
-    const outcome = grantApiOutcome(saved, "Calendar connected.", "Calendar needs a calendar grant.");
+    const outcome = grantApiOutcome(saved, "Calendar connected.", "Approve mailbox feature permissions in your browser.");
     if (!outcome.ok) throw new Error(outcome.message);
     showStatus(outcome.message);
   } finally {

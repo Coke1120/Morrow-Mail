@@ -28,6 +28,6 @@ Secrets: macOS Keychain service `morrow-mail`, or Windows DPAPI under `%LOCALAPP
 - Search: toolbar search reads a local full-text index of synced subject, from, and body (`mail:searchLocal`). The list filter still matches only subject, from, and snippet of messages already loaded. `mail:search` still asks the server
 - Agent triage and Email Brain skills: [docs/BRAIN_AGENT.md](docs/BRAIN_AGENT.md)
 - Packaging: electron-builder + electron-updater (unsigned alpha until SignPath approval). Windows and unsigned Mac feeds: Actions → **release** → Run workflow ([docs/PACKAGING.md](docs/PACKAGING.md)). [Code signing policy](CODE_SIGNING_POLICY.md)
-- OAuth: IMAP XOAUTH2 baseline, Gmail/Graph label side-car, a separate calendar grant, and a separate Out of Office grant. Google Desktop JSON stays out of git. See [docs/OAUTH.md](docs/OAUTH.md)
+- OAuth: One full Google consent; Microsoft uses Outlook IMAP/SMTP then one Graph consent for calendar, organize, Out of Office, and inbox rules. Google Desktop JSON stays out of git. See [docs/OAUTH.md](docs/OAUTH.md)
 - Out of Office: Settings → Out of Office writes Gmail vacation settings or Microsoft automatic replies after confirmation. IMAP tries ManageSieve on port 4190 and does not send local automatic replies
 - Bot bridge: default-off loopback API on `127.0.0.1:47831` for cached reads and inert draft proposals. See [docs/BOT_BRIDGE.md](docs/BOT_BRIDGE.md)
