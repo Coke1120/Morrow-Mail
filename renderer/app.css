@@ -390,6 +390,13 @@ button.icon-label svg { display: block; flex: none; }
   align-items: start;
 }
 
+#settings-ooo { grid-column: 1 / -1; }
+#ooo-fields { display: grid; gap: 8px; margin-top: 8px; }
+#ooo-fields label { display: grid; gap: 4px; font-size: 13px; }
+#ooo-fields textarea { min-height: 88px; resize: vertical; }
+#ooo-status.error { color: var(--danger); }
+#ooo-note, #ooo-help { margin-top: 8px; }
+
 #settings h3 {
   margin: 2px 0 8px;
   font-size: 12px;

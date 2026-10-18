@@ -32,6 +32,13 @@ const RULES_SCOPES = {
   microsoft: "offline_access User.Read MailboxSettings.ReadWrite Mail.Read",
 };
 
+// Vacation is its own consent. It does not include the IMAP or organize scopes,
+// so a partial grant cannot replace the mailbox token.
+const VACATION_SCOPES = {
+  google: "openid email https://www.googleapis.com/auth/gmail.settings.basic",
+  microsoft: "offline_access User.Read MailboxSettings.ReadWrite",
+};
+
 const MARKERS = {
   imap: {
     google: "https://mail.google.com/",
@@ -46,6 +53,10 @@ const MARKERS = {
     microsoft: "Calendars.ReadWrite",
   },
   rules: {
+    google: "https://www.googleapis.com/auth/gmail.settings.basic",
+    microsoft: "MailboxSettings.ReadWrite",
+  },
+  vacation: {
     google: "https://www.googleapis.com/auth/gmail.settings.basic",
     microsoft: "MailboxSettings.ReadWrite",
   },
@@ -150,6 +161,7 @@ function normalizePurpose(input) {
   const value = String(raw || "imap").toLowerCase();
   if (value === "calendar") return "calendar";
   if (value === "rules" || value === "filters" || value === "inbox-rules") return "rules";
+  if (value === "vacation" || value === "out-of-office" || value === "ooo") return "vacation";
   if (value === "organize" || value === "api" || value === "mail-api") return "organize";
   return "imap";
 }
@@ -160,6 +172,7 @@ function scopesFor(provider, purpose) {
   const name = normalizePurpose(purpose);
   if (name === "calendar") return CALENDAR_SCOPES[key];
   if (name === "rules") return RULES_SCOPES[key];
+  if (name === "vacation") return VACATION_SCOPES[key];
   if (name === "organize") return ORGANIZE_SCOPES[key];
   return SCOPES[key];
 }
@@ -169,7 +182,11 @@ function hasMarker(granted, provider, purpose) {
   const name = normalizePurpose(purpose);
   const marker = MARKERS[name] && MARKERS[name][key];
   if (!marker) return false;
-  return String(granted || "").split(/\s+/).filter(Boolean).includes(marker);
+  return String(granted || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((scope) => scope.replace(/^https:\/\/graph\.microsoft\.com\//i, ""))
+    .includes(marker);
 }
 
 function redirectPath(provider, purpose) {
@@ -190,7 +207,7 @@ function profileUrl(provider, purpose) {
   const key = providerKey(provider);
   if (!key) return "";
   const name = normalizePurpose(purpose);
-  if (key === "google" && (name === "calendar" || name === "rules")) {
+  if (key === "google" && (name === "calendar" || name === "rules" || name === "vacation")) {
     return "https://openidconnect.googleapis.com/v1/userinfo";
   }
   return ENDPOINTS[key].profile;
@@ -242,6 +259,7 @@ module.exports = {
   ORGANIZE_SCOPES,
   CALENDAR_SCOPES,
   RULES_SCOPES,
+  VACATION_SCOPES,
   MARKERS,
   ENDPOINTS,
   IMAP_PRESETS,

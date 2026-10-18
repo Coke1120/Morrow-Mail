@@ -570,6 +570,46 @@
             </button>
           </div>
         </section>
+        <section id="settings-ooo" aria-labelledby="settings-ooo-title">
+          <h3 id="settings-ooo-title">Out of Office</h3>
+          <p id="ooo-account" class="hint"></p>
+          <p id="ooo-note" class="hint"></p>
+          <div class="row">
+            <button type="button" class="ghost" id="ooo-refresh">Refresh provider settings</button>
+            <button type="button" class="ghost" id="ooo-grant" hidden>Allow Out of Office settings…</button>
+            <a id="ooo-provider-link" href="https://mail.google.com/mail/u/0/#settings/general" target="_blank" rel="noreferrer" hidden>Open provider settings</a>
+          </div>
+          <div id="ooo-fields" hidden>
+            <label for="ooo-mode">Automatic replies
+              <select id="ooo-mode">
+                <option value="disabled">Disabled</option>
+                <option value="always">Always enabled</option>
+                <option value="scheduled">Scheduled</option>
+              </select>
+            </label>
+            <div id="ooo-schedule" hidden>
+              <label for="ooo-start">Start <input id="ooo-start" type="datetime-local" /></label>
+              <label for="ooo-end">End <input id="ooo-end" type="datetime-local" /></label>
+            </div>
+            <label for="ooo-subject" id="ooo-subject-label">Subject prefix <input id="ooo-subject" type="text" maxlength="200" autocomplete="off" /></label>
+            <label for="ooo-message" id="ooo-message-label"><span id="ooo-message-caption">Reply message</span> <textarea id="ooo-message" rows="5" maxlength="10000"></textarea></label>
+            <label for="ooo-audience" id="ooo-audience-label">Reply audience
+              <select id="ooo-audience">
+                <option value="none">No external replies</option>
+                <option value="contacts">Contacts only</option>
+                <option value="all">All senders</option>
+              </select>
+            </label>
+            <label for="ooo-external" id="ooo-external-label">External reply message <textarea id="ooo-external" rows="5" maxlength="10000"></textarea></label>
+            <label class="check" id="ooo-domain-label" for="ooo-domain"><input id="ooo-domain" type="checkbox" /> Only my Google Workspace domain</label>
+            <p id="ooo-help" class="hint"></p>
+            <div class="row">
+              <button type="button" class="primary" id="ooo-save">Save and enable…</button>
+              <button type="button" class="ghost" id="ooo-disable">Disable automatic replies…</button>
+            </div>
+          </div>
+          <p id="ooo-status" role="status"></p>
+        </section>
       </div>
       <p class="hint">The API key stays in local AI config, the same store as Morrow Mail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
       </div>

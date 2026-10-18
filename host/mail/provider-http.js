@@ -82,6 +82,7 @@ async function apiJson(url, accessToken, options = {}) {
   try {
     response = await fetcher(url, {
       method: options.method || "GET",
+      redirect: options.redirect || "follow",
       headers: {
         accept: "application/json",
         ...(options.headers || {}),
@@ -96,6 +97,11 @@ async function apiJson(url, accessToken, options = {}) {
     throw error;
   }
   const text = typeof response.text === "function" ? await response.text() : "";
+  if (options.maxBytes && Buffer.byteLength(text) > options.maxBytes) {
+    const error = new Error("The provider returned an oversized response.");
+    error.code = "provider";
+    throw error;
+  }
   let json = {};
   if (text) {
     try {
