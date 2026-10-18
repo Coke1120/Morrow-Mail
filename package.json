@@ -1,11 +1,11 @@
 {
   "name": "morrow-mail",
   "version": "0.1.0-alpha.11",
-  "description": "Morrow Mail. Private Electron client.",
+  "description": "Morrow Mail. Open-source Electron mail client.",
   "main": "host/main.js",
   "private": true,
   "author": "Leo Ho",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "scripts": {
     "start": "electron .",
     "check": "node scripts/check-boot-path.js",
@@ -35,7 +35,7 @@
   "build": {
     "appId": "com.coke1120.morrow-mail",
     "productName": "Morrow Mail",
-    "copyright": "Copyright © Leo Ho",
+    "copyright": "Copyright © 2026 Leo Ho",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -45,6 +45,7 @@
       "renderer/**/*",
       "shared/**/*",
       "package.json",
+      "LICENSE",
       "!host/**/*.test.js",
       "!**/*.map",
       "!node_modules/motion/**",
