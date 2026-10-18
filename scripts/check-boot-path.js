@@ -29,6 +29,21 @@ const syntax = [
   "host/mail/sidecar.js",
   "host/brain.js",
   "host/agent.js",
+  "host/bot/constants.js",
+  "host/bot/json.js",
+  "host/bot/store.js",
+  "host/bot/text.js",
+  "host/bot/observe.js",
+  "host/bot/budget.js",
+  "host/bot/audit.js",
+  "host/bot/auth.js",
+  "host/bot/drafts.js",
+  "host/bot/reads.js",
+  "host/bot/service.js",
+  "host/bot/server.js",
+  "host/bot/manage.js",
+  "scripts/morrow-bot-call.js",
+  "scripts/check-bot-bridge.js",
   "renderer/preload.js",
   "renderer/app.js",
   "renderer/motion-ui.js",
@@ -62,7 +77,7 @@ for (const match of preload.matchAll(/"([a-zA-Z][\w-]*:[^"\n]{1,180})"/g)) {
 }
 const appJs = fs.readFileSync(path.join(root, "renderer/app.js"), "utf8");
 const used = new Set();
-for (const match of appJs.matchAll(/"((?:mail|app|host|morrow|config|aiDraftWrite|emailBrain|nativeAgent|calendar):[^"]+)"/g)) used.add(match[1]);
+for (const match of appJs.matchAll(/"((?:mail|app|host|morrow|config|aiDraftWrite|emailBrain|nativeAgent|calendar|bot):[^"]+)"/g)) used.add(match[1]);
 assert.ok(used.size >= 8, "renderer stopped calling mail IPC");
 for (const channel of used) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -6570,7 +6585,7 @@ async function checkInboxRules() {
 checkGoogleOauthAlias();
 require("./check-win-secrets").run();
 
-checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
+checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

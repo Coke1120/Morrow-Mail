@@ -1,0 +1,29 @@
+{
+  "apiVersion": "1.0",
+  "transport": {
+    "method": "POST",
+    "path": "/api/bot/v1/call",
+    "bind": "127.0.0.1",
+    "port": 47831,
+    "contentType": "application/json; charset=utf-8",
+    "accept": "application/json",
+    "authorization": "Bearer",
+    "capabilityHeader": "Tailscale-App-Capabilities",
+    "capability": "com.coke1120.morrow-mail/bot-access",
+    "capabilityValue": [{ "readBridge": true }],
+    "funnel": false,
+    "sending": false
+  },
+  "request": ["apiVersion", "requestId", "installationId", "operation", "params"],
+  "operations": {
+    "bridge.describe": [],
+    "accounts.list": [],
+    "mail.list_cached": ["accountId", "folder", "limit"],
+    "mail.search_cached": ["accountId", "query", "limit"],
+    "mail.get_cached": ["accountId", "messageId", "maxBodyBytes"],
+    "health.get": ["accountId"],
+    "agent.proposals.list": ["accountId", "limit"],
+    "draft.proposals.submit": ["accountId", "idempotencyKey", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"],
+    "draft.proposals.list": ["accountId", "limit"]
+  }
+}
