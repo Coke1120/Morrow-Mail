@@ -911,7 +911,7 @@ function finishOAuthPage(signed, okFlag, message) {
   try { signed.complete({ ok: okFlag === true, message: message || "" }); } catch { /* the browser already left */ }
 }
 
-async function connectOAuthAccount(providerInput) {
+async function connectOAuthAccount(providerInput, expectedAccountId) {
   const gen = ++oauthGeneration;
   let signed;
   try {
@@ -923,6 +923,13 @@ async function connectOAuthAccount(providerInput) {
   if (gen !== oauthGeneration) {
     finishOAuthPage(signed, false, "Sign-in canceled.");
     return fail("oauth_cancelled", "Sign-in canceled.");
+  }
+  if (expectedAccountId) {
+    const expected = db.accountById(expectedAccountId);
+    if (!expected || expected.email.toLowerCase() !== String(signed.email).toLowerCase()) {
+      finishOAuthPage(signed, false, "Sign-in did not match the mailbox being reconnected.");
+      return fail("account_mismatch", "Sign in with the mailbox named in Reconnect. Existing accounts and credentials are unchanged.");
+    }
   }
   const draft = {
     id: `oauth-${crypto.randomBytes(8).toString("hex")}`,
@@ -1043,6 +1050,10 @@ async function connectOAuthAccount(providerInput) {
 }
 
 async function connectAccount(params) {
+  if (params.expectedAccountId) {
+    const expected = db.accountById(params.expectedAccountId);
+    if (!expected || expected.email.toLowerCase() !== String(params.email || "").trim().toLowerCase()) return fail("account_mismatch", "Reconnect must use the selected mailbox address. Cached work is unchanged.");
+  }
   const profile = params && params.profile ? String(params.profile) : "custom";
   const email = params && typeof params.email === "string" ? params.email.trim() : "";
   const username = params && typeof params.username === "string" && params.username.trim()
@@ -1830,7 +1841,7 @@ function answer(channel, args) {
     return (async () => {
       try {
         const provider = (params && (params.provider || params.platform || params.type)) || "google";
-        const result = await connectOAuthAccount(provider);
+        const result = await connectOAuthAccount(provider, params && params.expectedAccountId);
         return result;
       } catch (error) {
         return fail("oauth", error instanceof Error ? error.message : String(error));

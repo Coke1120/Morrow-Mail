@@ -109,6 +109,7 @@
       <div class="side">
         <div id="side-mail" class="side-pane">
           <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled</button>
+          <section id="mail-ooo" class="mail-ooo" aria-label="Mailbox automatic replies" hidden><p id="mail-ooo-status" class="hint" role="status"></p><div class="row"><button type="button" class="ghost" id="mail-ooo-manage">Manage / disable</button><button type="button" class="ghost" id="mail-ooo-refresh">Refresh status</button></div></section>
           <nav id="folders" aria-label="Folders"></nav>
         <div id="updates" role="region" aria-label="Updates">
           <p id="product-name" class="product-name">Morrow Mail</p>
@@ -390,6 +391,7 @@
     <dialog id="connect" aria-labelledby="connect-title">
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
+        <p id="connect-recovery-note" class="hint"></p>
         <p class="hint">Sign in through your browser. Labels, inbox rules, and calendar each ask for their own consent.</p>
         <div class="row">
           <button type="button" class="primary" id="oauth-google">Continue with Google</button>
@@ -612,6 +614,13 @@
             <p id="ai-status" role="status"></p>
           </div>
           <h3 id="settings-mailbox-title">Mailbox</h3>
+          <label for="settings-account">Selected mailbox</label>
+          <select id="settings-account"></select>
+          <p id="settings-mailbox-note" class="hint"></p>
+          <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
+          <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
+          <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
+          <details id="account-recovery"><summary>Existing user? Recover access or find missing data</summary><p>If your mailbox is listed, reconnect the same address to keep its cached work. Do not remove the account to fix sign-in.</p><p>If this profile is empty, confirm you opened the expected app and operating-system user. Back up the old app’s data before changing folders. Morrow has not verified or migrated an older profile or its credentials. Reconnecting downloads available server mail; it does not recover unsynced local drafts from another profile.</p><p>For help, open Debug log from Settings and review a redacted support preview. Do not share passwords, OAuth files, or database files.</p></details>
           <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
           <div class="row mailbox-actions" role="group" aria-labelledby="settings-mailbox-title">
             <button type="button" class="ghost icon-label" id="inbox-rules-open">
