@@ -2455,3 +2455,28 @@ textarea { min-height: 140px; resize: vertical; }
 #compose-close-review { padding: 22px; width: min(560px, calc(100vw - 32px)); }
 #compose-close-review .row { flex-wrap: wrap; }
 #compose-status { margin: 8px 0; }
+
+/* Account context and queue management */
+.preserve-lines { white-space: pre-line; }
+.mail-ooo { margin: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; }
+.mail-ooo p { overflow-wrap: anywhere; }
+.mail-ooo .row { flex-wrap: wrap; }
+#scheduled-dialog { width: min(760px, calc(100vw - 32px)); }
+#scheduled li { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+#scheduled li > span { flex-basis: 100%; overflow-wrap: anywhere; }
+
+#support-dialog { width: min(840px, calc(100vw - 32px)); }
+#support-preview { width: 100%; min-height: 280px; font-family: monospace; font-size: 12px; }
+
+#compose-ai-tools, #compose-schedule-tools { margin-top: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+#compose details > summary { cursor: pointer; color: var(--accent-ink); }
+#compose details > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 4px; }
+
+#scheduled-dialog #scheduled { max-height: none; overflow: visible; padding-left: 0; }
+#side-mail > #scheduled-open { margin: 4px 8px; color: #fff; border-color: rgba(255,255,255,.3); }
+.mail-ooo { flex: 0 0 auto; color: #fff; border-color: rgba(255,255,255,.3); }
+.mail-ooo .hint, .mail-ooo button.ghost { color: #fff; }
+.mail-ooo button.ghost { border-color: rgba(255,255,255,.3); }
+.mail-ooo button.ghost:hover, #side-mail > #scheduled-open:hover { background: rgba(255,255,255,.12); }
+.settings-account-context { margin-top: 14px; padding: 12px; background: var(--hover); border-radius: 10px; }
+#side-mail > #scheduled-open, .mail-ooo button.ghost { background: transparent; }

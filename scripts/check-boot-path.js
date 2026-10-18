@@ -542,7 +542,7 @@ assert.ok(html.includes("Sends while the app is open"));
 assert.ok(!html.includes("Sample signatures"));
 assert.ok(!appJs.includes("Sample mailbox"));
 assert.ok(appJs.includes("No mailbox yet"));
-assert.ok(appJs.includes("No messages yet."));
+assert.ok(appJs.includes("Connect a mailbox to download messages here."));
 assert.ok(appJs.includes("mail:cancelScheduled"));
 assert.ok(functionSource(appJs, "connectButton").includes("Connect account"));
 assert.ok(functionSource(appJs, "renderReader").includes("connectButton()"));
@@ -555,7 +555,7 @@ assert.ok(css.includes(".signature-row") && css.includes("#signatures-status") &
 const updateView = extractFunction(appJs, "updateView");
 const idle = updateView({}, "0.1.0");
 assert.strictEqual(idle.version, "0.1.0");
-assert.strictEqual(idle.status, "Up to date.");
+assert.strictEqual(idle.status, "Updates have not been checked yet.");
 assert.strictEqual(idle.error, "");
 assert.strictEqual(idle.install, false);
 assert.strictEqual(idle.busy, false);
@@ -597,7 +597,7 @@ assert.ok(!rejectedToken.status.includes("available"));
 assert.ok(!appJs.includes("Private updates"));
 assert.ok(!appJs.includes("private repo"));
 assert.strictEqual(updateView(null, 12).version, "");
-assert.strictEqual(updateView(null, 12).status, "Up to date.");
+assert.strictEqual(updateView(null, 12).status, "Updates have not been checked yet.");
 assert.strictEqual(updateView({ downloading: true, progress: "nope" }, "").status, "Downloading 0%…");
 
 const prefRows = extractFunction(appJs, "prefRows");
@@ -839,7 +839,7 @@ assert.deepStrictEqual(scheduledRows({ records: [] }), []);
 assert.deepStrictEqual(scheduledRows([{ id: "a" }, null, { subject: "no id" }]).map((row) => row.id), ["a"]);
 const line = scheduledLine({ subject: "Hi", to: "ada@example.com", sendAt: "2026-10-17T09:30:00" });
 assert.ok(line.includes("Hi") && line.includes("ada@example.com"));
-assert.strictEqual(scheduledLine({ subject: "  ", to: "" }), "(no subject)");
+assert.strictEqual(scheduledLine({ subject: "  ", to: "" }), "(no subject) · Unknown time · Pending");
 assert.strictEqual(scheduledLine({ subject: "Hi", to: ["ada@example.com", "grace@example.com"] }).includes("ada@example.com, grace@example.com"), true);
 
 const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
@@ -855,13 +855,13 @@ assert.ok(main.includes('powerMonitor.on("suspend"'));
 assert.ok(main.includes('powerMonitor.on("resume"'));
 assert.ok(main.includes("stopIdle"));
 assert.ok(html.includes('id="settings-accounts"'));
-assert.ok(appJs.includes("Push: on") && appJs.includes("Push: polling"));
+assert.ok(appJs.includes("Push connected") && appJs.includes("Checking periodically"));
 assert.ok(appJs.includes("mail:setOnline"));
 const pushStatusLabel = extractFunction(appJs, "pushStatusLabel");
-assert.strictEqual(pushStatusLabel({ push: "push", platform: "imap" }), "Push: on");
-assert.strictEqual(pushStatusLabel({ push: "polling", platform: "imap" }), "Push: polling");
-assert.strictEqual(pushStatusLabel({ platform: "imap" }), "Push: polling");
-assert.strictEqual(pushStatusLabel(null), "Push: polling");
+assert.strictEqual(pushStatusLabel({ push: "push", platform: "imap" }), "Push connected");
+assert.strictEqual(pushStatusLabel({ push: "polling", platform: "imap" }), "Checking periodically");
+assert.strictEqual(pushStatusLabel({ platform: "imap" }), "Checking periodically");
+assert.strictEqual(pushStatusLabel(null), "Checking periodically");
 const remoteSrc = fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8");
 assert.ok(remoteSrc.includes("disableAutoIdle: true"));
 assert.ok(remoteSrc.includes("const IDLE_SOCKET_MS = 28 * 60 * 1000"));
@@ -957,7 +957,7 @@ for (const channel of ["mail:scheduleSend", "mail:listScheduled", "mail:cancelSc
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
-assert.ok(appJs.includes("Nothing scheduled."));
+assert.ok(appJs.includes("No pending or failed scheduled mail on this computer."));
 assert.ok(html.includes('id="schedule-preset"') && html.includes('id="schedule-at"') && html.includes('id="compose-schedule"') && html.includes('id="scheduled"'));
 assert.ok(html.includes("Schedule send") && html.includes("In 1 hour") && html.includes("Pick a time") && html.includes("Tomorrow morning"));
 assert.ok(css.includes("#scheduled") && css.includes("#compose textarea") && css.includes("max-height: calc(100vh - 32px)"));
@@ -1184,7 +1184,7 @@ assert.ok(!functionSource(appJs, "dismissCompose").includes("mail:send"));
 assert.ok(appJs.includes("requestComposeClose()") && html.includes('id="compose-close-review"'));
 assert.ok(html.includes('id="compose-quote"') && html.includes('id="compose-split-handle"') && html.includes('id="compose-quote-toggle"'));
 assert.ok(html.includes('id="compose-quote-collapse"') && html.includes("Hide quoted message") === false);
-assert.ok(html.includes("Show quoted message") && html.includes("The quoted original is still included when you save, send, or schedule."));
+assert.ok(html.includes("Show original preview") && html.includes("The quoted original is still included when you save, send, or schedule."));
 assert.ok(html.includes("M1 12s4-8 11-8") && html.includes("M17.94 17.94A10.07") && html.includes('points="6 9 12 15 18 9"'));
 assert.ok(css.includes('#compose[data-layout="wide"][data-quote="shown"] .compose-split'));
 assert.ok(css.includes('#compose[data-layout="narrow"][data-quote="shown"] .compose-quote'));
@@ -1583,7 +1583,7 @@ assert.ok(appJs.includes("nativeAgent:home:refreshTaxonomy") && appJs.includes("
 assert.ok(appJs.includes('source: "manual"') && appJs.includes('source: "open"'));
 assert.ok(appJs.includes("nativeAgent:chat") && appJs.includes("nativeAgent:memorySet") && appJs.includes("nativeAgent:chatHistory"));
 assert.ok(html.includes('id="rail-agent"') && html.includes('id="agent-sections"') && html.includes('id="agent-triage"'));
-assert.ok(html.includes(">Agent<") && html.includes("Home skills") && html.includes("Library skills") && html.includes("Only when I ask"));
+assert.ok(html.includes(">Agent<") && html.includes("Home skills") && html.includes("Library skills") && html.includes("Skills run on demand"));
 assert.ok(!html.includes("no agent loop"));
 assert.ok(!html.includes("Sample mail runs"));
 assert.ok(appJs.includes("No home skills.") && appJs.includes("No library skills."));
@@ -3529,7 +3529,7 @@ async function checkComposeMailbox() {
   };
   const fields = Object.fromEntries(Object.entries({
     "compose-to": "recipient@example.invalid", "compose-cc": "", "compose-bcc": "",
-    "compose-subject": "Reply", "compose-body": "Thanks", "schedule-preset": "1h", "schedule-at": "",
+    "compose-title": "Reply", "compose-subject": "Reply", "compose-body": "Thanks", "schedule-preset": "1h", "schedule-at": "",
   }).map(([id, value]) => [id, { value }]));
   const calls = [];
   const call = async (channel, payload) => { calls.push({ channel, payload }); return {draftId:"saved"}; };
@@ -6599,7 +6599,7 @@ checkGoogleOauthAlias();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 
-checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => {
+checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

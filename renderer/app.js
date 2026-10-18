@@ -3,6 +3,8 @@ const api = window.morrow;
 const state = {
   accounts: [],
   accountId: null,
+  settingsAccountId: null,
+  reconnectAccountId: null,
   folderId: null,
   emails: [],
   email: null,
@@ -70,6 +72,7 @@ let draftSeq = 0;
 let suggestGen = 0;
 let signatureGen = 0;
 let signatureEditId = "";
+let signatureEditorAccountId = "";
 let scheduledGen = 0;
 let sendTimer = null;
 let sendGen = 0;
@@ -125,7 +128,8 @@ function composeAccount() {
 }
 
 function signatureAccount() {
-  return $("compose").open ? composeAccount() : selectedAccount();
+  if (signatureEditorAccountId) return state.accounts.find(account => account.id === signatureEditorAccountId) || null;
+  return ($("settings").open ? settingsAccount() : composeAccount()) || settingsAccount();
 }
 
 function isLive(account) {
@@ -1394,13 +1398,14 @@ function scheduledRows(data) {
   return Array.isArray(data) ? data.filter((row) => row && row.id) : [];
 }
 
-function scheduledLine(row) {
+function scheduledLine(row, accounts = []) {
   const subject = String((row && row.subject) || "").trim() || "(no subject)";
   const to = Array.isArray(row && row.to) ? row.to.filter(Boolean).join(", ") : String((row && row.to) || "").trim();
   const when = row && row.sendAt ? new Date(row.sendAt) : null;
-  const time = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() : "";
+  const time = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")" : "Unknown time";
   const failed = row && row.status === "failed" ? (String(row.error || "").trim() || "Send failed.") : "";
-  return [subject, to, time, failed].filter(Boolean).join(" · ");
+  const account = accounts.find(item => item.id === row.accountId);
+  return [account ? account.email : (row && row.accountId), subject, to, time, row.status === "failed" ? "Failed — check Sent before retrying" : row.status === "sending" ? "Sending" : "Pending", failed].filter(Boolean).join(" · ");
 }
 
 function removalPayload(email, threaded) {
@@ -1919,7 +1924,7 @@ function renderBanner() {
 
 function syncRemove() {
   const button = $("remove");
-  const live = isLive(selectedAccount());
+  const live = isLive(settingsAccount());
   button.hidden = false;
   button.disabled = !live;
   button.title = live ? "Remove this account. Mail stays on the server." : "Connect a mailbox before removing one.";
@@ -1927,6 +1932,7 @@ function syncRemove() {
 
 function renderAccounts() {
   renderSettingsAccounts();
+  refreshMailVacation();
   const nav = $("folders");
   nav.replaceChildren();
   if (!state.accounts.length) {
@@ -1961,7 +1967,11 @@ function renderAccounts() {
       const note = document.createElement("p");
       note.className = "reauth";
       note.textContent = account.reauthReason;
-      nav.appendChild(note);
+      const reconnect = document.createElement("button");
+      reconnect.type = "button"; reconnect.className = "ghost";
+      reconnect.textContent = "Reconnect " + account.email;
+      reconnect.onclick = () => openConnectFor(account);
+      nav.append(note, reconnect);
     }
     if (expanded) {
     for (const folder of folderTree(foldersOf(account), accountDelimiter(account))) {
@@ -2514,7 +2524,7 @@ function bulkDropAction(target) {
 }
 
 function pushStatusLabel(account) {
-  return account && account.push === "push" ? "Push: on" : "Push: polling";
+  return account && account.needsReauth ? "Sign-in needed" : account && account.push === "push" ? "Push connected" : "Checking periodically";
 }
 
 function pushIcon() {
@@ -2547,6 +2557,7 @@ function pushIcon() {
 }
 
 function renderSettingsAccounts() {
+  paintSettingsMailbox();
   const list = $("settings-accounts");
   if (!list) return;
   const rows = state.accounts.map((account) => `${account.id}\t${pushStatusLabel(account)}`);
@@ -2591,10 +2602,11 @@ function syncStatusLabel(sync) {
 
 function redactDebugText(text) {
   return String(text || "")
+    .replace(/(["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|password|passwd|secret|authorization)["']?\s*[:=]\s*)(["'])(.*?)\2/gi, "$1[redacted]")
     .replace(/bearer\s+\S+/gi, "bearer [redacted]")
     .replace(/\b(access[_-]?token|refresh[_-]?token|api[_-]?key|password|passwd|secret|authorization)\b\s*[:=]\s*\S+/gi, "$1 [redacted]")
     .replace(/\bya29\.[A-Za-z0-9._-]+/g, "[redacted]")
-    .replace(/\bsk-[A-Za-z0-9]{10,}\b/g, "[redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{10,}\b/g, "[redacted]")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 400);
@@ -2707,36 +2719,54 @@ function finishLocalSync(kind, error) {
   paintSyncControl();
 }
 
-function paintLog(lines) {
-  const list = $("log-lines");
-  if (!list) return;
-  list.replaceChildren();
-  const rows = Array.isArray(lines) ? lines : [];
-  if (!rows.length) {
-    const item = document.createElement("li");
-    item.textContent = "No log lines yet.";
-    list.appendChild(item);
-    return;
-  }
-  for (const row of rows) {
-    const item = document.createElement("li");
-    const when = syncClock(row && row.at);
-    item.textContent = [when, row && row.source, redactDebugText(row && row.text)].filter(Boolean).join(" · ");
-    list.appendChild(item);
-  }
+let supportLogLines = [];
+function logLine(row) {
+  const at = new Date(row && row.at);
+  const when = Number.isFinite(+at) ? at.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")" : "Unknown time";
+  return [when, redactDebugText(row && row.source), redactDebugText(row && row.text)].filter(Boolean).join(" · ");
 }
-
+function paintLog(lines) {
+  supportLogLines = (Array.isArray(lines) ? lines : []).slice(-200);
+  const sources = $("log-source");
+  const previous = sources.value;
+  sources.replaceChildren();
+  for (const value of ["", ...new Set(supportLogLines.map(row => row.source || "host"))]) {
+    const option = document.createElement("option"); option.value = value; option.textContent = value ? redactDebugText(value) : "All sources"; sources.append(option);
+  }
+  sources.value = [...sources.options].some(row => row.value === previous) ? previous : "";
+  filterSupportLog();
+}
+function filteredSupportLog() {
+  const source = $("log-source").value;
+  return supportLogLines.filter(row => !source || (row.source || "host") === source);
+}
+function filterSupportLog() {
+  const list = $("log-lines"); list.replaceChildren();
+  const rows = filteredSupportLog();
+  for (const row of rows) { const item = document.createElement("li"); item.textContent = logLine(row); list.append(item); }
+  if (!rows.length) { const item = document.createElement("li"); item.textContent = "No recent session lines for this source."; list.append(item); }
+}
 async function refreshLog() {
   const status = $("log-status");
   try {
     const data = await call("host:getDebugLog", { limit: 200 });
     const lines = data && Array.isArray(data.lines) ? data.lines : [];
-    paintLog(lines.length ? lines : debugLines);
-    if (status) status.textContent = "";
+    paintLog([...lines, ...debugLines].sort((a,b) => Number(a.at) - Number(b.at)).slice(-200));
+    status.textContent = "Showing up to 200 recent host and renderer lines from this session.";
   } catch (error) {
     paintLog(debugLines);
-    if (status) status.textContent = error instanceof Error ? error.message : String(error);
+    status.textContent = "Host log unavailable; only recent renderer lines are shown. " + redactDebugText(error.message);
   }
+}
+function previewSupportLog() {
+  const header = "Morrow Mail " + appVersion + " · Support preview · " + new Date().toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")\nKnown credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. Up to 200 recent session lines; this is not a full history.\n\n";
+  $("support-preview").value = header + filteredSupportLog().map(logLine).join("\n");
+  $("support-copy-status").textContent = "Review the preview before copying.";
+  openDialog("support-dialog");
+}
+async function copySupportLog() {
+  try { await navigator.clipboard.writeText($("support-preview").value); $("support-copy-status").textContent = "Copied the preview. Review again before sharing; addresses may remain."; }
+  catch { $("support-copy-status").textContent = "Could not copy. Select and copy the preview manually."; $("support-preview").focus(); $("support-preview").select(); }
 }
 
 function showLog() {
@@ -2765,8 +2795,8 @@ function readNavCollapsed() {
     const stored = localStorage.getItem("morrow.navCollapsed");
     if (stored === "0") return false;
     if (stored === "1") return true;
-  } catch { /* keep the compact rail */ }
-  return true;
+  } catch { /* labels remain visible for a new profile */ }
+  return false;
 }
 
 const ROW_ICON = {
@@ -3110,10 +3140,10 @@ function renderList() {
     const empty = document.createElement("p");
     empty.className = "empty";
     if (!state.accounts.length && !state.query) {
-      empty.textContent = "No messages yet.";
+      empty.textContent = "Connect a mailbox to download messages here.";
     } else if (!state.emails.length) {
       empty.textContent = state.query ? `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.` : currentFolderSync()?.lastSuccessAt
-        ? "No messages in this folder." : "Mail has not been downloaded for this folder yet. Use Sync to download recent mail.";
+        ? "No downloaded messages in this folder. Sync checks recent mail; older mail may be outside the download window." : "Mail has not been downloaded for this folder yet. Use Sync to download recent mail.";
     } else {
       empty.textContent = "No loaded messages match that filter.";
     }
@@ -5180,10 +5210,7 @@ async function selectFolder(accountId, folderId) {
   const data = await loadList(live);
   if (live && !undoOpIds && !sendTimer) showStatus(syncStatusLabel(data && data.sync));
   if (previous !== accountId) await loadProviderFolders(accountGen);
-  const settingsDialog = $("settings");
-  if (previous !== accountId && settingsDialog && settingsDialog.open) {
-    loadVacation().catch((error) => setOooStatus(error instanceof Error ? error.message : String(error), true));
-  }
+  refreshMailVacation();
 }
 
 async function openMessage(emailId, focus) {
@@ -5213,8 +5240,8 @@ async function openMessage(emailId, focus) {
   if (!email.unread) return;
   try {
     await call("mail:markRead", { emailId, isRead: true });
-  } catch {
-    // The message is already on screen.
+  } catch (error) {
+    if (gen === openGen) showStatus("Message opened, but marking it read was not confirmed. Other clients may still show it unread. " + (error.message || String(error)), true);
   }
 }
 
@@ -5314,7 +5341,7 @@ async function connectImap() {
   paintConnectPending();
   setConnectStatus("Connecting…");
   try {
-    const view = await call("mail:connectImapSmtp", connectPayload());
+    const view = await call("mail:connectImapSmtp", { ...connectPayload(), expectedAccountId: state.reconnectAccountId || undefined });
     $("password").value = "";
     closeDialog("connect");
     showStatus(view && view.email ? `Connected ${view.email}. Downloading recent Inbox mail…` : "Connected.");
@@ -5329,7 +5356,7 @@ async function connectOAuth(provider) {
   paintConnectPending();
   setConnectStatus("Finish signing in in your browser. You can return here when it completes.");
   try {
-    const view = await call("mail:addAccount", { provider });
+    const view = await call("mail:addAccount", { provider, expectedAccountId: state.reconnectAccountId || undefined });
     if (!view || !view.id || !view.email) throw new Error("Sign-in did not return an account.");
     closeDialog("connect");
     showStatus(`Connected ${view.email}. Downloading recent Inbox mail…`);
@@ -5376,7 +5403,7 @@ function syncCompose() {
   for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked;
   $("compose-schedule").disabled = !live || locked || !!state.botDraftReview;
   $("compose-close").disabled = state.composePending || state.composeInitializing;
-  for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body", "signature", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
+  for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
   paintComposeNote();
 }
 
@@ -5409,6 +5436,8 @@ function syncScheduleFields() {
   const custom = $("schedule-preset").value === "custom";
   $("schedule-at").hidden = !custom;
   $("schedule-at-label").hidden = !custom;
+  const when = scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
+  $("schedule-note").textContent = (when ? "Scheduled time: " + when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + "). " : "Choose a future local time. ") + "Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.";
 }
 
 function renderScheduled(rows) {
@@ -5416,14 +5445,14 @@ function renderScheduled(rows) {
   list.replaceChildren();
   if (!rows.length) {
     const item = document.createElement("li");
-    item.textContent = "Nothing scheduled.";
+    item.textContent = "No pending or failed scheduled mail on this computer.";
     list.append(item);
     return;
   }
   for (const row of rows) {
     const item = document.createElement("li");
     const text = document.createElement("span");
-    text.textContent = scheduledLine(row);
+    text.textContent = scheduledLine(row, state.accounts);
     const cancel = document.createElement("button");
     cancel.type = "button";
     cancel.className = "ghost";
@@ -5432,10 +5461,17 @@ function renderScheduled(rows) {
     cancel.setAttribute("aria-label", `Cancel scheduled send ${subject}`);
     cancel.addEventListener("click", () => {
       cancelScheduled(row.id).catch((error) => {
-        showStatus(error instanceof Error ? error.message : String(error), true);
+        $("scheduled-status").textContent = error.message || String(error);
       });
     });
-    item.append(text, cancel);
+    cancel.disabled = row.status === "sending";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "ghost";
+    edit.textContent = "Edit/reschedule…";
+    edit.disabled = row.status === "sending";
+    edit.onclick = () => editScheduledMail(row).catch(error => { $("scheduled-status").textContent = error.message; });
+    item.append(text, cancel, edit);
     list.append(item);
   }
 }
@@ -5461,7 +5497,7 @@ async function fillSignatures(preserveBody) {
     showSignatureEmpty(error instanceof Error ? error.message : String(error));
     return;
   }
-  if (gen !== signatureGen) return;
+  if (gen !== signatureGen || state.composeQueued || state.composePending) return;
   const rows = signatureRows(pack);
   state.signatures = rows;
   if (!rows.length) {
@@ -5486,6 +5522,7 @@ async function fillSignatures(preserveBody) {
 }
 
 function onSignatureChange() {
+  if (state.composeQueued || state.composePending) return;
   const row = state.signatures.find((item) => String(item.id) === $("signature").value);
   const text = signaturePlain(row);
   $("compose-body").value = applySignature($("compose-body").value, state.signatureText, text);
@@ -5565,11 +5602,13 @@ function startSignatureEdit(row, isDefault) {
 async function loadSignatureEditor() {
   const accountId = signatureAccount()?.id;
   const pack = await call("mail:listSignatures", accountId ? { accountId } : {});
-  if ($("signatures").open) paintSignatures(pack);
+  if ($("signatures").open && signatureAccount()?.id === accountId) paintSignatures(pack);
   return pack;
 }
 
 function openSignatures() {
+  signatureEditorAccountId = ($("settings").open ? settingsAccount() : composeAccount())?.id || settingsAccount()?.id || "";
+  $("signatures-title").textContent = "Signatures · " + (signatureAccount()?.email || "No mailbox");
   clearSignatureForm();
   showSignatureStatus("");
   openDialog("signatures");
@@ -5657,6 +5696,7 @@ function resetDraftWrite() {
 }
 
 function paintDraft() {
+  if (state.composeQueued || state.composePending) return;
   const view = state.draftWrite;
   const pending = !!(view && view.pending);
   const cancel = $("ai-cancel");
@@ -5681,6 +5721,7 @@ function onDraftEvent(event) {
 }
 
 async function startDraftWrite() {
+  if (state.composeQueued || state.composePending || state.composeInitializing) return;
   const mode = $("ai-mode").value || "custom";
   const prompt = $("ai-prompt").value;
   const existing = $("compose-body").value;
@@ -6002,6 +6043,8 @@ async function openCompose(seed) {
   const write = document.querySelector(".ai-write");
   const openWrite = opensAiWrite(fields, state.prefs);
   if (write) write.classList.toggle("open", openWrite);
+  $("compose-ai-tools").open = openWrite;
+  $("compose-schedule-tools").open = false;
   if (openWrite) {
     const body = $("compose-body");
     body.setSelectionRange(0, 0);
@@ -6063,15 +6106,14 @@ async function resumeDraft(email) {
 
 async function loadScheduled() {
   const gen = scheduledGen += 1;
-  const account = composeAccount();
   try {
-    const data = await call("mail:listScheduled", account ? { accountId: account.id } : {});
+    const data = await call("mail:listScheduled", {});
     if (gen === scheduledGen) renderScheduled(scheduledRows(data));
   } catch (error) {
     if (gen !== scheduledGen) return;
     $("scheduled").replaceChildren();
     const item = document.createElement("li");
-    item.textContent = "Scheduled mail could not be loaded. ";
+    item.textContent = "Unknown — Scheduled mail could not be loaded. ";
     const retry = document.createElement("button");
     retry.type = "button";
     retry.className = "ghost";
@@ -6084,8 +6126,34 @@ async function loadScheduled() {
 
 async function cancelScheduled(id) {
   await call("mail:cancelScheduled", { id });
-  setComposeStatus("Scheduled send canceled. Start a new message to compose again.");
+  $("scheduled-status").textContent = "Scheduled delivery canceled.";
   await loadScheduled();
+}
+
+async function showScheduled() {
+  if ($("compose").open && !(await requestComposeClose())) return;
+  $("scheduled-status").textContent = "";
+  openDialog("scheduled-dialog");
+  await loadScheduled();
+}
+
+async function editScheduledMail(row) {
+  const answer = await askConfirm({ title: "Remove from queue and edit?", body: scheduledLine(row, state.accounts) + "\nThe queued delivery will be removed and saved as a local draft. Review it, then explicitly Schedule send again. A failed delivery may already have reached the recipient; check Sent before retrying.", confirm: "Remove and edit", cancel: "Keep queued" });
+  if (!answer || !answer.ok) return;
+  const draft = await call("mail:editScheduled", { id: row.id });
+  $("scheduled-status").textContent = "Removed from queue. A local draft is saved in Drafts.";
+  await loadScheduled();
+  await closeDialog("scheduled-dialog");
+  try {
+    await resumeDraft({ id: draft.emailId, accountId: draft.accountId });
+  } catch (error) {
+    openDialog("scheduled-dialog");
+    throw new Error("Removed from queue and saved in local Drafts, but the editor could not open. Resume it from Drafts. " + (error.message || String(error)));
+  }
+  $("schedule-preset").value = "custom";
+  $("schedule-at").value = vacationLocalValue(draft.sendAt);
+  syncScheduleFields();
+  setComposeStatus("Removed from queue; local draft saved. Review and choose a future time, then Schedule send.");
 }
 
 async function composeOperation(work) {
@@ -6112,8 +6180,9 @@ async function scheduleMail() {
     setComposeStatus("Scheduling…");
     await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
     state.composeQueued = true;
+    $("compose-title").textContent = "Scheduled receipt";
     state.composeBaseline = composeSnapshot();
-    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${account.email}. See Scheduled below. Close to start a new message.`);
+    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
     await loadScheduled();
   });
 }
@@ -6202,7 +6271,7 @@ async function sendMail() {
 }
 
 async function removeAccount() {
-  const account = selectedAccount();
+  const account = settingsAccount();
   if (!isLive(account)) return;
   const label = account.email || account.id;
   if (!window.confirm(`Remove ${label} from Morrow Mail? Messages stay on the server.`)) return;
@@ -6409,7 +6478,7 @@ function wireQuoteSplit() {
 function updateView(snapshot, version) {
   const snap = snapshot && typeof snapshot === "object" ? snapshot : {};
   const current = typeof version === "string" ? version : "";
-  let status = "Up to date.";
+  let status = snap.lastCheckedAt ? "Up to date." : "Updates have not been checked yet.";
   let install = false;
   let busy = false;
   const error = snap.error ? String(snap.error) : "";
@@ -6435,18 +6504,23 @@ function updateView(snapshot, version) {
   } else if (snap.enabled === false) {
     status = "Updater is off until the app is packaged.";
   }
-  return { version: current, status: status, error: error, install: install, busy: busy };
+  return { version: current, status: status, error: error, install: install, busy: busy, lastCheckedAt: snap.lastCheckedAt || null };
 }
 
 function paintUpdate(view) {
-  $("version").textContent = view.version ? "Version " + view.version : "";
-  const status = $("update-status");
-  status.textContent = view.error ? view.status + " " + view.error : view.status;
-  status.classList.toggle("error", !!view.error);
-  $("update-check").disabled = !!view.busy;
-  const install = $("update-install");
-  install.hidden = !view.install;
-  if (!view.install) install.disabled = false;
+  for (const prefix of ["", "about-"]) {
+    $(prefix + "version").textContent = view.version ? "Version " + view.version : "";
+    const status = $(prefix + "update-status");
+    status.textContent = (view.error ? view.status + " " + view.error : view.status) + (view.lastCheckedAt ? " Last checked " + new Date(view.lastCheckedAt).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : "");
+    status.classList.toggle("error", !!view.error);
+    $(prefix + "update-check").disabled = !!view.busy;
+    const install = $(prefix + "update-install");
+    install.hidden = !view.install;
+    install.textContent = "Restart and install";
+    install.disabled = !!view.busy;
+  }
+  $("about-update-quit").hidden = !view.install;
+  $("update-quit-note").hidden = !view.install;
 }
 
 function showUpdate(snapshot) {
@@ -6696,7 +6770,8 @@ async function loadSettings() {
     status.classList.add("error");
   }
   loadAiSettings();
-  loadVacation().catch((error) => setOooStatus(error instanceof Error ? error.message : String(error), true));
+  if (!oooDirty()) loadVacation().catch((error) => setOooStatus(error instanceof Error ? error.message : String(error), true));
+  loadSettingsCapabilities();
   loadBotAccess().catch((error) => setBotStatus(error instanceof Error ? error.message : String(error), true));
 }
 
@@ -6742,13 +6817,14 @@ function syncVacationFields() {
 
 function paintVacation(data) {
   vacationCache = data && data.accountId ? data : null;
-  const account = selectedAccount();
+  if (vacationCache) rememberVacation(vacationCache);
+  const account = settingsAccount();
   const who = $("ooo-account");
   if (who) who.textContent = account && isLive(account) ? (account.email || account.id) : "Choose a connected mailbox.";
   const view = vacationView(vacationCache);
   const note = $("ooo-note");
   if (note) {
-    note.textContent = view.note || "Server-managed automatic replies continue while Morrow is closed. This screen does not send mail.";
+    note.textContent = view.note || "Enabled automatic replies run on your mail server, including while Morrow is closed.";
   }
   const grant = $("ooo-grant");
   if (grant) grant.hidden = !view.showGrant;
@@ -6761,7 +6837,7 @@ function paintVacation(data) {
   const fields = $("ooo-fields");
   if (fields) fields.hidden = !view.showForm;
   const help = $("ooo-help");
-  if (help) help.textContent = view.help || "";
+  if (help) help.textContent = (view.help || "") + " Input times use " + Intl.DateTimeFormat().resolvedOptions().timeZone + ".";
   if (!vacationCache || !vacationCache.settings || !view.showForm) return;
   const settings = vacationCache.settings;
   $("ooo-mode").value = settings.mode || "disabled";
@@ -6797,7 +6873,7 @@ function vacationFormBody(kind) {
 }
 
 async function loadVacation() {
-  const account = selectedAccount();
+  const account = settingsAccount();
   if (!account || !isLive(account)) {
     vacationCache = null;
     paintVacation(null);
@@ -6805,9 +6881,13 @@ async function loadVacation() {
     return;
   }
   setOooStatus("Contacting the mail provider…", false);
+  const gen = ++settingsVacationGen;
   const data = await call("mail:vacationGet", { accountId: account.id });
-  if (!selectedAccount() || selectedAccount().id !== account.id) return;
+  if (gen !== settingsVacationGen) return;
+  if (!data || data.accountId !== account.id) throw new Error("Out of Office response did not match this mailbox.");
+  if (!settingsAccount() || settingsAccount().id !== account.id) return;
   paintVacation(data);
+  oooBaseline = oooSnapshot();
   setOooStatus("", false);
 }
 
@@ -6838,7 +6918,7 @@ async function refreshVacation() {
 }
 
 async function saveVacation(kind) {
-  const account = selectedAccount();
+  const account = settingsAccount();
   if (!account || !isLive(account) || !vacationCache || vacationCache.accountId !== account.id) {
     throw new Error("Choose a connected mailbox.");
   }
@@ -6852,25 +6932,26 @@ async function saveVacation(kind) {
     provider: vacationCache.provider,
   }));
   if (!answer || !answer.ok) return;
-  const current = selectedAccount();
+  const current = settingsAccount();
   if (!current || current.id !== account.id || !vacationCache || vacationCache.accountId !== account.id) {
     throw new Error("Choose a connected mailbox.");
   }
   setOooStatus("Contacting the mail provider…", false);
   const saved = await call("mail:vacationPut", body);
   paintVacation(saved);
+  oooBaseline = oooSnapshot();
   setOooStatus("Saved on the provider.", false);
 }
 
 async function grantVacationAccess() {
-  const account = selectedAccount();
+  const account = settingsAccount();
   if (!account || !isLive(account)) throw new Error("Choose a connected mailbox.");
   const answer = await askConfirm(vacationConfirm("grant", account.email || account.id, {
     provider: vacationProvider(account),
     scope: vacationCache && vacationCache.requiredScope,
   }));
   if (!answer || !answer.ok) return;
-  if (!selectedAccount() || selectedAccount().id !== account.id) throw new Error("Choose a connected mailbox.");
+  if (!settingsAccount() || settingsAccount().id !== account.id) throw new Error("Choose a connected mailbox.");
   setOooStatus("Waiting for Out of Office settings consent…", false);
   await call("mail:grantVacation", { accountId: account.id });
   await loadVacation();
@@ -6978,8 +7059,150 @@ async function savePref(row) {
 }
 
 function openSettings() {
+  if (!state.settingsAccountId) state.settingsAccountId = state.accountId;
+  paintSettingsMailbox();
   openDialog("settings");
   loadSettings();
+}
+
+const mailVacation = new Map();
+const mailVacationPending = new Set();
+function vacationSummary(data, now = Date.now()) {
+  if (!data) return "Out of Office: unknown";
+  if (data.requiresReconnect) return "Out of Office: permission needed to check";
+  if (!data.supported) return "Out of Office: unavailable here — manage on your server";
+  if (data.scheduleWarning) return "Out of Office: status needs review — " + data.scheduleWarning;
+  const settings = data.settings;
+  if (!settings) return "Out of Office: unknown";
+  if (settings.mode === "disabled") return "Out of Office: off";
+  if (settings.mode === "always") return "Out of Office: on until disabled";
+  if (settings.mode !== "scheduled") return "Out of Office: unknown";
+  const day = 86400000;
+  let start = Date.parse(settings.start), end = Date.parse(settings.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return "Out of Office: scheduled — dates unavailable; manage to review";
+  if (data.provider === "imap") { start = Math.floor(start / day) * day; end = Math.ceil(end / day) * day; }
+  const format = time => Number.isFinite(time) ? (data.provider === "imap" ? new Date(time).toISOString().slice(0, 10) + " 00:00 UTC" : new Date(time).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")") : "unknown";
+  const phase = Number.isFinite(end) && now >= end ? "ended" : Number.isFinite(start) && now < start ? "scheduled" : "scheduled / active within these dates";
+  return "Out of Office: " + phase + " · " + format(start) + " → " + format(end);
+}
+function rememberVacation(data) {
+  mailVacation.set(data.accountId, { data, at: Date.now() });
+  paintMailVacation();
+}
+function paintMailVacation() {
+  const account = selectedAccount();
+  const box = $("mail-ooo");
+  if (!box) return;
+  box.hidden = !account;
+  if (!account) return;
+  const entry = mailVacation.get(account.id);
+  $("mail-ooo-status").textContent = account.email + " · " + (entry?.error ? "Out of Office: unknown — refresh to retry" : vacationSummary(entry?.data)) + (entry?.at ? " · Checked " + new Date(entry.at).toLocaleString() : "");
+  $("mail-ooo-manage").textContent = "Manage / disable";
+}
+async function refreshMailVacation(force = false) {
+  const account = selectedAccount();
+  paintMailVacation();
+  if (!account || mailVacationPending.has(account.id)) return;
+  const previous = mailVacation.get(account.id);
+  if (!force && previous && Date.now() - previous.at < 60000) return;
+  mailVacationPending.add(account.id);
+  try {
+    const data = await call("mail:vacationGet", { accountId: account.id });
+    if (!data || data.accountId !== account.id) throw new Error("Mailbox did not match");
+    rememberVacation(data);
+  } catch (error) {
+    mailVacation.set(account.id, { error: true, at: Date.now() });
+    paintMailVacation();
+  } finally { mailVacationPending.delete(account.id); }
+}
+async function manageMailVacation() {
+  const id = state.accountId;
+  if (!id) return;
+  openSettings();
+  if (settingsAccount()?.id !== id && !(await changeSettingsMailbox(id))) return;
+  $("settings-ooo").scrollIntoView({ block: "start" });
+  $("ooo-refresh").focus();
+}
+
+let settingsVacationGen = 0;
+let settingsCapabilityGen = 0;
+let oooBaseline = "";
+function settingsAccount() {
+  return state.accounts.find(account => account.id === (state.settingsAccountId || state.accountId)) || null;
+}
+function oooSnapshot() {
+  return JSON.stringify(["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience", "ooo-domain"].map(id => {
+    const el = $(id); return el ? (el.type === "checkbox" ? el.checked : el.value) : "";
+  }));
+}
+function oooDirty() { return !!oooBaseline && oooSnapshot() !== oooBaseline; }
+function paintSettingsMailbox() {
+  const select = $("settings-account");
+  if (!select) return;
+  if (state.settingsAccountId && !state.accounts.some(a => a.id === state.settingsAccountId)) state.settingsAccountId = null;
+  const account = settingsAccount();
+  select.replaceChildren(...state.accounts.map(a => { const option = document.createElement("option"); option.value = a.id; option.textContent = a.email; return option; }));
+  select.value = account?.id || "";
+  select.disabled = !account;
+  $("settings-reconnect").disabled = !account;
+  $("settings-reconnect").textContent = account ? "Reconnect " + account.email : "Reconnect mailbox";
+  $("settings-mailbox-note").textContent = account ? "Signatures, rules, Out of Office, and Remove apply to " + account.email + ". Cached mail and local work remain when you reconnect this address." : "Connect an account to configure mailbox features.";
+  syncRemove();
+}
+async function changeSettingsMailbox(id) {
+  const previous = settingsAccount()?.id;
+  if (state.busy) { $("settings-account").value = previous || ""; return false; }
+  if (id === previous) return true;
+  if (oooDirty()) {
+    const answer = await askConfirm({ title: "Change Settings mailbox?", body: "Discard unsaved Out of Office edits for " + settingsAccount().email + "? Saved provider settings are unchanged.", confirm: "Discard edits", cancel: "Keep editing" });
+    if (!answer?.ok) { $("settings-account").value = previous || ""; return false; }
+  }
+  state.settingsAccountId = id;
+  ++settingsVacationGen;
+  oooBaseline = "";
+  paintVacation(null);
+  paintSettingsMailbox();
+  loadSettingsCapabilities();
+  await loadVacation().catch(error => setOooStatus(error.message, true));
+  return true;
+}
+async function loadSettingsCapabilities() {
+  const gen = ++settingsCapabilityGen;
+  const account = settingsAccount();
+  const node = $("settings-capabilities");
+  node.textContent = account ? "Checking feature permissions…" : "No mailbox selected.";
+  if (!account) return;
+  try {
+    const status = await call("mail:oauthStatus");
+    if (gen !== settingsCapabilityGen || settingsAccount()?.id !== account.id) return;
+    const grants = status?.accounts?.find(row => row.id === account.id);
+    const local = account.authKind !== "oauth2";
+    const permission = key => grants ? (grants[key] ? "Permission granted" : "Additional consent needed") : "Unknown — refresh permissions";
+    node.textContent = ["Mail: " + (account.needsReauth ? "Reconnect needed" : "Configured; connection health is shown in Sync"), "Signatures: saved on this computer", "Labels/folders: " + (local ? "IMAP folders" : permission("organize")), "Rules: " + (local ? "Local; runs on new downloads while open" : permission("rules")), "Calendar: " + (local ? "Requires Google or Microsoft browser sign-in" : permission("calendar")), "Out of Office: " + (local ? "ManageSieve support checked below" : permission("vacation"))].join("\n");
+  } catch (error) { if (gen === settingsCapabilityGen) node.textContent = "Permissions unknown. Refresh permissions to retry. " + error.message; }
+}
+function openConnectFor(account) {
+  if (state.oauthPending || state.connectPending) return;
+  state.reconnectAccountId = account?.id || null;
+  $("connect-title").textContent = account ? "Reconnect " + account.email : "Connect account";
+  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Optional grants are separate." : "";
+  $("email").value = account?.email || "";
+  $("email").readOnly = !!account;
+  $("username").value = account?.imapUsername || "";
+  $("password").value = "";
+  if (account) {
+    $("profile").value = account.imapSmtpProfile || "custom";
+    const custom = account.imapSmtpCustom;
+    if (custom) for (const kind of ["imap", "smtp"]) {
+      $(kind + "-host").value = custom[kind].host;
+      $(kind + "-port").value = custom[kind].port;
+      $(kind + "-tls").checked = custom[kind].tls;
+    }
+    syncCustomFields();
+  }
+  setConnectStatus("");
+  paintConnectPending();
+  openDialog("connect");
 }
 
 function brainSections(snapshot) {
@@ -7468,7 +7691,17 @@ async function grantInboxRules() {
   } finally { setInboxRulesBusy(false); }
 }
 
-function openInboxRules() {
+async function openInboxRules() {
+  const id = settingsAccount()?.id || "";
+  try {
+    if (id !== inboxRulesAccountId) await changeInboxRulesAccount(id);
+  } catch (error) {
+    $("settings-status").textContent = "Could not load rules for " + (settingsAccount()?.email || "this mailbox") + ". " + (error.message || String(error));
+    $("settings-status").classList.add("error");
+    $("settings-status").scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (id !== inboxRulesAccountId) return;
   closeDialog("settings");
   if (state.view !== "brain") openBrain("rules");
   else showBrainPane("rules");
@@ -8280,15 +8513,17 @@ function proposalLine(proposal) {
 }
 
 function runModeLabel(row) {
-  let text = "";
-  if (row && (row.schedule === "paused" || row.paused === true)) text = "Paused. It runs only when you ask.";
-  else if (row && (row.schedule === "interval" || row.kind === "interval") && Number(row.everyMinutes) > 0) {
-    text = "Every " + Number(row.everyMinutes) + " min. Nothing is sent.";
-  } else if (row && (row.schedule === "cron" || row.kind === "cron") && row.cron) {
-    text = "Cron " + String(row.cron) + ". Nothing is sent.";
-  } else if (row && row.schedule === "disabled") text = "Only when I ask. Auto-run is off.";
-  else if (row && row.runMode === "on_demand") text = "Only when I ask.";
-  if (text && row && row.lastError) return text + " Last run: " + String(row.lastError);
+  let text = "On demand. Auto-run is off.";
+  const paused = row && (row.schedule === "paused" || row.paused === true);
+  if (paused) text = "Paused. No scheduled runs; Run still works on demand.";
+  else if (row && row.schedule !== "disabled" && (row.schedule === "interval" || row.kind === "interval") && Number(row.everyMinutes) > 0) text = "Scheduled · Every " + Number(row.everyMinutes) + " min.";
+  else if (row && row.schedule !== "disabled" && (row.schedule === "cron" || row.kind === "cron") && row.cron) text = "Scheduled · Cron " + String(row.cron) + ".";
+  if (text.startsWith("Scheduled")) {
+    const next = row.nextRunAt && new Date(row.nextRunAt);
+    text += next && Number.isFinite(+next) ? " Next run: " + next.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : " Next run not available.";
+    text += " Runs while Morrow is open; a missed run fires once on relaunch. Drafts need review and Send; filing needs confirmation.";
+  }
+  if (row && row.lastError) text += " Last run: " + String(row.lastError);
   return text;
 }
 
@@ -8366,6 +8601,45 @@ function setSkillStatus(text, isError) {
   }
 }
 
+function proposalContext(proposal, kind) {
+  const account = state.accounts.find(row => row.id === proposal.accountId);
+  const who = account?.email || proposal.accountId || "Unknown — verified when opening source";
+  const source = proposal.subject || proposal.messageId || "Missing source";
+  const filing = folderProvider(account) === "gmail" ? "Add Gmail label when granted, otherwise move to IMAP folder" : "Move message to folder";
+  const action = kind === "draft" ? "Review reply draft" : filing;
+  const target = kind === "draft" ? "Recipients: verified from source when reviewed" : "Destination: " + (proposal.labelName || "Unknown");
+  return "Account: " + who + "\nSource: " + source + (proposal.messageId ? " · " + proposal.messageId : "") + "\nAction: " + action + "\n" + target + "\nState: " + (proposal.status || "Pending review") + (kind === "draft" ? " · Opening does not send or schedule." : " · Requires provider confirmation.");
+}
+async function describeDraftSource(node, draft) {
+  if (!draft.messageId) { node.textContent += "\nSource missing — request a new draft from a message."; return; }
+  try {
+    const data = await call("mail:openEmail", { emailId: draft.messageId });
+    const source = data?.email;
+    if (!source || (draft.accountId && source.accountId !== draft.accountId)) throw new Error("Source unavailable or mailbox mismatch");
+    const account = state.accounts.find(row => row.id === source.accountId);
+    if (!account) throw new Error("Mailbox unavailable");
+    const seed = composeSeed(source, "reply", account.email);
+    node.textContent = proposalContext({ ...draft, accountId: source.accountId, subject: source.subject }, "draft").replace("Recipients: verified from source when reviewed", "To: " + seed.to + (seed.cc ? " · Cc: " + seed.cc : ""));
+  } catch { node.textContent += "\nSource unavailable — review is blocked until it can be verified."; }
+}
+async function refreshAiSetupState() {
+  let configured = null;
+  try { const result = await api.invoke("host:aiGetConfig"); configured = (result?.data || result)?.hasKey === true; } catch { /* unknown stays actionable */ }
+  for (const space of ["agent", "brain"]) {
+    const box = $(space + "-setup");
+    if (!box) continue;
+    box.hidden = configured === true && state.accounts.length > 0;
+    $(space + "-setup-copy").textContent = !state.accounts.length ? "Connect a mailbox to use mail context. Cached profile and preferences remain available." : configured === false ? "Set up AI to ask questions and run skills. Cached content and local editing remain available." : "AI setup status is unknown. Open AI settings to check configuration.";
+    $(space + "-setup-ai").hidden = configured === true;
+    $(space + "-setup-connect").hidden = state.accounts.length > 0;
+  }
+}
+function openAiSetup() {
+  openSettings();
+  $("settings-ai-title").scrollIntoView({ block: "start" });
+  $("ai-base").focus();
+}
+
 function followButton(follow, draft) {
   const button = document.createElement("button");
   button.type = "button";
@@ -8411,7 +8685,9 @@ function paintSkillBlocks(root, data) {
     const wrap = document.createElement("div");
     wrap.className = "skill-block";
     const line = document.createElement("p");
-    line.textContent = draft.subject || "Draft reply";
+    line.textContent = proposalContext(draft, "draft");
+    line.className = "preserve-lines";
+    describeDraftSource(line, draft);
     wrap.appendChild(line);
     const row = document.createElement("div");
     row.className = "row";
@@ -8445,16 +8721,18 @@ function paintProposals(root, proposals, append) {
     const wrap = document.createElement("div");
     wrap.className = "proposal-row";
     const line = document.createElement("p");
-    line.textContent = proposalLine(proposal) || "Proposed move";
+    line.textContent = proposalContext(proposal, "filing");
+    line.className = "preserve-lines";
     wrap.appendChild(line);
     const actions = document.createElement("div");
     actions.className = "row";
     const confirm = document.createElement("button");
     confirm.type = "button";
     confirm.className = "primary";
-    confirm.textContent = "Confirm move";
+    confirm.textContent = "Review filing…";
     confirm.addEventListener("click", () => {
       confirmProposal(proposal).then((data) => {
+        if (!data) return;
         wrap.remove();
         if (brainIsOpen()) setSkillStatus((data && data.detail) || "Move confirmed.", false);
       }).catch((error) => {
@@ -8961,6 +9239,8 @@ async function removeBrainSkill(row) {
 }
 
 async function confirmProposal(proposal) {
+  const answer = await askConfirm({ title: "Confirm provider filing", body: proposalContext(proposal, "filing") + "\nThis changes mail on your server. It is separate from marking a local todo done.", confirm: "Apply filing", cancel: "Cancel" });
+  if (!answer?.ok) return null;
   const data = await call("emailBrain:confirmProposal", { proposalId: proposal && proposal.id });
   if (data && data.accepted === false) throw new Error(data.error || "That move was not applied.");
   showStatus((data && data.detail) || "Move confirmed.", false);
@@ -9102,7 +9382,7 @@ function paintThread() {
   if (!agentTurns.length) {
     const empty = document.createElement("p");
     empty.className = "agent-empty hint";
-    empty.textContent = "No messages yet. Ask Morrow Mail, or run a skill. Nothing is sent.";
+    empty.textContent = "No Agent conversations saved on this computer. Ask a question or run a skill.";
     root.appendChild(empty);
     return;
   }
@@ -9183,7 +9463,8 @@ function agentTodoCard(item) {
   const done = document.createElement("button");
   done.type = "button";
   done.className = "ghost";
-  done.textContent = "Done";
+  done.textContent = "Mark todo done";
+  done.title = "Updates this Agent list only; does not archive, delete, mark read, or reply.";
   done.addEventListener("click", () => {
     updateTodo(messageId, "done").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
   });
@@ -9195,7 +9476,8 @@ function agentTodoCard(item) {
     updateTodo(messageId, "dismissed").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
   });
   actions.append(done, dismiss);
-  card.appendChild(actions);
+  const note = document.createElement("p"); note.className = "hint"; note.textContent = "Done and Dismiss only update this local Agent list. They do not archive, delete, or reply.";
+  card.append(actions, note);
   return card;
 }
 
@@ -9359,6 +9641,7 @@ function markRail(view) {
 }
 
 function showPrimary(view, id) {
+  if (view === "agent" || view === "brain") refreshAiSetupState();
   const swap = state.view !== view;
   if (view !== "agent") stopAgentPoll();
   markRail(view);
@@ -10063,7 +10346,12 @@ function wire() {
   });
   $("rail-agent").addEventListener("click", showAgent);
   $("rail-brain").addEventListener("click", () => openBrain("profile"));
-  $("agent-manage-skills").addEventListener("click", () => openBrain("skills"));
+  $("agent-manage-skills").addEventListener("click", () => { $("brain-return-agent").hidden = false; openBrain("skills"); });
+  $("brain-return-agent").addEventListener("click", showAgent);
+  for (const space of ["agent", "brain"]) {
+    $(space + "-setup-ai").addEventListener("click", openAiSetup);
+    $(space + "-setup-connect").addEventListener("click", () => openConnectFor(null));
+  }
   $("agent-triage").addEventListener("click", () => {
     runTriage().catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
   });
@@ -10130,6 +10418,25 @@ function wire() {
     listFilter.addEventListener("search", () => renderList());
   }
   $("refresh").addEventListener("click", () => guard(refresh));
+  $("scheduled-open").addEventListener("click", () => showScheduled());
+  $("compose-view-scheduled").addEventListener("click", () => showScheduled());
+  $("scheduled-refresh").addEventListener("click", () => loadScheduled());
+  $("scheduled-close").addEventListener("click", () => closeDialog("scheduled-dialog"));
+  $("mail-ooo-manage").addEventListener("click", () => manageMailVacation());
+  $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
+  $("settings-account").addEventListener("change", () => changeSettingsMailbox($("settings-account").value));
+  $("settings-reconnect").addEventListener("click", () => openConnectFor(settingsAccount()));
+  $("settings-calendar").addEventListener("click", () => { state.calendarAccountId = settingsAccount()?.id || ""; closeDialog("settings"); showCalendar(); });
+  $("settings-capabilities-refresh").addEventListener("click", loadSettingsCapabilities);
+  $("settings-log").addEventListener("click", async () => { await closeDialog("settings"); showLog(); });
+  $("settings-about").addEventListener("click", () => { openDialog("about-dialog"); api.invoke("host:updateGetState").then(bumpUpdate).catch(error => bumpUpdate({ error: error.message })); });
+  $("about-close").addEventListener("click", () => closeDialog("about-dialog"));
+  $("about-update-check").addEventListener("click", checkForUpdates);
+  $("about-update-install").addEventListener("click", installUpdate);
+  $("log-source").addEventListener("change", filterSupportLog);
+  $("log-preview").addEventListener("click", previewSupportLog);
+  $("support-copy").addEventListener("click", copySupportLog);
+  $("support-close").addEventListener("click", () => closeDialog("support-dialog"));
   $("settings-open").addEventListener("click", openSettings);
   $("inbox-rules-open").addEventListener("click", openInboxRules);
   $("inbox-rule-form").addEventListener("submit", (event) => {
@@ -10215,6 +10522,7 @@ function wire() {
   $("signatures-close").addEventListener("click", () => closeDialog("signatures"));
   $("signatures").addEventListener("close", () => {
     signatureEditId = "";
+    signatureEditorAccountId = "";
   });
   $("signature-cancel").addEventListener("click", clearSignatureForm);
   $("signature-form").addEventListener("submit", (event) => {
@@ -10282,7 +10590,8 @@ function wire() {
   $("update-install").addEventListener("click", () => {
     installUpdate();
   });
-  $("connect-open").addEventListener("click", () => openDialog("connect"));
+  $("connect-open").addEventListener("click", () => openConnectFor(null));
+  $("connect").addEventListener("close", () => { state.reconnectAccountId = null; $("email").readOnly = false; $("connect-title").textContent = "Connect account"; $("connect-recovery-note").textContent = ""; });
   $("connect-close").addEventListener("click", () => dismissConnect());
   $("connect-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -10297,6 +10606,7 @@ function wire() {
   $("signature").addEventListener("change", onSignatureChange);
   $("signatures-from-compose").addEventListener("click", openSignatures);
   $("schedule-preset").addEventListener("change", syncScheduleFields);
+  $("schedule-at").addEventListener("change", syncScheduleFields);
   $("compose").addEventListener("close", () => stopDraftWrite());
   $("compose-close").addEventListener("click", () => {
     requestComposeClose();

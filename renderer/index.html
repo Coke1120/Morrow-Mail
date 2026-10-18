@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-nav="collapsed">
+<html lang="en" data-theme="light" data-nav="expanded">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -49,7 +49,7 @@
       </button>
       </div>
       <div class="rail-foot">
-      <button type="button" class="rail-btn nav-item" id="rail-log" aria-current="false" aria-label="Log" data-label="Log" title="Log">
+      <button type="button" class="rail-btn nav-item" id="rail-log" aria-current="false" aria-label="Debug log" data-label="Debug log" title="Debug log">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
           <polyline points="14 2 14 8 20 8"></polyline>
@@ -57,7 +57,7 @@
           <line x1="16" y1="17" x2="8" y2="17"></line>
           <polyline points="10 9 9 9 8 9"></polyline>
         </svg>
-        <span class="nav-label">Log</span>
+        <span class="nav-label">Debug log</span>
       </button>
       <button type="button" class="rail-btn nav-item" id="settings-open" aria-label="Settings" data-label="Settings" title="Settings">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -94,7 +94,7 @@
         </div>
         <form id="search-form" role="search">
           <label class="sr" for="search-query">Search downloaded mail</label>
-          <input id="search-query" type="search" placeholder="Search downloaded mail" title="Search downloaded subject, sender, and available message text" autocomplete="off" spellcheck="false" />
+          <input id="search-query" type="search" placeholder="Search downloaded mail" title="Matches all typed word prefixes in downloaded subject, sender, and available message text. Gmail query operators are not supported." autocomplete="off" spellcheck="false" />
         </form>
       </div>
     </header>
@@ -108,11 +108,14 @@
     <div class="shell" id="shell">
       <div class="side">
         <div id="side-mail" class="side-pane">
+          <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled</button>
+          <section id="mail-ooo" class="mail-ooo" aria-label="Mailbox automatic replies" hidden><p id="mail-ooo-status" class="hint" role="status"></p><div class="row"><button type="button" class="ghost" id="mail-ooo-manage">Manage / disable</button><button type="button" class="ghost" id="mail-ooo-refresh">Refresh status</button></div></section>
           <nav id="folders" aria-label="Folders"></nav>
         <div id="updates" role="region" aria-label="Updates">
           <p id="product-name" class="product-name">Morrow Mail</p>
           <p id="banner"></p>
           <p id="version"></p>
+          <p id="update-quit-note" hidden>Ready updates also install automatically when you quit.</p>
           <p id="update-status" role="status"></p>
           <button type="button" class="ghost" id="update-check">Check for updates</button>
             <button type="button" class="ghost" id="update-install" hidden>Install</button>
@@ -194,6 +197,8 @@
           <button type="button" class="ghost" id="agent-manage-skills">Manage Skills</button>
         </div>
       </div>
+      <p class="hint">Agent helps you ask questions about downloaded mail and review suggested tasks, drafts, and filing actions.</p>
+      <div id="agent-setup" class="setup-state" hidden><p id="agent-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="agent-setup-ai">Set up AI</button><button type="button" class="ghost" id="agent-setup-connect">Connect an account</button></div></div>
       <p id="agent-status" role="status"></p>
       <p id="agent-context" class="hint"></p>
       <div class="agent-scroll">
@@ -203,7 +208,7 @@
       <div id="agent-skill-chips" aria-label="Home skill shortcuts"></div>
       <details id="agent-tools">
         <summary>Skills and history</summary>
-        <p class="hint">Only when I ask, or on a saved interval or cron schedule. Auto-execute is off. A schedule runs in the background and does not send mail. Pause stops it. Drafts stay in compose until you send them yourself.</p>
+        <p class="hint">Skills are on demand unless their schedule is enabled below. Scheduled runs need Morrow open; a missed run fires once on relaunch. Pause stops scheduled runs. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="agent-skill-status" role="status"></p>
         <div id="agent-result" hidden></div>
         <label for="agent-contact">Person <span class="optional">(Brief This Person)</span></label>
@@ -214,7 +219,7 @@
         <div id="studio-library"></div>
         <section id="agent-proposals-wrap" aria-labelledby="agent-proposals-title">
           <h3 id="agent-proposals-title">Proposed moves</h3>
-          <p class="hint">Nothing moves until you confirm. Auto-run is off.</p>
+          <p class="hint">Filing changes your provider mailbox only after confirmation. Marking a todo done only changes the local Agent list.</p>
           <div id="agent-proposals"></div>
         </section>
         <h3 id="agent-history-title">Run history</h3>
@@ -240,6 +245,9 @@
         </div>
         <button type="button" class="ghost" id="brain-close">Mail</button>
       </div>
+      <p class="hint">Brain holds your learned profile, writing preferences, categories, skills, and inbox rules.</p>
+      <button type="button" class="ghost" id="brain-return-agent" hidden>Return to Agent</button>
+      <div id="brain-setup" class="setup-state" hidden><p id="brain-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="brain-setup-ai">Set up AI</button><button type="button" class="ghost" id="brain-setup-connect">Connect an account</button></div></div>
       <div class="brain-tabs" id="brain-tabs" role="tablist" aria-label="Email Brain sections">
         <button type="button" class="brain-tab" role="tab" id="brain-tab-profile" aria-controls="brain-profile" aria-selected="true">Profile</button>
         <button type="button" class="brain-tab" role="tab" id="brain-tab-categories" aria-controls="brain-categories" aria-selected="false" tabindex="-1">Categories</button>
@@ -298,7 +306,7 @@
       </section>
       <section id="brain-skills" role="tabpanel" aria-labelledby="brain-tab-skills" hidden>
         <h3 id="brain-skills-title">Skills</h3>
-        <p class="hint">Only when I ask, unless you save an interval or cron schedule. A schedule runs in the background while Morrow Mail is open and does not block the window. Pause keeps it from firing. Nothing is sent.</p>
+        <p class="hint">Skills run on demand, on a saved schedule, or stay paused. Scheduled runs need Morrow open; a missed run fires once on relaunch. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="brain-skill-status" role="status"></p>
         <div id="brain-skill-result"></div>
         <h3>Home skills</h3>
@@ -367,7 +375,8 @@
         </div>
         <button type="button" class="ghost" id="log-refresh">Refresh</button>
       </div>
-      <p class="hint">Passwords, tokens, and API keys are removed before a line is shown.</p>
+      <p class="hint">Known credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. This is a limited recent-session history, not a complete activity record.</p>
+      <div class="row"><label for="log-source">Source</label><select id="log-source"><option value="">All sources</option></select><button type="button" class="ghost" id="log-preview">Preview support copy…</button></div>
       <p id="log-status" role="status"></p>
       <ol id="log-lines"></ol>
     </section>
@@ -376,9 +385,31 @@
     </div>
     </div>
 
+    <dialog id="about-dialog" aria-labelledby="about-title"><div class="dialog-body">
+      <div class="sheet-head"><h2 id="about-title">About &amp; updates</h2><button type="button" class="ghost" id="about-close">Close</button></div>
+      <p>Morrow Mail</p><p id="about-version"></p><p id="about-update-status" role="status">Updates have not been checked yet.</p>
+      <p id="about-update-quit" class="hint" hidden>This update will also install automatically when you quit Morrow. Restart and install closes the app now.</p>
+      <div class="row"><button type="button" class="ghost" id="about-update-check">Check for updates</button><button type="button" class="primary" id="about-update-install" hidden>Restart and install</button></div>
+    </div></dialog>
+    <dialog id="support-dialog" aria-labelledby="support-title"><div class="dialog-body">
+      <h2 id="support-title">Review support copy</h2><p class="hint">Known credential patterns are redacted. Addresses and diagnostic context may remain. Remove anything private before sharing.</p>
+      <label for="support-preview">Redacted recent-session preview</label><textarea id="support-preview" rows="16" readonly></textarea>
+      <p id="support-copy-status" role="status"></p><div class="row"><button type="button" class="primary" id="support-copy">Copy preview</button><button type="button" class="ghost" id="support-close">Close</button></div>
+    </div></dialog>
+    <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
+      <div class="dialog-body">
+        <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>
+        <p class="hint">Messages send while Morrow is open. A missed time sends on the next launch. Edit/reschedule removes the queued delivery and saves a local draft; scheduling again requires your explicit action.</p>
+        <p id="scheduled-status" role="status"></p>
+        <button type="button" class="ghost" id="scheduled-refresh">Refresh queue</button>
+        <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
+      </div>
+    </dialog>
+
     <dialog id="connect" aria-labelledby="connect-title">
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
+        <p id="connect-recovery-note" class="hint"></p>
         <p class="hint">Sign in through your browser. Labels, inbox rules, and calendar each ask for their own consent.</p>
         <div class="row">
           <button type="button" class="primary" id="oauth-google">Continue with Google</button>
@@ -438,7 +469,7 @@
               <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
               <circle cx="12" cy="12" r="3"></circle>
             </svg>
-            <span id="compose-quote-toggle-label">Show quoted message</span>
+            <span id="compose-quote-toggle-label">Show original preview</span>
           </button>
         </div>
         <p id="compose-note" class="hint"></p>
@@ -478,6 +509,7 @@
         </div>
         <label class="sr" for="compose-body">Message</label>
         <textarea id="compose-body" placeholder="Message"></textarea>
+        <details id="compose-ai-tools"><summary>AI write</summary>
         <div class="ai-write">
           <label for="ai-mode">AI write</label>
           <select id="ai-mode">
@@ -491,13 +523,15 @@
           <button type="button" class="ghost" id="ai-cancel" hidden>Cancel</button>
           <p id="ai-write-error" class="error" role="status" hidden></p>
         </div>
+        </details>
         <div class="signature-head">
           <label for="signature">Signature</label>
           <button type="button" class="ghost" id="signatures-from-compose">Signatures</button>
         </div>
         <select id="signature" hidden></select>
         <p id="signature-empty" class="hint" hidden>No signatures.</p>
-        <label for="schedule-preset">Send later</label>
+        <details id="compose-schedule-tools"><summary>Send later</summary>
+        <label for="schedule-preset">When</label>
         <select id="schedule-preset">
           <option value="1h">In 1 hour</option>
           <option value="tonight">Tonight</option>
@@ -506,15 +540,15 @@
         </select>
         <label for="schedule-at" id="schedule-at-label" hidden>Date and time</label>
         <input id="schedule-at" type="datetime-local" hidden />
-        <p id="scheduled-heading" class="hint">Scheduled</p>
-        <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
         <p class="hint" id="schedule-note">Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.</p>
+        <button type="button" class="primary" id="compose-schedule">Schedule send</button>
+        </details>
           </div>
         </div>
+        <button type="button" class="ghost" id="compose-view-scheduled">View scheduled mail</button>
         <p id="compose-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>
-          <button type="button" class="ghost" id="compose-schedule">Schedule send</button>
           <button type="button" class="ghost" id="compose-save">Save draft</button>
           <button type="button" class="ghost" id="compose-close">Close</button>
         </div>
@@ -553,6 +587,13 @@
         <h2 id="settings-title">Settings</h2>
         <button type="button" class="ghost" id="settings-close">Close</button>
       </div>
+      <div class="row"><button type="button" class="ghost" id="settings-log">Debug log</button><button type="button" class="ghost" id="settings-about">About &amp; updates</button></div>
+      <section class="settings-account-context" aria-label="Settings mailbox">
+          <label for="settings-account">Selected mailbox</label>
+          <select id="settings-account"></select>
+          <p id="settings-mailbox-note" class="hint"></p>
+          <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
+      </section>
       <div class="settings-layout">
         <section aria-labelledby="settings-prefs-title">
           <h3 id="settings-prefs-title">Preferences</h3>
@@ -602,6 +643,9 @@
             <p id="ai-status" role="status"></p>
           </div>
           <h3 id="settings-mailbox-title">Mailbox</h3>
+          <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
+          <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
+          <details id="account-recovery"><summary>Existing user? Recover access or find missing data</summary><p>If your mailbox is listed, reconnect the same address to keep its cached work. Do not remove the account to fix sign-in.</p><p>If this profile is empty, confirm you opened the expected app and operating-system user. Back up the old app’s data before changing folders. Morrow has not verified or migrated an older profile or its credentials. Reconnecting downloads available server mail; it does not recover unsynced local drafts from another profile.</p><p>For help, open Debug log from Settings and review a redacted support preview. Do not share passwords, OAuth files, or database files.</p></details>
           <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
           <div class="row mailbox-actions" role="group" aria-labelledby="settings-mailbox-title">
             <button type="button" class="ghost icon-label" id="inbox-rules-open">

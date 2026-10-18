@@ -91,7 +91,16 @@ async function run() {
       savedRemote[name] = remote[name];
       remote[name] = mock;
     }
-    const connected = await engine.answer("mail:addAccount", [{ provider: "microsoft" }]);
+    const matchingSignIn = oauth.signIn;
+    oauth.signIn = async () => ({ ...(await matchingSignIn()), email: "wrong@example.invalid" });
+    const mismatch = await engine.answer("mail:addAccount", [{ provider: "microsoft", expectedAccountId: accountId }]);
+    assert.equal(mismatch.error.code, "account_mismatch");
+    assert.equal(db.accountByEmail("wrong@example.invalid"), null);
+    retained();
+    const wrongPassword = await engine.answer("mail:connectImapSmtp", [{ email: "wrong@example.invalid", expectedAccountId: accountId }]);
+    assert.equal(wrongPassword.error.code, "account_mismatch");
+    oauth.signIn = matchingSignIn;
+    const connected = await engine.answer("mail:addAccount", [{ provider: "microsoft", expectedAccountId: accountId }]);
     assert.equal(connected.success, true);
     assert.equal(connected.data.id, accountId, "re-login must reuse the original mailbox identity");
     assert.equal(connected.data.needsReauth, false);
