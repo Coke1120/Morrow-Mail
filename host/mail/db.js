@@ -1,8 +1,11 @@
-const fs = require("fs");
-const path = require("path");
+const { Persistence } = require("./persistence");
 
 let db = null;
 let filePath = "";
+let storage = null;
+let closing = Promise.resolve();
+let writes = null;
+const observedSync = new Map();
 
 function all(sql, params = []) {
   const stmt = db.prepare(sql);
@@ -18,28 +21,63 @@ function get(sql, params = []) {
 }
 
 function run(sql, params = []) {
+  if (!writes) throw new Error("Mail writes require a transaction.");
   db.run(sql, params);
+  recordWrite(sql, params);
 }
 
-function persist() {
-  const data = db.export();
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, Buffer.from(data), { mode: 0o600 });
-  fs.renameSync(tmp, filePath);
-  fs.chmodSync(filePath, 0o600);
+function recordWrite(sql, params) {
+  if (!writes) throw new Error("Mail writes require a transaction.");
+  if (!storage.initialized) return;
+  const last = writes[writes.length - 1];
+  if (last && last.sql === sql) last.bindings.push(params);
+  else writes.push({ sql, bindings: [params] });
+}
+
+function changeStamp() {
+  return `${get("SELECT total_changes() AS n").n}:${get("PRAGMA schema_version").schema_version}`;
 }
 
 function transaction(fn) {
-  run("BEGIN");
+  if (writes) return fn();
+  db.run("BEGIN");
+  const before = changeStamp();
+  writes = [];
+  let journalOffset = null;
+  let value;
   try {
-    const value = fn();
-    run("COMMIT");
-    persist();
-    return value;
+    value = fn();
+    if (value && typeof value.then === "function") throw new Error("Mail transactions must be synchronous.");
+    const changed = changeStamp() !== before;
+    if (changed && storage.initialized) {
+      db.run("UPDATE morrow_storage SET sequence = ? WHERE id = 1", [storage.sequence + 1]);
+      journalOffset = storage.append(writes);
+    }
+    db.run("COMMIT");
   } catch (error) {
-    try { run("ROLLBACK"); } catch { /* already closed */ }
+    if (journalOffset != null) {
+      try { storage.rewind(journalOffset); } catch { error.storageUncertain = true; }
+    }
+    try { db.run("ROLLBACK"); } catch { /* already closed */ }
+    // If even truncating/syncing an unsuccessful append failed, continuing could
+    // put another transaction behind an uncertain tail. Require a fresh open.
+    if (error.storageUncertain) close();
     throw error;
+  } finally {
+    writes = null;
   }
+  if (journalOffset != null) storage.committed();
+  return value;
+}
+
+function updateChanged(table, patch, where, whereParams) {
+  const entries = Object.entries(patch);
+  if (!entries.length) return false;
+  const values = entries.map(([, value]) => value);
+  run(`UPDATE ${table} SET ${entries.map(([key]) => `${key} = ?`).join(", ")}
+    WHERE ${where} AND (${entries.map(([key]) => `${key} IS NOT ?`).join(" OR ")})`,
+  [...values, ...whereParams, ...values]);
+  return db.getRowsModified() > 0;
 }
 
 function migrate() {
@@ -179,22 +217,27 @@ function migrate() {
 }
 
 async function open(target) {
-  const initSqlJs = require("sql.js");
-  const wasmDir = path.dirname(require.resolve("sql.js"));
-  const SQL = await initSqlJs({ locateFile: (name) => path.join(wasmDir, name) });
+  if (db) close();
+  await closing;
   filePath = target;
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  if (fs.existsSync(target)) db = new SQL.Database(fs.readFileSync(target));
-  else db = new SQL.Database();
-  migrate();
-  persist();
+  storage = new Persistence(target);
+  try {
+    db = await storage.open();
+    transaction(migrate);
+    if (!storage.initialized) storage.initialize(db);
+  } catch (error) {
+    close();
+    throw error;
+  }
 }
 
 function close() {
-  if (!db) return;
-  try { persist(); } catch { /* the test may already have removed the dir */ }
-  db.close();
+  if (storage) closing = storage.close();
+  if (db) db.close();
   db = null;
+  storage = null;
+  observedSync.clear();
+  return closing;
 }
 
 function hasAccounts() {
@@ -259,13 +302,13 @@ function updateAccountLogin(id, row) {
 }
 
 function setAuthError(id, message) {
-  transaction(() => run("UPDATE accounts SET auth_error = ? WHERE id = ?", [message, id]));
+  transaction(() => updateChanged("accounts", { auth_error: message }, "id = ?", [id]));
 }
 
 function clearAuthError(id) {
   transaction(() => {
-    if (id) run("UPDATE accounts SET auth_error = NULL WHERE id = ?", [id]);
-    else run("UPDATE accounts SET auth_error = NULL");
+    if (id) run("UPDATE accounts SET auth_error = NULL WHERE id = ? AND auth_error IS NOT NULL", [id]);
+    else run("UPDATE accounts SET auth_error = NULL WHERE auth_error IS NOT NULL");
   });
 }
 
@@ -284,15 +327,13 @@ function removeAccount(id) {
 
 function replaceFolders(accountId, folders, delimiter) {
   transaction(() => {
-    if (delimiter) run("UPDATE accounts SET delimiter = ? WHERE id = ?", [delimiter, accountId]);
+    if (delimiter) updateChanged("accounts", { delimiter }, "id = ?", [accountId]);
     const existing = new Set(all("SELECT path FROM folders WHERE account_id = ?", [accountId]).map((row) => row.path));
     const next = new Set(folders.map((folder) => folder.path));
     for (const folder of folders) {
       if (existing.has(folder.path)) {
-        run(
-          `UPDATE folders SET name = ?, well_known = ? WHERE account_id = ? AND path = ?`,
-          [folder.name, folder.wellKnown, accountId, folder.path]
-        );
+        updateChanged("folders", { name: folder.name, well_known: folder.wellKnown },
+          "account_id = ? AND path = ?", [accountId, folder.path]);
       } else {
         run(
           `INSERT INTO folders (account_id, path, name, well_known, uid_validity, unread, total, synced_at)
@@ -311,18 +352,24 @@ function replaceFolders(accountId, folders, delimiter) {
 }
 
 function foldersFor(accountId) {
-  return all("SELECT * FROM folders WHERE account_id = ? ORDER BY path ASC", [accountId]);
+  return all("SELECT * FROM folders WHERE account_id = ? ORDER BY path ASC", [accountId]).map(withObservedSync);
 }
 
 function folderByPath(accountId, folderPath) {
-  return get("SELECT * FROM folders WHERE account_id = ? AND path = ?", [accountId, folderPath]);
+  return withObservedSync(get("SELECT * FROM folders WHERE account_id = ? AND path = ?", [accountId, folderPath]));
+}
+
+function withObservedSync(row) {
+  if (!row) return row;
+  const seen = observedSync.get(JSON.stringify([row.account_id, row.path, row.uid_validity]));
+  return seen ? { ...row, synced_at: Math.max(row.synced_at || 0, seen) } : row;
 }
 
 function folderByWellKnown(accountId, wellKnown) {
-  return get(
+  return withObservedSync(get(
     "SELECT * FROM folders WHERE account_id = ? AND well_known = ? ORDER BY path ASC LIMIT 1",
     [accountId, wellKnown]
-  );
+  ));
 }
 
 function pathsForKey(accountId, folderKey) {
@@ -561,7 +608,8 @@ function indexText(messageId) {
     "INSERT INTO message_fts_doc (message_id, subject, sender, body) VALUES (?, ?, ?, ?)",
     [messageId, subject, sender, body]
   );
-  const stmt = db.prepare("INSERT INTO message_fts (term, message_id, field) VALUES (?, ?, ?)");
+  const sql = "INSERT INTO message_fts (term, message_id, field) VALUES (?, ?, ?)";
+  const stmt = db.prepare(sql);
   try {
     const fields = [
       ["subject", subject],
@@ -569,7 +617,11 @@ function indexText(messageId) {
       ["body", body],
     ];
     for (const [field, text] of fields) {
-      for (const term of tokenize(text)) stmt.run([term, messageId, field]);
+      for (const term of tokenize(text)) {
+        const params = [term, messageId, field];
+        stmt.run(params);
+        recordWrite(sql, params);
+      }
     }
   } finally {
     stmt.free();
@@ -678,7 +730,8 @@ function searchMessages(options) {
 }
 
 function applyFolderSync(accountId, folderPath, report) {
-  return transaction(() => {
+  const result = transaction(() => {
+    const before = changeStamp();
     const previous = get(
       "SELECT uid_validity FROM folders WHERE account_id = ? AND path = ?",
       [accountId, folderPath]
@@ -768,23 +821,12 @@ function applyFolderSync(accountId, folderPath, report) {
     const horizon = horizonWrite(report);
     if (report.keepOthers) {
       if (cursor != null || done != null || report.validity || horizon.touch) {
-        run(
-          `UPDATE folders SET
-             uid_validity = COALESCE(?, uid_validity),
-             uid_cursor = COALESCE(?, uid_cursor),
-             window_done = COALESCE(?, window_done),
-             sync_horizon_days = CASE WHEN ? = 1 THEN ? ELSE sync_horizon_days END
-           WHERE account_id = ? AND path = ?`,
-          [
-            report.validity || null,
-            Number.isFinite(cursor) ? cursor : null,
-            done,
-            horizon.touch,
-            horizon.value,
-            accountId,
-            folderPath,
-          ]
-        );
+        const patch = {};
+        if (report.validity) patch.uid_validity = report.validity;
+        if (Number.isFinite(cursor)) patch.uid_cursor = cursor;
+        if (done != null) patch.window_done = done;
+        if (horizon.touch) patch.sync_horizon_days = horizon.value;
+        updateChanged("folders", patch, "account_id = ? AND path = ?", [accountId, folderPath]);
       }
       return;
     }
@@ -797,19 +839,21 @@ function applyFolderSync(accountId, folderPath, report) {
       "SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND folder_path = ?",
       [accountId, folderPath]
     ).n;
-    run(
-      `UPDATE folders SET uid_validity = ?, unread = ?, total = ?, synced_at = ?,
-         uid_cursor = COALESCE(?, uid_cursor), window_done = COALESCE(?, window_done),
-         sync_horizon_days = CASE WHEN ? = 1 THEN ? ELSE sync_horizon_days END
-       WHERE account_id = ? AND path = ?`,
-      [
-        report.validity || null, unread, total, Date.now(),
-        Number.isFinite(cursor) ? cursor : null, done,
-        horizon.touch, horizon.value,
-        accountId, folderPath,
-      ]
-    );
+    const patch = { uid_validity: report.validity || null, unread, total };
+    if (Number.isFinite(cursor)) patch.uid_cursor = cursor;
+    if (done != null) patch.window_done = done;
+    if (horizon.touch) patch.sync_horizon_days = horizon.value;
+    const folder = folderByPath(accountId, folderPath);
+    if (folder && (changeStamp() !== before || !folder.synced_at
+        || Object.entries(patch).some(([key, value]) => folder[key] !== value))) {
+      patch.synced_at = Date.now();
+      updateChanged("folders", patch, "account_id = ? AND path = ?", [accountId, folderPath]);
+    }
   });
+  // Observation-only freshness is session state, like engine syncScopes. It must
+  // not make an otherwise unchanged mailbox dirty on every background poll.
+  if (!report.keepOthers) observedSync.set(JSON.stringify([accountId, folderPath, report.validity || null]), Date.now());
+  return result;
 }
 
 function uidsFor(accountId, folderPath) {
@@ -923,18 +967,10 @@ function messagesByThread(accountId, threadId) {
 }
 
 function updateMessage(id, patch) {
-  const assignments = [];
-  const params = [];
-  for (const [column, value] of Object.entries(patch)) {
-    assignments.push(`${column} = ?`);
-    params.push(value);
-  }
-  if (!assignments.length) return;
-  params.push(id);
+  if (!Object.keys(patch).length) return;
   const reindex = Object.keys(patch).some((key) => INDEXED_PATCH.has(key));
   transaction(() => {
-    run(`UPDATE messages SET ${assignments.join(", ")} WHERE id = ?`, params);
-    if (reindex) indexText(id);
+    if (updateChanged("messages", patch, "id = ?", [id]) && reindex) indexText(id);
   });
 }
 
@@ -1432,6 +1468,7 @@ function recentInbox(limit) {
 module.exports = {
   open,
   close,
+  checkpoint: () => storage ? storage.checkpoint() : Promise.resolve(),
   hasAccounts,
   isReady,
   listAccountRows,

@@ -9,6 +9,7 @@ out/
 *.asar
 *.db
 *.sqlite
+*.sqlite.journal*
 *.sqlite3
 .hermes/
 Library/
