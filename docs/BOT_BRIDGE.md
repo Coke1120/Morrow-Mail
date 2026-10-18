@@ -28,7 +28,7 @@ Every call also sends `Tailscale-App-Capabilities`:
 
 Local clients send that marker themselves. Serve injects it for tailnet peers. Funnel traffic does not, and Morrow rejects the call. Do not add a switch that skips the marker.
 
-From the shared box, after the secret is in a file:
+On the Mac running Morrow, after the secret is in a file (the default endpoint is loopback):
 
 ```bash
 node scripts/morrow-bot-call.js \
@@ -39,6 +39,19 @@ node scripts/morrow-bot-call.js \
 ```
 
 `params.json` for `bridge.describe` is `{}`. Do not pass `--token`. A shell substitution such as `Authorization: Bearer $(cat token)` can show the secret in the process list.
+
+From the shared box, first configure and qualify Serve below, save its exact hostname and port in Morrow Settings, and pass the paired HTTPS endpoint:
+
+```bash
+node scripts/morrow-bot-call.js \
+  --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call \
+  --token-file /path/to/morrow-bot-token \
+  --installation <installation-id-from-settings> \
+  --operation bridge.describe \
+  --params-file ./params.json
+```
+
+The client verifies TLS normally, rejects redirects and non-loopback plain HTTP, caps responses at 128 KiB, and ends a call after five seconds. It does not retry automatically. Endpoint and credential-file arguments belong in trusted operator configuration, not mail-derived tool input.
 
 The published params are in `shared/bot-contract-v1.json`. Operations:
 

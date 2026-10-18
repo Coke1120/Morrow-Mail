@@ -3,8 +3,9 @@
 
 const fs = require("fs");
 const http = require("http");
+const https = require("https");
 const crypto = require("crypto");
-const { API_VERSION, CALL_PATH, HOST, PORT, SERVE_CAPABILITY } = require("../host/bot/constants");
+const { API_VERSION, CALL_PATH, HOST, PORT, SERVE_CAPABILITY, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES } = require("../host/bot/constants");
 
 function fail(message, code) {
   process.stderr.write(`${message}\n`);
@@ -31,6 +32,19 @@ if (!tokenFile || !installation || !operation) {
   fail("Required: --token-file --installation --operation", 2);
 }
 
+let url;
+try {
+  url = new URL(endpoint);
+} catch {
+  fail("The endpoint is not a URL.", 2);
+}
+if (url.protocol !== "https:" && !(url.protocol === "http:" && url.hostname === HOST)) {
+  fail("Use HTTPS for Serve, or HTTP on 127.0.0.1 for a local bridge.", 2);
+}
+if (url.username || url.password || url.hash || url.pathname !== CALL_PATH || url.search) {
+  fail("Use the exact bridge endpoint without credentials, query, or fragment.", 2);
+}
+
 let token = "";
 try {
   token = fs.readFileSync(tokenFile, "utf8").trim();
@@ -48,15 +62,6 @@ if (paramsFile) {
   }
 }
 
-let url;
-try {
-  url = new URL(endpoint);
-} catch {
-  fail("The endpoint is not a URL.", 2);
-}
-if (url.protocol !== "http:") fail("This client speaks HTTP to the loopback bridge.", 2);
-if (url.pathname !== CALL_PATH || url.search) fail("The endpoint path is not the bridge call path.", 2);
-
 const body = JSON.stringify({
   apiVersion: API_VERSION,
   requestId: crypto.randomUUID(),
@@ -64,10 +69,12 @@ const body = JSON.stringify({
   operation,
   params,
 });
+if (Buffer.byteLength(body) > MAX_REQUEST_BYTES) fail("The request is too large.", 2);
 const marker = JSON.stringify({ [SERVE_CAPABILITY]: [{ readBridge: true }] });
-const req = http.request({
+const transport = url.protocol === "https:" ? https : http;
+const req = transport.request({
   hostname: url.hostname,
-  port: url.port || 80,
+  port: url.port || (url.protocol === "https:" ? 443 : 80),
   path: url.pathname,
   method: "POST",
   headers: {
@@ -78,15 +85,39 @@ const req = http.request({
     "content-length": Buffer.byteLength(body),
   },
 }, (res) => {
+  // Node's HTTPS defaults verify the certificate and hostname. Do not follow
+  // redirects with a bearer credential, or print arbitrary proxy error pages.
+  if (res.statusCode >= 300 && res.statusCode < 400) fail("The bridge endpoint redirected. Check the paired endpoint.", 1);
   const chunks = [];
-  res.on("data", (chunk) => chunks.push(chunk));
+  let bytes = 0;
+  res.on("data", (chunk) => {
+    bytes += chunk.length;
+    if (bytes > MAX_RESPONSE_BYTES) {
+      res.destroy();
+      fail("The bridge response is too large.", 1);
+    }
+    chunks.push(chunk);
+  });
+  res.on("error", () => fail("The bridge response was interrupted.", 1));
+  res.on("aborted", () => fail("The bridge response was interrupted.", 1));
   res.on("end", () => {
+    clearTimeout(deadline);
     const text = Buffer.concat(chunks).toString("utf8");
-    process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
     let parsed = null;
-    try { parsed = JSON.parse(text); } catch { process.exit(1); }
-    process.exit(parsed && parsed.ok === true ? 0 : 1);
+    try { parsed = JSON.parse(text); } catch { fail("The endpoint did not return a bridge response.", 1); }
+    if (!parsed || parsed.apiVersion !== API_VERSION || typeof parsed.ok !== "boolean") {
+      fail("The endpoint did not return a bridge response.", 1);
+    }
+    if (parsed.ok && (res.statusCode !== 200 || parsed.installationId !== installation)) {
+      fail("The bridge response does not match the paired installation.", 1);
+    }
+    process.stdout.write(`${JSON.stringify(parsed)}\n`);
+    process.exit(parsed.ok ? 0 : 1);
   });
 });
-req.on("error", () => fail("The bridge did not answer.", 1));
+const deadline = setTimeout(() => req.destroy(new Error("deadline")), 5000);
+req.on("error", () => {
+  clearTimeout(deadline);
+  fail("The bridge did not answer securely within the call deadline.", 1);
+});
 req.end(body);
