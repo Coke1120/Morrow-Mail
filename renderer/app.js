@@ -2544,7 +2544,7 @@ function renderSettingsAccounts() {
 
 function syncStatusLabel(sync) {
   if (!sync || !sync.state) return "";
-  if (sync.message) return sync.message;
+  if (sync.message) return redactDebugText(sync.message);
   if (sync.state === "syncing") return "Syncing…";
   if (sync.state === "paused") return "Paused for rate limit";
   if (sync.state === "done") return "Sync done";
@@ -2591,7 +2591,7 @@ function syncDetail(sync) {
   const success = syncClock(sync.lastSuccessAt);
   const successLine = success ? `Last success ${success}` : "";
   if (sync.state === "syncing") return [where, phase, successLine].filter(Boolean).join(" · ");
-  if (sync.state === "error") return [where, sync.lastError || sync.message || "Sync failed"].filter(Boolean).join(" · ");
+  if (sync.state === "error") return [where, redactDebugText(sync.lastError || sync.message || "Sync failed")].filter(Boolean).join(" · ");
   if (sync.state === "paused") return [sync.message || "Paused for rate limit", where].filter(Boolean).join(" · ");
   if (sync.state === "done") return successLine || sync.message || "Sync done";
   return sync.message || "";
@@ -2689,7 +2689,7 @@ function paintLog(lines) {
   for (const row of rows) {
     const item = document.createElement("li");
     const when = syncClock(row && row.at);
-    item.textContent = [when, row && row.source, row && row.text].filter(Boolean).join(" · ");
+    item.textContent = [when, row && row.source, redactDebugText(row && row.text)].filter(Boolean).join(" · ");
     list.appendChild(item);
   }
 }

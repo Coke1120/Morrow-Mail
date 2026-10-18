@@ -847,10 +847,11 @@ assert.ok(parityDoc.includes("does not call `mail:search`"));
 assert.ok(appJs.includes("Searching all mail"));
 assert.ok(html.includes("Search all mail"));
 assert.ok(registered.has("mail:syncStatus"));
-const syncStatusLabel = extractFunction(appJs, "syncStatusLabel");
+const syncStatusLabel = loadFunctions(appJs, ["redactDebugText", "syncStatusLabel"]).syncStatusLabel;
 assert.strictEqual(syncStatusLabel({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
 assert.strictEqual(syncStatusLabel({ state: "done" }), "Sync done");
 assert.strictEqual(syncStatusLabel(null), "");
+assert.strictEqual(syncStatusLabel({ state: "error", message: "password: hunter2" }), "password [redacted]");
 const syncUi = loadFunctions(appJs, ["redactDebugText", "phaseWord", "syncClock", "syncDetail", "syncButtonLabel"]);
 assert.strictEqual(syncUi.phaseWord("listing"), "Listing folders");
 assert.strictEqual(syncUi.phaseWord("fetching"), "Fetching mail");
@@ -870,6 +871,7 @@ assert.ok(syncUi.syncDetail({
   folderLabel: "Inbox",
 }).includes("Fetching mail"));
 assert.ok(syncUi.syncDetail({ state: "error", accountLabel: "ada@example.com", folderLabel: "Inbox", lastError: "Sync failed" }).includes("Sync failed"));
+assert.ok(!syncUi.syncDetail({ state: "error", lastError: "password: hunter2 ya29.secrettoken" }).includes("hunter2"));
 assert.strictEqual(syncUi.syncDetail({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
 assert.ok(syncUi.syncDetail({ state: "done", lastSuccessAt: Date.UTC(2026, 0, 2, 15, 4) }).startsWith("Last success "));
 assert.strictEqual(syncUi.syncButtonLabel({ state: "syncing" }), "Syncing");
