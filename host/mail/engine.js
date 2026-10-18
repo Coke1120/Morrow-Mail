@@ -318,6 +318,11 @@ function passwordFor(account) {
   return password;
 }
 
+function rememberSync(accountId, patch) {
+  if (!accountId) return;
+  try { require("../bot/observe").note(accountId, patch); } catch { /* the bridge is optional */ }
+}
+
 function emitFolderSync(accountId, folderPath, okFlag) {
   broadcast("mail:folderSyncCompleted", {
     accountId,
@@ -325,6 +330,10 @@ function emitFolderSync(accountId, folderPath, okFlag) {
     ok: okFlag === true,
     newThreadCount: 0,
   });
+  const now = new Date().toISOString();
+  const patch = { syncState: okFlag ? "idle" : "error", lastObservedAt: now, providerConnection: "unknown" };
+  if (okFlag) patch.lastSuccessfulSyncAt = now;
+  rememberSync(accountId, patch);
 }
 
 const activeFolder = new Map();
@@ -400,6 +409,15 @@ function emitSync(state, extra) {
   };
   debugLog.note("sync", [state, phase, place.accountLabel, place.folderLabel, message].filter(Boolean).join(" · "));
   broadcast("mail:syncStatus", syncState);
+  const accountId = syncState.accountId;
+  if (!accountId) return;
+  const gate = syncGates.get(accountId);
+  rememberSync(accountId, {
+    syncState: state === "paused" ? "paused" : state === "syncing" ? "syncing" : state === "done" ? "idle" : "error",
+    lastObservedAt: new Date().toISOString(),
+    pausedUntil: state === "paused" && gate ? new Date(gate.until).toISOString() : null,
+    providerConnection: "unknown",
+  });
 }
 
 function publicSync() {
