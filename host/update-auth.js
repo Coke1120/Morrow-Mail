@@ -27,12 +27,36 @@ function resolveGithubToken() {
   return readFileToken();
 }
 
-function missingTokenMessage() {
+function githubFeed(token) {
+  const feed = {
+    provider: "github",
+    owner: GITHUB_OWNER,
+    repo: GITHUB_REPO,
+    private: false,
+  };
+  const value = typeof token === "string" ? token.trim() : "";
+  if (value) feed.token = value;
+  return feed;
+}
+
+function tokenRejectedMessage() {
   return (
-    `Updates for the private repo ${GITHUB_OWNER}/${GITHUB_REPO} need a GitHub token with contents read. ` +
-    `Set GH_TOKEN or GITHUB_TOKEN, or save {"token":"..."} in ${tokenFile()} (same userData folder as settings.json). ` +
-    "Without that token the app does not call the public releases feed, which returns 404 for this private repo."
+    `The GitHub token configured for ${GITHUB_OWNER}/${GITHUB_REPO} was rejected. ` +
+    `Check GH_TOKEN or GITHUB_TOKEN, or the token saved in ${tokenFile()} (same userData folder as settings.json).`
   );
+}
+
+function feedNeedsAuthMessage() {
+  return (
+    `The update feed for ${GITHUB_OWNER}/${GITHUB_REPO} requires a GitHub token with contents read. ` +
+    `Set GH_TOKEN or GITHUB_TOKEN, or save {"token":"..."} in ${tokenFile()} (same userData folder as settings.json).`
+  );
+}
+
+function authFailureKind(message) {
+  if (message === tokenRejectedMessage()) return "rejected";
+  if (message === feedNeedsAuthMessage()) return "required";
+  return "";
 }
 
 function redact(value) {
@@ -42,12 +66,21 @@ function redact(value) {
     .replace(/Bearer\s+\S+/gi, "Bearer [token]");
 }
 
+function httpStatus(err) {
+  if (!err || typeof err !== "object") return 0;
+  const code = Number(err.statusCode || err.status || 0);
+  return code === 401 || code === 403 ? code : 0;
+}
+
+function isAuthFailure(err, text) {
+  if (httpStatus(err)) return true;
+  return /authentication token|Bad credentials|\b401\b|\b403\b|Unauthorized|Forbidden/i.test(text);
+}
+
 function explainUpdateError(err) {
   const text = redact(err instanceof Error ? err.message : String(err || ""));
-  if (/releases\.atom|authentication token|Bad credentials|\b40[13]\b/i.test(text)) {
-    return missingTokenMessage();
-  }
-  return text || "update failed";
+  if (!isAuthFailure(err, text)) return text || "update failed";
+  return resolveGithubToken() ? tokenRejectedMessage() : feedNeedsAuthMessage();
 }
 
 module.exports = {
@@ -55,6 +88,9 @@ module.exports = {
   GITHUB_REPO,
   tokenFile,
   resolveGithubToken,
-  missingTokenMessage,
+  githubFeed,
+  tokenRejectedMessage,
+  feedNeedsAuthMessage,
+  authFailureKind,
   explainUpdateError,
 };

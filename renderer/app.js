@@ -5910,7 +5910,7 @@ function updateView(snapshot, version) {
   let busy = false;
   const error = snap.error ? String(snap.error) : "";
   if (snap.needsToken) {
-    status = "Private updates need a GitHub token.";
+    status = /was rejected/i.test(error) ? "GitHub token was rejected." : "Updates need a GitHub token.";
   } else if (error) {
     status = "Update failed.";
   } else if (snap.installing) {

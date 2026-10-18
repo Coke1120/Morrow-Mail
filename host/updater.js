@@ -28,30 +28,15 @@ function setError(err) {
   state.downloading = false;
   state.installing = false;
   if (!state.downloaded) state.available = false;
-  if (state.error === auth.missingTokenMessage()) state.needsToken = true;
+  state.needsToken = auth.authFailureKind(state.error) !== "";
 }
 
 function applyFeed(updater, token) {
-  updater.setFeedURL({
-    provider: "github",
-    owner: auth.GITHUB_OWNER,
-    repo: auth.GITHUB_REPO,
-    private: true,
-    token,
-  });
+  updater.setFeedURL(auth.githubFeed(token));
 }
 
 function prepareUpdater() {
   const token = auth.resolveGithubToken();
-  if (!token) {
-    state.enabled = true;
-    state.needsToken = true;
-    state.available = false;
-    state.checking = false;
-    state.downloading = false;
-    state.error = auth.missingTokenMessage();
-    return null;
-  }
   state.needsToken = false;
   if (!autoUpdater) {
     ({ autoUpdater } = require("electron-updater"));
@@ -72,15 +57,18 @@ function bind(updater) {
   updater.on("checking-for-update", () => {
     state.checking = true;
     state.error = null;
+    state.needsToken = false;
   });
   updater.on("update-available", (info) => {
     state.checking = false;
     state.available = true;
+    state.needsToken = false;
     state.version = info && info.version ? info.version : null;
   });
   updater.on("update-not-available", () => {
     state.checking = false;
     state.available = false;
+    state.needsToken = false;
   });
   updater.on("download-progress", (p) => {
     state.downloading = true;
