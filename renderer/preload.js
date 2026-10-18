@@ -132,6 +132,14 @@ const INVOKE = [
   "nativeAgent:chatShow",
   "nativeAgent:memoryGet",
   "nativeAgent:memorySet",
+  "bot:getAccess",
+  "bot:setEnabled",
+  "bot:setServeHost",
+  "bot:mintGrant",
+  "bot:rotateGrant",
+  "bot:revokeGrant",
+  "bot:draftComposeSeed",
+  "bot:dismissDraftProposal",
 ];
 
 const EVENTS = [

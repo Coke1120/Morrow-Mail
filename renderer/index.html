@@ -648,6 +648,53 @@
           </div>
           <p id="ooo-status" role="status"></p>
         </section>
+        <section id="settings-bot" aria-labelledby="settings-bot-title">
+          <h3 id="settings-bot-title">Bot access</h3>
+          <p class="hint">The local bridge is off until you mint a grant and turn it on. A grant can read cached mail for the accounts you select, including Sent and Drafts. Message text is untrusted. Nothing is sent from the bridge. Tailscale Serve may forward 127.0.0.1:47831. Do not enable Funnel.</p>
+          <p id="bot-listen" class="hint"></p>
+          <p id="bot-install" class="hint"></p>
+          <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" /> Enable the loopback bridge</label>
+          <label for="bot-serve-host">Serve host
+            <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="hostname:8443" />
+          </label>
+          <div class="row">
+            <button type="button" class="ghost icon-label" id="bot-serve-save">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+              <span>Save Serve host</span>
+            </button>
+          </div>
+          <form id="bot-mint">
+            <label for="bot-label">Client name
+              <input id="bot-label" type="text" maxlength="60" autocomplete="off" spellcheck="false" />
+            </label>
+            <fieldset id="bot-accounts">
+              <legend>Accounts</legend>
+            </fieldset>
+            <fieldset id="bot-caps">
+              <legend>Extra capabilities</legend>
+              <label class="check"><input type="checkbox" data-cap="mail.bodies.read" /> Read cached message text</label>
+              <label class="check"><input type="checkbox" data-cap="mail.attachments.read" /> Read attachment names</label>
+              <label class="check"><input type="checkbox" data-cap="draft.proposals.create" /> Submit draft proposals</label>
+            </fieldset>
+            <label for="bot-expiry">Expiry days
+              <input id="bot-expiry" type="number" min="1" max="30" value="7" />
+            </label>
+            <div class="row">
+              <button type="submit" class="primary icon-label" id="bot-mint-btn">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+                </svg>
+                <span>Mint grant</span>
+              </button>
+            </div>
+          </form>
+          <ul id="bot-grants" aria-label="Bot grants"></ul>
+          <h4>Draft proposals</h4>
+          <ul id="bot-drafts" aria-label="Draft proposals"></ul>
+          <p id="bot-status" role="status"></p>
+        </section>
       </div>
       <p class="hint">The API key stays in local AI config, the same store as Morrow Mail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
       </div>
@@ -669,6 +716,23 @@
         <div class="row">
           <button type="submit" class="primary" id="move-picker-ok">Move</button>
           <button type="button" class="ghost" id="move-picker-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="bot-secret" aria-labelledby="bot-secret-title">
+      <form>
+        <h2 id="bot-secret-title">Grant secret</h2>
+        <p class="hint">Shown once. Copy it into the credential file on the shared box. Morrow stores only a verifier.</p>
+        <pre id="bot-secret-value"></pre>
+        <div class="row">
+          <button type="button" class="primary icon-label" id="bot-secret-copy">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <span>Copy secret</span>
+          </button>
+          <button type="button" class="ghost" id="bot-secret-close">Close</button>
         </div>
       </form>
     </dialog>
