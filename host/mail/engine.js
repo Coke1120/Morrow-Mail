@@ -15,6 +15,7 @@ const inboxRules = require("./inbox-rules");
 const http = require("./provider-http");
 const providerApi = require("./provider-api");
 const idle = require("./idle");
+const debugLog = require("../debug-log");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
 const KEY_TO_WELL = {
@@ -328,21 +329,76 @@ function emitFolderSync(accountId, folderPath, okFlag) {
 
 const activeFolder = new Map();
 const syncGates = new Map();
-let syncState = { state: "done", message: "Sync done", accountId: null, folderId: null };
+let syncState = {
+  state: "done",
+  phase: "done",
+  message: "Sync done",
+  accountId: null,
+  accountLabel: "",
+  folderId: null,
+  folderLabel: "",
+  updatedAt: 0,
+  lastSuccessAt: null,
+  lastError: "",
+  lastErrorAt: null,
+};
+
+function syncLabels(extra) {
+  const accountId = (extra && extra.accountId) || null;
+  const folderId = (extra && extra.folderId) || null;
+  let accountLabel = (extra && extra.accountLabel) || "";
+  let folderLabel = (extra && extra.folderLabel) || "";
+  try {
+    if (!accountLabel && accountId) {
+      const account = db.accountById(accountId);
+      if (account) accountLabel = account.email || account.display_name || "";
+    }
+    if (accountId && folderId) {
+      const folder = db.folderByPath(accountId, folderId);
+      if (!folderLabel && folder && folder.name) folderLabel = folder.name;
+      else if (!folderLabel) folderLabel = String(folderId);
+    }
+  } catch {
+    // A missing mailbox still reports the phase.
+  }
+  return {
+    accountId,
+    accountLabel: accountLabel || "",
+    folderId,
+    folderLabel: folderLabel || "",
+  };
+}
 
 function emitSync(state, extra) {
-  const message = (extra && extra.message) || (
+  const now = Date.now();
+  const prev = syncState || {};
+  const message = debugLog.redactDebugText((extra && extra.message) || (
     state === "syncing" ? "Syncing…"
       : state === "paused" ? "Paused for rate limit"
         : state === "done" ? "Sync done"
           : "Sync failed"
+  ));
+  const place = syncLabels(extra);
+  const phase = (extra && extra.phase) || (
+    state === "syncing" ? "fetching"
+      : state === "paused" ? "paused"
+        : state === "error" ? "error"
+          : "done"
   );
   syncState = {
     state,
+    phase,
     message,
-    accountId: (extra && extra.accountId) || null,
-    folderId: (extra && extra.folderId) || null,
+    accountId: place.accountId,
+    accountLabel: place.accountLabel,
+    folderId: place.folderId,
+    folderLabel: place.folderLabel,
+    updatedAt: now,
+    lastSuccessAt: state === "done" ? now : (prev.lastSuccessAt || null),
+    lastError: state === "error" ? message : (prev.lastError || ""),
+    lastErrorAt: state === "error" ? now : (prev.lastErrorAt || null),
   };
+  debugLog.note("sync", [state, phase, place.accountLabel, place.folderLabel, message].filter(Boolean).join(" · "));
   broadcast("mail:syncStatus", syncState);
 }
 
@@ -516,6 +572,7 @@ async function warmFolder(client, account, folder, started) {
       uidCursor: next,
     });
     if (folder.well_known === "inbox" && localInboxRules(account)) {
+      emitSync("syncing", { accountId: account.id, folderId: folder.path, phase: "rules" });
       const ruled = await inboxRules.runImapPlan({
         client,
         remote,
@@ -529,6 +586,7 @@ async function warmFolder(client, account, folder, started) {
         emitSync("error", {
           accountId: account.id,
           folderId: folder.path,
+          phase: "rules",
           message: "An inbox rule could not run.",
         });
       }
@@ -562,7 +620,14 @@ async function syncFolderPolicy(client, account, folderPath) {
     emitSync("paused", { accountId: account.id, folderId: folderPath, message: "Paused for rate limit" });
     return { paused: true, bootstrapped: false };
   }
-  emitSync("syncing", { accountId: account.id, folderId: folderPath });
+  let phase = "fetching";
+  try {
+    const known = db.folderByPath(account.id, folderPath);
+    if (known && windowOpen(known)) phase = "refreshing";
+  } catch {
+    phase = "fetching";
+  }
+  emitSync("syncing", { accountId: account.id, folderId: folderPath, phase });
   const started = Date.now();
   try {
     const folder = db.folderByPath(account.id, folderPath);
@@ -635,6 +700,7 @@ async function syncAccount(account, options) {
     let paused = false;
     let allDone = true;
     await remote.withClient(account, password, async (client) => {
+      emitSync("syncing", { accountId: account.id, phase: "listing" });
       const listed = await remote.listFolderRecords(client);
       db.replaceFolders(account.id, listed.folders, listed.delimiter);
       const folders = db.foldersFor(account.id);
@@ -1701,6 +1767,8 @@ function answer(channel, args) {
     case "mail:loadMoreAggregate":
       if (params && params.accountId && params.folderId) noteActive(params.accountId, params.folderId);
       return ok(listPayload(params));
+    case "mail:getSyncStatus":
+      return ok(publicSync());
     case "mail:listFromNetwork":
       return (async () => {
         const query = params || {};

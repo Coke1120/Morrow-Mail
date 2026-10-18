@@ -289,7 +289,10 @@ async function createWindow(preloadFile, mode) {
   win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     const text = `[console ${level}] ${message} (${sourceId}:${line})`;
     fs.appendFileSync(LOG, text + "\n");
-    if (level >= 2) console.error(text);
+    if (level >= 2) {
+      console.error(text);
+      try { require("./debug-log").note("console", message); } catch { /* the file log already has the line */ }
+    }
   });
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
     const text = `[fail-load] ${code} ${desc} ${url}`;
