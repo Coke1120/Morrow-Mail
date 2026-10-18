@@ -20,7 +20,7 @@ Tokens are stored per account and purpose (`grantedScopes`, refresh token, acces
 
 Passwords and OAuth tokens are stored under the service name `morrow-mail` only. On macOS that is the Keychain service (`security -s morrow-mail`). On Windows the DPAPI file is `%LOCALAPPDATA%\morrow-mail\secrets\morrow-mail_<account>`. Reads and deletes use that service. `MORROW_MAIL_SECRETS=memory` is the in-process store for tests and does not touch the keychain. This service is not the Swift app's store, and the bundle id is not `org.morrowmail.desktop`. A mailbox whose token is not already under `morrow-mail` needs to be connected again.
 
-`oauthReady().google` is false until a Desktop client JSON is available. The app and `npm run check` run without that file. Live Google calls are refused with `oauth_not_ready` until it is set. A packaged build also reads `google-oauth.json` from `process.resourcesPath` (`Contents/Resources` next to `app.asar`). Microsoft uses the public client id in `shared/microsoft-client-id.txt` and has no client secret.
+`oauthReady().google` is false until a Desktop client JSON is available. The app and `npm run check` run without that file. Live Google calls are refused with `oauth_not_ready` until it is set. A packaged build also reads `google-oauth.json` from `process.resourcesPath` (`Contents/Resources` next to `app.asar`). Release Actions place that file from the `GOOGLE_DESKTOP_OAUTH_JSON` secret before packaging. Microsoft uses the public client id in `shared/microsoft-client-id.txt` and has no client secret.
 
 ## Redirects
 
@@ -39,6 +39,8 @@ Do this in the same Desktop client Morrow-Mail uses. Do not paste the secret int
 2. Enable the Gmail API and the Google Calendar API on the project.
 3. Create an OAuth client of type **Desktop**. Download the JSON (`installed.client_id` and `installed.client_secret`).
 4. Provide it at runtime as `GOOGLE_DESKTOP_OAUTH_JSON`, `MORROW_GOOGLE_OAUTH_JSON`, `MORROW_GOOGLE_OAUTH_FILE`, dev `resources/google-oauth.json` (gitignored), or packaged `process.resourcesPath/google-oauth.json`.
+
+Release Actions bake the GitHub secret `GOOGLE_DESKTOP_OAUTH_JSON` into packaged builds. `.github/workflows/release.yml` writes that secret to `resources/google-oauth.json` on the Windows and macOS jobs before `npm run dist:win` and `npm run dist:mac`, creating `resources/` when it is absent. The step checks Desktop client JSON (`installed.client_id` ending in `.apps.googleusercontent.com`, and `client_secret`) and fails the job when the secret is missing or invalid. The log records the output path. `build.extraResources` copies `resources/` to `process.resourcesPath` (`google-oauth.json` beside `app.asar`). Never commit `resources/google-oauth.json`.
 
 ### Hard blocker: Testing and verification
 
