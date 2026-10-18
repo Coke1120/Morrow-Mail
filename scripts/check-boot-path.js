@@ -2036,6 +2036,7 @@ const selection = loadFunctions(appJs, [
   "clearListSelection",
   "pruneSelection",
   "selectionShortcut",
+  "modifierBlocksDrag",
   "selectionDragPayload",
   "dragMessagesFrom",
   "coalesceProviderCalls",
@@ -2088,6 +2089,16 @@ assert.strictEqual(selection.selectionShortcut({ key: "a", ctrl: true }, false),
 assert.strictEqual(selection.selectionShortcut({ key: "a", ctrl: true, shift: true }, false), "");
 assert.strictEqual(selection.selectionShortcut({ key: "a", meta: true }, true), "");
 assert.strictEqual(selection.selectionShortcut({ key: "Escape" }, true), "");
+assert.strictEqual(selection.modifierBlocksDrag(null), false);
+assert.strictEqual(selection.modifierBlocksDrag({}), false);
+assert.strictEqual(selection.modifierBlocksDrag({ altKey: true }), false);
+assert.strictEqual(selection.modifierBlocksDrag({ shiftKey: true }), true);
+assert.strictEqual(selection.modifierBlocksDrag({ metaKey: true }), true);
+assert.strictEqual(selection.modifierBlocksDrag({ ctrlKey: true }), true);
+assert.ok(functionSource(appJs, "onMessageDragStart").includes("modifierBlocksDrag"));
+assert.ok(functionSource(appJs, "onMessageDragStart").includes("is-mail-drag"));
+assert.ok(functionSource(appJs, "onMessagePointerDown").includes("modifierBlocksDrag"));
+assert.ok(functionSource(appJs, "clearMailDragChrome").includes("is-mail-drag"));
 const dragRows = [
   { id: "m1", accountId: "a1", folderId: "INBOX" },
   { id: "m2", accountId: "a1", folderId: "INBOX" },
@@ -2234,6 +2245,10 @@ assert.ok(preload.includes("mail:deleteBatch"));
 assert.ok(preload.includes("mail:markReadBatch"));
 assert.ok(preload.includes("mail:toggleStarBatch"));
 assert.ok(css.includes(".row-check"));
+assert.ok(css.includes("#messages.has-selection .row-check"));
+assert.ok(css.includes("body.is-mail-drag"));
+assert.ok(css.includes("cursor: grabbing"));
+assert.ok(!/button\.message\[draggable="true"\]\s*\{[^}]*cursor:\s*grab/.test(css));
 assert.ok(css.includes(".selection-bar"));
 assert.ok(!parity.includes("Multi-select stays a follow-up"));
 assert.ok(!parity.includes("Multi-select is a follow-up"));

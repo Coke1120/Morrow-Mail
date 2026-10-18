@@ -2202,6 +2202,11 @@ function selectionShortcut(event, blocked) {
   return "";
 }
 
+function modifierBlocksDrag(event) {
+  if (!event) return false;
+  return event.shiftKey === true || event.metaKey === true || event.ctrlKey === true;
+}
+
 function selectionDragPayload(messages) {
   const rows = [];
   for (const message of messages || []) {
@@ -4728,7 +4733,29 @@ function onReaderContext(event) {
   openOrganizeMenu(state.email, event.clientX, event.clientY);
 }
 
+function onMessagePointerDown(event) {
+  const button = event.target && event.target.closest && event.target.closest("button.message");
+  if (!button || event.button !== 0 || !modifierBlocksDrag(event)) return;
+  button.draggable = false;
+  const restore = () => {
+    if (button.isConnected) button.draggable = true;
+    window.removeEventListener("pointerup", restore, true);
+    window.removeEventListener("pointercancel", restore, true);
+  };
+  window.addEventListener("pointerup", restore, true);
+  window.addEventListener("pointercancel", restore, true);
+}
+
+function clearMailDragChrome() {
+  document.body.classList.remove("is-mail-drag");
+  for (const row of document.querySelectorAll(".message-row.dragging")) row.classList.remove("dragging");
+}
+
 function onMessageDragStart(event) {
+  if (modifierBlocksDrag(event)) {
+    event.preventDefault();
+    return;
+  }
   const button = event.target.closest && event.target.closest("button.message");
   if (!button || !event.dataTransfer) return;
   const row = button.closest(".message-row");
@@ -4743,6 +4770,7 @@ function onMessageDragStart(event) {
   state.dragMessage = payload;
   event.dataTransfer.setData("application/x-morrow-message", JSON.stringify(payload));
   event.dataTransfer.effectAllowed = "copyMove";
+  document.body.classList.add("is-mail-drag");
   const rows = inSelection ? document.querySelectorAll(".message-row.selected") : (row ? [row] : []);
   for (const item of rows) item.classList.add("dragging");
 }
@@ -4750,7 +4778,7 @@ function onMessageDragStart(event) {
 function onMessageDragEnd() {
   state.dragMessage = null;
   clearDropTargets();
-  for (const row of document.querySelectorAll(".message-row.dragging")) row.classList.remove("dragging");
+  clearMailDragChrome();
 }
 
 function onFolderDragOver(event) {
@@ -4770,7 +4798,7 @@ function onFolderDrop(event) {
   const raw = event.dataTransfer && event.dataTransfer.getData("application/x-morrow-message");
   const messages = dragMessagesFrom(raw, state.dragMessage);
   state.dragMessage = null;
-  for (const row of document.querySelectorAll(".message-row.dragging")) row.classList.remove("dragging");
+  clearMailDragChrome();
   if (!messages.length) return;
   const full = messages.map((item) => {
     const found = state.emails.find((email) => email && String(email.id) === String(item.id));
@@ -4787,6 +4815,7 @@ function onFolderDrop(event) {
 function wireOrganize() {
   $("messages").addEventListener("contextmenu", onListContext);
   $("reader").addEventListener("contextmenu", onReaderContext);
+  $("messages").addEventListener("pointerdown", onMessagePointerDown, true);
   $("messages").addEventListener("dragstart", onMessageDragStart);
   $("messages").addEventListener("dragend", onMessageDragEnd);
   const folders = $("folders");

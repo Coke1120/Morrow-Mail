@@ -1045,9 +1045,10 @@ button.folder.drop-target,
   outline-offset: -2px;
 }
 
-button.message[draggable="true"] { cursor: grab; }
-
 .message-row.dragging button.message { opacity: 0.55; }
+
+body.is-mail-drag,
+body.is-mail-drag * { cursor: grabbing !important; }
 
 .organize-menu {
   position: fixed;
