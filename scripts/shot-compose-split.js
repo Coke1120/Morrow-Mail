@@ -183,6 +183,41 @@ app.whenReady().then(async () => {
   });
   await win.loadFile(path.join(root, "renderer", "index.html"));
   await waitFor(win, `!!document.querySelector('[data-testid="mail-list-message-row"]')`, "message row");
+  const shell = await win.webContents.executeJavaScript(`(() => {
+    const row = document.querySelector("button.message");
+    const chips = document.getElementById("list-chips");
+    const chipText = chips ? [...chips.querySelectorAll("button")].map((button) => button.textContent) : [];
+    return {
+      title: document.title,
+      product: (document.getElementById("product-name") || {}).textContent || "",
+      agentToolbar: !!document.getElementById("agent-open"),
+      brainToolbar: !!document.getElementById("brain-open"),
+      railBrain: document.getElementById("rail-brain") ? document.getElementById("rail-brain").getAttribute("aria-label") : "",
+      chips: chipText,
+      chipsInHead: !!(chips && chips.parentElement && chips.parentElement.id === "list-head"),
+      rowMin: row ? getComputedStyle(row).minHeight : "",
+      avatar: row && row.querySelector(".avatar") ? getComputedStyle(row.querySelector(".avatar")).width : "",
+      listTitle: document.getElementById("list-title") ? document.getElementById("list-title").textContent : "",
+      folderText: document.getElementById("folders") ? document.getElementById("folders").innerText : "",
+    };
+  })()`, true);
+  if (shell.title !== "Morrow Mail") throw new Error("window title is " + shell.title);
+  if (shell.product !== "Morrow Mail") throw new Error("footer brand is " + shell.product);
+  if (shell.agentToolbar || shell.brainToolbar) throw new Error("toolbar still duplicates Agent or Brain");
+  if (shell.railBrain !== "Email Brain") throw new Error("rail brain label is " + shell.railBrain);
+  if (shell.chips.join(",") !== "Inbox,Sent,Drafts") throw new Error("chips are " + shell.chips.join(","));
+  if (!shell.chipsInHead) throw new Error("chips are outside the list header");
+  if (shell.rowMin !== "60px") throw new Error("row min-height is " + shell.rowMin);
+  if (shell.avatar !== "32px") throw new Error("avatar width is " + shell.avatar);
+  if (shell.listTitle !== "Inbox") throw new Error("list title is " + shell.listTitle);
+  if (!shell.folderText.includes("Inbox")) throw new Error("folders missing: " + shell.folderText);
+  await sleep(350);
+  const shellPath = path.join(outDir, "mail-shell.png");
+  fs.writeFileSync(shellPath, (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`document.querySelectorAll("#list-chips button")[1].click()`, true);
+  await waitFor(win, `document.getElementById("list-title").textContent === "Sent" && document.querySelector('#list-chips button[aria-current="true"]').textContent === "Sent"`, "sent chip");
+  await win.webContents.executeJavaScript(`document.querySelectorAll("#list-chips button")[0].click()`, true);
+  await waitFor(win, `document.getElementById("list-title").textContent === "Inbox" && !!document.querySelector('[data-testid="mail-list-message-row"]')`, "inbox chip");
   await win.webContents.executeJavaScript(`document.querySelector('[data-testid="mail-list-message-row"]').click()`, true);
   await waitFor(win, `!!document.querySelector('[data-action="forward"]')`, "reader actions");
 
@@ -234,6 +269,8 @@ app.whenReady().then(async () => {
   assertState(collapsed, { layout: "narrow", collapsed: "true", direction: "column" });
   const collapsedBodyHidden = await win.webContents.executeJavaScript(`document.getElementById("compose-quote-body").hidden`, true);
   if (collapsedBodyHidden !== true) throw new Error("collapsed body still shown");
+  const collapsedPath = path.join(outDir, "compose-split-collapsed.png");
+  fs.writeFileSync(collapsedPath, (await win.webContents.capturePage()).toPNG());
   await win.webContents.executeJavaScript(`document.getElementById("compose-quote-collapse").click()`, true);
   await sleep(250);
   await win.webContents.executeJavaScript(`document.querySelector(".compose-draft").scrollTop = 0; document.getElementById("compose-quote-body").scrollTop = 0;`, true);
@@ -251,6 +288,24 @@ app.whenReady().then(async () => {
   if (!(narrow.width < 900)) throw new Error("narrow dialog is " + narrow.width);
   if (!(narrow.quoteTop < narrow.draftTop)) throw new Error("quote is not above the draft");
   if (!narrow.text.includes("brass gears")) throw new Error("narrow quote missing");
+  const fit = await win.webContents.executeJavaScript(`(() => {
+    const dialog = document.getElementById("compose").getBoundingClientRect();
+    const body = document.getElementById("compose-quote-body").getBoundingClientRect();
+    return {
+      dialogHeight: dialog.height,
+      inner: window.innerHeight,
+      bodyBottom: body.bottom,
+      dialogBottom: dialog.bottom,
+      dialogTop: dialog.top,
+      bodyTop: body.top,
+    };
+  })()`, true);
+  if (fit.bodyBottom > fit.dialogBottom + 1 || fit.bodyTop < fit.dialogTop - 1) {
+    throw new Error("quote paints outside the dialog " + JSON.stringify(fit));
+  }
+  if (fit.dialogHeight < fit.inner - 40) {
+    throw new Error("quoting dialog does not fill the window " + JSON.stringify(fit));
+  }
   const narrowPath = path.join(outDir, "compose-split-narrow.png");
   fs.writeFileSync(narrowPath, (await win.webContents.capturePage()).toPNG());
 
@@ -265,13 +320,30 @@ app.whenReady().then(async () => {
   const sent = await win.webContents.executeJavaScript(`window.genmailShot.sent()`, true);
   if (sent.length) throw new Error("close or cancel sent mail: " + sent.join(","));
   const report = {
+    shell: shellPath,
     wide: widePath,
+    collapsed: collapsedPath,
     narrow: narrowPath,
+    shellState: shell,
     wideState: wide,
     narrowState: narrow,
     forwarded: { layout: forwarded.layout, quote: forwarded.quote, width: forwarded.width },
     sent: sent,
   };
+  fs.writeFileSync(path.join(outDir, "compose-split-check.json"), JSON.stringify(report, null, 2));
+  const setup = new BrowserWindow({
+    width: 560,
+    height: 520,
+    show: true,
+    backgroundColor: "#f6f3fb",
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  await setup.loadFile(path.join(root, "host/ai-setup.html"));
+  setup.setTitle("AI Setup — Morrow Mail");
+  await sleep(250);
+  const setupPath = path.join(outDir, "ai-setup.png");
+  fs.writeFileSync(setupPath, (await setup.webContents.capturePage()).toPNG());
+  report.setup = setupPath;
   fs.writeFileSync(path.join(outDir, "compose-split-check.json"), JSON.stringify(report, null, 2));
   console.log("SHOT_OK");
   console.log(JSON.stringify({ wide: wide.width, narrow: narrow.width, sent: sent }));

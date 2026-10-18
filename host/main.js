@@ -166,7 +166,9 @@ function openAiSetup() {
   setupWindow.on("closed", () => {
     setupWindow = null;
   });
-  setupWindow.loadFile(path.join(__dirname, "ai-setup.html"));
+  setupWindow.loadFile(path.join(__dirname, "ai-setup.html")).then(() => {
+    if (setupWindow && !setupWindow.isDestroyed()) setupWindow.setTitle("AI Setup — Morrow Mail");
+  }).catch(() => {});
 }
 
 function installMenu() {
@@ -300,6 +302,7 @@ async function createWindow(preloadFile, mode) {
   });
   if (external) await win.loadURL("genmail://local/index.html#/shell");
   else await win.loadFile(FIRST_PARTY_HTML);
+  if (!external) win.setTitle("Morrow Mail");
   return win;
 }
 
@@ -395,7 +398,7 @@ app.whenReady().then(async () => {
           console.log(composeText);
           console.log("COMPOSE_TEXT_END");
           await win.webContents.executeJavaScript(`(() => {
-            const button = document.querySelector('[aria-label="Email Brain"]');
+            const button = document.getElementById("rail-brain");
             if (button) button.click();
           })()`);
           await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -431,7 +434,7 @@ app.whenReady().then(async () => {
           fs.writeFileSync(path.join(path.dirname(LOG), "skill-run.png"), skillRunImage.toPNG());
           await win.webContents.executeJavaScript(`(() => {
             for (const open of document.querySelectorAll("dialog[open]")) open.close();
-            const button = document.getElementById("agent-open");
+            const button = document.getElementById("rail-agent");
             if (button) button.click();
           })()`);
           await new Promise((resolve) => setTimeout(resolve, 800));
