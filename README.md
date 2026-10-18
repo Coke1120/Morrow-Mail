@@ -1,6 +1,12 @@
 # Morrow Mail
 
-Private Electron mail client. The npm package is `morrow-mail`. The GitHub repository is `Coke1120/Morrow-Mail`. The app in this tree is Electron (`host/`, `renderer/`, `shared/`). The old SwiftUI, WinUI, and Rust snapshot is archival only, in [`legacy.zip`](legacy.zip). Do not unzip it for feature work. See [LEGACY.md](LEGACY.md).
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Morrow Mail is an open-source Electron mail client. You connect your own accounts, read and send mail, and install the desktop app from GitHub Releases.
+
+The npm package is `morrow-mail`. Source: [Coke1120/Morrow-Mail](https://github.com/Coke1120/Morrow-Mail). Downloads: [Releases](https://github.com/Coke1120/Morrow-Mail/releases). License: [MIT](LICENSE). [Code signing policy](CODE_SIGNING_POLICY.md). [Code of Conduct](CODE_OF_CONDUCT.md).
+
+The app in this tree is Electron (`host/`, `renderer/`, `shared/`). The old SwiftUI, WinUI, and Rust snapshot is archival only, in [`legacy.zip`](legacy.zip). Do not unzip it for feature work. See [LEGACY.md](LEGACY.md).
 
 ## Run (dev)
 
@@ -21,7 +27,7 @@ Secrets: macOS Keychain service `morrow-mail`, or Windows DPAPI under `%LOCALAPP
 - Host: IMAP engine + AI + bundled first-party UI (`MORROW_ASAR` optional)
 - Search: toolbar search reads a local full-text index of synced subject, from, and body (`mail:searchLocal`). The list filter still matches only subject, from, and snippet of messages already loaded. `mail:search` still asks the server
 - Agent triage and Email Brain skills: [docs/BRAIN_AGENT.md](docs/BRAIN_AGENT.md)
-- Packaging: electron-builder + electron-updater (unsigned alpha). Windows and unsigned Mac feeds: Actions → **release** → Run workflow ([docs/PACKAGING.md](docs/PACKAGING.md))
+- Packaging: electron-builder + electron-updater (unsigned alpha until SignPath approval). Windows and unsigned Mac feeds: Actions → **release** → Run workflow ([docs/PACKAGING.md](docs/PACKAGING.md)). [Code signing policy](CODE_SIGNING_POLICY.md)
 - OAuth: IMAP XOAUTH2 baseline, Gmail/Graph label side-car, a separate calendar grant, and a separate Out of Office grant. Google Desktop JSON stays out of git. See [docs/OAUTH.md](docs/OAUTH.md)
 - Out of Office: Settings → Out of Office writes Gmail vacation settings or Microsoft automatic replies after confirmation. IMAP tries ManageSieve on port 4190 and does not send local automatic replies
 - Bot bridge: default-off loopback API on `127.0.0.1:47831` for cached reads and inert draft proposals. See [docs/BOT_BRIDGE.md](docs/BOT_BRIDGE.md)
