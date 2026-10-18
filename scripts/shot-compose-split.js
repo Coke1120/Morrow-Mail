@@ -66,7 +66,6 @@ function raw(channel) {
   if (channel === "genmail:configSetComposeQuoteWidth") return 460;
   if (channel === "genmail:configGetAutoLoadRemoteImages") return false;
   if (channel === "genmail:configGetAiWriteAutoOpenOnReply") return false;
-  if (channel === "genmail:configGetShowOneClickTidy" || channel === "genmail:configGetShowOneClickTidyEffective") return false;
   if (channel === "genmail:configGetSidebarOutlookFoldersExpanded") return false;
   if (channel === "genmail:configGetSnoozeEffective") return true;
   if (channel === "genmail:configGetConversationViewEnabled") return true;
