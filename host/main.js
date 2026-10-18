@@ -39,7 +39,7 @@ if (process.platform === "win32") app.setAppUserModelId("com.coke1120.morrow-mai
 app.setAboutPanelOptions({
   applicationName: "Morrow Mail",
   applicationVersion: app.getVersion(),
-  copyright: "Copyright © Leo Ho",
+  copyright: "Copyright © 2026 Leo Ho",
   iconPath: APP_ICON,
 });
 
