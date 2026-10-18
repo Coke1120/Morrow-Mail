@@ -51,6 +51,9 @@ async function run() {
   bulk.context.outcome = outcome;
   assert.match(bulk.run(`receiptText('Archive',outcome)`), /1 completed.*1 unknown.*1 not attempted.*Second operation failed/);
   assert.equal(bulk.run(`receiptRows({opIds:['legacy']}, {params:{items:[{emailId:'one'},{emailId:'two'}]}}).filter(row=>row.status==='completed').length`), 0);
+  assert.match(bulk.run(`botListenerStatus({enabled:true,listen:{listening:false,error:'port_in_use'}})`), /Could not start.*not listening/);
+  assert.doesNotMatch(bulk.run(`botListenerStatus({enabled:true,listen:{listening:false,error:'port_in_use'}})`), /enabled|Listening on/);
+  assert.equal(bulk.run(`botPermissionNames(['accounts.read','mail.headers.read','draft.proposals.create'])`), 'account details, cached mail headers, draft proposals');
   console.log('ux-workflows-ok');
 }
 module.exports = { run, renderer };

@@ -527,6 +527,9 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
   gap: 8px;
 }
 #settings-bot label { display: grid; gap: 4px; font-size: 13px; }
+#settings-bot label.check { display: flex; align-items: center; gap: 8px; }
+#settings-bot label.check input { flex: 0 0 auto; width: auto; margin: 0; }
+#bot-secret-status.error, #compose-status.error, #connect-status.error { color: var(--danger); }
 #settings-bot fieldset {
   margin: 0;
   border: 1px solid var(--line);
