@@ -19,12 +19,16 @@ function syncDirectory(file) {
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 
-function writeAll(fd, data) {
+function writeAll(fd, data, position = null) {
   let offset = 0;
+  let at = position;
   while (offset < data.length) {
-    const written = fs.writeSync(fd, data, offset, data.length - offset);
+    const written = at == null
+      ? fs.writeSync(fd, data, offset, data.length - offset)
+      : fs.writeSync(fd, data, offset, data.length - offset, at);
     if (!written) throw new Error("Mail journal write made no progress.");
     offset += written;
+    if (at != null) at += written;
   }
 }
 
@@ -211,9 +215,13 @@ class Persistence {
 
   openJournal() {
     if (this.fd != null) return;
-    this.fd = fs.openSync(this.journal, "a+", 0o600);
+    // Use r+ so rewind/ftruncate works on Windows. Append-only (a+) handles do not
+    // reliably support SetEndOfFile there, which made partial journal writes mark
+    // storage uncertain and close the live DB during check-mail-persistence.
+    if (!fs.existsSync(this.journal)) fs.writeFileSync(this.journal, Buffer.alloc(0), { mode: 0o600 });
+    this.fd = fs.openSync(this.journal, "r+", 0o600);
     try {
-      fs.fchmodSync(this.fd, 0o600);
+      try { fs.fchmodSync(this.fd, 0o600); } catch { /* Windows may ignore mode */ }
       this.bytes = fs.fstatSync(this.fd).size;
       fs.fsyncSync(this.fd);
       syncDirectory(this.journal);
@@ -229,9 +237,13 @@ class Persistence {
     const offset = this.bytes;
     const parts = encode(this.generation, this.sequence + 1, commands);
     try {
-      for (const part of parts) writeAll(this.fd, part);
+      let at = offset;
+      for (const part of parts) {
+        writeAll(this.fd, part, at);
+        at += part.length;
+      }
       fs.fsyncSync(this.fd);
-      this.bytes += parts.reduce((sum, part) => sum + part.length, 0);
+      this.bytes = at;
     } catch (error) {
       // Never append behind a partial/uncertain write, even after ENOSPC.
       try { this.rewind(offset); } catch { error.storageUncertain = true; }

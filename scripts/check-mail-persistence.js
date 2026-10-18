@@ -120,8 +120,8 @@ async function checkTransactions(file) {
 
   const write = fs.writeSync;
   let calls = 0;
-  fs.writeSync = function (fd, data, offset, length) {
-    if (++calls === 1) return write.call(this, fd, data, offset, Math.min(length, 17));
+  fs.writeSync = function (fd, data, offset, length, position) {
+    if (++calls === 1) return write.call(this, fd, data, offset, Math.min(length, 17), position);
     throw new Error("Fixture partial write");
   };
   try { assert.throws(() => db.updateMessage("p-1", { starred: 1 }), /partial write/); }
@@ -313,10 +313,10 @@ if (require.main === module) {
     if (mode.startsWith("torn-")) {
       const write = fs.writeSync;
       let calls = 0;
-      fs.writeSync = function (fd, data, offset, length) {
+      fs.writeSync = function (fd, data, offset, length, position) {
         calls += 1;
-        if (mode === "torn-body" && calls === 1) return write.call(this, fd, data, offset, length);
-        write.call(this, fd, data, offset, Math.min(length, 17));
+        if (mode === "torn-body" && calls === 1) return write.call(this, fd, data, offset, length, position);
+        write.call(this, fd, data, offset, Math.min(length, 17), position);
         process.exit(0);
       };
     }
