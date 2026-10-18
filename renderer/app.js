@@ -6305,7 +6305,9 @@ async function refreshVacation() {
       || draft.message !== (current.message || "")
       || draft.externalMessage !== (current.externalMessage || "")
       || draft.audience !== (current.audience || "all")
-      || draft.restrictToDomain !== (current.restrictToDomain === true);
+      || draft.restrictToDomain !== (current.restrictToDomain === true)
+      || $("ooo-start").value !== vacationLocalValue(current.start)
+      || $("ooo-end").value !== vacationLocalValue(current.end);
     if (dirty) {
       const answer = await askConfirm({
         title: "Refresh provider settings",

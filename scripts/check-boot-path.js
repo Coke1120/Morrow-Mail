@@ -5197,6 +5197,29 @@ async function checkProviderApi() {
     const outlookLoaded = await engine.answer("mail:vacationGet", [{ accountId: "outlook-live" }]);
     assert.strictEqual(outlookLoaded.data.provider, "microsoft");
     assert.strictEqual(outlookLoaded.data.settings.message, "Inside");
+    const vacationOauth = require("../host/mail/oauth");
+    const originalAccessTokenFor = vacationOauth.accessTokenFor;
+    const beforeRefresh = secrets.getPassword("outlook-live:vacation");
+    try {
+      vacationOauth.accessTokenFor = async (_account, raw) => {
+        const blob = JSON.parse(raw);
+        return { token: blob.accessToken, store: JSON.stringify({ ...blob, refreshToken: blob.accessToken }) };
+      };
+      const refreshed = await engine.answer("mail:vacationGet", [{ accountId: "outlook-live" }]);
+      assert.strictEqual(refreshed.success, true, "the request's own refresh must not be treated as a reconnect");
+      vacationOauth.accessTokenFor = async (_account, raw) => {
+        // A new consent arrives while the old token refresh is in flight.
+        secrets.setPassword("outlook-live:vacation", beforeRefresh);
+        return { token: JSON.parse(raw).accessToken, store: raw };
+      };
+      const reconnected = await engine.answer("mail:vacationGet", [{ accountId: "outlook-live" }]);
+      assert.strictEqual(reconnected.success, false);
+      assert.strictEqual(reconnected.error.code, "conflict");
+      assert.strictEqual(secrets.getPassword("outlook-live:vacation"), beforeRefresh);
+    } finally {
+      vacationOauth.accessTokenFor = originalAccessTokenFor;
+      secrets.setPassword("outlook-live:vacation", beforeRefresh);
+    }
     const outlookSaved = await engine.answer("mail:vacationPut", [{
       accountId: "outlook-live",
       confirmed: true,
@@ -5275,6 +5298,10 @@ async function checkProviderApi() {
       assert.strictEqual(imapSaved.success, true);
       assert.match(sieveState.script, /vacation :days 1 :subject "Away" "Hello";/);
       assert.doesNotMatch(sieveState.script, /date/);
+      sieveState.active = "";
+      const inactiveScript = await engine.answer("mail:vacationGet", [{ accountId: "imap-test" }]);
+      assert.strictEqual(inactiveScript.data.settings.mode, "disabled");
+      assert.strictEqual(inactiveScript.data.settings.message, "Hello");
       sieveState.active = "other-filters";
       const blockedScript = await engine.answer("mail:vacationPut", [{
         accountId: "imap-test",

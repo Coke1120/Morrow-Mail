@@ -215,6 +215,11 @@ async function tokenFor(account, purpose) {
     throw error;
   }
   const result = await oauth.accessTokenFor(account, raw);
+  if (purpose === "vacation" && secrets.getPassword(key) !== raw) {
+    const error = new Error("This mailbox connection changed. Refresh settings.");
+    error.code = "conflict";
+    throw error;
+  }
   if (typeof result === "string") return { accessToken: result, grantedScopes: parsed.grantedScopes || "" };
   if (result && result.token) {
     if (result.store) {
@@ -224,7 +229,11 @@ async function tokenFor(account, purpose) {
     if (result.store) {
       try { granted = JSON.parse(result.store).grantedScopes || granted; } catch { /* keep the previous scopes */ }
     }
-    return { accessToken: result.token, grantedScopes: granted };
+    return {
+      accessToken: result.token,
+      grantedScopes: granted,
+      ...(purpose === "vacation" ? { vacationIdentity: vacationIdentity(account) } : {}),
+    };
   }
   const error = new Error("Could not refresh OAuth access token.");
   error.code = "oauth";
@@ -720,7 +729,7 @@ function projectSieve(account, remote) {
       ? "The server has a vacation script Morrow cannot edit safely. Disable remains available."
       : "",
     settings: parsed
-      ? { ...EMPTY_VACATION, ...parsed, externalMessage: "", audience: "all", restrictToDomain: false }
+      ? { ...EMPTY_VACATION, ...parsed, mode: remote.active === sieve.SCRIPT_NAME ? parsed.mode : "disabled", externalMessage: "", audience: "all", restrictToDomain: false }
       : { ...EMPTY_VACATION },
   });
 }
@@ -733,7 +742,7 @@ async function sieveCall(account, operation) {
     throw error;
   }
   return sieve.manageSieve({
-    email: account.email || account.username,
+    email: account.username || account.email,
     password,
     imapHost: account.imap_host,
   }, operation);
@@ -772,10 +781,13 @@ async function providerVacation(account, body) {
       detail: gate.message,
     }));
   }
-  const before = vacationIdentity(account);
+  let before = vacationIdentity(account);
   let token;
   try {
     token = await tokenFor(account, "vacation");
+    // A normal refresh can rotate the token. Keep detecting new consents,
+    // without treating the refresh performed by this request as a reconnect.
+    if (token.vacationIdentity) before = token.vacationIdentity;
   } catch (error) {
     return failFrom(error);
   }
