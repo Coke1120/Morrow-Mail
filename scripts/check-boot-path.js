@@ -607,6 +607,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configGetShowOneClickTidy", []), false);
     assert.strictEqual(answer("genmail:configGetSidebarGmailFoldersExpanded", []), true);
     assert.strictEqual(answer("genmail:configGetSidebarOutlookFoldersExpanded", []), false);
+    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 420);
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
     assert.strictEqual(answer("genmail:configSetAccent", ["#112233"]), "#112233");
@@ -619,6 +620,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configSetShowOneClickTidy", [true]), true);
     assert.strictEqual(answer("genmail:configSetSidebarGmailFoldersExpanded", [false]), false);
     assert.strictEqual(answer("genmail:configSetSidebarOutlookFoldersExpanded", [true]), true);
+    assert.strictEqual(answer("genmail:configSetComposeQuoteWidth", [560]), 560);
     assert.strictEqual(answer("config:getTheme", []), "dark");
     assert.strictEqual(answer("genmail:configGetAccent", []), "#112233");
     assert.strictEqual(answer("genmail:configGetConversationViewEnabled", []), false);
@@ -630,6 +632,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configGetShowOneClickTidy", []), true);
     assert.strictEqual(answer("genmail:configGetSidebarGmailFoldersExpanded", []), false);
     assert.strictEqual(answer("genmail:configGetSidebarOutlookFoldersExpanded", []), true);
+    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 560);
     assert.strictEqual(answer("genmail:configSetAccent", ["#abcdef"]), "#ABCDEF");
     const reloaded = spawnSync(process.execPath, ["-e", `
       const { answer } = require(${JSON.stringify(path.join(root, "host/settings.js"))});
@@ -645,6 +648,7 @@ function checkSettingsRoundTrip() {
         tidy: answer("genmail:configGetShowOneClickTidy", []),
         gmailFolders: answer("genmail:configGetSidebarGmailFoldersExpanded", []),
         outlookFolders: answer("genmail:configGetSidebarOutlookFoldersExpanded", []),
+        quoteWidth: answer("genmail:configGetComposeQuoteWidth", []),
       }));
     `], { encoding: "utf8" });
     assert.strictEqual(reloaded.status, 0, reloaded.stderr);
@@ -660,6 +664,7 @@ function checkSettingsRoundTrip() {
       tidy: true,
       gmailFolders: false,
       outlookFolders: true,
+      quoteWidth: 560,
     });
     assert.throws(() => answer("config:setTheme", ["neon"]), /light or dark/);
     assert.strictEqual(answer("config:getTheme", []), "dark");
@@ -671,8 +676,13 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), false);
     assert.throws(() => answer("genmail:configSetShowFolderChips", ["yes"]), /on or off/);
     assert.strictEqual(answer("genmail:configGetShowFolderChips", []), false);
+    assert.throws(() => answer("genmail:configSetComposeQuoteWidth", [10]), /220 to 720/);
+    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 560);
+    assert.throws(() => answer("genmail:configSetComposeQuoteWidth", [800]), /220 to 720/);
+    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 560);
     fs.writeFileSync(file, "{");
     assert.strictEqual(answer("config:getTheme", []), "light");
+    assert.strictEqual(answer("genmail:configGetComposeQuoteWidth", []), 420);
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
     assert.strictEqual(answer("config:getTheme", []), "dark");
   } finally {
@@ -823,6 +833,19 @@ const compose = loadFunctions(appJs, [
   "replyBody",
   "attachmentNote",
   "forwardBody",
+  "quoteShownDefault",
+  "quoteSource",
+  "outgoingBody",
+  "quoteWidthPref",
+  "paneWidth",
+  "quotePaneWidth",
+  "composeLayoutMode",
+  "composeFrame",
+  "composeDismisses",
+  "composeOutcome",
+  "composeSession",
+  "dismissCompose",
+  "quoteStateFromSeed",
   "composeSeed",
 ]);
 const ada = "ada.lovelace@example.com";
@@ -842,9 +865,16 @@ assert.strictEqual(reply.title, "Reply");
 assert.strictEqual(reply.aiWrite, true);
 assert.strictEqual(reply.to, "Charles Babbage <charles@example.com>");
 assert.strictEqual(reply.subject, "Re: Notes on the Analytical Engine");
-assert.ok(reply.body.includes("Charles Babbage <charles@example.com> wrote:"));
-assert.ok(reply.body.includes("> The table of operations is ready for a second reading."));
-assert.ok(!reply.body.includes("mary@example.com"));
+assert.strictEqual(reply.kind, "reply");
+assert.strictEqual(reply.body, "");
+assert.strictEqual(reply.quoteShown, true);
+assert.ok(reply.quote.includes("Charles Babbage <charles@example.com> wrote:"));
+assert.ok(reply.quote.includes("> The table of operations is ready for a second reading."));
+assert.ok(!reply.quote.includes("<p>"));
+assert.ok(!reply.quote.includes("mary@example.com"));
+assert.strictEqual(reply.quoteEmail.htmlBody.includes("table of operations"), true);
+assert.ok(compose.outgoingBody("Thanks.", reply.quote).startsWith("Thanks.\n\n"));
+assert.ok(compose.outgoingBody("Thanks.", reply.quote).includes("> The table of operations is ready for a second reading."));
 assert.strictEqual(reply.threadId, "m-engine");
 assert.strictEqual(reply.inReplyTo, undefined);
 const replyAll = compose.composeSeed(engineMail, "all", ada);
@@ -899,10 +929,15 @@ assert.strictEqual(forwarded.to, "");
 assert.strictEqual(forwarded.aiWrite, undefined);
 assert.strictEqual(opensAiWrite(forwarded, { aiReply: true }), false);
 assert.strictEqual(forwarded.subject, "Fwd: A compiler is just another program");
-assert.ok(forwarded.body.includes("---------- Forwarded message ----------"));
-assert.ok(forwarded.body.includes("From: Grace Hopper <grace.hopper@example.com>"));
-assert.ok(forwarded.body.includes("Once the machine can read its own instructions, the rest follows."));
-assert.ok(forwarded.body.includes("Attachments: notes.txt"));
+assert.strictEqual(forwarded.kind, "forward");
+assert.strictEqual(forwarded.body, "");
+assert.strictEqual(forwarded.quoteShown, false);
+assert.ok(forwarded.quote.includes("---------- Forwarded message ----------"));
+assert.ok(forwarded.quote.includes("From: Grace Hopper <grace.hopper@example.com>"));
+assert.ok(forwarded.quote.includes("Once the machine can read its own instructions, the rest follows."));
+assert.ok(forwarded.quote.includes("Attachments: notes.txt"));
+assert.ok(compose.outgoingBody("Please see this.", forwarded.quote).startsWith("Please see this.\n\n"));
+assert.ok(compose.outgoingBody("", forwarded.quote).includes("Forwarded message"));
 assert.strictEqual(forwarded.inReplyTo, undefined);
 assert.strictEqual(forwarded.threadId, undefined);
 assert.ok(!Object.hasOwn(forwarded, "attachments"));
@@ -918,9 +953,10 @@ const htmlReply = compose.composeSeed({
   messageId: "<abc@example.com>",
   threadId: "t-notes",
 }, "reply", ada);
-assert.ok(htmlReply.body.includes("> Ready & waiting."));
-assert.ok(htmlReply.body.includes("> Second line"));
-assert.ok(!htmlReply.body.includes("<p>"));
+assert.ok(htmlReply.quote.includes("> Ready & waiting."));
+assert.ok(htmlReply.quote.includes("> Second line"));
+assert.ok(!htmlReply.quote.includes("<p>"));
+assert.strictEqual(htmlReply.quoteShown, true);
 assert.strictEqual(htmlReply.inReplyTo, "<abc@example.com>");
 assert.strictEqual(htmlReply.threadId, "t-notes");
 assert.strictEqual(compose.composeSeed({
@@ -935,11 +971,93 @@ const namedOnly = compose.composeSeed({
   textBody: "See attached",
   hasAttachments: true,
 }, "forward", "");
-assert.ok(namedOnly.body.includes("This message has attachments."));
-assert.ok(!namedOnly.body.includes("Attachments:"));
+assert.ok(namedOnly.quote.includes("This message has attachments."));
+assert.ok(!namedOnly.quote.includes("Attachments:"));
 assert.strictEqual(compose.attachmentNote({ attachments: [{ id: "x" }] }), "Attachments: attachment");
 assert.strictEqual(compose.composeSeed({ subject: "Hi" }, "reply", ada).to, "");
-assert.strictEqual(compose.composeSeed({ subject: "Hi" }, "forward", ada).body.includes("Forwarded message"), true);
+assert.strictEqual(compose.composeSeed({ subject: "Hi" }, "forward", ada).quote.includes("Forwarded message"), true);
+assert.strictEqual(compose.quoteShownDefault("reply"), true);
+assert.strictEqual(compose.quoteShownDefault("all"), true);
+assert.strictEqual(compose.quoteShownDefault("forward"), false);
+assert.strictEqual(compose.composeLayoutMode(900, 0, 0), "wide");
+assert.strictEqual(compose.composeLayoutMode(899, 800, 1400), "narrow");
+assert.strictEqual(compose.composeLayoutMode(0, 640, 1280), "wide");
+assert.strictEqual(compose.composeLayoutMode(0, 700, 700), "narrow");
+assert.strictEqual(compose.composeLayoutMode(0, 100, 1400), "wide");
+assert.deepStrictEqual(compose.composeFrame(1100, 200, 1400, true, false), {
+  layout: "wide",
+  quote: "shown",
+  direction: "row",
+  divider: true,
+  collapsed: false,
+});
+assert.deepStrictEqual(compose.composeFrame(720, 200, 800, true, false), {
+  layout: "narrow",
+  quote: "shown",
+  direction: "column",
+  divider: false,
+  collapsed: false,
+});
+assert.strictEqual(compose.composeFrame(720, 200, 800, true, true).collapsed, true);
+assert.strictEqual(compose.composeFrame(1100, 200, 1400, true, true).collapsed, false);
+assert.strictEqual(compose.composeFrame(1100, 200, 1400, false, false).divider, false);
+assert.strictEqual(compose.composeFrame(1100, 200, 1400, false, false).direction, "column");
+assert.strictEqual(compose.quoteWidthPref(420), 420);
+assert.strictEqual(compose.quoteWidthPref("480"), 480);
+assert.strictEqual(compose.quoteWidthPref(219), 420);
+assert.strictEqual(compose.quoteWidthPref(721), 420);
+assert.strictEqual(compose.quotePaneWidth(480, 0), 480);
+assert.strictEqual(compose.quotePaneWidth(200, 1100), 220);
+assert.strictEqual(compose.quotePaneWidth(800, 1100), 720);
+assert.strictEqual(compose.quotePaneWidth(700, 900), 580);
+assert.deepStrictEqual(compose.composeSession(["close"]), []);
+assert.deepStrictEqual(compose.composeSession(["cancel"]), []);
+assert.deepStrictEqual(compose.composeSession(["cancel", "close"]), []);
+assert.deepStrictEqual(compose.composeSession(["save", "close"]), ["mail:upsertDraft"]);
+assert.deepStrictEqual(compose.composeSession(["send"]), ["mail:send"]);
+assert.strictEqual(compose.dismissCompose("close"), true);
+assert.strictEqual(compose.dismissCompose("cancel"), true);
+assert.strictEqual(compose.dismissCompose("send"), false);
+assert.strictEqual(compose.composeOutcome("close"), "");
+assert.strictEqual(compose.composeOutcome("cancel"), "");
+const hostile = compose.composeSeed({
+  from: "Eve <eve@example.com>",
+  subject: "Hi",
+  htmlBody: '<p>Hello</p><script>alert(1)</script><img src="javascript:alert(2)" alt="x"><img src="https://example.com/a.png" alt="Gear">',
+}, "reply", ada);
+assert.ok(hostile.quote.includes("> Hello"));
+assert.ok(!hostile.quote.includes("<script>"));
+assert.ok(!hostile.quote.includes("javascript:"));
+assert.ok(hostile.quoteEmail.htmlBody.includes("<script>"));
+const remoteImages = extractFunction(appJs, "remoteImageSrcs");
+assert.deepStrictEqual(remoteImages(hostile.quoteEmail.htmlBody).map((image) => image.src), ["https://example.com/a.png"]);
+const quotePaint = functionSource(appJs, "paintQuoteBody");
+const bodyPaint = functionSource(appJs, "appendMessageBody");
+assert.ok(quotePaint.includes("appendMessageBody"));
+assert.ok(bodyPaint.includes("textContent"));
+assert.ok(bodyPaint.includes("readable("));
+assert.ok(!bodyPaint.includes("innerHTML"));
+assert.ok(functionSource(appJs, "renderBody").includes("appendMessageBody"));
+assert.ok(functionSource(appJs, "composePayload").includes("outgoingBody"));
+assert.ok(!functionSource(appJs, "dismissCompose").includes("mail:send"));
+assert.ok(appJs.includes('dismissCompose("close")') && appJs.includes('dismissCompose("cancel")'));
+assert.ok(html.includes('id="compose-quote"') && html.includes('id="compose-split-handle"') && html.includes('id="compose-quote-toggle"'));
+assert.ok(html.includes('id="compose-quote-collapse"') && html.includes("Hide quoted message") === false);
+assert.ok(html.includes("Show quoted message") && html.includes("The quoted message is included when you save or send."));
+assert.ok(html.includes("M1 12s4-8 11-8") && html.includes("M17.94 17.94A10.07") && html.includes('points="6 9 12 15 18 9"'));
+assert.ok(css.includes('#compose[data-layout="wide"][data-quote="shown"] .compose-split'));
+assert.ok(css.includes('#compose[data-layout="narrow"][data-quote="shown"] .compose-quote'));
+const wideRule = css.slice(css.indexOf('#compose[data-layout="wide"][data-quote="shown"] .compose-split'));
+assert.ok(wideRule.slice(0, 240).includes("flex-direction: row"));
+assert.ok(css.includes("--compose-quote") && css.includes("prefers-reduced-motion: reduce"));
+assert.ok(appJs.includes("fadePane") && motionSrc.includes("function fadePane"));
+assert.ok(appJs.includes("genmail:configGetComposeQuoteWidth") && appJs.includes("genmail:configSetComposeQuoteWidth"));
+assert.strictEqual(compose.quoteStateFromSeed({}), null);
+assert.strictEqual(compose.quoteStateFromSeed(null), null);
+assert.ok(appJs.includes("Hide quoted message"));
+assert.strictEqual(replyAll.quoteShown, true);
+assert.strictEqual(compose.quoteStateFromSeed(reply).shown, true);
+assert.strictEqual(compose.quoteStateFromSeed(forwarded).shown, false);
 assert.ok(appJs.includes('readerButton("reply"') && appJs.includes('readerButton("reply-all"') && appJs.includes('readerButton("forward"'));
 assert.ok(appJs.includes("Load remote content") && appJs.includes("remote-gate"));
 assert.ok(html.includes('id="compose-cc"') && html.includes('id="compose-bcc"') && html.includes('class="compose-fields"'));
@@ -1019,8 +1137,10 @@ const suggested = ai.withSuggestion(compose.composeSeed({
 }, "reply", "ada.lovelace@example.com"), "Thanks, I'll read it.");
 assert.strictEqual(suggested.title, "Reply");
 assert.strictEqual(suggested.to, "Charles Babbage <charles@example.com>");
-assert.ok(suggested.body.startsWith("Thanks, I'll read it.\n\n"));
-assert.ok(suggested.body.includes("> See you"));
+assert.strictEqual(suggested.body, "Thanks, I'll read it.");
+assert.ok(suggested.quote.includes("> See you"));
+assert.ok(compose.outgoingBody(suggested.body, suggested.quote).startsWith("Thanks, I'll read it.\n\n"));
+assert.ok(compose.outgoingBody(suggested.body, suggested.quote).includes("> See you"));
 assert.strictEqual(ai.withSuggestion(suggested, "  "), suggested);
 for (const channel of [
   "aiDraftWrite:start",

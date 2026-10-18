@@ -28,6 +28,8 @@ const INVOKE = [
   "genmail:configSetSidebarGmailFoldersExpanded",
   "genmail:configGetSidebarOutlookFoldersExpanded",
   "genmail:configSetSidebarOutlookFoldersExpanded",
+  "genmail:configGetComposeQuoteWidth",
+  "genmail:configSetComposeQuoteWidth",
   "host:aiGetConfig",
   "host:aiSaveConfig",
   "host:aiTest",

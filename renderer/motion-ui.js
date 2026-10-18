@@ -96,8 +96,15 @@ function wantsCloseMotion() {
   return !reduced();
 }
 
+function fadePane(el, axis) {
+  if (!el || reduced() || el.hidden) return;
+  const value = token(el);
+  const from = axis === "x" ? { opacity: [0, 1], x: [-10, 0] } : { opacity: [0, 1], y: [8, 0] };
+  finish(el, value, animate(el, from, { duration: 0.16 }));
+}
+
 function bindChrome(root) {
-  const targets = root.querySelectorAll("header button.primary, .rail-btn, dialog button.primary");
+  const targets = root.querySelectorAll("header button.primary, .rail-btn, dialog button.primary, #compose-quote-toggle, #compose-quote-collapse");
   targets.forEach((el) => {
     hover(el, () => {
       if (reduced()) return;
@@ -130,4 +137,5 @@ window.genmailMotion = {
   dialogOut,
   wantsCloseMotion,
   bindChrome,
+  fadePane,
 };

@@ -304,10 +304,39 @@
       </form>
     </dialog>
 
-    <dialog id="compose" aria-labelledby="compose-title">
+    <dialog id="compose" aria-labelledby="compose-title" data-quote="off" data-layout="" data-quote-collapsed="false">
       <form id="compose-form">
-        <h2 id="compose-title">New message</h2>
+        <div class="compose-head">
+          <h2 id="compose-title">New message</h2>
+          <button type="button" class="ghost icon-label" id="compose-quote-toggle" hidden aria-pressed="false">
+            <svg class="quote-icon quote-icon-hide" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+              <line x1="1" y1="1" x2="23" y2="23"></line>
+            </svg>
+            <svg class="quote-icon quote-icon-show" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <span id="compose-quote-toggle-label">Show quoted message</span>
+          </button>
+        </div>
         <p id="compose-note" class="hint"></p>
+        <div id="compose-split" class="compose-split">
+          <section id="compose-quote" class="compose-quote" aria-label="Quoted message" hidden>
+            <div class="compose-quote-head">
+              <p class="compose-quote-label" id="compose-quote-label">Original message</p>
+              <button type="button" class="ghost icon-label" id="compose-quote-collapse" aria-expanded="true" aria-controls="compose-quote-body">
+                <svg class="quote-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+                <span id="compose-quote-collapse-label">Collapse</span>
+              </button>
+            </div>
+            <div id="compose-quote-body" class="compose-quote-body"></div>
+          </section>
+          <div id="compose-split-handle" class="compose-split-handle" role="separator" aria-orientation="vertical" aria-label="Resize quoted message" aria-valuemin="220" aria-valuemax="720" aria-valuenow="420" tabindex="0" hidden></div>
+          <div class="compose-draft">
+            <p id="compose-quote-note" class="hint" hidden>The quoted message is included when you save or send.</p>
         <div class="compose-fields">
           <div class="field-row">
             <label for="compose-to">To</label>
@@ -359,6 +388,8 @@
         <p id="scheduled-heading" class="hint">Scheduled</p>
         <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
         <p class="hint" id="schedule-note">Sends while the app is open. If GenMail is closed at that time, it sends the next time you open it.</p>
+          </div>
+        </div>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>
           <button type="button" class="ghost" id="compose-schedule">Schedule send</button>

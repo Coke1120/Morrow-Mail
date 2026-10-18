@@ -14,6 +14,7 @@ const DEFAULTS = {
   showOneClickTidy: false,
   sidebarGmailFoldersExpanded: true,
   sidebarOutlookFoldersExpanded: false,
+  composeQuoteWidth: 420,
 };
 
 const GET = {
@@ -28,6 +29,7 @@ const GET = {
   "genmail:configGetShowOneClickTidy": "showOneClickTidy",
   "genmail:configGetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
   "genmail:configGetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
+  "genmail:configGetComposeQuoteWidth": "composeQuoteWidth",
 };
 
 const SET = {
@@ -42,6 +44,7 @@ const SET = {
   "genmail:configSetShowOneClickTidy": "showOneClickTidy",
   "genmail:configSetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
   "genmail:configSetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
+  "genmail:configSetComposeQuoteWidth": "composeQuoteWidth",
 };
 
 const BOOLS = new Set([
@@ -63,6 +66,7 @@ function reject(key) {
   if (key === "theme") throw new Error("Theme must be light or dark");
   if (key === "accent") throw new Error("Accent must be a #RRGGBB color");
   if (key === "undoSendDelaySeconds") throw new Error("Undo send delay must be 0 to 30 seconds");
+  if (key === "composeQuoteWidth") throw new Error("Quote pane width must be 220 to 720");
   throw new Error("Expected on or off");
 }
 
@@ -75,6 +79,8 @@ function cast(key, value, loose) {
     if (/^#[0-9A-Fa-f]{6}$/.test(accent)) return accent.toUpperCase();
   } else if (key === "undoSendDelaySeconds") {
     if (Number.isInteger(value) && value >= 0 && value <= 30) return value;
+  } else if (key === "composeQuoteWidth") {
+    if (Number.isInteger(value) && value >= 220 && value <= 720) return value;
   } else if (BOOLS.has(key) && typeof value === "boolean") {
     return value;
   }

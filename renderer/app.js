@@ -10,6 +10,7 @@ const state = {
   query: "",
   draftId: null,
   composeMeta: null,
+  composeQuote: null,
   busy: false,
   snoozed: new Map(),
   signatures: [],
@@ -31,6 +32,7 @@ const state = {
     undoSend: 5,
     snooze: true,
     tidy: false,
+    quoteWidth: 420,
   },
   providerFolders: null,
   dragMessage: null,
@@ -1461,25 +1463,144 @@ function forwardBody(email) {
   return `\n\n${lines.join("\n")}`;
 }
 
+function quoteShownDefault(kind) {
+  return kind === "reply" || kind === "all";
+}
+
+function quoteSource(email) {
+  const message = email || {};
+  return {
+    id: message.id ? String(message.id) : "",
+    from: message.from || "",
+    to: message.to || "",
+    cc: message.cc || "",
+    date: message.date || "",
+    subject: message.subject || "",
+    htmlBody: typeof message.htmlBody === "string" ? message.htmlBody : "",
+    textBody: typeof message.textBody === "string" ? message.textBody : "",
+    snippet: typeof message.snippet === "string" ? message.snippet : "",
+    attachments: Array.isArray(message.attachments) ? message.attachments : [],
+    hasAttachments: message.hasAttachments === true,
+  };
+}
+
+function outgoingBody(draft, quote) {
+  const text = String(draft || "").replace(/\s+$/g, "");
+  const quoted = String(quote || "").replace(/^\s+/, "").replace(/\s+$/g, "");
+  if (!quoted) return text;
+  if (!text) return quoted;
+  return text + "\n\n" + quoted;
+}
+
+function quoteWidthPref(value) {
+  const raw = typeof value === "number" ? value : (typeof value === "string" && /^-?\d+$/.test(value.trim()) ? Number(value) : NaN);
+  if (!Number.isInteger(raw) || raw < 220 || raw > 720) return 420;
+  return raw;
+}
+
+function quotePaneWidth(width, total) {
+  const min = 220;
+  const raw = Number(width);
+  const stored = Number.isFinite(raw) ? raw : 420;
+  const space = Number(total);
+  const max = Number.isFinite(space) && space >= min + 320
+    ? Math.max(min, Math.min(720, Math.floor(space - 320)))
+    : 720;
+  return paneWidth(stored, 0, min, max);
+}
+
+function composeLayoutMode(contentWidth, readerWidth, viewportWidth) {
+  const content = Number(contentWidth) || 0;
+  const reader = Number(readerWidth) || 0;
+  const viewport = Number(viewportWidth) || 0;
+  if (content >= 900) return "wide";
+  if (content > 0) return "narrow";
+  if (reader >= 640 && (viewport === 0 || viewport >= 960)) return "wide";
+  if (viewport >= 960) return "wide";
+  return "narrow";
+}
+
+function composeFrame(contentWidth, readerWidth, viewportWidth, shown, collapsed) {
+  const layout = composeLayoutMode(contentWidth, readerWidth, viewportWidth);
+  const visible = shown === true;
+  const wide = layout === "wide";
+  return {
+    layout: layout,
+    quote: visible ? "shown" : "hidden",
+    direction: wide && visible ? "row" : "column",
+    divider: wide && visible,
+    collapsed: !wide && visible && collapsed === true,
+  };
+}
+
+function composeDismisses(action) {
+  return action === "close" || action === "cancel";
+}
+
+function composeOutcome(action) {
+  if (action === "send") return "mail:send";
+  if (action === "schedule") return "mail:scheduleSend";
+  if (action === "save") return "mail:upsertDraft";
+  return "";
+}
+
+function composeSession(actions) {
+  const calls = [];
+  const list = Array.isArray(actions) ? actions : [];
+  for (const action of list) {
+    if (composeDismisses(action)) continue;
+    const channel = composeOutcome(action);
+    if (channel) calls.push(channel);
+  }
+  return calls;
+}
+
+function dismissCompose(action) {
+  const name = action || "close";
+  return composeDismisses(name) && !composeOutcome(name);
+}
+
+function quoteStateFromSeed(fields) {
+  const source = fields && fields.quoteEmail;
+  const text = fields && typeof fields.quote === "string" ? fields.quote : "";
+  if (!source && !text) return null;
+  return {
+    text: text,
+    shown: !!(fields && fields.quoteShown),
+    collapsed: false,
+    email: source || null,
+    kind: (fields && fields.kind) || "",
+    images: false,
+  };
+}
+
 function composeSeed(email, kind, self) {
   const message = email || {};
   if (kind === "forward") {
     return {
+      kind: "forward",
       title: "Forward",
       to: "",
       cc: "",
       subject: prefixedSubject(message.subject, "Fwd:"),
-      body: forwardBody(message),
+      body: "",
+      quote: forwardBody(message),
+      quoteShown: quoteShownDefault("forward"),
+      quoteEmail: quoteSource(message),
     };
   }
   const all = kind === "all";
   const parties = replyParties(message, self, all);
   const seed = {
+    kind: all ? "all" : "reply",
     title: all ? "Reply All" : "Reply",
     to: parties.to,
     cc: parties.cc,
     subject: prefixedSubject(message.subject, "Re:"),
-    body: replyBody(message),
+    body: "",
+    quote: replyBody(message),
+    quoteShown: quoteShownDefault(all ? "all" : "reply"),
+    quoteEmail: quoteSource(message),
     aiWrite: true,
   };
   if (message.messageId) seed.inReplyTo = message.messageId;
@@ -2456,7 +2577,7 @@ function renderReader(focus) {
   }
 }
 
-function renderBody(pane, email) {
+function appendMessageBody(parent, email, imagesOn) {
   const wrap = document.createElement("div");
   wrap.className = "body";
   for (const node of bodyNodes(readable(email))) {
@@ -2465,8 +2586,7 @@ function renderBody(pane, email) {
     block.textContent = node.text;
     wrap.appendChild(block);
   }
-  const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
-  if (remoteVisible(state.prefs.images, allowed)) {
+  if (imagesOn) {
     for (const image of remoteImageSrcs(email && email.htmlBody)) {
       const img = document.createElement("img");
       img.className = "remote";
@@ -2476,7 +2596,13 @@ function renderBody(pane, email) {
       wrap.appendChild(img);
     }
   }
-  pane.appendChild(wrap);
+  parent.appendChild(wrap);
+  return wrap;
+}
+
+function renderBody(pane, email) {
+  const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
+  appendMessageBody(pane, email, remoteVisible(state.prefs.images, allowed));
 }
 
 function renderRemoteGate(pane, email) {
@@ -3887,7 +4013,7 @@ function composePayload(account) {
     accountId: account.id,
     to: $("compose-to").value.trim(),
     subject: $("compose-subject").value,
-    body: toHtml($("compose-body").value),
+    body: toHtml(outgoingBody($("compose-body").value, state.composeQuote && state.composeQuote.text)),
     fromAddress: account.email,
     draftId: state.draftId || undefined,
     emailId: state.draftId || undefined,
@@ -4228,6 +4354,228 @@ async function cancelDraftWrite() {
   await call("aiDraftWrite:cancel", { reqId });
 }
 
+function readComposeLayout() {
+  const dialog = $("compose");
+  const reader = $("reader");
+  return composeLayoutMode(
+    dialog ? dialog.clientWidth : 0,
+    reader ? reader.clientWidth : 0,
+    window.innerWidth || 0,
+  );
+}
+
+function applyQuoteWidth() {
+  const dialog = $("compose");
+  const total = dialog ? dialog.clientWidth : 0;
+  const next = Math.round(quotePaneWidth(state.prefs.quoteWidth, total));
+  document.documentElement.style.setProperty("--compose-quote", next + "px");
+  const handle = $("compose-split-handle");
+  if (handle) {
+    handle.setAttribute("aria-valuemin", "220");
+    handle.setAttribute("aria-valuemax", "720");
+    handle.setAttribute("aria-valuenow", String(next));
+  }
+  return next;
+}
+
+function dragQuoteWidth(px) {
+  const dialog = $("compose");
+  const total = dialog ? dialog.clientWidth : 0;
+  const next = Math.round(quotePaneWidth(px, total));
+  state.prefs.quoteWidth = next;
+  document.documentElement.style.setProperty("--compose-quote", next + "px");
+  const handle = $("compose-split-handle");
+  if (handle) handle.setAttribute("aria-valuenow", String(next));
+  return next;
+}
+
+function rememberQuoteWidth(px) {
+  const next = quoteWidthPref(px);
+  state.prefs.quoteWidth = next;
+  applyQuoteWidth();
+  if (!api) return;
+  api.invoke("genmail:configSetComposeQuoteWidth", next).catch(() => {});
+}
+
+function quoteImagesOn(email) {
+  if (!email) return false;
+  const allowed = !!(email.id && state.remoteAllowed && state.remoteAllowed[email.id]);
+  if (allowed) return true;
+  if (state.composeQuote && state.composeQuote.images === true && !email.id) return true;
+  return remoteVisible(state.prefs.images, false);
+}
+
+function paintQuoteBody() {
+  const root = $("compose-quote-body");
+  if (!root) return;
+  root.replaceChildren();
+  const quote = state.composeQuote;
+  if (!quote) return;
+  const email = quote.email;
+  if (!email) {
+    const text = String(quote.text || "").trim();
+    if (!text) return;
+    const block = document.createElement("p");
+    block.className = "body";
+    block.textContent = text;
+    root.appendChild(block);
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "compose-quote-meta";
+  const from = document.createElement("p");
+  from.className = "meta";
+  from.textContent = email.from || "";
+  head.appendChild(from);
+  if (email.date) {
+    const when = document.createElement("p");
+    when.className = "meta";
+    const date = new Date(email.date);
+    when.textContent = Number.isNaN(date.getTime()) ? String(email.date) : date.toLocaleString();
+    head.appendChild(when);
+  }
+  if (email.subject) {
+    const subject = document.createElement("p");
+    subject.className = "meta";
+    subject.textContent = email.subject;
+    head.appendChild(subject);
+  }
+  for (const pair of [["To", email.to], ["Cc", email.cc]]) {
+    const text = people(pair[1]);
+    if (!text) continue;
+    const line = document.createElement("p");
+    line.className = "meta";
+    line.textContent = pair[0] + " " + text;
+    head.appendChild(line);
+  }
+  root.appendChild(head);
+  const images = remoteImageSrcs(email.htmlBody);
+  const allowed = quoteImagesOn(email);
+  if (images.length && !allowed) {
+    const bar = document.createElement("div");
+    bar.className = "remote-gate";
+    const note = document.createElement("p");
+    note.textContent = images.length === 1
+      ? "1 remote image is blocked."
+      : images.length + " remote images are blocked.";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.textContent = "Load remote content";
+    button.addEventListener("click", () => {
+      if (email.id) {
+        state.remoteAllowed[email.id] = true;
+        if (state.email && state.email.id === email.id) renderReader(false);
+      } else if (state.composeQuote) {
+        state.composeQuote.images = true;
+      }
+      paintQuoteBody();
+    });
+    bar.append(note, button);
+    root.appendChild(bar);
+  }
+  appendMessageBody(root, email, allowed);
+  const files = attachmentNote(email);
+  if (files) {
+    const line = document.createElement("p");
+    line.className = "meta";
+    line.textContent = files;
+    root.appendChild(line);
+  }
+}
+
+function paintComposeChrome() {
+  const dialog = $("compose");
+  const quote = state.composeQuote;
+  const toggle = $("compose-quote-toggle");
+  const pane = $("compose-quote");
+  const handle = $("compose-split-handle");
+  const note = $("compose-quote-note");
+  const collapse = $("compose-quote-collapse");
+  const collapseLabel = $("compose-quote-collapse-label");
+  const body = $("compose-quote-body");
+  if (!dialog || !toggle || !pane || !handle || !note) return;
+  const has = !!(quote && (quote.email || quote.text));
+  dialog.classList.toggle("is-quoting", has);
+  toggle.hidden = !has;
+  if (!has) {
+    dialog.dataset.quote = "off";
+    dialog.dataset.layout = "";
+    dialog.dataset.quoteCollapsed = "false";
+    pane.hidden = true;
+    handle.hidden = true;
+    note.hidden = true;
+    if (collapse) collapse.hidden = true;
+    if (body) body.replaceChildren();
+    return;
+  }
+  const shown = quote.shown === true;
+  const wide = dialog.dataset.layout === "wide";
+  const collapsed = !wide && shown && quote.collapsed === true;
+  dialog.dataset.quote = shown ? "shown" : "hidden";
+  dialog.dataset.quoteCollapsed = collapsed ? "true" : "false";
+  toggle.setAttribute("aria-pressed", shown ? "true" : "false");
+  const toggleLabel = $("compose-quote-toggle-label");
+  if (toggleLabel) toggleLabel.textContent = shown ? "Hide quoted message" : "Show quoted message";
+  pane.hidden = !shown;
+  pane.setAttribute("aria-hidden", shown ? "false" : "true");
+  handle.hidden = !(shown && wide);
+  note.hidden = shown;
+  if (collapse) {
+    collapse.hidden = !shown || wide;
+    collapse.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  }
+  if (collapseLabel) collapseLabel.textContent = collapsed ? "Expand" : "Collapse";
+  if (body) body.hidden = collapsed;
+}
+
+function syncComposeLayout() {
+  const dialog = $("compose");
+  if (!dialog) return;
+  if (!state.composeQuote) {
+    paintComposeChrome();
+    return;
+  }
+  const mode = readComposeLayout();
+  const changed = dialog.dataset.layout !== mode;
+  dialog.dataset.layout = mode;
+  if (mode === "wide") state.composeQuote.collapsed = false;
+  paintComposeChrome();
+  applyQuoteWidth();
+  if (changed && state.composeQuote.shown) {
+    const motion = motionApi();
+    if (motion && motion.fadePane) motion.fadePane($("compose-quote"), mode === "wide" ? "x" : "y");
+  }
+}
+
+function scheduleComposeLayout() {
+  syncComposeLayout();
+  requestAnimationFrame(() => syncComposeLayout());
+}
+
+function toggleComposeQuote() {
+  if (!state.composeQuote) return;
+  state.composeQuote.shown = !state.composeQuote.shown;
+  if (state.composeQuote.shown) state.composeQuote.collapsed = false;
+  syncComposeLayout();
+  if (!state.composeQuote.shown) return;
+  const motion = motionApi();
+  if (motion && motion.fadePane) {
+    motion.fadePane($("compose-quote"), $("compose").dataset.layout === "wide" ? "x" : "y");
+  }
+}
+
+function toggleComposeQuoteCollapse() {
+  const quote = state.composeQuote;
+  const dialog = $("compose");
+  if (!quote || !quote.shown || !dialog || dialog.dataset.layout === "wide") return;
+  quote.collapsed = !quote.collapsed;
+  paintComposeChrome();
+  if (quote.collapsed) return;
+  const motion = motionApi();
+  if (motion && motion.fadePane) motion.fadePane($("compose-quote-body"), "y");
+}
+
 async function openCompose(seed) {
   const fields = seed || {};
   resetDraftWrite();
@@ -4237,6 +4585,7 @@ async function openCompose(seed) {
     inReplyTo: fields.inReplyTo || "",
     threadId: fields.threadId || "",
   };
+  state.composeQuote = quoteStateFromSeed(fields);
   $("compose-title").textContent = fields.title || "New message";
   $("compose-to").value = fields.to || "";
   $("compose-cc").value = fields.cc || "";
@@ -4248,9 +4597,13 @@ async function openCompose(seed) {
   $("schedule-at").value = "";
   syncScheduleFields();
   syncCompose();
+  paintComposeChrome();
+  paintQuoteBody();
   openDialog("compose");
+  scheduleComposeLayout();
   await Promise.all([fillSignatures(), loadScheduled()]);
   if (!$("compose").open) return;
+  scheduleComposeLayout();
   const write = document.querySelector(".ai-write");
   const openWrite = opensAiWrite(fields, state.prefs);
   if (write) write.classList.toggle("open", openWrite);
@@ -4529,6 +4882,50 @@ function wireSplits() {
   }
 }
 
+function wireQuoteSplit() {
+  const handle = $("compose-split-handle");
+  const toggle = $("compose-quote-toggle");
+  const collapse = $("compose-quote-collapse");
+  if (!handle || handle.dataset.wired === "1") return;
+  handle.dataset.wired = "1";
+  handle.addEventListener("keydown", (event) => {
+    const step = event.key === "ArrowRight" ? 24 : event.key === "ArrowLeft" ? -24 : 0;
+    if (!step) return;
+    event.preventDefault();
+    event.stopPropagation();
+    rememberQuoteWidth(dragQuoteWidth((state.prefs.quoteWidth || 420) + step));
+  });
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const start = state.prefs.quoteWidth || 420;
+    document.documentElement.style.cursor = "col-resize";
+    document.documentElement.style.userSelect = "none";
+    function move(ev) {
+      dragQuoteWidth(start + ev.clientX - startX);
+    }
+    function stop() {
+      document.documentElement.style.cursor = "";
+      document.documentElement.style.userSelect = "";
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      rememberQuoteWidth(state.prefs.quoteWidth);
+    }
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  });
+  window.addEventListener("resize", () => {
+    const dialog = $("compose");
+    if (!dialog || !dialog.open) return;
+    syncComposeLayout();
+  });
+  if (toggle) toggle.addEventListener("click", () => toggleComposeQuote());
+  if (collapse) collapse.addEventListener("click", () => toggleComposeQuoteCollapse());
+}
+
 function updateView(snapshot, version) {
   const snap = snapshot && typeof snapshot === "object" ? snapshot : {};
   const current = typeof version === "string" ? version : "";
@@ -4704,12 +5101,14 @@ async function loadShellPrefs() {
       next[key] = (await api.invoke(channel)) === true;
     }
     next.undoSend = sendDelayMs(await api.invoke("genmail:configGetUndoSendDelaySeconds")) / 1000;
+    next.quoteWidth = quoteWidthPref(await api.invoke("genmail:configGetComposeQuoteWidth"));
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
   }
   state.prefs = next;
   applyLook(next);
+  document.documentElement.style.setProperty("--compose-quote", state.prefs.quoteWidth + "px");
 }
 
 function refreshReader() {
@@ -7102,6 +7501,7 @@ function wire() {
         dismissConnect();
         return;
       }
+      if (dialog.id === "compose" && !dismissCompose("cancel")) return;
       const apiMotion = motionApi();
       if (!apiMotion || !apiMotion.wantsCloseMotion()) return;
       event.preventDefault();
@@ -7155,6 +7555,7 @@ function wire() {
     loadCalendar().catch((error) => showStatus(error.message, true));
   });
   wireSplits();
+  wireQuoteSplit();
   $("undo").addEventListener("click", () => guard(undoRemoval));
   $("undo-send").addEventListener("click", cancelUndoSend);
   $("profile").addEventListener("change", syncCustomFields);
@@ -7309,7 +7710,9 @@ function wire() {
   $("signatures-from-compose").addEventListener("click", openSignatures);
   $("schedule-preset").addEventListener("change", syncScheduleFields);
   $("compose").addEventListener("close", () => stopDraftWrite());
-  $("compose-close").addEventListener("click", () => closeDialog("compose"));
+  $("compose-close").addEventListener("click", () => {
+    if (dismissCompose("close")) closeDialog("compose");
+  });
   $("ai-generate").addEventListener("click", () => {
     startDraftWrite().catch((error) => showStatus(error.message, true));
   });
