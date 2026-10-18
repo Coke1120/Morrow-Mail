@@ -680,7 +680,7 @@ async function warmFolder(client, account, folder, started) {
     noteStorm(account.id);
     return { paused: true, bootstrapped: false };
   }
-  db.pruneMissing(account.id, folder.path, live.uids, windowStart());
+  // applyFolderSync prunes and updates the cursor/counts in one transaction.
   db.applyFolderSync(account.id, folder.path, {
     messages: [],
     validity: live.validity,
