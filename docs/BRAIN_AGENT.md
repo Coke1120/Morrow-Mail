@@ -1,6 +1,6 @@
 # Brain skills and Agent triage
 
-Morrow Mail runs these on the mailbox cache and your OpenAI-compatible key (`Morrow Mail → AI Setup`). It does not call Genspark. The host has no sample mailbox.
+Morrow Mail runs these on the mailbox cache and your OpenAI-compatible key (`Morrow Mail → AI Setup`). The host has no sample mailbox.
 
 ## Skills
 

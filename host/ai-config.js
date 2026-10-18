@@ -9,9 +9,9 @@ const DEFAULTS = {
 };
 
 function userDataDir() {
-  const override = (process.env.GENMAIL_AI_CONFIG_DIR || "").trim();
+  const override = (process.env.MORROW_AI_CONFIG_DIR || "").trim();
   if (override) return override;
-  return require("./paths").userDataDir("genmail-exact");
+  return require("./paths").userDataDir();
 }
 
 function configPath() {
@@ -34,9 +34,9 @@ function readFileConfig() {
 
 function fromEnv() {
   return {
-    baseUrl: (process.env.GENMAIL_AI_BASE_URL || "").trim(),
-    model: (process.env.GENMAIL_AI_MODEL || "").trim(),
-    apiKey: (process.env.GENMAIL_AI_API_KEY || process.env.XAI_API_KEY || "").trim(),
+    baseUrl: (process.env.MORROW_AI_BASE_URL || "").trim(),
+    model: (process.env.MORROW_AI_MODEL || "").trim(),
+    apiKey: (process.env.MORROW_AI_API_KEY || process.env.XAI_API_KEY || "").trim(),
   };
 }
 

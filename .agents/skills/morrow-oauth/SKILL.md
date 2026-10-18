@@ -1,5 +1,5 @@
 ---
-name: genmail-oauth
+name: morrow-oauth
 description: Use when you change OAuth, IMAP XOAUTH2, the Gmail API, Microsoft Graph, or calendar grants. Mail and calendar use separate grants.
 ---
 

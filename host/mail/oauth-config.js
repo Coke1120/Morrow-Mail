@@ -109,9 +109,8 @@ function googleClientFiles() {
 }
 
 function loadGoogleClient() {
-  const file = (process.env.GENMAIL_GOOGLE_OAUTH_FILE || process.env.MORROW_GOOGLE_OAUTH_FILE || "").trim();
+  const file = (process.env.MORROW_GOOGLE_OAUTH_FILE || "").trim();
   const raw = (
-    process.env.GENMAIL_GOOGLE_OAUTH_JSON ||
     process.env.MORROW_GOOGLE_OAUTH_JSON ||
     process.env.GOOGLE_DESKTOP_OAUTH_JSON ||
     ""
@@ -141,7 +140,7 @@ function credentials(provider) {
     const google = loadGoogleClient();
     if (!google) {
       throw new Error(
-        "Google Desktop OAuth is not configured. Set GOOGLE_DESKTOP_OAUTH_JSON, GENMAIL_GOOGLE_OAUTH_JSON, or GENMAIL_GOOGLE_OAUTH_FILE (same Desktop JSON as Morrow-Mail)."
+        "Google Desktop OAuth is not configured. Set GOOGLE_DESKTOP_OAUTH_JSON, MORROW_GOOGLE_OAUTH_JSON, or MORROW_GOOGLE_OAUTH_FILE (same Desktop JSON as Morrow-Mail)."
       );
     }
     return { provider: "google", clientId: google.clientId, clientSecret: google.clientSecret, public: false };
@@ -248,7 +247,7 @@ function oauthReady() {
     source: {
       microsoft: "shared/microsoft-client-id.txt (from Morrow-Mail; public desktop client)",
       google:
-        "env GOOGLE_DESKTOP_OAUTH_JSON or GENMAIL_GOOGLE_OAUTH_JSON|FILE, resources/google-oauth.json, or process.resourcesPath/google-oauth.json (packaged; never commit)",
+        "env GOOGLE_DESKTOP_OAUTH_JSON or MORROW_GOOGLE_OAUTH_JSON|FILE, resources/google-oauth.json, or process.resourcesPath/google-oauth.json (packaged; never commit)",
     },
   };
 }

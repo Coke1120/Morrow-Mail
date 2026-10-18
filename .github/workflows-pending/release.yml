@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: genmail-release
+  group: morrow-release
   cancel-in-progress: false
 
 jobs:

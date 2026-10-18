@@ -1,14 +1,14 @@
 const { SERVICE } = require("./secret-service");
 
 function backend() {
-  if (process.env.GENMAIL_MAIL_SECRETS === "memory") {
+  if (process.env.MORROW_MAIL_SECRETS === "memory") {
     return require("./memory-secrets");
   }
   if (process.platform === "win32") {
     return require("./win-secrets");
   }
   // macOS / Linux fallback: macOS Keychain via `security`. Linux has no keychain CLI here;
-  // callers should prefer GENMAIL_MAIL_SECRETS=memory for tests.
+  // callers should prefer MORROW_MAIL_SECRETS=memory for tests.
   return require("./mac-secrets");
 }
 

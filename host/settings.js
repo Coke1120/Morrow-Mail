@@ -18,30 +18,30 @@ const DEFAULTS = {
 
 const GET = {
   "config:getTheme": "theme",
-  "genmail:configGetAccent": "accent",
-  "genmail:configGetConversationViewEnabled": "conversationView",
-  "genmail:configGetAutoLoadRemoteImages": "remoteImages",
-  "genmail:configGetUndoSendDelaySeconds": "undoSendDelaySeconds",
-  "genmail:configGetSnoozeEffective": "snooze",
-  "genmail:configGetAiWriteAutoOpenOnReply": "aiWriteAutoOpenOnReply",
-  "genmail:configGetShowFolderChips": "showFolderChips",
-  "genmail:configGetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
-  "genmail:configGetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
-  "genmail:configGetComposeQuoteWidth": "composeQuoteWidth",
+  "morrow:configGetAccent": "accent",
+  "morrow:configGetConversationViewEnabled": "conversationView",
+  "morrow:configGetAutoLoadRemoteImages": "remoteImages",
+  "morrow:configGetUndoSendDelaySeconds": "undoSendDelaySeconds",
+  "morrow:configGetSnoozeEffective": "snooze",
+  "morrow:configGetAiWriteAutoOpenOnReply": "aiWriteAutoOpenOnReply",
+  "morrow:configGetShowFolderChips": "showFolderChips",
+  "morrow:configGetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
+  "morrow:configGetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
+  "morrow:configGetComposeQuoteWidth": "composeQuoteWidth",
 };
 
 const SET = {
   "config:setTheme": "theme",
-  "genmail:configSetAccent": "accent",
-  "genmail:configSetConversationViewEnabled": "conversationView",
-  "genmail:configSetAutoLoadRemoteImages": "remoteImages",
-  "genmail:configSetUndoSendDelaySeconds": "undoSendDelaySeconds",
-  "genmail:configSetSnoozeEffective": "snooze",
-  "genmail:configSetAiWriteAutoOpenOnReply": "aiWriteAutoOpenOnReply",
-  "genmail:configSetShowFolderChips": "showFolderChips",
-  "genmail:configSetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
-  "genmail:configSetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
-  "genmail:configSetComposeQuoteWidth": "composeQuoteWidth",
+  "morrow:configSetAccent": "accent",
+  "morrow:configSetConversationViewEnabled": "conversationView",
+  "morrow:configSetAutoLoadRemoteImages": "remoteImages",
+  "morrow:configSetUndoSendDelaySeconds": "undoSendDelaySeconds",
+  "morrow:configSetSnoozeEffective": "snooze",
+  "morrow:configSetAiWriteAutoOpenOnReply": "aiWriteAutoOpenOnReply",
+  "morrow:configSetShowFolderChips": "showFolderChips",
+  "morrow:configSetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
+  "morrow:configSetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
+  "morrow:configSetComposeQuoteWidth": "composeQuoteWidth",
 };
 
 const BOOLS = new Set([
@@ -55,7 +55,7 @@ const BOOLS = new Set([
 ]);
 
 function storePath() {
-  return path.join(userDataDir("genmail-exact"), "settings.json");
+  return path.join(userDataDir(), "settings.json");
 }
 
 function reject(key) {

@@ -6,14 +6,14 @@ function problem(list, message) {
 
 async function run() {
   const problems = [];
-  const host = process.env.GENMAIL_IMAP_HOST || "127.0.0.1";
-  const imapPort = Number(process.env.GENMAIL_IMAP_PORT || 3143);
-  const smtpPort = Number(process.env.GENMAIL_SMTP_PORT || 3025);
-  const email = process.env.GENMAIL_LIVE_EMAIL || "ada@example.com";
-  const username = process.env.GENMAIL_LIVE_USER || email;
-  const password = process.env.GENMAIL_LIVE_PASSWORD || "";
+  const host = process.env.MORROW_IMAP_HOST || "127.0.0.1";
+  const imapPort = Number(process.env.MORROW_IMAP_PORT || 3143);
+  const smtpPort = Number(process.env.MORROW_SMTP_PORT || 3025);
+  const email = process.env.MORROW_LIVE_EMAIL || "ada@example.com";
+  const username = process.env.MORROW_LIVE_USER || email;
+  const password = process.env.MORROW_LIVE_PASSWORD || "";
   if (!password) {
-    console.error("live mail test needs GENMAIL_LIVE_PASSWORD");
+    console.error("live mail test needs MORROW_LIVE_PASSWORD");
     return 1;
   }
   const token = `live-${Date.now().toString(36)}`;

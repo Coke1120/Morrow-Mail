@@ -1,8 +1,7 @@
 const { spawnSync } = require("child_process");
-const { SERVICE, LEGACY_SERVICE, migrateRead } = require("./secret-service");
+const { SERVICE } = require("./secret-service");
 
 const STORE_DIR = "morrow-mail";
-const LEGACY_STORE_DIR = "genmail-rea";
 
 function ps(script) {
   return spawnSync(
@@ -73,16 +72,11 @@ function setPassword(account, password) {
 }
 
 function getPassword(account) {
-  return migrateRead(
-    (service) => readPassword(service === SERVICE ? STORE_DIR : LEGACY_STORE_DIR, service, account),
-    (service, password) => writePassword(STORE_DIR, service, account, password),
-    (service) => deleteAt(LEGACY_STORE_DIR, service, account),
-  );
+  return readPassword(STORE_DIR, SERVICE, account);
 }
 
 function deletePassword(account) {
   deleteAt(STORE_DIR, SERVICE, account);
-  deleteAt(LEGACY_STORE_DIR, LEGACY_SERVICE, account);
 }
 
 module.exports = {
@@ -90,7 +84,5 @@ module.exports = {
   getPassword,
   deletePassword,
   SERVICE,
-  LEGACY_SERVICE,
   STORE_DIR,
-  LEGACY_STORE_DIR,
 };

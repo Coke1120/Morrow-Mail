@@ -1,4 +1,4 @@
-const api = window.genmail;
+const api = window.morrow;
 
 const state = {
   accounts: [],
@@ -1119,7 +1119,7 @@ function guardOoo(fn) {
 }
 
 function motionApi() {
-  const motion = window.genmailMotion;
+  const motion = window.morrowMotion;
   return motion && typeof motion.rows === "function" ? motion : null;
 }
 
@@ -4741,7 +4741,7 @@ function onMessageDragStart(event) {
     return;
   }
   state.dragMessage = payload;
-  event.dataTransfer.setData("application/x-genmail-message", JSON.stringify(payload));
+  event.dataTransfer.setData("application/x-morrow-message", JSON.stringify(payload));
   event.dataTransfer.effectAllowed = "copyMove";
   const rows = inSelection ? document.querySelectorAll(".message-row.selected") : (row ? [row] : []);
   for (const item of rows) item.classList.add("dragging");
@@ -4767,7 +4767,7 @@ function onFolderDrop(event) {
   clearDropTargets();
   if (!node) return;
   event.preventDefault();
-  const raw = event.dataTransfer && event.dataTransfer.getData("application/x-genmail-message");
+  const raw = event.dataTransfer && event.dataTransfer.getData("application/x-morrow-message");
   const messages = dragMessagesFrom(raw, state.dragMessage);
   state.dragMessage = null;
   for (const row of document.querySelectorAll(".message-row.dragging")) row.classList.remove("dragging");
@@ -5369,7 +5369,7 @@ function rememberQuoteWidth(px) {
   state.prefs.quoteWidth = next;
   applyQuoteWidth();
   if (!api) return;
-  api.invoke("genmail:configSetComposeQuoteWidth", next).catch(() => {});
+  api.invoke("morrow:configSetComposeQuoteWidth", next).catch(() => {});
 }
 
 function quoteImagesOn(email) {
@@ -6038,22 +6038,22 @@ function sendDelayMs(seconds) {
 }
 
 const SHELL_PREFS = {
-  "genmail:configGetShowFolderChips": "chips",
-  "genmail:configGetAiWriteAutoOpenOnReply": "aiReply",
-  "genmail:configGetSidebarGmailFoldersExpanded": "gmailOpen",
-  "genmail:configGetSidebarOutlookFoldersExpanded": "outlookOpen",
+  "morrow:configGetShowFolderChips": "chips",
+  "morrow:configGetAiWriteAutoOpenOnReply": "aiReply",
+  "morrow:configGetSidebarGmailFoldersExpanded": "gmailOpen",
+  "morrow:configGetSidebarOutlookFoldersExpanded": "outlookOpen",
 };
 
 const READER_PREFS = {
-  "genmail:configGetConversationViewEnabled": "conversation",
-  "genmail:configGetAutoLoadRemoteImages": "images",
-  "genmail:configGetSnoozeEffective": "snooze",
+  "morrow:configGetConversationViewEnabled": "conversation",
+  "morrow:configGetAutoLoadRemoteImages": "images",
+  "morrow:configGetSnoozeEffective": "snooze",
 };
 
 async function loadLook() {
   try {
     const theme = await api.invoke("config:getTheme");
-    const accent = await api.invoke("genmail:configGetAccent");
+    const accent = await api.invoke("morrow:configGetAccent");
     applyShellTheme(document.documentElement, theme, accent);
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
@@ -6068,15 +6068,15 @@ async function loadShellPrefs() {
     }
     const look = shellLook({
       theme: await api.invoke("config:getTheme"),
-      accent: await api.invoke("genmail:configGetAccent"),
+      accent: await api.invoke("morrow:configGetAccent"),
     });
     next.theme = look.theme;
     next.accent = look.accent;
     for (const [channel, key] of Object.entries(READER_PREFS)) {
       next[key] = (await api.invoke(channel)) === true;
     }
-    next.undoSend = sendDelayMs(await api.invoke("genmail:configGetUndoSendDelaySeconds")) / 1000;
-    next.quoteWidth = quoteWidthPref(await api.invoke("genmail:configGetComposeQuoteWidth"));
+    next.undoSend = sendDelayMs(await api.invoke("morrow:configGetUndoSendDelaySeconds")) / 1000;
+    next.quoteWidth = quoteWidthPref(await api.invoke("morrow:configGetComposeQuoteWidth"));
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
@@ -6108,16 +6108,16 @@ function takePref(getChannel, kind, control) {
     state.prefs[key] = control.checked === true;
     return true;
   }
-  if (getChannel === "config:getTheme" || getChannel === "genmail:configGetAccent") {
+  if (getChannel === "config:getTheme" || getChannel === "morrow:configGetAccent") {
     const look = shellLook({
       theme: getChannel === "config:getTheme" ? control.value : state.prefs.theme,
-      accent: getChannel === "genmail:configGetAccent" ? control.value : state.prefs.accent,
+      accent: getChannel === "morrow:configGetAccent" ? control.value : state.prefs.accent,
     });
     state.prefs.theme = look.theme;
     state.prefs.accent = look.accent;
     return true;
   }
-  if (getChannel === "genmail:configGetUndoSendDelaySeconds") {
+  if (getChannel === "morrow:configGetUndoSendDelaySeconds") {
     state.prefs.undoSend = sendDelayMs(readPref(kind, control)) / 1000;
     return true;
   }
@@ -6133,8 +6133,8 @@ function paintPrefs() {
 
 async function toggleProviderFolders(provider) {
   const spec = provider === "gmail"
-    ? ["gmailOpen", "genmail:configSetSidebarGmailFoldersExpanded"]
-    : ["outlookOpen", "genmail:configSetSidebarOutlookFoldersExpanded"];
+    ? ["gmailOpen", "morrow:configSetSidebarGmailFoldersExpanded"]
+    : ["outlookOpen", "morrow:configSetSidebarOutlookFoldersExpanded"];
   const key = spec[0];
   const next = !state.prefs[key];
   state.prefs[key] = next;
@@ -6151,15 +6151,15 @@ async function toggleProviderFolders(provider) {
 function prefRows() {
   return [
     ["pref-theme", "config:getTheme", "config:setTheme", "select"],
-    ["pref-accent", "genmail:configGetAccent", "genmail:configSetAccent", "text"],
-    ["pref-conversation", "genmail:configGetConversationViewEnabled", "genmail:configSetConversationViewEnabled", "bool"],
-    ["pref-images", "genmail:configGetAutoLoadRemoteImages", "genmail:configSetAutoLoadRemoteImages", "bool"],
-    ["pref-undo", "genmail:configGetUndoSendDelaySeconds", "genmail:configSetUndoSendDelaySeconds", "seconds"],
-    ["pref-snooze", "genmail:configGetSnoozeEffective", "genmail:configSetSnoozeEffective", "bool"],
-    ["pref-ai-reply", "genmail:configGetAiWriteAutoOpenOnReply", "genmail:configSetAiWriteAutoOpenOnReply", "bool"],
-    ["pref-folder-chips", "genmail:configGetShowFolderChips", "genmail:configSetShowFolderChips", "bool"],
-    ["pref-gmail-folders", "genmail:configGetSidebarGmailFoldersExpanded", "genmail:configSetSidebarGmailFoldersExpanded", "bool"],
-    ["pref-outlook-folders", "genmail:configGetSidebarOutlookFoldersExpanded", "genmail:configSetSidebarOutlookFoldersExpanded", "bool"],
+    ["pref-accent", "morrow:configGetAccent", "morrow:configSetAccent", "text"],
+    ["pref-conversation", "morrow:configGetConversationViewEnabled", "morrow:configSetConversationViewEnabled", "bool"],
+    ["pref-images", "morrow:configGetAutoLoadRemoteImages", "morrow:configSetAutoLoadRemoteImages", "bool"],
+    ["pref-undo", "morrow:configGetUndoSendDelaySeconds", "morrow:configSetUndoSendDelaySeconds", "seconds"],
+    ["pref-snooze", "morrow:configGetSnoozeEffective", "morrow:configSetSnoozeEffective", "bool"],
+    ["pref-ai-reply", "morrow:configGetAiWriteAutoOpenOnReply", "morrow:configSetAiWriteAutoOpenOnReply", "bool"],
+    ["pref-folder-chips", "morrow:configGetShowFolderChips", "morrow:configSetShowFolderChips", "bool"],
+    ["pref-gmail-folders", "morrow:configGetSidebarGmailFoldersExpanded", "morrow:configSetSidebarGmailFoldersExpanded", "bool"],
+    ["pref-outlook-folders", "morrow:configGetSidebarOutlookFoldersExpanded", "morrow:configSetSidebarOutlookFoldersExpanded", "bool"],
   ];
 }
 

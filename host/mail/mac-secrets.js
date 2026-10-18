@@ -1,5 +1,5 @@
 const { spawnSync } = require("child_process");
-const { SERVICE, LEGACY_SERVICE, migrateRead } = require("./secret-service");
+const { SERVICE } = require("./secret-service");
 
 function run(args) {
   return spawnSync("security", args, { encoding: "utf8" });
@@ -34,16 +34,11 @@ function setPassword(account, password) {
 }
 
 function getPassword(account) {
-  return migrateRead(
-    (service) => find(service, account),
-    (service, password) => write(service, account, password),
-    (service) => remove(service, account),
-  );
+  return find(SERVICE, account);
 }
 
 function deletePassword(account) {
   remove(SERVICE, account);
-  remove(LEGACY_SERVICE, account);
 }
 
-module.exports = { setPassword, getPassword, deletePassword, SERVICE, LEGACY_SERVICE };
+module.exports = { setPassword, getPassword, deletePassword, SERVICE };

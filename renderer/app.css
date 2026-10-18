@@ -1,5 +1,5 @@
 /* Plum shell tokens from the light skin, plus the dark canvas.
-   Not a copy of the Genspark stylesheet. */
+   First-party shell stylesheet. */
 :root {
   color-scheme: light;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", sans-serif;

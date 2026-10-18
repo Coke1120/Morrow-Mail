@@ -1,6 +1,6 @@
-# Codebase Memory on the genmail-rea Cloud Agent
+# Codebase Memory on the Morrow Mail Cloud Agent
 
-Pilot for the **genmail-rea** environment only. Do not copy this into other repos.
+Pilot for the **Morrow Mail** environment only. Do not copy this into other repos.
 
 `.cursor/environment.json` runs `.cursor/install-cbm.sh` on each Build. The official installer is called with `--skip-config` and `--dir $HOME/.local/share/codebase-memory-mcp`. Cloud Agent VMs use the `ubuntu` user, so the binary is:
 

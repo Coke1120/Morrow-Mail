@@ -1,5 +1,5 @@
 // Electron patches `fs` so paths inside an asar are virtual. Reading the
-// Genspark (or bundled) archive itself has to go through the unpatched module.
+// archive itself has to go through the unpatched module.
 const fs = (() => {
   try {
     return require("original-fs");
@@ -12,7 +12,7 @@ const fs = (() => {
 // load the bundled renderer instead.
 function resolveAsarPath(explicit) {
   if (explicit) return explicit;
-  const fromEnv = (process.env.GENMAIL_ASAR || "").trim();
+  const fromEnv = (process.env.MORROW_ASAR || "").trim();
   return fromEnv || null;
 }
 
@@ -20,12 +20,12 @@ function openAsar(asarPath = resolveAsarPath()) {
   const target = asarPath;
   if (!target) {
     throw new Error(
-      "GENMAIL_ASAR is not set. Leave it unset to boot the bundled renderer, or set it to an app.asar path (see docs/INDEPENDENT_UI.md)."
+      "MORROW_ASAR is not set. Leave it unset to boot the bundled renderer, or set it to an app.asar path (see docs/INDEPENDENT_UI.md)."
     );
   }
   if (!fs.existsSync(target)) {
     throw new Error(
-      `UI asar missing at ${target}. Unset GENMAIL_ASAR to use the bundled renderer (see docs/INDEPENDENT_UI.md).`
+      `UI asar missing at ${target}. Unset MORROW_ASAR to use the bundled renderer (see docs/INDEPENDENT_UI.md).`
     );
   }
   const fd = fs.openSync(target, "r");

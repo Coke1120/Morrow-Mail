@@ -1,5 +1,5 @@
 ---
-name: genmail-release
+name: morrow-release
 description: Use when you bump the app version or ship an unsigned Windows and macOS prerelease. The package.json version drives the v* tag.
 ---
 
