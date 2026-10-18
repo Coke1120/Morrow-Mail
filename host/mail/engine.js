@@ -25,8 +25,10 @@ const KEY_TO_WELL = {
 };
 const SNOOZE_MAX_MS = 365 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-// Bootstrap window. Older catch-up (out to ~180 days) is not implemented.
-const SYNC_DAYS = 30;
+// Download bound. Mail older than this stays on the server.
+// A folder records sync_horizon_days when the bound is finished, so raising
+// SYNC_DAYS catches up in place and leaves mail already in mail.sqlite.
+const SYNC_DAYS = 180;
 const HEADER_BATCH = 100;
 const OUTLOOK_BATCH = 50;
 const REFRESH_PAGES = [20, 30, 30];
@@ -249,7 +251,9 @@ function queryFrom(params) {
 }
 
 function windowOpen(folder) {
-  return !!(folder && Number(folder.window_done) === 1);
+  if (!folder || Number(folder.window_done) !== 1) return false;
+  const horizon = Number(folder.sync_horizon_days);
+  return Number.isFinite(horizon) && horizon >= SYNC_DAYS;
 }
 
 function serverHasMore(query) {
@@ -417,6 +421,7 @@ function resetWindow(accountId, folderPath, found) {
     exists: found.exists,
     unseen: found.unseen,
     windowDone: false,
+    horizonDays: null,
     uidCursor: 0,
   });
 }
@@ -445,6 +450,7 @@ async function bootstrapFolder(client, account, folderPath, started) {
         uids: found.uids,
         retainOlderThan: windowStart(),
         windowDone: true,
+        horizonDays: SYNC_DAYS,
         uidCursor: cursor,
       });
       return { paused: false, bootstrapped: true };
@@ -458,6 +464,7 @@ async function bootstrapFolder(client, account, folderPath, started) {
       return { paused: true, bootstrapped: false };
     }
     const highest = Math.max(Number(folder && folder.uid_cursor) || 0, ...page);
+    const finished = missing.length <= size;
     db.applyFolderSync(account.id, folderPath, {
       messages: fetched.messages,
       validity: fetched.validity || found.validity,
@@ -465,8 +472,9 @@ async function bootstrapFolder(client, account, folderPath, started) {
       unseen: found.unseen,
       uids: found.uids,
       retainOlderThan: windowStart(),
-      windowDone: missing.length <= size,
-      uidCursor: missing.length <= size ? cursor : highest,
+      windowDone: finished,
+      ...(finished ? { horizonDays: SYNC_DAYS } : {}),
+      uidCursor: finished ? cursor : highest,
     });
     emitFolderSync(account.id, folderPath, true);
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folderPath, folderIds: [folderPath] });
@@ -517,6 +525,7 @@ async function warmFolder(client, account, folder, started) {
     uids: live.uids,
     retainOlderThan: windowStart(),
     windowDone: true,
+    horizonDays: SYNC_DAYS,
     uidCursor: next,
   });
   return { paused: false, bootstrapped: true };

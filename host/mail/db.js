@@ -81,6 +81,7 @@ function migrate() {
     synced_at INTEGER,
     uid_cursor INTEGER NOT NULL DEFAULT 0,
     window_done INTEGER NOT NULL DEFAULT 0,
+    sync_horizon_days INTEGER,
     PRIMARY KEY (account_id, path)
   )`);
   run(`CREATE TABLE IF NOT EXISTS messages (
@@ -116,6 +117,9 @@ function migrate() {
     }
     if (!folderCols.includes("window_done")) {
       run("ALTER TABLE folders ADD COLUMN window_done INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!folderCols.includes("sync_horizon_days")) {
+      run("ALTER TABLE folders ADD COLUMN sync_horizon_days INTEGER");
     }
   } catch { /* fresh table already has the columns */ }
 
@@ -321,6 +325,16 @@ function newMessageId() {
   return `m-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
+function horizonWrite(report) {
+  if (!report || !Object.prototype.hasOwnProperty.call(report, "horizonDays")) {
+    return { touch: 0, value: null };
+  }
+  if (report.horizonDays == null || report.horizonDays === "") return { touch: 1, value: null };
+  const days = Number(report.horizonDays);
+  if (!Number.isFinite(days)) return { touch: 1, value: null };
+  return { touch: 1, value: days };
+}
+
 function applyFolderSync(accountId, folderPath, report) {
   return transaction(() => {
     const previous = get(
@@ -330,7 +344,7 @@ function applyFolderSync(accountId, folderPath, report) {
     if (previous && previous.uid_validity && report.validity && previous.uid_validity !== report.validity) {
       run("DELETE FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]);
       run(
-        "UPDATE folders SET uid_cursor = 0, window_done = 0 WHERE account_id = ? AND path = ?",
+        "UPDATE folders SET uid_cursor = 0, window_done = 0, sync_horizon_days = NULL WHERE account_id = ? AND path = ?",
         [accountId, folderPath]
       );
     }
@@ -406,15 +420,25 @@ function applyFolderSync(accountId, folderPath, report) {
     }
     const cursor = report.uidCursor == null ? null : Number(report.uidCursor);
     const done = report.windowDone === true ? 1 : (report.windowDone === false ? 0 : null);
+    const horizon = horizonWrite(report);
     if (report.keepOthers) {
-      if (cursor != null || done != null || report.validity) {
+      if (cursor != null || done != null || report.validity || horizon.touch) {
         run(
           `UPDATE folders SET
              uid_validity = COALESCE(?, uid_validity),
              uid_cursor = COALESCE(?, uid_cursor),
-             window_done = COALESCE(?, window_done)
+             window_done = COALESCE(?, window_done),
+             sync_horizon_days = CASE WHEN ? = 1 THEN ? ELSE sync_horizon_days END
            WHERE account_id = ? AND path = ?`,
-          [report.validity || null, Number.isFinite(cursor) ? cursor : null, done, accountId, folderPath]
+          [
+            report.validity || null,
+            Number.isFinite(cursor) ? cursor : null,
+            done,
+            horizon.touch,
+            horizon.value,
+            accountId,
+            folderPath,
+          ]
         );
       }
       return;
@@ -430,11 +454,13 @@ function applyFolderSync(accountId, folderPath, report) {
     ).n;
     run(
       `UPDATE folders SET uid_validity = ?, unread = ?, total = ?, synced_at = ?,
-         uid_cursor = COALESCE(?, uid_cursor), window_done = COALESCE(?, window_done)
+         uid_cursor = COALESCE(?, uid_cursor), window_done = COALESCE(?, window_done),
+         sync_horizon_days = CASE WHEN ? = 1 THEN ? ELSE sync_horizon_days END
        WHERE account_id = ? AND path = ?`,
       [
         report.validity || null, unread, total, Date.now(),
         Number.isFinite(cursor) ? cursor : null, done,
+        horizon.touch, horizon.value,
         accountId, folderPath,
       ]
     );

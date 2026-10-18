@@ -734,15 +734,23 @@ assert.strictEqual(scheduledLine({ subject: "Hi", to: ["ada@example.com", "grace
 const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
 assert.ok(!engineSrc.includes("INBOX_LIMIT") && !engineSrc.includes("OTHER_LIMIT"));
 assert.ok(engineSrc.includes("const REFRESH_PAGES = [20, 30, 30]"));
-assert.ok(engineSrc.includes("const SYNC_DAYS = 30"));
+assert.ok(engineSrc.includes("const SYNC_DAYS = 180"));
 assert.ok(engineSrc.includes("const POLL_MS = 45000"));
 assert.ok(engineSrc.includes("mail:syncStatus"));
 assert.ok(engineSrc.includes("limit: 40"));
+assert.ok(engineSrc.includes("sync_horizon_days"));
+const dbSrc = fs.readFileSync(path.join(root, "host/mail/db.js"), "utf8");
+assert.ok(dbSrc.includes("ADD COLUMN sync_horizon_days INTEGER"));
 const independentDoc = fs.readFileSync(path.join(root, "docs/INDEPENDENT_UI.md"), "utf8");
 const parityDoc = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
 assert.ok(independentDoc.includes("does not download the whole mailbox"));
 assert.ok(independentDoc.includes("already downloaded"));
-assert.ok(parityDoc.includes("30-day window"));
+assert.ok(independentDoc.includes("last 180 days"));
+assert.ok(!independentDoc.includes("last 30 days"));
+assert.ok(parityDoc.includes("180-day window"));
+assert.ok(parityDoc.includes("Older than 180 days is not downloaded."));
+assert.ok(!parityDoc.includes("30-day window"));
+assert.ok(!parityDoc.includes("Older than 30 days"));
 assert.ok(parityDoc.includes("does not call `mail:search`"));
 assert.ok(appJs.includes("Searching all mail"));
 assert.ok(html.includes("Search all mail"));
@@ -2724,6 +2732,7 @@ async function checkTidy() {
     const inbox = db.folderByPath("imap-test", "INBOX");
     assert.strictEqual(inbox.window_done, 1);
     assert.strictEqual(inbox.uid_cursor, 150);
+    assert.strictEqual(inbox.sync_horizon_days, 180);
     first.length = 0;
     await engine.syncAccountById("imap-test", { onlyPath: "INBOX" });
     assert.deepStrictEqual(first, []);
@@ -2766,6 +2775,134 @@ async function checkTidy() {
     await engine.syncAccountById("imap-ol", { onlyPath: "INBOX" });
     assert.deepStrictEqual(outlookPages, [50, 10]);
     assert.strictEqual(db.folderByPath("imap-ol", "INBOX").window_done, 1);
+    assert.strictEqual(db.folderByPath("imap-ol", "INBOX").sync_horizon_days, 180);
+
+    db.insertAccount({
+      id: "imap-old",
+      email: "old@example.com",
+      username: "old@example.com",
+      profile: "custom",
+      imapHost: "imap.example.test",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.example.test",
+      smtpPort: 465,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+    });
+    secrets.setPassword("imap-old", "pw");
+    const recentUids = Array.from({ length: 40 }, (_item, index) => 80 + index);
+    remote.searchUids = async () => ({ uids: recentUids.slice(), validity: 9, exists: 40, unseen: 0 });
+    remote.fetchMessages = async (_client, _folder, page) => ({ validity: 9, messages: page.map(header) });
+    await engine.syncAccountById("imap-old", { onlyPath: "INBOX" });
+    const kept = db.messageByUid("imap-old", "INBOX", 119, 9);
+    assert.ok(kept);
+    assert.strictEqual(db.countInFolder("imap-old", "INBOX"), 40);
+    assert.strictEqual(db.folderByPath("imap-old", "INBOX").sync_horizon_days, 180);
+    db.applyFolderSync("imap-old", "INBOX", {
+      messages: [],
+      keepOthers: true,
+      validity: 9,
+      windowDone: true,
+      horizonDays: null,
+    });
+    assert.strictEqual(db.folderByPath("imap-old", "INBOX").window_done, 1);
+    assert.strictEqual(db.folderByPath("imap-old", "INBOX").sync_horizon_days, null);
+    assert.strictEqual(db.countInFolder("imap-old", "INBOX"), 40);
+    const paused = Object.assign(new Error("slow down"), { status: 429, retryAfterMs: 60000 });
+    remote.searchUids = async () => { throw paused; };
+    await engine.syncAccountById("imap-old", { onlyPath: "INBOX" });
+    assert.strictEqual(db.messageByUid("imap-old", "INBOX", 119, 9).id, kept.id);
+    assert.strictEqual(db.countInFolder("imap-old", "INBOX"), 40);
+    const oldGate = engine.syncGates.get("imap-old");
+    assert.ok(oldGate && oldGate.until > Date.now());
+    engine.syncGates.delete("imap-old");
+    const caught = [];
+    const widened = Array.from({ length: 80 }, (_item, index) => 40 + index);
+    remote.searchUids = async () => ({ uids: widened.slice(), validity: 9, exists: 80, unseen: 0 });
+    remote.fetchMessages = async (_client, _folder, page) => {
+      caught.push(page.slice());
+      return { validity: 9, messages: page.map(header) };
+    };
+    await engine.syncAccountById("imap-old", { onlyPath: "INBOX" });
+    assert.deepStrictEqual(caught, [Array.from({ length: 40 }, (_item, index) => 79 - index)]);
+    assert.strictEqual(db.countInFolder("imap-old", "INBOX"), 80);
+    assert.strictEqual(db.messageByUid("imap-old", "INBOX", 119, 9).id, kept.id);
+    assert.ok(db.messageByUid("imap-old", "INBOX", 40, 9));
+    assert.strictEqual(db.folderByPath("imap-old", "INBOX").window_done, 1);
+    assert.strictEqual(db.folderByPath("imap-old", "INBOX").sync_horizon_days, 180);
+    caught.length = 0;
+    await engine.syncAccountById("imap-old", { onlyPath: "INBOX" });
+    assert.deepStrictEqual(caught, []);
+
+    const initSqlJs = require("sql.js");
+    const wasmDir = path.dirname(require.resolve("sql.js"));
+    const SQL = await initSqlJs({ locateFile: (name) => path.join(wasmDir, name) });
+    const legacy = new SQL.Database();
+    legacy.run(`CREATE TABLE folders (
+      account_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      well_known TEXT,
+      uid_validity INTEGER,
+      unread INTEGER NOT NULL DEFAULT 0,
+      total INTEGER NOT NULL DEFAULT 0,
+      synced_at INTEGER,
+      uid_cursor INTEGER NOT NULL DEFAULT 0,
+      window_done INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (account_id, path)
+    )`);
+    legacy.run(
+      "INSERT INTO folders (account_id, path, name, well_known, uid_validity, uid_cursor, window_done) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["legacy", "INBOX", "Inbox", "inbox", 4, 42, 1]
+    );
+    legacy.run(`CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      folder_path TEXT NOT NULL,
+      uid INTEGER NOT NULL,
+      uid_validity INTEGER NOT NULL,
+      thread_id TEXT NOT NULL,
+      rfc_message_id TEXT,
+      in_reply_to TEXT,
+      subject TEXT NOT NULL DEFAULT '',
+      snippet TEXT NOT NULL DEFAULT '',
+      from_addr TEXT NOT NULL DEFAULT '',
+      to_json TEXT NOT NULL DEFAULT '[]',
+      cc_json TEXT NOT NULL DEFAULT '[]',
+      bcc_json TEXT NOT NULL DEFAULT '[]',
+      date_iso TEXT NOT NULL,
+      list_sort_ts INTEGER NOT NULL,
+      unread INTEGER NOT NULL DEFAULT 0,
+      starred INTEGER NOT NULL DEFAULT 0,
+      is_draft INTEGER NOT NULL DEFAULT 0,
+      has_attachments INTEGER NOT NULL DEFAULT 0,
+      html_body TEXT,
+      text_body TEXT,
+      attachments_json TEXT NOT NULL DEFAULT '[]',
+      body_complete INTEGER NOT NULL DEFAULT 0
+    )`);
+    legacy.run(
+      `INSERT INTO messages (
+        id, account_id, folder_path, uid, uid_validity, thread_id, subject, snippet, from_addr,
+        date_iso, list_sort_ts
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["m-legacy", "legacy", "INBOX", 5, 4, "thr-legacy", "Keep me", "still here", "Ada <ada@example.com>", "2026-08-01T00:00:00.000Z", 1785542400000]
+    );
+    const legacyPath = path.join(dir, "legacy.sqlite");
+    fs.writeFileSync(legacyPath, Buffer.from(legacy.export()));
+    legacy.close();
+    const liveFile = db.file();
+    await db.open(legacyPath);
+    const legacyFolder = db.folderByPath("legacy", "INBOX");
+    assert.strictEqual(legacyFolder.window_done, 1);
+    assert.strictEqual(legacyFolder.uid_cursor, 42);
+    assert.strictEqual(legacyFolder.sync_horizon_days, null);
+    assert.strictEqual(db.messageByUid("legacy", "INBOX", 5, 4).subject, "Keep me");
+    await db.open(liveFile);
+    assert.ok(db.accountById("imap-test"));
+    assert.strictEqual(db.folderByPath("imap-test", "INBOX").window_done, 1);
 
     const touched = [];
     remote.searchUids = async (_client, folder) => {
@@ -2795,7 +2932,7 @@ async function checkTidy() {
     };
     await engine.syncAccountById("imap-ol", { onlyPath: "INBOX" });
     assert.strictEqual(blocked, 0);
-    assert.strictEqual(engine.syncPolicy.syncDays, 30);
+    assert.strictEqual(engine.syncPolicy.syncDays, 180);
     assert.deepStrictEqual(engine.syncPolicy.refreshPages, [20, 30, 30]);
     assert.strictEqual(engine.syncPolicy.headerBatch, 100);
     assert.strictEqual(engine.syncPolicy.outlookBatch, 50);
