@@ -1,6 +1,6 @@
 # Updater test checklist
 
-`Coke1120/Morrow-Mail` is public. The packaged app checks the prerelease feed with no GitHub token. `allowPrerelease` is on, so alpha prereleases count. An optional token is `GH_TOKEN` or `GITHUB_TOKEN` in that process, or userData `github-update.json` containing `{"token":"..."}` (same folder as `settings.json`). Do not put a token in the repo or in the asar.
+`Coke1120/Morrow-Mail` is public. The packaged app checks the prerelease feed with no GitHub token. `allowPrerelease` is on, so alpha prereleases count. `GH_TOKEN`, `GITHUB_TOKEN`, and legacy userData `github-update.json` are ignored by the app updater. A token in the feed configuration selects the private provider in electron-updater even with `private: false`; the public feed therefore never includes one. Publishing from CI still uses its build token.
 
 `host:updateGetState`, `host:updateCheck`, and `host:updateInstall` are the shell channels.
 
@@ -31,4 +31,4 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
 
 The **release** workflow publishes unsigned `latest-mac.yml` with the Mac zip. Apple codesign stays on the MBA.
 
-Launch that installed app with no `GH_TOKEN` and no `github-update.json`. Check for updates. The public prerelease feed is `releases.atom` plus `latest-mac.yml` on the newest prerelease. A configured token that GitHub rejects shows `GitHub token was rejected.` A feed that answers 401 or 403 shows `Updates need a GitHub token.`
+Launch that installed app with no `GH_TOKEN` and no `github-update.json`. Check for updates. The public prerelease feed is `releases.atom` plus `latest-mac.yml` on the newest prerelease. HTTP 401/403 reports a blocked public request (retry or check the network/proxy); HTTP 429 and rate-limit responses ask you to retry later. Missing feed assets and offline errors keep their diagnostic details. None asks for a token. Repeat the check with an invalid `GH_TOKEN` and a legacy `github-update.json`: the provider must still be public.

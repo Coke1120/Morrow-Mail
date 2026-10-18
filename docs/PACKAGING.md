@@ -20,7 +20,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win -- --publish always
 
 `dist:win` is `electron-builder --win nsis portable --x64`. `build.win.signAndEditExecutable` is `false`. Authenticode is not configured. SignPath Foundation signing is pending approval and is not in this workflow. See [Code signing policy](../CODE_SIGNING_POLICY.md) and [SIGNPATH.md](SIGNPATH.md).
 
-That flag also skips electron-builder's own resource edit, which would leave the installed `Morrow Mail.exe` as Electron's icon and product name. `build.afterPack` (`scripts/windows-icon.js`) writes `build/icon.ico` and the Morrow Mail version strings into that exe after the pack, and does not sign it. The NSIS installer and uninstaller icons are the same `build/icon.ico`. The taskbar, desktop shortcut, and installed exe use the icon inside `Morrow Mail.exe`.
+That flag also skips electron-builder's own resource edit, which would leave the installed `Morrow Mail.exe` as Electron's icon and product name. `build.afterPack` (`scripts/windows-icon.js`) writes `build/icon.ico` and the Morrow Mail version strings into that exe after the pack, and does not sign it. The hook reopens the edited executable and verifies every icon image and product version, plus preservation of unrelated resources (including Electron's ASAR integrity record). The NSIS installer and uninstaller icons are the same `build/icon.ico`. The taskbar, desktop shortcut, and installed exe use the icon inside `Morrow Mail.exe`.
 
 4. The job uploads the NSIS setup exe, its `.blockmap`, the portable exe, and `latest.yml` to a **prerelease** on public `Coke1120/Morrow-Mail`. `latest.yml` is the Windows electron-updater feed and names the NSIS setup. The portable exe is a no-install download. `detectUpdateChannel` is `false`, so `0.1.0-alpha.N` still publishes `latest.yml`.
 
@@ -63,15 +63,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
 
 A packaged install checks and downloads that feed with no GitHub token. `npm start` leaves the updater off.
 
-`GH_TOKEN`, `GITHUB_TOKEN`, or the userData file `github-update.json` (the folder that holds `settings.json`) is optional:
-
-```json
-{ "token": "github_pat_..." }
-```
-
-The environment variable wins when both are set. `setFeedURL` passes that token only when one is configured, and keeps `private: false`. electron-updater then uses the GitHub API for that check. With no token it stays on the public feed. The token stays in memory. It is not written into `app-update.yml`. Do not commit `github-update.json`. The Actions token that uploads the release is not shipped inside the app.
-
-A configured token that GitHub rejects is reported as rejected. A feed response that requires authentication (HTTP 401 or 403) explains how to set the token. The check runs when no token is configured.
+The updater ignores `GH_TOKEN`, `GITHUB_TOKEN`, and legacy `github-update.json`. It always uses the public provider without a token. HTTP 401/403 indicates a blocked request; rate limiting asks you to retry later. Neither implies that this public repository needs credentials. CI publishing still uses its build token.
 
 ## Product name, icon, and app id
 
@@ -85,10 +77,12 @@ Icons are the Morrow Mail mark (forest green rounded square, pale envelope, risi
 
 - `build/icon.png` is the 1024 source. Linux uses it. The pack copies it to `resources/icon.png` for the running app.
 - `build/icon.icns` is the macOS `.app` icon (`mac.icon`, `CFBundleIconFile`).
-- `build/icon.ico` is the Windows exe, taskbar, shortcut, and NSIS installer icon.
+- `build/icon.ico` is the Windows exe, taskbar, shortcut, and NSIS installer icon. It includes 16, 20, 24, 32, 40, 48, 64, 128, and 256 px images from `build/icon.png`. The pack also copies it to `resources/icon.ico` for Windows BrowserWindow icons.
 - `build/morrow-icon.svg` matches `renderer/morrow-icon.svg`, which the rail uses.
 
-`host/main.js` points the window and About at `resources/icon.png` when the app is packaged, and at `build/icon.png` in a dev checkout. On macOS it calls `app.dock.setIcon` so the Dock shows that mark. `npm start` is the Electron binary, so without that call the Dock shows Electron's icon.
+`host/main.js` points the window and About at `resources/icon.ico` on Windows, with a PNG fallback. Other platforms use `resources/icon.png`; a dev checkout uses the corresponding file in `build/`. On macOS it calls `app.dock.setIcon` so the Dock shows that mark. `npm start` is the Electron binary, so without that call the Dock shows Electron's icon.
+
+On Windows, verify the installed executable (not only the NSIS wrapper) with `node scripts/check-windows-icon.js "path/to/Morrow Mail.exe"`. An existing taskbar pin may still refer to another installation or cache older artwork: quit all copies, launch the installed executable, then unpin and repin that running app. The app does not clear the system icon cache or change the stable AppUserModelID.
 
 A fresh install of the next release should show this mark on the `.app`, in the Dock, and on the Windows exe. If an older copy is already in `/Applications` or pinned in the Dock, macOS can keep the previous artwork until the icon cache is cleared:
 

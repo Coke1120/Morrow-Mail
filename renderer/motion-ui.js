@@ -1,13 +1,15 @@
 import { animate, hover, press, stagger } from "motion";
 
 const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+const boundChrome = new WeakSet();
+let sequence = 0;
 
 function reduced() {
   return media.matches;
 }
 
 function token(el) {
-  const value = `${Date.now()}-${Math.random()}`;
+  const value = String(++sequence);
   el.dataset.motion = value;
   return value;
 }
@@ -19,7 +21,30 @@ function clearStyles(el) {
   el.style.opacity = "";
   el.style.transform = "";
   el.style.transformOrigin = "";
+  el.style.scale = "";
 }
+
+function reset(el) {
+  if (!el) return;
+  delete el.dataset.motion;
+  clearStyles(el);
+  if (el.classList.contains("fold-panel") || el.classList.contains("agent-tools-body")) {
+    el.style.height = "";
+    el.style.overflow = "";
+  }
+}
+
+function run(el, keyframes, options) {
+  reset(el);
+  if (!el || reduced()) return Promise.resolve();
+  const value = token(el);
+  try { return finish(el, value, animate(el, keyframes, options)); }
+  catch { reset(el); return Promise.resolve(); }
+}
+
+media.addEventListener("change", () => {
+  if (reduced()) document.querySelectorAll("[data-motion]").forEach(reset);
+});
 
 function finish(el, value, animation) {
   return Promise.resolve(animation && animation.finished)
@@ -31,16 +56,12 @@ function finish(el, value, animation) {
     });
 }
 
-// First screen of rows only, so a long folder does not wait on the last one.
+// Only the first screen enters; cache refreshes and selection retain their rows.
 function rows(nodes) {
   const list = Array.prototype.slice.call(nodes || [], 0, 12);
   if (!list.length || reduced()) return;
-  const animation = animate(list, { opacity: [0, 1], y: [4, 0] }, { duration: 0.14, delay: stagger(0.012) });
-  animation.finished.then(() => {
-    for (const el of list) {
-      if (el.isConnected) clearStyles(el);
-    }
-  }).catch(() => {});
+  const delay = stagger(0.004);
+  list.forEach((el, i) => run(el, { opacity: [0, 1], y: [3, 0] }, { duration: 0.12, delay: delay(i, list.length) }));
 }
 
 function prepare(el) {
@@ -106,76 +127,43 @@ function fadePane(el, axis) {
 function sections(nodes) {
   const list = Array.prototype.slice.call(nodes || [], 0, 8).filter((el) => el && !el.hidden);
   if (!list.length || reduced()) return;
-  try {
-    const animation = animate(list, { opacity: [0, 1], y: [8, 0] }, { duration: 0.2, delay: stagger(0.04) });
-    animation.finished.then(() => {
-      for (const el of list) if (el.isConnected) clearStyles(el);
-    }).catch(() => {
-      for (const el of list) clearStyles(el);
-    });
-  } catch {
-    for (const el of list) clearStyles(el);
-  }
+  // A short shared transition avoids hiding later sections for half a second.
+  list.forEach((el) => run(el, { opacity: [0.65, 1], y: [4, 0] }, { duration: 0.12 }));
 }
 
 function fold(body, open) {
   if (!body) return Promise.resolve();
-  if (reduced()) {
-    body.hidden = !open;
-    body.style.height = "";
-    body.style.opacity = "";
-    body.style.overflow = "";
-    return Promise.resolve();
-  }
-  const value = token(body);
-  const settle = (hide) => {
-    if (body.dataset.motion !== value) return;
-    body.hidden = hide;
-    clearStyles(body);
-    delete body.dataset.motion;
-  };
-  body.hidden = false;
-  body.style.overflow = "hidden";
-  body.style.height = "auto";
-  const full = body.scrollHeight;
-  let animation;
-  try {
-    if (open) {
-      body.style.height = "0px";
-      body.style.opacity = "0";
-      animation = animate(body, { height: [0, full], opacity: [0, 1] }, { duration: 0.22, ease: "easeOut" });
-    } else {
-      body.style.height = full + "px";
-      animation = animate(body, { height: [full, 0], opacity: [1, 0] }, { duration: 0.16, ease: "easeOut" });
-    }
-  } catch {
-    settle(!open);
-    return Promise.resolve();
-  }
-  return Promise.resolve(animation.finished).catch(() => {}).finally(() => settle(!open));
+  reset(body);
+  body.style.height = "";
+  body.style.overflow = "";
+  // Commit layout once. Animating height forces layout on every frame, and a
+  // measured pixel height clips content that arrives later over IPC.
+  body.hidden = !open;
+  if (!open || reduced()) return Promise.resolve();
+  return run(body, { opacity: [0.65, 1], y: [3, 0] }, { duration: 0.12 });
 }
 
 function bindChrome(root) {
   const targets = root.querySelectorAll("header button.primary, .rail-btn, dialog button.primary, #compose-quote-toggle, #compose-quote-collapse, .fold-toggle, .section-nav button");
   targets.forEach((el) => {
+    if (boundChrome.has(el)) return;
+    boundChrome.add(el);
     hover(el, () => {
       if (reduced()) return;
-      animate(el, { scale: 1.02 }, { duration: 0.12 });
+      run(el, { scale: 1.02 }, { duration: 0.1 });
       return () => {
         if (reduced()) {
           clearStyles(el);
           return;
         }
-        const back = animate(el, { scale: 1 }, { duration: 0.1 });
-        back.finished.then(() => clearStyles(el)).catch(() => clearStyles(el));
+        run(el, { scale: 1 }, { duration: 0.08 });
       };
     });
     press(el, () => {
       if (reduced()) return;
-      animate(el, { scale: 0.98 }, { duration: 0.06 });
+      run(el, { scale: 0.98 }, { duration: 0.06 });
       return () => {
-        const back = animate(el, { scale: 1 }, { duration: 0.08 });
-        back.finished.then(() => clearStyles(el)).catch(() => clearStyles(el));
+        run(el, { scale: 1 }, { duration: 0.08 });
       };
     });
   });
@@ -183,6 +171,7 @@ function bindChrome(root) {
 
 window.morrowMotion = {
   rows,
+  reset,
   prepare,
   enter,
   dialogIn,

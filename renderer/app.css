@@ -539,15 +539,32 @@ button.icon-label svg { display: block; flex: none; }
 
 button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 
+#log-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  padding: 20px 24px;
+}
+#log-panel > :not(#log-lines) { flex: 0 0 auto; min-width: 0; }
+#log-panel > .row { flex-wrap: wrap; }
+#log-source { width: auto; max-width: 100%; }
+#log-panel .hint, #log-status { overflow-wrap: anywhere; }
 #log-lines {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
   margin: 12px 0 0;
   padding: 0;
   list-style: none;
-  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 #log-lines li {
-  padding: 6px 0;
+  padding: 10px 12px 10px 0;
+  white-space: pre-wrap;
   border-top: 1px solid var(--line);
   overflow-wrap: anywhere;
 }
@@ -1780,6 +1797,8 @@ button.message.cursor { box-shadow: inset 3px 0 0 var(--accent-ink); }
 button.message:focus-visible { outline-offset: -2px; }
 
 .message-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
   position: relative;
   display: flex;
   align-items: stretch;
@@ -2739,3 +2758,13 @@ textarea { min-height: 140px; resize: vertical; }
 .mail-ooo button.ghost:hover, #side-mail > #scheduled-open:hover { background: rgba(255,255,255,.12); }
 .settings-account-context { margin-top: 14px; padding: 12px; background: var(--hover); border-radius: 10px; }
 #side-mail > #scheduled-open, .mail-ooo button.ghost { background: transparent; }
+
+/* Verified disabled replies remain a status line; active/unknown/error keep details. */
+.mail-ooo.is-off { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+.mail-ooo.is-off .hint { margin: 0; flex: 1; font-size: 12px; white-space: nowrap; }
+.mail-ooo.is-off .row { margin: 0; flex: 0 0 auto; }
+.mail-ooo.is-off button { padding: 3px 6px; font-size: 12px; }
+@media (max-height: 600px) {
+  #log-panel { padding: 12px 16px; }
+  #log-panel .space-head { margin-bottom: 4px; }
+}
