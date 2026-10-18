@@ -108,6 +108,7 @@
     <div class="shell" id="shell">
       <div class="side">
         <div id="side-mail" class="side-pane">
+          <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled</button>
           <nav id="folders" aria-label="Folders"></nav>
         <div id="updates" role="region" aria-label="Updates">
           <p id="product-name" class="product-name">Morrow Mail</p>
@@ -376,6 +377,16 @@
     </div>
     </div>
 
+    <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
+      <div class="dialog-body">
+        <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>
+        <p class="hint">Messages send while Morrow is open. A missed time sends on the next launch. Edit/reschedule removes the queued delivery and saves a local draft; scheduling again requires your explicit action.</p>
+        <p id="scheduled-status" role="status"></p>
+        <button type="button" class="ghost" id="scheduled-refresh">Refresh queue</button>
+        <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
+      </div>
+    </dialog>
+
     <dialog id="connect" aria-labelledby="connect-title">
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
@@ -506,11 +517,10 @@
         </select>
         <label for="schedule-at" id="schedule-at-label" hidden>Date and time</label>
         <input id="schedule-at" type="datetime-local" hidden />
-        <p id="scheduled-heading" class="hint">Scheduled</p>
-        <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
         <p class="hint" id="schedule-note">Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.</p>
           </div>
         </div>
+        <button type="button" class="ghost" id="compose-view-scheduled">View scheduled mail</button>
         <p id="compose-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>

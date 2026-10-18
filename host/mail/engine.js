@@ -1599,6 +1599,8 @@ function storedAttachments(list) {
   }).filter(Boolean);
 }
 
+const scheduledDelivering = new Set();
+
 function publicScheduled(row) {
   let payload = {};
   try { payload = JSON.parse(row.payload_json) || {}; } catch { payload = {}; }
@@ -1608,7 +1610,7 @@ function publicScheduled(row) {
     to: displayAddress(payload.to),
     subject: payload.subject || "",
     sendAt: new Date(row.send_at).toISOString(),
-    status: row.status || "pending",
+    status: scheduledDelivering.has(row.id) ? "sending" : (row.status || "pending"),
   };
   const cc = displayAddress(payload.cc);
   const bcc = displayAddress(payload.bcc);
@@ -1662,8 +1664,35 @@ function listScheduled(params) {
 
 function cancelScheduled(params) {
   const id = params && params.id ? String(params.id) : "";
+  if (scheduledDelivering.has(id)) return fail("sending", "Delivery has started. It can no longer be canceled or edited. Check Sent before retrying.");
   if (!db.deleteScheduled(id)) return fail("not-found", "That scheduled send is gone.");
   return ok(true);
+}
+
+function editScheduled(params) {
+  const id = String((params && params.id) || "");
+  if (scheduledDelivering.has(id)) return fail("sending", "Delivery has started. It can no longer be canceled or edited. Check Sent before retrying.");
+  const row = db.scheduledById(id);
+  if (!row) return fail("not-found", "That scheduled send is gone. Refresh the queue and check Sent.");
+  const account = db.accountById(row.account_id);
+  const drafts = account && db.folderByWellKnown(account.id, "drafts");
+  if (!drafts) return fail("not-found", "This mailbox has no Drafts folder. The queued message is unchanged.");
+  let payload;
+  try { payload = JSON.parse(row.payload_json); } catch { return fail("invalid", "The queued content cannot be read. It has not been changed."); }
+  if (payload.attachments && payload.attachments.length) return fail("unsupported", "This composer cannot edit queued attachments. The queued message is unchanged.");
+  const now = new Date();
+  const emailId = db.newMessageId();
+  db.scheduledToDraft(id, {
+    id: emailId, accountId: account.id, folderPath: drafts.path,
+    threadId: payload.threadId || emailId, inReplyTo: payload.inReplyTo || null,
+    rfcMessageId: rfcMessageId(account.email), subject: payload.subject || "",
+    from: payload.fromAddress || account.email, to: addrList(payload.to), cc: addrList(payload.cc), bcc: addrList(payload.bcc),
+    date: now.toISOString(), listSortTs: now.getTime(), isDraft: true,
+    htmlBody: payload.body || "", textBody: plainFromHtml(payload.body || ""),
+    snippet: plainFromHtml(payload.body || "").slice(0, 180), bodyComplete: true,
+  });
+  emitAccounts();
+  return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString() });
 }
 
 async function deliver(params) {
@@ -1754,7 +1783,11 @@ async function pumpScheduled() {
   pumping = true;
   try {
     const due = db.dueScheduled(Date.now());
-    for (const row of due) {
+    for (const candidate of due) {
+      // Another queued item may have been canceled/edited while delivery awaited I/O.
+      const row = db.scheduledById(candidate.id);
+      if (!row || row.status !== "pending") continue;
+      scheduledDelivering.add(row.id);
       let payload = {};
       try { payload = JSON.parse(row.payload_json) || {}; } catch { payload = {}; }
       let result;
@@ -1763,6 +1796,7 @@ async function pumpScheduled() {
       } catch (error) {
         result = fail("send", error instanceof Error ? error.message : String(error));
       }
+      scheduledDelivering.delete(row.id);
       if (result && result.success) db.deleteScheduled(row.id);
       else db.markScheduledFailed(row.id, (result && result.error && result.error.message) || "Send failed.");
     }
@@ -2290,6 +2324,8 @@ function answer(channel, args) {
       return deliver(params || {});
     case "mail:scheduleSend":
       return scheduleSend(params || {});
+    case "mail:editScheduled":
+      return editScheduled(params || {});
     case "mail:cancelScheduled":
       return cancelScheduled(params || {});
     case "mail:downloadAttachment":

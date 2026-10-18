@@ -1394,13 +1394,14 @@ function scheduledRows(data) {
   return Array.isArray(data) ? data.filter((row) => row && row.id) : [];
 }
 
-function scheduledLine(row) {
+function scheduledLine(row, accounts = []) {
   const subject = String((row && row.subject) || "").trim() || "(no subject)";
   const to = Array.isArray(row && row.to) ? row.to.filter(Boolean).join(", ") : String((row && row.to) || "").trim();
   const when = row && row.sendAt ? new Date(row.sendAt) : null;
-  const time = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() : "";
+  const time = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")" : "Unknown time";
   const failed = row && row.status === "failed" ? (String(row.error || "").trim() || "Send failed.") : "";
-  return [subject, to, time, failed].filter(Boolean).join(" · ");
+  const account = accounts.find(item => item.id === row.accountId);
+  return [account ? account.email : (row && row.accountId), subject, to, time, row.status === "failed" ? "Failed — check Sent before retrying" : row.status === "sending" ? "Sending" : "Pending", failed].filter(Boolean).join(" · ");
 }
 
 function removalPayload(email, threaded) {
@@ -5416,14 +5417,14 @@ function renderScheduled(rows) {
   list.replaceChildren();
   if (!rows.length) {
     const item = document.createElement("li");
-    item.textContent = "Nothing scheduled.";
+    item.textContent = "No pending or failed scheduled mail on this computer.";
     list.append(item);
     return;
   }
   for (const row of rows) {
     const item = document.createElement("li");
     const text = document.createElement("span");
-    text.textContent = scheduledLine(row);
+    text.textContent = scheduledLine(row, state.accounts);
     const cancel = document.createElement("button");
     cancel.type = "button";
     cancel.className = "ghost";
@@ -5432,10 +5433,17 @@ function renderScheduled(rows) {
     cancel.setAttribute("aria-label", `Cancel scheduled send ${subject}`);
     cancel.addEventListener("click", () => {
       cancelScheduled(row.id).catch((error) => {
-        showStatus(error instanceof Error ? error.message : String(error), true);
+        $("scheduled-status").textContent = error.message || String(error);
       });
     });
-    item.append(text, cancel);
+    cancel.disabled = row.status === "sending";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "ghost";
+    edit.textContent = "Edit/reschedule…";
+    edit.disabled = row.status === "sending";
+    edit.onclick = () => editScheduledMail(row).catch(error => { $("scheduled-status").textContent = error.message; });
+    item.append(text, cancel, edit);
     list.append(item);
   }
 }
@@ -6063,15 +6071,14 @@ async function resumeDraft(email) {
 
 async function loadScheduled() {
   const gen = scheduledGen += 1;
-  const account = composeAccount();
   try {
-    const data = await call("mail:listScheduled", account ? { accountId: account.id } : {});
+    const data = await call("mail:listScheduled", {});
     if (gen === scheduledGen) renderScheduled(scheduledRows(data));
   } catch (error) {
     if (gen !== scheduledGen) return;
     $("scheduled").replaceChildren();
     const item = document.createElement("li");
-    item.textContent = "Scheduled mail could not be loaded. ";
+    item.textContent = "Unknown — Scheduled mail could not be loaded. ";
     const retry = document.createElement("button");
     retry.type = "button";
     retry.className = "ghost";
@@ -6084,8 +6091,29 @@ async function loadScheduled() {
 
 async function cancelScheduled(id) {
   await call("mail:cancelScheduled", { id });
-  setComposeStatus("Scheduled send canceled. Start a new message to compose again.");
+  $("scheduled-status").textContent = "Scheduled delivery canceled.";
   await loadScheduled();
+}
+
+async function showScheduled() {
+  if ($("compose").open && !(await requestComposeClose())) return;
+  $("scheduled-status").textContent = "";
+  openDialog("scheduled-dialog");
+  await loadScheduled();
+}
+
+async function editScheduledMail(row) {
+  const answer = await askConfirm({ title: "Remove from queue and edit?", body: scheduledLine(row, state.accounts) + "\nThe queued delivery will be removed and saved as a local draft. Review it, then explicitly Schedule send again. A failed delivery may already have reached the recipient; check Sent before retrying.", confirm: "Remove and edit", cancel: "Keep queued" });
+  if (!answer || !answer.ok) return;
+  const draft = await call("mail:editScheduled", { id: row.id });
+  $("scheduled-status").textContent = "Removed from queue. A local draft is saved in Drafts.";
+  await loadScheduled();
+  await closeDialog("scheduled-dialog");
+  await resumeDraft({ id: draft.emailId, accountId: draft.accountId });
+  $("schedule-preset").value = "custom";
+  $("schedule-at").value = vacationLocalValue(draft.sendAt);
+  syncScheduleFields();
+  setComposeStatus("Removed from queue; local draft saved. Review and choose a future time, then Schedule send.");
 }
 
 async function composeOperation(work) {
@@ -6112,8 +6140,9 @@ async function scheduleMail() {
     setComposeStatus("Scheduling…");
     await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
     state.composeQueued = true;
+    $("compose-title").textContent = "Scheduled receipt";
     state.composeBaseline = composeSnapshot();
-    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${account.email}. See Scheduled below. Close to start a new message.`);
+    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
     await loadScheduled();
   });
 }
@@ -10130,6 +10159,10 @@ function wire() {
     listFilter.addEventListener("search", () => renderList());
   }
   $("refresh").addEventListener("click", () => guard(refresh));
+  $("scheduled-open").addEventListener("click", () => showScheduled());
+  $("compose-view-scheduled").addEventListener("click", () => showScheduled());
+  $("scheduled-refresh").addEventListener("click", () => loadScheduled());
+  $("scheduled-close").addEventListener("click", () => closeDialog("scheduled-dialog"));
   $("settings-open").addEventListener("click", openSettings);
   $("inbox-rules-open").addEventListener("click", openInboxRules);
   $("inbox-rule-form").addEventListener("submit", (event) => {

@@ -859,7 +859,10 @@ function countInFolder(accountId, folderPath) {
 }
 
 function insertMessage(row) {
-  transaction(() => {
+  transaction(() => insertMessageRecord(row));
+}
+
+function insertMessageRecord(row) {
     run(
       `INSERT INTO messages (
         id, account_id, folder_path, uid, uid_validity, thread_id, rfc_message_id, in_reply_to,
@@ -877,7 +880,6 @@ function insertMessage(row) {
       ]
     );
     indexText(row.id);
-  });
 }
 
 function messageById(id) {
@@ -1279,6 +1281,20 @@ function dueScheduled(now) {
   );
 }
 
+function scheduledById(id) {
+  return get("SELECT * FROM scheduled_sends WHERE id = ?", [id]);
+}
+
+function scheduledToDraft(id, record) {
+  return transaction(() => {
+    const queued = scheduledById(id);
+    if (!queued || queued.account_id !== record.accountId) throw new Error("That scheduled send is gone.");
+    insertMessageRecord(record);
+    run("DELETE FROM scheduled_sends WHERE id = ?", [id]);
+    return record.id;
+  });
+}
+
 function deleteScheduled(id) {
   if (!db || !id || !get("SELECT id FROM scheduled_sends WHERE id = ?", [id])) return false;
   transaction(() => run("DELETE FROM scheduled_sends WHERE id = ?", [id]));
@@ -1469,6 +1485,8 @@ module.exports = {
   signatureDefaults,
   saveSignature,
   deleteSignature,
+  scheduledById,
+  scheduledToDraft,
   insertScheduled,
   listScheduled,
   dueScheduled,
