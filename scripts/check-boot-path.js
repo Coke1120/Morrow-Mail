@@ -1660,6 +1660,7 @@ const providerUi = loadFunctions(appJs, [
   "providerFolderState",
   "providerCopy",
   "showOrganizeGrant",
+  "grantApiOutcome",
   "calendarMode",
   "calendarCopy",
   "calendarConnection",
@@ -2393,6 +2394,29 @@ assert.strictEqual(providerUi.showOrganizeGrant("scope_missing"), true);
 assert.strictEqual(providerUi.showOrganizeGrant("password_account"), true);
 assert.strictEqual(providerUi.showOrganizeGrant("oauth_not_ready"), false);
 assert.strictEqual(providerUi.showOrganizeGrant("imap_only"), false);
+assert.deepStrictEqual(
+  providerUi.grantApiOutcome({ api: true }, "Mail API connected.", "fallback"),
+  { ok: true, message: "Mail API connected." },
+);
+assert.deepStrictEqual(
+  providerUi.grantApiOutcome(
+    { api: false, message: "Microsoft did not return the Mail.ReadWrite grant. This mailbox stays on IMAP until then." },
+    "Mail API connected.",
+    "fallback",
+  ),
+  {
+    ok: false,
+    message: "Microsoft did not return the Mail.ReadWrite grant. This mailbox stays on IMAP until then.",
+  },
+);
+assert.strictEqual(
+  providerUi.grantApiOutcome({ api: false }, "Mail API connected.", providerUi.providerCopy("scope_missing", "outlook")).ok,
+  false,
+);
+assert.match(
+  providerUi.grantApiOutcome({ api: false }, "Mail API connected.", providerUi.providerCopy("scope_missing", "outlook")).message,
+  /Mail\.ReadWrite/,
+);
 const needsAuth = providerUi.calendarView({ api: false, reason: "needs_auth" });
 assert.strictEqual(needsAuth.showGrid, false);
 assert.strictEqual(needsAuth.showForm, false);
@@ -2745,6 +2769,36 @@ assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "o
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.CALENDAR_SCOPES.google, "google", "calendar"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.CALENDAR_SCOPES.microsoft, "microsoft", "calendar"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "imap"), true);
+assert.strictEqual(
+  oauthConfig.hasMarker("offline_access,USER.READ,mail.readwrite,Mail.Send", "microsoft", "organize"),
+  true,
+);
+assert.strictEqual(
+  oauthConfig.hasMarker(
+    "https%3A%2F%2Fgraph.microsoft.com%2Fmail.readwrite%20https%3A%2F%2Fgraph.microsoft.com%2Fuser.read",
+    "outlook",
+    "organize",
+  ),
+  true,
+);
+assert.strictEqual(
+  oauthConfig.hasMarker(
+    "https://graph.microsoft.com/Mail.ReadWrite,https://graph.microsoft.com/User.Read",
+    "microsoft",
+    "organize",
+  ),
+  true,
+);
+assert.strictEqual(
+  oauthConfig.hasMarker("00000003-0000-0000-c000-000000000000/Mail.ReadWrite", "microsoft", "organize"),
+  true,
+);
+assert.strictEqual(oauthConfig.hasMarker("MAIL.READWRITE", "outlook", "organize"), true);
+assert.strictEqual(
+  oauthConfig.hasMarker("https://graph.microsoft.com/Mail.Read,https://graph.microsoft.com/Mail.Send", "microsoft", "organize"),
+  false,
+);
+assert.strictEqual(oauthConfig.hasMarker("https://graph.microsoft.com/Mail.ReadWrite.All", "microsoft", "organize"), false);
 assert.strictEqual(oauthConfig.redirectPath("google", "imap"), "/api/oauth/google/callback");
 assert.strictEqual(oauthConfig.redirectPath("google", "organize"), "/api/oauth/google/callback");
 assert.strictEqual(oauthConfig.redirectPath("microsoft", "calendar"), "/api/calendar-oauth/microsoft/callback");
@@ -5135,6 +5189,108 @@ async function checkProviderApi() {
     assert.ok(status.data.accounts.some((account) => account.id === "outlook-live" && account.calendar === true && account.organize === true));
     assert.ok(status.data.grantedScopes === undefined);
     assert.ok(status.data.accounts.some((account) => account.id === "outlook-live" && account.grantedScopes.calendar.includes("Calendars.ReadWrite")));
+    liveAccount({
+      id: "outlook-grant",
+      email: "leo.grant@example.com",
+      profile: "outlook",
+      authKind: "oauth2",
+    });
+    const mailboxSecret = JSON.stringify({
+      provider: "microsoft",
+      purpose: "imap",
+      refreshToken: "refresh-imap-grant",
+      accessToken: "access-imap-grant",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      grantedScopes: oauthConfig.SCOPES.microsoft,
+      requestedScopes: oauthConfig.SCOPES.microsoft,
+    });
+    secrets.setPassword("outlook-grant", mailboxSecret);
+    const omitted = await oauthMod.exchange(
+      "microsoft",
+      { clientId: oauthConfig.MICROSOFT_CLIENT_ID, clientSecret: "" },
+      "code",
+      "http://localhost:1/api/oauth/microsoft/callback",
+      "verifier",
+      oauthConfig.ORGANIZE_SCOPES.microsoft,
+      async () => jsonResponse({
+        access_token: "opaque-organize",
+        refresh_token: "refresh-omit",
+        expires_in: 3600,
+      }),
+    );
+    assert.strictEqual(omitted.grantedScopes, oauthConfig.ORGANIZE_SCOPES.microsoft);
+    const encoded = await oauthMod.exchange(
+      "microsoft",
+      { clientId: oauthConfig.MICROSOFT_CLIENT_ID, clientSecret: "" },
+      "code",
+      "http://localhost:1/api/oauth/microsoft/callback",
+      "verifier",
+      oauthConfig.ORGANIZE_SCOPES.microsoft,
+      async () => jsonResponse({
+        access_token: fakeJwt({ scp: "Mail.ReadWrite User.Read Mail.Send" }),
+        refresh_token: "refresh-encoded",
+        expires_in: 3600,
+        scope: "https%3A%2F%2Fgraph.microsoft.com%2Fmail.readwrite",
+      }),
+    );
+    assert.strictEqual(oauthConfig.hasMarker(encoded.grantedScopes, "microsoft", "organize"), true);
+    const originalSignIn = oauthMod.signIn;
+    let browser = null;
+    const signedGrant = (grantedScopes) => ({
+      provider: "microsoft",
+      purpose: "organize",
+      email: "leo.grant@example.com",
+      refreshToken: "refresh-organize-grant",
+      accessToken: "access-organize-grant",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      requestedScopes: oauthConfig.ORGANIZE_SCOPES.microsoft,
+      grantedScopes,
+      complete(outcome) { browser = outcome; },
+    });
+    try {
+      oauthMod.signIn = async () => signedGrant(
+        "https%3A%2F%2Fgraph.microsoft.com%2Fuser.read%20https%3A%2F%2Fgraph.microsoft.com%2Fmail.send",
+      );
+      const missing = await sidecar.answer("mail:grantOrganize", [{ accountId: "outlook-grant" }]);
+      assert.strictEqual(missing.success, false);
+      assert.strictEqual(missing.error.code, "scope_missing");
+      assert.match(missing.error.message, /Mail\.ReadWrite/);
+      assert.strictEqual(browser && browser.ok, false);
+      const partial = JSON.parse(secrets.getPassword("outlook-grant:organize"));
+      assert.strictEqual(oauthConfig.hasMarker(partial.grantedScopes, "microsoft", "organize"), false);
+      assert.strictEqual(secrets.getPassword("outlook-grant"), mailboxSecret);
+      const stillImap = await sidecar.answer("mail:listProviderFolders", [{ accountId: "outlook-grant" }]);
+      assert.strictEqual(stillImap.success, true);
+      assert.strictEqual(stillImap.data.api, false);
+      assert.strictEqual(stillImap.data.reason, "scope_missing");
+
+      browser = null;
+      oauthMod.signIn = async () => signedGrant("offline_access,USER.READ,mail.readwrite,Mail.Send");
+      const granted = await sidecar.answer("mail:grantOrganize", [{ accountId: "outlook-grant" }]);
+      assert.strictEqual(granted.success, true);
+      assert.strictEqual(granted.data.api, true);
+      assert.strictEqual(browser && browser.ok, true);
+      const saved = JSON.parse(secrets.getPassword("outlook-grant:organize"));
+      assert.match(saved.grantedScopes, /mail\.readwrite/i);
+      assert.strictEqual(secrets.getPassword("outlook-grant"), mailboxSecret);
+      assert.strictEqual(sidecar.gateAccount(db.accountById("outlook-grant"), "organize").ok, true);
+      const folders = await sidecar.answer("mail:listProviderFolders", [{ accountId: "outlook-grant" }]);
+      assert.strictEqual(folders.data.api, true);
+      assert.strictEqual(folders.data.source, "graph");
+      assert.ok(calls.some((call) => String(call.href).includes("/me/mailFolders") && call.method === "GET"));
+
+      browser = null;
+      oauthMod.signIn = async () => signedGrant(oauthConfig.ORGANIZE_SCOPES.microsoft);
+      const storedRequest = await sidecar.answer("mail:grantOrganize", [{ accountId: "outlook-grant" }]);
+      assert.strictEqual(storedRequest.success, true);
+      assert.strictEqual(storedRequest.data.api, true);
+      const requestedBlob = JSON.parse(secrets.getPassword("outlook-grant:organize"));
+      assert.strictEqual(requestedBlob.grantedScopes, oauthConfig.ORGANIZE_SCOPES.microsoft);
+      assert.ok(requestedBlob.grantedScopes.includes("Mail.ReadWrite"));
+      assert.strictEqual(secrets.getPassword("outlook-grant"), mailboxSecret);
+    } finally {
+      oauthMod.signIn = originalSignIn;
+    }
     db.insertAccount({
       id: "oauth-draft",
       email: "draft@example.com",

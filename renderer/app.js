@@ -245,6 +245,14 @@ function showOrganizeGrant(reason) {
   return reason === "scope_missing" || reason === "password_account";
 }
 
+function grantApiOutcome(saved, successMessage, fallback) {
+  if (saved && saved.api === true) return { ok: true, message: successMessage };
+  const message = saved && typeof saved.message === "string" && saved.message.trim()
+    ? saved.message.trim()
+    : fallback;
+  return { ok: false, message: message || "The provider did not return the required grant." };
+}
+
 function folderDelimiter(folders) {
   const rows = Array.isArray(folders) ? folders : [];
   const ids = new Set(rows.filter((folder) => folder && folder.id).map((folder) => String(folder.id)));
@@ -4059,9 +4067,15 @@ async function grantOrganize() {
   const account = selectedAccount();
   if (!isLive(account)) throw new Error("Connect a Google or Microsoft mailbox first.");
   showStatus("Waiting for the mail API consent…");
-  await call("mail:grantOrganize", { accountId: account.id });
-  showStatus("Mail API connected.");
-  await loadProviderFolders(accountGen);
+  const provider = folderProvider(account) === "gmail" ? "gmail" : "outlook";
+  try {
+    const saved = await call("mail:grantOrganize", { accountId: account.id });
+    const outcome = grantApiOutcome(saved, "Mail API connected.", providerCopy("scope_missing", provider));
+    if (!outcome.ok) throw new Error(outcome.message);
+    showStatus(outcome.message);
+  } finally {
+    await loadProviderFolders(accountGen);
+  }
 }
 
 async function createProviderFolder(name, parentId) {
@@ -7689,9 +7703,11 @@ async function grantInboxRules() {
   setInboxRulesBusy(true);
   try {
     showInboxRuleStatus("Waiting for the browser for " + accountLabel(account) + "…", false);
-    await call("mail:grantRules", { accountId: account.id });
+    const saved = await call("mail:grantRules", { accountId: account.id });
+    const outcome = grantApiOutcome(saved, "Granted for " + accountLabel(account) + ".", "Inbox rules need a provider grant.");
+    if (!outcome.ok) throw new Error(outcome.message);
     await loadInboxRules();
-    showInboxRuleStatus("Granted for " + accountLabel(account) + ".", false);
+    showInboxRuleStatus(outcome.message, false);
   } finally { setInboxRulesBusy(false); }
 }
 
@@ -9904,9 +9920,14 @@ async function grantCalendar() {
   const account = calendarAccount();
   if (!account) throw new Error("Connect a Google or Microsoft mailbox first.");
   showStatus("Waiting for the calendar consent…");
-  await call("calendar:connect", { accountId: account.id });
-  showStatus("Calendar connected.");
-  await loadCalendar();
+  try {
+    const saved = await call("calendar:connect", { accountId: account.id });
+    const outcome = grantApiOutcome(saved, "Calendar connected.", "Calendar needs a calendar grant.");
+    if (!outcome.ok) throw new Error(outcome.message);
+    showStatus(outcome.message);
+  } finally {
+    await loadCalendar();
+  }
 }
 
 async function submitCalendarEvent(event) {

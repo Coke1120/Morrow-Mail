@@ -141,6 +141,20 @@ function gateMessage(reason, provider, purpose) {
   return "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.";
 }
 
+function missingGrantMessage(provider, purpose) {
+  const key = config.providerKey(provider);
+  if (purpose === "calendar") {
+    if (key === "microsoft") return "Microsoft did not return the Calendars.ReadWrite grant.";
+    return "Google did not return the calendar.events grant.";
+  }
+  if (purpose === "rules") {
+    if (key === "microsoft") return "Microsoft did not return the MailboxSettings.ReadWrite grant.";
+    return "Google did not return the gmail.settings.basic grant.";
+  }
+  if (key === "microsoft") return "Microsoft did not return the Mail.ReadWrite grant. This mailbox stays on IMAP until then.";
+  return "Google did not return the gmail.modify grant. This mailbox stays on IMAP until then.";
+}
+
 function gateAccount(account, purpose) {
   const provider = providerOf(account);
   const scopes = scopeText(account, purpose);
@@ -323,13 +337,17 @@ async function saveGrant(account, signed, purpose) {
     return fail("keychain", error instanceof Error ? error.message : "Could not save OAuth tokens.");
   }
   const api = config.hasMarker(blob.grantedScopes, signed.provider, purpose);
+  if (!api) {
+    const reason = purpose === "calendar" ? "needs_auth" : "scope_missing";
+    return fail(reason, missingGrantMessage(signed.provider, purpose));
+  }
   return ok({
     accountId: account.id,
     email: account.email,
     provider: signed.provider,
     purpose,
-    api,
-    reason: api ? "" : (purpose === "calendar" ? "needs_auth" : "scope_missing"),
+    api: true,
+    reason: "",
     grantedScopes: blob.grantedScopes,
   });
 }

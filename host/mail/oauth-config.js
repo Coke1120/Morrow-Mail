@@ -176,16 +176,42 @@ function scopesFor(provider, purpose) {
   return SCOPES[key];
 }
 
+function decodeScopeText(value) {
+  let text = Array.isArray(value) ? value.join(" ") : String(value || "");
+  text = text.trim();
+  for (let pass = 0; pass < 2 && /%[0-9A-Fa-f]{2}/.test(text); pass += 1) {
+    try {
+      const next = decodeURIComponent(text.replace(/\+/g, "%20"));
+      if (next === text) break;
+      text = next;
+    } catch {
+      break;
+    }
+  }
+  return text;
+}
+
+function normalizeScopeToken(scope) {
+  return String(scope || "")
+    .trim()
+    .replace(/^https:\/\/graph\.microsoft\.com\//i, "")
+    .replace(/^00000003-0000-0000-c000-000000000000\//i, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
 function hasMarker(granted, provider, purpose) {
   const key = providerKey(provider);
   const name = normalizePurpose(purpose);
   const marker = MARKERS[name] && MARKERS[name][key];
   if (!marker) return false;
-  return String(granted || "")
-    .split(/\s+/)
+  const needle = normalizeScopeToken(marker);
+  if (!needle) return false;
+  return decodeScopeText(granted)
+    .split(/[\s,]+/)
+    .map(normalizeScopeToken)
     .filter(Boolean)
-    .map((scope) => scope.replace(/^https:\/\/graph\.microsoft\.com\//i, ""))
-    .includes(marker);
+    .includes(needle);
 }
 
 function redirectPath(provider, purpose) {
