@@ -108,7 +108,7 @@ assert.ok(windowsIcon.includes('path.join(__dirname, "..", "build", "icon.ico")'
 assert.ok(windowsIcon.includes("ProductName") && windowsIcon.includes("ignoreCert: true"));
 assert.ok(!windowsIcon.includes("signtool") && !windowsIcon.includes("generateExecutableWithSign"));
 const { windowsFileVersion } = require("./windows-icon");
-assert.deepStrictEqual(windowsFileVersion("0.1.0-alpha.13"), [0, 1, 0, 0]);
+assert.deepStrictEqual(windowsFileVersion("0.2.1"), [0, 2, 1, 0]);
 assert.deepStrictEqual(windowsFileVersion("1.2.3.4"), [1, 2, 3, 4]);
 assert.throws(() => windowsFileVersion("alpha"), /numeric version/);
 assert.deepStrictEqual(
@@ -219,7 +219,7 @@ assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell doe
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.1.0-alpha.13");
+assert.strictEqual(pkg.version, "0.2.1");
 assert.strictEqual(pkg.build.productName, "Morrow Mail");
 assert.strictEqual(pkg.build.appId, "com.coke1120.morrow-mail");
 assert.notStrictEqual(pkg.build.appId, "org.morrowmail.desktop");

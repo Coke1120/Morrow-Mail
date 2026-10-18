@@ -1,6 +1,6 @@
 {
   "name": "morrow-mail",
-  "version": "0.1.0-alpha.13",
+  "version": "0.2.1",
   "description": "Morrow Mail. Open-source Electron mail client.",
   "main": "host/main.js",
   "private": true,
@@ -37,7 +37,7 @@
   "build": {
     "appId": "com.coke1120.morrow-mail",
     "productName": "Morrow Mail",
-    "copyright": "Copyright © 2026 Leo Ho",
+    "copyright": "Copyright \u00a9 2026 Leo Ho",
     "directories": {
       "output": "dist",
       "buildResources": "build"
