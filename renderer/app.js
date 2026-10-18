@@ -2600,10 +2600,11 @@ function syncStatusLabel(sync) {
 
 function redactDebugText(text) {
   return String(text || "")
+    .replace(/(["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|password|passwd|secret|authorization)["']?\s*[:=]\s*)(["'])(.*?)\2/gi, "$1[redacted]")
     .replace(/bearer\s+\S+/gi, "bearer [redacted]")
     .replace(/\b(access[_-]?token|refresh[_-]?token|api[_-]?key|password|passwd|secret|authorization)\b\s*[:=]\s*\S+/gi, "$1 [redacted]")
     .replace(/\bya29\.[A-Za-z0-9._-]+/g, "[redacted]")
-    .replace(/\bsk-[A-Za-z0-9]{10,}\b/g, "[redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{10,}\b/g, "[redacted]")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 400);
@@ -2716,36 +2717,54 @@ function finishLocalSync(kind, error) {
   paintSyncControl();
 }
 
-function paintLog(lines) {
-  const list = $("log-lines");
-  if (!list) return;
-  list.replaceChildren();
-  const rows = Array.isArray(lines) ? lines : [];
-  if (!rows.length) {
-    const item = document.createElement("li");
-    item.textContent = "No log lines yet.";
-    list.appendChild(item);
-    return;
-  }
-  for (const row of rows) {
-    const item = document.createElement("li");
-    const when = syncClock(row && row.at);
-    item.textContent = [when, row && row.source, redactDebugText(row && row.text)].filter(Boolean).join(" · ");
-    list.appendChild(item);
-  }
+let supportLogLines = [];
+function logLine(row) {
+  const at = new Date(row && row.at);
+  const when = Number.isFinite(+at) ? at.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")" : "Unknown time";
+  return [when, redactDebugText(row && row.source), redactDebugText(row && row.text)].filter(Boolean).join(" · ");
 }
-
+function paintLog(lines) {
+  supportLogLines = (Array.isArray(lines) ? lines : []).slice(-200);
+  const sources = $("log-source");
+  const previous = sources.value;
+  sources.replaceChildren();
+  for (const value of ["", ...new Set(supportLogLines.map(row => row.source || "host"))]) {
+    const option = document.createElement("option"); option.value = value; option.textContent = value ? redactDebugText(value) : "All sources"; sources.append(option);
+  }
+  sources.value = [...sources.options].some(row => row.value === previous) ? previous : "";
+  filterSupportLog();
+}
+function filteredSupportLog() {
+  const source = $("log-source").value;
+  return supportLogLines.filter(row => !source || (row.source || "host") === source);
+}
+function filterSupportLog() {
+  const list = $("log-lines"); list.replaceChildren();
+  const rows = filteredSupportLog();
+  for (const row of rows) { const item = document.createElement("li"); item.textContent = logLine(row); list.append(item); }
+  if (!rows.length) { const item = document.createElement("li"); item.textContent = "No recent session lines for this source."; list.append(item); }
+}
 async function refreshLog() {
   const status = $("log-status");
   try {
     const data = await call("host:getDebugLog", { limit: 200 });
     const lines = data && Array.isArray(data.lines) ? data.lines : [];
-    paintLog(lines.length ? lines : debugLines);
-    if (status) status.textContent = "";
+    paintLog([...lines, ...debugLines].sort((a,b) => Number(a.at) - Number(b.at)).slice(-200));
+    status.textContent = "Showing up to 200 recent host and renderer lines from this session.";
   } catch (error) {
     paintLog(debugLines);
-    if (status) status.textContent = error instanceof Error ? error.message : String(error);
+    status.textContent = "Host log unavailable; only recent renderer lines are shown. " + redactDebugText(error.message);
   }
+}
+function previewSupportLog() {
+  const header = "Morrow Mail " + appVersion + " · Support preview · " + new Date().toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")\nKnown credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. Up to 200 recent session lines; this is not a full history.\n\n";
+  $("support-preview").value = header + filteredSupportLog().map(logLine).join("\n");
+  $("support-copy-status").textContent = "Review the preview before copying.";
+  openDialog("support-dialog");
+}
+async function copySupportLog() {
+  try { await navigator.clipboard.writeText($("support-preview").value); $("support-copy-status").textContent = "Copied the preview. Review again before sharing; addresses may remain."; }
+  catch { $("support-copy-status").textContent = "Could not copy. Select and copy the preview manually."; $("support-preview").focus(); $("support-preview").select(); }
 }
 
 function showLog() {
@@ -6443,7 +6462,7 @@ function wireQuoteSplit() {
 function updateView(snapshot, version) {
   const snap = snapshot && typeof snapshot === "object" ? snapshot : {};
   const current = typeof version === "string" ? version : "";
-  let status = "Up to date.";
+  let status = snap.lastCheckedAt ? "Up to date." : "Updates have not been checked yet.";
   let install = false;
   let busy = false;
   const error = snap.error ? String(snap.error) : "";
@@ -6469,18 +6488,22 @@ function updateView(snapshot, version) {
   } else if (snap.enabled === false) {
     status = "Updater is off until the app is packaged.";
   }
-  return { version: current, status: status, error: error, install: install, busy: busy };
+  return { version: current, status: status, error: error, install: install, busy: busy, lastCheckedAt: snap.lastCheckedAt || null };
 }
 
 function paintUpdate(view) {
-  $("version").textContent = view.version ? "Version " + view.version : "";
-  const status = $("update-status");
-  status.textContent = view.error ? view.status + " " + view.error : view.status;
-  status.classList.toggle("error", !!view.error);
-  $("update-check").disabled = !!view.busy;
-  const install = $("update-install");
-  install.hidden = !view.install;
-  if (!view.install) install.disabled = false;
+  for (const prefix of ["", "about-"]) {
+    $(prefix + "version").textContent = view.version ? "Version " + view.version : "";
+    const status = $(prefix + "update-status");
+    status.textContent = (view.error ? view.status + " " + view.error : view.status) + (view.lastCheckedAt ? " Last checked " + new Date(view.lastCheckedAt).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : "");
+    status.classList.toggle("error", !!view.error);
+    $(prefix + "update-check").disabled = !!view.busy;
+    const install = $(prefix + "update-install");
+    install.hidden = !view.install;
+    install.textContent = "Restart and install";
+    install.disabled = !!view.busy;
+  }
+  $("about-update-quit").hidden = !view.install;
 }
 
 function showUpdate(snapshot) {
@@ -10379,6 +10402,15 @@ function wire() {
   $("settings-reconnect").addEventListener("click", () => openConnectFor(settingsAccount()));
   $("settings-calendar").addEventListener("click", () => { state.calendarAccountId = settingsAccount()?.id || ""; closeDialog("settings"); showCalendar(); });
   $("settings-capabilities-refresh").addEventListener("click", loadSettingsCapabilities);
+  $("settings-log").addEventListener("click", async () => { await closeDialog("settings"); showLog(); });
+  $("settings-about").addEventListener("click", () => { openDialog("about-dialog"); api.invoke("host:updateGetState").then(bumpUpdate).catch(error => bumpUpdate({ error: error.message })); });
+  $("about-close").addEventListener("click", () => closeDialog("about-dialog"));
+  $("about-update-check").addEventListener("click", checkForUpdates);
+  $("about-update-install").addEventListener("click", installUpdate);
+  $("log-source").addEventListener("change", filterSupportLog);
+  $("log-preview").addEventListener("click", previewSupportLog);
+  $("support-copy").addEventListener("click", copySupportLog);
+  $("support-close").addEventListener("click", () => closeDialog("support-dialog"));
   $("settings-open").addEventListener("click", openSettings);
   $("inbox-rules-open").addEventListener("click", openInboxRules);
   $("inbox-rule-form").addEventListener("submit", (event) => {

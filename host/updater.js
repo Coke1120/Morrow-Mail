@@ -3,6 +3,8 @@ const auth = require("./update-auth");
 
 const state = {
   checking: false,
+  lastCheckedAt: null,
+  lastAttemptAt: null,
   available: false,
   downloading: false,
   downloaded: false,
@@ -56,16 +58,19 @@ function bind(updater) {
   listenersBound = true;
   updater.on("checking-for-update", () => {
     state.checking = true;
+    state.lastAttemptAt = new Date().toISOString();
     state.error = null;
     state.needsToken = false;
   });
   updater.on("update-available", (info) => {
+    state.lastCheckedAt = new Date().toISOString();
     state.checking = false;
     state.available = true;
     state.needsToken = false;
     state.version = info && info.version ? info.version : null;
   });
   updater.on("update-not-available", () => {
+    state.lastCheckedAt = new Date().toISOString();
     state.checking = false;
     state.available = false;
     state.needsToken = false;

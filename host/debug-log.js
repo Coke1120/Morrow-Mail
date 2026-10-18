@@ -3,10 +3,11 @@ const rows = [];
 
 function redactDebugText(text) {
   return String(text || "")
+    .replace(/(["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|password|passwd|secret|authorization)["']?\s*[:=]\s*)(["'])(.*?)\2/gi, "$1[redacted]")
     .replace(/bearer\s+\S+/gi, "bearer [redacted]")
     .replace(/\b(access[_-]?token|refresh[_-]?token|api[_-]?key|password|passwd|secret|authorization)\b\s*[:=]\s*\S+/gi, "$1 [redacted]")
     .replace(/\bya29\.[A-Za-z0-9._-]+/g, "[redacted]")
-    .replace(/\bsk-[A-Za-z0-9]{10,}\b/g, "[redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{10,}\b/g, "[redacted]")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 400);

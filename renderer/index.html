@@ -374,7 +374,8 @@
         </div>
         <button type="button" class="ghost" id="log-refresh">Refresh</button>
       </div>
-      <p class="hint">Passwords, tokens, and API keys are removed before a line is shown.</p>
+      <p class="hint">Known credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. This is a limited recent-session history, not a complete activity record.</p>
+      <div class="row"><label for="log-source">Source</label><select id="log-source"><option value="">All sources</option></select><button type="button" class="ghost" id="log-preview">Preview support copy…</button></div>
       <p id="log-status" role="status"></p>
       <ol id="log-lines"></ol>
     </section>
@@ -383,6 +384,17 @@
     </div>
     </div>
 
+    <dialog id="about-dialog" aria-labelledby="about-title"><div class="dialog-body">
+      <div class="sheet-head"><h2 id="about-title">About &amp; updates</h2><button type="button" class="ghost" id="about-close">Close</button></div>
+      <p>Morrow Mail</p><p id="about-version"></p><p id="about-update-status" role="status">Updates have not been checked yet.</p>
+      <p id="about-update-quit" class="hint" hidden>This update will also install automatically when you quit Morrow. Restart and install closes the app now.</p>
+      <div class="row"><button type="button" class="ghost" id="about-update-check">Check for updates</button><button type="button" class="primary" id="about-update-install" hidden>Restart and install</button></div>
+    </div></dialog>
+    <dialog id="support-dialog" aria-labelledby="support-title"><div class="dialog-body">
+      <h2 id="support-title">Review support copy</h2><p class="hint">Known credential patterns are redacted. Addresses and diagnostic context may remain. Remove anything private before sharing.</p>
+      <label for="support-preview">Redacted recent-session preview</label><textarea id="support-preview" rows="16" readonly></textarea>
+      <p id="support-copy-status" role="status"></p><div class="row"><button type="button" class="primary" id="support-copy">Copy preview</button><button type="button" class="ghost" id="support-close">Close</button></div>
+    </div></dialog>
     <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>
@@ -570,6 +582,7 @@
         <h2 id="settings-title">Settings</h2>
         <button type="button" class="ghost" id="settings-close">Close</button>
       </div>
+      <div class="row"><button type="button" class="ghost" id="settings-log">Debug log</button><button type="button" class="ghost" id="settings-about">About &amp; updates</button></div>
       <div class="settings-layout">
         <section aria-labelledby="settings-prefs-title">
           <h3 id="settings-prefs-title">Preferences</h3>

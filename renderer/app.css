@@ -2464,3 +2464,6 @@ textarea { min-height: 140px; resize: vertical; }
 #scheduled-dialog { width: min(760px, calc(100vw - 32px)); }
 #scheduled li { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 #scheduled li > span { flex-basis: 100%; overflow-wrap: anywhere; }
+
+#support-dialog { width: min(840px, calc(100vw - 32px)); }
+#support-preview { width: 100%; min-height: 280px; font-family: monospace; font-size: 12px; }
