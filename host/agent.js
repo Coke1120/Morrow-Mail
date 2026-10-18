@@ -1506,6 +1506,69 @@ function startSkillScheduler() {
   if (skillTimer.unref) skillTimer.unref();
 }
 
+const BRIDGE_STORE_CAP = 2 * 1024 * 1024;
+
+function readStoreForBridge() {
+  const file = storePath();
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return { proposals: [] };
+    return { error: "STORE_UNAVAILABLE" };
+  }
+  if (!stat.isFile() || stat.size > BRIDGE_STORE_CAP) return { error: "STORE_UNAVAILABLE" };
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return { error: "STORE_UNAVAILABLE" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { error: "STORE_UNAVAILABLE" };
+  if (!Object.prototype.hasOwnProperty.call(parsed, "proposals")) return { proposals: [] };
+  if (!Array.isArray(parsed.proposals)) return { error: "STORE_UNAVAILABLE" };
+  return { proposals: parsed.proposals };
+}
+
+function bridgeListProposals(accountId, options) {
+  const read = readStoreForBridge();
+  if (read.error) return { error: read.error };
+  const limit = options && options.limit ? options.limit : 20;
+  const owns = options && options.owns;
+  const items = [];
+  let more = false;
+  for (const row of read.proposals) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    if (row.status !== "pending") continue;
+    if (row.accountId !== accountId) continue;
+    const messageId = typeof row.messageId === "string" ? row.messageId : "";
+    const proposalId = typeof row.id === "string" ? row.id : "";
+    if (!messageId || !proposalId) continue;
+    if (typeof owns === "function" && !owns(messageId, accountId)) continue;
+    if (items.length >= limit) {
+      more = true;
+      break;
+    }
+    items.push({
+      proposalId,
+      accountId,
+      messageId,
+      kind: "organize",
+      status: "pending",
+      createdAt: typeof row.createdAt === "string" ? row.createdAt : null,
+      source: "morrow-agent",
+      reviewInMorrow: true,
+      detailsAvailable: false,
+      detailsUnavailableReason: "SOURCE_SCOPE_UNVERIFIED",
+    });
+  }
+  return {
+    items,
+    more,
+    coverage: { kinds: ["organize"], draftAndTriageSuggestionsIncluded: false },
+  };
+}
+
 function dismissProposal(params) {
   const proposalId = params && typeof params.proposalId === "string" ? params.proposalId.trim() : "";
   const store = readStore();
@@ -1563,6 +1626,7 @@ module.exports = {
   runSkill,
   confirmProposal,
   dismissProposal,
+  bridgeListProposals,
   triage,
   getTriage,
   routeChat,

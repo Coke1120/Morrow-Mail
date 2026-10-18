@@ -202,6 +202,10 @@ function hasAccounts() {
   return get("SELECT COUNT(*) AS n FROM accounts").n > 0;
 }
 
+function isReady() {
+  return !!db;
+}
+
 function listAccountRows() {
   return all("SELECT * FROM accounts ORDER BY created_at ASC, id ASC");
 }
@@ -609,10 +613,39 @@ function searchResultLimit(value) {
   return Math.min(Math.max(Math.trunc(n), 1), SEARCH_RESULT_CAP);
 }
 
+function inspectSearchTokens(value) {
+  const found = foldTerm(value).match(/[\p{L}\p{N}]+/gu) || [];
+  let overlong = 0;
+  const tokens = [];
+  const seen = new Set();
+  for (const term of found) {
+    if (!term) continue;
+    if (term.length > 80) {
+      overlong += 1;
+      continue;
+    }
+    if (seen.has(term)) continue;
+    seen.add(term);
+    tokens.push(term);
+  }
+  return { tokens, overlong };
+}
+
 function searchMessages(options) {
   if (!db) return [];
   const query = options || {};
-  const tokens = tokenize(query.query).slice(0, SEARCH_QUERY_CAP);
+  if (query.accountRequired && !query.accountId) return [];
+  let tokens;
+  if (Array.isArray(query.tokens)) {
+    tokens = [];
+    for (const term of query.tokens) {
+      if (typeof term !== "string" || !term || term.length > 80) continue;
+      tokens.push(term);
+      if (tokens.length >= SEARCH_QUERY_CAP) break;
+    }
+  } else {
+    tokens = tokenize(query.query).slice(0, SEARCH_QUERY_CAP);
+  }
   if (!tokens.length) return [];
   const joins = [];
   const params = [];
@@ -638,7 +671,7 @@ function searchMessages(options) {
     `SELECT m.* FROM messages m
      ${joins.join("\n")}
      ${where}
-     ORDER BY (${rank}) DESC, m.list_sort_ts DESC
+     ORDER BY (${rank}) DESC, m.list_sort_ts DESC, m.id DESC
      LIMIT ?`,
     params
   );
@@ -850,6 +883,34 @@ function insertMessage(row) {
 function messageById(id) {
   if (!id) return null;
   return get("SELECT * FROM messages WHERE id = ?", [id]);
+}
+
+function selectBotHeaders(accountId, folderPaths, limit) {
+  if (!db || !accountId || !Array.isArray(folderPaths) || !folderPaths.length) return [];
+  const n = Math.min(Math.max(Number(limit) || 1, 1), 51);
+  const marks = folderPaths.map(() => "?").join(", ");
+  return all(
+    `SELECT m.*, CASE WHEN EXISTS (
+       SELECT 1 FROM snooze s
+       WHERE s.account_id = m.account_id AND s.thread_id = m.thread_id AND s.until_iso > ?
+     ) THEN 1 ELSE 0 END AS snoozed
+     FROM messages m
+     WHERE m.account_id = ? AND m.folder_path IN (${marks})
+     ORDER BY m.list_sort_ts DESC, m.id DESC
+     LIMIT ?`,
+    [new Date().toISOString(), accountId, ...folderPaths, n]
+  );
+}
+
+function messageStats(accountId) {
+  if (!db) return { messages: 0, bodiesComplete: 0 };
+  const row = accountId
+    ? get(
+      "SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN body_complete = 1 THEN 1 ELSE 0 END), 0) AS bodies FROM messages WHERE account_id = ?",
+      [accountId],
+    )
+    : get("SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN body_complete = 1 THEN 1 ELSE 0 END), 0) AS bodies FROM messages");
+  return { messages: row ? row.n : 0, bodiesComplete: row ? row.bodies : 0 };
 }
 
 function messagesByThread(accountId, threadId) {
@@ -1356,6 +1417,7 @@ module.exports = {
   open,
   close,
   hasAccounts,
+  isReady,
   listAccountRows,
   accountById,
   accountByEmail,
@@ -1379,6 +1441,9 @@ module.exports = {
   pruneMissing,
   insertMessage,
   searchMessages,
+  inspectSearchTokens,
+  selectBotHeaders,
+  messageStats,
   messageById,
   messagesByThread,
   updateMessage,

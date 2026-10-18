@@ -21,6 +21,19 @@ const FIRST_PARTY_HTML = path.join(FIRST_PARTY_DIR, "index.html");
 const updater = require("./updater");
 const APP_ICON = path.join(__dirname, "..", "build", "icon.png");
 
+const singleInstance = app.requestSingleInstanceLock();
+let shellWindow = null;
+if (!singleInstance) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!shellWindow) return;
+    if (shellWindow.isMinimized()) shellWindow.restore();
+    shellWindow.show();
+    shellWindow.focus();
+  });
+}
+
 app.setName("Morrow Mail");
 if (process.platform === "win32") app.setAppUserModelId("com.coke1120.morrow-mail");
 app.setAboutPanelOptions({
@@ -314,12 +327,18 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   idleStopped = true;
   Promise.resolve()
+    .then(() => require("./bot/server").stop())
+    .catch(() => {})
     .then(() => require("./mail/engine").stopIdle())
     .catch(() => {})
     .finally(() => app.quit());
 });
 
 app.whenReady().then(async () => {
+  if (!singleInstance) {
+    app.exit(0);
+    return;
+  }
   installMenu();
   registerHostAi();
   updater.registerIpc();
@@ -356,7 +375,9 @@ app.whenReady().then(async () => {
     });
     attachIpc(preloadFile);
     const win = await createWindow(preloadFile, mode);
+    shellWindow = win;
     startBackgroundSync();
+    try { await require("./bot/server").startIfEnabled(); } catch { /* a missing grant leaves the bridge off */ }
     try {
       powerMonitor.on("suspend", () => {
         try { require("./mail/engine").idleSleep(); } catch { /* mail is not open */ }

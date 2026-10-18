@@ -192,8 +192,11 @@ function createIpc(logPath) {
     fs.appendFileSync(logPath, `${key}\n`);
   }
   return {
-    handle(_event, channel, ...args) {
+    handle(event, channel, ...args) {
       note("invoke", channel);
+      if (typeof channel === "string" && channel.startsWith("bot:")) {
+        return require("./bot/manage").answer(channel, args && args[0], event);
+      }
       if (args.length && channel.startsWith("mail:")) {
         fs.appendFileSync(logPath, `  args ${channel} ${redact(args)}\n`);
       }

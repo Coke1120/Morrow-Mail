@@ -521,6 +521,40 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 }
 
 #settings-ooo { grid-column: 1 / -1; }
+#settings-bot {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+}
+#settings-bot label { display: grid; gap: 4px; font-size: 13px; }
+#settings-bot fieldset {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+}
+#bot-status.error { color: var(--danger); }
+#bot-grants, #bot-drafts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.bot-grant, .bot-draft {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 6px;
+}
+.bot-draft pre, #bot-secret pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  font: inherit;
+}
 #ooo-fields { display: grid; gap: 8px; margin-top: 8px; }
 #ooo-fields label { display: grid; gap: 4px; font-size: 13px; }
 #ooo-fields textarea { min-height: 88px; resize: vertical; }

@@ -11,6 +11,8 @@ const state = {
   draftId: null,
   composeMeta: null,
   composeQuote: null,
+  botDraftReview: null,
+  botAccess: null,
   busy: false,
   snoozed: new Map(),
   signatures: [],
@@ -5224,12 +5226,32 @@ function composePayload(account) {
 function syncCompose() {
   const account = composeAccount();
   const live = isLive(account);
-  $("compose-note").textContent = live
-    ? `From ${account.email}`
-    : "Connect an account before saving or sending.";
   $("compose-save").disabled = !live;
   $("compose-send").disabled = !live;
   $("compose-schedule").disabled = !live;
+  paintComposeNote();
+}
+
+function paintComposeNote() {
+  const account = composeAccount();
+  const live = isLive(account);
+  let text = live
+    ? `From ${account.email}`
+    : "Connect an account before saving or sending.";
+  const review = state.botDraftReview;
+  if (review) {
+    const accountId = (state.composeMeta && state.composeMeta.accountId) || "";
+    const same = review.accountId === accountId
+      && review.to === $("compose-to").value
+      && review.cc === $("compose-cc").value
+      && review.bcc === $("compose-bcc").value
+      && review.subject === $("compose-subject").value
+      && review.body === $("compose-body").value;
+    text += same
+      ? " Reviewing a draft proposal. Nothing is sent until you press Send."
+      : " This compose no longer matches the reviewed draft. Nothing is sent until you press Send.";
+  }
+  $("compose-note").textContent = text;
 }
 
 function syncScheduleFields() {
@@ -5316,6 +5338,7 @@ function onSignatureChange() {
   const text = signaturePlain(row);
   $("compose-body").value = applySignature($("compose-body").value, state.signatureText, text);
   state.signatureText = text;
+  paintComposeNote();
 }
 
 function showSignatureStatus(text, isError) {
@@ -5781,6 +5804,15 @@ async function openCompose(seed) {
     threadId: fields.threadId || "",
   };
   state.composeQuote = quoteStateFromSeed(fields);
+  state.botDraftReview = fields.botDraft ? {
+    proposalId: fields.botDraft.proposalId || "",
+    accountId: fields.accountId || state.accountId || "",
+    to: fields.to || "",
+    cc: fields.cc || "",
+    bcc: fields.bcc || "",
+    subject: fields.subject || "",
+    body: fields.body || "",
+  } : null;
   $("compose-title").textContent = fields.title || "New message";
   $("compose-to").value = fields.to || "";
   $("compose-cc").value = fields.cc || "";
@@ -5797,6 +5829,7 @@ async function openCompose(seed) {
   openDialog("compose");
   scheduleComposeLayout();
   await Promise.all([fillSignatures(), loadScheduled()]);
+  paintComposeNote();
   if (!$("compose").open) return;
   scheduleComposeLayout();
   const write = document.querySelector(".ai-write");
@@ -6452,6 +6485,7 @@ async function loadSettings() {
   }
   loadAiSettings();
   loadVacation().catch((error) => setOooStatus(error instanceof Error ? error.message : String(error), true));
+  loadBotAccess().catch((error) => setBotStatus(error instanceof Error ? error.message : String(error), true));
 }
 
 function setOooStatus(text, isError) {
@@ -9376,8 +9410,328 @@ async function loadOauthStatus() {
   $("oauth-google").title = google.reason;
 }
 
+function setBotStatus(text, isError) {
+  const status = $("bot-status");
+  if (!status) return;
+  status.textContent = text || "";
+  status.classList.toggle("error", !!isError && !!text);
+}
+
+function clearBotSecret() {
+  const value = $("bot-secret-value");
+  if (value) value.textContent = "";
+}
+
+function showBotSecret(secret) {
+  $("bot-secret-value").textContent = secret || "";
+  openDialog("bot-secret");
+}
+
+async function loadBotAccess() {
+  const data = await call("bot:getAccess");
+  state.botAccess = data;
+  paintBotAccess(data);
+  return data;
+}
+
+function botIcon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "15");
+  svg.setAttribute("height", "15");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const paths = {
+    refresh: [
+      ["polyline", { points: "23 4 23 10 17 10" }],
+      ["polyline", { points: "1 20 1 14 7 14" }],
+      ["path", { d: "M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" }],
+    ],
+    x: [
+      ["line", { x1: "18", y1: "6", x2: "6", y2: "18" }],
+      ["line", { x1: "6", y1: "6", x2: "18", y2: "18" }],
+    ],
+    mail: [
+      ["path", { d: "M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" }],
+      ["polyline", { points: "22,6 12,13 2,6" }],
+    ],
+  };
+  for (const [tag, attrs] of paths[name] || []) {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+    svg.append(node);
+  }
+  return svg;
+}
+
+function paintBotAccounts(accounts) {
+  const box = $("bot-accounts");
+  box.replaceChildren();
+  const legend = document.createElement("legend");
+  legend.textContent = "Accounts";
+  box.append(legend);
+  if (!accounts.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "Connect an account before minting a grant.";
+    box.append(empty);
+    return;
+  }
+  for (const account of accounts) {
+    const label = document.createElement("label");
+    label.className = "check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = account.accountId;
+    const name = account.displayName ? `${account.displayName} · ${account.email}` : (account.email || account.accountId);
+    label.append(input, document.createTextNode(` ${name}`));
+    box.append(label);
+  }
+}
+
+function paintBotGrants(grants) {
+  const list = $("bot-grants");
+  list.replaceChildren();
+  if (!grants.length) {
+    const item = document.createElement("li");
+    item.textContent = "No grants.";
+    list.append(item);
+    return;
+  }
+  for (const grant of grants) {
+    const item = document.createElement("li");
+    item.className = "bot-grant";
+    const title = document.createElement("p");
+    const when = grant.revokedAt ? "revoked" : (grant.expired ? "expired" : "live");
+    title.textContent = `${grant.label} · ${grant.keyId} · ${when}`;
+    const meta = document.createElement("p");
+    meta.className = "hint";
+    meta.textContent = `${(grant.accountIds || []).join(", ")} · ${(grant.capabilities || []).join(", ")} · until ${grant.expiresAt}`;
+    const used = document.createElement("p");
+    used.className = "hint";
+    used.textContent = grant.lastUsedAt
+      ? `Last used ${grant.lastUsedAt}. ${grant.bytesToday} bytes today.`
+      : "Not used yet.";
+    const row = document.createElement("div");
+    row.className = "row";
+    const rotate = document.createElement("button");
+    rotate.type = "button";
+    rotate.className = "ghost icon-label";
+    rotate.append(botIcon("refresh"), document.createElement("span"));
+    rotate.lastChild.textContent = "Rotate";
+    rotate.disabled = !!grant.revokedAt || !!grant.expired;
+    rotate.addEventListener("click", () => {
+      botGuard(async () => {
+        const rotated = await call("bot:rotateGrant", { clientId: grant.clientId });
+        showBotSecret(rotated.secret);
+        paintBotAccess(rotated.access);
+        setBotStatus("Rotated. The previous secret stopped working.");
+      });
+    });
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.className = "ghost icon-label";
+    revoke.append(botIcon("x"), document.createElement("span"));
+    revoke.lastChild.textContent = "Revoke";
+    revoke.disabled = !!grant.revokedAt;
+    revoke.addEventListener("click", () => {
+      botGuard(async () => {
+        paintBotAccess(await call("bot:revokeGrant", { clientId: grant.clientId }));
+        setBotStatus("Grant revoked.");
+      });
+    });
+    row.append(rotate, revoke);
+    item.append(title, meta, used, row);
+    list.append(item);
+  }
+}
+
+function paintBotDrafts(rows) {
+  const list = $("bot-drafts");
+  list.replaceChildren();
+  if (!rows) {
+    const item = document.createElement("li");
+    item.textContent = "Draft proposals cannot be read.";
+    list.append(item);
+    return;
+  }
+  if (!rows.length) {
+    const item = document.createElement("li");
+    item.textContent = "No draft proposals waiting.";
+    list.append(item);
+    return;
+  }
+  for (const row of rows) {
+    const item = document.createElement("li");
+    item.className = "bot-draft";
+    const title = document.createElement("p");
+    title.textContent = `${row.subject || "(no subject)"} · ${row.status}`;
+    const to = document.createElement("p");
+    to.className = "hint";
+    to.textContent = `To ${(row.to || []).join(", ")}`;
+    const body = document.createElement("pre");
+    body.textContent = row.bodyText || "";
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "ghost icon-label";
+    open.append(botIcon("mail"), document.createElement("span"));
+    open.lastChild.textContent = "Open in compose";
+    open.addEventListener("click", () => {
+      botGuard(() => openBotDraft(row.proposalId));
+    });
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "ghost icon-label";
+    dismiss.append(botIcon("x"), document.createElement("span"));
+    dismiss.lastChild.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => {
+      botGuard(async () => {
+        paintBotAccess(await call("bot:dismissDraftProposal", { proposalId: row.proposalId }));
+        setBotStatus("Draft proposal dismissed. Nothing was sent.");
+      });
+    });
+    actions.append(open, dismiss);
+    item.append(title, to, body, actions);
+    list.append(item);
+  }
+}
+
+function paintBotAccess(data) {
+  const access = data || {};
+  const listen = access.listen || {};
+  const listenLine = $("bot-listen");
+  if (listen.listening) {
+    listenLine.textContent = `Listening on ${listen.address}:${listen.port}. Sending stays in Morrow.`;
+  } else if (listen.error === "port_in_use") {
+    listenLine.textContent = "The bridge is off. Port 47831 is already in use on this computer.";
+  } else {
+    listenLine.textContent = "The bridge is not listening.";
+  }
+  $("bot-install").textContent = access.installationId
+    ? `Installation ${access.installationId}`
+    : "The installation id is created with the first grant.";
+  const grants = access.grants || [];
+  const live = grants.some((grant) => grant.live);
+  const enabled = $("bot-enabled");
+  enabled.checked = access.enabled === true;
+  enabled.disabled = access.enabled !== true && !live;
+  $("bot-serve-host").value = access.serveHost || "";
+  paintBotAccounts(access.accounts || []);
+  paintBotGrants(grants);
+  paintBotDrafts(access.draftsAvailable === false ? null : (access.drafts || []));
+}
+
+async function openBotDraft(proposalId) {
+  const seed = await call("bot:draftComposeSeed", { proposalId });
+  await openCompose({
+    accountId: seed.accountId,
+    to: seed.to,
+    cc: seed.cc,
+    bcc: seed.bcc,
+    subject: seed.subject,
+    body: seed.body,
+    title: "Review draft",
+    botDraft: {
+      proposalId: seed.proposalId,
+      accountId: seed.accountId,
+      to: seed.to,
+      cc: seed.cc,
+      bcc: seed.bcc,
+      subject: seed.subject,
+      body: seed.body,
+    },
+  });
+  setBotStatus("Opened in compose. Nothing is sent until you press Send.");
+}
+
+let botBusy = false;
+function botGuard(fn) {
+  if (botBusy) return Promise.resolve();
+  botBusy = true;
+  return Promise.resolve()
+    .then(fn)
+    .catch((error) => {
+      setBotStatus(error instanceof Error ? error.message : String(error), true);
+    })
+    .finally(() => {
+      botBusy = false;
+    });
+}
+
+function selectedBotAccounts() {
+  return [...$("bot-accounts").querySelectorAll("input:checked")].map((input) => input.value);
+}
+
+function selectedBotCaps() {
+  const caps = ["accounts.read", "mail.headers.read", "health.read", "agent.proposals.read"];
+  for (const input of $("bot-caps").querySelectorAll("input")) {
+    if (input.checked && input.dataset.cap) caps.push(input.dataset.cap);
+  }
+  return caps;
+}
+
+function wireBot() {
+  $("bot-enabled").addEventListener("change", () => {
+    const want = $("bot-enabled").checked === true;
+    botGuard(async () => {
+      try {
+        paintBotAccess(await call("bot:setEnabled", { enabled: want }));
+        setBotStatus(want ? "Bridge enabled on 127.0.0.1." : "Bridge disabled.");
+      } catch (error) {
+        await loadBotAccess().catch(() => {});
+        throw error;
+      }
+    });
+  });
+  $("bot-serve-save").addEventListener("click", () => {
+    botGuard(async () => {
+      paintBotAccess(await call("bot:setServeHost", { serveHost: $("bot-serve-host").value }));
+      setBotStatus("Serve host saved.");
+    });
+  });
+  $("bot-mint").addEventListener("submit", (event) => {
+    event.preventDefault();
+    botGuard(async () => {
+      const minted = await call("bot:mintGrant", {
+        label: $("bot-label").value,
+        accountIds: selectedBotAccounts(),
+        capabilities: selectedBotCaps(),
+        expiryDays: Number($("bot-expiry").value),
+      });
+      showBotSecret(minted.secret);
+      paintBotAccess(minted.access);
+      $("bot-label").value = "";
+      setBotStatus("Grant minted. Copy the secret now. The bridge stays off until you enable it.");
+    });
+  });
+  $("bot-secret-copy").addEventListener("click", () => {
+    const value = $("bot-secret-value").textContent;
+    if (!value || !navigator.clipboard) {
+      setBotStatus("Copy the secret from the dialog.", true);
+      return;
+    }
+    navigator.clipboard.writeText(value).then(() => {
+      setBotStatus("Secret copied.");
+    }).catch(() => {
+      setBotStatus("Copy the secret from the dialog.", true);
+    });
+  });
+  $("bot-secret-close").addEventListener("click", () => closeDialog("bot-secret"));
+  $("bot-secret").addEventListener("close", clearBotSecret);
+  for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body"]) {
+    $(id).addEventListener("input", paintComposeNote);
+  }
+}
+
 function wire() {
   document.addEventListener("keydown", onShellKey);
+  wireBot();
   document.addEventListener("keydown", onSelectionKey);
   wireOrganize();
   wireSelection();
@@ -9543,6 +9897,7 @@ function wire() {
     guardOoo(() => saveVacation("disable"));
   });
   $("settings").addEventListener("close", () => {
+    clearBotSecret();
     loadShellPrefs().then(() => {
       paintPrefs();
     }).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));

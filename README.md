@@ -24,3 +24,4 @@ Secrets: macOS Keychain service `morrow-mail`, or Windows DPAPI under `%LOCALAPP
 - Packaging: electron-builder + electron-updater (unsigned alpha). Windows and unsigned Mac feeds: Actions → **release** → Run workflow ([docs/PACKAGING.md](docs/PACKAGING.md))
 - OAuth: IMAP XOAUTH2 baseline, Gmail/Graph label side-car, a separate calendar grant, and a separate Out of Office grant. Google Desktop JSON stays out of git. See [docs/OAUTH.md](docs/OAUTH.md)
 - Out of Office: Settings → Out of Office writes Gmail vacation settings or Microsoft automatic replies after confirmation. IMAP tries ManageSieve on port 4190 and does not send local automatic replies
+- Bot bridge: default-off loopback API on `127.0.0.1:47831` for cached reads and inert draft proposals. See [docs/BOT_BRIDGE.md](docs/BOT_BRIDGE.md)

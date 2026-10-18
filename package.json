@@ -9,6 +9,7 @@
   "scripts": {
     "start": "electron .",
     "check": "node scripts/check-boot-path.js",
+    "bot:call": "node scripts/morrow-bot-call.js",
     "postinstall": "node scripts/bundle-motion.js",
     "motion:bundle": "node scripts/bundle-motion.js",
     "pack": "electron-builder --dir",
