@@ -137,6 +137,12 @@ function chipFolders(account) {
   return list.filter((folder) => folder && names.has(String(folder.wellKnownName || "").toLowerCase()));
 }
 
+function chipLabel(folder) {
+  const name = String((folder && (folder.label || folder.name || folder.id)) || "");
+  if (name.toUpperCase() === "INBOX") return "Inbox";
+  return name;
+}
+
 function accountLabel(account) {
   const email = (account && (account.email || account.displayEmail)) || "";
   const name = (account && account.name) || "";
@@ -1799,7 +1805,8 @@ function renderAccounts() {
       icon.textContent = folderIcon(folder.wellKnownName);
       const name = document.createElement("span");
       name.className = "name";
-      name.textContent = folder.label || folder.name || folder.id;
+      const labelText = chipLabel(folder);
+      name.textContent = labelText;
       label.append(icon, name);
       button.appendChild(label);
       if (folder.unreadCount) {
@@ -1809,7 +1816,9 @@ function renderAccounts() {
         button.appendChild(count);
       }
       const unread = folder.unreadCount ? `, ${folder.unreadCount} unread` : "";
-      button.setAttribute("aria-label", `${folder.name || "Folder"}${unread}. Right-click to move.`);
+      const serverName = String(folder.name || folder.id || "");
+      button.title = serverName && serverName !== labelText ? serverName : labelText;
+      button.setAttribute("aria-label", `${labelText || "Folder"}${unread}. Right-click to move.`);
       button.addEventListener("click", () => {
         selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
       });
@@ -1934,19 +1943,20 @@ function threadMembers(fromOpen, listed) {
   return Array.isArray(listed) ? listed.filter((row) => row && row.id) : [];
 }
 
-function renderChips(list, account) {
-  if (!state.prefs.chips || !account) return;
-  const folders = chipFolders(account);
-  if (!folders.length) return;
-  const row = document.createElement("div");
-  row.className = "chips";
-  row.setAttribute("role", "group");
-  row.setAttribute("aria-label", "Primary folders");
+function renderChips(account) {
+  const row = $("list-chips");
+  if (!row) return;
+  row.replaceChildren();
+  const folders = state.prefs.chips && account ? chipFolders(account) : [];
+  row.hidden = folders.length === 0;
   for (const folder of folders) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "chip";
-    button.textContent = folder.name || folder.id;
+    const label = chipLabel(folder);
+    button.textContent = label;
+    const server = String(folder.name || folder.id || "");
+    if (server && server !== label) button.title = server;
     if (account.id === state.accountId && folder.id === state.folderId) {
       button.setAttribute("aria-current", "true");
     }
@@ -1955,7 +1965,6 @@ function renderChips(list, account) {
     });
     row.appendChild(button);
   }
-  list.appendChild(row);
 }
 
 // Filter stays on messages already loaded: subject, from, and snippet.
@@ -2668,9 +2677,9 @@ function renderList() {
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = $("list-title");
   if (title) {
-    title.textContent = state.query ? `Search: ${state.query}` : ((folder && (folder.name || folder.id)) || "Messages");
+    title.textContent = state.query ? `Search: ${state.query}` : (chipLabel(folder) || "Messages");
   }
-  renderChips(list, account);
+  renderChips(account);
   const shown = filteredEmails(state.emails, $("list-filter") ? $("list-filter").value : "");
   paintSelectionBar(shown);
   if (!shown.length) {
@@ -8811,7 +8820,6 @@ function wire() {
   });
   $("rail-agent").addEventListener("click", showAgent);
   $("rail-brain").addEventListener("click", () => openBrain("profile"));
-  $("agent-open").addEventListener("click", showAgent);
   $("agent-manage-skills").addEventListener("click", () => openBrain("skills"));
   $("agent-triage").addEventListener("click", () => {
     runTriage().catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
@@ -8942,7 +8950,6 @@ function wire() {
       showSignatureStatus(error instanceof Error ? error.message : String(error), true);
     });
   });
-  $("brain-open").addEventListener("click", () => openBrain("profile"));
   $("brain-close").addEventListener("click", closeBrain);
   $("brain-category-cancel").addEventListener("click", () => {
     resetCategoryForm();

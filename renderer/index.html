@@ -11,7 +11,7 @@
   <body data-ui="first-party">
     <div class="app">
     <nav class="rail" aria-label="Morrow Mail">
-      <img class="rail-logo" src="./morrow-icon.svg" width="36" height="36" alt="" aria-hidden="true" />
+      <img class="rail-logo" src="./morrow-icon.svg" width="36" height="36" alt="" title="Morrow Mail" aria-hidden="true" />
       <div class="rail-rule" aria-hidden="true"></div>
       <button type="button" class="rail-btn" id="rail-agent" aria-current="false" aria-label="Agent" title="Agent">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -31,7 +31,7 @@
         </svg>
         <span class="sr">Calendar</span>
       </button>
-      <button type="button" class="rail-btn" id="rail-brain" aria-current="false" aria-label="Brain" title="Brain">
+      <button type="button" class="rail-btn" id="rail-brain" aria-current="false" aria-label="Email Brain" title="Email Brain">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <path fill="currentColor" d="M8.5 4A3.5 3.5 0 0 0 5 7.5c0 .6.1 1.2.4 1.7A3 3 0 0 0 4 11.5a3 3 0 0 0 2.2 2.9A3 3 0 0 0 8 19h3V4.3A3.5 3.5 0 0 0 8.5 4Zm7 0A3.5 3.5 0 0 0 13 4.3V19h3a3 3 0 0 0 1.8-4.6A3 3 0 0 0 20 11.5a3 3 0 0 0-1.4-2.3c.3-.5.4-1.1.4-1.7A3.5 3.5 0 0 0 15.5 4Z" />
         </svg>
@@ -66,8 +66,6 @@
           </svg>
           <span>Settings</span>
         </button>
-        <button type="button" class="ghost" id="brain-open" aria-label="Email Brain">Brain</button>
-        <button type="button" class="ghost" id="agent-open" aria-label="Agent">Agent</button>
         <form id="search-form" role="search">
           <label class="sr" for="search-query">Search all mail</label>
           <input id="search-query" type="search" placeholder="Search all mail" title="Search synced subject, from, and body" autocomplete="off" spellcheck="false" />
@@ -86,6 +84,7 @@
         <div id="side-mail" class="side-pane">
           <nav id="folders" aria-label="Folders"></nav>
         <div id="updates" role="region" aria-label="Updates">
+          <p id="product-name" class="product-name">Morrow Mail</p>
           <p id="banner"></p>
           <p id="version"></p>
           <p id="update-status" role="status"></p>
@@ -105,6 +104,7 @@
             <p id="selection-count">0 selected</p>
             <div id="selection-actions" class="selection-actions" role="toolbar" aria-label="Selected messages"></div>
           </div>
+          <div id="list-chips" class="chips" role="group" aria-label="Primary folders" hidden></div>
           <div class="list-filter">
             <label class="sr" for="list-filter">Filter loaded messages</label>
             <input id="list-filter" data-testid="list-filter" type="search" placeholder="Filter subject, from, snippet" autocomplete="off" spellcheck="false" />
