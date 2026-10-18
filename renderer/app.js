@@ -36,6 +36,9 @@ const state = {
   },
   providerFolders: null,
   dragMessage: null,
+  selectedIds: [],
+  selectionAnchor: "",
+  sync: null,
   oauthStatus: null,
   oauthPending: false,
   view: "mail",
@@ -519,6 +522,8 @@ function movePreviewLine(session, target) {
   if (target.disabled) return target.reason || "That destination is not available.";
   if (view.purpose === "message") {
     const where = target.path || target.label || target.name || "that folder";
+    const count = Array.isArray(view.emails) ? view.emails.length : 0;
+    if (count > 1) return "Move " + count + " messages to “" + where + "”.";
     return "Move the message to “" + where + "”.";
   }
   const next = movePathPreview(view.source || view, target, view.kind, view.delimiter);
@@ -1976,6 +1981,353 @@ function filteredEmails(emails, query) {
   });
 }
 
+function selectionIds(selected) {
+  const list = selected instanceof Set ? Array.from(selected) : (Array.isArray(selected) ? selected : []);
+  const ids = [];
+  const seen = new Set();
+  for (const id of list) {
+    const key = String(id || "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    ids.push(key);
+  }
+  return ids;
+}
+
+function listClickSelection(selected, anchor, visibleIds, clickedId, mods) {
+  const visible = selectionIds(visibleIds);
+  const current = selectionIds(selected);
+  const id = String(clickedId || "");
+  const flags = mods || {};
+  const shift = flags.shift === true;
+  const toggle = flags.meta === true || flags.ctrl === true || flags.toggle === true;
+  const kept = anchor ? String(anchor) : "";
+  if (!id || visible.indexOf(id) < 0) return { ids: current, anchor: kept };
+  if (shift) {
+    const start = kept && visible.indexOf(kept) >= 0 ? kept : id;
+    const from = Math.min(visible.indexOf(start), visible.indexOf(id));
+    const to = Math.max(visible.indexOf(start), visible.indexOf(id));
+    const range = visible.slice(from, to + 1);
+    if (toggle) {
+      const set = new Set(current);
+      for (const item of range) set.add(item);
+      return { ids: selectionIds(Array.from(set)), anchor: start };
+    }
+    return { ids: range, anchor: start };
+  }
+  if (toggle) {
+    const set = new Set(current);
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+    return { ids: selectionIds(Array.from(set)), anchor: id };
+  }
+  return { ids: [id], anchor: id };
+}
+
+function toggleSelectionId(selected, id) {
+  const key = String(id || "");
+  const current = selectionIds(selected);
+  if (!key) return { ids: current, anchor: current[0] || "" };
+  const has = current.indexOf(key) >= 0;
+  const ids = has ? current.filter((item) => item !== key) : current.concat(key);
+  return { ids: ids, anchor: has ? (ids[ids.length - 1] || "") : key };
+}
+
+function selectAllVisible(visibleIds) {
+  const ids = selectionIds(visibleIds);
+  return { ids: ids, anchor: ids[0] || "" };
+}
+
+function clearListSelection() {
+  return { ids: [], anchor: "" };
+}
+
+function pruneSelection(selected, loadedIds, anchor) {
+  const allowed = new Set(selectionIds(loadedIds));
+  const ids = selectionIds(selected).filter((id) => allowed.has(id));
+  const kept = anchor && allowed.has(String(anchor)) && ids.indexOf(String(anchor)) >= 0
+    ? String(anchor)
+    : (ids[0] || "");
+  return { ids: ids, anchor: kept };
+}
+
+function selectionShortcut(event, blocked) {
+  if (blocked || !event) return "";
+  if (event.key === "Escape") return "clear";
+  const key = String(event.key || "").toLowerCase();
+  if (key === "a" && (event.meta || event.ctrl) && !event.alt && !event.shift) return "all";
+  return "";
+}
+
+function selectionDragPayload(messages) {
+  const rows = [];
+  for (const message of messages || []) {
+    const row = messageDragPayload(message);
+    if (row) rows.push(row);
+  }
+  if (!rows.length) return null;
+  return {
+    id: rows[0].id,
+    accountId: rows[0].accountId,
+    folderId: rows[0].folderId,
+    messages: rows,
+  };
+}
+
+function dragMessagesFrom(raw, fallback) {
+  let payload = fallback || null;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && (parsed.id || (Array.isArray(parsed.messages) && parsed.messages.length))) payload = parsed;
+    } catch (error) {
+      // The in-memory drag payload still names the messages.
+    }
+  }
+  if (!payload) return [];
+  if (Array.isArray(payload.messages) && payload.messages.length) {
+    return payload.messages.map((row) => messageDragPayload(row)).filter(Boolean);
+  }
+  const one = messageDragPayload(payload);
+  return one ? [one] : [];
+}
+
+function coalesceProviderCalls(calls) {
+  const list = Array.isArray(calls) ? calls : [];
+  const moves = new Map();
+  const order = [];
+  const rest = [];
+  for (const spec of list) {
+    if (!spec || !spec.channel || !spec.params) continue;
+    if (spec.channel === "mail:moveToFolder") {
+      const key = String(spec.params.targetFolderId || "");
+      if (!moves.has(key)) {
+        moves.set(key, []);
+        order.push(key);
+      }
+      moves.get(key).push(spec.params);
+      continue;
+    }
+    rest.push({ channel: spec.channel, params: spec.params });
+  }
+  const out = [];
+  for (const key of order) {
+    const params = moves.get(key);
+    if (params.length === 1) {
+      out.push({ channel: "mail:moveToFolder", params: params[0] });
+      continue;
+    }
+    out.push({
+      channel: "mail:moveToFolder",
+      params: {
+        targetFolderId: params[0].targetFolderId,
+        items: params.map((row) => ({
+          emailId: row.emailId,
+          accountId: row.accountId,
+          folderId: row.folderId,
+        })),
+      },
+    });
+  }
+  return out.concat(rest);
+}
+
+function bulkMoveCalls(messages, target) {
+  const calls = [];
+  for (const message of messages || []) {
+    const plan = organizeDrop(target, message);
+    if (!plan.ok) continue;
+    calls.push({ channel: plan.channel, params: plan.params });
+  }
+  return coalesceProviderCalls(calls);
+}
+
+function bulkMoveFailure(messages, target) {
+  if (bulkMoveCalls(messages, target).length) return "";
+  const first = (messages || [])[0];
+  const plan = first ? organizeDrop(target, first) : null;
+  return plan && plan.message ? plan.message : "Choose a message first.";
+}
+
+function conversationRemoval(email, conversationOn, members) {
+  const threaded = conversationOn !== false && usesThread(email, members);
+  return {
+    unit: threaded ? "thread" : "message",
+    threaded: threaded,
+    channelArchive: threaded ? "mail:threadArchive" : "mail:archive",
+    channelTrash: threaded ? "mail:threadTrash" : "mail:delete",
+  };
+}
+
+function bulkRemovalCalls(messages, kind, conversationOn) {
+  const trash = kind === "trash";
+  const threads = new Map();
+  const singles = [];
+  for (const email of messages || []) {
+    if (!email || !email.id || !email.accountId) continue;
+    const choice = conversationRemoval(email, conversationOn, email.members || []);
+    if (choice.threaded) {
+      const threadId = String(email.threadId || email.id);
+      const key = String(email.accountId) + "\0" + threadId;
+      if (!threads.has(key)) {
+        threads.set(key, {
+          channel: trash ? "mail:threadTrash" : "mail:threadArchive",
+          params: {
+            accountId: email.accountId,
+            emailId: String(email.id),
+            threadId: threadId,
+          },
+        });
+      }
+      continue;
+    }
+    singles.push({ emailId: String(email.id), accountId: email.accountId });
+  }
+  const calls = Array.from(threads.values());
+  if (singles.length === 1) {
+    calls.push({
+      channel: trash ? "mail:delete" : "mail:archive",
+      params: singles[0],
+    });
+  } else if (singles.length > 1) {
+    calls.push({
+      channel: trash ? "mail:deleteBatch" : "mail:archiveBatch",
+      params: { items: singles },
+    });
+  }
+  return calls;
+}
+
+function bulkFlagCalls(messages, action) {
+  const items = [];
+  for (const message of messages || []) {
+    if (!message || !message.id) continue;
+    items.push({ emailId: String(message.id), accountId: message.accountId });
+  }
+  if (!items.length) return [];
+  if (action === "read" || action === "unread") {
+    return [{ channel: "mail:markReadBatch", params: { isRead: action === "read", items: items } }];
+  }
+  if (action === "star" || action === "unstar") {
+    return [{ channel: "mail:toggleStarBatch", params: { isStarred: action === "star", items: items } }];
+  }
+  return [];
+}
+
+function bulkLabelCalls(messages, labelId, mode) {
+  const id = String(labelId || "");
+  if (!id) return [];
+  const add = mode === "add" ? [id] : [];
+  const remove = mode === "remove" ? [id] : [];
+  const calls = [];
+  for (const message of messages || []) {
+    if (!message || !message.id || !message.accountId) continue;
+    calls.push({
+      channel: "mail:modifyMessageLabels",
+      params: {
+        accountId: message.accountId,
+        emailId: String(message.id),
+        addLabelIds: add,
+        removeLabelIds: remove,
+      },
+    });
+  }
+  return calls;
+}
+
+function bulkNeedsConfirm(action, detail) {
+  if (action === "archive" || action === "trash" || action === "move") return true;
+  if (action === "remove-label") return !!(detail && detail.removesFromView);
+  return false;
+}
+
+function bulkConfirmCopy(action, count, detail) {
+  const n = Math.max(0, Number(count) || 0);
+  const noun = n === 1 ? "message" : "messages";
+  const row = detail || {};
+  const base = { confirm: "Confirm", cancel: "Cancel", needsName: false, name: "" };
+  if (action === "archive") {
+    return Object.assign({}, base, {
+      title: "Archive",
+      body: "Archive " + n + " " + noun + "? This removes them from the current list.",
+    });
+  }
+  if (action === "trash") {
+    return Object.assign({}, base, {
+      title: "Trash",
+      body: "Move " + n + " " + noun + " to Trash? This removes them from the current list.",
+    });
+  }
+  if (action === "move") {
+    const target = String(row.target || "that folder");
+    return Object.assign({}, base, {
+      title: "Move",
+      body: "Move " + n + " " + noun + " to “" + target + "”? This moves them on the provider.",
+    });
+  }
+  if (action === "remove-label") {
+    const label = String(row.label || "that label");
+    return Object.assign({}, base, {
+      title: "Remove label",
+      body: "Remove “" + label + "” from " + n + " " + noun + "? This removes them from the current list.",
+    });
+  }
+  return null;
+}
+
+function confirmedCalls(action, answer, calls, detail) {
+  const list = Array.isArray(calls) ? calls.slice() : [];
+  if (!bulkNeedsConfirm(action, detail)) return list;
+  if (!answer || answer.ok !== true) return [];
+  return list;
+}
+
+function labelRemovesFromView(folderId, labelId) {
+  const folder = String(folderId || "");
+  const label = String(labelId || "");
+  return !!(folder && label && folder === label);
+}
+
+function bulkBlockedByPause(sync, accountId) {
+  if (!sync || sync.state !== "paused") return false;
+  if (sync.accountId && accountId && String(sync.accountId) !== String(accountId)) return false;
+  return true;
+}
+
+function selectionPaused(sync, messages) {
+  return (messages || []).some((message) => bulkBlockedByPause(sync, message && message.accountId));
+}
+
+function collectBulkOutcome(previous, data, error) {
+  const opIds = previous && Array.isArray(previous.opIds) ? previous.opIds.slice() : [];
+  if (error) {
+    const message = error && error.message ? String(error.message) : String(error || "");
+    if (/rate limit|rate_limit|\b429\b/i.test(message)) {
+      return { opIds: opIds, paused: true, error: "Paused for rate limit" };
+    }
+    return { opIds: opIds, paused: false, error: message || "The mail host rejected that request." };
+  }
+  const more = data && Array.isArray(data.opIds) ? data.opIds.filter(Boolean) : [];
+  return { opIds: opIds.concat(more), paused: false, error: "" };
+}
+
+function callCount(calls) {
+  let n = 0;
+  for (const spec of calls || []) {
+    const params = spec && spec.params;
+    if (params && Array.isArray(params.items) && params.items.length) n += params.items.length;
+    else if (params) n += 1;
+  }
+  return n;
+}
+
+function bulkDropAction(target) {
+  if (!target || !target.kind) return "";
+  if (target.kind === "gmail") return "add-label";
+  if (target.kind === "imap" || target.kind === "outlook") return "move";
+  return "";
+}
+
 function pushStatusLabel(account) {
   return account && account.push === "push" ? "Push: on" : "Push: polling";
 }
@@ -2093,12 +2445,34 @@ function rowAction(action, label, run) {
   return button;
 }
 
+const CHECK_BOX = "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z";
+const CHECK_MARK = "M8 12.5l2.5 2.5L16 9";
+
+function rowCheck(email, selected) {
+  const box = document.createElement("button");
+  box.type = "button";
+  box.className = "row-check";
+  box.setAttribute("role", "checkbox");
+  box.setAttribute("aria-checked", selected ? "true" : "false");
+  box.setAttribute("aria-label", "Select " + (email.subject || "message"));
+  box.appendChild(strokeIcon(selected ? [CHECK_BOX, CHECK_MARK] : [CHECK_BOX], 16));
+  box.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    commitSelection(toggleSelectionId(state.selectedIds, email.id));
+  });
+  return box;
+}
+
 function messageRow(email) {
   const row = document.createElement("div");
   row.className = "message-row";
   row.dataset.emailId = email.id || "";
   row.dataset.accountId = email.accountId || "";
   row.dataset.folderId = email.folderId || "";
+  const selected = state.selectedIds.indexOf(String(email.id || "")) >= 0;
+  if (selected) row.classList.add("selected");
+  row.setAttribute("aria-selected", selected ? "true" : "false");
   const button = document.createElement("button");
   button.type = "button";
   button.className = "message";
@@ -2159,7 +2533,14 @@ function messageRow(email) {
   snippet.textContent = email.snippet || "";
   main.append(from, subjectLine, snippet);
   button.append(gutter, avatar, main);
-  button.addEventListener("click", () => {
+  button.addEventListener("click", (event) => {
+    const mods = { shift: event.shiftKey, meta: event.metaKey, ctrl: event.ctrlKey };
+    const visible = shownEmails().map((item) => item && item.id);
+    commitSelection(listClickSelection(state.selectedIds, state.selectionAnchor, visible, email.id, mods));
+    if (mods.shift || mods.meta || mods.ctrl) {
+      event.preventDefault();
+      return;
+    }
     openMessage(email.id).catch((error) => showStatus(error.message, true));
   });
   const actions = document.createElement("div");
@@ -2172,12 +2553,122 @@ function messageRow(email) {
     rowAction("reply", "Reply", () => replyFromList(email, "reply")),
     rowAction("reply-all", "Reply All", () => replyFromList(email, "all")),
   );
-  row.append(button, actions);
+  row.append(rowCheck(email, selected), button, actions);
   return row;
+}
+
+function shownEmails() {
+  const input = $("list-filter");
+  return filteredEmails(state.emails, input ? input.value : "");
+}
+
+function rememberLoadedSelection() {
+  const next = pruneSelection(
+    state.selectedIds,
+    (state.emails || []).map((email) => email && email.id),
+    state.selectionAnchor,
+  );
+  state.selectedIds = next.ids;
+  state.selectionAnchor = next.anchor;
+}
+
+function commitSelection(next) {
+  const row = next || clearListSelection();
+  state.selectedIds = row.ids;
+  state.selectionAnchor = row.anchor || "";
+  renderList();
+}
+
+function selectedMessages() {
+  const byId = new Map();
+  for (const email of state.emails || []) {
+    if (email && email.id) byId.set(String(email.id), email);
+  }
+  return state.selectedIds.map((id) => byId.get(id)).filter(Boolean);
+}
+
+function selectionMoveMessages() {
+  const rows = selectedMessages();
+  if (!rows.length) return [];
+  const accountId = rows.some((email) => email.accountId === state.accountId)
+    ? state.accountId
+    : rows[0].accountId;
+  return rows.filter((email) => email.accountId === accountId);
+}
+
+function withSelectionMembers(email) {
+  const members = [];
+  if (state.prefs.conversation !== false && email) {
+    const threadId = String(email.threadId || "");
+    const open = state.email;
+    if (open && (open.id === email.id || (threadId && String(open.threadId || "") === threadId))) {
+      for (const row of state.thread || []) members.push(row);
+    }
+    if (threadId) {
+      for (const row of state.emails || []) {
+        if (row && String(row.threadId || "") === threadId) members.push(row);
+      }
+    }
+  }
+  return Object.assign({}, email, { members: members });
+}
+
+function setSelectionLabel(id, label) {
+  const button = $(id);
+  if (!button) return;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  const text = button.querySelector("span");
+  if (text) text.textContent = label;
+}
+
+function paintSelectionBar(shown) {
+  const bar = $("selection-bar");
+  const count = $("selection-count");
+  const selectAll = $("select-visible");
+  const list = $("messages");
+  if (list) list.classList.toggle("has-selection", state.selectedIds.length > 0);
+  if (selectAll) selectAll.hidden = !shown.length;
+  if (!bar) return;
+  const wasHidden = bar.hidden;
+  if (!state.selectedIds.length) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  if (count) {
+    const n = state.selectedIds.length;
+    count.textContent = n === 1 ? "1 selected" : n + " selected";
+  }
+  const messages = selectedMessages();
+  const starred = messages.length > 0 && messages.every((email) => email.isStarred);
+  setSelectionLabel("selection-star", starred ? "Unstar" : "Star");
+  const account = messages[0]
+    ? (state.accounts.find((item) => item.id === messages[0].accountId) || selectedAccount())
+    : selectedAccount();
+  const provider = folderProvider(account);
+  const listed = account ? providerPayloadFor(account) : null;
+  const model = messages[0]
+    ? organizeMenu(messages[0], foldersOf(account), listed, provider)
+    : { add: [], remove: [], outlook: [] };
+  const add = $("selection-add-label");
+  const remove = $("selection-remove-label");
+  const outlook = $("selection-outlook");
+  if (add) add.hidden = !model.add.length;
+  if (remove) remove.hidden = !model.remove.length;
+  if (outlook) outlook.hidden = !model.outlook.length;
+  if (wasHidden) {
+    const motion = motionApi();
+    if (motion) {
+      motion.prepare(bar);
+      motion.enter(bar);
+    }
+  }
 }
 
 function renderList() {
   syncTidy();
+  rememberLoadedSelection();
   const list = $("messages");
   const head = $("list-head");
   for (const node of [...list.children]) {
@@ -2191,6 +2682,7 @@ function renderList() {
   }
   renderChips(list, account);
   const shown = filteredEmails(state.emails, $("list-filter") ? $("list-filter").value : "");
+  paintSelectionBar(shown);
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -3060,6 +3552,7 @@ async function loadList(fromNetwork) {
   });
   if (gen !== listGen) return data;
   state.emails = (data && data.emails) || [];
+  if (data && data.sync) state.sync = Object.assign({ accountId: account.id }, data.sync);
   renderList();
   return data;
 }
@@ -3543,6 +4036,14 @@ function finishMovePick() {
   if (!session || !target || target.disabled) return;
   closeMovePicker();
   if (session.purpose === "message") {
+    if (session.bulk && session.emails && session.emails.length) {
+      const emails = session.emails.slice();
+      const kind = session.kind;
+      const id = target.id;
+      const name = target.path || target.label || target.name;
+      guard(() => applyPickedMove(emails, kind, id, name));
+      return;
+    }
     guard(() => (session.kind === "outlook"
       ? moveOutlook(session.email, target.id)
       : moveOpen(session.email, target.id)));
@@ -3731,6 +4232,342 @@ function dropTargetFrom(node) {
   };
 }
 
+function refusePaused(messages) {
+  if (!selectionPaused(state.sync, messages)) return false;
+  showStatus("Paused for rate limit", true);
+  return true;
+}
+
+async function runBulk(calls) {
+  let outcome = { opIds: [], paused: false, error: "" };
+  let done = 0;
+  for (const spec of calls) {
+    try {
+      const data = await call(spec.channel, spec.params);
+      outcome = collectBulkOutcome(outcome, data, null);
+      done += 1;
+    } catch (error) {
+      outcome = collectBulkOutcome(outcome, null, error);
+      break;
+    }
+  }
+  outcome.done = done;
+  return outcome;
+}
+
+async function finishBulkRemoval(label, outcome, ids) {
+  const acted = Array.isArray(ids) ? ids : [];
+  if (outcome.done > 0 && state.email && acted.indexOf(state.email.id) >= 0) {
+    state.email = null;
+    state.thread = [];
+    renderReader(false);
+  }
+  if (outcome.done > 0) {
+    state.selectedIds = [];
+    state.selectionAnchor = "";
+  }
+  if (outcome.opIds.length) showUndo(outcome.paused ? "Paused for rate limit." : label, outcome.opIds);
+  else if (outcome.paused || outcome.error) showStatus(outcome.error || "Paused for rate limit", true);
+  else if (outcome.done > 0) showStatus(label);
+  if (outcome.done > 0) await loadList();
+}
+
+async function bulkArchive() {
+  const messages = selectedMessages().map(withSelectionMembers);
+  if (!messages.length || refusePaused(messages)) return;
+  const calls = bulkRemovalCalls(messages, "archive", state.prefs.conversation);
+  const answer = await askConfirm(bulkConfirmCopy("archive", messages.length, {}));
+  const gated = confirmedCalls("archive", answer, calls, {});
+  if (!gated.length) return;
+  const outcome = await runBulk(gated);
+  const n = messages.length;
+  await finishBulkRemoval(n === 1 ? "Archived." : "Archived " + n + " messages.", outcome, messages.map((item) => item.id));
+}
+
+async function bulkTrash() {
+  const messages = selectedMessages().map(withSelectionMembers);
+  if (!messages.length || refusePaused(messages)) return;
+  const calls = bulkRemovalCalls(messages, "trash", state.prefs.conversation);
+  const answer = await askConfirm(bulkConfirmCopy("trash", messages.length, {}));
+  const gated = confirmedCalls("trash", answer, calls, {});
+  if (!gated.length) return;
+  const outcome = await runBulk(gated);
+  const n = messages.length;
+  await finishBulkRemoval(n === 1 ? "Moved to Trash." : "Moved " + n + " messages to Trash.", outcome, messages.map((item) => item.id));
+}
+
+async function bulkSetRead(isRead) {
+  const messages = selectedMessages();
+  if (!messages.length || refusePaused(messages)) return;
+  const outcome = await runBulk(bulkFlagCalls(messages, isRead ? "read" : "unread"));
+  if (outcome.error) {
+    showStatus(outcome.error, true);
+    return;
+  }
+  for (const email of messages) {
+    email.unread = !isRead;
+    email.isRead = isRead;
+    if (state.email && state.email.id === email.id) {
+      state.email.unread = email.unread;
+      state.email.isRead = email.isRead;
+    }
+  }
+  renderList();
+  renderReader(false);
+  showStatus(isRead ? "Marked read." : "Marked unread.");
+}
+
+async function bulkStar(isStarred) {
+  const messages = selectedMessages();
+  if (!messages.length || refusePaused(messages)) return;
+  const outcome = await runBulk(bulkFlagCalls(messages, isStarred ? "star" : "unstar"));
+  if (outcome.error) {
+    showStatus(outcome.error, true);
+    return;
+  }
+  for (const email of messages) {
+    email.isStarred = isStarred;
+    if (state.email && state.email.id === email.id) state.email.isStarred = isStarred;
+  }
+  renderList();
+  renderReader(false);
+  showStatus(isStarred ? "Starred." : "Unstarred.");
+}
+
+async function applySelectionLabels(label, mode) {
+  const messages = selectionMoveMessages();
+  if (!messages.length || !label || refusePaused(messages)) return;
+  const name = label.label || label.name || label.id;
+  const removes = mode === "remove" && labelRemovesFromView(state.folderId, label.id);
+  const action = mode === "remove" ? "remove-label" : "add-label";
+  const detail = { removesFromView: removes, label: name };
+  const calls = bulkLabelCalls(messages, label.id, mode);
+  let answer = { ok: true };
+  if (bulkNeedsConfirm(action, detail)) {
+    answer = await askConfirm(bulkConfirmCopy(action, messages.length, detail));
+  }
+  const gated = confirmedCalls(action, answer, calls, detail);
+  if (!gated.length) return;
+  const outcome = await runBulk(gated);
+  if (outcome.paused || outcome.error) {
+    showStatus(outcome.error || "Paused for rate limit", true);
+    if (outcome.done > 0 && removes) await loadList();
+    return;
+  }
+  showStatus(mode === "add" ? "Label added in Gmail." : "Label removed in Gmail.");
+  if (removes) {
+    state.selectedIds = [];
+    state.selectionAnchor = "";
+    if (state.email && messages.some((item) => item.id === state.email.id)) {
+      state.email = null;
+      state.thread = [];
+      renderReader(false);
+    }
+    await loadList();
+  }
+}
+
+function dropTargetName(target) {
+  if (!target) return "that folder";
+  if (target.kind === "imap") {
+    const account = state.accounts.find((item) => item.id === target.accountId) || selectedAccount();
+    return folderTitle(foldersOf(account), target.id);
+  }
+  const folders = state.providerFolders && Array.isArray(state.providerFolders.folders) ? state.providerFolders.folders : [];
+  return folderTitle(folders, target.id);
+}
+
+async function applyBulkMove(messages, target, targetName) {
+  const rows = Array.isArray(messages) ? messages.filter(Boolean) : [];
+  if (!rows.length || !target) return;
+  if (refusePaused(rows)) return;
+  const planned = bulkMoveCalls(rows, target);
+  if (!planned.length) throw new Error(bulkMoveFailure(rows, target));
+  const action = bulkDropAction(target) || "move";
+  const name = targetName || dropTargetName(target);
+  const detail = {
+    removesFromView: action === "remove-label" && labelRemovesFromView(state.folderId, target.id),
+    target: name,
+    label: name,
+  };
+  let answer = { ok: true };
+  if (bulkNeedsConfirm(action, detail)) {
+    answer = await askConfirm(bulkConfirmCopy(action, callCount(planned), detail));
+  }
+  const gated = confirmedCalls(action, answer, planned, detail);
+  if (!gated.length) return;
+  const outcome = await runBulk(gated);
+  const acted = [];
+  for (const spec of gated) {
+    if (spec.params && Array.isArray(spec.params.items)) {
+      for (const item of spec.params.items) acted.push(item.emailId);
+    } else if (spec.params && spec.params.emailId) acted.push(spec.params.emailId);
+  }
+  if (action === "add-label") {
+    if (outcome.paused || outcome.error) showStatus(outcome.error || "Paused for rate limit", true);
+    else showStatus("Label added in Gmail.");
+    return;
+  }
+  const count = callCount(gated);
+  const label = action === "move"
+    ? (count === 1 ? "Moved." : "Moved " + count + " messages.")
+    : "Label removed in Gmail.";
+  await finishBulkRemoval(label, outcome, acted);
+}
+
+async function applyPickedMove(messages, kind, destinationId, name) {
+  const accountId = messages[0] && messages[0].accountId;
+  const target = kind === "outlook"
+    ? { kind: "outlook", id: destinationId, accountId: accountId, api: true }
+    : { kind: "imap", id: destinationId, accountId: accountId };
+  await applyBulkMove(messages, target, name);
+}
+
+function openSelectionMove(kind) {
+  const messages = selectionMoveMessages();
+  if (!messages.length) return;
+  openMessageMovePicker(messages[0], kind);
+  if (!moveSession) return;
+  moveSession.bulk = true;
+  moveSession.emails = messages.slice();
+  paintMoveTree();
+  const source = $("move-picker-source");
+  if (!source) return;
+  if (messages.length === 1) source.textContent = "Message: " + (messages[0].subject || "this message");
+  else source.textContent = "Messages: " + messages.length;
+}
+
+function openSelectionLabelMenu(mode, anchor) {
+  const messages = selectionMoveMessages();
+  const email = messages[0];
+  if (!email || !anchor) return;
+  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const provider = folderProvider(account);
+  const listed = account ? providerPayloadFor(account) : null;
+  const model = organizeMenu(email, foldersOf(account), listed, provider);
+  const items = mode === "add" ? model.add : model.remove;
+  const menu = ensureOrganizeMenu();
+  menu.setAttribute("aria-label", mode === "add" ? "Add Gmail label" : "Remove Gmail label");
+  menu.replaceChildren();
+  appendMenuGroup(menu, mode === "add" ? "Add Gmail label" : "Remove Gmail label", items, (item) => applySelectionLabels(item, mode));
+  if (!items.length) {
+    const note = document.createElement("p");
+    note.className = "organize-note";
+    note.textContent = model.note || "No labels to show.";
+    menu.appendChild(note);
+  }
+  const rect = anchor.getBoundingClientRect();
+  placeMenu(menu, rect.left, rect.bottom + 4);
+}
+
+function openSelectionMenu(x, y) {
+  const messages = selectedMessages();
+  if (!messages.length) return;
+  const email = messages[0];
+  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const provider = folderProvider(account);
+  const listed = account ? providerPayloadFor(account) : null;
+  const model = organizeMenu(email, foldersOf(account), listed, provider);
+  const menu = ensureOrganizeMenu();
+  menu.setAttribute("aria-label", "Selected messages");
+  menu.replaceChildren();
+  const starred = messages.every((row) => row.isStarred);
+  appendMenuAction(menu, "Mark read", () => guard(() => bulkSetRead(true)));
+  appendMenuAction(menu, "Mark unread", () => guard(() => bulkSetRead(false)));
+  appendMenuAction(menu, starred ? "Unstar" : "Star", () => guard(() => bulkStar(!starred)));
+  appendMenuAction(menu, "Archive", () => guard(bulkArchive));
+  appendMenuAction(menu, "Trash", () => guard(bulkTrash));
+  if (model.move.length) appendMenuAction(menu, "Move to folder…", () => openSelectionMove("imap"));
+  appendMenuGroup(menu, "Add Gmail label", model.add, (item) => applySelectionLabels(item, "add"));
+  appendMenuGroup(menu, "Remove Gmail label", model.remove, (item) => applySelectionLabels(item, "remove"));
+  if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", () => openSelectionMove("outlook"));
+  appendMenuAction(menu, "Clear selection", () => commitSelection(clearListSelection()));
+  if (model.note && !model.add.length && !model.remove.length && !model.outlook.length) {
+    const note = document.createElement("p");
+    note.className = "organize-note";
+    note.textContent = model.note;
+    menu.appendChild(note);
+  }
+  placeMenu(menu, x, y);
+}
+
+function selectionButton(id, label, paths, run) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "selection-action";
+  button.id = id;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.appendChild(strokeIcon(paths, 15));
+  const text = document.createElement("span");
+  text.textContent = label;
+  button.appendChild(text);
+  button.addEventListener("click", (event) => {
+    if (run) guard(run);
+    else openSelectionLabelMenu(button.dataset.mode, event.currentTarget);
+  });
+  return button;
+}
+
+function wireSelection() {
+  const bar = $("selection-actions");
+  if (!bar || bar.childElementCount) return;
+  const mail = ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M22 6l-10 7L2 6"];
+  const archive = ["M21 8v13H3V8", "M1 3h22v5H1z", "M10 12h4"];
+  const trash = ["M3 6h18", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2", "M19 6l-1 14H6L5 6"];
+  const star = ["M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"];
+  const tag = ["M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z", "M7 7h.01"];
+  const clear = ["M18 6L6 18", "M6 6l12 12"];
+  bar.append(
+    selectionButton("selection-read", "Mark read", mail, () => bulkSetRead(true)),
+    selectionButton("selection-unread", "Mark unread", mail, () => bulkSetRead(false)),
+    selectionButton("selection-star", "Star", star, () => {
+      const messages = selectedMessages();
+      const starred = messages.length > 0 && messages.every((email) => email.isStarred);
+      return bulkStar(!starred);
+    }),
+    selectionButton("selection-archive", "Archive", archive, bulkArchive),
+    selectionButton("selection-trash", "Trash", trash, bulkTrash),
+    selectionButton("selection-move", "Move…", [MOVE_FOLDER], () => openSelectionMove("imap")),
+    selectionButton("selection-outlook", "Move in Outlook…", [MOVE_FOLDER], () => openSelectionMove("outlook")),
+  );
+  const add = selectionButton("selection-add-label", "Add label", tag, null);
+  add.dataset.mode = "add";
+  const remove = selectionButton("selection-remove-label", "Remove label", tag, null);
+  remove.dataset.mode = "remove";
+  bar.append(add, remove, selectionButton("selection-clear", "Clear", clear, () => commitSelection(clearListSelection())));
+  const selectAll = $("select-visible");
+  if (selectAll) {
+    selectAll.addEventListener("click", () => {
+      commitSelection(selectAllVisible(shownEmails().map((email) => email && email.id)));
+    });
+  }
+}
+
+function onSelectionKey(event) {
+  const menu = $("organize-menu");
+  const menuOpen = menu && !menu.hidden;
+  if (event.key === "Escape") {
+    if (menuOpen || document.querySelector("dialog[open]")) return;
+    const typing = event.target && event.target.closest && event.target.closest("input, textarea, select");
+    if (selectionShortcut({ key: "Escape" }, !!typing) !== "clear") return;
+    if (!state.selectedIds.length) return;
+    event.preventDefault();
+    commitSelection(clearListSelection());
+    return;
+  }
+  const shortcut = selectionShortcut({
+    key: event.key,
+    meta: event.metaKey,
+    ctrl: event.ctrlKey,
+    alt: event.altKey,
+    shift: event.shiftKey,
+  }, shellBlocked(event.target) || state.view !== "mail");
+  if (shortcut !== "all") return;
+  event.preventDefault();
+  commitSelection(selectAllVisible(shownEmails().map((email) => email && email.id)));
+}
+
 async function dropOrganized(target, message) {
   const plan = organizeDrop(target, message);
   if (!plan.ok) throw new Error(plan.message || "That message could not be moved.");
@@ -3754,6 +4591,10 @@ function onListContext(event) {
   const email = emailFromRow(row);
   if (!email) return;
   event.preventDefault();
+  if (state.selectedIds.indexOf(String(email.id)) >= 0 && state.selectedIds.length > 1) {
+    openSelectionMenu(event.clientX, event.clientY);
+    return;
+  }
   openOrganizeMenu(email, event.clientX, event.clientY);
 }
 
@@ -3768,7 +4609,10 @@ function onMessageDragStart(event) {
   const button = event.target.closest && event.target.closest("button.message");
   if (!button || !event.dataTransfer) return;
   const row = button.closest(".message-row");
-  const payload = messageDragPayload(emailFromRow(row));
+  const email = emailFromRow(row);
+  const selected = selectedMessages();
+  const inSelection = !!(email && state.selectedIds.indexOf(String(email.id)) >= 0 && selected.length > 1);
+  const payload = inSelection ? selectionDragPayload(selected) : messageDragPayload(email);
   if (!payload) {
     event.preventDefault();
     return;
@@ -3776,7 +4620,8 @@ function onMessageDragStart(event) {
   state.dragMessage = payload;
   event.dataTransfer.setData("application/x-genmail-message", JSON.stringify(payload));
   event.dataTransfer.effectAllowed = "copyMove";
-  if (row) row.classList.add("dragging");
+  const rows = inSelection ? document.querySelectorAll(".message-row.selected") : (row ? [row] : []);
+  for (const item of rows) item.classList.add("dragging");
 }
 
 function onMessageDragEnd() {
@@ -3799,20 +4644,21 @@ function onFolderDrop(event) {
   clearDropTargets();
   if (!node) return;
   event.preventDefault();
-  let message = state.dragMessage;
   const raw = event.dataTransfer && event.dataTransfer.getData("application/x-genmail-message");
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.id) message = parsed;
-    } catch {
-      // The in-memory drag payload still names the message.
-    }
-  }
+  const messages = dragMessagesFrom(raw, state.dragMessage);
   state.dragMessage = null;
   for (const row of document.querySelectorAll(".message-row.dragging")) row.classList.remove("dragging");
-  if (!message) return;
-  guard(() => dropOrganized(dropTargetFrom(node), message));
+  if (!messages.length) return;
+  const full = messages.map((item) => {
+    const found = state.emails.find((email) => email && String(email.id) === String(item.id));
+    return found || item;
+  });
+  const target = dropTargetFrom(node);
+  if (full.length === 1) {
+    guard(() => dropOrganized(target, full[0]));
+    return;
+  }
+  guard(() => applyBulkMove(full, target, dropTargetName(target)));
 }
 
 function wireOrganize() {
@@ -3855,6 +4701,8 @@ async function selectFolder(accountId, folderId) {
   if (listFilter) listFilter.value = "";
   state.email = null;
   state.thread = [];
+  state.selectedIds = [];
+  state.selectionAnchor = "";
   renderAccounts();
   syncRemove();
   renderReader(false);
@@ -7491,7 +8339,9 @@ async function loadOauthStatus() {
 
 function wire() {
   document.addEventListener("keydown", onShellKey);
+  document.addEventListener("keydown", onSelectionKey);
   wireOrganize();
+  wireSelection();
   const motion = motionApi();
   if (motion) motion.bindChrome(document);
   for (const dialog of document.querySelectorAll("dialog")) {
@@ -7752,6 +8602,7 @@ async function boot() {
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:syncStatus", (payload) => {
+    state.sync = payload || null;
     if (state.query) return;
     const label = syncStatusLabel(payload);
     if (!label) return;

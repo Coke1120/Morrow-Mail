@@ -97,7 +97,14 @@
       <div class="split" data-split="folders" role="separator" aria-orientation="vertical" aria-label="Resize folders" tabindex="0"></div>
       <div id="messages" aria-label="Messages">
         <div class="list-head" id="list-head">
-          <h2 class="list-title" id="list-title">Messages</h2>
+          <div class="list-tools">
+            <h2 class="list-title" id="list-title">Messages</h2>
+            <button type="button" class="select-visible" id="select-visible" aria-label="Select all visible messages">Select all</button>
+          </div>
+          <div id="selection-bar" class="selection-bar" hidden>
+            <p id="selection-count">0 selected</p>
+            <div id="selection-actions" class="selection-actions" role="toolbar" aria-label="Selected messages"></div>
+          </div>
           <div class="list-filter">
             <label class="sr" for="list-filter">Filter loaded messages</label>
             <input id="list-filter" data-testid="list-filter" type="search" placeholder="Filter subject, from, snippet" autocomplete="off" spellcheck="false" />

@@ -1141,7 +1141,14 @@ button.chip[aria-current="true"] {
   background: var(--paper);
 }
 
+.list-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .list-title {
+  flex: 1;
   margin: 0;
   padding: 0;
   font-size: 17px;
@@ -1152,6 +1159,63 @@ button.chip[aria-current="true"] {
   white-space: nowrap;
   color: var(--ink);
 }
+
+.select-visible {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.select-visible:hover,
+.select-visible:focus-visible { background: var(--hover); }
+
+.selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 8px;
+}
+
+.selection-bar[hidden] { display: none; }
+
+#selection-count {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.selection-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.selection-action:hover,
+.selection-action:focus-visible { background: var(--hover); }
+
+.selection-action svg { display: block; flex: none; }
 
 .list-filter { margin-top: 8px; }
 
@@ -1249,7 +1313,39 @@ button.message.cursor { box-shadow: inset 3px 0 0 var(--accent); }
 
 button.message:focus-visible { outline-offset: -2px; }
 
-.message-row { position: relative; }
+.message-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.message-row.selected button.message { background: var(--selected); }
+
+.row-check {
+  flex: none;
+  width: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  display: grid;
+  place-items: center;
+}
+
+.message-row:hover .row-check,
+.message-row.selected .row-check,
+#messages.has-selection .row-check,
+.row-check:focus-visible { opacity: 1; }
+
+.row-check[aria-checked="true"] { color: var(--accent); }
+
+.message-row button.message {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
 
 .message-row:hover,
 .message-row:focus-within { z-index: 2; }

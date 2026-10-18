@@ -1830,6 +1830,13 @@ assert.match(folderChrome.movePreviewLine({
   kind: "gmail",
   source: travelNode,
 }, travelById.L2), /itself/);
+assert.strictEqual(folderChrome.movePreviewLine({
+  purpose: "message",
+  emails: [{ id: "m1" }, { id: "m2" }, { id: "m3" }],
+}, { path: "Sent" }), "Move 3 messages to “Sent”.");
+assert.strictEqual(folderChrome.movePreviewLine({
+  purpose: "message",
+}, { path: "Sent" }), "Move the message to “Sent”.");
 const imapNodes = folderChrome.moveNodesFromFolders("imap", [
   { id: "INBOX", name: "Inbox", wellKnownName: "inbox" },
   { id: "Work", name: "Work" },
@@ -1937,6 +1944,209 @@ assert.strictEqual(folderChrome.confirmsBefore("mail:moveProviderFolder"), true)
 assert.strictEqual(folderChrome.confirmsBefore("mail:moveFolder"), true);
 assert.strictEqual(folderChrome.confirmsBefore("mail:modifyMessageLabels"), false);
 assert.strictEqual(folderChrome.confirmsBefore("mail:createProviderFolder"), false);
+const selection = loadFunctions(appJs, [
+  "filteredEmails",
+  "providerCopy",
+  "messageDragPayload",
+  "organizeDrop",
+  "usesThread",
+  "selectionIds",
+  "listClickSelection",
+  "toggleSelectionId",
+  "selectAllVisible",
+  "clearListSelection",
+  "pruneSelection",
+  "selectionShortcut",
+  "selectionDragPayload",
+  "dragMessagesFrom",
+  "coalesceProviderCalls",
+  "bulkMoveCalls",
+  "bulkMoveFailure",
+  "bulkRemovalCalls",
+  "conversationRemoval",
+  "bulkFlagCalls",
+  "bulkLabelCalls",
+  "bulkNeedsConfirm",
+  "bulkConfirmCopy",
+  "confirmedCalls",
+  "labelRemovesFromView",
+  "bulkBlockedByPause",
+  "selectionPaused",
+  "collectBulkOutcome",
+  "callCount",
+  "bulkDropAction",
+]);
+const visibleIds = ["a", "b", "c", "d"];
+let selectedClick = selection.listClickSelection([], "", visibleIds, "b", {});
+assert.deepStrictEqual(selectedClick, { ids: ["b"], anchor: "b" });
+selectedClick = selection.listClickSelection(selectedClick.ids, selectedClick.anchor, visibleIds, "d", { meta: true });
+assert.deepStrictEqual(selectedClick.ids, ["b", "d"]);
+assert.strictEqual(selectedClick.anchor, "d");
+selectedClick = selection.listClickSelection(["b"], "b", visibleIds, "d", { shift: true });
+assert.deepStrictEqual(selectedClick, { ids: ["b", "c", "d"], anchor: "b" });
+selectedClick = selection.listClickSelection(["b", "c", "d"], "b", visibleIds, "c", { ctrl: true });
+assert.deepStrictEqual(selectedClick.ids, ["b", "d"]);
+selectedClick = selection.listClickSelection(["a"], "a", visibleIds, "c", { shift: true, meta: true });
+assert.deepStrictEqual(selectedClick.ids, ["a", "b", "c"]);
+assert.deepStrictEqual(selection.listClickSelection(["a"], "a", visibleIds, "missing", {}), { ids: ["a"], anchor: "a" });
+assert.deepStrictEqual(selection.toggleSelectionId(["a"], "b").ids, ["a", "b"]);
+assert.deepStrictEqual(selection.toggleSelectionId(["a", "b"], "a").ids, ["b"]);
+const loaded = [
+  { id: "a", subject: "Alpha trip", from: "Ada", snippet: "notes" },
+  { id: "b", subject: "Beta", from: "Grace", snippet: "lab" },
+];
+const filtered = selection.filteredEmails(loaded, "alp");
+const allVisible = selection.selectAllVisible(filtered.map((email) => email.id));
+assert.deepStrictEqual(allVisible.ids, ["a"]);
+assert.ok(!allVisible.ids.includes("b"));
+assert.ok(!allVisible.ids.includes("remote-only"));
+assert.ok(!functionSource(appJs, "selectAllVisible").includes("mail:search"));
+assert.deepStrictEqual(selection.clearListSelection(["a", "b"]), { ids: [], anchor: "" });
+assert.deepStrictEqual(selection.pruneSelection(["a", "gone"], ["a", "b"], "gone"), { ids: ["a"], anchor: "a" });
+assert.strictEqual(selection.selectionShortcut({ key: "Escape" }, false), "clear");
+assert.strictEqual(selection.selectionShortcut({ key: "a", meta: true }, false), "all");
+assert.strictEqual(selection.selectionShortcut({ key: "a", ctrl: true }, false), "all");
+assert.strictEqual(selection.selectionShortcut({ key: "a", ctrl: true, shift: true }, false), "");
+assert.strictEqual(selection.selectionShortcut({ key: "a", meta: true }, true), "");
+assert.strictEqual(selection.selectionShortcut({ key: "Escape" }, true), "");
+const dragRows = [
+  { id: "m1", accountId: "a1", folderId: "INBOX" },
+  { id: "m2", accountId: "a1", folderId: "INBOX" },
+];
+const dragged = selection.selectionDragPayload(dragRows);
+assert.strictEqual(dragged.id, "m1");
+assert.deepStrictEqual(dragged.messages.map((row) => row.id), ["m1", "m2"]);
+assert.deepStrictEqual(
+  selection.dragMessagesFrom(JSON.stringify(dragged), null).map((row) => row.id),
+  ["m1", "m2"],
+);
+assert.deepStrictEqual(selection.dragMessagesFrom("", dragged).map((row) => row.id), ["m1", "m2"]);
+const moveTarget = { kind: "imap", id: "Notes", accountId: "a1" };
+const singleMove = selection.organizeDrop(moveTarget, dragRows[0]);
+const bulkMove = selection.bulkMoveCalls(dragRows, moveTarget);
+assert.strictEqual(bulkMove.length, 1);
+assert.strictEqual(bulkMove[0].channel, singleMove.channel);
+assert.strictEqual(bulkMove[0].channel, "mail:moveToFolder");
+assert.strictEqual(bulkMove[0].params.targetFolderId, singleMove.params.targetFolderId);
+assert.deepStrictEqual(bulkMove[0].params.items.map((item) => item.emailId), ["m1", "m2"]);
+assert.deepStrictEqual(bulkMove[0].params.items[0].folderId, singleMove.params.folderId);
+const oneMove = selection.bulkMoveCalls([dragRows[0]], moveTarget);
+assert.deepStrictEqual(oneMove[0].params, singleMove.params);
+assert.strictEqual(oneMove[0].channel, "mail:moveToFolder");
+const skippedSame = selection.bulkMoveCalls([
+  dragRows[0],
+  { id: "m2", accountId: "a1", folderId: "Notes" },
+], moveTarget);
+assert.deepStrictEqual(skippedSame[0].params, singleMove.params);
+assert.strictEqual(selection.bulkMoveFailure([], moveTarget), "Choose a message first.");
+assert.strictEqual(selection.bulkMoveCalls(dragRows, moveTarget).length > 0 ? selection.bulkMoveFailure(dragRows, moveTarget) : "x", "");
+const cancelledMove = selection.confirmedCalls("move", { ok: false, name: "" }, bulkMove, {});
+assert.deepStrictEqual(cancelledMove, []);
+const acceptedMove = selection.confirmedCalls("move", { ok: true, name: "" }, bulkMove, {});
+assert.strictEqual(acceptedMove.length, 1);
+assert.strictEqual(acceptedMove[0].channel, "mail:moveToFolder");
+const moveCopyBulk = selection.bulkConfirmCopy("move", 2, { target: "Notes" });
+assert.strictEqual(moveCopyBulk.confirm, "Confirm");
+assert.strictEqual(moveCopyBulk.cancel, "Cancel");
+assert.match(moveCopyBulk.body, /2/);
+assert.match(moveCopyBulk.body, /Notes/);
+const archiveCalls = selection.bulkRemovalCalls(dragRows, "archive", false);
+assert.strictEqual(archiveCalls[0].channel, "mail:archiveBatch");
+assert.deepStrictEqual(archiveCalls[0].params.items.map((item) => item.emailId), ["m1", "m2"]);
+assert.deepStrictEqual(selection.confirmedCalls("archive", { ok: false, name: "" }, archiveCalls, {}), []);
+assert.strictEqual(selection.confirmedCalls("archive", { ok: true, name: "" }, archiveCalls, {}).length, 1);
+const trashCopy = selection.bulkConfirmCopy("trash", 2, {});
+assert.match(trashCopy.body, /2/);
+assert.match(trashCopy.body, /Trash/);
+const alone = selection.bulkRemovalCalls([dragRows[0]], "trash", false);
+assert.strictEqual(alone[0].channel, "mail:delete");
+assert.strictEqual(alone[0].params.emailId, "m1");
+const threaded = selection.bulkRemovalCalls([
+  { id: "m1", accountId: "a1", threadId: "t1", members: [{ id: "m1" }, { id: "m9" }] },
+  { id: "m2", accountId: "a1", threadId: "t1", members: [{ id: "m2" }, { id: "m9" }] },
+], "archive", true);
+assert.strictEqual(threaded.length, 1);
+assert.strictEqual(threaded[0].channel, "mail:threadArchive");
+assert.strictEqual(threaded[0].params.threadId, "t1");
+const messageUnit = selection.conversationRemoval(
+  { id: "m1", threadId: "t1" },
+  false,
+  [{ id: "m1" }, { id: "m9" }],
+);
+assert.strictEqual(messageUnit.unit, "message");
+assert.strictEqual(messageUnit.channelArchive, "mail:archive");
+assert.strictEqual(messageUnit.channelTrash, "mail:delete");
+const threadUnit = selection.conversationRemoval(
+  { id: "m1", threadId: "t1" },
+  true,
+  [{ id: "m1" }, { id: "m9" }],
+);
+assert.strictEqual(threadUnit.unit, "thread");
+assert.strictEqual(threadUnit.channelTrash, "mail:threadTrash");
+const loneThread = selection.conversationRemoval({ id: "m1", threadId: "t1" }, true, [{ id: "m1" }]);
+assert.strictEqual(loneThread.unit, "message");
+const readCalls = selection.bulkFlagCalls(dragRows, "read");
+assert.strictEqual(readCalls[0].channel, "mail:markReadBatch");
+assert.strictEqual(readCalls[0].params.isRead, true);
+assert.strictEqual(selection.bulkFlagCalls(dragRows, "unread")[0].params.isRead, false);
+assert.strictEqual(selection.bulkFlagCalls(dragRows, "star")[0].channel, "mail:toggleStarBatch");
+assert.strictEqual(selection.bulkFlagCalls(dragRows, "star")[0].params.isStarred, true);
+const labelCalls = selection.bulkLabelCalls(dragRows, "Label_9", "add");
+assert.strictEqual(labelCalls.length, 2);
+assert.strictEqual(labelCalls[0].channel, "mail:modifyMessageLabels");
+assert.deepStrictEqual(labelCalls[0].params.addLabelIds, ["Label_9"]);
+assert.deepStrictEqual(labelCalls[0].params.removeLabelIds, []);
+assert.deepStrictEqual(selection.bulkLabelCalls(dragRows, "Label_9", "remove")[0].params.removeLabelIds, ["Label_9"]);
+assert.strictEqual(selection.bulkNeedsConfirm("add-label", {}), false);
+assert.strictEqual(selection.confirmedCalls("add-label", { ok: false }, labelCalls, {}).length, 2);
+assert.strictEqual(selection.bulkNeedsConfirm("remove-label", { removesFromView: false }), false);
+assert.strictEqual(selection.bulkNeedsConfirm("remove-label", { removesFromView: true }), true);
+assert.deepStrictEqual(
+  selection.confirmedCalls("remove-label", { ok: false, name: "" }, labelCalls, { removesFromView: true }),
+  [],
+);
+assert.strictEqual(selection.labelRemovesFromView("Label_9", "Label_9"), true);
+assert.strictEqual(selection.labelRemovesFromView("INBOX", "Label_9"), false);
+const removeCopy = selection.bulkConfirmCopy("remove-label", 2, { label: "Travel" });
+assert.match(removeCopy.body, /2/);
+assert.match(removeCopy.body, /Travel/);
+assert.strictEqual(selection.bulkDropAction({ kind: "gmail", id: "Label_9" }), "add-label");
+assert.strictEqual(selection.bulkDropAction({ kind: "imap", id: "Notes" }), "move");
+assert.strictEqual(selection.bulkDropAction({ kind: "outlook", id: "folder-1" }), "move");
+const gmailDrop = selection.bulkMoveCalls(dragRows, { kind: "gmail", id: "Label_9", api: true });
+assert.strictEqual(gmailDrop.length, 2);
+assert.strictEqual(gmailDrop[0].channel, "mail:modifyMessageLabels");
+assert.deepStrictEqual(gmailDrop[0].params, selection.organizeDrop({ kind: "gmail", id: "Label_9", api: true }, dragRows[0]).params);
+assert.strictEqual(selection.bulkBlockedByPause({ state: "paused", accountId: "other" }, "a1"), false);
+assert.strictEqual(selection.bulkBlockedByPause({ state: "paused", accountId: "a1" }, "a1"), true);
+assert.strictEqual(selection.selectionPaused({ state: "paused" }, dragRows), true);
+assert.strictEqual(selection.selectionPaused({ state: "syncing", accountId: "a1" }, dragRows), false);
+let outcome = selection.collectBulkOutcome(null, { opIds: ["op-1"] }, null);
+assert.deepStrictEqual(outcome.opIds, ["op-1"]);
+assert.strictEqual(outcome.paused, false);
+outcome = selection.collectBulkOutcome(outcome, null, new Error("Paused for rate limit"));
+assert.strictEqual(outcome.paused, true);
+assert.strictEqual(outcome.error, "Paused for rate limit");
+assert.deepStrictEqual(outcome.opIds, ["op-1"]);
+assert.strictEqual(selection.callCount(bulkMove), 2);
+assert.strictEqual(selection.callCount(oneMove), 1);
+assert.ok(html.includes('id="selection-bar"'));
+assert.ok(html.includes('id="select-visible"'));
+assert.ok(appJs.includes("mail:archiveBatch"));
+assert.ok(appJs.includes("mail:deleteBatch"));
+assert.ok(appJs.includes("mail:markReadBatch"));
+assert.ok(appJs.includes("mail:toggleStarBatch"));
+assert.ok(preload.includes("mail:archiveBatch"));
+assert.ok(preload.includes("mail:deleteBatch"));
+assert.ok(preload.includes("mail:markReadBatch"));
+assert.ok(preload.includes("mail:toggleStarBatch"));
+assert.ok(css.includes(".row-check"));
+assert.ok(css.includes(".selection-bar"));
+assert.ok(!parity.includes("Multi-select stays a follow-up"));
+assert.ok(!parity.includes("Multi-select is a follow-up"));
+assert.ok(parity.includes("Select all"));
+assert.ok(parity.includes("mail:threadArchive"));
+assert.ok(!independentDoc.includes("Multi-select is not in this slice"));
 assert.ok(appJs.includes('confirmRelocation("mail:moveToFolder"'));
 assert.ok(appJs.includes('confirmRelocation("mail:moveProviderMessage"'));
 assert.ok(appJs.includes('confirmsBefore("mail:renameProviderFolder")'));
