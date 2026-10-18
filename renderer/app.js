@@ -6144,7 +6144,12 @@ async function editScheduledMail(row) {
   $("scheduled-status").textContent = "Removed from queue. A local draft is saved in Drafts.";
   await loadScheduled();
   await closeDialog("scheduled-dialog");
-  await resumeDraft({ id: draft.emailId, accountId: draft.accountId });
+  try {
+    await resumeDraft({ id: draft.emailId, accountId: draft.accountId });
+  } catch (error) {
+    openDialog("scheduled-dialog");
+    throw new Error("Removed from queue and saved in local Drafts, but the editor could not open. Resume it from Drafts. " + (error.message || String(error)));
+  }
   $("schedule-preset").value = "custom";
   $("schedule-at").value = vacationLocalValue(draft.sendAt);
   syncScheduleFields();
@@ -7688,7 +7693,14 @@ async function grantInboxRules() {
 
 async function openInboxRules() {
   const id = settingsAccount()?.id || "";
-  if (id !== inboxRulesAccountId) await changeInboxRulesAccount(id);
+  try {
+    if (id !== inboxRulesAccountId) await changeInboxRulesAccount(id);
+  } catch (error) {
+    $("settings-status").textContent = "Could not load rules for " + (settingsAccount()?.email || "this mailbox") + ". " + (error.message || String(error));
+    $("settings-status").classList.add("error");
+    $("settings-status").scrollIntoView({ block: "nearest" });
+    return;
+  }
   if (id !== inboxRulesAccountId) return;
   closeDialog("settings");
   if (state.view !== "brain") openBrain("rules");

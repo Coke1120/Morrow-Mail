@@ -53,6 +53,9 @@ async function run() {
   ui.run(`renderReader=()=>{};renderList=()=>{};state.prefs.conversation=false;showStatus=text=>{globalThis.receipt=text;};call=async channel=>{if(channel==='mail:markRead')throw new Error('Fixture persistence failed');return {email:{id:'read',accountId:'a',unread:true}};};`);
   await ui.run(`openMessage('read',false)`);
   assert.equal(ui.run('state.email.id'),'read');assert.match(ui.run('receipt'),/opened.*not confirmed.*Fixture persistence failed/);
+  ui.run(`globalThis.reopened='';openDialog=id=>{reopened=id;};closeDialog=async()=>{};askConfirm=async()=>({ok:true});loadScheduled=async()=>{};resumeDraft=async()=>{throw new Error('Fixture read failure');};call=async()=>({emailId:'durable-draft',accountId:'a',sendAt:'2099-01-01T08:00:00Z'});`);
+  await assert.rejects(ui.run(`editScheduledMail({id:'queued',accountId:'a',status:'pending'})`),/saved in local Drafts.*Resume it from Drafts/);
+  assert.equal(ui.run('reopened'),'scheduled-dialog','editor failure must return to the visible queue error surface');
   const vm = require('node:vm'), fs = require('node:fs'), path = require('node:path');
   const events={}, ipc={};
   const updater={on:(name,fn)=>{events[name]=fn;},setFeedURL(){},checkForUpdates:async()=>{}};
