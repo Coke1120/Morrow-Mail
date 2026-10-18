@@ -103,8 +103,60 @@ function fadePane(el, axis) {
   finish(el, value, animate(el, from, { duration: 0.16 }));
 }
 
+function sections(nodes) {
+  const list = Array.prototype.slice.call(nodes || [], 0, 8).filter((el) => el && !el.hidden);
+  if (!list.length || reduced()) return;
+  try {
+    const animation = animate(list, { opacity: [0, 1], y: [8, 0] }, { duration: 0.2, delay: stagger(0.04) });
+    animation.finished.then(() => {
+      for (const el of list) if (el.isConnected) clearStyles(el);
+    }).catch(() => {
+      for (const el of list) clearStyles(el);
+    });
+  } catch {
+    for (const el of list) clearStyles(el);
+  }
+}
+
+function fold(body, open) {
+  if (!body) return Promise.resolve();
+  if (reduced()) {
+    body.hidden = !open;
+    body.style.height = "";
+    body.style.opacity = "";
+    body.style.overflow = "";
+    return Promise.resolve();
+  }
+  const value = token(body);
+  const settle = (hide) => {
+    if (body.dataset.motion !== value) return;
+    body.hidden = hide;
+    clearStyles(body);
+    delete body.dataset.motion;
+  };
+  body.hidden = false;
+  body.style.overflow = "hidden";
+  body.style.height = "auto";
+  const full = body.scrollHeight;
+  let animation;
+  try {
+    if (open) {
+      body.style.height = "0px";
+      body.style.opacity = "0";
+      animation = animate(body, { height: [0, full], opacity: [0, 1] }, { duration: 0.22, ease: "easeOut" });
+    } else {
+      body.style.height = full + "px";
+      animation = animate(body, { height: [full, 0], opacity: [1, 0] }, { duration: 0.16, ease: "easeOut" });
+    }
+  } catch {
+    settle(!open);
+    return Promise.resolve();
+  }
+  return Promise.resolve(animation.finished).catch(() => {}).finally(() => settle(!open));
+}
+
 function bindChrome(root) {
-  const targets = root.querySelectorAll("header button.primary, .rail-btn, dialog button.primary, #compose-quote-toggle, #compose-quote-collapse");
+  const targets = root.querySelectorAll("header button.primary, .rail-btn, dialog button.primary, #compose-quote-toggle, #compose-quote-collapse, .fold-toggle, .section-nav button");
   targets.forEach((el) => {
     hover(el, () => {
       if (reduced()) return;
@@ -138,4 +190,7 @@ window.morrowMotion = {
   wantsCloseMotion,
   bindChrome,
   fadePane,
+  sections,
+  fold,
+  reduced,
 };

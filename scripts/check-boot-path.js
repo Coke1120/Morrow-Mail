@@ -235,6 +235,8 @@ assert.ok(main.includes("nativeImage.createFromPath(APP_ICON)") && main.includes
 assert.ok(main.includes("applyDockIcon()"));
 assert.ok(html.includes("<title>Morrow Mail</title>"));
 assert.ok(html.includes('src="./morrow-icon.svg"') && html.includes('class="rail-logo"') && html.includes('title="Morrow Mail"'));
+assert.ok(html.includes('class="rail-name"') && html.includes(">Morrow Mail</span>"));
+assert.ok(html.includes('aria-label="Settings sections"'));
 assert.ok(html.includes('id="product-name"') && html.includes('class="product-name"') && html.includes(">Morrow Mail</p>"));
 assert.ok(html.includes('id="list-chips"') && html.includes('aria-label="Primary folders"'));
 assert.ok(html.includes('aria-label="Email Brain"') && html.includes('id="rail-brain"'));
@@ -275,8 +277,12 @@ const motionSrc = fs.readFileSync(path.join(root, "renderer/motion-ui.js"), "utf
 assert.ok(motionSrc.includes('from "motion"'), "Motion UI does not import motion");
 assert.ok(motionSrc.includes("prefers-reduced-motion: reduce"), "Motion UI ignores reduced motion");
 assert.ok(fs.existsSync(path.join(root, "renderer/motion.bundle.js")), "Motion bundle was not built");
-assert.ok(fs.readFileSync(path.join(root, "renderer/motion.bundle.js"), "utf8").includes("morrowMotion"), "Motion bundle missing morrowMotion");
+const motionBundle = fs.readFileSync(path.join(root, "renderer/motion.bundle.js"), "utf8");
+assert.ok(motionBundle.includes("morrowMotion"), "Motion bundle missing morrowMotion");
+assert.ok(motionSrc.includes("function sections(") && motionSrc.includes("function fold("), "Motion UI missing section or fold motion");
+assert.ok(motionBundle.includes("sections") && motionBundle.includes("fold"), "Motion bundle missing section or fold motion");
 assert.ok(appJs.includes("morrowMotion") && appJs.includes("wantsCloseMotion"), "shell does not call Motion");
+assert.ok(appJs.includes("playPageSections") && appJs.includes("revealSettingsFold"));
 assert.ok(css.includes("margin: 0 auto"), "dialog is not centered without a transform");
 assert.ok(css.includes(".dialog-body") && css.includes(".row-actions"), "shell css missing dialog scroll or row actions");
 assert.ok(html.includes('id="list-filter"') && html.includes("Does not search the server."), "message list has no loaded-mail filter");
@@ -1956,6 +1962,10 @@ const folderChrome = loadFunctions(appJs, [
   "moveMenuItem",
   "imapFolderMenu",
   "folderActionMenu",
+  "isStarredFolder",
+  "isVirtualMailbox",
+  "folderCanNest",
+  "nestDropPlan",
   "actionConfirm",
   "confirmsBefore",
 ]);
@@ -1999,6 +2009,29 @@ assert.match(travelById.L1.reason, /already there/);
 assert.strictEqual(travelById.L4.disabled, false);
 assert.strictEqual(travelFlags.root.disabled, false);
 const workFlags = folderChrome.moveTargetFlags(gmailNodes, "L1", "gmail", "/");
+assert.strictEqual(folderChrome.folderCanNest("imap", { id: "INBOX", name: "Inbox", wellKnownName: "inbox", type: "system" }).ok, false);
+assert.strictEqual(folderChrome.folderCanNest("imap", { id: "Notes", name: "Notes", type: "user" }).ok, true);
+assert.strictEqual(folderChrome.folderCanNest("gmail", { id: "L4", name: "Personal", editable: true }).ok, true);
+assert.strictEqual(folderChrome.folderCanNest("gmail", { id: "INBOX", name: "INBOX", editable: false }).ok, false);
+assert.strictEqual(folderChrome.folderCanNest("local", { id: "x", name: "x" }).ok, false);
+assert.strictEqual(folderChrome.folderCanNest("imap", { id: "__morrow_starred__", name: "Starred", type: "virtual" }).ok, false);
+const nestSource = { kind: "gmail", accountId: "a1", folderId: "L2" };
+const nestUnder = folderChrome.nestDropPlan(nestSource, { kind: "gmail", accountId: "a1", id: "L4" }, travelFlags);
+assert.strictEqual(nestUnder.ok, true);
+assert.strictEqual(nestUnder.channel, "mail:moveProviderFolder");
+assert.strictEqual(nestUnder.params.destinationId, "L4");
+const unnest = folderChrome.nestDropPlan(nestSource, { kind: "gmail", accountId: "a1", id: "", isRoot: true }, travelFlags);
+assert.strictEqual(unnest.ok, true);
+assert.strictEqual(unnest.params.destinationId, "");
+assert.strictEqual(folderChrome.nestDropPlan(nestSource, { kind: "gmail", accountId: "a1", id: "L2" }, travelFlags).ok, false);
+assert.strictEqual(folderChrome.nestDropPlan(nestSource, { kind: "gmail", accountId: "a1", id: "L3" }, travelFlags).ok, false);
+assert.strictEqual(folderChrome.nestDropPlan(nestSource, { kind: "imap", accountId: "a1", id: "Notes" }, travelFlags).ok, false);
+assert.strictEqual(folderChrome.nestDropPlan(nestSource, { kind: "gmail", accountId: "a2", id: "L4" }, travelFlags).ok, false);
+assert.strictEqual(folderChrome.nestDropPlan(
+  { kind: "gmail", accountId: "a1", folderId: "L1" },
+  { kind: "gmail", accountId: "a1", isRoot: true },
+  workFlags,
+).ok, false);
 assert.strictEqual(workFlags.root.disabled, true);
 assert.strictEqual(workFlags.nodes.find((node) => node.id === "L2").disabled, true);
 assert.strictEqual(workFlags.nodes.find((node) => node.id === "L4").disabled, false);
@@ -2174,9 +2207,10 @@ const selection = loadFunctions(appJs, [
   "bulkDropAction",
 ]);
 const visibleIds = ["a", "b", "c", "d"];
-let selectedClick = selection.listClickSelection([], "", visibleIds, "b", {});
-assert.deepStrictEqual(selectedClick, { ids: ["b"], anchor: "b" });
-selectedClick = selection.listClickSelection(selectedClick.ids, selectedClick.anchor, visibleIds, "d", { meta: true });
+let selectedClick = selection.listClickSelection(["a", "c"], "a", visibleIds, "b", {});
+assert.deepStrictEqual(selectedClick, { ids: [], anchor: "" });
+assert.deepStrictEqual(selection.listClickSelection([], "", visibleIds, "b", {}), { ids: [], anchor: "" });
+selectedClick = selection.listClickSelection(["b"], "b", visibleIds, "d", { meta: true });
 assert.deepStrictEqual(selectedClick.ids, ["b", "d"]);
 assert.strictEqual(selectedClick.anchor, "d");
 selectedClick = selection.listClickSelection(["b"], "b", visibleIds, "d", { shift: true });
@@ -2214,6 +2248,22 @@ assert.strictEqual(selection.modifierBlocksDrag({ metaKey: true }), true);
 assert.strictEqual(selection.modifierBlocksDrag({ ctrlKey: true }), true);
 assert.ok(functionSource(appJs, "onMessageDragStart").includes("modifierBlocksDrag"));
 assert.ok(functionSource(appJs, "onMessageDragStart").includes("is-mail-drag"));
+assert.ok(functionSource(appJs, "onMessageDragStart").includes("setOffsetDragGhost"));
+assert.ok(functionSource(appJs, "listClickSelection").includes("clearListSelection"));
+assert.ok(functionSource(appJs, "paintSelectionBar").includes("has-selection"));
+const hotspot = extractFunction(appJs, "dragGhostHotspot")();
+assert.ok(hotspot.y < hotspot.offset && hotspot.offset >= 28);
+assert.ok(appJs.includes("application/x-morrow-folder"));
+assert.ok(functionSource(appJs, "onFolderDrop").includes("dropFolderNest"));
+assert.ok(functionSource(appJs, "onFolderDrop").includes("dropOrganized"));
+assert.ok(functionSource(appJs, "onFolderDrop").includes("applyBulkMove"));
+const pageBusy = functionSource(appJs, "setPageBusy");
+assert.ok(pageBusy.includes("page-busy") && pageBusy.includes("aria-busy"));
+assert.ok(!pageBusy.includes("document.body") && !pageBusy.includes("showModal"));
+assert.ok(functionSource(appJs, "setAgentBusy").includes("syncAgentPageBusy"));
+assert.ok(functionSource(appJs, "loadAgent").includes("agentLoadOverlay"));
+assert.ok(css.includes(".drag-ghost") && css.includes(".folder-root") && css.includes(".page-busy"));
+assert.ok(css.includes("#agent-panel.primary-space") && css.includes("position: relative"));
 assert.ok(functionSource(appJs, "onMessagePointerDown").includes("modifierBlocksDrag"));
 assert.ok(functionSource(appJs, "clearMailDragChrome").includes("is-mail-drag"));
 const dragRows = [
