@@ -92,7 +92,8 @@
         "zip"
       ],
       "icon": "build/icon.icns",
-      "identity": null,
+      "sign": "./scripts/sign-macos.js",
+      "notarize": false,
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "extendInfo": {

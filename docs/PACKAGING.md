@@ -8,7 +8,7 @@ The packaged app boots the first-party renderer shipped in `renderer/` (see [IND
 
 ## Windows alpha (Leo)
 
-Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an unsigned macOS zip to the same GitHub release. Pull requests stay on the `ci` check job.
+Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an ad hoc signed macOS zip to the same GitHub release. Pull requests stay on the `ci` check job.
 
 1. Bump `package.json` `version` (the first alpha is already `0.1.0-alpha.1`) and merge to `main`. The GitHub tag is `v` plus that version.
 2. Actions → **release** → **Run workflow**, branch `main`.
@@ -45,17 +45,21 @@ electron-builder attaches files to an existing release only for about two hours 
 
 ## macOS
 
-The same **release** workflow runs on `macos-latest` after the Windows job, and publishes an unsigned zip plus `latest-mac.yml` (and a blockmap when electron-builder writes one) to that release. Windows creates the release first. `build.mac.identity` is `null`. The job sets `CSC_IDENTITY_AUTO_DISCOVERY=false` and does not codesign or notarize. The zip arch is the runner's (Apple silicon on `macos-latest`).
+The same **release** workflow runs on `macos-latest` after Windows and publishes an ad hoc signed zip plus `latest-mac.yml`. `build.mac.sign` invokes `scripts/sign-macos.js` after bundle/resource edits and before ZIP creation. The existing `@electron/osx-sign` dependency signs nested code inside-out with identity `-`, then seals the outer app. A failing `codesign --verify --deep --strict` aborts packaging before upload. No certificate, private key, or provisioning profile is used; notarization is explicitly disabled.
+
+Previously `mac.identity: null` made electron-builder 25.1.8 return before signing, leaving the modified Electron bundle without a fresh resource seal. The official v0.2.3 ARM64 ZIP was reported to fail verification with `code has no resources but signature indicates they must be present` on macOS. A GitHub-matching ZIP hash does not establish signature validity.
+
+Ad hoc signing provides local integrity only. It is **not Developer ID signing or notarization**, and does not establish Gatekeeper trust. Do not remove quarantine or disable protections to validate this change.
+
+Local ARM64 build without publishing (on macOS, with dependencies already available):
 
 ```bash
-CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac -- --publish always
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac -- --arm64 --publish never
+codesign --verify --deep --strict --verbose=2 "dist/mac-arm64/Morrow Mail.app"
+codesign -dv --verbose=4 "dist/mac-arm64/Morrow Mail.app"
 ```
 
-Apple codesign and notarization stay on the MBA, locally, for a later step. Unsigned zip only, no upload:
-
-```bash
-CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
-```
+Before approving the fix, also extract the generated ZIP into a fresh temporary directory using `ditto -x -k`, and run both commands on that extracted `.app`. Require successful strict verification for both copies and `Signature=adhoc` with no Developer ID/TeamIdentifier. Compare the extracted app's files and symlinks with the packaged app. `spctl --assess --type execute --verbose=4` may still reject an ad hoc app; this is not the integrity test. Linux hook tests mock signing and cannot establish native signature validity. Do not launch the app as part of this check.
 
 ## Updater reads
 
