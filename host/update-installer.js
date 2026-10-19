@@ -153,6 +153,12 @@ async function assessBundleTrust(bundle, { run = execFile } = {}) {
   // Propagate rejection/timeouts; callers must never launch a rejected bundle.
   try { await run('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle], NATIVE_OPTIONS); }
   catch (cause) {
+    // spctl(8): exit 3 means assessment denial without another tool error.
+    // execFile's configured timeout kills with SIGTERM and reports a null code;
+    // maxBuffer, spawn errors and external signals must not become policy results.
+    const denied = cause.code === 3 && !cause.killed && !cause.signal;
+    const timedOut = cause.code === null && cause.killed === true && cause.signal === 'SIGTERM';
+    if (!denied && !timedOut) throw cause;
     throw Object.assign(new Error('macOS has not approved this update for automatic installation. Use Show downloaded update to review it in Finder and follow macOS security prompts.', { cause }), { code: 'UPDATE_MANUAL_TRUST' });
   }
 }

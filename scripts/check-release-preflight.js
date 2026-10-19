@@ -7,6 +7,7 @@ const os = require('node:os');
 const { preflight } = require('./release-preflight');
 const { signRelease } = require('./sign-release-manifest');
 const { verifyReleaseMacos } = require('./verify-release-macos');
+const { assessBundleTrust } = require('../host/update-installer');
 const { verifyManifest } = require('../host/update-manifest');
 
 (async () => {
@@ -85,7 +86,10 @@ const { verifyManifest } = require('../host/update-manifest');
   }), /unsafe archive/);
   await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
 
-  for (const reason of ['Gatekeeper rejected', 'Gatekeeper timed out']) {
+  for (const cause of [
+    Object.assign(Error('Gatekeeper rejected'), { code: 3, killed: false, signal: null }),
+    Object.assign(Error('Gatekeeper timed out'), { code: null, killed: true, signal: 'SIGTERM' })
+  ]) {
     const manual = await verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
       extract: async (_file, destination) => {
         extractedPath = destination;
@@ -93,7 +97,7 @@ const { verifyManifest } = require('../host/update-manifest');
         return path.join(destination, 'Morrow Mail.app');
       },
       verify: async () => {},
-      assess: async () => { throw Object.assign(new Error(reason), { code: 'UPDATE_MANUAL_TRUST' }); }
+      assess: bundle => assessBundleTrust(bundle, { run: async () => { throw cause; } })
     });
     assert.deepEqual(manual, { integrity: 'verified', platformTrust: 'manual-review-required' });
     await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
@@ -104,10 +108,24 @@ const { verifyManifest } = require('../host/update-manifest');
     assess: async () => assert.fail('Broken seals must not reach policy assessment')
   }), /broken seal/);
 
-  await assert.rejects(verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
-    extract: async () => '/fixture.app', verify: async () => {},
-    assess: async () => { throw new Error('unexpected verifier fault'); }
-  }), /unexpected verifier fault/);
+  // Exercise the real classification wrapper at the execFile boundary, not a
+  // preclassified UPDATE_MANUAL_TRUST mock. Tool faults must fail publication.
+  for (const details of [
+    { code: 'ENOENT' }, { code: 'EACCES' }, { code: 'EPERM' },
+    { code: 1 }, { code: 2 }, { code: 4 }, { code: 9 }, {},
+    { code: null, killed: false, signal: 'SIGTERM' },
+    { code: null, killed: true, signal: 'SIGKILL' },
+    { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', killed: true, signal: 'SIGTERM' },
+    { code: 'ABORT_ERR', killed: true, signal: 'SIGTERM' }
+  ]) {
+    const cause = Object.assign(Error('unexpected verifier fault'), details);
+    await assert.rejects(verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
+      extract: async (_file, destination) => { extractedPath = destination; await fs.mkdir(destination); return '/fixture.app'; },
+      verify: async () => {},
+      assess: bundle => assessBundleTrust(bundle, { run: async () => { throw cause; } })
+    }), error => error === cause);
+    await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
+  }
 
   // Structural regression checks for authority boundaries and release ordering.
   const workflow = await fs.readFile(path.join(__dirname, '..', '.github/workflows/release.yml'), 'utf8');
