@@ -644,6 +644,9 @@
           <textarea id="signature-body"></textarea>
           <label class="check" for="signature-html"><input id="signature-html" type="checkbox" /> HTML</label>
           <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default for this account</label>
+          <label for="signature-domains">Domains</label>
+          <input id="signature-domains" type="text" autocomplete="off" spellcheck="false" placeholder="hkbscl.com, gmail.com" />
+          <p class="hint">Compose uses this signature when From is one of these domains, and otherwise uses the account default. Enter the exact domain. A leading @ is optional. Subdomains do not match.</p>
           <div class="row">
             <button type="submit" class="primary" id="signature-save">Add</button>
             <button type="button" class="ghost" id="signature-cancel" hidden>Cancel</button>

@@ -320,7 +320,15 @@ async function rendererFlows() {
   await ui.run("openCompose()"); assert.equal(get("compose-from").value, "leo@second.example");
   assert.equal(get("compose-cc").value, "ops@second.example");
   assert.equal(get("compose-bcc").value, "");
-  await ui.run("requestComposeClose()"); ui.run("failed=true");
+  assert.doesNotMatch(get("compose-from-note").textContent, /Signature domain/);
+  ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
+  await ui.run("openCompose({fromAddress:'leo@gmail.com'})");
+  assert.equal(get("compose-cc").value, "project@project.example");
+  assert.equal(get("compose-bcc").value, "logs@gmail.com");
+  assert.match(get("compose-from-note").textContent, /CC domain: project\.example\./);
+  assert.match(get("compose-from-note").textContent, /Signature domain: gmail\.com\./);
+  ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
+  ui.run("failed=true");
   await ui.run("openCompose()"); get("compose-to").value = "client@client.example";
   const count = ui.run("calls.length"); await ui.run("saveDraft(); scheduleMail(); sendMail()");
   assert.equal(ui.run("calls.length"), count, "identity failure blocks keyboard/programmatic send as well as buttons");
