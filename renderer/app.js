@@ -1712,20 +1712,48 @@ function people(value) {
 }
 
 function readable(email) {
-  const html = email && email.htmlBody ? String(email.htmlBody) : "";
-  if (html) {
-    const text = html
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/p>/gi, "\n")
-      .replace(/<[^>]+>/g, "")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&amp;/g, "&")
-      .trim();
-    if (text) return text;
+  if (email && email.textBody) return String(email.textBody);
+  // Plain-text quotes and AI inputs must not contain CSS/script source.
+  const text = String((email && email.htmlBody) || "")
+    .replace(/<(script|style|head|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<br\s*\/?>|<\/(?:p|div|tr|li|h[1-6]|blockquote)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&")
+    .trim();
+  return text || (email && email.snippet) || "";
+}
+
+// Parse in an inert template, then reconstruct formatting only. Never copy
+// source attributes (CSS, handlers, URLs, forms, SVG or embedded documents).
+function appendSafeMailHtml(parent, html, imagesOn) {
+  const template = document.createElement("template");
+  template.innerHTML = String(html || "");
+  const allowed = new Set("p div span br hr b strong i em u s small sub sup blockquote pre code ul ol li table tbody thead tfoot tr td th h1 h2 h3 h4 h5 h6".split(" "));
+  const blocked = new Set("script style head title template iframe object embed svg math form input button textarea select link meta base audio video source".split(" "));
+  function copy(source, target) {
+    if (source.nodeType === 3) { target.appendChild(document.createTextNode(source.textContent)); return; }
+    if (source.nodeType !== 1) return;
+    const tag = source.localName.toLowerCase();
+    if (blocked.has(tag)) return;
+    if (tag === "img") {
+      const alt = source.getAttribute("alt") || "";
+      const src = source.getAttribute("src") || "";
+      if (imagesOn && /^https?:\/\//i.test(src)) {
+        const image = document.createElement("img");
+        image.className = "remote";
+        image.alt = alt;
+        image.referrerPolicy = "no-referrer";
+        image.src = src;
+        target.appendChild(image);
+      } else if (alt) target.appendChild(document.createTextNode(alt));
+      return;
+    }
+    const dest = allowed.has(tag) ? document.createElement(tag) : document.createElement("span");
+    for (const child of source.childNodes) copy(child, dest);
+    target.appendChild(dest);
   }
-  return (email && (email.textBody || email.snippet)) || "";
+  for (const child of template.content.childNodes) copy(child, parent);
 }
 
 // shortcut: one string is one address, upgrade if the host sends a comma-separated To.
@@ -3918,20 +3946,14 @@ function renderReader(focus) {
 function appendMessageBody(parent, email, imagesOn) {
   const wrap = document.createElement("div");
   wrap.className = "body";
-  for (const node of bodyNodes(readable(email))) {
-    const block = document.createElement("p");
-    block.dataset.nodeId = node.node_id;
-    block.textContent = node.text;
-    wrap.appendChild(block);
-  }
-  if (imagesOn) {
-    for (const image of remoteImageSrcs(email && email.htmlBody)) {
-      const img = document.createElement("img");
-      img.className = "remote";
-      img.alt = image.alt;
-      img.referrerPolicy = "no-referrer";
-      img.src = image.src;
-      wrap.appendChild(img);
+  if (email && email.htmlBody) {
+    appendSafeMailHtml(wrap, email.htmlBody, imagesOn);
+  } else {
+    for (const node of bodyNodes(readable(email))) {
+      const block = document.createElement("p");
+      block.dataset.nodeId = node.node_id;
+      block.textContent = node.text;
+      wrap.appendChild(block);
     }
   }
   parent.appendChild(wrap);
@@ -4235,15 +4257,24 @@ async function toggleStar(email) {
   showStatus(next ? "Starred." : "Removed the star.");
 }
 
+const readWrites = new Map();
 async function setRead(email, isRead) {
-  await call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead });
-  email.unread = !isRead;
-  email.isRead = isRead;
-  if (state.email && state.email.id === email.id) {
-    state.email.unread = email.unread;
-    state.email.isRead = email.isRead;
+  const previousWrite = readWrites.get(email.id);
+  if (previousWrite) {
+    await previousWrite.catch(() => {});
+    return setRead(email, isRead);
   }
-  renderList();
+  const previous = !!email.unread;
+  const paint = (unread) => {
+    eachStarRow(email, (row) => { row.unread = unread; row.isRead = !unread; });
+    renderList();
+  };
+  paint(!isRead);
+  const write = call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead });
+  readWrites.set(email.id, write);
+  try { await write; paint(!isRead); }
+  catch (error) { paint(previous); throw error; }
+  finally { if (readWrites.get(email.id) === write) readWrites.delete(email.id); }
 }
 
 async function deleteFromList(email) {
@@ -5934,7 +5965,7 @@ async function openMessage(emailId, focus) {
   renderList();
   if (!email.unread) return;
   try {
-    await call("mail:markRead", { emailId, isRead: true });
+    await setRead(email, true);
   } catch (error) {
     if (gen === openGen) showStatus("Message opened, but marking it read was not confirmed. Other clients may still show it unread. " + (error.message || String(error)), true);
   }

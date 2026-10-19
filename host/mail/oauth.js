@@ -89,6 +89,7 @@ function waitForCode(server, expectedState, expectedPath, timeoutMs, signal) {
     let settled = false;
     let outcome = null;
     let response = null;
+    let acceptedCode = null;
     const duplicates = [];
     const shutdown = () => {
       try { server.close(); } catch { /* already closed */ }
@@ -135,7 +136,7 @@ function waitForCode(server, expectedState, expectedPath, timeoutMs, signal) {
         state: url.searchParams.get("state"),
       };
     };
-    const validCallback = (parts) => parts.pathname === expectedPath && !parts.err && parts.code && parts.state === expectedState;
+    const validCallback = (parts) => parts.pathname === expectedPath && !parts.err && parts.code === acceptedCode && parts.state === expectedState;
 
     server.on("request", (req, res) => {
       try {
@@ -160,6 +161,12 @@ function waitForCode(server, expectedState, expectedPath, timeoutMs, signal) {
           duplicates.push(res);
           return;
         }
+        // Even provider errors must belong to this PKCE session. A stray callback
+        // must not cancel a valid sign-in that is still waiting.
+        if (parts.state !== expectedState) {
+          finishResponse(res, 400, "Sign-in not finished", "Invalid OAuth callback.");
+          return;
+        }
         if (parts.err) {
           response = res;
           const error = new Error(`OAuth provider error: ${parts.err}`);
@@ -172,6 +179,7 @@ function waitForCode(server, expectedState, expectedPath, timeoutMs, signal) {
           return;
         }
         response = res;
+        acceptedCode = parts.code;
         settled = true;
         clearTimeout(timer);
         if (signal) signal.removeEventListener("abort", onAbort);

@@ -1,4 +1,5 @@
 function providerFailure(status) {
+  if (status === 400) return "The provider rejected the request format (HTTP 400). Check for an app update.";
   if (status === 401) return "Authorization expired. Grant access again.";
   if (status === 403) return "The provider refused this scope. Grant access again.";
   if (status === 429) return "The provider is rate limiting requests. Try again shortly.";
