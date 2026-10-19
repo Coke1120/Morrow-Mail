@@ -337,6 +337,14 @@ app.whenReady().then(async () => {
   await run(`$('rail-about').click()`);
   await waitFor(`!$('about-update-install').hidden`);
   assert.equal(await run(`$('about-dialog').open`), true);
+  await run(`Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))).then(()=>null)`);
+  for (const [width, height] of [[1180, 820], [800, 500]]) {
+    win.setSize(width, height);
+    await run(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(null))))`);
+    const placement = await run(`(()=>{const r=$('about-dialog').getBoundingClientRect();return {x:r.x+r.width/2-innerWidth/2,y:r.y+r.height/2-innerHeight/2};})()`);
+    assert.ok(Math.abs(placement.x) <= 1 && Math.abs(placement.y) <= 1, 'About remains centered after viewport resize');
+  }
+  win.setSize(1180, 820);
   assert.equal(await run(`$('updates')===null && $('update-check')===null`), true);
   await run(`$('about-update-check').click()`);
   await waitCalls('host:updateCheck', 1);

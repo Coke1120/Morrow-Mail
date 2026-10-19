@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const { apiJson, safeId, cleanName, idList, safeNext } = require("./provider-http");
 
 const GMAIL_ROOT = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -402,8 +403,42 @@ const CHILD_REQUESTS = 50;
 function graphFolderListUrl(path) {
   const url = new URL(path);
   url.searchParams.set("$top", "100");
-  url.searchParams.set("$select", "id,displayName,parentFolderId,childFolderCount,wellKnownName");
+  url.searchParams.set("$select", "id,displayName,parentFolderId,childFolderCount");
   return url.toString();
+}
+
+// Scope the short-lived cache to the exact grant without retaining its bearer token.
+const graphSystemCache = new Map();
+async function graphSystemFolders(accessToken, fetchImpl) {
+  const key = crypto.createHash("sha256").update(accessToken).digest("hex");
+  const cached = graphSystemCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.ids;
+  const ids = new Map();
+  const names = ["archive", "clutter", "conflicts", "conversationhistory", "deleteditems",
+    "drafts", "inbox", "junkemail", "localfailures", "msgfolderroot", "outbox",
+    "recoverableitemsdeletions", "scheduled", "searchfolders", "sentitems",
+    "serverfailures", "syncissues"];
+  // Limit concurrency to avoid a burst against Graph on large mailboxes.
+  for (let start = 0; start < names.length; start += 4) {
+    await Promise.all(names.slice(start, start + 4).map(async (name) => {
+      let system;
+      try {
+        system = await apiJson(`${GRAPH_ROOT}/mailFolders/${name}?$select=id`, accessToken, { fetchImpl });
+      } catch (error) {
+        if (error.status === 404) return; // Optional folders need not exist.
+        throw error;
+      }
+      if (!safeId(system.id)) {
+        const error = new Error("Outlook did not identify its system folder.");
+        error.code = "provider";
+        throw error;
+      }
+      ids.set(system.id, name);
+    }));
+  }
+  if (graphSystemCache.size >= 32) graphSystemCache.delete(graphSystemCache.keys().next().value);
+  graphSystemCache.set(key, { ids, expires: Date.now() + 5 * 60 * 1000 });
+  return ids;
 }
 
 async function listMailFolders(accessToken, fetchImpl) {
@@ -429,6 +464,15 @@ async function listMailFolders(accessToken, fetchImpl) {
       seen.add(child.id);
       rows.push(child);
       if (child.childCount > 0) queue.push(child);
+    }
+  }
+  // wellKnownName is a beta-only property. v1.0 supports addressing these
+  // folders by alias; compare their stable IDs, never translated display names.
+  if (rows.some((folder) => !folder.wellKnown)) {
+    const identities = await graphSystemFolders(accessToken, fetchImpl);
+    for (const row of rows) {
+      const name = identities.get(row.id);
+      if (name) Object.assign(row, { type: "system", editable: false, wellKnown: name });
     }
   }
   return rows.sort(byName);

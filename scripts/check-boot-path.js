@@ -15,6 +15,8 @@ const syntax = [
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
   "scripts/check-mail-calendar-consent.js",
+  "scripts/check-oauth-graph-regressions.js",
+  "scripts/check-mail-reader.js",
   "host/update-auth.js",
   "host/updater.js",
   "host/mail/secrets.js",
@@ -1311,7 +1313,7 @@ const suggestMail = ai.suggestionEmail({
 });
 assert.strictEqual(suggestMail.subject, "Notes");
 assert.strictEqual(suggestMail.snippet, "short");
-assert.strictEqual(suggestMail.text_body, "Ready & waiting.");
+assert.strictEqual(suggestMail.text_body, "longer"); // Prefer MIME plain text for AI/quotes.
 const suggested = ai.withSuggestion(compose.composeSeed({
   from: "Charles Babbage <charles@example.com>",
   subject: "Notes",
@@ -4582,6 +4584,7 @@ async function checkProviderApi() {
   const nested = await gmailApi.listMailFolders("token", async (url) => {
     const href = String(url);
     seenFolders.push(href);
+    if (new URL(href).searchParams.get("$select") === "id") return jsonResponse({}, 404);
     if (href.includes("/childFolders")) {
       return jsonResponse({
         value: [{
@@ -4825,6 +4828,7 @@ async function checkProviderApi() {
     await assert.rejects(
       () => gmailApi.moveMailFolder("token", "in", "work", async (url) => {
         if (String(url).includes("/move")) graphMoves += 1;
+        if (new URL(url).searchParams.get("$select") === "id") return String(url).includes("/inbox?") ? jsonResponse({ id: "in" }) : jsonResponse({}, 404);
         return jsonResponse({
           value: [
             { id: "in", displayName: "Inbox", wellKnownName: "inbox", parentFolderId: "msgfolderroot" },
@@ -4839,6 +4843,7 @@ async function checkProviderApi() {
     const graphMoved = await gmailApi.moveMailFolder("token", "rec", "", async (url, init) => {
       const href = String(url);
       if (href.includes("/childFolders")) return jsonResponse({ value: [] });
+      if (new URL(href).searchParams.get("$select") === "id") return jsonResponse({}, 404);
       if (href.endsWith("/move")) {
         graphBodies.push(JSON.parse(init.body));
         assert.strictEqual(init.method, "POST");
@@ -5024,6 +5029,7 @@ async function checkProviderApi() {
       if (href.includes("rfc822msgid")) return jsonResponse({ messages: [{ id: "msg-1" }] });
       if (method === "POST" && href.includes("/messages/msg-1/modify")) return jsonResponse({});
       if (href.startsWith("https://graph.microsoft.com/v1.0/me/mailFolders") && method === "GET") {
+        if (new URL(href).searchParams.get("$select") === "id") return href.includes("/inbox?") ? jsonResponse({ id: "inbox-id" }) : jsonResponse({}, 404);
         if (href.includes("/childFolders")) return jsonResponse({ value: [] });
         return jsonResponse({ value: graphFolders.map((folder) => ({ ...folder })) });
       }
@@ -6743,6 +6749,7 @@ async function checkInboxRules() {
         return jsonResponse({ filter: [] });
       }
       if (href.includes("/mailFolders") && !href.includes("messageRules")) {
+        if (new URL(href).searchParams.get("$select") === "id") return href.includes("/archive?") ? jsonResponse({ id: "archive-id" }) : jsonResponse({}, 404);
         return jsonResponse({
           value: [
             { id: "archive-id", displayName: "Archive", wellKnownName: "archive", childFolderCount: 0 },
@@ -6875,7 +6882,7 @@ require("./check-bake-google-oauth").run();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 
-require("./check-macos-sign").run().then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
+require("./check-macos-sign").run().then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
 }).then(() => {
   console.log("ui-path-ok");

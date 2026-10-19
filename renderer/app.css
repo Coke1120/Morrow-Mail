@@ -2471,6 +2471,9 @@ dialog > form,
 
 dialog::backdrop { background: rgba(16, 40, 34, 0.72); }
 
+/* Keep About centered on both axes without conflicting with Motion transforms. */
+#about-dialog { inset: 0; margin: auto; }
+
 dialog h2 {
   margin-bottom: 8px;
   font-size: 18px;

@@ -1428,6 +1428,9 @@ async function ensureBody(row) {
   if (!account) return row;
   try {
     return await exclusive(account.id, async () => {
+    // Another open may have filled the cache while this request queued.
+    row = db.messageById(row.id);
+    if (!row || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
     const password = await secretFor(account);
     const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid));
     if (!fetched) return row;
