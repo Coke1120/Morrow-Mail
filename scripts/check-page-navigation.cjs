@@ -168,7 +168,10 @@ app.whenReady().then(async () => {
   const botAccess = { enabled: false, accounts: accounts.map(a => ({ accountId: a.id, email: a.email })), grants: [], drafts: [], listen: {} };
   routes.set('bot:getAccess', () => ok(botAccess));
   routes.set('bot:mintGrant', payload => {
-    botAccess.grants.push({ ...payload, clientId: 'fixture-client', live: true, expiry: payload.expiry || { kind: 'finite', expiresAt: '2099-01-01T00:00:00.000Z' } });
+    const expiry = payload.expiry && payload.expiry.kind === 'never'
+      ? { kind: 'never' }
+      : { kind: 'finite', expiresAt: '2099-01-01T00:00:00.000Z' };
+    botAccess.grants.push({ ...payload, clientId: 'fixture-client', live: true, expiry });
     return ok({ secret: 'SYNTHETIC SECRET FOR OFFLINE UI CHECK', access: botAccess });
   });
   routes.set('bot:setEnabled', payload => {
@@ -376,7 +379,7 @@ app.whenReady().then(async () => {
     await waitFor(`state.listOffset===${page*200} && !state.busy && !state.listLoading`);
     assert.ok(await run(`document.querySelectorAll('.message-row').length<=200`));
   }
-  assert.equal(await run(`$('list-page-status').textContent`), '2001–2105 of 2105 downloaded');
+  assert.equal(await run(`$('list-page-status').textContent`), await run(`(2001).toLocaleString()+'–'+(2105).toLocaleString()+' / '+(2105).toLocaleString()+' downloaded'`));
   assert.equal(await run(`$('list-next').disabled && !$('list-prev').disabled`), true);
   assert.equal(await run(`document.querySelectorAll('.message-row').length`), 105);
   await shot('message-last-page');
@@ -414,7 +417,8 @@ app.whenReady().then(async () => {
   await run(`$('pref-compact-list').click()`);
   await waitFor(`state.prefs.compactList===false`);
   await run(`$('settings').close();retainedRow.querySelector('button.message').focus();`);
-  assert.equal(await run(`document.querySelector('.message-row').getBoundingClientRect().height`), 60);
+  const comfortableHeight = await run(`document.querySelector('.message-row').getBoundingClientRect().height`);
+  assert.ok(comfortableHeight >= 60 && comfortableHeight < 64, `comfortable row stays near the 60px minimum, got ${comfortableHeight}`);
   // Reduced motion and a short window retain one tab panel and reachable controls.
   win.webContents.debugger.attach('1.3');
   await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]});

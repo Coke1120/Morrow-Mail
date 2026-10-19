@@ -8036,6 +8036,22 @@ function applySettingsFold(fold, open, animate) {
     if (motion && typeof motion.reset === "function") motion.reset(panel);
     panel.hidden = !open;
   }
+  if (fold.dataset.fold === "bot") syncBotSectionPanels(open);
+}
+
+function syncBotSectionPanels(open) {
+  const nav = $("bot-sections");
+  if (!nav) return;
+  if (!open) {
+    for (const tab of nav.querySelectorAll('[role="tab"]')) {
+      tab.tabIndex = -1;
+      const panel = $(tab.getAttribute("aria-controls"));
+      if (panel) panel.hidden = true;
+    }
+    return;
+  }
+  const selected = nav.querySelector('[role="tab"][aria-selected="true"]');
+  showBotSection((selected && selected.dataset.botSection) || "local");
 }
 
 function setSettingsFold(name, open, animate) {
