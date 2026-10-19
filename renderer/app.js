@@ -7651,13 +7651,11 @@ function syncVacationFields() {
 function paintVacation(data) {
   vacationCache = data && data.accountId ? data : null;
   if (vacationCache) rememberVacation(vacationCache);
-  const account = settingsAccount();
-  const who = $("ooo-account");
-  if (who) who.textContent = account && isLive(account) ? (account.email || account.id) : "Choose a connected mailbox.";
   const view = vacationView(vacationCache);
   const note = $("ooo-note");
   if (note) {
-    note.textContent = view.note || "Enabled automatic replies run on your mail server, including while Morrow is closed.";
+    note.textContent = view.note;
+    note.hidden = !view.note;
   }
   const grant = $("ooo-grant");
   if (grant) grant.hidden = !view.showGrant;
@@ -7670,7 +7668,8 @@ function paintVacation(data) {
   const fields = $("ooo-fields");
   if (fields) fields.hidden = !view.showForm;
   const help = $("ooo-help");
-  if (help) help.textContent = (view.help || "") + " Input times use " + Intl.DateTimeFormat().resolvedOptions().timeZone + ".";
+  if (help) help.textContent = view.help || "";
+  $("ooo-timezone").textContent = "Times use " + Intl.DateTimeFormat().resolvedOptions().timeZone + ".";
   if (!vacationCache || !vacationCache.settings || !view.showForm) return;
   const settings = vacationCache.settings;
   $("ooo-mode").value = settings.mode || "disabled";
@@ -8109,8 +8108,9 @@ function paintSettingsMailbox() {
   const account = settingsAccount();
   fillAccountOptions(select, state.accounts, account?.id);
   $("settings-reconnect").disabled = !account;
-  $("settings-reconnect").textContent = account ? "Reconnect " + account.email : "Reconnect mailbox";
-  $("settings-mailbox-note").textContent = account ? "Signatures, rules, Out of Office, and Remove apply to " + account.email + ". Cached mail and local work remain when you reconnect this address." : "Connect an account to configure mailbox features.";
+  $("settings-reconnect").textContent = "Reconnect mailbox";
+  $("settings-reconnect").title = account ? "Reconnect " + account.email : "Connect a mailbox first";
+  $("settings-mailbox-note").textContent = account ? "Signatures, rules, and automatic replies use this mailbox." : "Connect an account in Accounts to get started.";
   syncRemove();
 }
 async function changeSettingsMailbox(id) {
@@ -8143,7 +8143,7 @@ async function loadSettingsCapabilities() {
     const grants = status?.accounts?.find(row => row.id === account.id);
     const local = account.authKind !== "oauth2";
     const permission = key => grants ? (grants[key] ? "Permission granted" : "Additional consent needed") : "Unknown — refresh permissions";
-    node.textContent = ["Mail: " + (account.needsReauth ? "Reconnect needed" : "Configured; connection health is shown in Sync"), "Signatures: saved on this computer", "Labels/folders: " + (local ? "IMAP folders" : permission("organize")), "Rules: " + (local ? "Local; runs on new downloads while open" : permission("rules")), "Calendar: " + (local ? "Requires Google or Microsoft browser sign-in" : permission("calendar")), "Out of Office: " + (local ? "ManageSieve support checked below" : permission("vacation"))].join("\n");
+    node.textContent = ["Mail: " + (account.needsReauth ? "Reconnect needed" : "Configured; connection health is shown in Sync"), "Signatures: saved on this computer", "Labels/folders: " + (local ? "IMAP folders" : permission("organize")), "Rules: " + (local ? "Local; runs on new downloads while open" : permission("rules")), "Calendar: " + (local ? "Requires Google or Microsoft browser sign-in" : permission("calendar")), "Out of Office: " + (local ? "Check support in the Out of Office tab" : permission("vacation"))].join("\n");
   } catch (error) { if (gen === settingsCapabilityGen) node.textContent = "Permissions unknown. Refresh permissions to retry. " + error.message; }
 }
 function openConnectFor(account) {
@@ -11117,7 +11117,7 @@ function paintBotAccounts(accounts) {
   const box = $("bot-accounts");
   box.replaceChildren();
   const legend = document.createElement("legend");
-  legend.textContent = "Accounts";
+  legend.textContent = "Allow access to";
   box.append(legend);
   if (!accounts.length) {
     const empty = document.createElement("p");
@@ -11147,7 +11147,7 @@ function botPermissionNames(capabilities) {
 
 function botListenerStatus(access) {
   const listen = (access && access.listen) || {};
-  if (listen.listening) return `Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}. Client connectivity is shown by last successful use below.`;
+  if (listen.listening) return `Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}.`;
   if (listen.error === "port_in_use") return "Could not start the bridge: port 47831 is in use. This bridge is not listening.";
   if (listen.error) return "The bridge could not start. " + listen.error;
   return "The bridge is not listening.";
@@ -11286,7 +11286,7 @@ function paintBotAccess(data) {
   const enabled = $("bot-enabled");
   enabled.checked = access.enabled === true;
   enabled.disabled = access.enabled !== true && !live;
-  $("bot-enable-help").textContent = live ? "After copying your secret, enable the listener and verify its status." : "Create an unexpired grant before enabling the bridge.";
+  $("bot-enable-help").textContent = live ? "Copy your secret before enabling. Local access only: 127.0.0.1." : "Create an unexpired grant first. Local access only: 127.0.0.1.";
   $("bot-serve-host").value = access.serveHost || "";
   paintBotAccounts(access.accounts || []);
   paintBotGrants(grants);
@@ -11343,7 +11343,13 @@ function selectedBotCaps() {
 }
 
 function wireBot() {
-  $("bot-review-link").addEventListener("click", () => { $("bot-draft-heading").scrollIntoView({ block: "start" }); $("bot-draft-heading").focus(); });
+  $("bot-review-link").addEventListener("click", () => {
+    $("bot-review").open = true;
+    $("bot-draft-heading").scrollIntoView({ block: "center" });
+    $("bot-draft-heading").focus({ preventScroll: true });
+  });
+  // Native form validation cannot focus an invalid input in a closed disclosure.
+  $("bot-expiry").addEventListener("invalid", () => { $("bot-grant-options").open = true; });
   $("bot-verify").addEventListener("click", () => botGuard(async () => {
     const access = await loadBotAccess();
     setBotStatus(botListenerStatus(access), !!(access.listen && access.listen.error));
