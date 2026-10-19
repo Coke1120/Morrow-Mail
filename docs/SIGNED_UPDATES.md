@@ -1,8 +1,8 @@
 # Signed macOS updates (draft implementation)
 
-This migration restores the legacy updater's independent release-authentication model for macOS. Windows retains electron-updater. It does not import legacy accounts, data, UI, or the legacy signing key.
+This migration restores the legacy updater's independent release-authentication model for macOS. Windows retains electron-updater. It does not import legacy accounts, data, UI, or any private signing key. It retains the legacy public signing identity.
 
-The application must embed an operator-approved Ed25519 public key. There is deliberately no production key in this change: checking or installing signed macOS updates fails closed until a reviewed public key is embedded. Environment variables, downloaded manifests, and local user preferences must not choose a trust root. The corresponding private key must never be shipped in the app or repository. Test keys are ephemeral fixtures only.
+The application embeds the existing legacy Ed25519 public key in `host/update-trust.js`, recovered verbatim from `legacy.zip` at main commit `7df99b5a83c5c055cdef54c79552a48fe36125a3`, path `legacy/rust/resources/update-public-key.pem`, and cross-checked against snapshot `d7b140e2797834882559f81456ce57bbc03d551d`. It is already SPKI PEM; no conversion or new identity is needed. Environment variables, downloaded manifests, and local preferences cannot choose the root. No production private key was read, generated or configured.
 
 The legacy snapshot at `d7b140e2797834882559f81456ce57bbc03d551d` contains `legacy/rust/src/updater.rs` and `legacy/macos/Sources/MorrowMail/AppModel.swift`. Its Ed25519 manifest authenticated the archive independently of ad hoc bundle signing. This is distinct from the Electron 0.2.4/0.2.5 Squirrel path, which validates a new app against the installed app's designated requirement. No verification bypass or weak designated requirement is part of this migration.
 
@@ -34,7 +34,7 @@ The signature authenticates the publisher holding the approved key. Strict macOS
 
 ## Offline publication tooling
 
-The generator does not upload, discover credentials, create keys, or modify workflows. Only a future authorized release operator supplies existing signing and public-key files explicitly. The key is not passed as command-line text. No production key or secret was inspected or configured during this implementation.
+The generator does not upload, discover credentials, create keys, or modify workflows. Only a future authorized release operator supplies existing signing and public-key files explicitly. The key is not passed as command-line text. Only the public key was inspected and embedded; no production private key or secret value was inspected or configured.
 
 After building and strict-verifying the final ARM64 app and ZIP, with `package.json` already at the release version:
 
@@ -51,19 +51,19 @@ Replace example paths and version. The local ZIP may contain spaces; the signed 
 
 ## Release workflow gate
 
-The workflow now builds both platforms with `--publish never`. Before dependency installation it requires a committed Ed25519 public root in `host/update-trust.js` and the presence of the `MORROW_UPDATE_SIGNING_KEY` Actions secret (PKCS#8 PEM). The root remains empty, so production publication is blocked. No production private key was read, generated or configured. There is no public-key environment override.
+The workflow now builds both platforms with `--publish never`. Before dependency installation it requires a committed Ed25519 public root in `host/update-trust.js` and the presence of the `MORROW_UPDATE_SIGNING_KEY` Actions secret (PKCS#8 PEM). The legacy public root is bundled; missing or mismatched private-key configuration still blocks publication. No production private key was read, generated or configured. There is no public-key environment override.
 
 Windows receives only a boolean indicating secret availability. macOS verifies the freshly extracted final archive and requires `spctl --assess --type execute` to succeed in a separate secret-free step, then signs the manifest with the private key in memory. Staging binds both platforms to the same source SHA, version, workflow run and attempt. The publisher rejects existing releases and mismatched tags, validates feeds and the manifest, uploads a draft, downloads every asset to compare hashes and sizes, and promotes only the complete verified set. Failure after draft creation retains the draft for review; reruns do not overwrite it. Windows still uses unsigned binaries and electron-updater, but publication now waits for the paired macOS gate.
 
-The historical public key at `d7b140e2797834882559f81456ce57bbc03d551d:legacy/rust/resources/update-public-key.pem` has Ed25519 SPKI SHA-256 fingerprint `3acce483f67ca8e9baf5430da27630f7dca1daa7d7344d16e014619a8a15f918`. Legacy workflow source used the same secret name. Reuse requires explicit owner approval of this public root and confirmation that its private counterpart remains controlled and available; historical source does not prove current secret configuration.
+The historical public key at `d7b140e2797834882559f81456ce57bbc03d551d:legacy/rust/resources/update-public-key.pem` has Ed25519 SPKI SHA-256 fingerprint `3acce483f67ca8e9baf5430da27630f7dca1daa7d7344d16e014619a8a15f918`. Legacy workflow source used the same secret name. The authorized legacy migration now retains this exact public root. Historical source does not prove the private counterpart is still configured or controlled.
 
 This workflow is the authenticated auto-install publication path. Its current ad hoc build is expected to fail Gatekeeper assessment even after an Ed25519 key is configured; denial or timeout blocks manifest signing and publication. A future approved Apple signing/notarization setup is a separate prerequisite, with no credentials configured by this change. Passing CI policy assessment also cannot guarantee every destination Mac will accept the app. Ordinary manual distribution must be described as manual-only and must not claim automatic-update readiness on the strength of ad hoc integrity or an Ed25519 signature. No manual-release bypass is added here.
 
-The workflow has only been tested offline with fixture keys and a mocked GitHub API. It has not been executed or published. Native transition validation and approved key provisioning remain release blockers.
+The workflow has only been tested offline with fixture keys and a mocked GitHub API. It has not been executed or published. Native transition validation, the private secret being available to Actions, and the current Apple trust gate remain release blockers.
 
 ## Migration and recovery
 
-Electron 0.2.4 and 0.2.5 cannot gain the new verifier before their existing updater accepts an update. A release containing this code does not repair that earlier trust check remotely. Plan one manual bridge installation from the official release, with the app fully quit and existing user data left in place. Users must follow normal macOS protections; a Gatekeeper block is not permission to bypass it. The bridge must embed the approved public key before it can consume subsequent signed updates. No production key means no functional automatic update path yet.
+Electron 0.2.4 and 0.2.5 cannot gain the new verifier before their existing updater accepts an update. A release containing this code does not repair that earlier trust check remotely. Plan one manual bridge installation from the official release, with the app fully quit and existing user data left in place. Users must follow normal macOS protections; a Gatekeeper block is not permission to bypass it. The bridge embeds the legacy public key, but needs a new-format signed release before it can consume subsequent updates. Legacy `update-manifest.json` with a `platforms` map and PR104 `update-manifest-macos-arm64.json` are different schemas and asset names: key/signature compatibility does not make old release payloads installable through the new feed.
 
 Installation must wait for draft persistence and orderly service/application exit, stage on the same filesystem, retain the old app as a recoverable backup, and replace only the application bundle. It must not move/delete mail, profile, credentials or userData. A candidate that fails to start can be rolled back when it is known to have exited; an unconfirmed but potentially running candidate requires explicit recovery rather than renaming a live app. Preserve the backup and diagnostics on an uncertain outcome. The installed app may be owned by the current user or root. A private `~/Applications` remains supported. The standard canonical `/Applications` owned by root:admin (UID 0, GID 80), including mode 0775, is also eligible when this process actually has write/search access and can create private staging. Additional allow ACLs, world-writable directories, other shared writable groups, or symlinked parents require manual installation. No escalation or directory permission change is attempted.
 
@@ -113,3 +113,32 @@ A real hosted end-to-end test requires an approved release-signing configuration
 MBA previously confirmed strict-signature/tamper checks, hash/extraction checks, real child exit and filesystem rollback with simulated launch/rename failures. Gatekeeper rejected the fixture, so true restart/readiness, draft preservation and end-to-end updating remain unverified. Re-test quarantine creation and policy rejection on the new commit without bypassing macOS protections.
 
 The latest legacy-flow follow-up needs native tests on a disposable, normally writable `/Applications` installation, a standard-user permission denial, ACL/symlink/path-change rejection, preserved quarantine flags, Finder handoff, and real bridge-to-candidate restart/readiness/draft persistence. No change to the Windows update provider is intended.
+
+## Owner signing configuration
+
+The only owner-held credential needed for manifest authentication is the existing `MORROW_UPDATE_SIGNING_KEY`: Ed25519 PKCS#8 PEM matching the bundled public root. In GitHub, open **Coke1120/Morrow-Mail → Settings → Secrets and variables → Actions → Repository secrets**. If that name already exists with the original key, leave it in place; GitHub does not reveal existing secret values. Do not paste a private key into chat. If absent, restore the original private key from the owner's protected backup via **New repository secret**. If it exists only in Actions, it can still sign there; it does not need to be exported.
+
+Archive evidence: `legacy/.github/workflows/check.yml:255` passes this secret to `morrow-publish`; `legacy/rust/src/bin/morrow-publish.rs:250–265` parses PKCS#8, signs exact manifest bytes, base64-encodes the 64-byte signature, and verifies against its compiled public key. The new publisher uses the same algorithm and encoding, with the new Electron manifest schema. Offline tests pin the original SPKI fingerprint and reject unrelated fixture private keys; they cannot prove possession of the original private key.
+
+If the original private key is truly lost, its public key cannot recover it. Generating a replacement is a deliberate key rotation requiring a new bundled public root and bridge distribution; merely changing the secret breaks signature verification. No replacement production key has been generated by this work.
+
+The release-time Gatekeeper gate was added by PR104, not legacy. With the workflow's fixed ad hoc signing, it is expected to block publication of both paired platforms before manifest signing. A minimal follow-up would explicitly separate manual distribution (integrity/authenticity retained, manual installation clearly labeled) from automatic-install-ready distribution (platform trust required). That release-mode change is not implemented here. Do not disable Gatekeeper, erase quarantine or directly execute rejected apps to satisfy the gate. Apple Developer ID/notarization is separate from the manifest key; the current automatic publication route needs platform trust, while manual distribution must not claim it.
+
+Only if the original identity is irrecoverably lost and a key rotation is chosen, the owner can run this locally on their Mac, outside the repository, with Node already installed. This creates a fresh private directory and refuses to overwrite an existing one; it prints no key material. This instruction was not executed to create production credentials.
+
+```bash
+node <<'NODE'
+const fs = require('node:fs');
+const { generateKeyPairSync } = require('node:crypto');
+const directory = 'morrow-update-keys';
+fs.mkdirSync(directory, { mode: 0o700 });
+const { publicKey, privateKey } = generateKeyPairSync('ed25519', {
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
+});
+fs.writeFileSync(directory + '/private.pem', privateKey, { mode: 0o600, flag: 'wx' });
+fs.writeFileSync(directory + '/public.pem', publicKey, { mode: 0o644, flag: 'wx' });
+NODE
+```
+
+Back up `private.pem` securely and enter its complete PEM only in the GitHub secret field, never chat or Git. Share only `public.pem` for the reviewed source change and bridge/key-rotation plan. Do not replace the existing secret merely to experiment. References: [GitHub repository secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets), [Node key generation](https://nodejs.org/api/crypto.html#cryptogeneratekeypairsynctype-options).

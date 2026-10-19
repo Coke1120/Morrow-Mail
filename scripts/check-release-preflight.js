@@ -13,8 +13,17 @@ const { verifyManifest } = require('../host/update-manifest');
   const pair = crypto.generateKeyPairSync('ed25519');
   const publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' });
   const privateKey = pair.privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const legacyPublicKey = require('../host/update-trust').publicKey;
+  const legacyKey = crypto.createPublicKey(legacyPublicKey);
+  assert.equal(legacyKey.asymmetricKeyType, 'ed25519');
+  assert.equal(legacyKey.export({ type: 'spki', format: 'pem' }), legacyPublicKey);
+  assert.equal(crypto.createHash('sha256').update(legacyKey.export({ type: 'spki', format: 'der' })).digest('hex'),
+    '3acce483f67ca8e9baf5430da27630f7dca1daa7d7344d16e014619a8a15f918');
   const base = { publicKey, signingKeyPresent: true, version: '0.2.6', ref: 'refs/heads/main', sha: 'a'.repeat(40) };
   assert.equal(preflight(base).version, '0.2.6');
+  assert.equal(preflight({ ...base, publicKey: legacyPublicKey }).publicKeyFingerprint,
+    '3acce483f67ca8e9baf5430da27630f7dca1daa7d7344d16e014619a8a15f918');
+  assert.throws(() => preflight({ ...base, publicKey: legacyPublicKey, signingKeyPresent: false }), /secret/);
   assert.equal(preflight({ ...base, ref: 'refs/tags/v0.2.6' }).sha, base.sha);
   assert.match(preflight(base).publicKeyFingerprint, /^[a-f0-9]{64}$/);
   for (const [field, value] of [
@@ -34,6 +43,12 @@ const { verifyManifest } = require('../host/update-manifest');
     const bytes = await fs.readFile(path.join(outputDir, 'update-manifest-macos-arm64.json'));
     const signature = await fs.readFile(path.join(outputDir, 'update-manifest-macos-arm64.json.sig'), 'utf8');
     assert.equal(verifyManifest(bytes, signature, { publicKey, currentVersion: '0.2.5', platform: 'darwin', arch: 'arm64' }).version, '0.2.6');
+    // Same Ed25519/raw-bytes/base64 contract as legacy's dalek publisher.
+    assert.match(signature.trim(), /^[A-Za-z0-9+/]{86}==$/);
+    assert.equal(Buffer.from(signature.trim(), 'base64').length, 64);
+    assert.equal(crypto.verify(null, bytes, crypto.createPublicKey(publicKey), Buffer.from(signature.trim(), 'base64')), true);
+    // Fixture signing cannot replace or impersonate the retained production root.
+    await assert.rejects(signRelease({ ...base, artifact, outputDir: path.join(temporary, 'legacy-mismatch'), publicKey: legacyPublicKey, privateKey }), /does not match/);
     const other = crypto.generateKeyPairSync('ed25519');
     await assert.rejects(signRelease({ ...base, artifact, outputDir: path.join(temporary, 'mismatch'), privateKey: other.privateKey.export({ type: 'pkcs8', format: 'pem' }) }), /does not match/);
     await assert.rejects(signRelease({ ...base, artifact, outputDir: path.join(temporary, 'missing'), privateKey: '' }), /secret/);

@@ -23,7 +23,7 @@ jobs:
           node-version: 20
           cache: npm
       # Presence only: Windows never receives the release-signing private key.
-      # An empty committed public root blocks both builds and any publication.
+      # The committed legacy public root is fixed; a missing secret blocks publication.
       - name: Validate release source and signing prerequisites
         env:
           SIGNING_KEY_AVAILABLE: ${{ secrets.MORROW_UPDATE_SIGNING_KEY != '' }}

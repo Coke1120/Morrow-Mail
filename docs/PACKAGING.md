@@ -8,7 +8,7 @@ The packaged app boots the first-party renderer shipped in `renderer/` (see [IND
 
 ## Windows packaging
 
-The draft signed-updater workflow requires Gatekeeper acceptance of the final extracted app as well as an approved public root and `MORROW_UPDATE_SIGNING_KEY`; the current empty root blocks publication, and the ad hoc build is expected to fail the additional Gatekeeper gate even with a configured key. Manual distribution is not evidence of automatic-update readiness. See [signed update gates](SIGNED_UPDATES.md#release-workflow-gate).
+The draft signed-updater workflow requires Gatekeeper acceptance of the final extracted app as well as an approved public root and `MORROW_UPDATE_SIGNING_KEY`; the legacy public root is now bundled, but a missing/mismatched private signing secret blocks publication. The ad hoc build is still expected to fail the additional Gatekeeper gate even with the correct key. Manual distribution is not evidence of automatic-update readiness. See [signed update gates](SIGNED_UPDATES.md#release-workflow-gate).
 
 Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an ad hoc signed macOS zip to the same GitHub release. Pull requests stay on the `ci` check job.
 
