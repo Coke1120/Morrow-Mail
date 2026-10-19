@@ -118,7 +118,9 @@ async function run() {
     assert.strictEqual(starredQuery.excludeSnoozed, undefined);
     assert.strictEqual(starredQuery.folderId, null);
     const missingAccount = virtuals.apply({ folderId: "__morrow_unread__" });
-    assert.deepStrictEqual(missingAccount.excludeFolderPaths, ["__none__"]);
+    assert.equal(missingAccount.category, "none");
+    assert.equal(missingAccount.folderPaths, undefined);
+    assert.equal(missingAccount.excludeFolderPaths, undefined);
     const everyAccount = engine.answer("mail:listFromCache", [{ folderId: "__morrow_unread__", limit: 20 }]);
     assert.deepStrictEqual(everyAccount.data.emails, []);
 
@@ -225,7 +227,7 @@ async function run() {
     assert.strictEqual(clientUses, usesBeforeUnreadMove);
   } finally {
     Object.assign(remote, saved);
-    try { secrets.deletePassword("star-acct"); } catch { /* already removed */ }
+    secrets.deletePassword("star-acct");
     db.close();
     for (const [key, value] of Object.entries(env)) {
       if (value === undefined) delete process.env[key];

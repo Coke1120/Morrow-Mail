@@ -70,10 +70,7 @@ function apply(query) {
     if (source.accountId) {
       next.excludeFolderPaths = attentionPaths(source.accountId);
     } else {
-      // NOT IN of an unused path still returns every account.
-      // IN of that sentinel matches nothing, which a missing account requires.
-      next.excludeFolderPaths = ["__none__"];
-      next.folderPaths = ["__none__"];
+      next.category = "none";
     }
   }
   return next;
