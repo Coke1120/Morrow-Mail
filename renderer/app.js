@@ -6161,6 +6161,25 @@ function composePayload(account) {
   return payload;
 }
 
+function syncComposeRecipientRows() {
+  const showCc = !!(state.composeShowCc || $("compose-cc")?.value?.trim());
+  const showBcc = !!(state.composeShowBcc || $("compose-bcc")?.value?.trim());
+  const ccRow = $("compose-cc-row");
+  const bccRow = $("compose-bcc-row");
+  const ccBtn = $("compose-show-cc");
+  const bccBtn = $("compose-show-bcc");
+  if (ccRow) ccRow.hidden = !showCc;
+  if (bccRow) bccRow.hidden = !showBcc;
+  if (ccBtn) {
+    ccBtn.hidden = showCc;
+    ccBtn.setAttribute?.("aria-expanded", String(showCc));
+  }
+  if (bccBtn) {
+    bccBtn.hidden = showBcc;
+    bccBtn.setAttribute?.("aria-expanded", String(showBcc));
+  }
+}
+
 function syncCompose() {
   const account = composeAccount();
   const live = isLive(account);
@@ -6168,7 +6187,8 @@ function syncCompose() {
   for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked || !!state.composeIdentityError;
   $("compose-schedule").disabled = !live || locked || !!state.composeIdentityError || !!state.botDraftReview;
   $("compose-close").disabled = state.composePending || state.composeInitializing;
-  for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
+  for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
+  syncComposeRecipientRows();
   paintComposeNote();
 }
 
@@ -6784,6 +6804,7 @@ function applyComposeCc() {
   if (!context || context.ccEdited) return;
   $("compose-cc").value = window.morrowComposePolicy.seedCc(context.baseCc,
     context.defaultCc, $("compose-to").value, $("compose-bcc").value, context.selfAddresses);
+  syncComposeRecipientRows();
 }
 
 function paintComposeIdentity() {
@@ -6821,6 +6842,8 @@ async function openCompose(seed) {
   state.composeInitializing = true;
   state.composeIdentityError = false;
   state.composeIdentity = null;
+  state.composeShowCc = false;
+  state.composeShowBcc = false;
   resetDraftWrite();
   state.draftId = fields.draftId || null;
   state.composeQueued = false;
@@ -7641,6 +7664,16 @@ function applyPref(kind, control, value) {
   control.value = value == null ? "" : String(value);
 }
 
+function syncAccentPicker(value) {
+  const picker = $("pref-accent-picker");
+  const reset = $("pref-accent-reset");
+  const clean = /^#[0-9A-Fa-f]{6}$/.test(String(value || "").trim())
+    ? String(value).trim().toLowerCase()
+    : "#193c34";
+  if (picker) picker.value = clean;
+  if (reset) reset.disabled = clean === "#193c34";
+}
+
 async function loadSettings() {
   const status = $("settings-status");
   status.textContent = "";
@@ -7653,6 +7686,7 @@ async function loadSettings() {
   for (const [id, channel, , kind] of prefRows()) {
     applyPref(kind, $(id), state.prefs[keys[channel]]);
   }
+  syncAccentPicker(state.prefs.accent);
 }
 
 const settingsFoldPending = new Map();
@@ -7979,6 +8013,7 @@ async function savePref(row) {
     } catch { /* status already shows the failure */ }
   }
   if (id === "pref-theme" || id === "pref-accent") {
+    syncAccentPicker($("pref-accent").value);
     applyShellTheme(document.documentElement, $("pref-theme").value, $("pref-accent").value);
   }
 }
@@ -11750,6 +11785,23 @@ function wire() {
       savePref(row);
     });
   }
+  const accentRow = prefRows().find((row) => row[0] === "pref-accent");
+  if ($("pref-accent-picker") && accentRow) {
+    $("pref-accent-picker").addEventListener("input", () => {
+      $("pref-accent").value = $("pref-accent-picker").value.toUpperCase();
+      applyShellTheme(document.documentElement, $("pref-theme").value, $("pref-accent").value);
+    });
+    $("pref-accent-picker").addEventListener("change", () => {
+      $("pref-accent").value = $("pref-accent-picker").value.toUpperCase();
+      savePref(accentRow);
+    });
+  }
+  if ($("pref-accent-reset") && accentRow) {
+    $("pref-accent-reset").addEventListener("click", () => {
+      $("pref-accent").value = "#193C34";
+      savePref(accentRow);
+    });
+  }
   $("signatures-open").addEventListener("click", openSignatures);
   $("signatures-close").addEventListener("click", () => closeDialog("signatures"));
   $("signatures").addEventListener("close", () => {
@@ -11828,6 +11880,16 @@ function wire() {
   $("remove").addEventListener("click", () => guard(removeAccount));
   $("compose-open").addEventListener("click", () => {
     openCompose().catch((error) => showStatus(error.message, true));
+  });
+  $("compose-show-cc")?.addEventListener("click", () => {
+    state.composeShowCc = true;
+    syncComposeRecipientRows();
+    $("compose-cc")?.focus();
+  });
+  $("compose-show-bcc")?.addEventListener("click", () => {
+    state.composeShowBcc = true;
+    syncComposeRecipientRows();
+    $("compose-bcc")?.focus();
   });
   $("signature").addEventListener("change", onSignatureChange);
   $("signatures-from-compose").addEventListener("click", openSignatures);

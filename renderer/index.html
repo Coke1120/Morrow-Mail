@@ -553,15 +553,19 @@
             <select id="compose-from" aria-describedby="compose-from-note"></select>
           </div>
           <p id="compose-from-note" class="hint" role="status"></p>
-          <div class="field-row">
+          <div class="field-row field-row-to">
             <label for="compose-to">To</label>
             <input id="compose-to" type="text" autocomplete="email" spellcheck="false" />
+            <div class="field-row-toggles">
+              <button type="button" class="ghost field-toggle" id="compose-show-cc" aria-controls="compose-cc-row" aria-expanded="false">Cc</button>
+              <button type="button" class="ghost field-toggle" id="compose-show-bcc" aria-controls="compose-bcc-row" aria-expanded="false">Bcc</button>
+            </div>
           </div>
-          <div class="field-row">
+          <div class="field-row" id="compose-cc-row" hidden>
             <label for="compose-cc">Cc</label>
             <input id="compose-cc" type="text" autocomplete="email" spellcheck="false" />
           </div>
-          <div class="field-row">
+          <div class="field-row" id="compose-bcc-row" hidden>
             <label for="compose-bcc">Bcc</label>
             <input id="compose-bcc" type="text" autocomplete="email" spellcheck="false" />
           </div>
@@ -572,43 +576,45 @@
         </div>
         <label class="sr" for="compose-body">Message</label>
         <textarea id="compose-body" placeholder="Message"></textarea>
-        <details id="compose-ai-tools"><summary>AI write</summary>
-        <div class="ai-write">
-          <label for="ai-mode">AI write</label>
-          <select id="ai-mode">
-            <option value="rewrite">Rewrite</option>
-            <option value="continue">Continue</option>
-            <option value="custom">Custom</option>
+        <div class="compose-tools-grid">
+          <details id="compose-ai-tools"><summary>AI write</summary>
+          <div class="ai-write">
+            <label for="ai-mode">AI write</label>
+            <select id="ai-mode">
+              <option value="rewrite">Rewrite</option>
+              <option value="continue">Continue</option>
+              <option value="custom">Custom</option>
+            </select>
+            <label class="sr" for="ai-prompt">Prompt</label>
+            <input id="ai-prompt" type="text" placeholder="Prompt" />
+            <button type="button" class="ghost" id="ai-generate">Generate</button>
+            <button type="button" class="ghost" id="ai-cancel" hidden>Cancel</button>
+            <p id="ai-write-error" class="error" role="status" hidden></p>
+          </div>
+          </details>
+          <details id="compose-schedule-tools"><summary>Send later</summary>
+          <label for="schedule-preset">When</label>
+          <select id="schedule-preset">
+            <option value="1h">In 1 hour</option>
+            <option value="tonight">Tonight</option>
+            <option value="morning">Tomorrow morning</option>
+            <option value="custom">Pick a time</option>
           </select>
-          <label class="sr" for="ai-prompt">Prompt</label>
-          <input id="ai-prompt" type="text" placeholder="Prompt" />
-          <button type="button" class="ghost" id="ai-generate">Generate</button>
-          <button type="button" class="ghost" id="ai-cancel" hidden>Cancel</button>
-          <p id="ai-write-error" class="error" role="status" hidden></p>
+          <label for="schedule-at" id="schedule-at-label" hidden>Date and time</label>
+          <input id="schedule-at" type="datetime-local" hidden />
+          <p class="hint" id="schedule-note">Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.</p>
+          <button type="button" class="primary" id="compose-schedule">Schedule send</button>
+          </details>
         </div>
-        </details>
         <div class="signature-head">
           <label for="signature">Signature</label>
+          <select id="signature" hidden></select>
+          <p id="signature-empty" class="hint" hidden>No signatures.</p>
           <button type="button" class="ghost" id="signatures-from-compose">Signatures</button>
+          <button type="button" class="ghost" id="compose-view-scheduled">View scheduled mail</button>
         </div>
-        <select id="signature" hidden></select>
-        <p id="signature-empty" class="hint" hidden>No signatures.</p>
-        <details id="compose-schedule-tools"><summary>Send later</summary>
-        <label for="schedule-preset">When</label>
-        <select id="schedule-preset">
-          <option value="1h">In 1 hour</option>
-          <option value="tonight">Tonight</option>
-          <option value="morning">Tomorrow morning</option>
-          <option value="custom">Pick a time</option>
-        </select>
-        <label for="schedule-at" id="schedule-at-label" hidden>Date and time</label>
-        <input id="schedule-at" type="datetime-local" hidden />
-        <p class="hint" id="schedule-note">Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.</p>
-        <button type="button" class="primary" id="compose-schedule">Schedule send</button>
-        </details>
           </div>
         </div>
-        <button type="button" class="ghost" id="compose-view-scheduled">View scheduled mail</button>
         <p id="compose-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>
@@ -677,7 +683,11 @@
             </div>
             <div class="field">
               <label for="pref-accent">Accent color</label>
-              <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" placeholder="#193C34" />
+              <div class="accent-control">
+                <input id="pref-accent-picker" type="color" value="#193c34" aria-label="Pick accent color" />
+                <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" placeholder="#193C34" />
+                <button type="button" class="ghost" id="pref-accent-reset">Reset</button>
+              </div>
             </div>
             <div class="checks">
               <h4>Sidebar &amp; navigation</h4>
