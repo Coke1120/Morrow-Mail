@@ -3,6 +3,7 @@ const auth = require("./update-auth");
 const { platform } = require("node:process");
 
 const state = {
+  platform,
   checking: false,
   lastCheckedAt: null,
   lastAttemptAt: null,
@@ -22,6 +23,16 @@ let autoUpdater = null;
 let listenersBound = false;
 let macUpdater = null;
 let installLifecycle = null;
+let installing = null;
+let resumeInstall = null;
+let installTimer = null;
+function resumeAfterFailedInstall() {
+  if (installTimer) clearTimeout(installTimer);
+  installTimer = null;
+  const resume = resumeInstall;
+  resumeInstall = null;
+  if (resume) resume();
+}
 function signedMacUpdater() {
   if (!macUpdater) macUpdater = require("./update-macos").createMacUpdater({ app, state });
   if (installLifecycle) macUpdater.configure(installLifecycle);
@@ -41,6 +52,7 @@ function snapshot() {
 }
 
 function setError(err) {
+  resumeAfterFailedInstall();
   state.error = auth.explainUpdateError(err);
   state.checking = false;
   state.downloading = false;
@@ -58,12 +70,14 @@ function prepareUpdater() {
   if (!autoUpdater) {
     ({ autoUpdater } = require("electron-updater"));
     autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    // A normal quit must not bypass renderer consent and draining writes.
+    autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowPrerelease = true;
     bind(autoUpdater);
   }
   applyFeed(autoUpdater);
   state.enabled = true;
+  state.requiresExplicitInstall = true;
   state.error = null;
   return autoUpdater;
 }
@@ -150,14 +164,27 @@ function registerIpc() {
     return signedMacUpdater().manual();
   });
   ipcMain.handle("host:updateInstall", (event) => {
+    authorizeInstall(event);
     if (platform === "darwin") {
-      authorizeInstall(event);
       return signedMacUpdater().install();
     }
-    if (!autoUpdater || !state.downloaded) return snapshot();
-    state.installing = true;
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
-    return snapshot();
+    if (!autoUpdater || !state.downloaded || state.installing) return installing || snapshot();
+    installing = (async () => {
+      state.installing = true;
+      state.error = null;
+      try {
+        resumeInstall = await installLifecycle.prepare();
+        if (!state.installing) { resumeAfterFailedInstall(); return snapshot(); }
+        // electron-updater can emit error synchronously instead of throwing.
+        autoUpdater.quitAndInstall(false, true);
+        if (state.installing) {
+          installTimer = setTimeout(() => setError(new Error("The app did not exit for the update. Finish active work and retry.")), 120000);
+          if (installTimer.unref) installTimer.unref();
+        }
+      } catch (err) { setError(err); }
+      return snapshot();
+    })().finally(() => { installing = null; });
+    return installing;
   });
 }
 

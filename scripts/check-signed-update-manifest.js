@@ -95,6 +95,50 @@ async function main() {
     };
     await assert.rejects(downloadArtifact(manifest, { directory: dir, request: stalled, timeoutMs: 5 }));
     assert.deepEqual(await fs.readdir(dir), []);
+    // Virtual clock exercises production default deadlines without waiting
+    // minutes. Real Readable chunks still pass through hash/size/file writes.
+    function clock() {
+      let now = 0, id = 0; const pending = new Map(), fired = [];
+      return { timers: {
+        setTimeout(fn, ms) { const key = ++id; pending.set(key, { fn, at: now + ms }); return key; },
+        clearTimeout(key) { pending.delete(key); }
+      }, advance(ms) {
+        const until = now + ms;
+        while (true) {
+          const next = [...pending.entries()].filter(([, task]) => task.at <= until).sort((a, b) => a[1].at - b[1].at)[0];
+          if (!next) break;
+          pending.delete(next[0]); now = next[1].at; fired.push(now); next[1].fn();
+        }
+        now = until;
+      }, get pending() { return pending.size; }, fired };
+    }
+    function paced(fake, steps) {
+      return (_url, options, callback) => {
+        const req = new EventEmitter(); let response;
+        options.signal.addEventListener('abort', () => {
+          if (response) response.destroy(Error('timed out'));
+          else req.emit('error', Error('timed out'));
+        }, { once: true });
+        process.nextTick(() => {
+          response = Readable.from((async function* () {
+            for (const [ms, chunk] of steps) { fake.advance(ms); if (options.signal.aborted) throw Error('timed out'); yield chunk; await new Promise(resolve => setImmediate(resolve)); }
+          })(), { highWaterMark: 1 });
+          response.statusCode = 200; response.headers = {}; callback(response);
+        });
+        return req;
+      };
+    }
+    const slow = clock();
+    const slowFile = await downloadArtifact(manifest, { directory: dir, timers: slow.timers,
+      request: paced(slow, [...body].map(byte => [10000, Buffer.from([byte])])) });
+    assert.equal(await validateArtifact(slowFile, manifest), true, 'Progressing transfer longer than two minutes succeeds');
+    assert.equal(slow.pending, 0); await fs.rm(path.dirname(slowFile), { recursive: true });
+    for (const [steps, deadline] of [[[[60001, body]], 60000], [Array.from({ length: 31 }, () => [30000, Buffer.from('x')]), 900000]]) {
+      const timeout = clock();
+      await assert.rejects(fetchBytes(metadata, { maxBytes: 100, timers: timeout.timers, request: paced(timeout, steps) }), /timed out/);
+      assert.equal(timeout.fired[0], deadline, 'Idle and absolute limits are exercised independently');
+      assert.equal(timeout.pending, 0); assert.deepEqual(await fs.readdir(dir), [], 'Timed out transfers are removed');
+    }
     await assert.rejects(downloadArtifact(manifest, { directory: dir, request: request([body]), quarantine: async () => { throw Error('quarantine denied'); } }), /quarantine denied/);
     assert.deepEqual(await fs.readdir(dir), [], 'unquarantined downloads cannot be returned');
     const corrupt = path.join(dir, 'corrupt.zip'); await fs.writeFile(corrupt, Buffer.alloc(body.length));

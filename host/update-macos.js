@@ -15,10 +15,24 @@ function createMacUpdater(options) {
   const fetchBytes = options.fetchBytes || downloads.fetchBytes;
   const downloadArtifact = options.downloadArtifact || downloads.downloadArtifact;
   const verifyManifest = options.verifyManifest || manifestTools.verifyManifest;
+  const validateArtifact = options.validateArtifact || manifestTools.validateArtifact;
   let checking = null;
   let installing = null;
   let candidate = null;
   let lifecycle = null;
+  function invalidateCandidate() {
+    candidate = null;
+    state.downloaded = false;
+    state.available = false;
+    state.version = null;
+    state.progress = 0;
+    state.manualRequired = false;
+    state.manualAvailable = true;
+  }
+  async function validateCandidate() {
+    try { await validateArtifact(candidate.archive, candidate.manifest); }
+    catch (err) { invalidateCandidate(); throw err; }
+  }
   function configure(value) { lifecycle = value; }
   function snapshot() { return { ...state }; }
   function error(err) {
@@ -33,6 +47,7 @@ function createMacUpdater(options) {
     if (!["arm64", "x64"].includes(arch)) throw new Error("Unsupported update architecture.");
   }
   function init() {
+    state.platform = 'darwin';
     state.channel = "stable";
     state.requiresExplicitInstall = true;
     try { requireTrust(); state.enabled = !!app.isPackaged; }
@@ -41,7 +56,11 @@ function createMacUpdater(options) {
   }
   async function performCheck() {
     if (!app.isPackaged || installing) return snapshot();
-    if (candidate) return snapshot();
+    if (state.installing) return snapshot();
+    if (candidate) {
+      try { await validateCandidate(); return snapshot(); }
+      catch { /* A removed/changed temp file requires a fresh signed download. */ }
+    }
     state.lastAttemptAt = new Date().toISOString();
     state.error = null;
     state.available = false;
@@ -49,6 +68,7 @@ function createMacUpdater(options) {
     try {
       requireTrust();
       state.enabled = true;
+      state.manualAvailable = false;
       state.checking = true;
       const base = `${manifestTools.RELEASE_ROOT}latest/download/update-manifest-macos-${arch}.json`;
       const bytes = await fetchBytes(base, { maxBytes: manifestTools.MANIFEST_LIMIT });
@@ -76,6 +96,7 @@ function createMacUpdater(options) {
         state.lastCheckedAt = new Date().toISOString();
         state.error = null;
       } else error(err);
+      if (state.error) state.manualAvailable = true;
     }
     return snapshot();
   }
@@ -93,6 +114,7 @@ function createMacUpdater(options) {
     state.manualAvailable = false;
     try {
       requireTrust();
+      await validateCandidate();
       // Closing the write gate and renderer consent happen before helper start.
       resume = await lifecycle.prepare();
       const target = path.resolve(options.resourcesPath || process.resourcesPath, "..", "..");
@@ -132,17 +154,19 @@ function createMacUpdater(options) {
         return snapshot();
       }
       requireTrust();
-      const manifest = verifyManifest(candidate.manifestBytes, candidate.signature, { publicKey, currentVersion: app.getVersion(), platform: 'darwin', arch });
-      await (options.validateArtifact || manifestTools.validateArtifact)(candidate.archive, manifest);
+      verifyManifest(candidate.manifestBytes, candidate.signature, { publicKey, currentVersion: app.getVersion(), platform: 'darwin', arch });
+      // A changed download is no longer a candidate, even for Finder handoff.
+      await validateCandidate();
       await (options.requireQuarantine || require('./update-installer').requireQuarantine)(candidate.archive);
       // Reveal only: never open/execute a policy-rejected candidate or quit here.
       shell.showItemInFolder(candidate.archive);
       state.manualRequired = true;
       state.error = 'The verified download is shown in Finder. Save your work and quit Morrow before manually replacing the app. Follow macOS security and permission prompts; installation and restart have not been completed by Morrow.';
-    } catch (err) { state.manualAvailable = false; error(err); }
+    } catch (err) { state.manualAvailable = !candidate; error(err); }
     return snapshot();
   }
   function install() {
+    if (checking) return Promise.resolve(snapshot());
     if (!installing && !state.installing) installing = performInstall().finally(() => { installing = null; });
     return installing || Promise.resolve(snapshot());
   }

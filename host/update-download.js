@@ -16,21 +16,30 @@ function allowedURL(input, redirect = false) {
   if (!input.startsWith(RELEASE_ROOT) || url.search || !/^(?:latest\/download|download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\/(?:update-manifest-macos-(?:arm64|x64)\.json(?:\.sig)?|Morrow-Mail-(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-(?:arm64|x64)-mac\.zip)$/.test(suffix)) throw new Error('Update download origin or path rejected.');
   return url;
 }
-async function streamDownload(input, { maxBytes, signal, request = https.get, timeoutMs = 120000, onChunk }) {
+async function streamDownload(input, { maxBytes, signal, request = https.get, timeoutMs = 15 * 60 * 1000, idleTimeoutMs = 60000, onChunk,
+  timers = { setTimeout, clearTimeout } }) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > ARCHIVE_LIMIT) throw new Error('Invalid download bound.');
+  if (![timeoutMs, idleTimeoutMs].every(value => Number.isSafeInteger(value) && value > 0 && value <= 30 * 60 * 1000)) throw new Error('Invalid download timeout.');
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (signal?.aborted) abort();
   signal?.addEventListener('abort', abort, { once: true });
-  const timer = setTimeout(abort, timeoutMs);
+  const timer = timers.setTimeout(abort, timeoutMs);
+  let idleTimer;
+  const progress = () => {
+    if (idleTimer) timers.clearTimeout(idleTimer);
+    idleTimer = timers.setTimeout(abort, idleTimeoutMs);
+  };
   try {
     let url = allowedURL(input), total = 0;
     for (let redirects = 0; redirects <= 4; redirects++) {
+      progress();
       if (controller.signal.aborted) throw new Error('Update download cancelled or timed out.');
       const response = await new Promise((resolve, reject) => {
         const req = request(url, { signal: controller.signal, headers: { 'User-Agent': 'Morrow-Mail-signed-updater', 'Accept-Encoding': 'identity' } }, resolve);
         req.on('error', reject);
       });
+      progress();
       if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
         response.resume();
         if (redirects === 4 || !response.headers.location) throw new Error('Too many update redirects.');
@@ -46,13 +55,15 @@ async function streamDownload(input, { maxBytes, signal, request = https.get, ti
           total += chunk.length;
           if (total > maxBytes) throw new Error('Update download exceeds size limit.');
           await onChunk(chunk, total);
+          progress();
         }
+        if (controller.signal.aborted) throw new Error('Update download cancelled or timed out.');
         if (response.complete === false || (length !== undefined && total !== Number(length))) throw new Error('Update download interrupted.');
         return total;
       } finally { response.destroy(); }
     }
     throw new Error('Update download failed.');
-  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+  } finally { timers.clearTimeout(timer); timers.clearTimeout(idleTimer); signal?.removeEventListener('abort', abort); }
 }
 async function fetchBytes(url, options = {}) {
   const chunks = [];

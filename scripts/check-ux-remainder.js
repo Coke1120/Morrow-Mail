@@ -41,7 +41,9 @@ async function run() {
   assert.equal(ui.run('updateView({}).status'),'Updates have not been checked yet.');
   assert.equal(ui.run(`updateView({lastCheckedAt:'2026-10-18T08:00:00Z'}).status`),'Up to date.');
   assert.equal(ui.run('updateView({downloaded:true}).install'),true);
-  assert.match(ui.run('updateView({downloaded:true,requiresExplicitInstall:true}).status'),/macOS may require manual approval/);
+  assert.match(ui.run('updateView({downloaded:true,requiresExplicitInstall:true,platform:"darwin"}).status'),/macOS may require manual approval/);
+  assert.equal(ui.run('updateView({downloaded:true,requiresExplicitInstall:true,platform:"win32"}).explicitInstall'),true);
+  assert.doesNotMatch(ui.run('updateView({downloaded:true,requiresExplicitInstall:true,platform:"win32"}).status'),/macOS/);
   assert.equal(ui.run('updateView({manualRequired:true,manualAvailable:true,downloaded:true}).install'),false);
   assert.equal(ui.run('updateView({manualRequired:true,manualAvailable:true}).manual'),true);
   assert.match(ui.run('updateView({manualRequired:true}).status'),/has not been replaced/);
@@ -77,9 +79,9 @@ async function run() {
   assert.equal(host.module.exports.snapshot().lastCheckedAt,null,'failed update attempt must not imply a completed check');
   events['checking-for-update']();events['update-not-available']();
   assert.ok(host.module.exports.snapshot().lastCheckedAt);
-  assert.equal(updater.autoInstallOnAppQuit,true);
+  assert.equal(updater.autoInstallOnAppQuit,false);
   events['update-downloaded']({version:'fixture'});
-  assert.equal(ipc['host:updateInstall']().installing,true);
+  assert.throws(()=>ipc['host:updateInstall'](),/main application window/);
   console.log('ux-remainder-ok');
 }
 module.exports={run};

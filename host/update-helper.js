@@ -18,14 +18,22 @@ async function cancelled(staging) {
 function definitelyExited(pid) {
   try { process.kill(pid, 0); return false; } catch (error) { return error.code === 'ESRCH'; }
 }
-async function waitReady({ receipt, nonce, version, launchState, timeout = 60000, sleep = delay, now = Date.now, exited = definitelyExited }) {
+async function waitReady({ receipt, nonce, version, launchState, timeout = 60000, healthyMs = 2000, sleep = delay, now = Date.now, exited = definitelyExited }) {
   const deadline = now() + timeout;
+  let healthySince = null;
   while (now() < deadline) {
     try {
       const value = await readPrivateJSON(receipt);
-      if (value.nonce !== nonce || value.version !== version || !Number.isSafeInteger(value.pid) || value.pid < 2) throw new Error('Invalid startup receipt.');
-      return 'ready';
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const started = await readPrivateJSON(path.join(path.dirname(receipt), 'started.json'));
+      if (value.nonce !== nonce || value.version !== version || !Number.isSafeInteger(value.pid) || value.pid < 2 || value.pid === process.pid ||
+          started.nonce !== nonce || started.version !== version || started.pid !== value.pid) throw new Error('Invalid startup receipt.');
+      // An acknowledgement is a startup milestone, not proof of health after
+      // an immediate crash. Keep the candidate alive for a short observation.
+      if (!launchState.exited && !exited(value.pid)) {
+        if (healthySince === null) healthySince = now();
+        if (now() - healthySince >= healthyMs) return 'ready';
+      } else healthySince = null;
+    } catch (error) { if (error.code !== 'ENOENT') throw error; healthySince = null; }
     // open exiting does not prove candidate descendants have stopped. Without
     // a readiness receipt, preserve the running candidate and its backup.
     if (launchState.exited) {
