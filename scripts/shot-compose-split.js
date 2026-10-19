@@ -33,9 +33,9 @@ const account = {
   imapSmtpProfile: "custom",
   folders: {
     primary: [
-      { id: "inbox", name: "Inbox", wellKnownName: "inbox" },
-      { id: "sent", name: "Sent", wellKnownName: "sent" },
-      { id: "drafts", name: "Drafts", wellKnownName: "drafts" },
+      { id: "inbox", name: "Inbox", wellKnownName: "inbox", chip: true },
+      { id: "sent", name: "Sent", wellKnownName: "sent", chip: true },
+      { id: "drafts", name: "Drafts", wellKnownName: "drafts", chip: true },
     ],
     more: [],
   },

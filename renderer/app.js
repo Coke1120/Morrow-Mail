@@ -172,14 +172,16 @@ function inboxOf(account) {
   return folders.find((folder) => folder.wellKnownName === "inbox") || folders[0] || null;
 }
 
-// shortcut: chips are Inbox, Sent, and Drafts, upgrade when every primary folder should be a chip.
 function chipFolders(account) {
   const folders = account && account.folders;
   const primary = folders && Array.isArray(folders.primary) ? folders.primary : [];
   const more = folders && Array.isArray(folders.more) ? folders.more : [];
   const list = primary.length ? primary : more;
-  const names = new Set(["inbox", "sent", "sentitems", "drafts", "draft"]);
-  return list.filter((folder) => folder && names.has(String(folder.wellKnownName || "").toLowerCase()));
+  return list.filter((folder) => folder && folder.chip === true);
+}
+
+function selectedFolderNode() {
+  return foldersOf(selectedAccount()).find((folder) => folder && folder.id === state.folderId) || null;
 }
 
 function chipLabel(folder) {
@@ -188,27 +190,23 @@ function chipLabel(folder) {
   return name;
 }
 
-// Keep this id aligned with host/mail/engine.js STARRED_FOLDER_ID.
-const STARRED_FOLDER_ID = "__morrow_starred__";
-
-function isStarredFolder(folderId) {
-  return String(folderId || "") === "__morrow_starred__";
-}
-
 function isVirtualMailbox(folder) {
-  if (!folder) return false;
-  if (typeof folder === "string") return isStarredFolder(folder);
-  return isStarredFolder(folder.id) || folder.type === "virtual";
+  return !!(folder && typeof folder === "object" && folder.type === "virtual");
 }
 
 function storableFolders(folders) {
   return (Array.isArray(folders) ? folders : []).filter((folder) => folder && !isVirtualMailbox(folder));
 }
 
-function visibleList(emails, query, folderId) {
+function visibleList(emails, query, folder) {
   const rows = filteredEmails(emails, query);
-  if (isStarredFolder(folderId)) return rows.filter((email) => email && email.isStarred);
-  return rows;
+  const view = folder && folder.view;
+  if (!view) return rows;
+  return rows.filter((email) => {
+    if (view.unread === true && !(email && email.unread)) return false;
+    if (view.flagged === true && !(email && email.isStarred)) return false;
+    return true;
+  });
 }
 
 function accountLabel(account) {
@@ -499,7 +497,7 @@ function moveTargetFlags(nodes, sourceId, kind, delimiter) {
 
 function folderCanNest(kind, folder) {
   if (!folder) return { ok: false, reason: "Choose a folder." };
-  if (isVirtualMailbox(folder)) return { ok: false, reason: "Starred is a filter, not a folder." };
+  if (isVirtualMailbox(folder)) return { ok: false, reason: folder.filterCopy || "That view is a filter, not a folder." };
   if (kind === "imap") {
     const item = imapFolderMenu(folder).items[0];
     return item && item.disabled
@@ -685,10 +683,14 @@ function organizeDrop(target, message) {
   if (!target || !target.id || !target.kind) {
     return { ok: false, reason: "no_target", message: "Drop the message on a folder or label." };
   }
+  if (target.kind === "virtual" || target.type === "virtual") {
+    return {
+      ok: false,
+      reason: "virtual",
+      message: target.dropCopy || target.filterCopy || "That view is a filter, not a folder.",
+    };
+  }
   if (target.kind === "imap") {
-    if (target.id === "__morrow_starred__" || target.type === "virtual") {
-      return { ok: false, reason: "virtual", message: "Starred is a filter. Use the star control to flag a message." };
-    }
     if (target.accountId && target.accountId !== email.accountId) {
       return { ok: false, reason: "other_account", message: "Move stays inside this mailbox." };
     }
@@ -1530,6 +1532,7 @@ function folderIcon(wellKnownName) {
   switch (String(wellKnownName || "").toLowerCase()) {
     case "inbox": return "📥";
     case "starred": return "⭐";
+    case "unread": return "✉️";
     case "sentitems":
     case "sent": return "📤";
     case "drafts":
@@ -2232,7 +2235,12 @@ function renderAccounts() {
       button.dataset.accountId = account.id;
       button.dataset.folderId = folder.id;
       const virtual = isVirtualMailbox(folder);
-      if (!virtual) {
+      if (virtual) {
+        button.dataset.dropKind = "virtual";
+        button.dataset.dropId = folder.id;
+        button.dataset.dropAccount = account.id;
+        button.dataset.dropCopy = folder.dropCopy || "";
+      } else {
         button.dataset.dropKind = "imap";
         button.dataset.dropId = folder.id;
         button.dataset.dropAccount = account.id;
@@ -2261,15 +2269,11 @@ function renderAccounts() {
       }
       const unread = folder.unreadCount ? `, ${folder.unreadCount} unread` : "";
       const serverName = String(folder.name || folder.id || "");
-      const baseTitle = virtual
-        ? "Starred messages in this mailbox"
-        : (serverName && serverName !== labelText ? serverName : labelText);
-      const baseLabel = virtual
-        ? "Starred. Downloaded messages flagged with a star."
-        : `${labelText || "Folder"}${unread}. Right-click to move.`;
+      const baseTitle = serverName && serverName !== labelText ? serverName : labelText;
+      const baseLabel = `${labelText || "Folder"}${unread}. Right-click to move.`;
       if (virtual) {
-        button.title = baseTitle;
-        button.setAttribute("aria-label", baseLabel);
+        button.title = folder.title || labelText;
+        button.setAttribute("aria-label", (folder.ariaLabel || labelText) + unread);
       } else {
         applyNestDrag(button, "imap", folder, account.id, baseTitle, baseLabel);
       }
@@ -3292,7 +3296,7 @@ function messageRow(email) {
 
 function shownEmails() {
   const input = $("list-filter");
-  return visibleList(state.emails, input ? input.value : "", state.folderId);
+  return visibleList(state.emails, input ? input.value : "", selectedFolderNode());
 }
 
 function rememberLoadedSelection() {
@@ -3497,8 +3501,8 @@ function renderList() {
       empty.textContent = "Connect a mailbox to download messages here.";
     } else if (state.query && !state.emails.length) {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
-    } else if (isStarredFolder(state.folderId) && !listQuery) {
-      empty.textContent = "No starred messages in the mail already downloaded.";
+    } else if (!listQuery && folder && folder.emptyCopy) {
+      empty.textContent = folder.emptyCopy;
     } else if (!state.emails.length) {
       empty.textContent = currentFolderSync()?.lastSuccessAt
         ? "No downloaded messages in this folder. Sync checks recent mail; older mail may be outside the download window."
@@ -4242,6 +4246,21 @@ function eachStarRow(email, visit) {
   }
 }
 
+let openViewReload = false;
+async function settleOpenView() {
+  // check-mail-reader evals setRead without these helpers. typeof does not throw when the binding is absent.
+  if (typeof selectedFolderNode !== "function" || typeof loadList !== "function") return;
+  if (openViewReload) return;
+  const folder = selectedFolderNode();
+  if (!folder || !folder.view) return;
+  openViewReload = true;
+  try {
+    await loadList(false);
+  } finally {
+    openViewReload = false;
+  }
+}
+
 function paintStars(emails, isStarred, focus) {
   const ids = new Set();
   for (const email of emails || []) {
@@ -4270,6 +4289,7 @@ async function toggleStar(email) {
     throw error;
   }
   showStatus(next ? "Starred." : "Removed the star.");
+  await settleOpenView();
 }
 
 const readWrites = new Map();
@@ -4290,6 +4310,7 @@ async function setRead(email, isRead) {
   try { await write; paint(!isRead); }
   catch (error) { paint(previous); throw error; }
   finally { if (readWrites.get(email.id) === write) readWrites.delete(email.id); }
+  await settleOpenView();
 }
 
 async function deleteFromList(email) {
@@ -4454,7 +4475,7 @@ function paintListPaging() {
   const end = state.listOffset + state.emails.length;
   $("list-prev").disabled = state.listLoading || state.listOffset === 0;
   $("list-next").disabled = state.listLoading || end >= state.listTotal;
-  $("list-sync-more").hidden = state.listSyncDone || isStarredFolder(state.folderId);
+  $("list-sync-more").hidden = state.listSyncDone || selectedFolderNode()?.syncs === false;
   $("list-sync-more").disabled = state.listLoading || currentFolderSync()?.state === "syncing";
   $("list-page-status").textContent = state.listLoading ? "Loading messages…"
     : (state.emails.length ? `${(state.listOffset + 1).toLocaleString()}–${end.toLocaleString()} / ${state.listTotal.toLocaleString()} downloaded`
@@ -5200,6 +5221,15 @@ function dropTargetFrom(node) {
   const kind = node.dataset.dropKind;
   const id = node.dataset.dropId;
   if (!kind || !id) return null;
+  if (kind === "virtual") {
+    return {
+      kind,
+      id,
+      type: "virtual",
+      accountId: node.dataset.dropAccount || "",
+      dropCopy: node.dataset.dropCopy || "",
+    };
+  }
   if (kind === "imap") return { kind, id, accountId: node.dataset.dropAccount || "" };
   const provider = kind === "outlook" ? "outlook" : "gmail";
   const payload = state.providerFolders;
@@ -5326,6 +5356,7 @@ async function bulkSetRead(isRead) {
   renderList();
   renderReader(false);
   showStatus(receiptText(isRead ? "Mark read" : "Mark unread", outcome), !!outcome.error);
+  if (completed.size) await settleOpenView();
 }
 
 async function bulkStar(isStarred) {
@@ -5345,6 +5376,7 @@ async function bulkStar(isStarred) {
   renderReader(false);
   const failed = (outcome.outcomes || []).some((row) => row.status !== "completed");
   showStatus(receiptText(isStarred ? "Star" : "Unstar", outcome), !!(outcome.error || failed));
+  if (completed.size) await settleOpenView();
 }
 
 async function applySelectionLabels(label, mode) {
@@ -5846,6 +5878,12 @@ function onFolderDragOver(event) {
   const node = event.target.closest && event.target.closest("[data-drop-kind]");
   if (!node || !state.dragMessage) { clearDropTargets(); return; }
   event.preventDefault();
+  if (node.dataset.dropKind === "virtual") {
+    // Chromium skips the drop event when dropEffect is none, so the refusal never reaches the status line.
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    paintDropTarget(node, "drop-reject");
+    return;
+  }
   if (event.dataTransfer) event.dataTransfer.dropEffect = node.dataset.dropKind === "gmail" ? "copy" : "move";
   paintDropTarget(node, "drop-target");
 }
@@ -5941,7 +5979,7 @@ async function selectFolder(accountId, folderId) {
   if (state.view === "folders") paintProviderPage();
   syncRemove();
   renderReader(false);
-  const live = isLive(selectedAccount()) && !isStarredFolder(folderId);
+  const live = isLive(selectedAccount()) && selectedFolderNode()?.syncs !== false;
   if (!undoOpIds && !sendTimer) showStatus("");
   // Paint downloaded mail before waiting for IMAP or provider APIs.
   await loadList();
