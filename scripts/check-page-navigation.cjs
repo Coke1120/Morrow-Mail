@@ -18,6 +18,9 @@ const calls = [];
 const routes = new Map();
 const calendarRequests = [];
 const statusRequests = [];
+// Keep the pending IPC reply alive across renderer GC; boot must remain paused
+// while navigation checks measure only the work caused by their own actions.
+const startupWaiters = [];
 const ok = data => ({ success: true, data });
 let providerGranted = true;
 ipcMain.handle('fixture:invoke', async (_event, channel, payload) => {
@@ -25,7 +28,7 @@ ipcMain.handle('fixture:invoke', async (_event, channel, payload) => {
   if (routes.has(channel)) return routes.get(channel)(payload);
   const preference = require('../host/settings').answer(channel, [payload]);
   if (preference !== undefined) return preference;
-  if (channel === 'app:getVersion') return new Promise(() => {}); // Boot wired; suspend unrelated startup reads.
+  if (channel === 'app:getVersion') return new Promise(resolve => startupWaiters.push(resolve));
   if (channel === 'host:aiGetConfig') return { hasKey: false, baseUrl: 'https://example.test', model: 'fixture' };
   if (channel.startsWith('host:update')) return { downloaded: true, version: 'fixture', lastCheckedAt: Date.now() };
   if (channel === 'mail:listAccounts') return ok(accounts);
@@ -77,6 +80,9 @@ app.whenReady().then(async () => {
   session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, cb) => cb({ cancel: true }));
   win = new BrowserWindow({ width: 1180, height: 820, show: true, webPreferences: { preload, contextIsolation: true, sandbox: true } });
   await win.loadFile(path.join(__dirname, '../renderer/index.html'));
+  await waitCalls('app:getVersion', 1);
+  assert.equal(startupWaiters.length, 1, 'startup is held at the version barrier');
+  assert.equal(count('host:updateGetState'), 0, 'startup must not advance past the barrier');
   await run(`state.accounts=${JSON.stringify(accounts)};state.accountId='box-0';state.folderId='Inbox';
     refreshMailVacation=()=>{};loadShellPrefs=async()=>{};refreshAiSetupState=async()=>{};
     renderAccounts();showStatus('');`);
