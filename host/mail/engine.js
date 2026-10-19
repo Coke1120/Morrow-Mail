@@ -20,6 +20,7 @@ const providerApi = require("./provider-api");
 const idle = require("./idle");
 const debugLog = require("../debug-log");
 const composeIdentity = require("./compose-identity");
+const composePolicy = require("../../shared/compose-policy");
 const { syncHorizonDays } = require("../settings");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
@@ -1655,10 +1656,16 @@ function signaturePack(accountId) {
   const rows = db.listSignatures(accountId || null);
   const per = {};
   for (const row of db.signatureDefaults()) per[row.account_id] = row.id;
+  const byDomain = {};
+  for (const row of db.listSignatureDomains()) {
+    if (!byDomain[row.account_id]) byDomain[row.account_id] = {};
+    byDomain[row.account_id][row.domain] = row.signature_id;
+  }
   return {
     signatures: rows.map(publicSignature),
     defaultSignatureId: accountId ? (per[accountId] || null) : null,
     defaultSignaturePerAccount: per,
+    signatureByDomainPerAccount: byDomain,
   };
 }
 
@@ -1675,14 +1682,25 @@ function upsertSignature(params) {
   const html = signatureText(params && params.html);
   if (!name) return fail("invalid", "Add a name.");
   if (!text && !html) return fail("invalid", "Add signature text.");
-  const saved = db.saveSignature({
-    id: existing ? existing.id : `sig-${crypto.randomBytes(8).toString("hex")}`,
-    accountId: owner,
-    name,
-    bodyText: html ? null : text,
-    bodyHtml: html || null,
-    isDefault: params && params.isDefault,
-  });
+  let domains;
+  if (Array.isArray(params && params.domains)) {
+    try { domains = composePolicy.normalizeDomainKeys(params.domains); }
+    catch (error) { return fail("invalid", error instanceof Error ? error.message : String(error)); }
+  }
+  let saved;
+  try {
+    saved = db.saveSignature({
+      id: existing ? existing.id : `sig-${crypto.randomBytes(8).toString("hex")}`,
+      accountId: owner,
+      name,
+      bodyText: html ? null : text,
+      bodyHtml: html || null,
+      isDefault: params && params.isDefault,
+      domains,
+    });
+  } catch (error) {
+    return fail("invalid", error instanceof Error ? error.message : String(error));
+  }
   return ok(publicSignature(saved));
 }
 

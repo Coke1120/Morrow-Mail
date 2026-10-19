@@ -17,6 +17,20 @@
   function lines(id) {
     return get(id).value.split(/\r?\n/).map((text) => text.trim()).filter(Boolean);
   }
+  function domainLines(map) {
+    return Object.entries(map || {}).map(([key, rows]) => "@" + key + " = " + rows.join(", ")).join("\n");
+  }
+  function parseDomainLines(text, label) {
+    const map = {};
+    for (const line of String(text || "").split(/\r?\n/).map((row) => row.trim()).filter(Boolean)) {
+      const parts = line.split("=");
+      const key = policy.domain(parts[0]);
+      if (parts.length !== 2 || !key) throw new Error("Use @domain = address, address on each " + label + " line.");
+      if (Object.hasOwn(map, key)) throw new Error("Each " + label + " domain can appear only once.");
+      map[key] = parts[1].split(/[,;]/).map((row) => row.trim()).filter(Boolean);
+    }
+    return map;
+  }
   function keepAccount() {
     if (!accountId) return;
     settings.accounts[accountId] = {
@@ -70,7 +84,8 @@
     try {
       settings = await api.call("emailBrain:getComposeSettings");
       syncAccounts();
-      get("brain-compose-domains").value = Object.entries(settings.ccByDomain).map(([key, rows]) => "@" + key + " = " + rows.join(", ")).join("\n");
+      get("brain-compose-domains").value = domainLines(settings.ccByDomain);
+      get("brain-compose-bcc").value = domainLines(settings.bccByDomain);
       paintAccount();
       ready = true;
       status("Saved on this computer. No AI key is required.");
@@ -83,15 +98,9 @@
     lock(true);
     try {
       keepAccount();
-      const ccByDomain = {};
-      for (const text of lines("brain-compose-domains")) {
-        const parts = text.split("=");
-        const key = policy.domain(parts[0]);
-        if (parts.length !== 2 || !key) throw new Error("Use @domain = address, address on each CC line.");
-        if (Object.hasOwn(ccByDomain, key)) throw new Error("Each CC domain can appear only once.");
-        ccByDomain[key] = parts[1].split(/[,;]/).map((row) => row.trim()).filter(Boolean);
-      }
-      const normalized = policy.normalizeSettings({ ...settings, ccByDomain });
+      const ccByDomain = parseDomainLines(get("brain-compose-domains").value, "CC");
+      const bccByDomain = parseDomainLines(get("brain-compose-bcc").value, "BCC");
+      const normalized = policy.normalizeSettings({ ...settings, ccByDomain, bccByDomain });
       settings = await api.call("emailBrain:saveComposeSettings", normalized);
       paintAccount();
       status("Compose defaults saved. They apply the next time you open compose.");
@@ -117,5 +126,5 @@
       catch (error) { get("brain-compose-account").value = accountId; status(error.message, true); }
     });
   }
-  window.morrowBrainCompose = { load, wire };
+  window.morrowBrainCompose = { load, wire, parseDomainLines };
 })();

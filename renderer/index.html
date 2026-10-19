@@ -296,6 +296,8 @@
             <p class="hint">Default CC is chosen from your received alias for replies and forwards, or your From address for new mail. Review recipients before sending.</p>
             <label for="brain-compose-domains">Default CC by domain — one domain per line</label>
             <textarea id="brain-compose-domains" rows="4" placeholder="@hkbscl.com = colleague@hkbscl.com, team@example.com" spellcheck="false" disabled></textarea>
+            <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
+            <textarea id="brain-compose-bcc" rows="4" placeholder="@hkbscl.com = records@hkbscl.com, audit@example.com" spellcheck="false" disabled></textarea>
             <label for="brain-compose-account">Mailbox for alias settings</label>
             <select id="brain-compose-account" disabled></select>
             <p id="brain-compose-identities" class="hint"></p>
@@ -306,7 +308,7 @@
             <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
             <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
             <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
-            <p class="hint">Clearing or editing CC keeps your choice for the rest of that composition. Resumed drafts keep their saved recipients.</p>
+            <p class="hint">This fallback is only the CC list. BCC and signatures still use the From domain. Clearing or editing CC keeps that choice for the rest of the composition. Clearing or editing BCC does the same for BCC. The two fields lock separately. Resumed drafts keep their saved recipients.</p>
             <div class="row">
               <button type="submit" class="primary" disabled>Save compose defaults</button>
               <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
@@ -642,6 +644,9 @@
           <textarea id="signature-body"></textarea>
           <label class="check" for="signature-html"><input id="signature-html" type="checkbox" /> HTML</label>
           <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default for this account</label>
+          <label for="signature-domains">Domains</label>
+          <input id="signature-domains" type="text" autocomplete="off" spellcheck="false" placeholder="hkbscl.com, gmail.com" />
+          <p class="hint">Compose uses this signature when From is one of these domains, and otherwise uses the account default. Enter the exact domain. A leading @ is optional. Subdomains do not match.</p>
           <div class="row">
             <button type="submit" class="primary" id="signature-save">Add</button>
             <button type="button" class="ghost" id="signature-cancel" hidden>Cancel</button>

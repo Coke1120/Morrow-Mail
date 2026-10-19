@@ -531,11 +531,59 @@ const pack = {
 assert.strictEqual(chosenSignatureId(pack, "gmail-ada"), "s1");
 assert.strictEqual(chosenSignatureId(pack, "other"), "s2");
 assert.strictEqual(chosenSignatureId({ signatures: [] }, "a"), "");
+const domainPack = {
+  ...pack,
+  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "s2", "gmail.com": "missing", "mail.hkbscl.com": "s1" } },
+};
+assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "hkbscl.com"), "s2");
+assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "gmail.com"), "s1");
+assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "mail.hkbscl.com"), "s1");
+assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada"), "s1");
+assert.strictEqual(chosenSignatureId(domainPack, "other", "hkbscl.com"), "s2");
+const signatureDomainField = extractFunction(appJs, "signatureDomainField");
+assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s2"), "hkbscl.com");
+assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s1"), "mail.hkbscl.com");
+assert.strictEqual(signatureDomainField(domainPack, "other", "s2"), "");
 assert.strictEqual(signaturePlain(pack.signatures[0]), "Thanks,\nAda");
 assert.strictEqual(signaturePlain(pack.signatures[1]), "— Ada");
 assert.strictEqual(applySignature("Hello", "", "— Ada"), "Hello\n\n— Ada");
 assert.strictEqual(applySignature("Hello\n\n— Ada", "— Ada", "Thanks,\nAda"), "Hello\n\nThanks,\nAda");
 assert.strictEqual(applySignature("— Ada", "— Ada", ""), "");
+assert.strictEqual(applySignature("Hello\n\n— Ada\n\nps", "— Ada", "Thanks"), "Hello\n\n— Ada\n\nps\n\nThanks");
+const signatureSwap = loadFunctions(appJs, [
+  "signatureRows", "chosenSignatureId", "signaturePlain", "applySignature",
+  "signatureUntouched", "replaceSignature", "commitPickerSignature", "applyFromSignature",
+]);
+const replaceSignature = signatureSwap.replaceSignature;
+const commitPickerSignature = signatureSwap.commitPickerSignature;
+const applyFromSignature = signatureSwap.applyFromSignature;
+const swapped = replaceSignature("Hello\n\n— Ada", "— Ada", "Thanks,\nAda");
+assert.strictEqual(swapped.applied, true);
+assert.strictEqual(swapped.body, "Hello\n\nThanks,\nAda");
+const dirty = replaceSignature("Hello\n\n— Ada\n\nps", "— Ada", "Thanks");
+assert.strictEqual(dirty.applied, false);
+assert.strictEqual(dirty.body, "Hello\n\n— Ada\n\nps");
+const clearedPick = commitPickerSignature("Hello\n\n— Ada", "— Ada", "");
+assert.strictEqual(clearedPick.body, "Hello");
+assert.strictEqual(clearedPick.previous, "— Ada");
+const afterClear = replaceSignature(clearedPick.body, clearedPick.previous, "Thanks");
+assert.strictEqual(afterClear.applied, false);
+assert.strictEqual(afterClear.body, "Hello");
+const fromDomain = applyFromSignature({
+  follows: true, body: "Hello\n\n— Ada", previous: "— Ada", pack: domainPack,
+  accountId: "gmail-ada", policyDomain: "gmail.com", rows: domainPack.signatures,
+});
+assert.strictEqual(fromDomain.applied, true);
+assert.strictEqual(fromDomain.pickerId, "s1");
+assert.strictEqual(fromDomain.body, "Hello\n\nThanks,\nAda");
+assert.strictEqual(fromDomain.previous, "Thanks,\nAda");
+const draftBody = applyFromSignature({
+  follows: false, body: "Draft", previous: "", pack: domainPack,
+  accountId: "gmail-ada", policyDomain: "hkbscl.com", rows: domainPack.signatures,
+});
+assert.strictEqual(draftBody.applied, false);
+assert.strictEqual(draftBody.body, "Draft");
+assert.strictEqual(draftBody.pickerId, null);
 assert.deepStrictEqual(signatureRows({ signatures: [] }), []);
 assert.deepStrictEqual(signatureRows(null), []);
 const signatureDraft = extractFunction(appJs, "signatureDraft");
@@ -550,6 +598,12 @@ assert.deepStrictEqual(signatureDraft({ id: "s1", name: "Work", body: "<p>Hi</p>
   name: "Work",
   html: "<p>Hi</p>",
   isDefault: false,
+});
+assert.deepStrictEqual(signatureDraft({ name: "Work", body: "Hi", domains: ["@HKBSCL.com", " Gmail.com "] }), {
+  name: "Work",
+  text: "Hi",
+  isDefault: false,
+  domains: ["@HKBSCL.com", " Gmail.com "],
 });
 assert.deepStrictEqual(signatureFields(null, true), { id: "", name: "", body: "", html: false, isDefault: false });
 assert.deepStrictEqual(signatureFields({ id: "s1", name: "Work", html: "<p>Hi</p>", text: "nope" }, true), {
@@ -584,6 +638,7 @@ for (const channel of ["mail:upsertSignature", "mail:deleteSignature"]) {
 }
 assert.ok(html.includes('id="signatures"') && html.includes('id="signature-name"') && html.includes('id="signature-body"'));
 assert.ok(html.includes('id="signature-html"') && html.includes('id="signature-default"') && html.includes('id="signatures-open"'));
+assert.ok(html.includes('id="signature-domains"') && html.includes('id="brain-compose-bcc"'));
 assert.ok(html.includes('id="signatures-from-compose"'));
 assert.ok(html.includes("Saved on this computer for the selected account"));
 assert.ok(html.includes("Default for this account"));
@@ -3619,6 +3674,85 @@ async function checkSignaturesAndSchedule(engine, db) {
     text: "Thanks,\nAda",
     isDefault: true,
   }]).data.id, createdId);
+  const bound = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    text: "Thanks,\nAda",
+    isDefault: true,
+    domains: ["@HKBSCL.com", "gmail.com"],
+  }]);
+  assert.strictEqual(bound.success, true);
+  const boundMap = { "hkbscl.com": createdId, "gmail.com": createdId };
+  assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatureByDomainPerAccount["imap-test"], boundMap);
+  const rebound = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    text: "Thanks,\nAda",
+    isDefault: true,
+    domains: ["hkbscl.com", "@gmail.com"],
+  }]);
+  assert.strictEqual(rebound.success, true);
+  assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatureByDomainPerAccount["imap-test"], boundMap);
+  const clash = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    name: "Personal",
+    text: "— Ada",
+    domains: ["hkbscl.com"],
+  }]);
+  assert.strictEqual(clash.success, false);
+  assert.match(clash.error.message, /hkbscl.com is already bound to Work\./);
+  const afterClash = engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data;
+  assert.deepStrictEqual(afterClash.signatures.map((row) => row.name), ["Work"]);
+  assert.deepStrictEqual(afterClash.signatureByDomainPerAccount["imap-test"], boundMap);
+  const badDomain = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    text: "Thanks,\nAda",
+    domains: ["not a domain"],
+  }]);
+  assert.strictEqual(badDomain.error.code, "invalid");
+  assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatureByDomainPerAccount["imap-test"], boundMap);
+  const extra = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    name: "Extra",
+    text: "Extra line",
+    domains: ["extra.example"],
+  }]);
+  assert.strictEqual(extra.success, true);
+  assert.strictEqual(engine.answer("mail:deleteSignature", [{ id: extra.data.id }]).success, true);
+  assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatureByDomainPerAccount["imap-test"], boundMap);
+  const omittedDomains = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    text: "Thanks,\nAda",
+    isDefault: true,
+  }]);
+  assert.strictEqual(omittedDomains.success, true);
+  assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatureByDomainPerAccount["imap-test"], boundMap);
+  const clearedDomains = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    text: "Thanks,\nAda",
+    isDefault: true,
+    domains: [],
+  }]);
+  assert.strictEqual(clearedDomains.success, true);
+  assert.equal(engine.answer("mail:listSignatures", []).data.signatureByDomainPerAccount["imap-test"], undefined);
+  const restoredDomains = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    text: "Thanks,\nAda",
+    isDefault: true,
+    domains: ["hkbscl.com", "gmail.com"],
+  }]);
+  assert.strictEqual(restoredDomains.success, true);
+  assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatureByDomainPerAccount["imap-test"], boundMap);
 
   assert.deepStrictEqual(engine.answer("mail:listScheduled").data, []);
   const first = engine.answer("mail:scheduleSend", [{
@@ -3693,6 +3827,7 @@ async function checkSignaturesAndSchedule(engine, db) {
   const againSig = engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]);
   assert.ok(againSig.data.signatures.some((row) => row.id === createdId && row.text === "Thanks,\nAda"));
   assert.strictEqual(againSig.data.defaultSignaturePerAccount["imap-test"], createdId);
+  assert.deepStrictEqual(againSig.data.signatureByDomainPerAccount["imap-test"], { "hkbscl.com": createdId, "gmail.com": createdId });
   const againSched = engine.answer("mail:listScheduled", [{ accountId: "imap-test" }]);
   assert.ok(againSched.data.some((row) => row.id === queued.data.id && row.subject === "After restart"));
 
@@ -3737,6 +3872,7 @@ async function checkSignaturesAndSchedule(engine, db) {
     accountId: "imap-drop",
     name: "Drop",
     text: "Gone",
+    domains: ["drop.example"],
   }]);
   const dropSend = engine.answer("mail:scheduleSend", [{
     accountId: "imap-drop",
@@ -3749,6 +3885,7 @@ async function checkSignaturesAndSchedule(engine, db) {
   const removed = await engine.answer("mail:removeAccount", [{ accountId: "imap-drop" }]);
   assert.strictEqual(removed.success, true);
   assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-drop" }]).data.signatures, []);
+  assert.equal(engine.answer("mail:listSignatures", []).data.signatureByDomainPerAccount["imap-drop"], undefined);
   assert.deepStrictEqual(engine.answer("mail:listScheduled", [{ accountId: "imap-drop" }]).data, []);
   assert.ok(!engine.answer("mail:listAccounts").data.some((row) => row.id === "imap-drop"));
   assert.ok(engine.answer("mail:listAccounts").data.some((row) => row.id === "imap-test"));
@@ -3849,6 +3986,7 @@ async function checkTidy() {
       signatures: [],
       defaultSignatureId: null,
       defaultSignaturePerAccount: {},
+      signatureByDomainPerAccount: {},
     });
     db.insertAccount({
       id: "imap-test",

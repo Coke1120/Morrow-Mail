@@ -27,21 +27,28 @@
       /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part)) ? text : "";
   }
 
-  function emptySettings() { return { ccByDomain: {}, accounts: {} }; }
+  function emptySettings() { return { ccByDomain: {}, bccByDomain: {}, accounts: {} }; }
+
+  function normalizeAddressMap(source, label) {
+    const entries = Object.entries(source || {});
+    if (entries.length > 100) throw new Error(`Use at most 100 ${label} domains.`);
+    const map = {};
+    for (const [key, value] of entries) {
+      const name = domain(key);
+      if (!name || !Array.isArray(value) || value.length > 100) throw new Error(`Each ${label} domain needs a list of at most 100 addresses.`);
+      const rows = value.map(address);
+      if (rows.some((item) => !item)) throw new Error(`Enter valid ${label} email addresses.`);
+      if (Object.hasOwn(map, name)) throw new Error(`Each ${label} domain can appear only once.`);
+      map[name] = [...new Set(rows)];
+    }
+    return map;
+  }
 
   function normalizeSettings(input) {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected compose settings.");
     const result = emptySettings();
-    const entries = Object.entries(input.ccByDomain || {});
-    if (entries.length > 100) throw new Error("Use at most 100 CC domains.");
-    for (const [key, value] of entries) {
-      const name = domain(key);
-      if (!name || !Array.isArray(value) || value.length > 100) throw new Error("Each CC domain needs a list of at most 100 addresses.");
-      const rows = value.map(address);
-      if (rows.some((item) => !item)) throw new Error("Enter valid CC email addresses.");
-      if (Object.hasOwn(result.ccByDomain, name)) throw new Error("Each CC domain can appear only once.");
-      result.ccByDomain[name] = [...new Set(rows)];
-    }
+    result.ccByDomain = normalizeAddressMap(input.ccByDomain, "CC");
+    result.bccByDomain = normalizeAddressMap(input.bccByDomain, "BCC");
     const accounts = Object.entries(input.accounts || {});
     if (accounts.length > 100) throw new Error("Too many mailbox mappings.");
     for (const [id, value] of accounts) {
@@ -92,14 +99,27 @@
     return (rows.find((row) => row.email === selected) || rows.find((row) => row.isDefault) || rows[0] || {}).email || "";
   }
 
-  function ccDomain(fromAddress, account, settings, kind) {
+  function policyDomain(fromAddress, account, settings) {
     const from = address(fromAddress);
     const prefs = accountSettings(settings, account);
     const mapped = (prefs.aliases || []).find((row) => row.address === from && row.domain);
     if (mapped) return mapped.domain;
-    const key = from.split("@")[1] || "";
+    return from.split("@")[1] || "";
+  }
+
+  function ccDomain(fromAddress, account, settings, kind) {
+    const key = policyDomain(fromAddress, account, settings);
+    const prefs = accountSettings(settings, account);
     if ((!kind || kind === "new") && !Object.hasOwn(settings.ccByDomain || {}, key) && prefs.defaultDomain) return prefs.defaultDomain;
     return key;
+  }
+
+  function recipientDefaults(fromAddress, account, settings, kind) {
+    const policyKey = policyDomain(fromAddress, account, settings);
+    const ccKey = ccDomain(fromAddress, account, settings, kind);
+    const ccMap = (settings && settings.ccByDomain) || {};
+    const bccMap = (settings && settings.bccByDomain) || {};
+    return { policyDomain: policyKey, ccDomain: ccKey, cc: ccMap[ccKey] || [], bcc: bccMap[policyKey] || [] };
   }
 
   function resolve(account, message, settings, kind, explicitFrom) {
@@ -115,23 +135,54 @@
     const received = candidates.find((email) => email !== primary) || candidates[0] || "";
     const ownFrom = addresses(message && message.from).find((email) => mine.has(email));
     const fromAddress = address(explicitFrom) || received || ownFrom || preferredFrom(account, settings);
-    const key = ccDomain(fromAddress, account, settings, kind);
-    return { fromAddress, receivedAddress: received, domain: key, sendAs: rows,
-      selfAddresses: [...mine], defaultCc: (settings.ccByDomain || {})[key] || [],
+    const defaults = recipientDefaults(fromAddress, account, settings, kind);
+    return { fromAddress, receivedAddress: received, domain: defaults.ccDomain, policyDomain: defaults.policyDomain,
+      sendAs: rows, selfAddresses: [...mine], defaultCc: defaults.cc, defaultBcc: defaults.bcc,
       fallback: !!message && !received && !ownFrom && !explicitFrom };
   }
 
-  function seedCc(baseCc, defaults, to, bcc, self) {
-    const seen = new Set(addresses([to, bcc, ...(self || [])]));
-    // Keep the original Reply All/display-name text; append only missing defaults.
-    for (const email of addresses(baseCc)) seen.add(email);
+  function seedRecipients(base, defaults, exclude, self) {
+    const seen = new Set(addresses([...(exclude || []), ...(self || [])]));
+    for (const email of addresses(base)) seen.add(email);
     const added = addresses(defaults).filter((email) => {
       if (seen.has(email)) return false;
       seen.add(email);
       return true;
     });
-    return [String(baseCc || "").trim(), ...added].filter(Boolean).join(", ");
+    return [String(base || "").trim(), ...added].filter(Boolean).join(", ");
   }
 
-  return { address, addresses, domain, emptySettings, normalizeSettings, accountSettings, identities, preferredFrom, ccDomain, resolve, seedCc };
+  function openRecipientSeeds(savedRecipients, ccText, bccText) {
+    const locked = !!savedRecipients;
+    return { cc: { base: ccText == null ? "" : String(ccText), locked }, bcc: { base: bccText == null ? "" : String(bccText), locked } };
+  }
+
+  function applyRecipientSeeds(seeds, defaults, fields, self) {
+    const lists = defaults || {};
+    const current = fields || {};
+    const bccExclude = seeds.bcc.locked ? current.bcc : seeds.bcc.base;
+    const cc = seeds.cc.locked ? current.cc : seedRecipients(seeds.cc.base, lists.cc, [current.to, bccExclude], self);
+    const bcc = seeds.bcc.locked ? current.bcc : seedRecipients(seeds.bcc.base, lists.bcc, [current.to, cc], self);
+    return { to: current.to, cc, bcc };
+  }
+
+  function normalizeDomainKeys(tokens) {
+    if (tokens == null) return [];
+    if (!Array.isArray(tokens)) throw new Error("Expected a list of signature domains.");
+    if (tokens.length > 100) throw new Error("Use at most 100 signature domains.");
+    const seen = new Set();
+    const keys = [];
+    for (const token of tokens) {
+      const name = domain(token);
+      if (!name) throw new Error("Enter a valid signature domain.");
+      if (seen.has(name)) throw new Error("Each signature domain can appear only once.");
+      seen.add(name);
+      keys.push(name);
+    }
+    return keys;
+  }
+
+  return { address, addresses, domain, emptySettings, normalizeSettings, accountSettings, identities, preferredFrom,
+    policyDomain, ccDomain, recipientDefaults, resolve, seedRecipients, openRecipientSeeds, applyRecipientSeeds,
+    normalizeDomainKeys };
 });

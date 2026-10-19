@@ -84,6 +84,7 @@ let suggestGen = 0;
 let signatureGen = 0;
 let signatureEditId = "";
 let signatureEditorAccountId = "";
+let signatureEditorPack = null;
 let scheduledGen = 0;
 let sendTimer = null;
 let sendGen = 0;
@@ -1646,7 +1647,13 @@ function signatureRows(pack) {
   return rows.filter((row) => row && row.id);
 }
 
-function chosenSignatureId(pack, accountId) {
+function chosenSignatureId(pack, accountId, policyDomain) {
+  if (policyDomain) {
+    const byAccount = pack && pack.signatureByDomainPerAccount && accountId ? pack.signatureByDomainPerAccount[accountId] : null;
+    const bound = byAccount && Object.hasOwn(byAccount, policyDomain) ? String(byAccount[policyDomain]) : "";
+    const rows = pack && Array.isArray(pack.signatures) ? pack.signatures : [];
+    if (bound && rows.some((row) => row && String(row.id) === bound)) return bound;
+  }
   const per = pack && pack.defaultSignaturePerAccount;
   const fromAccount = per && accountId ? per[accountId] : null;
   if (fromAccount) return String(fromAccount);
@@ -1684,6 +1691,7 @@ function signatureDraft(input) {
   const body = String(source.body || "");
   if (source.html === true) payload.html = body;
   else payload.text = body;
+  if (Array.isArray(source.domains)) payload.domains = source.domains.slice();
   return payload;
 }
 
@@ -1714,6 +1722,37 @@ function applySignature(body, previous, next) {
   const added = String(next || "");
   if (!added) return base;
   return base ? `${base}\n\n${added}` : added;
+}
+
+function signatureUntouched(body, previous) {
+  const base = String(body || "");
+  const prev = String(previous || "");
+  if (!prev) return true;
+  return base === prev || base.endsWith(`\n\n${prev}`);
+}
+
+function replaceSignature(body, previous, next) {
+  if (!signatureUntouched(body, previous)) return { body: String(body || ""), applied: false };
+  return { body: applySignature(body, previous, next), applied: true };
+}
+
+function commitPickerSignature(body, previous, next) {
+  const text = String(next || "");
+  return { body: applySignature(body, previous, text), previous: text ? text : String(previous || "") };
+}
+
+function applyFromSignature(input) {
+  const source = input || {};
+  const body = String(source.body || "");
+  const previous = String(source.previous || "");
+  if (!source.follows || !source.pack) return { body, previous, applied: false, pickerId: null };
+  const id = chosenSignatureId(source.pack, source.accountId, source.policyDomain);
+  const rows = Array.isArray(source.rows) ? source.rows : signatureRows(source.pack);
+  const match = id ? rows.find((row) => String(row.id) === String(id)) : null;
+  const next = match ? signaturePlain(match) : "";
+  const replaced = replaceSignature(body, previous, next);
+  if (!replaced.applied) return { body, previous, applied: false, pickerId: null };
+  return { body: replaced.body, previous: next, applied: true, pickerId: match ? String(match.id) : "" };
 }
 
 function people(value) {
@@ -6325,11 +6364,14 @@ async function fillSignatures(preserveBody) {
   }
   if (gen !== signatureGen || state.composeQueued || state.composePending) return;
   const rows = signatureRows(pack);
+  state.signaturePack = pack;
   state.signatures = rows;
+  const identity = state.composeIdentity;
   if (!rows.length) {
     showSignatureEmpty("No signatures.");
     $("compose-body").value = applySignature($("compose-body").value, state.signatureText, "");
     state.signatureText = "";
+    if (identity) identity.signatureFollowsFrom = !preserveBody;
     return;
   }
   const select = $("signature");
@@ -6338,21 +6380,27 @@ async function fillSignatures(preserveBody) {
   select.replaceChildren();
   select.append(option("", "No signature"));
   for (const row of rows) select.append(option(String(row.id), signatureName(row)));
-  if (preserveBody) { select.value = ""; return; }
-  const id = chosenSignatureId(pack, accountId);
+  if (preserveBody) {
+    select.value = "";
+    if (identity) identity.signatureFollowsFrom = false;
+    return;
+  }
+  const id = chosenSignatureId(pack, accountId, identity && identity.policyDomain);
   const match = rows.find((row) => String(row.id) === id);
   select.value = match ? String(match.id) : "";
   const text = signaturePlain(match);
   $("compose-body").value = applySignature($("compose-body").value, state.signatureText, text);
   state.signatureText = text;
+  if (identity) identity.signatureFollowsFrom = true;
 }
 
 function onSignatureChange() {
   if (state.composeQueued || state.composePending) return;
   const row = state.signatures.find((item) => String(item.id) === $("signature").value);
   const text = signaturePlain(row);
-  $("compose-body").value = applySignature($("compose-body").value, state.signatureText, text);
-  state.signatureText = text;
+  const committed = commitPickerSignature($("compose-body").value, state.signatureText, text);
+  $("compose-body").value = committed.body;
+  state.signatureText = committed.previous;
   paintComposeNote();
 }
 
@@ -6368,11 +6416,19 @@ function clearSignatureForm() {
   $("signature-body").value = "";
   $("signature-html").checked = false;
   $("signature-default").checked = false;
+  $("signature-domains").value = "";
   $("signature-save").textContent = "Add";
   $("signature-cancel").hidden = true;
 }
 
+function signatureDomainField(pack, accountId, signatureId) {
+  const map = pack && pack.signatureByDomainPerAccount && accountId ? pack.signatureByDomainPerAccount[accountId] : null;
+  if (!map || !signatureId) return "";
+  return Object.keys(map).filter((domain) => map[domain] === signatureId).sort().join(", ");
+}
+
 function paintSignatures(pack) {
+  signatureEditorPack = pack;
   const root = $("signature-list");
   root.replaceChildren();
   const rows = signatureRows(pack);
@@ -6420,6 +6476,7 @@ function startSignatureEdit(row, isDefault) {
   $("signature-body").value = fields.body;
   $("signature-html").checked = fields.html;
   $("signature-default").checked = fields.isDefault;
+  $("signature-domains").value = signatureDomainField(signatureEditorPack, signatureAccount()?.id, fields.id);
   $("signature-save").textContent = "Save";
   $("signature-cancel").hidden = false;
   $("signature-name").focus();
@@ -6464,6 +6521,7 @@ async function submitSignature(event) {
     body: $("signature-body").value,
     html: $("signature-html").checked,
     isDefault: $("signature-default").checked,
+    domains: $("signature-domains").value.split(/[,;\s]+/).map((token) => token.trim()).filter(Boolean),
   });
   if (!draft.name) {
     showSignatureStatus("Add a name.", true);
@@ -6834,17 +6892,22 @@ async function initializeComposeIdentity(fields) {
     $("compose-to").value = parties.to;
     $("compose-cc").value = parties.cc;
   }
-  state.composeIdentity = { ...context, kind: fields.kind || "new", baseCc: $("compose-cc").value,
-    ccEdited: !!fields.draftId || !!fields.botDraft };
-  applyComposeCc();
+  const savedRecipients = !!fields.draftId || !!fields.botDraft;
+  state.composeIdentity = { ...context, kind: fields.kind || "new",
+    seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
+  applyComposeRecipients();
   paintComposeIdentity();
 }
 
-function applyComposeCc() {
+function applyComposeRecipients() {
   const context = state.composeIdentity;
-  if (!context || context.ccEdited) return;
-  $("compose-cc").value = window.morrowComposePolicy.seedCc(context.baseCc,
-    context.defaultCc, $("compose-to").value, $("compose-bcc").value, context.selfAddresses);
+  if (!context || !context.seeds) return;
+  const seeded = window.morrowComposePolicy.applyRecipientSeeds(context.seeds,
+    { cc: context.defaultCc, bcc: context.defaultBcc },
+    { to: $("compose-to").value, cc: $("compose-cc").value, bcc: $("compose-bcc").value },
+    context.selfAddresses);
+  $("compose-cc").value = seeded.cc;
+  $("compose-bcc").value = seeded.bcc;
   syncComposeRecipientRows();
 }
 
@@ -6856,6 +6919,7 @@ function paintComposeIdentity() {
   if (context.receivedAddress) text.push("Received as " + context.receivedAddress + ".");
   else if (context.fallback) text.push("No received address matched this mailbox's known aliases. Add a missing alias in Email Brain or choose From.");
   text.push("CC domain: " + (context.domain || "none") + ".");
+  if (context.policyDomain && context.policyDomain !== context.domain) text.push("Signature domain: " + context.policyDomain + ".");
   if (row && row.source === "configured") text.push("Confirm this alias is enabled for sending with your provider.");
   if (context.warning) text.push(context.warning);
   $("compose-from-note").textContent = text.join(" ");
@@ -6866,9 +6930,28 @@ function changeComposeFrom() {
   const context = state.composeIdentity;
   const fromAddress = $("compose-from").value;
   state.composeMeta.fromAddress = fromAddress;
-  context.domain = window.morrowComposePolicy.ccDomain(fromAddress, composeAccount(), context.settings, context.kind);
-  context.defaultCc = context.settings.ccByDomain[context.domain] || [];
-  applyComposeCc();
+  const account = composeAccount();
+  const defaults = window.morrowComposePolicy.recipientDefaults(fromAddress, account, context.settings, context.kind);
+  context.domain = defaults.ccDomain;
+  context.policyDomain = defaults.policyDomain;
+  context.defaultCc = defaults.cc;
+  context.defaultBcc = defaults.bcc;
+  applyComposeRecipients();
+  const signature = applyFromSignature({
+    follows: context.signatureFollowsFrom,
+    body: $("compose-body").value,
+    previous: state.signatureText,
+    pack: state.signaturePack,
+    accountId: account && account.id,
+    policyDomain: defaults.policyDomain,
+    rows: state.signatures,
+  });
+  if (signature.applied) {
+    $("compose-body").value = signature.body;
+    state.signatureText = signature.previous;
+    const select = $("signature");
+    if (!select.hidden) select.value = signature.pickerId || "";
+  }
   paintComposeIdentity();
   paintComposeNote();
 }
@@ -11689,7 +11772,10 @@ function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
   $("compose-from").addEventListener("change", changeComposeFrom);
   $("compose-cc").addEventListener("input", () => {
-    if (state.composeIdentity) state.composeIdentity.ccEdited = true;
+    if (state.composeIdentity && state.composeIdentity.seeds) state.composeIdentity.seeds.cc.locked = true;
+  });
+  $("compose-bcc").addEventListener("input", () => {
+    if (state.composeIdentity && state.composeIdentity.seeds) state.composeIdentity.seeds.bcc.locked = true;
   });
   $("inbox-rules-account").addEventListener("change", () => changeInboxRulesAccount($("inbox-rules-account").value).catch((error) => showInboxRuleStatus(error.message, true)));
   document.addEventListener("keydown", onShellKey);

@@ -196,6 +196,12 @@ function migrate() {
     updated_at INTEGER NOT NULL
   )`);
   run(`CREATE INDEX IF NOT EXISTS signatures_account ON signatures(account_id, created_at)`);
+  run(`CREATE TABLE IF NOT EXISTS signature_domains (
+    account_id TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    signature_id TEXT NOT NULL,
+    PRIMARY KEY (account_id, domain)
+  )`);
   run(`CREATE TABLE IF NOT EXISTS scheduled_sends (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
@@ -324,6 +330,7 @@ function removeAccount(id) {
     run("DELETE FROM messages WHERE account_id = ?", [id]);
     run("DELETE FROM folders WHERE account_id = ?", [id]);
     run("DELETE FROM snooze WHERE account_id = ?", [id]);
+    run("DELETE FROM signature_domains WHERE account_id = ?", [id]);
     run("DELETE FROM signatures WHERE account_id = ?", [id]);
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
@@ -1262,6 +1269,24 @@ function signatureDefaults() {
   return all("SELECT id, account_id FROM signatures WHERE is_default = 1 ORDER BY account_id ASC");
 }
 
+function listSignatureDomains() {
+  if (!db) return [];
+  return all("SELECT account_id, domain, signature_id FROM signature_domains ORDER BY account_id ASC, domain ASC");
+}
+
+function replaceSignatureDomains(accountId, signatureId, domains) {
+  run("DELETE FROM signature_domains WHERE signature_id = ?", [signatureId]);
+  for (const domain of domains) {
+    const existing = get("SELECT signature_id FROM signature_domains WHERE account_id = ? AND domain = ?", [accountId, domain]);
+    if (existing && existing.signature_id !== signatureId) {
+      const other = get("SELECT name FROM signatures WHERE id = ?", [existing.signature_id]);
+      const name = other && other.name ? other.name : "another signature";
+      throw new Error(domain + " is already bound to " + name + ".");
+    }
+    run("INSERT INTO signature_domains (account_id, domain, signature_id) VALUES (?, ?, ?)", [accountId, domain, signatureId]);
+  }
+}
+
 function saveSignature(row) {
   const now = Date.now();
   transaction(() => {
@@ -1285,13 +1310,17 @@ function saveSignature(row) {
     } else if (row.isDefault === false) {
       run("UPDATE signatures SET is_default = 0 WHERE id = ? AND account_id = ?", [row.id, row.accountId]);
     }
+    if (Array.isArray(row.domains)) replaceSignatureDomains(row.accountId, row.id, row.domains);
   });
   return signatureById(row.id);
 }
 
 function deleteSignature(id) {
   if (!signatureById(id)) return false;
-  transaction(() => run("DELETE FROM signatures WHERE id = ?", [id]));
+  transaction(() => {
+    run("DELETE FROM signature_domains WHERE signature_id = ?", [id]);
+    run("DELETE FROM signatures WHERE id = ?", [id]);
+  });
   return true;
 }
 
@@ -1537,6 +1566,7 @@ module.exports = {
   listSignatures,
   signatureById,
   signatureDefaults,
+  listSignatureDomains,
   saveSignature,
   deleteSignature,
   scheduledById,
