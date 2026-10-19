@@ -920,7 +920,9 @@ function readJsonFile(file, fallback) {
 function readTurns() {
   const parsed = readJsonFile(chatPath(), { turns: [] });
   const turns = Array.isArray(parsed.turns) ? parsed.turns : [];
-  return turns.filter((turn) => turn && (turn.role === "user" || turn.role === "agent"));
+  return turns
+    .filter((turn) => turn && (turn.role === "user" || turn.role === "agent"))
+    .map((turn) => ({ ...turn, reply: normalizeReply(turn.reply) }));
 }
 
 function writeTurns(turns) {
@@ -959,6 +961,7 @@ function appendChat(turn) {
     followUps: Array.isArray(turn && turn.followUps) ? turn.followUps : [],
     proposals: Array.isArray(turn && turn.proposals) ? turn.proposals : [],
     triage: turn && turn.triage && typeof turn.triage === "object" ? turn.triage : null,
+    reply: normalizeReply(turn && turn.reply),
   };
   turns.push(next);
   writeTurns(turns);
@@ -993,6 +996,396 @@ function routeChat(text, skills) {
     return { kind: "draft" };
   }
   return { kind: "chat" };
+}
+
+const LIST_PAGE = 5;
+const LIST_CAP = 15;
+const INBOX_SCAN = 40;
+const NO_REPLY = /no-?reply|noreply|notifications?@|mailer-daemon/i;
+const CONTINUE_TEXT = new Set(["any other", "any others", "and", "more", "another", "next", "还有", "还有呢", "其他"]);
+const CHOICE_IDS = new Map([
+  ["unread", "unread"],
+  ["today", "today"],
+  ["sender", "sender"],
+  ["a sender", "sender"],
+  ["未读", "unread"],
+  ["今天", "today"],
+  ["发件人", "sender"],
+]);
+const UNREAD_ASK = new Set(["what is unread", "what's unread", "unread", "any unread", "show unread", "unread mail", "未读", "有没有未读"]);
+const TODAY_ASK = new Set(["today", "mail from today", "anything today", "今天", "今天的邮件"]);
+const BROAD_ASK = new Set([
+  "any email",
+  "any emails",
+  "any email address to me",
+  "any email for me",
+  "what's new",
+  "what is new",
+  "anything for me",
+  "any mail",
+  "emails for me",
+  "what's in my inbox",
+  "what is in my inbox",
+  "有没有邮件",
+  "有没有给我的邮件",
+  "有什么新邮件",
+]);
+
+function foldedAsk(text) {
+  return String(text || "").trim().toLowerCase().replace(/[?？]$/, "");
+}
+
+function usesChinese(text) {
+  return /[\u3400-\u9fff]/.test(String(text || ""));
+}
+
+function replyIsHonest(from) {
+  return !NO_REPLY.test(String(from || ""));
+}
+
+function copyFilter(filter) {
+  if (!filter || typeof filter !== "object") return null;
+  if (filter.kind === "unread" || filter.kind === "today") return { kind: filter.kind };
+  if (filter.kind === "sender") {
+    const query = clip(filter.query, 80);
+    return query ? { kind: "sender", query } : null;
+  }
+  return null;
+}
+
+function choicePlan(id) {
+  if (id === "sender") return { type: "clarify", expect: "sender" };
+  if (id === "unread" || id === "today") return { type: "list", filter: { kind: id } };
+  return null;
+}
+
+function choiceFromPrior(folded, prior) {
+  const reply = prior && prior.reply;
+  if (!folded || !reply || reply.kind !== "clarify" || !Array.isArray(reply.choices)) return "";
+  for (const choice of reply.choices) {
+    const id = String(choice && choice.id || "").trim().toLowerCase();
+    const label = String(choice && choice.label || "").trim().toLowerCase();
+    if (folded === id || folded === label) return id;
+  }
+  return "";
+}
+
+function senderAskQuery(text) {
+  const stripped = String(text || "").trim().replace(/[?？]$/, "");
+  const en = stripped.match(/^from\s+(.+)$/i);
+  if (en) return clip(en[1], 80);
+  const zh = stripped.match(/^来自\s*(.+)$/);
+  if (zh) return clip(zh[1], 80);
+  return "";
+}
+
+function planChat(text, priorAgentTurn) {
+  const folded = foldedAsk(text);
+  if (CONTINUE_TEXT.has(folded)) {
+    const reply = priorAgentTurn && priorAgentTurn.reply;
+    if (reply && reply.kind === "list" && Array.isArray(reply.ids)) {
+      const offset = Number(reply.offset) || 0;
+      if (offset < reply.ids.length) return { type: "continue" };
+      return { type: "list-end" };
+    }
+    return { type: "clarify", expect: "filter" };
+  }
+  const chosen = choicePlan(CHOICE_IDS.get(folded) || choiceFromPrior(folded, priorAgentTurn));
+  if (chosen) return chosen;
+  const query = senderAskQuery(text);
+  if (query) return { type: "list", filter: { kind: "sender", query } };
+  if (UNREAD_ASK.has(folded)) return { type: "list", filter: { kind: "unread" } };
+  if (TODAY_ASK.has(folded)) return { type: "list", filter: { kind: "today" } };
+  if (BROAD_ASK.has(folded)) return { type: "clarify", expect: "filter" };
+  const prior = priorAgentTurn && priorAgentTurn.reply;
+  if (prior && prior.kind === "clarify" && prior.expect === "sender" && String(text || "").trim()) {
+    return { type: "list", filter: { kind: "sender", query: clip(text, 80) } };
+  }
+  return { type: "prose" };
+}
+
+function isLocalToday(value, now) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  const day = now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date();
+  return date.getFullYear() === day.getFullYear()
+    && date.getMonth() === day.getMonth()
+    && date.getDate() === day.getDate();
+}
+
+function matchesMailFilter(row, filter, now) {
+  if (!row || !filter) return false;
+  if (filter.kind === "unread") return !!row.unread;
+  if (filter.kind === "today") return isLocalToday(row.date, now);
+  if (filter.kind === "sender") {
+    const query = String(filter.query || "").trim().toLowerCase();
+    if (!query) return false;
+    return String(row.from || "").toLowerCase().includes(query);
+  }
+  return false;
+}
+
+function cardFromRow(row) {
+  const messageId = row && row.id ? String(row.id) : "";
+  if (!messageId) return null;
+  return {
+    messageId,
+    from: String(row.from || ""),
+    subject: String(row.subject || ""),
+    summary: String(row.snippet || "").slice(0, 180),
+    date: String(row.date || ""),
+    unread: !!row.unread,
+    hasAttachments: !!row.hasAttachments,
+  };
+}
+
+function indexInbox(inbox) {
+  const byId = new Map();
+  for (const row of Array.isArray(inbox) ? inbox : []) {
+    const id = row && row.id ? String(row.id) : "";
+    if (id && !byId.has(id)) byId.set(id, row);
+  }
+  return byId;
+}
+
+function freshIds(inbox, filter, now) {
+  const ids = [];
+  const seen = new Set();
+  for (const row of Array.isArray(inbox) ? inbox : []) {
+    const id = row && row.id ? String(row.id) : "";
+    if (!id || seen.has(id) || !matchesMailFilter(row, filter, now)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return { ids: ids.slice(0, LIST_CAP), capped: ids.length > LIST_CAP };
+}
+
+function pageIds(inbox, ids, offset) {
+  const byId = indexInbox(inbox);
+  const start = Math.max(0, Math.floor(Number(offset) || 0));
+  const chosen = ids.slice(start, start + LIST_PAGE);
+  const cards = [];
+  for (const id of chosen) {
+    const row = byId.get(id);
+    if (!row) continue;
+    const card = cardFromRow(row);
+    if (card) cards.push(card);
+  }
+  return { cards, offset: Math.min(ids.length, start + chosen.length) };
+}
+
+function stampCards(cards, userText) {
+  const zh = usesChinese(userText);
+  const openLabel = zh ? "打开" : "Open";
+  const draftLabel = zh ? "写回复" : "Draft";
+  return cards.map((card) => {
+    const followUps = [{ kind: "open", messageId: card.messageId, label: openLabel }];
+    if (replyIsHonest(card.from)) {
+      followUps.push({ kind: "draft", messageId: card.messageId, label: draftLabel });
+    }
+    return { ...card, followUps };
+  });
+}
+
+function filterChoices(userText) {
+  const zh = usesChinese(userText);
+  return [
+    { id: "unread", label: zh ? "未读" : "Unread" },
+    { id: "today", label: zh ? "今天" : "Today" },
+    { id: "sender", label: zh ? "发件人" : "A sender" },
+  ];
+}
+
+function listSentence(total, filter, zh) {
+  const n = Math.max(0, Number(total) || 0);
+  const kind = filter && filter.kind;
+  if (zh) {
+    if (kind === "today") return `${n} 封今天的邮件。`;
+    if (kind === "sender") return `${n} 封来自 ${filter.query} 的邮件。`;
+    return `${n} 封未读邮件。`;
+  }
+  const noun = n === 1 ? "message" : "messages";
+  if (kind === "today") return `${n} ${noun} from today.`;
+  if (kind === "sender") return `${n} ${noun} from ${filter.query}.`;
+  return `${n} unread ${noun}.`;
+}
+
+function phraseFor(userText, detail) {
+  const zh = usesChinese(userText);
+  if (detail && detail.type === "clarify" && detail.expect === "sender") {
+    return zh ? "哪一位发件人？输入邮箱或姓名。" : "Which sender? Type an email address or a name.";
+  }
+  if (detail && detail.type === "clarify") {
+    return zh
+      ? "要看未读、今天的邮件，还是某一位发件人的邮件？"
+      : "Do you want unread mail, mail from today, or mail from one sender?";
+  }
+  if (detail && detail.type === "list-end") {
+    if (zh) return "这个列表到这里了。";
+    return detail.capped ? "That's the last of these 15." : "That's the last of this list.";
+  }
+  let sentence = listSentence(detail && detail.total, detail && detail.filter, zh);
+  if (detail && !detail.whole) {
+    const start = (Number(detail.start) || 0) + 1;
+    const end = Number(detail.end) || start;
+    sentence += zh ? ` 显示 ${start} 到 ${end}。` : ` Showing ${start} to ${end}.`;
+  }
+  if (detail && detail.fresh && detail.capped) {
+    sentence += zh ? " 只含前 15 封。" : " Only the first 15 are in this list.";
+  }
+  return sentence;
+}
+
+function normalizeChoices(raw) {
+  const fallback = [["unread", "Unread"], ["today", "Today"], ["sender", "A sender"]];
+  const incoming = Array.isArray(raw) ? raw : [];
+  return fallback.map(([id, label]) => {
+    const found = incoming.find((choice) => choice && choice.id === id);
+    const kept = clip(found && found.label, 40);
+    return { id, label: kept || label };
+  });
+}
+
+function normalizeCards(raw) {
+  if (!Array.isArray(raw)) return [];
+  const cards = [];
+  for (const item of raw) {
+    const messageId = clip(item && item.messageId, 200);
+    if (!messageId) continue;
+    const followUps = [];
+    const rows = Array.isArray(item.followUps) ? item.followUps : [];
+    for (const follow of rows) {
+      const id = clip(follow && follow.messageId, 200);
+      if (id !== messageId) continue;
+      const label = clip(follow && follow.label, 40);
+      if (follow.kind === "open") followUps.push({ kind: "open", messageId, label: label || "Open" });
+      if (follow.kind === "draft") followUps.push({ kind: "draft", messageId, label: label || "Draft" });
+    }
+    cards.push({
+      messageId,
+      from: clip(item.from, 500),
+      subject: clip(item.subject, 300),
+      summary: String(item.summary || "").slice(0, 180),
+      date: clip(item.date, 40),
+      unread: !!item.unread,
+      hasAttachments: !!item.hasAttachments,
+      followUps,
+    });
+  }
+  return cards;
+}
+
+function normalizeReply(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.kind === "clarify") {
+    if (raw.expect !== "filter" && raw.expect !== "sender") return null;
+    if (raw.expect === "sender") return { kind: "clarify", expect: "sender", choices: [] };
+    return { kind: "clarify", expect: "filter", choices: normalizeChoices(raw.choices) };
+  }
+  if (raw.kind !== "list") return null;
+  const filter = copyFilter(raw.filter);
+  if (!filter) return null;
+  const ids = Array.isArray(raw.ids)
+    ? raw.ids.map((id) => clip(id, 200)).filter(Boolean).slice(0, LIST_CAP)
+    : [];
+  const offset = Number.isFinite(Number(raw.offset)) ? Math.max(0, Math.floor(Number(raw.offset))) : 0;
+  const total = Number.isFinite(Number(raw.total)) ? Math.max(0, Math.floor(Number(raw.total))) : ids.length;
+  return {
+    kind: "list",
+    filter,
+    topic: clip(raw.topic, 200),
+    ids,
+    offset,
+    total,
+    capped: !!raw.capped,
+    cards: normalizeCards(raw.cards),
+  };
+}
+
+function latestAgentTurn() {
+  const turns = readTurns();
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (turns[i].role === "agent") return turns[i];
+  }
+  return null;
+}
+
+function listReply(filter, topic, ids, offset, total, capped, cards) {
+  return {
+    kind: "list",
+    filter: copyFilter(filter),
+    topic: topic || "",
+    ids: ids.slice(),
+    offset,
+    total,
+    capped: !!capped,
+    cards,
+  };
+}
+
+async function answerChat(text) {
+  const prior = latestAgentTurn();
+  const plan = planChat(text, prior);
+  if (plan.type === "prose") {
+    const answer = await answerQuestion(text);
+    return { text: answer.text, error: !!answer.error, reply: null };
+  }
+  if (plan.type === "clarify") {
+    const expect = plan.expect === "sender" ? "sender" : "filter";
+    return {
+      text: phraseFor(text, { type: "clarify", expect }),
+      error: false,
+      reply: {
+        kind: "clarify",
+        expect,
+        choices: expect === "sender" ? [] : filterChoices(text),
+      },
+    };
+  }
+  const stored = prior && prior.reply;
+  if (plan.type === "list-end") {
+    return {
+      text: phraseFor(text, { type: "list-end", capped: !!(stored && stored.capped) }),
+      error: false,
+      reply: listReply(stored.filter, stored.topic, stored.ids, stored.offset, stored.total, stored.capped, []),
+    };
+  }
+  const inbox = inboxMessages(INBOX_SCAN);
+  if (plan.type === "continue") {
+    const page = pageIds(inbox, stored.ids, stored.offset);
+    const cards = stampCards(page.cards, text);
+    return {
+      text: phraseFor(text, {
+        type: "list",
+        filter: stored.filter,
+        total: stored.ids.length,
+        fresh: false,
+        capped: false,
+        whole: stored.offset === 0 && page.offset === stored.ids.length,
+        start: stored.offset,
+        end: page.offset,
+      }),
+      error: false,
+      reply: listReply(stored.filter, stored.topic, stored.ids, page.offset, stored.total, stored.capped, cards),
+    };
+  }
+  const built = freshIds(inbox, plan.filter, new Date());
+  const page = pageIds(inbox, built.ids, 0);
+  const cards = stampCards(page.cards, text);
+  return {
+    text: phraseFor(text, {
+      type: "list",
+      filter: plan.filter,
+      total: built.ids.length,
+      fresh: true,
+      capped: built.capped,
+      whole: page.offset === built.ids.length,
+      start: 0,
+      end: page.offset,
+    }),
+    error: false,
+    reply: listReply(plan.filter, clip(text, 200), built.ids, page.offset, built.ids.length, built.capped, cards),
+  };
 }
 
 function turnFromSkill(data) {
@@ -1174,6 +1567,7 @@ async function chat(params) {
       skillId: intent.skillId,
       error: (result && result.error && result.error.message) || "That skill did not run.",
     };
+    if (data && !data.name) data.name = intent.name || "";
     const turn = appendChat(turnFromSkill(data));
     return ok({ intent: "skill", turn, turns: publicTurns(), result: data });
   }
@@ -1196,8 +1590,14 @@ async function chat(params) {
     });
     return ok({ intent: "draft", turn, turns: publicTurns(), result: data });
   }
-  const answer = await answerQuestion(text);
-  const turn = appendChat({ role: "agent", kind: "chat", text: answer.text, error: answer.error });
+  const answer = await answerChat(text);
+  const turn = appendChat({
+    role: "agent",
+    kind: "chat",
+    text: answer.text,
+    error: answer.error,
+    reply: answer.reply,
+  });
   return ok({ intent: "chat", turn, turns: publicTurns() });
 }
 
@@ -1641,6 +2041,7 @@ module.exports = {
   triage,
   getTriage,
   routeChat,
+  planChat,
   mailboxConnected,
   profileSample,
   liveProfileMail,
