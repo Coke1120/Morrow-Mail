@@ -2574,6 +2574,7 @@ async function syncAccountById(id, options) {
 module.exports = {
   init,
   answer,
+  bytesFor,
   STARRED_FOLDER_ID,
   messagesForAi,
   pumpScheduled,

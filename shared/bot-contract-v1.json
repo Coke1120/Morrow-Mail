@@ -21,6 +21,7 @@
     "mail.list_cached": ["accountId", "folder", "limit"],
     "mail.search_cached": ["accountId", "query", "limit"],
     "mail.get_cached": ["accountId", "messageId", "maxBodyBytes"],
+    "mail.attachment.get": ["accountId", "messageId", "index"],
     "health.get": ["accountId"],
     "agent.proposals.list": ["accountId", "limit"],
     "draft.proposals.submit": ["accountId", "idempotencyKey", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"],

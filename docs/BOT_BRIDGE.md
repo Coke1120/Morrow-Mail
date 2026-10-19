@@ -62,12 +62,13 @@ The published params are in `shared/bot-contract-v1.json`. Operations:
 - `mail.list_cached`
 - `mail.search_cached`
 - `mail.get_cached`
+- `mail.attachment.get`
 - `health.get`
 - `agent.proposals.list`
 - `draft.proposals.submit`
 - `draft.proposals.list`
 
-Cached reads do not mark mail read and do not download a missing body. Search is the local index only. Organize proposals are structural. Draft list responses omit the body; the body stays in Morrow for the Settings review.
+Cached reads do not mark mail read and do not download a missing body. `mail.attachment.get` returns cached attachment metadata only. The bot does not download attachment bytes. Search is the local index only. Organize proposals are structural. Draft list responses omit the body; the body stays in Morrow for the Settings review.
 
 ## Tailscale Serve
 

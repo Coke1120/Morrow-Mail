@@ -110,17 +110,22 @@ function headerOf(row, detail) {
   return item;
 }
 
+function attachmentItem(item, index) {
+  return {
+    index,
+    filename: trimUtf8(item && item.filename, 320).text,
+    mimeType: trimUtf8(item && (item.mimeType || item.mime), 120).text,
+    size: Number(item && item.size) || 0,
+    inline: !!(item && (item.inline === true || item.isInlineFromApi === true)),
+  };
+}
+
 function attachmentMeta(row, allowed) {
   const items = db.jsonList(row.attachments_json);
   if (!allowed) return { count: items.length };
   return {
     count: items.length,
-    items: items.slice(0, 20).map((item, index) => ({
-      index,
-      filename: trimUtf8(item && item.filename, 320).text,
-      mimeType: trimUtf8(item && (item.mimeType || item.mime), 120).text,
-      size: Number(item && item.size) || 0,
-    })),
+    items: items.slice(0, 20).map((item, index) => attachmentItem(item, index)),
   };
 }
 
@@ -248,6 +253,21 @@ function bodyOf(row, maxBodyBytes) {
   };
 }
 
+function getAttachment(accountId, messageId, index) {
+  if (!ready()) throw coded("HOST_NOT_READY");
+  const row = db.messageById(messageId);
+  if (!row || row.account_id !== accountId) throw coded("NOT_FOUND");
+  const attachment = attachmentMeta(row, true).items.find((item) => item.index === index) || null;
+  if (!attachment) throw coded("ATTACHMENT_NOT_IN_CACHE");
+  return {
+    accountId,
+    messageId,
+    attachment,
+    bytes: null,
+    code: "attachment_bytes_not_stored",
+  };
+}
+
 function getCached(accountId, messageId, maxBodyBytes, attachments) {
   if (!ready()) throw coded("HOST_NOT_READY");
   const row = db.messageById(messageId);
@@ -366,6 +386,7 @@ module.exports = {
   listCached,
   searchCached,
   getCached,
+  getAttachment,
   health,
   freshness,
   coverage,

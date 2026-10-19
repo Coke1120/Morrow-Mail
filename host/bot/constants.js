@@ -71,6 +71,11 @@ const ERRORS = {
     message: "That cached item is not available.",
     retryable: false,
   },
+  ATTACHMENT_NOT_IN_CACHE: {
+    status: 404,
+    message: "No cached attachment metadata is stored for that index.",
+    retryable: false,
+  },
   UNKNOWN_OPERATION: {
     status: 404,
     message: "That operation is not available.",

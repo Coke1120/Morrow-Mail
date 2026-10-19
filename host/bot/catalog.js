@@ -72,6 +72,16 @@ const ROWS = [
     budgets: null,
   },
   {
+    operation: "mail.attachment.get",
+    caps: ["mail.headers.read", "mail.attachments.read"],
+    params: ["accountId", "messageId", "index"],
+    kind: "call",
+    requestBytes: ORDINARY_BYTES,
+    responseTimeoutMs: ORDINARY_TIMEOUT_MS,
+    requestId: "echo",
+    budgets: null,
+  },
+  {
     operation: "health.get",
     caps: ["health.read"],
     params: ["accountId"],

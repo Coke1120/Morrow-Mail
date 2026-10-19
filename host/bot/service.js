@@ -228,6 +228,22 @@ function getMail(ctx) {
   };
 }
 
+function getAttachment(ctx) {
+  const params = ctx.params;
+  if (!closed(params, ["accountId", "messageId", "index"])) throw coded("INVALID_REQUEST");
+  const accountId = accountParam(params);
+  requireAccount(ctx.grant, accountId);
+  if (!validId(params.messageId)) throw coded("INVALID_REQUEST");
+  if (!Number.isInteger(params.index) || params.index < 0) throw coded("INVALID_REQUEST");
+  return {
+    data: reads.getAttachment(accountId, params.messageId, params.index),
+    meta: {
+      ...hostMeta(),
+      contentTrust: "untrusted_mail_data",
+    },
+  };
+}
+
 function health(ctx) {
   const params = ctx.params;
   if (!closed(params, ["accountId"])) throw coded("INVALID_REQUEST");
@@ -345,6 +361,7 @@ const HANDLERS = {
   "mail.list_cached": listMail,
   "mail.search_cached": searchMail,
   "mail.get_cached": getMail,
+  "mail.attachment.get": getAttachment,
   "health.get": health,
   "agent.proposals.list": proposals,
   "draft.proposals.submit": submitDraft,

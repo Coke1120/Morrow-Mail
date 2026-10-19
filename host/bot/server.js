@@ -46,7 +46,7 @@ function observed() {
   return new Date().toISOString();
 }
 
-function failure({ statusCode, code, requestId, installationId, retryAfterMs }) {
+function failure({ statusCode, code, requestId, installationId, retryAfterMs, contentTrust }) {
   const spec = ERRORS[code] || ERRORS.INTERNAL;
   const error = {
     code: spec === ERRORS[code] ? code : "INTERNAL",
@@ -55,6 +55,8 @@ function failure({ statusCode, code, requestId, installationId, retryAfterMs }) 
   };
   if (spec.action) error.action = spec.action;
   if (retryAfterMs) error.retryAfterMs = retryAfterMs;
+  const meta = { observedAt: observed(), source: "host" };
+  if (contentTrust) meta.contentTrust = contentTrust;
   return {
     statusCode: statusCode || spec.status,
     envelope: {
@@ -63,7 +65,7 @@ function failure({ statusCode, code, requestId, installationId, retryAfterMs }) 
       installationId: installationId || null,
       ok: false,
       error,
-      meta: { observedAt: observed(), source: "host" },
+      meta,
     },
   };
 }
@@ -350,11 +352,15 @@ async function handleAdmitted(req, res) {
   } catch (error) {
     if (admitted) budget.leave(clientId, admitted.kind || "call");
     const code = error && error.expose && ERRORS[error.code] ? error.code : "INTERNAL";
+    const trust = operation === "mail.attachment.get" || operation === "mail.send"
+      ? catalog.CONTENT_TRUST
+      : undefined;
     finish(failure({
       code,
       requestId,
       installationId: code === "UNAUTHENTICATED" ? null : installationId,
       retryAfterMs: error && error.retryAfterMs,
+      contentTrust: trust,
     }));
   }
 }

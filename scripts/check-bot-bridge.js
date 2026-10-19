@@ -271,6 +271,8 @@ async function run() {
   assert.ok(!serviceSrc.includes("mail/secrets"));
   assert.ok(!serviceSrc.includes("mail/oauth"));
   assert.ok(!serviceSrc.includes("mail/engine"));
+  assert.ok(!serviceSrc.includes("bytesFor"));
+  assert.ok(!read("host/bot/reads.js").includes("bytesFor"));
   assert.ok(!serviceSrc.includes("upsertDraft"));
   assert.ok(!serviceSrc.includes("ensureBody"));
   assert.ok(!serviceSrc.includes("secretFor"));
@@ -313,6 +315,13 @@ async function run() {
       return { app: null, BrowserWindow: { getAllWindows() { return []; } } };
     }
     return previousRequire.apply(this, arguments);
+  };
+  const engine = require("../host/mail/engine");
+  const originalBytesFor = engine.bytesFor;
+  let bytesForHits = 0;
+  engine.bytesFor = async (...args) => {
+    bytesForHits += 1;
+    return originalBytesFor(...args);
   };
   const db = require("../host/mail/db");
   const auth = require("../host/bot/auth");
@@ -616,7 +625,38 @@ async function run() {
       params: { accountId: "acct-a", messageId: "msg-a-header" },
     });
     assert.strictEqual(named.json.data.message.attachments[0].filename, "SECRETFILE.pdf");
+    assert.strictEqual(named.json.data.message.attachments[0].inline, false);
+    assert.ok(!Object.prototype.hasOwnProperty.call(named.json.data.message.attachments[0], "bytes"));
     assert.ok(!named.text.includes("contentBytes"));
+    const deniedAttach = await callBridge({
+      ...base,
+      operation: "mail.attachment.get",
+      params: { accountId: "acct-a", messageId: "msg-a-header", index: 0 },
+    });
+    assert.strictEqual(deniedAttach.status, 403);
+    assert.strictEqual(deniedAttach.json.error.code, "FORBIDDEN");
+    const gotAttach = await callBridge({
+      token: files.secret,
+      installationId,
+      operation: "mail.attachment.get",
+      params: { accountId: "acct-a", messageId: "msg-a-header", index: 0 },
+    });
+    assert.strictEqual(gotAttach.status, 200);
+    assert.strictEqual(gotAttach.json.data.code, "attachment_bytes_not_stored");
+    assert.strictEqual(gotAttach.json.data.bytes, null);
+    assert.strictEqual(gotAttach.json.data.attachment.filename, "SECRETFILE.pdf");
+    assert.strictEqual(gotAttach.json.data.attachment.size, 12);
+    assert.strictEqual(gotAttach.json.data.attachment.inline, false);
+    assert.strictEqual(gotAttach.json.meta.contentTrust, "untrusted_mail_data");
+    const missingPart = await callBridge({
+      token: files.secret,
+      installationId,
+      operation: "mail.attachment.get",
+      params: { accountId: "acct-a", messageId: "msg-a-header", index: 4 },
+    });
+    assert.strictEqual(missingPart.status, 404);
+    assert.strictEqual(missingPart.json.error.code, "ATTACHMENT_NOT_IN_CACHE");
+    assert.strictEqual(bytesForHits, 0);
 
     const htmlBody = await callBridge({
       ...base,
@@ -1124,6 +1164,7 @@ async function run() {
     assert.strictEqual(fs.readFileSync(path.join(dir, "settings.json"), "utf8"), "{\"sentinel\":true}\n");
     assert.strictEqual(secretHits, 0);
     assert.strictEqual(completeHits, 0);
+    assert.strictEqual(bytesForHits, 0);
     assert.ok(!fs.readFileSync(path.join(dir, "bot-access.json"), "utf8").includes(token));
     console.log("bot-bridge-ok");
   } finally {
@@ -1134,6 +1175,7 @@ async function run() {
     try { reads.setCorpusCapForTest(50000); } catch { /* reads module failed to load */ }
     secrets.getPassword = originalPassword;
     openai.complete = originalComplete;
+    engine.bytesFor = originalBytesFor;
     Module.prototype.require = previousRequire;
     if (opened) {
       try { db.close(); } catch { /* temp db already closed */ }
