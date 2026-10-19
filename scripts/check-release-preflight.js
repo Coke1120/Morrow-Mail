@@ -128,7 +128,9 @@ const { verifyManifest } = require('../host/update-manifest');
   }
 
   // Structural regression checks for authority boundaries and release ordering.
-  const workflow = await fs.readFile(path.join(__dirname, '..', '.github/workflows/release.yml'), 'utf8');
+  const source = (await fs.readFile(path.join(__dirname, '..', '.github/workflows/release.yml'), 'utf8')).replace(/\r\n/g, '\n');
+  for (const checkout of [source, source.replace(/\n/g, '\r\n')]) {
+  const workflow = checkout.replace(/\r\n/g, '\n');
   const windows = workflow.split('\n  windows:\n')[1].split('\n  macos:\n')[0];
   assert.ok(!windows.includes('MORROW_UPDATE_SIGNING_KEY:'));
   assert.ok(windows.includes("SIGNING_KEY_AVAILABLE: ${{ secrets.MORROW_UPDATE_SIGNING_KEY != '' }}"));
@@ -141,5 +143,6 @@ const { verifyManifest } = require('../host/update-manifest');
   assert.ok(workflow.indexOf('verify-release-macos.js') < workflow.indexOf('sign-release-manifest.js'));
   assert.ok(workflow.indexOf('sign-release-manifest.js') < workflow.indexOf('Publish and verify paired release'));
   assert.ok(workflow.indexOf('actions/download-artifact@v4') < workflow.indexOf('Publish and verify paired release'));
+  }
   console.log('Release preflight and signing checks passed (ephemeral fixture keys only)');
 })().catch(error => { console.error(error); process.exitCode = 1; });
