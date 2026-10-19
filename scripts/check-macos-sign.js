@@ -19,7 +19,7 @@ async function run() {
     assert.equal(actual.identityValidation, false);
     assert.equal(actual.preAutoEntitlements, false);
     assert.equal(actual.preEmbedProvisioningProfile, false);
-    assert.equal(actual.strictVerify, true);
+    assert.equal(actual.strictVerify, undefined);
     assert.equal(actual.keychain, undefined);
     assert.equal(actual.provisioningProfile, undefined);
     assert.equal(actual.optionsForFile, optionsForFile);

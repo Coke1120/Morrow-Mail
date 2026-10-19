@@ -18,7 +18,9 @@ function createSigner({ signAsync, verify = execFileSync, platform = process.pla
       provisioningProfile: undefined,
       preEmbedProvisioningProfile: false,
       preAutoEntitlements: false,
-      strictVerify: true,
+      // osx-sign 1.3.1 serializes true as the invalid --strict=true.
+      // undefined enables its default bare --strict on supported macOS.
+      strictVerify: undefined,
     });
     // Fail the packaging operation before any archive/feed is published.
     verify("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", options.app], {
