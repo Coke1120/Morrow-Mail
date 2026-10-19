@@ -915,7 +915,7 @@ function calendarCopy(reason, email) {
   if (reason === "error") return "Calendar could not be loaded.";
   if (reason === "loading") return "Loading calendar…";
   const who = email ? ` for ${email}` : "";
-  return `Enable calendar and mailbox features${who}. Google uses one consent; Microsoft uses a separate feature consent after mail sign-in.`;
+  return `Enable calendar and mailbox features${who}. Google uses one consent; Microsoft connects mail first, then checks feature permissions for the same account.`;
 }
 
 function calendarConnection(status, account, listed) {
@@ -6105,7 +6105,7 @@ async function connectOAuth(provider) {
   state.oauthPending = true;
   paintConnectPending();
   setConnectStatus(provider === "microsoft"
-    ? "Sign in for mail in your browser, then approve calendar, organize, Out of Office, and inbox rules in a second consent."
+    ? "Continue in your browser to connect mail. Morrow then checks calendar, organize, Out of Office, and inbox rules for the same account; approve any missing permissions. Mail stays connected if you decline those features."
     : "Approve mail, calendar, organize, Out of Office, and inbox rules in one browser consent.");
   try {
     const view = await call("mail:addAccount", { provider, expectedAccountId: state.reconnectAccountId || undefined });

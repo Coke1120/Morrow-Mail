@@ -329,7 +329,7 @@ async function secretFor(account) {
     throw error;
   }
   if (account.auth_kind !== "oauth2") return stored;
-  const result = await oauth.accessTokenFor(account, stored);
+  const result = await oauth.accessTokenFor(account, stored, "imap");
   if (secrets.getPassword(account.id) !== stored) {
     const error = new Error("This mailbox connection changed. Try again with the current connection.");
     error.code = "conflict";
@@ -1049,7 +1049,7 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
   const gen = ++oauthGeneration;
   let signed;
   try {
-    signed = await oauth.signIn(providerInput, oauthConfig.providerKey(providerInput) === "google" ? "bundle" : "imap");
+    signed = await oauth.signIn(providerInput, oauthConfig.providerKey(providerInput) === "google" ? "bundle" : "imap", { expectedEmail: expectedAccountId ? db.accountById(expectedAccountId)?.email : undefined });
   } catch (error) {
     if (error && error.code === "oauth_cancelled") return fail("oauth_cancelled", "Sign-in canceled.");
     return fail("oauth", error instanceof Error ? error.message : String(error));

@@ -222,7 +222,7 @@ async function tokenFor(account, purpose) {
     error.code = purpose === "calendar" || purpose === "rules" ? "needs_auth" : "scope_missing";
     throw error;
   }
-  const result = await oauth.accessTokenFor(account, raw);
+  const result = await oauth.accessTokenFor(account, raw, purpose);
   if (secrets.getPassword(key) !== raw) {
     const error = new Error("This mailbox connection changed. Refresh the feature and try again.");
     error.code = "conflict";
@@ -381,7 +381,7 @@ async function grantPurpose(params, purpose) {
   const bundle = secrets.getPassword(`${account.id}:bundle`);
   let signed;
   try {
-    signed = await oauth.signIn(provider, "bundle");
+    signed = await oauth.signIn(provider, "bundle", { expectedEmail: account.email });
   } catch (error) {
     return failFrom(error);
   }

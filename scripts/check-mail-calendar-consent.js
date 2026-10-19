@@ -125,10 +125,10 @@ async function run() {
   };
   try {
     global.fetch = fetchMock;
-    oauth.signIn = (provider, purpose) => {
+    oauth.signIn = (provider, purpose, options) => {
       assert.ok(purpose === "bundle" || (provider === "microsoft" && purpose === "imap"));
       return original.signIn(provider, purpose, {
-        fetchImpl: fetchMock, timeoutMs: 3000,
+        ...options, fetchImpl: fetchMock, timeoutMs: 3000,
         openBrowser: async (url) => {
           const auth = new URL(url);
           opened.push(auth);
@@ -137,6 +137,10 @@ async function run() {
           assert.ok(auth.searchParams.get("state"));
           if (provider === "google") assert.equal(auth.searchParams.get("include_granted_scopes"), "true");
           if (provider === "microsoft") {
+            if (purpose !== "imap") {
+              assert.equal(auth.searchParams.get("prompt"), null, "do not force repeated consent");
+              assert.equal(auth.searchParams.get("login_hint"), options.expectedEmail);
+            }
             const scope = auth.searchParams.get("scope");
             assert.equal(scope.includes("outlook.office.com"), purpose === "imap");
             if (purpose === "imap") assert.doesNotMatch(scope, /User.Read|Calendars|MailboxSettings|Mail.Read|Mail.Send/);
@@ -378,10 +382,52 @@ async function run() {
     assert.equal(memory.getPassword(partialId), null);
     assert.equal(db.accountById(partialId), null);
 
+    // Repair legacy mixed metadata before using even a still-live cache.
+    scenario = {};
+    const mixedMetadata = `${config.SCOPES.microsoft} ${config.BUNDLE_SCOPES.microsoft}`;
+    const oldMail = { ...JSON.parse(primary), grantedScopes: mixedMetadata, requestedScopes: mixedMetadata, expiresAt: Date.now() + 3600000 };
+    const beforeRepair = posts.length;
+    const repairedMail = await oauth.accessTokenFor(ms, JSON.stringify(oldMail), "imap");
+    assert.equal(posts.length, beforeRepair + 1);
+    assert.equal(posts.at(-1).scope, config.SCOPES.microsoft);
+    assert.equal(JSON.parse(repairedMail.store).grantedScopes, config.SCOPES.microsoft);
+    assert.equal(JSON.parse(repairedMail.store).requestedScopes, config.SCOPES.microsoft);
+    assert.equal(await oauth.accessTokenFor(ms, repairedMail.store, "imap"), "fixture-outlook-mail");
+    const oldGraph = { ...JSON.parse(bundle), grantedScopes: mixedMetadata, requestedScopes: mixedMetadata, purpose: undefined, expiresAt: 1 };
+    const repairedGraph = await oauth.accessTokenFor(ms, JSON.stringify(oldGraph), "calendar");
+    assert.equal(posts.at(-1).scope, config.BUNDLE_SCOPES.microsoft);
+    assert.doesNotMatch(repairedGraph.store, /outlook\.office\.com/);
+    assert.equal(JSON.parse(repairedGraph.store).purpose, "calendar");
+    scenario = { graphScopes: "offline_access User.Read Calendars.ReadWrite" };
+    const partialLegacy = { ...oldGraph, grantedScopes: `${config.SCOPES.microsoft} User.Read Calendars.ReadWrite` };
+    const partialRepair = await oauth.accessTokenFor(ms, JSON.stringify(partialLegacy), "calendar");
+    assert.equal(posts.at(-1).scope, "offline_access User.Read Calendars.ReadWrite");
+    assert.equal(config.hasPurposeScopes(JSON.parse(partialRepair.store).grantedScopes, "microsoft", "organize"), false);
+    const beforeMissing = posts.length;
+    await assert.rejects(() => oauth.accessTokenFor(ms, JSON.stringify({ ...oldMail, grantedScopes: "" }), "imap"), /No saved Microsoft permissions/);
+    await assert.rejects(() => oauth.accessTokenFor(ms, bundle, "imap"), /No saved Microsoft permissions/);
+    assert.equal(posts.length, beforeMissing, "do not borrow permissions from requested scopes or the other token");
+    scenario = { refreshFailure: true };
+    await assert.rejects(() => oauth.accessTokenFor(ms, JSON.stringify(oldMail), "imap"), /Could not refresh/);
+    assert.equal(memory.getPassword(ms.id), primary);
+    scenario = {};
+    const jwt = claims => `fixture.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.unsigned`;
+    const wrongResource = async () => json({ access_token: jwt({ aud: "https://graph.microsoft.com", scp: "Mail.ReadWrite" }), refresh_token: "fixture", scope: config.SCOPES.microsoft });
+    await assert.rejects(() => oauth.refresh("microsoft", { clientId: "fixture" }, "fixture", config.SCOPES.microsoft, "", wrongResource), /different resource/);
+    const mixedResponse = async () => json({ access_token: "opaque-fixture", refresh_token: "fixture", scope: mixedMetadata });
+    const scopedResponse = await oauth.refresh("microsoft", { clientId: "fixture" }, "fixture", config.SCOPES.microsoft, mixedMetadata, mixedResponse);
+    assert.equal(scopedResponse.grantedScopes, config.SCOPES.microsoft);
+    const emptyResponse = async () => json({ access_token: "opaque-fixture", scope: "" });
+    const emptyGrant = await oauth.refresh("microsoft", { clientId: "fixture" }, "fixture", config.BUNDLE_SCOPES.microsoft, config.BUNDLE_SCOPES.microsoft, emptyResponse);
+    assert.equal(emptyGrant.grantedScopes, "", "explicit empty scope is not full consent");
+    const partialResponse = async () => json({ access_token: jwt({ scp: "User.Read Calendars.ReadWrite Mail.ReadWrite" }), scope: "User.Read Calendars.ReadWrite" });
+    const authoritative = await oauth.refresh("microsoft", { clientId: "fixture" }, "fixture", config.BUNDLE_SCOPES.microsoft, config.BUNDLE_SCOPES.microsoft, partialResponse);
+    assert.equal(config.hasPurposeScopes(authoritative.grantedScopes, "microsoft", "organize"), false, "JWT hints must not broaden explicit partial response scopes");
+
     // Refuse mixed-resource token requests even if a malformed old record asks.
     const mixed = `${config.SCOPES.microsoft} User.Read`;
-    await assert.rejects(() => oauth.refresh("microsoft", { clientId: "fixture" }, "fixture", mixed, mixed, fetchMock), /separate sign-ins/);
-    await assert.rejects(() => oauth.exchange("microsoft", { clientId: "fixture" }, "code", "redirect", "verifier", mixed, fetchMock), /separate sign-ins/);
+    await assert.rejects(() => oauth.refresh("microsoft", { clientId: "fixture" }, "fixture", mixed, mixed, fetchMock), /both resources/);
+    await assert.rejects(() => oauth.exchange("microsoft", { clientId: "fixture" }, "code", "redirect", "verifier", mixed, fetchMock), /both resources/);
     scenario = {};
     await oauth.refresh("microsoft", { clientId: "fixture" }, "fixture", "offline_access,IMAP.AccessAsUser.All,SMTP.Send", "", fetchMock);
     assert.equal(posts.at(-1).scope, config.SCOPES.microsoft);
