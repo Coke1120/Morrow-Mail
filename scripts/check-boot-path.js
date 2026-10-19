@@ -326,6 +326,7 @@ assert.strictEqual(paneWidth(200, 20, 140, 400), 220);
 const folderIcon = extractFunction(appJs, "folderIcon");
 assert.strictEqual(folderIcon("inbox"), "📥");
 assert.strictEqual(folderIcon("starred"), "⭐");
+assert.strictEqual(folderIcon("unread"), "✉️");
 assert.strictEqual(folderIcon("archive"), "📦");
 assert.strictEqual(folderIcon("deleteditems"), "🗑️");
 assert.strictEqual(folderIcon(null), "📁");
@@ -338,9 +339,9 @@ const gmailAccount = {
   platform: "gmail",
   folders: {
     primary: [
-      { id: "in", wellKnownName: "inbox" },
-      { id: "sent", wellKnownName: "sentitems" },
-      { id: "drafts", wellKnownName: "drafts" },
+      { id: "in", wellKnownName: "inbox", chip: true },
+      { id: "sent", wellKnownName: "sentitems", chip: true },
+      { id: "drafts", wellKnownName: "drafts", chip: true },
       { id: "arch", wellKnownName: "archive" },
     ],
     more: [],
@@ -350,9 +351,9 @@ const outlookAccount = {
   platform: "outlook",
   folders: {
     primary: [
-      { id: "in", wellKnownName: "inbox" },
-      { id: "drafts", wellKnownName: "drafts" },
-      { id: "sent", wellKnownName: "sentitems" },
+      { id: "in", wellKnownName: "inbox", chip: true },
+      { id: "drafts", wellKnownName: "drafts", chip: true },
+      { id: "sent", wellKnownName: "sentitems", chip: true },
     ],
     more: [],
   },
@@ -360,18 +361,19 @@ const outlookAccount = {
 assert.deepStrictEqual(chipFolders(gmailAccount).map((folder) => folder.wellKnownName), ["inbox", "sentitems", "drafts"]);
 assert.deepStrictEqual(chipFolders(outlookAccount).map((folder) => folder.wellKnownName), ["inbox", "drafts", "sentitems"]);
 assert.deepStrictEqual(chipFolders(null), []);
-assert.deepStrictEqual(chipFolders({ folders: { primary: [], more: [{ id: "in", wellKnownName: "inbox" }] } }).map((folder) => folder.id), ["in"]);
+assert.deepStrictEqual(chipFolders({ folders: { primary: [], more: [{ id: "in", wellKnownName: "inbox", chip: true }] } }).map((folder) => folder.id), ["in"]);
 assert.deepStrictEqual(chipFolders({ folders: { primary: [{ id: "x", wellKnownName: "archive" }] } }), []);
 assert.deepStrictEqual(chipFolders({
   folders: {
     primary: [
-      { id: "in", wellKnownName: "inbox" },
-      { id: "__morrow_starred__", wellKnownName: "starred", type: "virtual" },
-      { id: "sent", wellKnownName: "sentitems" },
-      { id: "drafts", wellKnownName: "drafts" },
+      { id: "in", wellKnownName: "inbox", chip: true },
+      { id: "sent", wellKnownName: "sentitems", chip: true },
+      { id: "star", wellKnownName: "starred", chip: false, type: "virtual" },
+      { id: "drafts", wellKnownName: "drafts", chip: true },
+      { id: "un", wellKnownName: "unread", chip: true, type: "virtual" },
     ],
   },
-}).map((folder) => folder.id), ["in", "sent", "drafts"]);
+}).map((folder) => folder.wellKnownName), ["inbox", "sentitems", "drafts", "unread"]);
 const chipLabel = extractFunction(appJs, "chipLabel");
 assert.strictEqual(chipLabel({ name: "INBOX" }), "Inbox");
 assert.strictEqual(chipLabel({ name: "inbox" }), "Inbox");
@@ -1771,7 +1773,6 @@ const organizeUi = loadFunctions(appJs, [
   "providerLabelText",
   "providerLabelTree",
   "messageDragPayload",
-  "isStarredFolder",
   "isVirtualMailbox",
   "storableFolders",
   "organizeDrop",
@@ -1974,7 +1975,6 @@ const folderChrome = loadFunctions(appJs, [
   "moveMenuItem",
   "imapFolderMenu",
   "folderActionMenu",
-  "isStarredFolder",
   "isVirtualMailbox",
   "folderCanNest",
   "nestDropPlan",
@@ -2026,7 +2026,13 @@ assert.strictEqual(folderChrome.folderCanNest("imap", { id: "Notes", name: "Note
 assert.strictEqual(folderChrome.folderCanNest("gmail", { id: "L4", name: "Personal", editable: true }).ok, true);
 assert.strictEqual(folderChrome.folderCanNest("gmail", { id: "INBOX", name: "INBOX", editable: false }).ok, false);
 assert.strictEqual(folderChrome.folderCanNest("local", { id: "x", name: "x" }).ok, false);
-assert.strictEqual(folderChrome.folderCanNest("imap", { id: "__morrow_starred__", name: "Starred", type: "virtual" }).ok, false);
+const unreadNest = folderChrome.folderCanNest("imap", {
+  name: "Unread",
+  type: "virtual",
+  filterCopy: "Unread is a filter, not a folder.",
+});
+assert.strictEqual(unreadNest.ok, false);
+assert.match(unreadNest.reason, /Unread/);
 const nestSource = { kind: "gmail", accountId: "a1", folderId: "L2" };
 const nestUnder = folderChrome.nestDropPlan(nestSource, { kind: "gmail", accountId: "a1", id: "L4" }, travelFlags);
 assert.strictEqual(nestUnder.ok, true);
@@ -2425,7 +2431,6 @@ assert.ok(preload.includes("mail:markReadBatch"));
 assert.ok(preload.includes("mail:toggleStarBatch"));
 const starUi = loadFunctions(appJs, [
   "filteredEmails",
-  "isStarredFolder",
   "isVirtualMailbox",
   "storableFolders",
   "visibleList",
@@ -2433,37 +2438,48 @@ const starUi = loadFunctions(appJs, [
   "providerCopy",
   "organizeDrop",
 ]);
-assert.strictEqual(starUi.isStarredFolder("__morrow_starred__"), true);
-assert.strictEqual(starUi.isStarredFolder("INBOX"), false);
-assert.strictEqual(starUi.isVirtualMailbox({ id: "__morrow_starred__", type: "virtual" }), true);
+assert.strictEqual(starUi.isVirtualMailbox({ type: "virtual" }), true);
+assert.strictEqual(starUi.isVirtualMailbox("INBOX"), false);
 assert.strictEqual(starUi.isVirtualMailbox({ id: "INBOX", wellKnownName: "inbox" }), false);
 assert.deepStrictEqual(starUi.storableFolders([
   { id: "INBOX", name: "Inbox" },
-  { id: "__morrow_starred__", name: "Starred", type: "virtual" },
+  { id: "starred-view", name: "Starred", type: "virtual" },
 ]).map((folder) => folder.id), ["INBOX"]);
 const starRows = [
-  { id: "a", subject: "Hello", from: "Ada", snippet: "x", isStarred: true },
-  { id: "b", subject: "Other", from: "Bea", snippet: "y", isStarred: false },
+  { id: "a", subject: "Hello", from: "Ada", snippet: "x", isStarred: true, unread: true },
+  { id: "b", subject: "Other", from: "Bea", snippet: "y", isStarred: false, unread: false },
 ];
-assert.deepStrictEqual(starUi.visibleList(starRows, "", "INBOX").map((row) => row.id), ["a", "b"]);
-assert.deepStrictEqual(starUi.visibleList(starRows, "", "__morrow_starred__").map((row) => row.id), ["a"]);
-assert.deepStrictEqual(starUi.visibleList(starRows, "other", "__morrow_starred__"), []);
+assert.deepStrictEqual(starUi.visibleList(starRows, "", { id: "INBOX" }).map((row) => row.id), ["a", "b"]);
+assert.deepStrictEqual(starUi.visibleList(starRows, "", { view: { flagged: true } }).map((row) => row.id), ["a"]);
+assert.deepStrictEqual(starUi.visibleList(starRows, "other", { view: { flagged: true } }), []);
+assert.deepStrictEqual(starUi.visibleList(starRows, "", { view: { unread: true } }).map((row) => row.id), ["a"]);
 assert.ok(functionSource(appJs, "renderList").includes("shownEmails()"));
 const refusedStarDrop = starUi.organizeDrop(
-  { kind: "imap", id: "__morrow_starred__", accountId: "a1" },
+  {
+    kind: "virtual",
+    id: "starred-view",
+    accountId: "a1",
+    dropCopy: "Starred is a filter. Use the star control to flag a message.",
+  },
   { id: "m1", accountId: "a1", folderId: "INBOX" },
 );
 assert.strictEqual(refusedStarDrop.ok, false);
+assert.strictEqual(refusedStarDrop.reason, "virtual");
 assert.match(refusedStarDrop.message, /Starred is a filter/);
 const toggleStarSource = functionSource(appJs, "toggleStar");
 assert.ok(toggleStarSource.indexOf("paintStars") < toggleStarSource.indexOf("await call"));
 assert.ok(toggleStarSource.includes("paintStars([email], previous, true)"));
-assert.ok(appJs.includes('const STARRED_FOLDER_ID = "__morrow_starred__"'));
+assert.ok(!appJs.includes("__morrow_starred__"));
+assert.ok(!appJs.includes("__morrow_unread__"));
 assert.ok(appJs.includes("starIcon(starredOn)"));
 assert.ok(appJs.includes("Still finishing the last change."));
 assert.ok(css.includes("--star:"));
 assert.ok(css.includes('#reader .reader-actions button[data-action="star"].is-starred'));
 assert.ok(engineSrc.includes("STARRED_FOLDER_ID"));
+assert.ok(!engineSrc.includes("=== STARRED_FOLDER_ID"));
+assert.ok(!engineSrc.includes("!== STARRED_FOLDER_ID"));
+assert.ok(!engineSrc.includes("=== UNREAD_FOLDER_ID"));
+assert.ok(!engineSrc.includes("!== UNREAD_FOLDER_ID"));
 assert.ok(engineSrc.includes('"\\\\Flagged"'));
 assert.ok(css.includes(".row-check"));
 assert.ok(css.includes("#messages.has-selection .row-check"));
