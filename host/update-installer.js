@@ -130,6 +130,19 @@ async function verifyBundle(bundle, { version, arch, appId = 'com.coke1120.morro
   if (!['arm64', 'x64'].includes(arch) || !/^\d+\.\d+\.\d+$/.test(version)) fail('Invalid bundle expectations.');
   if ((await fsp.lstat(bundle)).isSymbolicLink()) fail('Application cannot be a symlink.');
   const plist = path.join(bundle, 'Contents', 'Info.plist');
+  // Check compatibility before shutdown/replacement, not after LaunchServices
+  // has already rejected the installed candidate. Architecture-specific values
+  // take precedence over the general minimum in Info.plist.
+  const info = JSON.parse((await run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], NATIVE_OPTIONS)).stdout);
+  const minimum = info.LSMinimumSystemVersionByArchitecture?.[arch === 'x64' ? 'x86_64' : arch] ?? info.LSMinimumSystemVersion;
+  const currentOS = (await run('/usr/bin/sw_vers', ['-productVersion'], NATIVE_OPTIONS)).stdout.trim();
+  const parts = value => {
+    if (typeof value !== 'string' || !/^\d{1,5}(?:\.\d{1,5}){0,2}$/.test(value)) throw new Error('Invalid macOS compatibility metadata.');
+    return value.split('.').map(Number).concat([0, 0]).slice(0, 3);
+  };
+  const required = parts(minimum), current = parts(currentOS);
+  const difference = required.map((value, index) => value - current[index]).find(value => value !== 0) || 0;
+  if (difference > 0) throw Object.assign(new Error(`This update requires macOS ${minimum} or later; this Mac runs ${currentOS}. No app files were replaced.`), { code: 'UPDATE_INCOMPATIBLE_OS' });
   async function field(name) { return (await run('/usr/libexec/PlistBuddy', ['-c', 'Print :' + name, plist], NATIVE_OPTIONS)).stdout.trim(); }
   if (await field('CFBundleIdentifier') !== appId || await field('CFBundleShortVersionString') !== version) fail('Application identity or version mismatch.');
   const executable = await field('CFBundleExecutable');

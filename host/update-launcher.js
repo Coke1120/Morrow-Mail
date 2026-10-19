@@ -59,6 +59,18 @@ async function assertDirectoryIdentity(file, expected) {
 }
 async function writeExclusive(file, value) { await fs.writeFile(file, value, { mode: 0o600, flag: 'wx' }); }
 async function readPrivateJSON(file) { const stat = await privatePath(file); if (stat.size > 16384) throw new Error('Update receipt exceeds size limit.'); return JSON.parse(await fs.readFile(file, 'utf8')); }
+async function cleanupUnstarted({ staging, target, identities }) {
+  // Called only while this launcher knows spawn has not been attempted. Never
+  // use directory age or a missing PID to infer that an existing helper stopped.
+  await validateStaging(staging, target);
+  await assertDirectoryIdentity(path.dirname(target), identities.parent);
+  await assertDirectoryIdentity(target, identities.target);
+  await assertDirectoryIdentity(staging, identities.staging);
+  const allowed = new Set(['update-helper.js', 'update-launcher.js', 'update-manifest.js', 'update-installer.js',
+    'artifact.zip', 'preflight', 'manifest.json', 'public-key.pem', 'config.json', 'cancel']);
+  if ((await fs.readdir(staging)).some(name => !allowed.has(name))) throw new Error('Update transaction may have started; recovery files retained.');
+  await fs.rm(staging, { recursive: true });
+}
 async function start(options) {
   if (process.platform !== 'darwin') throw new Error('This installer requires macOS.');
   const { target, archive, manifestBytes, signature, publicKey, currentVersion, arch, pid, execPath } = options;
@@ -76,6 +88,7 @@ async function start(options) {
   try { staging = await fs.mkdtemp(path.join(path.dirname(target), PREFIX)); }
   catch (error) { if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw manualLocation('This app cannot create installation staging.'); throw error; }
   await fs.chmod(staging, 0o700);
+  let helperMayRun = false;
   try {
     await validateStaging(staging, target);
     identities.staging = await directoryIdentity(staging);
@@ -96,6 +109,10 @@ async function start(options) {
     await preserveQuarantine(archiveCopy, preflight);
     await verifyBundle(preflight, { version: manifest.version, arch });
     await assessBundleTrust(preflight);
+    // The helper re-extracts authenticated bytes after quit. This preview is no
+    // longer needed and must not accumulate beside the retained backup.
+    await assertDirectoryIdentity(staging, identities.staging);
+    await fs.rm(path.join(staging, 'preflight'), { recursive: true });
     const nonce = crypto.randomBytes(32).toString('hex');
     await writeExclusive(path.join(staging, 'manifest.json'), manifestBytes);
     await writeExclusive(path.join(staging, 'public-key.pem'), publicKey);
@@ -103,6 +120,7 @@ async function start(options) {
     await assertDirectoryIdentity(path.dirname(target), identities.parent);
     await assertDirectoryIdentity(staging, identities.staging);
     await assertDirectoryIdentity(target, identities.target);
+    helperMayRun = true;
     const child = spawn(execPath, [path.join(staging, 'update-helper.js'), staging], { detached: true, stdio: 'ignore', env: childEnvironment(true) });
     let failed;
     child.on('error', err => { failed = err; });
@@ -119,8 +137,13 @@ async function start(options) {
     }
     throw new Error('Installer helper readiness timed out.');
   } catch (error) {
-    // Preserve evidence; a helper that never received parent exit cannot replace the app.
-    await writeExclusive(path.join(staging, 'cancel'), 'cancel').catch(() => {});
+    if (!helperMayRun && identities.staging) {
+      try { await cleanupUnstarted({ staging, target, identities }); }
+      catch { error.message += ` Temporary files retained for review at ${staging}.`; }
+    } else {
+      // Once spawn was attempted, a timeout is not proof the helper stopped.
+      await writeExclusive(path.join(staging, 'cancel'), 'cancel').catch(() => {});
+    }
     throw error;
   }
 }
@@ -178,4 +201,4 @@ async function recoveryStatus(target) {
   if (!latest || !['failed', 'recovery-required', 'installing'].includes(latest.state)) return null;
   return { state: latest.state, message: `An update transaction needs review (${latest.state}). Recovery files are retained at ${latest.staging}. Quit all app copies before restoring a verified backup; see Signed Updates recovery instructions.` };
 }
-module.exports = { trustedParent, validateParent, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, start, registerStartup, acknowledge, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay };
+module.exports = { cleanupUnstarted, trustedParent, validateParent, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, start, registerStartup, acknowledge, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay };

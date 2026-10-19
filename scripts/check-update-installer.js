@@ -82,8 +82,18 @@ async function main() {
     }
     await fs.writeFile(executable, macho());
     const commands = [];
-    const run = async (cmd, args) => { commands.push([cmd, args]); return { stdout: cmd.endsWith('PlistBuddy') ? ({ 'Print :CFBundleIdentifier': 'com.coke1120.morrow-mail', 'Print :CFBundleShortVersionString': '0.2.6', 'Print :CFBundleExecutable': 'Morrow Mail' })[args[1]] : '' }; };
+    let minimum = { LSMinimumSystemVersion: '11.0' }, currentOS = '14.0';
+    const run = async (cmd, args) => { commands.push([cmd, args]); return { stdout: cmd.endsWith('plutil') ? JSON.stringify(minimum) : cmd.endsWith('sw_vers') ? currentOS : cmd.endsWith('PlistBuddy') ? ({ 'Print :CFBundleIdentifier': 'com.coke1120.morrow-mail', 'Print :CFBundleShortVersionString': '0.2.6', 'Print :CFBundleExecutable': 'Morrow Mail' })[args[1]] : '' }; };
     await verifyBundle(bundle, { version: '0.2.6', arch: 'arm64', run }); assert(commands.some(([cmd, args]) => cmd.endsWith('codesign') && args.includes('--strict')));
+    minimum = { LSMinimumSystemVersion: '15.0' };
+    await assert.rejects(verifyBundle(bundle, { version: '0.2.6', arch: 'arm64', run }), { code: 'UPDATE_INCOMPATIBLE_OS' });
+    minimum = { LSMinimumSystemVersion: '11.0', LSMinimumSystemVersionByArchitecture: { arm64: '14.1' } };
+    await assert.rejects(verifyBundle(bundle, { version: '0.2.6', arch: 'arm64', run }), { code: 'UPDATE_INCOMPATIBLE_OS' });
+    currentOS = '14.1.0'; await verifyBundle(bundle, { version: '0.2.6', arch: 'arm64', run });
+    minimum = { LSMinimumSystemVersion: 'invalid' };
+    await assert.rejects(verifyBundle(bundle, { version: '0.2.6', arch: 'arm64', run }), /compatibility/);
+    minimum = {}; await assert.rejects(verifyBundle(bundle, { version: '0.2.6', arch: 'arm64', run }), /compatibility/);
+    minimum = { LSMinimumSystemVersion: '11.0' };
     await assert.rejects(verifyBundle(bundle, { version: '0.2.6', arch: 'x64', run }), /architecture/);
     await assert.rejects(verifyBundle(bundle, { version: '0.2.7', arch: 'arm64', run }), /identity or version/);
     await fs.writeFile(executable, macho(0x01000007));

@@ -17,6 +17,10 @@ if (process.argv.includes('--windows-paths')) {
   require('node:vm').runInNewContext(require('node:fs').readFileSync(filename, 'utf8'), context, { filename });
   createMacUpdater = context.module.exports.createMacUpdater;
 }
+// Controller-only fixtures inject file validation; the real-file retry cases
+// below explicitly restore production validation.
+const controller = createMacUpdater;
+createMacUpdater = options => controller({ validateArtifact: async () => {}, ...options });
 const { artifactURL } = require("../host/update-manifest");
 const key = crypto.generateKeyPairSync("ed25519");
 const publicKey = key.publicKey.export({ type: "spki", format: "pem" });
@@ -65,7 +69,7 @@ const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => fixtur
     fetchBytes: async url => Buffer.from(url.endsWith('.sig') ? sig : bytes),
     downloadArtifact: async () => authenticatedArchive,
     startInstaller: async () => { throw Object.assign(Error('Policy needs user review'), { code: 'UPDATE_MANUAL_TRUST' }); },
-    validateArtifact: async () => { if (++checked > 1) throw Error('checksum changed'); }, requireQuarantine: async () => {},
+    validateArtifact: async () => { if (++checked > 2) throw Error('checksum changed'); }, requireQuarantine: async () => {},
     shell: { showItemInFolder: file => { assert.equal(file, authenticatedArchive); revealed++; }, openExternal: () => assert.fail('Candidate handoff must use verified download') }
   });
   handoff.configure({ prepare: async () => () => { recovered++; }, quit: () => { forbiddenQuits++; } });
@@ -73,15 +77,34 @@ const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => fixtur
   assert.equal(handoff.snapshot().manualRequired, true);
   assert.equal(handoff.snapshot().installing, false);
   assert.equal(recovered, 1); assert.equal(forbiddenQuits, 0);
-  await handoff.manual(); assert.equal(checked, 1); assert.equal(revealed, 1);
+  await handoff.manual(); assert.equal(checked, 2); assert.equal(revealed, 1);
   assert.match(handoff.snapshot().error, /have not been completed/);
   await handoff.manual(); assert.equal(revealed, 1, 'Changed archive must not be revealed');
-  assert.equal(handoff.snapshot().manualAvailable, false);
+  assert.equal(handoff.snapshot().manualAvailable, true, 'Invalidated downloads can use the official manual release page');
+  assert.equal(handoff.snapshot().downloaded, false);
   assert.match(handoff.snapshot().error, /checksum changed/);
   let website;
   const unconfigured = createMacUpdater({ app, state: {}, publicKey: '', shell: { openExternal: async url => { website = url; }, showItemInFolder: () => assert.fail() } });
   unconfigured.init(); await unconfigured.manual();
   assert.equal(website, 'https://github.com/Coke1120/Morrow-Mail/releases/latest');
+  const disk = require('node:fs/promises'), nativePath = require('node:path');
+  const retryRoot = await disk.mkdtemp(nativePath.join(require('node:os').tmpdir(), 'morrow-retry-'));
+  try {
+    const file = nativePath.join(retryRoot, 'update.zip');
+    let requests = 0, copies = 0, preparations = 0;
+    const retry = createMacUpdater({ app, state: {}, arch: 'arm64', publicKey, resourcesPath,
+      fetchBytes: async url => { requests++; return Buffer.from(url.endsWith('.sig') ? sig : bytes); },
+      downloadArtifact: async () => { copies++; await disk.writeFile(file, 'test'); return file; },
+      validateArtifact: require('../host/update-manifest').validateArtifact,
+      startInstaller: async () => assert.fail('Invalid file must not reach installer') });
+    retry.configure({ prepare: async () => { preparations++; return () => {}; }, quit: () => assert.fail() });
+    await retry.check(); await disk.unlink(file); await retry.install();
+    assert.equal(preparations, 0); assert.equal(retry.snapshot().downloaded, false);
+    await retry.check(); assert.equal(copies, 2); assert.equal(requests, 4);
+    await disk.writeFile(file, 'evil'); await retry.check();
+    assert.equal(copies, 3); assert.equal(requests, 6); assert.equal(await disk.readFile(file, 'utf8'), 'test');
+    await retry.check(); assert.equal(copies, 3, 'Valid cached bytes are not downloaded again');
+  } finally { await disk.rm(retryRoot, { recursive: true, force: true }); }
   // Exercise the actual macOS IPC branch; the Windows provider is not loaded.
   const vm = require("node:vm"), fs = require("node:fs");
   const handlers = {}, contents = { mainFrame: {} }, win = { isDestroyed: () => false, webContents: contents };
