@@ -1616,6 +1616,11 @@ assert.ok(!registered.has("morrow:configGetShowOneClickTidy") && !registered.has
 assert.ok(!registered.has("morrow:configGetShowOneClickTidyEffective") && !used.has("morrow:configGetShowOneClickTidyEffective"));
 assert.ok(!appJs.includes("function showTidy") && !appJs.includes("function tidyInbox") && !appJs.includes("mail:tidyInbox"));
 assert.ok(html.includes('id="agent-panel"') && !html.includes('id="agent-open"') && html.includes('id="studio-home"') && html.includes('id="studio-library"'));
+assert.ok(html.includes('id="agent-peek"') && !html.includes('id="agent-open"') && !html.includes('id="agent-mail"'));
+assert.ok(!functionSource(appJs, "peekMessage").includes("showMail"));
+assert.ok(functionSource(appJs, "openPeekInMail").includes("showMail"));
+assert.ok(!appJs.includes("Done and Dismiss only update this local Agent list. They do not archive, delete, or reply."));
+assert.ok(appJs.includes("Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply."));
 assert.ok(html.includes('id="agent-composer"') && html.includes('id="agent-send"') && html.includes('id="agent-input"'));
 assert.ok(html.includes('id="agent-memory"') && html.includes('id="rail-brain"') && html.includes('id="agent-home"') && html.includes('id="side-mail"'));
 assert.ok(!html.includes('id="side-agent"') && !html.includes('id="side-brain"') && !html.includes("side-switch"));

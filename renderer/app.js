@@ -72,6 +72,8 @@ let accountGen = 0;
 let listGen = 0;
 const LIST_PAGE_SIZE = 200;
 let openGen = 0;
+let peekGen = 0;
+let peekEmail = null;
 let reloadTimer = null;
 let undoOpIds = null;
 let undoReceipt = "";
@@ -3977,7 +3979,7 @@ function renderBody(pane, email) {
   appendMessageBody(pane, email, remoteVisible(state.prefs.images, allowed));
 }
 
-function renderRemoteGate(pane, email) {
+function renderRemoteGate(pane, email, repaint) {
   const images = remoteImageSrcs(email && email.htmlBody);
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
   if (!images.length || remoteVisible(state.prefs.images, allowed)) return;
@@ -3994,7 +3996,8 @@ function renderRemoteGate(pane, email) {
   button.textContent = "Load remote content";
   button.addEventListener("click", () => {
     state.remoteAllowed[email.id] = true;
-    renderReader(false);
+    if (typeof repaint === "function") repaint();
+    else renderReader(false);
   });
   bar.append(note, button);
   pane.appendChild(bar);
@@ -9713,12 +9716,16 @@ function followButton(follow, draft) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "ghost";
-  const kind = follow ? follow.kind : "draft";
   button.textContent = (follow && follow.label) || (draft ? "Review draft" : "Open");
   button.addEventListener("click", () => {
-    const run = kind === "draft" || draft
-      ? reviewDraft(draft || follow)
-      : openFollowUp((follow && follow.messageId) || "");
+    const source = draft || follow || {};
+    const body = String(source.body || source.text || "").trim();
+    const draftFollow = !draft && source.kind === "draft";
+    const run = draft || (source.kind === "draft" && body)
+      ? reviewDraft(source)
+      : draftFollow
+        ? openReplyCompose(source.messageId || "")
+        : peekMessage(source.messageId || "");
     Promise.resolve(run).catch((error) => {
       showStatus(error instanceof Error ? error.message : String(error), true);
     });
@@ -10244,10 +10251,73 @@ async function reviewDraft(draft) {
   await openCompose(withSuggestion(seed, body));
 }
 
-async function openFollowUp(messageId) {
+function paintMailBody(pane, email, repaint) {
+  pane.replaceChildren();
+  const from = document.createElement("p");
+  from.className = "meta";
+  from.textContent = email.from || "";
+  const when = document.createElement("p");
+  when.className = "meta";
+  const date = email.date ? new Date(email.date) : null;
+  when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  pane.append(from, when);
+  for (const [label, value] of [["To", email.to], ["Cc", email.cc]]) {
+    const text = people(value);
+    if (!text) continue;
+    const line = document.createElement("p");
+    line.className = "meta";
+    line.textContent = `${label} ${text}`;
+    pane.appendChild(line);
+  }
+  renderRemoteGate(pane, email, repaint);
+  renderAttachments(pane, email);
+  renderBody(pane, email);
+}
+
+function paintPeek(email) {
+  const title = $("agent-peek-title");
+  if (title) title.textContent = (email && String(email.subject || "").trim()) || "Message";
+  const pane = $("agent-peek-body");
+  if (!pane || !email) return;
+  paintMailBody(pane, email, () => paintPeek(email));
+}
+
+async function peekMessage(messageId) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
-  if (state.view !== "mail") showMail();
-  await openMessage(messageId, true);
+  const gen = ++peekGen;
+  let data;
+  try {
+    data = await call("mail:openEmail", { emailId: messageId });
+  } catch (error) {
+    if (gen !== peekGen) return;
+    throw error;
+  }
+  if (gen !== peekGen) return;
+  const email = data && data.email;
+  if (!email) throw new Error("That message is no longer in the mailbox.");
+  peekEmail = email;
+  paintPeek(email);
+  openDialog("agent-peek");
+}
+
+async function openPeekInMail() {
+  const id = peekEmail && peekEmail.id;
+  const closing = closeDialog("agent-peek");
+  if (closing) await closing;
+  if (!id) return;
+  showMail();
+  await openMessage(id, true);
+}
+
+async function openReplyCompose(messageId) {
+  if (!messageId) throw new Error("That message is not in the mailbox.");
+  const data = await call("mail:openEmail", { emailId: messageId });
+  const email = data && data.email;
+  if (!email || !email.accountId) throw new Error("That message is no longer in the mailbox.");
+  const account = state.accounts.find((item) => item.id === email.accountId);
+  if (!account) throw new Error("The mailbox is no longer connected.");
+  const self = account.preferredFromAddress || account.email || "";
+  await openCompose(composeSeed(email, "reply", self));
 }
 
 async function showStoredRun(run) {
@@ -10424,10 +10494,34 @@ function paintTurn(turn) {
   who.className = "agent-who";
   who.textContent = turn && turn.role === "user" ? "You" : "Agent";
   article.appendChild(who);
+  const cueName = turn && turn.kind === "skill" ? String(turn.name || "").trim() : "";
+  if (cueName) {
+    const cue = document.createElement("p");
+    cue.className = "agent-cue";
+    cue.textContent = "Running " + cueName + "…";
+    article.appendChild(cue);
+  }
   if (turn && turn.text) {
     const body = document.createElement("p");
     body.textContent = turn.text;
     article.appendChild(body);
+  }
+  const reply = turn && turn.reply;
+  if (reply && reply.kind === "list" && Array.isArray(reply.cards)) {
+    for (const card of reply.cards) article.appendChild(agentCard(card));
+  }
+  if (reply && reply.kind === "clarify" && Array.isArray(reply.choices) && reply.choices.length) {
+    const actions = document.createElement("div");
+    actions.className = "agent-actions row";
+    for (const choice of reply.choices) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost";
+      button.textContent = choice.label || "";
+      button.addEventListener("click", () => sendAgentText(choice.label || ""));
+      actions.appendChild(button);
+    }
+    article.appendChild(actions);
   }
   if (turn && turn.kind === "triage" && turn.triage) appendTriage(article, turn.triage);
   else if (turn && turn.role !== "user" && !turn.error) {
@@ -10487,6 +10581,11 @@ function paintAgentHome(payload) {
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
   root.replaceChildren();
+  const note = document.createElement("p");
+  note.id = "agent-todo-note";
+  note.className = "hint";
+  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply.";
+  root.appendChild(note);
   const reason = payload && payload.reason;
   for (const section of agentSections(payload)) {
     const block = document.createElement("section");
@@ -10538,7 +10637,6 @@ function agentTodoCard(item) {
   done.type = "button";
   done.className = "ghost";
   done.textContent = "Mark todo done";
-  done.title = "Updates this Agent list only; does not archive, delete, mark read, or reply.";
   done.addEventListener("click", () => {
     updateTodo(messageId, "done").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
   });
@@ -10550,8 +10648,7 @@ function agentTodoCard(item) {
     updateTodo(messageId, "dismissed").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
   });
   actions.append(done, dismiss);
-  const note = document.createElement("p"); note.className = "hint"; note.textContent = "Done and Dismiss only update this local Agent list. They do not archive, delete, or reply.";
-  card.append(actions, note);
+  card.append(actions);
   return card;
 }
 
@@ -11705,6 +11802,13 @@ function wire() {
     submitConfirm();
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
+  $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
+  $("agent-peek-mail").addEventListener("click", () => {
+    openPeekInMail().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+  });
+  $("agent-peek").addEventListener("close", () => {
+    peekEmail = null;
+  });
   $("confirm").addEventListener("close", () => {
     if (!confirmResult) return;
     const pending = confirmResult;

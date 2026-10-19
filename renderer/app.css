@@ -1063,6 +1063,8 @@ button.brain-skill {
   align-items: start;
 }
 
+#agent-todo-note { grid-column: 1 / -1; margin: 0; }
+
 .agent-thread {
   display: flex;
   flex-direction: column;
@@ -1093,6 +1095,8 @@ button.brain-skill {
   font-weight: 700;
   color: var(--muted);
 }
+
+.agent-cue { margin: 0 0 4px; font-weight: 700; }
 
 #agent-skill-chips {
   display: flex;
@@ -1170,6 +1174,14 @@ button.brain-skill {
 .skill-block {
   margin: 6px 0;
   overflow-wrap: anywhere;
+}
+
+.agent-item {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
 }
 
 .agent-item p,
@@ -2481,6 +2493,8 @@ dialog h2 {
 }
 
 #confirm { width: min(440px, calc(100vw - 24px)); }
+
+#agent-peek { width: min(720px, calc(100vw - 24px)); }
 
 #move-picker { width: min(480px, calc(100vw - 24px)); }
 
