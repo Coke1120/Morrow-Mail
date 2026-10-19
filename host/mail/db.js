@@ -1025,6 +1025,10 @@ function whereFor(query) {
     clauses.push("m.folder_path = ?");
     params.push(query.folderPath);
   }
+  if (Array.isArray(query.excludeFolderPaths) && query.excludeFolderPaths.length) {
+    clauses.push(`m.folder_path NOT IN (${query.excludeFolderPaths.map(() => "?").join(", ")})`);
+    params.push(...query.excludeFolderPaths);
+  }
   if (query.category && query.category !== "all" && query.category !== "primary") {
     clauses.push("0 = 1");
   }

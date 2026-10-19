@@ -4,6 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const db = require("./db");
+const virtuals = require("./virtual-folders");
 const presets = require("./presets");
 const remote = require("./remote");
 
@@ -22,8 +23,8 @@ const composeIdentity = require("./compose-identity");
 const { syncHorizonDays } = require("../settings");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
-// Not an IMAP mailbox. List queries with this id return starred rows for one account.
-const STARRED_FOLDER_ID = "__morrow_starred__";
+const STARRED_FOLDER_ID = virtuals.STARRED_ID;
+const UNREAD_FOLDER_ID = virtuals.UNREAD_ID;
 const KEY_TO_WELL = {
   inbox: "inbox",
   drafts: "drafts",
@@ -107,30 +108,6 @@ function accountViews() {
   return db.listAccountRows().map((row, index) => accountView(row, index));
 }
 
-function starredMailbox(accountId) {
-  return {
-    id: STARRED_FOLDER_ID,
-    name: "Starred",
-    wellKnownName: "starred",
-    unreadCount: 0,
-    totalCount: db.countMessages({ accountId, filterFlagged: true }),
-    type: "virtual",
-    children: [],
-  };
-}
-
-function placeStarred(primary, accountId) {
-  const view = starredMailbox(accountId);
-  for (const name of ["drafts", "sentitems", "inbox"]) {
-    const index = primary.findIndex((folder) => folder.wellKnownName === name);
-    if (index >= 0) {
-      primary.splice(index + 1, 0, view);
-      return;
-    }
-  }
-  primary.unshift(view);
-}
-
 function accountView(row, index) {
   const folders = db.foldersFor(row.id);
   const primary = [];
@@ -149,7 +126,7 @@ function accountView(row, index) {
     else more.push(view);
   }
   primary.sort((a, b) => PRIMARY_ORDER.indexOf(a.wellKnownName) - PRIMARY_ORDER.indexOf(b.wellKnownName));
-  placeStarred(primary, row.id);
+  virtuals.place(primary, more, row.id);
   const view = {
     id: row.id,
     email: row.email,
@@ -250,7 +227,7 @@ function threadMeta(rows) {
 
 function queryFrom(params) {
   const query = params || {};
-  const out = {
+  let out = {
     accountId: query.accountId || null,
     folderId: query.folderId || null,
     folderKey: query.folderKey || null,
@@ -261,10 +238,8 @@ function queryFrom(params) {
     limit: query.limit,
     offset: query.offset,
   };
-  if (out.folderId === STARRED_FOLDER_ID) {
-    out.filterFlagged = true;
-    out.folderId = null;
-  } else if (!out.folderKey && out.folderId && !out.accountId && KEY_TO_WELL[out.folderId]) {
+  out = virtuals.apply(out);
+  if (!out.folderKey && out.folderId && !out.accountId && KEY_TO_WELL[out.folderId]) {
     out.folderKey = out.folderId;
     out.folderId = null;
   }
@@ -404,8 +379,9 @@ function syncLabels(extra) {
       const account = db.accountById(accountId);
       if (account) accountLabel = account.email || account.display_name || "";
     }
-    if (folderId === STARRED_FOLDER_ID) {
-      if (!folderLabel) folderLabel = "Starred";
+    const described = virtuals.get(folderId);
+    if (described) {
+      if (!folderLabel) folderLabel = described.name;
     } else if (accountId && folderId) {
       const folder = db.folderByPath(accountId, folderId);
       if (!folderLabel && folder && folder.name) folderLabel = folder.name;
@@ -470,12 +446,13 @@ function publicSync(params) {
   if (!db.listAccountRows().length) return { state: "idle", message: "No account connected", lastSuccessAt: null };
   const accountId = params && params.accountId;
   const folderId = params && params.folderId;
-  if (folderId === STARRED_FOLDER_ID) {
+  const described = virtuals.get(folderId);
+  if (described) {
     return {
       ...syncLabels(params),
       state: "idle",
       phase: "idle",
-      message: "Starred uses messages already downloaded",
+      message: described.syncMessage,
       lastSuccessAt: null,
       lastError: "",
     };
@@ -2020,7 +1997,7 @@ function answer(channel, args) {
     case "mail:listFromCache":
     case "mail:listWindowRead":
     case "mail:loadMoreAggregate":
-      if (params && params.accountId && params.folderId && params.folderId !== STARRED_FOLDER_ID) {
+      if (params && params.accountId && params.folderId && !virtuals.get(params.folderId)) {
         noteActive(params.accountId, params.folderId);
       }
       return ok({ ...listPayload(params), sync: publicSync(params) });
@@ -2029,7 +2006,7 @@ function answer(channel, args) {
     case "mail:listFromNetwork":
       return (async () => {
         const query = params || {};
-        if (query.folderId === STARRED_FOLDER_ID) {
+        if (virtuals.get(query.folderId)) {
           return ok({ ...listPayload(query), sync: publicSync(query) });
         }
         const account = query.accountId ? db.accountById(query.accountId) : null;
@@ -2204,7 +2181,8 @@ function answer(channel, args) {
       return (async () => {
         try {
         const target = params && (params.targetFolderId || params.destination);
-        if (target === STARRED_FOLDER_ID) return fail("move", "Starred is a filter, not a folder.");
+        const blocked = virtuals.get(target);
+        if (blocked) return fail("move", blocked.filterCopy);
         if (!target) return fail("move", "Choose a folder.");
           const ids = [];
           if (params.emailId) ids.push(params.emailId);
@@ -2575,6 +2553,7 @@ module.exports = {
   init,
   answer,
   STARRED_FOLDER_ID,
+  UNREAD_FOLDER_ID,
   messagesForAi,
   pumpScheduled,
   startBackgroundSync,

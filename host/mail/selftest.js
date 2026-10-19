@@ -73,6 +73,7 @@ async function run() {
   }
   const primaryNames = accounts.data[0].folders.primary.map((folder) => folder.wellKnownName);
   if (primaryNames.indexOf("starred") !== primaryNames.indexOf("drafts") + 1) problem(problems, "starred folder placement");
+  if (primaryNames.indexOf("unread") !== primaryNames.indexOf("starred") + 1) problem(problems, "unread folder placement");
   const starredFolder = accounts.data[0].folders.primary.find((folder) => folder.wellKnownName === "starred");
   if (!starredFolder || starredFolder.id !== "__morrow_starred__" || starredFolder.type !== "virtual") {
     problem(problems, "starred folder shape");
@@ -158,7 +159,7 @@ async function run() {
   const notes = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "Notes", limit: 50 }]);
   if (!notes || notes.data.emails.length !== 1) problem(problems, "custom folder move");
   const undo = await answer("mail:undoRemoval", [{ opIds: moved.data.opIds, kind: "move" }]);
-  if (!undo || undo.ok !== true) problem(problems, "undo");
+  if (!undo || undo.success !== true) problem(problems, "undo");
   const restored = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "INBOX", limit: 50 }]);
   if (!restored || restored.data.emails.length !== 1) problem(problems, "undo did not restore");
 
@@ -181,8 +182,16 @@ async function run() {
   const refused = await answer("mail:markRead", [{ emailId: "m-remote", accountId: "imap-test", isRead: true }]);
   if (!refused || refused.success !== false) problem(problems, "mark read without a password should fail");
   if (db.messageById("m-remote").unread !== 1) problem(problems, "failed mark read changed the local row");
+  const unreadBefore = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "__morrow_unread__", limit: 50 }]);
+  if (!unreadBefore || !unreadBefore.data || !unreadBefore.data.emails.some((row) => row.id === "m-test")) {
+    problem(problems, "unread filter missed m-test");
+  }
   const read = await answer("mail:markRead", [{ emailId: "m-test", accountId: "imap-test", isRead: true }]);
   if (!read || read.success !== true || db.messageById("m-test").unread !== 0) problem(problems, "local mark read");
+  const unreadAfter = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "__morrow_unread__", limit: 50 }]);
+  if (!unreadAfter || !unreadAfter.data || unreadAfter.data.emails.some((row) => row.id === "m-test")) {
+    problem(problems, "unread filter kept m-test after mark read");
+  }
   const star = await answer("mail:toggleStar", [{ emailId: "m-test", accountId: "imap-test", isStarred: true }]);
   if (!star || star.success !== true || db.messageById("m-test").starred !== 1) problem(problems, "local star");
   const starredList = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "__morrow_starred__", limit: 50 }]);
