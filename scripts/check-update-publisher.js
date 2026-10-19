@@ -55,6 +55,8 @@ const { createManifest, MANIFEST_NAME, SIGNATURE_NAME } = require('./create-upda
       const symlink = path.join(temp, 'symlink.zip');
       await fs.symlink(artifact, symlink);
       await assert.rejects(createManifest({ ...base, artifact: symlink, outputDir: path.join(temp, 'symlink-output') }));
+    } else {
+      console.log('SKIP POSIX symlink artifact assertion on Windows; manifest authentication and artifact integrity checks still run.');
     }
     // CLI version mismatch must fail before it even tries to read a key path.
     const pkgPath = path.join(temp, 'package.json');

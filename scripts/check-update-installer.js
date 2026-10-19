@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { preserveQuarantine, extractZip, verifyBundle, createStaging, waitForExit, replaceAndLaunch } = require('../host/update-installer');
+const { requireQuarantine, assessBundleTrust, preserveQuarantine, extractZip, verifyBundle, createStaging, waitForExit, replaceAndLaunch } = require('../host/update-installer');
 function crc(bytes) { let c = 0xffffffff; for (const b of bytes) { c ^= b; for (let i = 0; i < 8; i++) c = c >>> 1 ^ (0xedb88320 & -(c & 1)); } return (c ^ 0xffffffff) >>> 0; }
 function zip(entries) {
   const locals = [], centrals = []; let offset = 0;
@@ -53,6 +53,21 @@ async function main() {
     await assert.rejects(extract([['Morrow Mail.app/described', 'ok']], bytes => { const offset = bytes.readUInt32LE(bytes.length - 6); bytes.writeUInt16LE(8, 6); bytes.writeUInt16LE(8, offset + 8); return bytes; }), /descriptor/);
     await extract([['Morrow Mail.app/', '', 0o040755]]);
     await assert.rejects(extract([['Morrow Mail.app/', '', 0o040755]], bytes => { const offset = bytes.readUInt32LE(bytes.length - 6); bytes.writeUInt32LE(1, 14); bytes.writeUInt32LE(1, offset + 16); return bytes; }), /checksum/);
+    for (const badName of ['Morrow Mail.app/Contents/._Info.plist', '__MACOSX/._Morrow Mail.app', 'Morrow Mail.app/__MACOSX/data']) {
+      const archive = path.join(root, `metadata${id++}.zip`), destination = path.join(root, `metadata-output${id++}`);
+      await fs.writeFile(archive, zip([['Morrow Mail.app/Contents/first', 'safe'], [badName, 'unsupported metadata']]));
+      await assert.rejects(extractZip(archive, destination), /metadata/);
+      await assert.rejects(fs.lstat(destination), { code: 'ENOENT' });
+    }
+    assert.equal(await requireQuarantine('archive', { run: async () => ({ stdout: '30 30 38 33' }) }), '30303833');
+    await assert.rejects(requireQuarantine('archive', { run: async () => ({ stdout: '' }) }), /quarantine/);
+    await assert.rejects(requireQuarantine('archive', { run: async () => { throw new Error('No such xattr'); } }), /No such xattr/);
+    await assert.rejects(requireQuarantine('archive', { run: async () => ({ stdout: '30303832' }) }), /Inactive quarantine/);
+    await assert.rejects(preserveQuarantine('archive', 'bundle', { run: async () => ({ stdout: '' }) }), /quarantine/);
+    const assessments = [];
+    await assessBundleTrust(bundle, { run: async (...args) => { assessments.push(args); return { stdout: '' }; } });
+    assert.deepEqual(assessments[0], ['/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle], { timeout: 60000, maxBuffer: 1024 * 1024 }]);
+    for (const message of ['rejected', 'timed out']) await assert.rejects(assessBundleTrust(bundle, { run: async () => { throw new Error(message); } }), new RegExp(message));
     const attrs = [];
     await preserveQuarantine('archive', 'bundle', { run: async (cmd, args) => { attrs.push(args); return { stdout: args.length === 1 ? 'com.apple.quarantine\n' : args[0] === '-px' ? '30 30 38 33' : '' }; } });
     assert.deepEqual(attrs.at(-1), ['-wx', 'com.apple.quarantine', '30303833', 'bundle']);

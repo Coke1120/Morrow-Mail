@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { verifyManifest, validateArtifact } = require('./update-manifest');
-const { extractZip, verifyBundle, waitForExit, replaceAndLaunch, preserveQuarantine } = require('./update-installer');
+const { extractZip, verifyBundle, waitForExit, replaceAndLaunch, preserveQuarantine, requireQuarantine, assessBundleTrust } = require('./update-installer');
 const { childEnvironment, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay } = require('./update-launcher');
 async function journal(staging, state, extra = {}) {
   const temp = path.join(staging, 'journal.next');
@@ -40,6 +40,10 @@ async function waitReady({ receipt, nonce, version, launchState, timeout = 60000
   }
   return 'timeout';
 }
+async function launchTrusted(bundle, launch, assess = assessBundleTrust) {
+  await assess(bundle);
+  return launch();
+}
 async function run(staging) {
   if (process.platform !== "darwin") throw new Error("This installer requires macOS.");
   await privatePath(staging, true);
@@ -61,10 +65,12 @@ async function run(staging) {
   // Verify signed bytes and archive again after the installed app has stopped.
   const manifest = check();
   await validateArtifact(path.join(staging, 'artifact.zip'), manifest);
+  await requireQuarantine(path.join(staging, 'artifact.zip'));
   await journal(staging, 'verifying');
   const extracted = await extractZip(path.join(staging, 'artifact.zip'), path.join(staging, 'extracted'));
   await preserveQuarantine(path.join(staging, 'artifact.zip'), extracted);
   await verifyBundle(extracted, { version, arch });
+  await assessBundleTrust(extracted);
   const staged = path.join(staging, 'candidate.app');
   await fs.rename(extracted, staged);
   const backup = path.join(staging, 'previous.app');
@@ -74,17 +80,17 @@ async function run(staging) {
   await verifyBundle(target, { version: currentVersion, arch });
   replacementAttempted = true;
   const result = await replaceAndLaunch({ target, staged, backup }, {
-    launch: bundle => new Promise((resolve, reject) => {
+    launch: bundle => launchTrusted(bundle, () => new Promise((resolve, reject) => {
       const child = spawn('/usr/bin/open', ['-W', '-n', bundle, '--args', `--morrow-update-receipt=${path.join(staging, 'receipt.json')}`, `--morrow-update-nonce=${nonce}`], { stdio: 'ignore', env: appEnvironment });
       child.once('error', reject);
       child.once('spawn', () => { child.unref(); resolve(); });
       child.once('exit', code => { launchState.exited = true; launchState.code = code; });
-    }),
+    })),
     waitReady: () => waitReady({ receipt: path.join(staging, 'receipt.json'), nonce, version, launchState }),
-    relaunchOld: bundle => new Promise((resolve, reject) => {
+    relaunchOld: bundle => launchTrusted(bundle, () => new Promise((resolve, reject) => {
       const child = spawn('/usr/bin/open', [bundle], { stdio: 'ignore', detached: true, env: appEnvironment });
       child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
-    })
+    }))
   });
   await journal(staging, result.state, { target, backup, version, message: result.message });
   } catch (error) {
@@ -93,10 +99,10 @@ async function run(staging) {
       // relaunch it after verifying its expected identity and strict integrity.
       await verifyBundle(target, { version: currentVersion, arch });
       const env = childEnvironment();
-      await new Promise((resolve, reject) => {
+      await launchTrusted(target, () => new Promise((resolve, reject) => {
         const child = spawn('/usr/bin/open', [target], { stdio: 'ignore', detached: true, env });
         child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
-      });
+      }));
     }
     throw error;
   }
@@ -109,4 +115,4 @@ if (require.main === module) {
     process.exitCode = 1;
   });
 }
-module.exports = { run, waitReady, journal };
+module.exports = { launchTrusted, run, waitReady, journal };

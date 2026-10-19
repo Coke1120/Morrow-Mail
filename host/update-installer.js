@@ -23,6 +23,7 @@ async function readAt(handle, length, position) {
 function safeName(name, bundleName) {
   if (!name || name.includes('\\') || /[\x00-\x1f\x7f]/.test(name) || name.startsWith('/') || name.includes(':')) fail('Unsafe ZIP path.');
   const parts = name.replace(/\/$/, '').split('/');
+  if (parts.some(p => p.startsWith('._') || p === '__MACOSX')) fail('Unsupported ZIP AppleDouble metadata.');
   if (parts.some(p => !p || p === '.' || p === '..') || parts[0] !== bundleName) fail('ZIP must contain only the expected application.');
   return parts.join('/');
 }
@@ -36,7 +37,6 @@ function crcUpdate(crc, bytes) {
 }
 async function extractZip(archive, destination, { bundleName = 'Morrow Mail.app' } = {}) {
   // Destination must be fresh; never extract into a prior tree or follow links.
-  await fsp.mkdir(destination, { mode: 0o700 });
   const handle = await fsp.open(archive, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
     const stat = await handle.stat();
@@ -92,6 +92,8 @@ async function extractZip(archive, destination, { bundleName = 'Morrow Mail.app'
       let parent = path.posix.dirname(entry.relative);
       while (parent !== '.') { if (links.has(parent.normalize('NFD').toLowerCase())) fail('ZIP entry descends through a symlink.'); parent = path.posix.dirname(parent); }
     }
+    // Finish archive metadata/path validation before creating any output.
+    await fsp.mkdir(destination, { mode: 0o700 });
     const pendingLinks = [];
     for (const entry of entries) {
       const target = path.join(destination, entry.relative);
@@ -146,13 +148,22 @@ async function verifyBundle(bundle, { version, arch, appId = 'com.coke1120.morro
   } finally { await binary.close(); }
   await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', bundle], NATIVE_OPTIONS);
 }
-async function preserveQuarantine(source, destination, { run = execFile } = {}) {
-  // xattr enumerates names only; absence is valid, read/write failures are not.
-  // Hex mode preserves the exact attribute bytes without shell interpolation.
-  const names = (await run('/usr/bin/xattr', [source], NATIVE_OPTIONS)).stdout.split(/\r?\n/);
-  if (!names.includes('com.apple.quarantine')) return;
+async function assessBundleTrust(bundle, { run = execFile } = {}) {
+  // Integrity and publisher authenticity do not establish Apple platform trust.
+  // Propagate rejection/timeouts; callers must never launch a rejected bundle.
+  await run('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle], NATIVE_OPTIONS);
+}
+async function requireQuarantine(source, { run = execFile } = {}) {
   const value = (await run('/usr/bin/xattr', ['-px', 'com.apple.quarantine', source], NATIVE_OPTIONS)).stdout.replace(/\s/g, '');
-  if (!/^(?:[0-9a-fA-F]{2})+$/.test(value) || value.length > 32768) fail('Invalid quarantine metadata.');
+  if (!/^(?:[0-9a-fA-F]{2})+$/.test(value) || value.length > 32768) fail('Missing or invalid quarantine metadata.');
+  const flags = Buffer.from(value, 'hex').toString('utf8').split(';')[0];
+  if (!/^[a-fA-F0-9]{4,8}$/.test(flags) || !(Number.parseInt(flags, 16) & 1)) fail('Inactive quarantine metadata.');
+  return value;
+}
+async function preserveQuarantine(source, destination, { run = execFile } = {}) {
+  // Missing metadata is an error. Hex mode preserves the exact attribute bytes
+  // without shell interpolation or clearing the download's provenance.
+  const value = await requireQuarantine(source, { run });
   await run('/usr/bin/xattr', ['-wx', 'com.apple.quarantine', value, destination], NATIVE_OPTIONS);
 }
 async function createStaging(target) {
@@ -188,4 +199,4 @@ async function replaceAndLaunch({ target, staged, backup }, { launch, waitReady,
     throw error;
   }
 }
-module.exports = { preserveQuarantine, extractZip, verifyBundle, createStaging, waitForExit, replaceAndLaunch };
+module.exports = { requireQuarantine, assessBundleTrust, preserveQuarantine, extractZip, verifyBundle, createStaging, waitForExit, replaceAndLaunch };

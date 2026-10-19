@@ -4,6 +4,7 @@ const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const execFile = require('node:util').promisify(require('node:child_process').execFile);
 const { RELEASE_ROOT, ARCHIVE_LIMIT } = require('./update-manifest');
 
 // No renderer-controlled origins, credentials, custom headers or executable URLs.
@@ -58,7 +59,23 @@ async function fetchBytes(url, options = {}) {
   await streamDownload(url, { ...options, onChunk: chunk => chunks.push(Buffer.from(chunk)) });
   return Buffer.concat(chunks);
 }
-async function downloadArtifact(manifest, { directory, onProgress, ...options }) {
+async function recordInternetDownload(file, { platform = process.platform, run = execFile } = {}) {
+  if (platform !== 'darwin') return;
+  const options = { timeout: 60000, maxBuffer: 65536, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } };
+  // A programmatic download does not automatically receive Safari's quarantine
+  // provenance. Create an explicit quarantine record; never clear existing data.
+  const names = (await run('/usr/bin/xattr', [file], options)).stdout.split(/\r?\n/);
+  if (!names.includes('com.apple.quarantine')) {
+    const value = `0083;${Math.floor(Date.now() / 1000).toString(16)};Morrow Mail;${crypto.randomUUID().toUpperCase()}`;
+    await run('/usr/bin/xattr', ['-w', 'com.apple.quarantine', value, file], options);
+  }
+  const value = (await run('/usr/bin/xattr', ['-p', 'com.apple.quarantine', file], options)).stdout.trim();
+  const flags = value.split(';')[0];
+  if (value.length > 16384 || !/^[a-fA-F0-9]{4,8}$/.test(flags) || !(Number.parseInt(flags, 16) & 1)) {
+    throw new Error('Downloaded update quarantine could not be established. Use the manual download.');
+  }
+}
+async function downloadArtifact(manifest, { directory, onProgress, quarantine = recordInternetDownload, ...options }) {
   // Caller supplies a host-owned private directory; create a private child and never overwrite a path.
   const dir = await fs.promises.mkdtemp(path.join(directory, 'signed-update-'));
   await fs.promises.chmod(dir, 0o700);
@@ -76,6 +93,7 @@ async function downloadArtifact(manifest, { directory, onProgress, ...options })
     if (size !== manifest.size || hash.digest('hex') !== manifest.sha256) throw new Error('Update artifact checksum or size mismatch.');
     await handle.sync();
     await handle.close(); handle = null;
+    await quarantine(file);
     return file;
   } catch (error) {
     if (handle) await handle.close();
@@ -83,4 +101,4 @@ async function downloadArtifact(manifest, { directory, onProgress, ...options })
     throw error;
   }
 }
-module.exports = { allowedURL, fetchBytes, downloadArtifact };
+module.exports = { allowedURL, fetchBytes, downloadArtifact, recordInternetDownload };

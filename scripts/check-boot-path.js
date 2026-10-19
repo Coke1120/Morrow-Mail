@@ -60,7 +60,7 @@ for (const file of syntax) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-for (const file of ["check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js"]) {
+for (const file of ["check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-release-preflight.js", "check-release-publication.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }

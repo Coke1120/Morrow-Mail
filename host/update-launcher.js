@@ -4,7 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { verifyManifest, validateArtifact } = require('./update-manifest');
-const { preserveQuarantine, verifyBundle } = require('./update-installer');
+const { preserveQuarantine, requireQuarantine, extractZip, verifyBundle, assessBundleTrust } = require('./update-installer');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const PREFIX = '.morrow-update-';
 function childEnvironment(runAsNode = false) {
@@ -33,6 +33,7 @@ async function start(options) {
   if (pid !== process.pid || execPath !== process.execPath || !Number.isInteger(pid) || pid < 2) throw new Error('Invalid installer process identity.');
   const manifest = verifyManifest(manifestBytes, signature, { publicKey, currentVersion, arch, platform: 'darwin' });
   await validateArtifact(archive, manifest);
+  await requireQuarantine(archive);
   const installed = await fs.lstat(target);
   if (!installed.isDirectory() || installed.isSymbolicLink() || installed.uid !== process.getuid()) throw new Error('Application must be owned by the current user.');
   await verifyBundle(target, { version: currentVersion, arch });
@@ -49,6 +50,13 @@ async function start(options) {
     await fs.chmod(archiveCopy, 0o600);
     await preserveQuarantine(archive, archiveCopy);
     await validateArtifact(archiveCopy, manifest);
+    await requireQuarantine(archiveCopy);
+    // Native policy approval is required while the current app is still running.
+    // A rejected candidate must never cause shutdown or helper handoff.
+    const preflight = await extractZip(archiveCopy, path.join(staging, 'preflight'));
+    await preserveQuarantine(archiveCopy, preflight);
+    await verifyBundle(preflight, { version: manifest.version, arch });
+    await assessBundleTrust(preflight);
     const nonce = crypto.randomBytes(32).toString('hex');
     await writeExclusive(path.join(staging, 'manifest.json'), manifestBytes);
     await writeExclusive(path.join(staging, 'public-key.pem'), publicKey);

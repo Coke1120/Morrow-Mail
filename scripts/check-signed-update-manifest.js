@@ -7,9 +7,21 @@ const path = require('node:path');
 const { Readable } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { verifyManifest, artifactURL, validateArtifact, compareVersions } = require('../host/update-manifest');
-const { allowedURL, fetchBytes, downloadArtifact } = require('../host/update-download');
+const { allowedURL, fetchBytes, downloadArtifact, recordInternetDownload } = require('../host/update-download');
 
 async function main() {
+  const attrs = new Map(); let writes = 0;
+  const xattr = async (_tool, args) => {
+    if (args.length === 1) return { stdout: attrs.has(args[0]) ? 'com.apple.quarantine\n' : '' };
+    if (args[0] === '-w') { writes++; attrs.set(args[3], args[2]); return { stdout: '' }; }
+    return { stdout: attrs.get(args[2]) || '' };
+  };
+  await recordInternetDownload('/fixture.zip', { platform: 'darwin', run: xattr });
+  assert.match(attrs.get('/fixture.zip'), /^0083;[a-f0-9]+;Morrow Mail;/);
+  await recordInternetDownload('/fixture.zip', { platform: 'darwin', run: xattr });
+  assert.equal(writes, 1, 'existing quarantine is retained');
+  await assert.rejects(recordInternetDownload('/fixture.zip', { platform: 'darwin', run: async () => ({ stdout: '' }) }), /quarantine/);
+  await assert.rejects(recordInternetDownload('/fixture.zip', { platform: 'darwin', run: async () => { throw Error('xattr denied'); } }), /denied/);
   // Ephemeral test-only roots: never written to disk or reused by the application.
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
   const pem = publicKey.export({ type: 'spki', format: 'pem' });
@@ -79,6 +91,8 @@ async function main() {
     };
     await assert.rejects(downloadArtifact(manifest, { directory: dir, request: stalled, timeoutMs: 5 }));
     assert.deepEqual(await fs.readdir(dir), []);
+    await assert.rejects(downloadArtifact(manifest, { directory: dir, request: request([body]), quarantine: async () => { throw Error('quarantine denied'); } }), /quarantine denied/);
+    assert.deepEqual(await fs.readdir(dir), [], 'unquarantined downloads cannot be returned');
     const corrupt = path.join(dir, 'corrupt.zip'); await fs.writeFile(corrupt, Buffer.alloc(body.length));
     await assert.rejects(validateArtifact(corrupt, manifest));
     if (process.platform !== 'win32') {

@@ -4,8 +4,13 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { recoveryStatus, childEnvironment, acknowledge, registerStartup, validateStaging, writeExclusive, start } = require('../host/update-launcher');
-const { waitReady } = require('../host/update-helper');
+const { launchTrusted, waitReady } = require('../host/update-helper');
 (async () => {
+  let launches = 0;
+  await assert.rejects(launchTrusted('/fixture.app', () => { launches++; }, async () => { throw new Error('Gatekeeper denied fixture'); }), /Gatekeeper denied/);
+  assert.equal(launches, 0, 'Policy rejection must not launch any candidate or fallback');
+  await launchTrusted('/fixture.app', () => { launches++; }, async () => {});
+  assert.equal(launches, 1);
   assert.deepEqual(Object.keys(childEnvironment()).filter(key => !['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL'].includes(key)), []);
   assert.equal(childEnvironment(true).ELECTRON_RUN_AS_NODE, '1');
   assert.equal(childEnvironment().ELECTRON_RUN_AS_NODE, undefined);
