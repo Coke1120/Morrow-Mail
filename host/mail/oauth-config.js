@@ -244,12 +244,22 @@ function hasPurposeScopes(granted, provider, purpose) {
   return hasScopes(granted, required.join(" "));
 }
 
+// Recover saved metadata using the resource selected by the caller. Never add
+// permissions from requestedScopes to a partial grantedScopes record.
+function microsoftResourceScopes(scopes, purpose) {
+  const allowed = new Map(scopesFor("microsoft", normalizePurpose(purpose) === "imap" ? "imap" : "bundle")
+    .split(" ").map(scope => [normalizeScopeToken(scope), scope]));
+  for (const scope of ["openid", "profile", "email"]) allowed.set(scope, scope);
+  return [...new Set(decodeScopeText(scopes).split(/[\s,]+/)
+    .map(scope => allowed.get(normalizeScopeToken(scope))).filter(Boolean))].join(" ");
+}
+
 function assertResourceScopes(provider, scopes) {
   if (providerKey(provider) !== "microsoft") return;
   const tokens = tokenScopeText(scopes).split(" ").filter(Boolean);
   const outlook = tokens.some((scope) => /^https:\/\/outlook\.office\.com\//i.test(scope));
   if (outlook && tokens.some((scope) => !/^https:\/\/outlook\.office\.com\//i.test(scope) && !/^(offline_access|openid|profile|email)$/i.test(scope))) {
-    throw new Error("Microsoft Outlook and Graph permissions require separate sign-ins.");
+    throw new Error("Microsoft token requests must target either Outlook mail or Graph features. This request combines both resources; reconnect the affected mailbox or feature if the problem persists.");
   }
 }
 
@@ -297,11 +307,10 @@ function authorizeUrl(provider, purpose, fields) {
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("prompt", "consent");
     url.searchParams.set("include_granted_scopes", "true");
-  } else if (normalizePurpose(purpose) === "imap") {
+  } else if (normalizePurpose(purpose) === "imap" && !fields.loginHint) {
     url.searchParams.set("prompt", "select_account");
-  } else {
-    url.searchParams.set("prompt", "consent");
   }
+  if (key === "microsoft" && fields.loginHint) url.searchParams.set("login_hint", fields.loginHint);
   return url.toString();
 }
 
@@ -342,6 +351,7 @@ module.exports = {
   hasScopes,
   tokenScopeText,
   assertResourceScopes,
+  microsoftResourceScopes,
   redirectPath,
   redirectUri,
   profileUrl,

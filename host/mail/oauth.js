@@ -15,8 +15,10 @@ const {
   normalizePurpose,
   providerKey,
   hasPurposeScopes,
+  hasScopes,
   assertResourceScopes,
   tokenScopeText,
+  microsoftResourceScopes,
 } = require("./oauth-config");
 
 function b64url(buf) {
@@ -251,7 +253,7 @@ async function refresh(provider, creds, refreshToken, scope, previousGranted, fe
     accessToken: json.access_token,
     refreshToken: json.refresh_token || refreshToken,
     expiresAt: Date.now() + Number(json.expires_in || 3600) * 1000,
-    grantedScopes: grantedScopeText(provider, json, previousGranted || scope || SCOPES[provider]),
+    grantedScopes: grantedScopeText(provider, json, provider === "microsoft" ? (scope || SCOPES.microsoft) : (previousGranted || scope || SCOPES[provider])),
   };
 }
 
@@ -263,16 +265,32 @@ function scopeFieldText(value) {
   return "";
 }
 
-function grantedScopeText(provider, json, fallback) {
-  const parts = [];
-  const listed = scopeFieldText(json && json.scope);
-  if (listed) parts.push(listed);
-  if (provider === "microsoft") {
-    const scp = scopeFieldText(tokenClaims(json && json.access_token).scp);
-    if (scp) parts.push(scp);
+function microsoftTokenResource(scope) {
+  return /https:\/\/outlook\.office\.com\//i.test(tokenScopeText(scope)) ? "imap" : "bundle";
+}
+
+// JWT claims are only a negative consistency signal, never proof of identity
+// or extra grants. Microsoft can also return opaque access tokens.
+function assertTokenResource(provider, token, scope) {
+  if (provider !== "microsoft") return;
+  const aud = String(tokenClaims(token).aud || "").toLowerCase().replace(/\/+$/, "");
+  const graph = ["https://graph.microsoft.com", "00000003-0000-0000-c000-000000000000"].includes(aud);
+  const outlook = ["https://outlook.office.com", "https://outlook.office365.com", "00000002-0000-0ff1-ce00-000000000000"].includes(aud);
+  if ((graph && microsoftTokenResource(scope) === "imap") || (outlook && microsoftTokenResource(scope) !== "imap")) {
+    const error = new Error("Microsoft returned a token for a different resource. Reconnect the affected mailbox or feature.");
+    error.code = "resource_mismatch";
+    throw error;
   }
-  if (parts.length) return parts.join(" ");
-  return fallback || "";
+}
+
+function grantedScopeText(provider, json, fallback) {
+  const listed = scopeFieldText(json && json.scope);
+  const claimed = provider === "microsoft" ? scopeFieldText(tokenClaims(json && json.access_token).scp) : "";
+  const explicit = provider === "microsoft" && (typeof json?.scope === "string" || Array.isArray(json?.scope));
+  const granted = explicit ? listed : (listed || claimed || fallback || "");
+  if (provider !== "microsoft") return granted;
+  assertTokenResource(provider, json && json.access_token, fallback);
+  return microsoftResourceScopes(granted, microsoftTokenResource(fallback));
 }
 
 function tokenClaims(token) {
@@ -454,6 +472,7 @@ async function signIn(providerInput, purposeInput, options) {
       redirectUri: redirect,
       state,
       challenge,
+      loginHint: options && options.expectedEmail,
     });
 
     const codePromise = waitForCode(server, state, pathName, timeoutMs, signal);
@@ -475,6 +494,11 @@ async function signIn(providerInput, purposeInput, options) {
     const profile = await fetchProfile(provider, tokens.accessToken, purpose, tokens.idToken, fetchImpl);
     throwIfAborted(signal);
     if (!profile.email) throw new Error("Provider did not return an email address.");
+    if (options?.expectedEmail && profile.email.trim().toLowerCase() !== options.expectedEmail.trim().toLowerCase()) {
+      const error = new Error("Sign in with the selected mailbox. Existing accounts and permissions are unchanged.");
+      error.code = "account_mismatch";
+      throw error;
+    }
     const preset = IMAP_PRESETS[provider];
     return {
       provider,
@@ -512,7 +536,7 @@ function requirePurposeScopes(tokens, provider, purpose) {
   }
 }
 
-async function accessTokenFor(account, secretBlob) {
+async function accessTokenFor(account, secretBlob, expectedPurpose) {
   let parsed;
   try {
     parsed = JSON.parse(secretBlob);
@@ -524,7 +548,23 @@ async function accessTokenFor(account, secretBlob) {
     parsed.provider || (account.profile === "gmail" ? "google" : account.profile === "outlook" ? "microsoft" : "")
   ) || providerKey(account && account.profile);
   if (!provider) throw new Error("Stored OAuth secret is missing a provider. Connect the account again.");
-  if (parsed.expiresAt && parsed.accessToken && Date.now() < parsed.expiresAt - 60000) {
+  let scope = parsed.grantedScopes || parsed.requestedScopes || SCOPES[provider];
+  let requested = parsed.requestedScopes || scope;
+  let repair = false;
+  const purpose = normalizePurpose(expectedPurpose || parsed.purpose);
+  if (provider === "microsoft") {
+    const saved = typeof parsed.grantedScopes === "string" ? parsed.grantedScopes : requested;
+    scope = microsoftResourceScopes(saved, purpose);
+    requested = microsoftResourceScopes(requested, purpose);
+    if (!scope.split(" ").some(value => value && !/^(offline_access|openid|profile|email)$/i.test(value))) {
+      const error = new Error("No saved Microsoft permissions match this mailbox feature. Reconnect it to approve the missing permissions. Existing connections are unchanged.");
+      error.code = "scope_missing";
+      throw error;
+    }
+    repair = !hasScopes(scope, saved) || !hasScopes(requested, parsed.requestedScopes || saved);
+    try { assertTokenResource(provider, parsed.accessToken, scope); } catch { repair = true; }
+  }
+  if (!repair && parsed.expiresAt && parsed.accessToken && Date.now() < parsed.expiresAt - 60000) {
     return parsed.accessToken;
   }
   if (provider === "google" && !oauthReady().google) {
@@ -533,15 +573,16 @@ async function accessTokenFor(account, secretBlob) {
     throw error;
   }
   const creds = credentials(provider);
-  const scope = parsed.grantedScopes || parsed.requestedScopes || SCOPES[provider];
-  const next = await refresh(provider, creds, parsed.refreshToken, scope, parsed.grantedScopes);
+  const next = await refresh(provider, creds, parsed.refreshToken, scope, scope);
+  if (provider === "microsoft" && purpose === "imap") requirePurposeScopes(next, provider, purpose);
   return {
     token: next.accessToken,
     store: JSON.stringify({
       ...parsed,
       ...next,
       provider,
-      requestedScopes: parsed.requestedScopes || scope,
+      purpose: provider === "microsoft" ? purpose : parsed.purpose,
+      requestedScopes: requested,
     }),
   };
 }

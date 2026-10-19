@@ -1,6 +1,6 @@
 # Google / Outlook OAuth
 
-Morrow Mail keeps **IMAP XOAUTH2 as the mail baseline**. Google uses **one full consent**. Microsoft uses **two dialogs maximum**: Outlook IMAP/SMTP first, then one Graph bundle. Calendar, organize, Out of Office, and inbox rules reuse the granted permissions without another popup. Bot bridge permissions stay separate. No client secret belongs in git.
+Morrow Mail keeps **IMAP XOAUTH2 as the mail baseline**. Google uses **one full consent**. Microsoft coordinates two resource-specific authorization steps: Outlook IMAP/SMTP first, then one Graph bundle for the same mailbox. Existing grants are reused; Microsoft controls whether a browser step needs interaction. Calendar, organize, Out of Office, and inbox rules reuse the granted permissions without another popup. Bot bridge permissions stay separate. No client secret belongs in git.
 
 ## Consent and token scopes
 
@@ -12,13 +12,13 @@ Morrow Mail keeps **IMAP XOAUTH2 as the mail baseline**. Google uses **one full 
 
 Google uses `include_granted_scopes=true`, `prompt=consent`, offline access, and the OpenID userinfo profile. Connecting or enabling a missing feature requests the complete bundle. There are no Drive or Contacts scopes. `gmail.settings.basic` covers Out of Office and filters; `gmail.labels` is included for rules label choices.
 
-### Why Microsoft needs two dialogs
+### Microsoft resources and coordinated onboarding
 
-Outlook IMAP/SMTP and Microsoft Graph are different resources. **Never put Graph scopes on the Outlook authorize URL**: the mixed-resource request can fail with Entra `invalid_scope`. Each dialog has its own PKCE code and code redemption. The Outlook token is never sent to Graph, and the Graph token is never sent to IMAP/SMTP. No Graph-to-IMAP refresh exchange substitutes for the mail dialog.
+Outlook IMAP/SMTP and Microsoft Graph are different resources, and each token request targets one resource. This does **not** mean Microsoft requires two separate sign-ins: its [authorization-code documentation](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow) allows multi-resource consent on the authorize leg. Morrow keeps two resource-specific PKCE authorization steps for compatibility with its separate token stores. Graph requests carry the saved mailbox as `login_hint` and omit forced `prompt=consent`, allowing the browser session and existing consent to be reused. The hint does not establish identity: the returned profile must match the selected mailbox. Tenant policy, missing permissions or an expired session may still require interaction. The Outlook token is never sent to Graph, and the Graph token is never sent to IMAP/SMTP. No Graph-to-IMAP refresh exchange substitutes for the mail dialog.
 
 1. Authorize and redeem the Outlook-only mail scopes. Resolve the mailbox with `https://outlook.office.com/api/v2.0/me` or token email claims. This flow does not call Microsoft Graph with that token. Save mail credentials and the account.
-2. If any API feature is missing, open one Graph-only bundle consent for the same mailbox. Use Graph `/me` for its profile and reject a different mailbox.
-3. Save the Graph token under `<id>:bundle`; keep the Outlook token under the account id. Later refreshes use only scopes actually granted for that resource. Explicit mixed-resource token requests are rejected locally.
+2. If any API feature is missing, continue with the Graph-only bundle for the same mailbox, without forcing repeat consent. Use Graph `/me` for its profile and reject a different mailbox.
+3. Save the Graph token under `<id>:bundle`; keep the Outlook token under the account id. Later refreshes use only saved granted scopes for that resource. Legacy mixed metadata is projected onto the resource chosen by the mail/feature caller and renewed before cached access is used; requested permissions never expand a partial grant. Empty or wrong-resource grants require reconnecting that feature. Successful renewal stores normalized metadata, while failures leave the old record untouched. Explicit mixed-resource token requests remain rejected locally. Token response scopes take precedence over JWT scope hints; recognized contradictory JWT audiences are rejected. Opaque tokens remain supported.
 
 `Mail.Read` remains in the Graph bundle for rules folder enumeration; `Mail.ReadWrite` also satisfies that read requirement. Missing admin consent, a declined second dialog, or a partial Graph grant leaves the saved mail connection available. The returned connection warning identifies incomplete feature access. Enabling a missing feature retries only the Graph bundle. A reconnect with all API grants already saved needs only the mail dialog.
 
@@ -76,9 +76,9 @@ The shared public client id stays `2ca9ca19-add5-4807-bfa1-c2a7ac3cc6bf` (`share
    IMAP and SMTP scope URLs use the resource host `https://outlook.office.com`. The mailbox servers stay `outlook.office365.com` and `smtp.office365.com`. If the Entra app is missing those Exchange permissions, sign-in still fails with `invalid_scope`.
 3. Do not commit user refresh tokens.
 
-### Hard blocker: admin consent
+### Tenant consent policy
 
-Work and school mailboxes cannot grant those delegated permissions until an admin consents on the shared Entra app. A missing admin consent is a provider error. The mailbox keeps the IMAP folder list and does not show stand-in labels, folders, or events.
+Work and school consent depends on tenant policy and the requested permissions; admin approval is not universally required for every mailbox. When Microsoft requires admin approval, it is a provider blocker and cannot be bypassed by this client. The mailbox keeps the IMAP folder list and does not show stand-in labels, folders, or events.
 
 ## What the UI does when a grant is missing
 
@@ -104,4 +104,4 @@ Plan My Week and Meeting Prep call `calendar:list` only when that calendar grant
 
 `npm run check` includes `scripts/check-mail-calendar-consent.js`: real local loopback callbacks with fake provider token/profile responses, memory-only secrets, and a temporary database. It checks one Google dialog, two Microsoft dialogs with separate code exchanges, resource-specific refreshes, no popup for granted features, partial consent, legacy grants, account mismatch, cancellation, storage rollback, and mail sync/calendar availability. It also rejects mixed-resource Microsoft token requests. No live OAuth credentials, Keychain, or mailbox writes are needed.
 
-Live smoke checks are pending. With an authorized test account, approve the full Google dialog or Microsoft's mail then Graph dialogs, verify mail sync, and open Calendar, organize, Out of Office, and Inbox Rules without another popup. View settings only; this consent change does not authorize a live settings/rules/event write. Repeat Microsoft with a personal account and a work/school account with admin consent. Decline Graph or individual Google permissions, verify mail and existing grants remain, then enable a missing feature and retry. Verify mail-only and calendar-only migration preserves cached work. Bot bridge still uses its separate grants. Mocks cannot verify provider registration, verification, or tenant policy.
+Live smoke checks are pending. With an authorized test account, approve the full Google dialog or Microsoft's mail then Graph dialogs, verify mail sync, and open Calendar, organize, Out of Office, and Inbox Rules without another popup. View settings only; this consent change does not authorize a live settings/rules/event write. Repeat Microsoft with personal and work/school accounts under their applicable consent policies, including an admin-required case. Decline Graph or individual Google permissions, verify mail and existing grants remain, then enable a missing feature and retry. Verify mail-only and calendar-only migration preserves cached work. Bot bridge still uses its separate grants. Mocks cannot verify provider registration, verification, or tenant policy.

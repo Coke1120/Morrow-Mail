@@ -2549,13 +2549,13 @@ assert.strictEqual(providerUi.calendarView({ api: false, reason: "error" }).erro
 assert.strictEqual(providerUi.calendarView({ api: false, reason: "no_account" }).showGrid, false);
 assert.strictEqual(
   needsAuth.status,
-  "Enable calendar and mailbox features. Google uses one consent; Microsoft uses a separate feature consent after mail sign-in.",
+  "Enable calendar and mailbox features. Google uses one consent; Microsoft connects mail first, then checks feature permissions for the same account.",
 );
 assert.strictEqual(providerUi.calendarCopy("oauth_not_ready"), "Google Desktop OAuth is not configured, so calendar stays offline.");
 assert.strictEqual(providerUi.calendarCopy("no_account"), "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.");
 assert.strictEqual(
   providerUi.calendarCopy("needs_auth", "ada@example.com"),
-  "Enable calendar and mailbox features for ada@example.com. Google uses one consent; Microsoft uses a separate feature consent after mail sign-in.",
+  "Enable calendar and mailbox features for ada@example.com. Google uses one consent; Microsoft connects mail first, then checks feature permissions for the same account.",
 );
 assert.deepStrictEqual(providerUi.calendarConnection(null, null), {
   connected: false,
@@ -2959,7 +2959,7 @@ const microsoftCalendar = new URL(oauthConfig.authorizeUrl("microsoft", "calenda
   clientId: oauthConfig.MICROSOFT_CLIENT_ID,
   redirectUri: "http://localhost:1/api/calendar-oauth/microsoft/callback",
 }));
-assert.strictEqual(microsoftCalendar.searchParams.get("prompt"), "consent");
+assert.strictEqual(microsoftCalendar.searchParams.get("prompt"), null);
 assert.strictEqual(microsoftCalendar.searchParams.get("scope"), oauthConfig.CALENDAR_SCOPES.microsoft);
 assert.strictEqual(oauthConfig.MICROSOFT_CLIENT_ID, "2ca9ca19-add5-4807-bfa1-c2a7ac3cc6bf");
 
@@ -6870,7 +6870,7 @@ async function checkInboxRules() {
       challenge: "challenge",
       redirectUri: "http://localhost:1/api/oauth/microsoft/callback",
     }));
-    assert.strictEqual(rulesAuth.searchParams.get("prompt"), "consent");
+    assert.strictEqual(rulesAuth.searchParams.get("prompt"), null);
     assert.strictEqual(rulesAuth.searchParams.get("scope"), oauthConfig.RULES_SCOPES.microsoft);
   } finally {
     global.fetch = prevFetch;
