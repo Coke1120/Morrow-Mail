@@ -29,6 +29,6 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win
 CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
 ```
 
-The **release** workflow publishes unsigned `latest-mac.yml` with the Mac zip. Apple codesign stays on the MBA.
+The **release** workflow publishes `latest-mac.yml` with the ad hoc signed Mac zip. Follow the native bundle and extracted-ZIP integrity checks in [PACKAGING.md](PACKAGING.md); Developer ID signing and notarization are not configured.
 
 Launch that installed app with no `GH_TOKEN` and no `github-update.json`. Check for updates. The public prerelease feed is `releases.atom` plus `latest-mac.yml` on the newest prerelease. HTTP 401/403 reports a blocked public request (retry or check the network/proxy); HTTP 429 and rate-limit responses ask you to retry later. Missing feed assets and offline errors keep their diagnostic details. None asks for a token. Repeat the check with an invalid `GH_TOKEN` and a legacy `github-update.json`: the provider must still be public.
