@@ -1838,6 +1838,116 @@ function editScheduled(params) {
   return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString() });
 }
 
+const PRE_ACCEPT_CODES = new Set(["EENVELOPE", "ENOTFOUND", "ECONNREFUSED", "EAI_AGAIN"]);
+const CERT_CODES = new Set([
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "CERT_HAS_EXPIRED",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "CERT_SIGNATURE_FAILURE",
+]);
+const PRE_ACCEPT_COMMANDS = new Set(["CONN", "AUTH", "EHLO", "HELO", "STARTTLS", "MAIL FROM", "RCPT TO"]);
+let smtpSenderForTest = null;
+
+function setSmtpSenderForTest(fn) {
+  smtpSenderForTest = typeof fn === "function" ? fn : null;
+}
+
+function provedRefusal(error) {
+  if (!error || typeof error !== "object") return "";
+  const code = typeof error.code === "string" ? error.code : "";
+  const command = typeof error.command === "string" ? error.command.toUpperCase() : "";
+  const responseCode = Number(error.responseCode);
+  const proved = PRE_ACCEPT_CODES.has(code) || CERT_CODES.has(code)
+    || code === "EAUTH" || code === "EMESSAGE" || code === "auth"
+    || (Number.isFinite(responseCode) && responseCode >= 400)
+    || (PRE_ACCEPT_COMMANDS.has(command) && responseCode >= 400);
+  if (!proved) return "";
+  return remote.explain(error, "") || code || command || "The mail server refused the message.";
+}
+
+async function fileSentMessage(account, password, options, info, messageId, extra) {
+  const sent = db.folderByWellKnown(account.id, "sentitems");
+  const emailId = db.newMessageId();
+  const when = new Date();
+  const keptId = (info && info.messageId) || messageId;
+  const files = (extra && extra.files) || [];
+  if (sent) {
+    db.insertMessage({
+      id: emailId,
+      accountId: account.id,
+      folderPath: sent.path,
+      threadId: (extra && extra.threadId) || emailId,
+      rfcMessageId: keptId,
+      subject: options.subject,
+      snippet: plainFromHtml(options.html).slice(0, 180),
+      from: options.from,
+      to: options.to,
+      cc: options.cc,
+      bcc: options.bcc,
+      date: when.toISOString(),
+      listSortTs: when.getTime(),
+      isDraft: false,
+      hasAttachments: files.length > 0,
+      htmlBody: options.html,
+      textBody: options.text,
+      bodyComplete: true,
+      inReplyTo: (extra && extra.inReplyTo) || null,
+    });
+    if (password && account.profile !== "gmail") {
+      try {
+        const raw = await remote.buildRaw({ ...options, messageId: keptId });
+        const appended = await remote.withClient(account, password, (client) => remote.appendRaw(client, sent.path, raw, ["\\Seen"]));
+        if (appended && appended.uid) {
+          db.updateMessage(emailId, {
+            uid: Number(appended.uid),
+            uid_validity: Number(appended.uidValidity) || 0,
+          });
+        }
+      } catch {
+        // The SMTP send already succeeded. The next sync adopts the Sent copy by message id.
+      }
+    } else if (password) {
+      try {
+        const report = await remote.withClient(account, password, (client) => remote.syncFolder(client, sent.path, { limit: 40 }));
+        db.applyFolderSync(account.id, sent.path, report);
+      } catch {
+        // The local Sent row stays until a later sync can adopt it.
+      }
+    }
+  }
+  return { emailId, messageId: keptId };
+}
+
+async function submitSmtp(input) {
+  const account = input && input.account;
+  const options = input && input.options;
+  const messageId = input && input.messageId;
+  if (!account || !options || !messageId) return { kind: "rejected", refusal: "Missing message id." };
+  try {
+    const sentResult = await exclusive(account.id, async () => {
+      let info;
+      let password = "";
+      if (smtpSenderForTest) info = await smtpSenderForTest({ account, options, messageId });
+      else {
+        password = await secretFor(account);
+        info = await remote.sendSmtp(account, password, { ...options, messageId });
+      }
+      try {
+        return await fileSentMessage(account, password, options, info, messageId, input);
+      } catch {
+        return { emailId: null, messageId: (info && info.messageId) || messageId };
+      }
+    });
+    return { kind: "accepted", messageId: sentResult.messageId, emailId: sentResult.emailId };
+  } catch (error) {
+    const refusal = provedRefusal(error);
+    if (refusal) return { kind: "rejected", refusal };
+    return { kind: "unknown", detail: remote.explain(error, "") };
+  }
+}
+
 async function deliver(params) {
   let account = db.accountById(params && params.accountId);
   if (!account) return fail("not-found", "Choose an account before sending.");
@@ -1850,61 +1960,21 @@ async function deliver(params) {
   if (!options.to.length && !options.cc.length && !options.bcc.length) {
     return fail("invalid", "Add a recipient.");
   }
+  const submitted = await submitSmtp({
+    account,
+    options,
+    messageId: rfcMessageId(account.email),
+    threadId: (params && params.threadId) || null,
+    inReplyTo: (params && params.inReplyTo) || null,
+    files,
+  });
+  if (submitted.kind !== "accepted") {
+    const message = submitted.kind === "rejected" && submitted.refusal
+      ? submitted.refusal
+      : (submitted.detail || "The mail server did not confirm this message.");
+    return fail("send", message);
+  }
   try {
-    const sentResult = await exclusive(account.id, async () => {
-      const password = await secretFor(account);
-      const messageId = rfcMessageId(account.email);
-      const info = await remote.sendSmtp(account, password, { ...options, messageId });
-      const sent = db.folderByWellKnown(account.id, "sentitems");
-      const emailId = db.newMessageId();
-      const when = new Date();
-      const keptId = info.messageId || messageId;
-      if (sent) {
-        db.insertMessage({
-          id: emailId,
-          accountId: account.id,
-          folderPath: sent.path,
-          threadId: (params && params.threadId) || emailId,
-          rfcMessageId: keptId,
-          subject: options.subject,
-          snippet: plainFromHtml(options.html).slice(0, 180),
-          from: options.from,
-          to: options.to,
-          cc: options.cc,
-          bcc: options.bcc,
-          date: when.toISOString(),
-          listSortTs: when.getTime(),
-          isDraft: false,
-          hasAttachments: files.length > 0,
-          htmlBody: options.html,
-          textBody: options.text,
-          bodyComplete: true,
-          inReplyTo: params.inReplyTo || null,
-        });
-        if (account.profile !== "gmail") {
-          try {
-            const raw = await remote.buildRaw({ ...options, messageId: keptId });
-            const appended = await remote.withClient(account, password, (client) => remote.appendRaw(client, sent.path, raw, ["\\Seen"]));
-            if (appended && appended.uid) {
-              db.updateMessage(emailId, {
-                uid: Number(appended.uid),
-                uid_validity: Number(appended.uidValidity) || 0,
-              });
-            }
-          } catch {
-            // The SMTP send already succeeded. The next sync adopts the Sent copy by message id.
-          }
-        } else {
-          try {
-            const report = await remote.withClient(account, password, (client) => remote.syncFolder(client, sent.path, { limit: 40 }));
-            db.applyFolderSync(account.id, sent.path, report);
-          } catch {
-            // The local Sent row stays until a later sync can adopt it.
-          }
-        }
-      }
-      return { emailId, messageId: keptId };
-    });
     const draftId = params && (params.draftId || params.emailId);
     const draft = draftId ? db.messageById(draftId) : null;
     if (draft && draft.is_draft === 1) {
@@ -1919,9 +1989,9 @@ async function deliver(params) {
       db.deleteMessage(draft.id);
     }
     emitAccounts();
-    return ok({ emailId: sentResult.emailId, messageId: sentResult.messageId, platform: "imap" });
+    return ok({ emailId: submitted.emailId, messageId: submitted.messageId, platform: "imap" });
   } catch (error) {
-    return fail("send", remote.explain(error, secrets.getPassword(account.id)));
+    return fail("send", remote.explain(error, ""));
   }
 }
 
@@ -2567,9 +2637,46 @@ async function syncAccountById(id, options) {
   return publicSync();
 }
 
+function noteBotSent(receipt) {
+  try {
+    if (!receipt || !receipt.accountId || !receipt.messageId) return;
+    if (db.messageByRfc(receipt.accountId, receipt.messageId)) return;
+    const sent = db.folderByWellKnown(receipt.accountId, "sentitems");
+    if (!sent) return;
+    const when = new Date();
+    const emailId = db.newMessageId();
+    db.insertMessage({
+      id: emailId,
+      accountId: receipt.accountId,
+      folderPath: sent.path,
+      threadId: emailId,
+      rfcMessageId: receipt.messageId,
+      subject: receipt.subject || "",
+      snippet: String(receipt.text || "").slice(0, 180),
+      from: receipt.fromAddress || "",
+      to: receipt.to || [],
+      cc: receipt.cc || [],
+      bcc: receipt.bcc || [],
+      date: when.toISOString(),
+      listSortTs: when.getTime(),
+      isDraft: false,
+      htmlBody: receipt.html || "",
+      textBody: receipt.text || "",
+      bodyComplete: true,
+      inReplyTo: receipt.inReplyTo || null,
+    });
+  } catch {
+    // A durable submit already happened. A missing local Sent row can be adopted later.
+  }
+}
+
 module.exports = {
   init,
   answer,
+  bytesFor,
+  submitSmtp,
+  setSmtpSenderForTest,
+  noteBotSent,
   STARRED_FOLDER_ID,
   UNREAD_FOLDER_ID,
   messagesForAi,

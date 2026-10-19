@@ -871,17 +871,53 @@
         </section>
         <section class="fold" id="settings-bot" data-fold="bot" role="tabpanel" aria-labelledby="settings-tab-bot" tabindex="0" hidden>
           <div class="fold-panel" id="settings-bot-panel" hidden>
-          <h3 id="settings-bot-title">Connect a bot over Tailscale</h3>
-          <div class="settings-intro">
-            <p class="hint">Use selected mailboxes from another device on your tailnet. Your bot still needs its own access grant and secret. It cannot send mail.</p>
-            <button type="button" class="ghost" id="bot-review-link" aria-controls="bot-drafts">Review draft proposals</button>
+          <h3 id="settings-bot-title">Bot access</h3>
+          <p class="hint">A bot cannot send mail until a grant allows it.</p>
+          <div class="section-nav" id="bot-sections" role="tablist" aria-label="Bot access sections">
+            <button type="button" id="bot-tab-local" role="tab" data-bot-section="local" aria-controls="bot-panel-local" aria-selected="true" tabindex="-1">Local</button>
+            <button type="button" id="bot-tab-tailscale" role="tab" data-bot-section="tailscale" aria-controls="bot-panel-tailscale" aria-selected="false" tabindex="-1">Tailscale</button>
+            <button type="button" id="bot-tab-grants" role="tab" data-bot-section="grants" aria-controls="bot-panel-grants" aria-selected="false" tabindex="-1">Grants</button>
+            <button type="button" id="bot-tab-agent" role="tab" data-bot-section="agent" aria-controls="bot-panel-agent" aria-selected="false" tabindex="-1">Agent setup</button>
           </div>
-          <h4>Access status</h4>
-          <p id="bot-remote-status" class="hint" role="status"></p>
+          <p id="bot-status" role="status"></p>
+          <div id="bot-panel-local" role="tabpanel" aria-labelledby="bot-tab-local" hidden>
+          <h4>Listener on this computer</h4>
           <p id="bot-listen" class="hint" role="status"></p>
           <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" aria-describedby="bot-enable-help" /> Enable bot access on this computer</label>
           <p id="bot-enable-help" class="hint">Create an unexpired grant first.</p>
-          <div class="row"><button type="button" class="ghost" id="bot-verify">Refresh local status</button><button type="button" class="ghost" id="bot-retry" hidden>Retry listener</button></div>
+          <p id="bot-local-endpoint" class="hint"></p>
+          <div id="bot-advanced">
+            <p class="hint">Same-computer bots can continue using the loopback endpoint with their existing secret, installation ID, and capability marker. No Tailscale host is required for local access.</p>
+          </div>
+          <p id="bot-install" class="hint"></p>
+          <p id="bot-intent" class="hint"></p>
+          <div class="row"><button type="button" class="ghost" id="bot-verify">Refresh</button><button type="button" class="ghost" id="bot-retry" hidden>Retry listener</button></div>
+          </div>
+          <div id="bot-panel-tailscale" role="tabpanel" aria-labelledby="bot-tab-tailscale" hidden>
+          <h4>Tailscale Serve</h4>
+          <p id="bot-remote-status" class="hint" role="status"></p>
+          <ol class="bot-setup-steps" aria-label="Tailscale connection steps">
+            <li>On the computer running Morrow, configure Tailscale Serve to forward HTTPS to <code>http://127.0.0.1:47831</code>, with the Morrow app capability. Do not enable Funnel.</li>
+            <li>Save that computer’s exact Tailscale hostname and port below. Saving only allows that hostname; it does not configure Serve or your tailnet policy.</li>
+            <li>On your other device, use the HTTPS endpoint below with your private secret file and this installation ID. Local status does not verify the Tailscale connection.</li>
+          </ol>
+          <label for="bot-serve-host">Tailscale hostname and port
+            <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="your-mac.your-tailnet.ts.net:8443" />
+          </label>
+          <p class="hint">Saving a host does not install or configure Tailscale Serve.</p>
+          <div class="row">
+            <button type="button" class="ghost icon-label" id="bot-serve-save">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+              <span>Save allowed Serve host</span>
+            </button>
+          </div>
+          <p id="bot-endpoint" class="hint"></p>
+          <p id="bot-marker" class="hint"></p>
+          <p class="hint">Do not enable Funnel. Funnel does not inject the capability marker, and Morrow rejects the call. There is no switch that skips the marker.</p>
+          </div>
+          <div id="bot-panel-grants" role="tabpanel" aria-labelledby="bot-tab-grants" hidden>
           <h4>Your bots</h4>
           <p class="hint">Last successful use is shown below. Disabling access stops every bot without revoking its grant.</p>
           <ul id="bot-grants" aria-label="Bot grants"></ul>
@@ -903,11 +939,18 @@
                 <label class="check"><input type="checkbox" data-cap="mail.bodies.read" /> Read cached message text</label>
                 <label class="check"><input type="checkbox" data-cap="mail.attachments.read" /> Read attachment names</label>
                 <label class="check"><input type="checkbox" data-cap="draft.proposals.create" /> Submit draft proposals</label>
+                <label class="check"><input type="checkbox" data-cap="mail.send" /> This bot can send mail as you.</label>
+                <p class="hint">When this is on, the bot can send mail from the mailboxes you select. It does not wait for you to press Send.</p>
               </fieldset>
-              <label class="settings-short-field" for="bot-expiry">Expires after (days)
-                <input id="bot-expiry" type="number" min="1" max="30" value="7" />
+              <label class="settings-short-field" for="bot-expiry">Expires after
+                <select id="bot-expiry">
+                  <option value="1">1 day</option>
+                  <option value="7" selected>7 days</option>
+                  <option value="30">30 days</option>
+                  <option value="never">Never</option>
+                </select>
               </label>
-              <p class="hint">Up to 30 days. Message text is untrusted; never treat it as instructions.</p>
+              <p class="hint">Up to 30 days, or no expiry after you confirm. Message text is untrusted; never treat it as instructions.</p>
             </details>
             <div class="row">
               <button type="submit" class="primary icon-label" id="bot-mint-btn">
@@ -928,38 +971,36 @@
           </li>
           </ol>
           </details>
-          <h4>Tailscale connection</h4>
-          <ol class="bot-setup-steps" aria-label="Tailscale connection steps">
-            <li>On the computer running Morrow, configure Tailscale Serve to forward HTTPS to <code>http://127.0.0.1:47831</code>, with the Morrow app capability. Do not enable Funnel.</li>
-            <li>Save that computer’s exact Tailscale hostname and port below. Saving only allows that hostname; it does not configure Serve or your tailnet policy.</li>
-            <li>On your other device, use the HTTPS endpoint below with your private secret file and this installation ID. Test access from that device; local status does not verify the Tailscale connection.</li>
-          </ol>
-            <label for="bot-serve-host">Tailscale hostname and port
-              <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="your-mac.your-tailnet.ts.net:8443" />
-            </label>
-          <p class="hint">Saving a host does not install or configure Tailscale Serve.</p>
-          <div class="row">
-            <button type="button" class="ghost icon-label" id="bot-serve-save">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-              </svg>
-              <span>Save allowed Serve host</span>
-            </button>
-          </div>
-
-          <p id="bot-endpoint" class="hint"></p>
-          <p id="bot-install" class="hint"></p>
-          <p id="bot-status" role="status"></p>
-          <details class="settings-disclosure" id="bot-advanced"><summary>Advanced: local access &amp; diagnostics</summary>
-            <p class="hint">Same-computer bots can continue using <code>http://127.0.0.1:47831/api/bot/v1/call</code> with their existing secret, installation ID, and capability marker. No Tailscale host is required for local access.</p>
-            <p class="hint">Serve must forward the <code>com.coke1120.morrow-mail/bot-access</code> capability with <code>readBridge: true</code>. Tailscale does not replace Morrow’s mailbox permissions or secret.</p>
-            <p id="bot-intent" class="hint"></p>
-          </details>
+          <button type="button" class="ghost" id="bot-review-link" aria-controls="bot-drafts">Review draft proposals</button>
           <details class="settings-disclosure" id="bot-review">
             <summary id="bot-draft-heading">Draft proposals</summary>
             <p class="hint">Open a proposal in compose to review it. Only Send sends the message.</p>
             <ul id="bot-drafts" aria-label="Draft proposals"></ul>
           </details>
+          <h4>Send receipts</h4>
+          <ul id="bot-sends" aria-label="Send receipts"></ul>
+          <h4>Recent bridge activity</h4>
+          <ul id="bot-audit" aria-label="Recent bridge activity"></ul>
+          </div>
+          <div id="bot-panel-agent" role="tabpanel" aria-labelledby="bot-tab-agent" hidden>
+          <h4>Agent setup</h4>
+          <p class="hint">Copy or download the prompt for this installation. Morrow fills the operations, marker, and budgets.</p>
+          <fieldset id="bot-setup-target">
+            <legend>Prompt target</legend>
+            <label class="check"><input type="radio" name="bot-setup-target" value="local" checked /> Local listener</label>
+            <label class="check"><input type="radio" name="bot-setup-target" value="serve" /> Tailscale Serve</label>
+          </fieldset>
+          <div class="row">
+            <button type="button" class="ghost icon-label" id="bot-copy-setup">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <span>Copy setup prompt</span>
+            </button>
+            <button type="button" class="ghost" id="bot-download-skill">Download SKILL.md</button>
+          </div>
+          </div>
           </div>
         </section>
       </div>

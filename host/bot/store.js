@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { userDataDir } = require("../paths");
@@ -17,8 +18,29 @@ function writePrivate(file, text) {
   try { fs.chmodSync(file, 0o600); } catch { /* Windows permissions differ */ }
 }
 
+function writeDurable(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  const fd = fs.openSync(tmp, "w", 0o600);
+  try {
+    fs.writeSync(fd, text);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try { fs.chmodSync(tmp, 0o600); } catch { /* Windows permissions differ */ }
+  fs.renameSync(tmp, file);
+  try { fs.chmodSync(file, 0o600); } catch { /* Windows permissions differ */ }
+  const dir = fs.openSync(path.dirname(file), "r");
+  try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+}
+
 function accessPath() {
   return path.join(bridgeDir(), "bot-access.json");
+}
+
+function sendReceiptPath() {
+  return path.join(bridgeDir(), "bot-send-receipts.json");
 }
 
 function draftPath() {
@@ -32,7 +54,9 @@ function auditPath() {
 module.exports = {
   bridgeDir,
   writePrivate,
+  writeDurable,
   accessPath,
   draftPath,
   auditPath,
+  sendReceiptPath,
 };

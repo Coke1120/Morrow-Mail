@@ -4,10 +4,11 @@ const agent = require("../agent");
 const auth = require("./auth");
 const drafts = require("./drafts");
 const reads = require("./reads");
+const catalog = require("./catalog");
+const send = require("./send");
 const {
   API_VERSION,
   CALLS_PER_MINUTE,
-  CAPABILITIES,
   DEFAULT_BODY_BYTES,
   DEFAULT_LIMIT,
   FOLDERS,
@@ -16,24 +17,11 @@ const {
   MAX_BODY_BYTES,
   MAX_LIMIT,
   MAX_RESPONSE_BYTES,
-  OPERATIONS,
   PORT,
   SERVE_CAPABILITY,
   STALE_AFTER_SECONDS,
   SYNC_WINDOW_DAYS,
 } = require("./constants");
-
-const OP = {
-  "bridge.describe": { caps: [] },
-  "accounts.list": { caps: ["accounts.read"] },
-  "mail.list_cached": { caps: ["mail.headers.read"], account: true },
-  "mail.search_cached": { caps: ["mail.headers.read"], account: true, kind: "search" },
-  "mail.get_cached": { caps: ["mail.headers.read", "mail.bodies.read"], account: true, kind: "body" },
-  "health.get": { caps: ["health.read"], account: true },
-  "agent.proposals.list": { caps: ["agent.proposals.read", "mail.headers.read"], account: true },
-  "draft.proposals.submit": { caps: ["draft.proposals.create"], account: true },
-  "draft.proposals.list": { caps: ["draft.proposals.create"], account: true },
-};
 
 function coded(code, extra) {
   const error = new Error(code);
@@ -124,8 +112,8 @@ function fit(envelope) {
 
 function describe(ctx) {
   if (!closed(ctx.params, [])) throw coded("INVALID_REQUEST");
-  const allowed = OPERATIONS.filter((name) => {
-    const spec = OP[name];
+  const allowed = catalog.operations().filter((name) => {
+    const spec = catalog.operation(name);
     return spec.caps.every((cap) => ctx.grant.capabilities.includes(cap));
   });
   return {
@@ -135,10 +123,11 @@ function describe(ctx) {
       installationId: ctx.installationId,
       operations: allowed,
       capabilities: ctx.grant.capabilities.slice(),
-      grantExpiresAt: ctx.grant.expiresAt,
+      grantExpiry: ctx.grant.expiry,
       semantics: {
         cacheOnlyReads: true,
-        sending: false,
+        sending: ctx.grant.capabilities.includes("mail.send"),
+        attachmentBytes: false,
         providerCalls: false,
         draftProposals: ctx.grant.capabilities.includes("draft.proposals.create"),
         draftProposalsSend: false,
@@ -158,7 +147,7 @@ function describe(ctx) {
         targetSyncWindowDays: SYNC_WINDOW_DAYS,
         maxResponseBytes: MAX_RESPONSE_BYTES,
       },
-      readOnlyMailbox: true,
+      readOnlyMailbox: !ctx.grant.capabilities.includes("mail.send"),
     },
     meta: hostMeta(),
   };
@@ -237,6 +226,22 @@ function getMail(ctx) {
   return {
     data: { accountId, message: got.message, body: got.body },
     meta: metaFor(fresh, got.warnings, { coverage: reads.coverage(accountId, got.folders) }),
+  };
+}
+
+function getAttachment(ctx) {
+  const params = ctx.params;
+  if (!closed(params, ["accountId", "messageId", "index"])) throw coded("INVALID_REQUEST");
+  const accountId = accountParam(params);
+  requireAccount(ctx.grant, accountId);
+  if (!validId(params.messageId)) throw coded("INVALID_REQUEST");
+  if (!Number.isInteger(params.index) || params.index < 0) throw coded("INVALID_REQUEST");
+  return {
+    data: reads.getAttachment(accountId, params.messageId, params.index),
+    meta: {
+      ...hostMeta(),
+      contentTrust: "untrusted_mail_data",
+    },
   };
 }
 
@@ -328,6 +333,10 @@ function submitDraft(ctx) {
   };
 }
 
+async function sendMail(ctx) {
+  return send.perform(ctx);
+}
+
 function listDrafts(ctx) {
   const params = ctx.params;
   if (!closed(params, ["accountId", "limit"])) throw coded("INVALID_REQUEST");
@@ -357,20 +366,25 @@ const HANDLERS = {
   "mail.list_cached": listMail,
   "mail.search_cached": searchMail,
   "mail.get_cached": getMail,
+  "mail.attachment.get": getAttachment,
   "health.get": health,
   "agent.proposals.list": proposals,
   "draft.proposals.submit": submitDraft,
   "draft.proposals.list": listDrafts,
+  "mail.send": sendMail,
 };
 
-function execute(ctx) {
-  if (!ctx || typeof ctx.operation !== "string" || !Object.prototype.hasOwnProperty.call(OP, ctx.operation)) {
-    throw coded("UNKNOWN_OPERATION");
-  }
-  const spec = OP[ctx.operation];
+const catalogNames = catalog.operations();
+if (catalogNames.length !== Object.keys(HANDLERS).length || catalogNames.some((name) => typeof HANDLERS[name] !== "function")) {
+  throw new Error("Bot operation handlers do not match the catalog.");
+}
+
+async function execute(ctx) {
+  const spec = ctx && catalog.operation(ctx.operation);
+  if (!spec) throw coded("UNKNOWN_OPERATION");
   if (spec.caps.some((cap) => !ctx.grant.capabilities.includes(cap))) throw coded("FORBIDDEN");
   const handler = HANDLERS[ctx.operation];
-  const result = handler(ctx);
+  const result = await handler(ctx);
   return fit({
     apiVersion: API_VERSION,
     requestId: ctx.requestId,
@@ -382,14 +396,12 @@ function execute(ctx) {
 }
 
 function kindFor(operation) {
-  const spec = OP[operation];
+  const spec = catalog.operation(operation);
   return spec && spec.kind ? spec.kind : "call";
 }
 
 module.exports = {
   execute,
   kindFor,
-  OP,
-  OPERATIONS,
-  CAPABILITIES,
+  HANDLERS,
 };

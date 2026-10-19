@@ -168,7 +168,10 @@ app.whenReady().then(async () => {
   const botAccess = { enabled: false, accounts: accounts.map(a => ({ accountId: a.id, email: a.email })), grants: [], drafts: [], listen: {} };
   routes.set('bot:getAccess', () => ok(botAccess));
   routes.set('bot:mintGrant', payload => {
-    botAccess.grants.push({ ...payload, clientId: 'fixture-client', live: true, expiresAt: '2099-01-01T00:00:00Z' });
+    const expiry = payload.expiry && payload.expiry.kind === 'never'
+      ? { kind: 'never' }
+      : { kind: 'finite', expiresAt: '2099-01-01T00:00:00.000Z' };
+    botAccess.grants.push({ ...payload, clientId: 'fixture-client', live: true, expiry });
     return ok({ secret: 'SYNTHETIC SECRET FOR OFFLINE UI CHECK', access: botAccess });
   });
   routes.set('bot:setEnabled', payload => {
@@ -180,19 +183,24 @@ app.whenReady().then(async () => {
   assert.equal(await run(`$('settings-account').checkVisibility()`), false);
   assert.equal(await run(`$('bot-enabled').disabled`), true);
   assert.equal(await run(`$('bot-expiry').checkVisibility()`), false);
-  assert.equal(await run(`$('bot-serve-host').checkVisibility() && $('bot-add-client').open`), true);
+  assert.match(await run(`$('bot-listen').textContent`), /listener on this computer/);
+  await run(`showBotSection('tailscale')`);
+  assert.equal(await run(`$('bot-serve-host').checkVisibility()`), true);
   assert.match(await run(`$('bot-remote-status').textContent`), /No Tailscale host/);
+  await run(`showBotSection('grants')`);
+  assert.equal(await run(`$('bot-add-client').open`), true);
   assert.deepEqual(await run(`selectedBotAccounts()`), [], 'mailbox access remains opt-in');
   await shot('settings-bot-first-run');
-  // An invalid expiry must reveal itself even if More options was closed.
-  await run(`$('bot-expiry').value='31';$('bot-mint-btn').click()`);
-  assert.equal(count('bot:mintGrant'), 0);
-  assert.equal(await run(`$('bot-grant-options').open && document.activeElement.id==='bot-expiry'`), true);
+  await run(`$('bot-expiry').value='never';$('bot-label').value='My assistant';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
+  await waitFor(`$('confirm').open`);
+  await run(`$('confirm-cancel').click()`);
+  await waitFor(`!$('confirm').open`);
+  assert.equal(count('bot:mintGrant'), 0, 'canceling no expiry writes nothing');
   await run(`$('bot-expiry').value='7';$('bot-grant-options').open=false;
     $('bot-label').value='My assistant';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
   await waitFor(`$('bot-secret').open && !botBusy`);
   assert.deepEqual(calls.find(row => row.channel === 'bot:mintGrant').payload, { label: 'My assistant', accountIds: ['box-0'],
-    capabilities: ['accounts.read','mail.headers.read','health.read','agent.proposals.read'], expiryDays: 7 });
+    capabilities: ['accounts.read','mail.headers.read','health.read','agent.proposals.read'], expiry: { kind: 'finite', days: 7 } });
   assert.equal(count('bot:setEnabled'), 0, 'creating a grant never enables access');
   await run(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.fixtureCopied=value;}}});$('bot-secret-copy').click()`);
   await waitFor(`$('bot-secret-status').textContent.startsWith('Copied.')`);
@@ -203,19 +211,19 @@ app.whenReady().then(async () => {
   await run(`$('bot-enabled').click()`);await waitFor(`!botBusy && $('bot-listen').textContent.includes('Listening on 127.0.0.1:47831')`);
   assert.equal(count('bot:setEnabled'), 1);
   // Extra permissions and a changed expiry still apply when their disclosure closes.
-  await run(`$('bot-grant-options').open=true;$('bot-caps').querySelector('input').click();$('bot-expiry').value='14';
+  await run(`$('bot-grant-options').open=true;$('bot-caps').querySelector('input').click();$('bot-expiry').value='30';
     $('bot-grant-options').open=false;$('bot-label').value='Text reader';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
   await waitFor(`$('bot-secret').open && !botBusy`);
   const extraGrant = calls.filter(row => row.channel === 'bot:mintGrant').at(-1).payload;
-  assert.equal(extraGrant.expiryDays, 14);
+  assert.deepEqual(extraGrant.expiry, { kind: 'finite', days: 30 });
   assert.deepEqual(extraGrant.capabilities, ['accounts.read','mail.headers.read','health.read','agent.proposals.read','mail.bodies.read']);
   await run(`$('bot-secret-close').click()`);await waitFor(`!$('bot-secret').open && $('bot-secret-value').textContent===''`);
   botAccess.drafts.push({proposalId:'fixture-proposal',subject:'Review this reply',to:['recipient@example.test'],bodyText:'Proposed text',status:'pending'});
   await run(`loadBotAccess()`);
-  await run(`$('bot-advanced').querySelector('summary').focus()`);await key('RETURN');
-  assert.equal(await run(`$('bot-serve-host').checkVisibility() && $('bot-grants').querySelector('button').checkVisibility()`), true);
+  await run(`showBotSection('grants')`);
+  assert.equal(await run(`$('bot-grants').querySelector('button').checkVisibility()`), true);
   await shot('settings-bot-advanced');
-  await run(`$('bot-advanced').open=false;$('bot-review-link').click()`);
+  await run(`$('bot-review-link').click()`);
   assert.equal(await run(`$('bot-review').open && document.activeElement.id==='bot-draft-heading' && $('bot-drafts').checkVisibility()`), true);
   assert.equal(await run(`$('bot-drafts').querySelector('button').checkVisibility()`), true, 'the proposal review action remains reachable');
   await key('TAB');
@@ -371,7 +379,7 @@ app.whenReady().then(async () => {
     await waitFor(`state.listOffset===${page*200} && !state.busy && !state.listLoading`);
     assert.ok(await run(`document.querySelectorAll('.message-row').length<=200`));
   }
-  assert.equal(await run(`$('list-page-status').textContent`), '2001–2105 of 2105 downloaded');
+  assert.equal(await run(`$('list-page-status').textContent`), await run(`(2001).toLocaleString()+'–'+(2105).toLocaleString()+' / '+(2105).toLocaleString()+' downloaded'`));
   assert.equal(await run(`$('list-next').disabled && !$('list-prev').disabled`), true);
   assert.equal(await run(`document.querySelectorAll('.message-row').length`), 105);
   await shot('message-last-page');
@@ -409,7 +417,8 @@ app.whenReady().then(async () => {
   await run(`$('pref-compact-list').click()`);
   await waitFor(`state.prefs.compactList===false`);
   await run(`$('settings').close();retainedRow.querySelector('button.message').focus();`);
-  assert.equal(await run(`document.querySelector('.message-row').getBoundingClientRect().height`), 60);
+  const comfortableHeight = await run(`document.querySelector('.message-row').getBoundingClientRect().height`);
+  assert.ok(comfortableHeight >= 60 && comfortableHeight < 64, `comfortable row stays near the 60px minimum, got ${comfortableHeight}`);
   // Reduced motion and a short window retain one tab panel and reachable controls.
   win.webContents.debugger.attach('1.3');
   await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]});

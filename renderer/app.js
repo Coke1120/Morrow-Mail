@@ -8157,6 +8157,22 @@ function applySettingsFold(fold, open, animate) {
     if (motion && typeof motion.reset === "function") motion.reset(panel);
     panel.hidden = !open;
   }
+  if (fold.dataset.fold === "bot") syncBotSectionPanels(open);
+}
+
+function syncBotSectionPanels(open) {
+  const nav = $("bot-sections");
+  if (!nav) return;
+  if (!open) {
+    for (const tab of nav.querySelectorAll('[role="tab"]')) {
+      tab.tabIndex = -1;
+      const panel = $(tab.getAttribute("aria-controls"));
+      if (panel) panel.hidden = true;
+    }
+    return;
+  }
+  const selected = nav.querySelector('[role="tab"][aria-selected="true"]');
+  showBotSection((selected && selected.dataset.botSection) || "local");
 }
 
 function setSettingsFold(name, open, animate) {
@@ -11485,16 +11501,18 @@ function paintBotAccounts(accounts) {
 function botPermissionNames(capabilities) {
   const names = { "accounts.read": "account details", "mail.headers.read": "cached mail headers",
     "health.read": "sync health", "agent.proposals.read": "Agent proposals", "mail.bodies.read": "message text",
-    "mail.attachments.read": "attachment names", "draft.proposals.create": "draft proposals" };
+    "mail.attachments.read": "attachment names", "draft.proposals.create": "draft proposals",
+    "mail.send": "send mail as you" };
   return (capabilities || []).map((cap) => names[cap] || cap).join(", ");
 }
 
 function botListenerStatus(access) {
   const listen = (access && access.listen) || {};
-  if (listen.listening) return `Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}.`;
-  if (listen.error === "port_in_use") return "Could not start the bridge: port 47831 is in use. This bridge is not listening.";
-  if (listen.error) return "The bridge could not start. " + listen.error;
-  return "The bridge is not listening.";
+  const where = "This is the listener on this computer.";
+  if (listen.listening) return `${where} Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}.`;
+  if (listen.error === "port_in_use") return `${where} Could not start the bridge: port 47831 is in use. This bridge is not listening.`;
+  if (listen.error) return `${where} The bridge could not start. ${listen.error}`;
+  return `${where} The bridge is not listening.`;
 }
 
 function paintBotGrants(grants) {
@@ -11519,7 +11537,10 @@ function paintBotGrants(grants) {
       const account = accounts.find((row) => row.accountId === id);
       return account ? account.email || account.displayName : "Disconnected mailbox";
     });
-    meta.textContent = `${names.join(", ")} · ${botPermissionNames(grant.capabilities)} · Expires ${new Date(grant.expiresAt).toLocaleString()}`;
+    const expiryText = grant.expiry && grant.expiry.kind === "never"
+      ? "No expiry"
+      : `Expires ${new Date(grant.expiry && grant.expiry.expiresAt).toLocaleString()}`;
+    meta.textContent = `${names.join(", ")} · ${botPermissionNames(grant.capabilities)} · ${expiryText}`;
     const used = document.createElement("p");
     used.className = "hint";
     used.textContent = grant.lastUsedAt
@@ -11615,6 +11636,44 @@ function paintBotDrafts(rows) {
   }
 }
 
+function paintBotAudit(rows) {
+  const list = $("bot-audit");
+  if (!list || typeof list.replaceChildren !== "function") return;
+  list.replaceChildren();
+  const items = rows || [];
+  if (!items.length) {
+    const item = document.createElement("li");
+    item.textContent = "No recent bridge activity.";
+    list.append(item);
+    return;
+  }
+  for (const row of items) {
+    const item = document.createElement("li");
+    const audit = row.auditId ? `${row.auditId} · ` : "";
+    item.textContent = `${audit}${row.at || ""} · ${row.operation || "call"} · ${row.code || "ok"} · ${row.accountId || "no account"}`;
+    list.append(item);
+  }
+}
+
+function paintBotSends(rows) {
+  const list = $("bot-sends");
+  if (!list || typeof list.replaceChildren !== "function") return;
+  list.replaceChildren();
+  const items = rows || [];
+  if (!items.length) {
+    const item = document.createElement("li");
+    item.textContent = "No send receipts.";
+    list.append(item);
+    return;
+  }
+  for (const row of items) {
+    const item = document.createElement("li");
+    const to = row.recipientSummary && row.recipientSummary.to ? row.recipientSummary.to.join(", ") : "";
+    item.textContent = `${row.auditId || ""} · ${row.state || ""} · ${row.accountId || ""} · ${to} · ${row.subject || ""} · ${row.claimedAt || ""} · ${row.finishedAt || ""}`;
+    list.append(item);
+  }
+}
+
 function paintBotAccess(data) {
   const access = data || {};
   state.botAccess = access;
@@ -11635,17 +11694,29 @@ function paintBotAccess(data) {
   $("bot-remote-status").textContent = access.serveHost
     ? "Tailscale host saved. Remote connectivity has not been verified by this app."
     : "No Tailscale host saved. Same-computer access can still be used.";
-  $("bot-endpoint").textContent = access.serveHost
-    ? `Remote endpoint: https://${access.serveHost}/api/bot/v1/call`
+  const endpoints = access.endpoints || {};
+  $("bot-local-endpoint").textContent = endpoints.local
+    ? `Loopback endpoint ${endpoints.local}`
+    : "";
+  $("bot-endpoint").textContent = endpoints.serve
+    ? endpoints.serve
     : "Save your Tailscale hostname and port to see the remote endpoint.";
+  $("bot-marker").textContent = access.markerJson
+    ? `Capability marker ${access.markerJson}`
+    : "";
   const enabled = $("bot-enabled");
   enabled.checked = access.enabled === true;
   enabled.disabled = access.enabled !== true && !live;
-  $("bot-enable-help").textContent = live ? "Copy your secret before enabling. Tailscale Serve forwards this local listener; enabling does not configure Serve." : "Create an unexpired grant first. The listener stays on 127.0.0.1 only.";
-  $("bot-serve-host").value = access.serveHost || "";
+  $("bot-enable-help").textContent = live ? "Copy your secret before enabling. Enabling does not configure Serve." : "Create an unexpired grant first. The listener stays on 127.0.0.1 only.";
+  const hostField = $("bot-serve-host");
+  if (typeof document === "undefined" || document.activeElement !== hostField) {
+    hostField.value = access.serveHost || "";
+  }
   paintBotAccounts(access.accounts || []);
   paintBotGrants(grants);
   paintBotDrafts(access.draftsAvailable === false ? null : (access.drafts || []));
+  if (typeof paintBotAudit === "function") paintBotAudit(access.audit || []);
+  if (typeof paintBotSends === "function") paintBotSends(access.sends || []);
 }
 
 async function openBotDraft(proposalId) {
@@ -11697,14 +11768,84 @@ function selectedBotCaps() {
   return caps;
 }
 
+function showBotSection(name) {
+  const nav = $("bot-sections");
+  if (!nav) return;
+  const tabs = [...nav.querySelectorAll('[role="tab"]')];
+  const known = tabs.some((tab) => tab.dataset.botSection === name);
+  if (!known) return;
+  for (const tab of tabs) {
+    const active = tab.dataset.botSection === name;
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.tabIndex = active ? 0 : -1;
+    const panel = $(tab.getAttribute("aria-controls"));
+    if (!panel) continue;
+    const show = active;
+    const wasHidden = panel.hidden;
+    panel.hidden = !show;
+    if (show && wasHidden) {
+      const motion = motionApi();
+      if (motion && motion.fadePane) motion.fadePane(panel, "y");
+    }
+  }
+}
+
+function botSetupChoice() {
+  const picked = document.querySelector('input[name="bot-setup-target"]:checked');
+  return picked && picked.value === "serve" ? "serve" : "local";
+}
+
+function wireBotSections() {
+  const nav = $("bot-sections");
+  if (!nav || nav.dataset.wired === "1") return;
+  nav.dataset.wired = "1";
+  nav.addEventListener("click", (event) => {
+    const tab = event.target.closest && event.target.closest('[role="tab"]');
+    if (!tab || !nav.contains(tab)) return;
+    showBotSection(tab.dataset.botSection);
+    tab.focus({ preventScroll: true });
+  });
+  nav.addEventListener("keydown", (event) => {
+    const tabs = [...nav.querySelectorAll('[role="tab"]')];
+    const current = tabs.indexOf(document.activeElement);
+    if (current < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    showBotSection(tabs[next].dataset.botSection);
+    tabs[next].focus({ preventScroll: true });
+  });
+}
+
 function wireBot() {
+  wireBotSections();
   $("bot-review-link").addEventListener("click", () => {
+    showBotSection("grants");
     $("bot-review").open = true;
     $("bot-draft-heading").scrollIntoView({ block: "center" });
     $("bot-draft-heading").focus({ preventScroll: true });
   });
-  // Native form validation cannot focus an invalid input in a closed disclosure.
-  $("bot-expiry").addEventListener("invalid", () => { $("bot-grant-options").open = true; });
+  $("bot-copy-setup").addEventListener("click", () => botGuard(async () => {
+    const text = await call("bot:setupText", { target: botSetupChoice() });
+    if (!navigator.clipboard) {
+      setBotStatus("Could not copy the setup prompt.", true);
+      return;
+    }
+    await navigator.clipboard.writeText(text.prompt);
+    setBotStatus("Setup prompt copied.");
+  }));
+  $("bot-download-skill").addEventListener("click", () => botGuard(async () => {
+    const text = await call("bot:setupText", { target: botSetupChoice() });
+    const blob = new Blob([text.skillMarkdown], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "SKILL.md";
+    link.click();
+    URL.revokeObjectURL(url);
+    setBotStatus("SKILL.md downloaded.");
+  }));
   $("bot-verify").addEventListener("click", () => botGuard(async () => {
     const access = await loadBotAccess();
     setBotStatus(botListenerStatus(access), !!(access.listen && access.listen.error));
@@ -11736,11 +11877,25 @@ function wireBot() {
   $("bot-mint").addEventListener("submit", (event) => {
     event.preventDefault();
     botGuard(async () => {
+      const choice = $("bot-expiry").value;
+      let expiry;
+      if (choice === "never") {
+        const answer = await askConfirm({
+          title: "No expiry",
+          body: "This grant stays active until you revoke it. Create it only if you can disable that client.",
+          confirm: "Create grant",
+          cancel: "Cancel",
+        });
+        if (!answer || !answer.ok) return;
+        expiry = { kind: "never", neverConfirmed: true };
+      } else {
+        expiry = { kind: "finite", days: Number(choice) };
+      }
       const minted = await call("bot:mintGrant", {
         label: $("bot-label").value,
         accountIds: selectedBotAccounts(),
         capabilities: selectedBotCaps(),
-        expiryDays: Number($("bot-expiry").value),
+        expiry,
       });
       showBotSecret(minted.secret);
       paintBotAccess(minted.access);

@@ -659,7 +659,8 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 .section-nav button:hover,
 .section-nav button:focus-visible { background: var(--hover); }
 
-.section-nav button[aria-current="true"] {
+.section-nav button[aria-current="true"],
+#bot-sections button[aria-selected="true"] {
   border-color: transparent;
   background: var(--brand);
   color: #fff;

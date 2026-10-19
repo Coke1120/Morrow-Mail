@@ -11,8 +11,7 @@
     "capabilityHeader": "Tailscale-App-Capabilities",
     "capability": "com.coke1120.morrow-mail/bot-access",
     "capabilityValue": [{ "readBridge": true }],
-    "funnel": false,
-    "sending": false
+    "funnel": false
   },
   "request": ["apiVersion", "requestId", "installationId", "operation", "params"],
   "operations": {
@@ -21,9 +20,11 @@
     "mail.list_cached": ["accountId", "folder", "limit"],
     "mail.search_cached": ["accountId", "query", "limit"],
     "mail.get_cached": ["accountId", "messageId", "maxBodyBytes"],
+    "mail.attachment.get": ["accountId", "messageId", "index"],
     "health.get": ["accountId"],
     "agent.proposals.list": ["accountId", "limit"],
     "draft.proposals.submit": ["accountId", "idempotencyKey", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"],
-    "draft.proposals.list": ["accountId", "limit"]
+    "draft.proposals.list": ["accountId", "limit"],
+    "mail.send": ["accountId", "fromAddress", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"]
   }
 }

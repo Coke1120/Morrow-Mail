@@ -120,14 +120,147 @@ function stamp(db, accountId, folderPath, when) {
   try { run(); } finally { Date.now = real; }
 }
 
+async function checkGrantExpiry(auth) {
+  const catalog = require("../host/bot/catalog");
+  const home = process.env.MORROW_USER_DATA;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-bot-expiry-"));
+  process.env.MORROW_USER_DATA = dir;
+  try {
+    const weekBefore = Date.now();
+    const week = auth.mint({
+      label: "seven days",
+      accountIds: ["acct-a"],
+      capabilities: catalog.DEFAULT_CAPABILITIES,
+    });
+    const weekAfter = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    const at = Date.parse(week.grant.expiry.expiresAt);
+    assert.strictEqual(week.grant.expiry.kind, "finite");
+    assert.ok(at >= weekBefore + 7 * day - 1000);
+    assert.ok(at <= weekAfter + 7 * day + 1000);
+    assert.ok(!Object.prototype.hasOwnProperty.call(week.grant, "expiresAt"));
+    const file = path.join(dir, "bot-access.json");
+    const beforeNever = fs.readFileSync(file, "utf8");
+    assert.throws(() => auth.mint({
+      label: "forever",
+      accountIds: ["acct-a"],
+      capabilities: catalog.DEFAULT_CAPABILITIES,
+      expiry: { kind: "never" },
+    }), /Confirm no expiry/);
+    assert.throws(() => auth.mint({
+      label: "forever",
+      accountIds: ["acct-a"],
+      capabilities: catalog.DEFAULT_CAPABILITIES,
+      expiry: "never",
+    }), /Choose an expiry/);
+    assert.strictEqual(fs.readFileSync(file, "utf8"), beforeNever);
+
+    const forever = auth.mint({
+      label: "forever",
+      accountIds: ["acct-a"],
+      capabilities: catalog.DEFAULT_CAPABILITIES,
+      expiry: { kind: "never", neverConfirmed: true },
+    });
+    assert.deepStrictEqual(forever.grant.expiry, { kind: "never" });
+    const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+    const storedForever = stored.grants.find((grant) => grant.clientId === forever.grant.clientId);
+    assert.deepStrictEqual(storedForever.expiry, { kind: "never" });
+    assert.ok(!Object.prototype.hasOwnProperty.call(storedForever, "neverConfirmed"));
+    auth.setEnabledFlag(true);
+    const principal = auth.authenticate(`Bearer ${forever.secret}`);
+    assert.ok(principal);
+    assert.deepStrictEqual(principal.expiry, { kind: "never" });
+    assert.ok(!Object.prototype.hasOwnProperty.call(principal, "expiresAt"));
+    const rotated = auth.rotate(forever.grant.clientId);
+    assert.strictEqual(rotated.grant.expiry.kind, "never");
+    assert.notStrictEqual(rotated.grant.keyId, forever.grant.keyId);
+    assert.ok(auth.authenticate(`Bearer ${rotated.secret}`));
+    assert.strictEqual(auth.authenticate(`Bearer ${forever.secret}`), null);
+
+    const past = auth.mint({
+      label: "past",
+      accountIds: ["acct-a"],
+      capabilities: catalog.DEFAULT_CAPABILITIES,
+      expiry: { kind: "finite", days: 1 },
+    });
+    const access = auth.load().store;
+    access.grants.find((grant) => grant.clientId === past.grant.clientId).expiry = {
+      kind: "finite",
+      expiresAt: new Date(0).toISOString(),
+    };
+    fs.writeFileSync(file, JSON.stringify(access));
+    assert.strictEqual(auth.authenticate(`Bearer ${past.secret}`), null);
+
+    const version1 = auth.load().store;
+    version1.version = 1;
+    for (const grant of version1.grants) {
+      grant.expiresAt = grant.expiry.kind === "never"
+        ? new Date(Date.now() + day).toISOString()
+        : grant.expiry.expiresAt;
+      delete grant.expiry;
+    }
+    fs.writeFileSync(file, JSON.stringify(version1));
+    const loaded = auth.load();
+    assert.strictEqual(loaded.ok, true);
+    assert.strictEqual(loaded.store.version, 2);
+    assert.ok(loaded.store.grants.every((grant) => grant.expiry.kind === "finite"));
+    assert.ok(loaded.store.grants.every((grant) => !Object.prototype.hasOwnProperty.call(grant, "expiresAt")));
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.strictEqual(saved.version, 2);
+    assert.ok(saved.grants.every((grant) => !Object.prototype.hasOwnProperty.call(grant, "expiresAt")));
+    assert.ok(saved.grants.every((grant) => grant.expiry.kind === "finite"));
+
+    fs.writeFileSync(file, JSON.stringify(version1));
+    fs.chmodSync(dir, 0o500);
+    try {
+      assert.strictEqual(auth.load().ok, false);
+      assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).version, 1);
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
+  } finally {
+    process.env.MORROW_USER_DATA = home;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function run() {
   const contract = require("../shared/bot-contract-v1.json");
   const constants = require("../host/bot/constants");
-  assert.deepStrictEqual(Object.keys(contract.operations).sort(), constants.OPERATIONS.slice().sort());
+  const catalog = require("../host/bot/catalog");
+  const prompt = require("../host/bot/prompt");
+  assert.deepStrictEqual(Object.keys(contract.operations).sort(), catalog.operations().slice().sort());
+  for (const name of catalog.operations()) {
+    assert.deepStrictEqual(contract.operations[name], catalog.operation(name).params, name);
+  }
+  const listed = read("docs/BOT_BRIDGE.md").split("\n").map((line) => {
+    const match = /^- `([^`]+)`$/.exec(line);
+    return match ? match[1] : "";
+  }).filter(Boolean);
+  assert.deepStrictEqual(listed, catalog.operations());
+  const facts = catalog.factsFrom({
+    installationId: "6c2e1a40-1111-4222-8333-444455556666",
+    serveHost: "mac.example.ts.net:8443",
+  }, "local");
+  facts.callsPerMinute = 61;
+  const rendered = prompt.renderSetup(facts);
+  assert.ok(rendered.prompt.includes("61"));
+  for (const name of catalog.operations()) assert.ok(rendered.prompt.includes(name), name);
+  assert.ok(rendered.prompt.includes(catalog.markerJson()));
+  assert.ok(rendered.prompt.includes(facts.installationId));
+  assert.ok(rendered.prompt.includes("attachment_bytes_not_stored"));
+  assert.ok(rendered.prompt.includes("SEND_OUTCOME_UNKNOWN"));
+  assert.ok(rendered.prompt.includes("untrusted_mail_data"));
+  assert.ok(!rendered.prompt.includes("mmb_v1_"));
+  assert.ok(!rendered.skillMarkdown.includes("mmb_v1_"));
+  assert.ok(rendered.skillMarkdown.includes("name: morrow-bot"));
+  const noServe = prompt.renderSetup(catalog.factsFrom({ installationId: facts.installationId, serveHost: "" }, "serve"));
+  assert.ok(noServe.prompt.includes("No Tailscale Serve host is saved."));
+  assert.ok(!noServe.prompt.includes("https://"));
   assert.strictEqual(contract.transport.bind, "127.0.0.1");
   assert.strictEqual(contract.transport.port, 47831);
   assert.strictEqual(contract.transport.funnel, false);
-  assert.strictEqual(contract.transport.sending, false);
+  assert.ok(!Object.prototype.hasOwnProperty.call(contract.transport, "sending"));
 
   const serviceSrc = read("host/bot/service.js");
   const serverSrc = read("host/bot/server.js");
@@ -138,6 +271,8 @@ async function run() {
   assert.ok(!serviceSrc.includes("mail/secrets"));
   assert.ok(!serviceSrc.includes("mail/oauth"));
   assert.ok(!serviceSrc.includes("mail/engine"));
+  assert.ok(!serviceSrc.includes("bytesFor"));
+  assert.ok(!read("host/bot/reads.js").includes("bytesFor"));
   assert.ok(!serviceSrc.includes("upsertDraft"));
   assert.ok(!serviceSrc.includes("ensureBody"));
   assert.ok(!serviceSrc.includes("secretFor"));
@@ -149,6 +284,8 @@ async function run() {
   assert.ok(mainSrc.includes("bot/server"));
   assert.ok(html.includes('id="settings-bot"'));
   assert.ok(html.includes("Do not enable Funnel"));
+  assert.ok(html.includes('id="bot-sections"'));
+  assert.ok(html.includes("This bot can send mail as you."));
   assert.ok(appSrc.includes("Nothing is sent until you press Send."));
   assert.ok(appSrc.includes("bot:mintGrant"));
   assert.ok(appSrc.includes("window.morrowMotion") || appSrc.includes("morrowMotion"));
@@ -181,12 +318,23 @@ async function run() {
     }
     return previousRequire.apply(this, arguments);
   };
+  const engine = require("../host/mail/engine");
+  const originalBytesFor = engine.bytesFor;
+  let bytesForHits = 0;
+  engine.bytesFor = async (...args) => {
+    bytesForHits += 1;
+    return originalBytesFor(...args);
+  };
   const db = require("../host/mail/db");
   const auth = require("../host/bot/auth");
   const server = require("../host/bot/server");
   const budget = require("../host/bot/budget");
   const reads = require("../host/bot/reads");
   const manage = require("../host/bot/manage");
+  const service = require("../host/bot/service");
+  assert.deepStrictEqual(Object.keys(service.HANDLERS).sort(), catalog.operations().slice().sort());
+  assert.strictEqual(server.markerOk(catalog.markerJson()), true);
+  assert.strictEqual(server.markerOk(JSON.stringify({ "com.coke1120.morrow-mail/bot-access": [{ readBridge: false }] })), false);
   const { createIpc } = require("../host/ipc");
   const secrets = require("../host/mail/secrets");
   const openai = require("../host/openai-client");
@@ -331,7 +479,7 @@ async function run() {
         "agent.proposals.read",
         "draft.proposals.create",
       ],
-      expiryDays: 7,
+      expiry: { kind: "finite", days: 7 },
     });
     assert.strictEqual(minted.success, true);
     const token = minted.data.secret;
@@ -351,8 +499,7 @@ async function run() {
     const reader = auth.mint({
       label: "reader",
       accountIds: ["acct-a"],
-      capabilities: constants.DEFAULT_CAPABILITIES,
-      expiryDays: 7,
+      capabilities: catalog.DEFAULT_CAPABILITIES,
     });
     const enabled = await manage.answer("bot:setEnabled", { enabled: true }, settingsEvent());
     assert.strictEqual(enabled.success, true);
@@ -391,6 +538,14 @@ async function run() {
       }),
     });
     assert.strictEqual(extraMarker.status, 403);
+    const catalogMarker = await callBridge({ ...base, operation: "accounts.list", marker: catalog.markerJson() });
+    assert.strictEqual(catalogMarker.status, 200);
+    const missingRead = await callBridge({
+      ...base,
+      operation: "accounts.list",
+      marker: JSON.stringify({ "com.coke1120.morrow-mail/bot-access": [{ writeBridge: true }] }),
+    });
+    assert.strictEqual(missingRead.status, 403);
 
     const origin = await callBridge({ ...base, operation: "accounts.list", origin: "https://evil.example" });
     assert.strictEqual(origin.status, 403);
@@ -449,8 +604,7 @@ async function run() {
     const narrowed = auth.mint({
       label: "headers",
       accountIds: ["acct-a"],
-      capabilities: constants.DEFAULT_CAPABILITIES.concat(["mail.bodies.read"]),
-      expiryDays: 7,
+      capabilities: catalog.DEFAULT_CAPABILITIES.concat(["mail.bodies.read"]),
     });
     const stillHidden = await callBridge({
       token: narrowed.secret,
@@ -466,8 +620,7 @@ async function run() {
     const files = auth.mint({
       label: "files",
       accountIds: ["acct-a"],
-      capabilities: constants.DEFAULT_CAPABILITIES.concat(["mail.bodies.read", "mail.attachments.read"]),
-      expiryDays: 7,
+      capabilities: catalog.DEFAULT_CAPABILITIES.concat(["mail.bodies.read", "mail.attachments.read"]),
     });
     const named = await callBridge({
       token: files.secret,
@@ -476,7 +629,193 @@ async function run() {
       params: { accountId: "acct-a", messageId: "msg-a-header" },
     });
     assert.strictEqual(named.json.data.message.attachments[0].filename, "SECRETFILE.pdf");
+    assert.strictEqual(named.json.data.message.attachments[0].inline, false);
+    assert.ok(!Object.prototype.hasOwnProperty.call(named.json.data.message.attachments[0], "bytes"));
     assert.ok(!named.text.includes("contentBytes"));
+    const deniedAttach = await callBridge({
+      ...base,
+      operation: "mail.attachment.get",
+      params: { accountId: "acct-a", messageId: "msg-a-header", index: 0 },
+    });
+    assert.strictEqual(deniedAttach.status, 403);
+    assert.strictEqual(deniedAttach.json.error.code, "FORBIDDEN");
+    const gotAttach = await callBridge({
+      token: files.secret,
+      installationId,
+      operation: "mail.attachment.get",
+      params: { accountId: "acct-a", messageId: "msg-a-header", index: 0 },
+    });
+    assert.strictEqual(gotAttach.status, 200);
+    assert.strictEqual(gotAttach.json.data.code, "attachment_bytes_not_stored");
+    assert.strictEqual(gotAttach.json.data.bytes, null);
+    assert.strictEqual(gotAttach.json.data.attachment.filename, "SECRETFILE.pdf");
+    assert.strictEqual(gotAttach.json.data.attachment.size, 12);
+    assert.strictEqual(gotAttach.json.data.attachment.inline, false);
+    assert.strictEqual(gotAttach.json.meta.contentTrust, "untrusted_mail_data");
+    const missingPart = await callBridge({
+      token: files.secret,
+      installationId,
+      operation: "mail.attachment.get",
+      params: { accountId: "acct-a", messageId: "msg-a-header", index: 4 },
+    });
+    assert.strictEqual(missingPart.status, 404);
+    assert.strictEqual(missingPart.json.error.code, "ATTACHMENT_NOT_IN_CACHE");
+    assert.strictEqual(missingPart.json.meta.contentTrust, "untrusted_mail_data");
+    assert.strictEqual(bytesForHits, 0);
+
+    const sendApi = require("../host/bot/send");
+    let smtpCalls = 0;
+    sendApi.setSmtpForTest(async () => {
+      smtpCalls += 1;
+      return { messageId: "<smtp-stub@example.test>" };
+    });
+    const sendParams = {
+      accountId: "acct-a",
+      to: ["ada@example.test"],
+      subject: "Hello",
+      bodyText: "Plain body",
+    };
+    const deniedSend = await callBridge({ ...base, operation: "mail.send", params: sendParams });
+    assert.strictEqual(deniedSend.status, 403);
+    assert.strictEqual(deniedSend.json.error.code, "FORBIDDEN");
+    assert.strictEqual(smtpCalls, 0);
+    const sender = auth.mint({
+      label: "sender",
+      accountIds: ["acct-a"],
+      capabilities: catalog.DEFAULT_CAPABILITIES.concat(["mail.send"]),
+    });
+    const sendId = crypto.randomUUID();
+    const sent = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: sendId,
+      params: sendParams,
+    });
+    assert.strictEqual(sent.status, 200, sent.text);
+    assert.strictEqual(smtpCalls, 1);
+    assert.strictEqual(sent.json.data.idempotentReplay, false);
+    assert.strictEqual(sent.json.data.state, "submitted");
+    assert.strictEqual(sent.json.data.messageId, "<smtp-stub@example.test>");
+    assert.strictEqual(sent.json.meta.contentTrust, "untrusted_mail_data");
+    const sendReplay = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: sendId,
+      params: sendParams,
+    });
+    assert.strictEqual(sendReplay.status, 200, sendReplay.text);
+    assert.strictEqual(smtpCalls, 1);
+    assert.strictEqual(sendReplay.json.data.auditId, sent.json.data.auditId);
+    assert.strictEqual(sendReplay.json.data.idempotentReplay, true);
+    const mismatched = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: sendId,
+      params: { ...sendParams, subject: "Different" },
+    });
+    assert.strictEqual(mismatched.status, 400);
+    assert.strictEqual(mismatched.json.error.code, "INVALID_REQUEST");
+    assert.strictEqual(smtpCalls, 1);
+    const receiptFile = path.join(dir, "bot-send-receipts.json");
+    const ageReceipts = () => {
+      const stored = JSON.parse(fs.readFileSync(receiptFile, "utf8"));
+      const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+      for (const row of stored.receipts) row.claimedAt = old;
+      fs.writeFileSync(receiptFile, JSON.stringify(stored));
+    };
+    ageReceipts();
+    sendApi.resetForTest();
+    sendApi.setSmtpForTest(async () => {
+      smtpCalls += 1;
+      const error = new Error("socket hang up");
+      error.code = "ECONNRESET";
+      throw error;
+    });
+    const unknownId = crypto.randomUUID();
+    const unknownParams = { ...sendParams, subject: "Unknown outcome" };
+    const unknown = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: unknownId,
+      params: unknownParams,
+    });
+    assert.strictEqual(unknown.status, 409, unknown.text);
+    assert.strictEqual(unknown.json.error.code, "SEND_OUTCOME_UNKNOWN");
+    assert.strictEqual(unknown.json.error.retryable, false);
+    assert.strictEqual(unknown.json.error.state, "claimed");
+    assert.ok(unknown.json.error.auditId);
+    const smtpAfterUnknown = smtpCalls;
+    sendApi.resetForTest();
+    sendApi.setSmtpForTest(async () => {
+      smtpCalls += 1;
+      return { messageId: "<should-not-send@example.test>" };
+    });
+    const unknownAgain = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: unknownId,
+      params: unknownParams,
+    });
+    assert.strictEqual(unknownAgain.status, 409);
+    assert.strictEqual(unknownAgain.json.error.code, "SEND_OUTCOME_UNKNOWN");
+    assert.strictEqual(smtpCalls, smtpAfterUnknown);
+    const loose = await callBridge({
+      ...base,
+      operation: "mail.list_cached",
+      requestId: "not-a-uuid",
+      params: { accountId: "acct-a", folder: "inbox", limit: 5 },
+    });
+    assert.strictEqual(loose.status, 200);
+    const beforeLooseSend = JSON.parse(fs.readFileSync(receiptFile, "utf8")).receipts.length;
+    const looseSend = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: "not-a-uuid",
+      params: sendParams,
+    });
+    assert.strictEqual(looseSend.status, 400);
+    assert.strictEqual(looseSend.json.error.code, "INVALID_REQUEST");
+    assert.strictEqual(JSON.parse(fs.readFileSync(receiptFile, "utf8")).receipts.length, beforeLooseSend);
+    assert.strictEqual(smtpCalls, smtpAfterUnknown);
+    ageReceipts();
+    const fatList = JSON.stringify({
+      apiVersion: "1.0",
+      requestId: crypto.randomUUID(),
+      installationId,
+      operation: "mail.list_cached",
+      params: { accountId: "acct-a", folder: "inbox", limit: 1, note: "n".repeat(9000) },
+    });
+    assert.ok(Buffer.byteLength(fatList) > 8192);
+    const tooBigList = await callBridge({ ...base, raw: fatList, operation: "mail.list_cached" });
+    assert.strictEqual(tooBigList.status, 413);
+    const fatSend = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      params: { ...sendParams, subject: "Large", bodyText: "y".repeat(9000) },
+    });
+    assert.strictEqual(fatSend.status, 200, fatSend.text);
+    assert.ok(Buffer.byteLength(JSON.stringify(fatSend.json)) > 0);
+    assert.ok(!fs.readFileSync(receiptFile, "utf8").includes("Plain body"));
+    assert.ok(!fs.readFileSync(receiptFile, "utf8").includes("y".repeat(200)));
+    const badFrom = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      params: { ...sendParams, fromAddress: "other@example.test", subject: "Wrong from" },
+    });
+    assert.strictEqual(badFrom.status, 400);
+    assert.strictEqual(badFrom.json.error.code, "INVALID_REQUEST");
+    const settingsView = await manage.answer("bot:getAccess", {}, settingsEvent());
+    assert.ok(settingsView.data.sends.some((row) => row.auditId === sent.json.data.auditId));
+    assert.ok(!JSON.stringify(settingsView.data.sends).includes("Plain body"));
+    sendApi.setSmtpForTest(null);
 
     const htmlBody = await callBridge({
       ...base,
@@ -729,7 +1068,7 @@ async function run() {
         label: `slow upload ${change}`,
         accountIds: ["acct-a"],
         capabilities: ["draft.proposals.create"],
-        expiryDays: 1,
+        expiry: { kind: "finite", days: 1 },
       });
       const draftFile = path.join(dir, "bot-draft-proposals.json");
       const before = fs.readFileSync(draftFile, "utf8");
@@ -760,7 +1099,8 @@ async function run() {
             if (change === "disable") auth.setEnabledFlag(false);
             if (change === "expire") {
               const access = auth.load().store;
-              access.grants.find((grant) => grant.clientId === delayed.grant.clientId).expiresAt = new Date(0).toISOString();
+              const row = access.grants.find((grant) => grant.clientId === delayed.grant.clientId);
+              row.expiry = { kind: "finite", expiresAt: new Date(0).toISOString() };
               fs.writeFileSync(path.join(dir, "bot-access.json"), JSON.stringify(access));
             }
           },
@@ -816,6 +1156,10 @@ async function run() {
     assert.ok(!readerView.json.data.operations.includes("mail.get_cached"));
     assert.ok(!readerView.json.data.operations.includes("draft.proposals.submit"));
     assert.strictEqual(readerView.json.data.semantics.sending, false);
+    assert.strictEqual(readerView.json.data.semantics.attachmentBytes, false);
+    assert.strictEqual(readerView.json.data.readOnlyMailbox, true);
+    assert.strictEqual(readerView.json.data.grantExpiry.kind, "finite");
+    assert.ok(!Object.prototype.hasOwnProperty.call(readerView.json.data, "grantExpiresAt"));
     const rotated = auth.rotate(reader.grant.clientId);
     const oldReader = await callBridge({
       token: reader.secret,
@@ -936,6 +1280,16 @@ async function run() {
     assert.strictEqual(refused.status, 2);
     assert.ok(!refused.stderr.includes(token));
     assert.ok(!refused.stdout.includes(token));
+    const missingSendId = spawnSync(process.execPath, [
+      path.join(root, "scripts/morrow-bot-call.js"),
+      "--token-file", tokenFile,
+      "--installation", installationId,
+      "--operation", "mail.send",
+      "--params-file", paramsFile,
+    ], { encoding: "utf8" });
+    assert.strictEqual(missingSendId.status, 2);
+    assert.match(missingSendId.stderr, /request-id/);
+    assert.ok(!missingSendId.stderr.includes(token));
 
     server.setBeforeRelease(async () => { auth.setEnabledFlag(false); });
     let droppedText = "";
@@ -974,9 +1328,12 @@ async function run() {
     const stopped = await manage.setEnabled(false);
     assert.strictEqual(stopped.listen.listening, false);
 
+    await checkGrantExpiry(auth);
+
     assert.strictEqual(fs.readFileSync(path.join(dir, "settings.json"), "utf8"), "{\"sentinel\":true}\n");
     assert.strictEqual(secretHits, 0);
     assert.strictEqual(completeHits, 0);
+    assert.strictEqual(bytesForHits, 0);
     assert.ok(!fs.readFileSync(path.join(dir, "bot-access.json"), "utf8").includes(token));
     console.log("bot-bridge-ok");
   } finally {
@@ -985,8 +1342,14 @@ async function run() {
     try { await server.stop(); } catch { /* listener already closed */ }
     try { budget.resetLimitsForTest(); } catch { /* budget module failed to load */ }
     try { reads.setCorpusCapForTest(50000); } catch { /* reads module failed to load */ }
+    try {
+      const sendApi = require("../host/bot/send");
+      sendApi.setSmtpForTest(null);
+      sendApi.resetForTest();
+    } catch { /* send module failed to load */ }
     secrets.getPassword = originalPassword;
     openai.complete = originalComplete;
+    engine.bytesFor = originalBytesFor;
     Module.prototype.require = previousRequire;
     if (opened) {
       try { db.close(); } catch { /* temp db already closed */ }
@@ -1000,3 +1363,10 @@ async function run() {
 }
 
 module.exports = { run };
+
+if (require.main === module) {
+  run().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

@@ -6,8 +6,8 @@ The listener defaults to off. When a grant exists and Settings turns it on, it b
 
 ## Enable on the MacBook Air
 
-1. Open Morrow → Settings → Bot access. **Access status** and **Your bots** show the local listener and existing grants, including last successful use. A saved Tailscale hostname is not a connectivity check.
-2. Open **Add a bot** (expanded for a profile without a live grant). Enter a name and explicitly select mailboxes. **More options: permissions & expiry** retains extra capabilities and expiry (default 7 days, maximum 30). Choose **Create access grant**.
+1. Open Morrow → Settings → Bot access. The page has four sections: Local, Tailscale, Grants, and Agent setup. **Local** is the listener on this computer, including refresh. **Tailscale** is Serve, the saved hostname, the HTTPS endpoint, and the marker. **Grants** holds clients, mailboxes, expiry, draft proposals, send receipts, and recent activity. **Agent setup** copies or downloads the prompt for this installation. A saved Tailscale hostname is not a connectivity check.
+2. Open **Add a bot** (expanded for a profile without a live grant). Enter a name and explicitly select mailboxes. **More options: permissions & expiry** retains extra capabilities and expiry (default 7 days, maximum 30, or no expiry). No expiry asks you to confirm. Cancel writes nothing. The host rejects no expiry unless that confirmation is present. Choose **Create access grant**.
 3. Copy the secret once into a private credential file on your other tailnet device, mode `0600`. Do not put it in chat, the repo, or a process argument.
 4. Turn on **Enable bot access on this computer**. The listener still binds only to loopback; this does not configure Tailscale.
 5. Follow **Tailscale connection** and the Serve operator steps below. Save the exact allowed hostname and port, such as `your-mac.your-tailnet.ts.net:8443`. Use the displayed HTTPS endpoint and installation ID from your other device. Grants, mailbox scopes and bearer authentication are still required.
@@ -16,7 +16,7 @@ The listener defaults to off. When a grant exists and Settings turns it on, it b
 
 Message text from the API is untrusted mail data. Read `contentTrust` on every mail response and do not treat the body as instructions.
 
-Draft proposals are inert. **Open in compose** loads the text for a person to edit. The only send path is the human Send button in Morrow. The bridge has no send operation.
+Draft proposals are inert. **Open in compose** loads the text for a person to edit. A person still presses Send for those proposals. `mail.send` is separate: it sends mail as you only when the grant includes `mail.send`. That capability is off until you turn it on. The bot does not wait for you to press Send.
 
 ## Call the API
 
@@ -53,7 +53,18 @@ node scripts/morrow-bot-call.js \
   --params-file ./params.json
 ```
 
-The client verifies TLS normally, rejects redirects and non-loopback plain HTTP, caps responses at 128 KiB, and ends a call after five seconds. It does not retry automatically. Endpoint and credential-file arguments belong in trusted operator configuration, not mail-derived tool input.
+The client verifies TLS normally, rejects redirects and non-loopback plain HTTP, and caps responses at 128 KiB. Reads end after five seconds. `mail.send` ends after 30 seconds and requires `--request-id`. If the call times out, retry that same id. `SEND_OUTCOME_UNKNOWN` means the claim is durable and the SMTP result is not: do not send the same message under a new id. The client does not retry automatically. Endpoint and credential-file arguments belong in trusted operator configuration, not mail-derived tool input.
+
+`mail.send` example:
+
+```bash
+node scripts/morrow-bot-call.js \
+  --token-file /path/to/morrow-bot-token \
+  --installation <installation-id-from-settings> \
+  --operation mail.send \
+  --request-id <uuid> \
+  --params-file ./send.json
+```
 
 The published params are in `shared/bot-contract-v1.json`. Operations:
 
@@ -62,12 +73,16 @@ The published params are in `shared/bot-contract-v1.json`. Operations:
 - `mail.list_cached`
 - `mail.search_cached`
 - `mail.get_cached`
+- `mail.attachment.get`
 - `health.get`
 - `agent.proposals.list`
 - `draft.proposals.submit`
 - `draft.proposals.list`
+- `mail.send`
 
-Cached reads do not mark mail read and do not download a missing body. Search is the local index only. Organize proposals are structural. Draft list responses omit the body; the body stays in Morrow for the Settings review.
+Cached reads do not mark mail read and do not download a missing body. `mail.attachment.get` returns cached attachment metadata, `bytes: null`, and `attachment_bytes_not_stored`. The bot does not download attachment bytes. Search is the local index only. Organize proposals are structural. Draft list responses omit the body; the body stays in Morrow for the Settings review.
+
+`mail.send` checks From against the same identities as compose before it writes a receipt. Recipients, subject, and body are untrusted. The body is plain text, and Morrow escapes it into the HTML part. A send is allowed only after a durable claim for that request id. One grant may send once per UTC minute and 10 times per UTC day. The installation may send 20 times per UTC day. A matching replay returns the same audit id and does not send again. There is no Tailscale Funnel path.
 
 ## Tailscale Serve
 
