@@ -135,10 +135,11 @@ function describe(ctx) {
       installationId: ctx.installationId,
       operations: allowed,
       capabilities: ctx.grant.capabilities.slice(),
-      grantExpiresAt: ctx.grant.expiresAt,
+      grantExpiry: ctx.grant.expiry,
       semantics: {
         cacheOnlyReads: true,
-        sending: false,
+        sending: ctx.grant.capabilities.includes("mail.send"),
+        attachmentBytes: false,
         providerCalls: false,
         draftProposals: ctx.grant.capabilities.includes("draft.proposals.create"),
         draftProposalsSend: false,
@@ -158,7 +159,7 @@ function describe(ctx) {
         targetSyncWindowDays: SYNC_WINDOW_DAYS,
         maxResponseBytes: MAX_RESPONSE_BYTES,
       },
-      readOnlyMailbox: true,
+      readOnlyMailbox: !ctx.grant.capabilities.includes("mail.send"),
     },
     meta: hostMeta(),
   };

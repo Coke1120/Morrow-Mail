@@ -120,6 +120,110 @@ function stamp(db, accountId, folderPath, when) {
   try { run(); } finally { Date.now = real; }
 }
 
+async function checkGrantExpiry(auth) {
+  const constants = require("../host/bot/constants");
+  const home = process.env.MORROW_USER_DATA;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-bot-expiry-"));
+  process.env.MORROW_USER_DATA = dir;
+  try {
+    const weekBefore = Date.now();
+    const week = auth.mint({
+      label: "seven days",
+      accountIds: ["acct-a"],
+      capabilities: constants.DEFAULT_CAPABILITIES,
+    });
+    const weekAfter = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    const at = Date.parse(week.grant.expiry.expiresAt);
+    assert.strictEqual(week.grant.expiry.kind, "finite");
+    assert.ok(at >= weekBefore + 7 * day - 1000);
+    assert.ok(at <= weekAfter + 7 * day + 1000);
+    assert.ok(!Object.prototype.hasOwnProperty.call(week.grant, "expiresAt"));
+    const file = path.join(dir, "bot-access.json");
+    const beforeNever = fs.readFileSync(file, "utf8");
+    assert.throws(() => auth.mint({
+      label: "forever",
+      accountIds: ["acct-a"],
+      capabilities: constants.DEFAULT_CAPABILITIES,
+      expiry: { kind: "never" },
+    }), /Confirm no expiry/);
+    assert.throws(() => auth.mint({
+      label: "forever",
+      accountIds: ["acct-a"],
+      capabilities: constants.DEFAULT_CAPABILITIES,
+      expiry: "never",
+    }), /Choose an expiry/);
+    assert.strictEqual(fs.readFileSync(file, "utf8"), beforeNever);
+
+    const forever = auth.mint({
+      label: "forever",
+      accountIds: ["acct-a"],
+      capabilities: constants.DEFAULT_CAPABILITIES,
+      expiry: { kind: "never", neverConfirmed: true },
+    });
+    assert.deepStrictEqual(forever.grant.expiry, { kind: "never" });
+    const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+    const storedForever = stored.grants.find((grant) => grant.clientId === forever.grant.clientId);
+    assert.deepStrictEqual(storedForever.expiry, { kind: "never" });
+    assert.ok(!Object.prototype.hasOwnProperty.call(storedForever, "neverConfirmed"));
+    auth.setEnabledFlag(true);
+    const principal = auth.authenticate(`Bearer ${forever.secret}`);
+    assert.ok(principal);
+    assert.deepStrictEqual(principal.expiry, { kind: "never" });
+    assert.ok(!Object.prototype.hasOwnProperty.call(principal, "expiresAt"));
+    const rotated = auth.rotate(forever.grant.clientId);
+    assert.strictEqual(rotated.grant.expiry.kind, "never");
+    assert.notStrictEqual(rotated.grant.keyId, forever.grant.keyId);
+    assert.ok(auth.authenticate(`Bearer ${rotated.secret}`));
+    assert.strictEqual(auth.authenticate(`Bearer ${forever.secret}`), null);
+
+    const past = auth.mint({
+      label: "past",
+      accountIds: ["acct-a"],
+      capabilities: constants.DEFAULT_CAPABILITIES,
+      expiry: { kind: "finite", days: 1 },
+    });
+    const access = auth.load().store;
+    access.grants.find((grant) => grant.clientId === past.grant.clientId).expiry = {
+      kind: "finite",
+      expiresAt: new Date(0).toISOString(),
+    };
+    fs.writeFileSync(file, JSON.stringify(access));
+    assert.strictEqual(auth.authenticate(`Bearer ${past.secret}`), null);
+
+    const version1 = auth.load().store;
+    version1.version = 1;
+    for (const grant of version1.grants) {
+      grant.expiresAt = grant.expiry.kind === "never"
+        ? new Date(Date.now() + day).toISOString()
+        : grant.expiry.expiresAt;
+      delete grant.expiry;
+    }
+    fs.writeFileSync(file, JSON.stringify(version1));
+    const loaded = auth.load();
+    assert.strictEqual(loaded.ok, true);
+    assert.strictEqual(loaded.store.version, 2);
+    assert.ok(loaded.store.grants.every((grant) => grant.expiry.kind === "finite"));
+    assert.ok(loaded.store.grants.every((grant) => !Object.prototype.hasOwnProperty.call(grant, "expiresAt")));
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.strictEqual(saved.version, 2);
+    assert.ok(saved.grants.every((grant) => !Object.prototype.hasOwnProperty.call(grant, "expiresAt")));
+    assert.ok(saved.grants.every((grant) => grant.expiry.kind === "finite"));
+
+    fs.writeFileSync(file, JSON.stringify(version1));
+    fs.chmodSync(dir, 0o500);
+    try {
+      assert.strictEqual(auth.load().ok, false);
+      assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).version, 1);
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
+  } finally {
+    process.env.MORROW_USER_DATA = home;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function run() {
   const contract = require("../shared/bot-contract-v1.json");
   const constants = require("../host/bot/constants");
@@ -331,7 +435,7 @@ async function run() {
         "agent.proposals.read",
         "draft.proposals.create",
       ],
-      expiryDays: 7,
+      expiry: { kind: "finite", days: 7 },
     });
     assert.strictEqual(minted.success, true);
     const token = minted.data.secret;
@@ -352,7 +456,6 @@ async function run() {
       label: "reader",
       accountIds: ["acct-a"],
       capabilities: constants.DEFAULT_CAPABILITIES,
-      expiryDays: 7,
     });
     const enabled = await manage.answer("bot:setEnabled", { enabled: true }, settingsEvent());
     assert.strictEqual(enabled.success, true);
@@ -450,7 +553,6 @@ async function run() {
       label: "headers",
       accountIds: ["acct-a"],
       capabilities: constants.DEFAULT_CAPABILITIES.concat(["mail.bodies.read"]),
-      expiryDays: 7,
     });
     const stillHidden = await callBridge({
       token: narrowed.secret,
@@ -467,7 +569,6 @@ async function run() {
       label: "files",
       accountIds: ["acct-a"],
       capabilities: constants.DEFAULT_CAPABILITIES.concat(["mail.bodies.read", "mail.attachments.read"]),
-      expiryDays: 7,
     });
     const named = await callBridge({
       token: files.secret,
@@ -729,7 +830,7 @@ async function run() {
         label: `slow upload ${change}`,
         accountIds: ["acct-a"],
         capabilities: ["draft.proposals.create"],
-        expiryDays: 1,
+        expiry: { kind: "finite", days: 1 },
       });
       const draftFile = path.join(dir, "bot-draft-proposals.json");
       const before = fs.readFileSync(draftFile, "utf8");
@@ -760,7 +861,8 @@ async function run() {
             if (change === "disable") auth.setEnabledFlag(false);
             if (change === "expire") {
               const access = auth.load().store;
-              access.grants.find((grant) => grant.clientId === delayed.grant.clientId).expiresAt = new Date(0).toISOString();
+              const row = access.grants.find((grant) => grant.clientId === delayed.grant.clientId);
+              row.expiry = { kind: "finite", expiresAt: new Date(0).toISOString() };
               fs.writeFileSync(path.join(dir, "bot-access.json"), JSON.stringify(access));
             }
           },
@@ -816,6 +918,10 @@ async function run() {
     assert.ok(!readerView.json.data.operations.includes("mail.get_cached"));
     assert.ok(!readerView.json.data.operations.includes("draft.proposals.submit"));
     assert.strictEqual(readerView.json.data.semantics.sending, false);
+    assert.strictEqual(readerView.json.data.semantics.attachmentBytes, false);
+    assert.strictEqual(readerView.json.data.readOnlyMailbox, true);
+    assert.strictEqual(readerView.json.data.grantExpiry.kind, "finite");
+    assert.ok(!Object.prototype.hasOwnProperty.call(readerView.json.data, "grantExpiresAt"));
     const rotated = auth.rotate(reader.grant.clientId);
     const oldReader = await callBridge({
       token: reader.secret,
@@ -974,6 +1080,8 @@ async function run() {
     const stopped = await manage.setEnabled(false);
     assert.strictEqual(stopped.listen.listening, false);
 
+    await checkGrantExpiry(auth);
+
     assert.strictEqual(fs.readFileSync(path.join(dir, "settings.json"), "utf8"), "{\"sentinel\":true}\n");
     assert.strictEqual(secretHits, 0);
     assert.strictEqual(completeHits, 0);
@@ -1000,3 +1108,10 @@ async function run() {
 }
 
 module.exports = { run };
+
+if (require.main === module) {
+  run().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

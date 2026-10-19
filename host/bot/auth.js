@@ -16,7 +16,7 @@ const TOKEN = /^mmb_v1_([A-Za-z0-9_-]{8,32})\.([A-Za-z0-9_-]{40,80})$/;
 const STORE_KEYS = ["version", "enabled", "installationId", "serveHost", "grants"];
 const GRANT_KEYS = [
   "clientId", "label", "keyId", "verifier", "accountIds", "capabilities",
-  "installationId", "createdAt", "expiresAt", "revokedAt", "revision",
+  "installationId", "createdAt", "expiry", "revokedAt", "revision",
   "lastUsedAt", "bytesDay", "bytesToday", "draftsDay", "draftsToday",
 ];
 
@@ -33,7 +33,7 @@ function digestToken(token) {
 
 function emptyStore() {
   return {
-    version: 1,
+    version: 2,
     enabled: false,
     installationId: crypto.randomUUID(),
     serveHost: "",
@@ -48,6 +48,40 @@ function sameKeys(value, keys) {
   return keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
+function expiryValid(expiry) {
+  if (!expiry || typeof expiry !== "object" || Array.isArray(expiry)) return false;
+  if (expiry.kind === "never") return Object.keys(expiry).length === 1;
+  if (expiry.kind !== "finite") return false;
+  const keys = Object.keys(expiry);
+  if (keys.length !== 2 || typeof expiry.expiresAt !== "string") return false;
+  return Number.isFinite(Date.parse(expiry.expiresAt));
+}
+
+function expiryAllows(expiry, now) {
+  if (!expiryValid(expiry)) return false;
+  if (expiry.kind === "never") return true;
+  return Date.parse(expiry.expiresAt) > now;
+}
+
+function copyExpiry(expiry) {
+  if (expiry && expiry.kind === "never") return { kind: "never" };
+  return { kind: "finite", expiresAt: expiry.expiresAt };
+}
+
+function migrateStore(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (parsed.version === 2) return parsed;
+  if (parsed.version !== 1 || !Array.isArray(parsed.grants)) return null;
+  const grants = [];
+  for (const grant of parsed.grants) {
+    if (!grant || typeof grant !== "object" || Array.isArray(grant)) return null;
+    const next = { ...grant, expiry: { kind: "finite", expiresAt: grant.expiresAt } };
+    delete next.expiresAt;
+    grants.push(next);
+  }
+  return { ...parsed, version: 2, grants };
+}
+
 function validGrant(grant, installationId) {
   if (!sameKeys(grant, GRANT_KEYS)) return false;
   if (!UUID.test(grant.clientId) || !UUID.test(grant.installationId)) return false;
@@ -58,7 +92,7 @@ function validGrant(grant, installationId) {
   if (!Array.isArray(grant.accountIds) || grant.accountIds.length < 1 || grant.accountIds.length > MAX_ACCOUNTS) return false;
   if (!Array.isArray(grant.capabilities) || !grant.capabilities.length) return false;
   if (grant.capabilities.some((cap) => !CAPABILITIES.includes(cap))) return false;
-  if (typeof grant.createdAt !== "string" || typeof grant.expiresAt !== "string") return false;
+  if (typeof grant.createdAt !== "string" || !expiryValid(grant.expiry)) return false;
   if (grant.revokedAt != null && typeof grant.revokedAt !== "string") return false;
   if (grant.lastUsedAt != null && typeof grant.lastUsedAt !== "string") return false;
   if (!Number.isInteger(grant.revision) || grant.revision < 1) return false;
@@ -69,7 +103,7 @@ function validGrant(grant, installationId) {
 
 function validate(parsed) {
   if (!sameKeys(parsed, STORE_KEYS)) return null;
-  if (parsed.version !== 1 || typeof parsed.enabled !== "boolean") return null;
+  if (parsed.version !== 2 || typeof parsed.enabled !== "boolean") return null;
   if (!UUID.test(parsed.installationId)) return null;
   if (typeof parsed.serveHost !== "string" || parsed.serveHost.length > 253) return null;
   if (!Array.isArray(parsed.grants)) return null;
@@ -84,8 +118,12 @@ function load() {
     const stat = fs.statSync(file);
     if (!stat.isFile() || stat.size > 1024 * 1024) return { ok: false, fresh: false, store: null };
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    const store = validate(parsed);
+    const migrated = migrateStore(parsed);
+    const store = migrated && validate(migrated);
     if (!store) return { ok: false, fresh: false, store: null };
+    if (!parsed || parsed.version !== 2) {
+      save(store);
+    }
     return { ok: true, fresh: false, store };
   } catch {
     return { ok: false, fresh: false, store: null };
@@ -101,7 +139,8 @@ function dayStamp(now = new Date()) {
 }
 
 function publicGrant(grant, now = Date.now()) {
-  const expired = Date.parse(grant.expiresAt) <= now;
+  const allowed = expiryAllows(grant.expiry, now);
+  const expired = !!(grant.expiry && grant.expiry.kind === "finite" && !allowed);
   return {
     clientId: grant.clientId,
     label: grant.label,
@@ -109,20 +148,20 @@ function publicGrant(grant, now = Date.now()) {
     accountIds: grant.accountIds.slice(),
     capabilities: grant.capabilities.slice(),
     createdAt: grant.createdAt,
-    expiresAt: grant.expiresAt,
+    expiry: copyExpiry(grant.expiry),
     revokedAt: grant.revokedAt,
     revision: grant.revision,
     lastUsedAt: grant.lastUsedAt,
     bytesToday: grant.bytesDay === dayStamp(new Date(now)) ? grant.bytesToday : 0,
     expired,
-    live: !grant.revokedAt && !expired,
+    live: !grant.revokedAt && allowed,
   };
 }
 
 function liveGrant(store, now = Date.now()) {
   return store.grants.some((grant) => {
     if (grant.revokedAt) return false;
-    if (Date.parse(grant.expiresAt) <= now) return false;
+    if (!expiryAllows(grant.expiry, now)) return false;
     return grant.accountIds.length > 0 && grant.capabilities.length > 0;
   });
 }
@@ -218,6 +257,22 @@ function expiryFromDays(days) {
   return new Date(Date.now() + n * 24 * 60 * 60 * 1000).toISOString();
 }
 
+function parseExpiry(input) {
+  if (input == null) return { kind: "finite", expiresAt: expiryFromDays(7) };
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw publicError("Choose an expiry.");
+  if (input.kind === "finite") {
+    if (Object.prototype.hasOwnProperty.call(input, "neverConfirmed")) {
+      throw publicError("A finite grant does not take an expiry confirmation.");
+    }
+    return { kind: "finite", expiresAt: expiryFromDays(input.days) };
+  }
+  if (input.kind === "never") {
+    if (input.neverConfirmed !== true) throw publicError("Confirm no expiry before creating that grant.");
+    return { kind: "never" };
+  }
+  throw publicError("Choose an expiry.");
+}
+
 function newToken() {
   const keyId = crypto.randomBytes(9).toString("base64url");
   const secret = crypto.randomBytes(32).toString("base64url");
@@ -241,7 +296,7 @@ function mint(input) {
   if (!label || label.length > 60) throw publicError("Name the client in 1 to 60 characters.");
   const accountIds = normalizeAccounts(body.accountIds);
   const capabilities = normalizeCapabilities(body.capabilities || DEFAULT_CAPABILITIES);
-  const expiresAt = expiryFromDays(body.expiryDays);
+  const expiry = parseExpiry(body.expiry);
   const db = require("../mail/db");
   if (!db.isReady()) throw publicError("Morrow mail storage is not open.");
   for (const id of accountIds) {
@@ -258,7 +313,7 @@ function mint(input) {
     capabilities,
     installationId: store.installationId,
     createdAt: new Date().toISOString(),
-    expiresAt,
+    expiry,
     revokedAt: null,
     revision: 1,
     ...blankCounters(),
@@ -291,7 +346,7 @@ function rotate(clientId) {
   let secret = "";
   const grant = mutate(clientId, (row) => {
     if (row.revokedAt) throw publicError("That client is revoked. Mint a new grant.");
-    if (Date.parse(row.expiresAt) <= Date.now()) throw publicError("That grant has expired. Mint a new one.");
+    if (!expiryAllows(row.expiry, Date.now())) throw publicError("That grant has expired. Mint a new one.");
     const token = newToken();
     secret = token.token;
     row.keyId = token.keyId;
@@ -346,7 +401,7 @@ function parseBearer(header) {
 
 function grantUsable(grant, now) {
   if (!grant || grant.revokedAt) return false;
-  return Date.parse(grant.expiresAt) > now;
+  return expiryAllows(grant.expiry, now);
 }
 
 function authenticate(header) {
@@ -374,7 +429,7 @@ function authenticate(header) {
     digest: parsed.digest,
     accountIds: grant.accountIds.slice(),
     capabilities: grant.capabilities.slice(),
-    expiresAt: grant.expiresAt,
+    expiry: copyExpiry(grant.expiry),
     installationId: loaded.store.installationId,
     bytesToday: grant.bytesDay === dayStamp() ? grant.bytesToday : 0,
   };

@@ -7,7 +7,7 @@ The listener defaults to off. When a grant exists and Settings turns it on, it b
 ## Enable on the MacBook Air
 
 1. Open Morrow → Settings → Bot access. **Access status** and **Your bots** show the local listener and existing grants, including last successful use. A saved Tailscale hostname is not a connectivity check.
-2. Open **Add a bot** (expanded for a profile without a live grant). Enter a name and explicitly select mailboxes. **More options: permissions & expiry** retains extra capabilities and expiry (default 7 days, maximum 30). Choose **Create access grant**.
+2. Open **Add a bot** (expanded for a profile without a live grant). Enter a name and explicitly select mailboxes. **More options: permissions & expiry** retains extra capabilities and expiry (default 7 days, maximum 30, or no expiry). No expiry asks you to confirm. Cancel writes nothing. The host rejects no expiry unless that confirmation is present. Choose **Create access grant**.
 3. Copy the secret once into a private credential file on your other tailnet device, mode `0600`. Do not put it in chat, the repo, or a process argument.
 4. Turn on **Enable bot access on this computer**. The listener still binds only to loopback; this does not configure Tailscale.
 5. Follow **Tailscale connection** and the Serve operator steps below. Save the exact allowed hostname and port, such as `your-mac.your-tailnet.ts.net:8443`. Use the displayed HTTPS endpoint and installation ID from your other device. Grants, mailbox scopes and bearer authentication are still required.

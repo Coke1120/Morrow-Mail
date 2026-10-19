@@ -11398,7 +11398,10 @@ function paintBotGrants(grants) {
       const account = accounts.find((row) => row.accountId === id);
       return account ? account.email || account.displayName : "Disconnected mailbox";
     });
-    meta.textContent = `${names.join(", ")} · ${botPermissionNames(grant.capabilities)} · Expires ${new Date(grant.expiresAt).toLocaleString()}`;
+    const expiryText = grant.expiry && grant.expiry.kind === "never"
+      ? "No expiry"
+      : `Expires ${new Date(grant.expiry && grant.expiry.expiresAt).toLocaleString()}`;
+    meta.textContent = `${names.join(", ")} · ${botPermissionNames(grant.capabilities)} · ${expiryText}`;
     const used = document.createElement("p");
     used.className = "hint";
     used.textContent = grant.lastUsedAt
@@ -11582,8 +11585,6 @@ function wireBot() {
     $("bot-draft-heading").scrollIntoView({ block: "center" });
     $("bot-draft-heading").focus({ preventScroll: true });
   });
-  // Native form validation cannot focus an invalid input in a closed disclosure.
-  $("bot-expiry").addEventListener("invalid", () => { $("bot-grant-options").open = true; });
   $("bot-verify").addEventListener("click", () => botGuard(async () => {
     const access = await loadBotAccess();
     setBotStatus(botListenerStatus(access), !!(access.listen && access.listen.error));
@@ -11615,11 +11616,25 @@ function wireBot() {
   $("bot-mint").addEventListener("submit", (event) => {
     event.preventDefault();
     botGuard(async () => {
+      const choice = $("bot-expiry").value;
+      let expiry;
+      if (choice === "never") {
+        const answer = await askConfirm({
+          title: "No expiry",
+          body: "This grant stays active until you revoke it. Create it only if you can disable that client.",
+          confirm: "Create grant",
+          cancel: "Cancel",
+        });
+        if (!answer || !answer.ok) return;
+        expiry = { kind: "never", neverConfirmed: true };
+      } else {
+        expiry = { kind: "finite", days: Number(choice) };
+      }
       const minted = await call("bot:mintGrant", {
         label: $("bot-label").value,
         accountIds: selectedBotAccounts(),
         capabilities: selectedBotCaps(),
-        expiryDays: Number($("bot-expiry").value),
+        expiry,
       });
       showBotSecret(minted.secret);
       paintBotAccess(minted.access);

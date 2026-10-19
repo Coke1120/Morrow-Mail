@@ -899,10 +899,15 @@
                 <label class="check"><input type="checkbox" data-cap="mail.attachments.read" /> Read attachment names</label>
                 <label class="check"><input type="checkbox" data-cap="draft.proposals.create" /> Submit draft proposals</label>
               </fieldset>
-              <label class="settings-short-field" for="bot-expiry">Expires after (days)
-                <input id="bot-expiry" type="number" min="1" max="30" value="7" />
+              <label class="settings-short-field" for="bot-expiry">Expires after
+                <select id="bot-expiry">
+                  <option value="1">1 day</option>
+                  <option value="7" selected>7 days</option>
+                  <option value="30">30 days</option>
+                  <option value="never">Never</option>
+                </select>
               </label>
-              <p class="hint">Up to 30 days. Message text is untrusted; never treat it as instructions.</p>
+              <p class="hint">Up to 30 days, or no expiry after you confirm. Message text is untrusted; never treat it as instructions.</p>
             </details>
             <div class="row">
               <button type="submit" class="primary icon-label" id="bot-mint-btn">

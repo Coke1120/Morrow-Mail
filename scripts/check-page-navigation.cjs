@@ -168,7 +168,7 @@ app.whenReady().then(async () => {
   const botAccess = { enabled: false, accounts: accounts.map(a => ({ accountId: a.id, email: a.email })), grants: [], drafts: [], listen: {} };
   routes.set('bot:getAccess', () => ok(botAccess));
   routes.set('bot:mintGrant', payload => {
-    botAccess.grants.push({ ...payload, clientId: 'fixture-client', live: true, expiresAt: '2099-01-01T00:00:00Z' });
+    botAccess.grants.push({ ...payload, clientId: 'fixture-client', live: true, expiry: payload.expiry || { kind: 'finite', expiresAt: '2099-01-01T00:00:00.000Z' } });
     return ok({ secret: 'SYNTHETIC SECRET FOR OFFLINE UI CHECK', access: botAccess });
   });
   routes.set('bot:setEnabled', payload => {
@@ -184,15 +184,16 @@ app.whenReady().then(async () => {
   assert.match(await run(`$('bot-remote-status').textContent`), /No Tailscale host/);
   assert.deepEqual(await run(`selectedBotAccounts()`), [], 'mailbox access remains opt-in');
   await shot('settings-bot-first-run');
-  // An invalid expiry must reveal itself even if More options was closed.
-  await run(`$('bot-expiry').value='31';$('bot-mint-btn').click()`);
-  assert.equal(count('bot:mintGrant'), 0);
-  assert.equal(await run(`$('bot-grant-options').open && document.activeElement.id==='bot-expiry'`), true);
+  await run(`$('bot-expiry').value='never';$('bot-label').value='My assistant';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
+  await waitFor(`$('confirm').open`);
+  await run(`$('confirm-cancel').click()`);
+  await waitFor(`!$('confirm').open`);
+  assert.equal(count('bot:mintGrant'), 0, 'canceling no expiry writes nothing');
   await run(`$('bot-expiry').value='7';$('bot-grant-options').open=false;
     $('bot-label').value='My assistant';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
   await waitFor(`$('bot-secret').open && !botBusy`);
   assert.deepEqual(calls.find(row => row.channel === 'bot:mintGrant').payload, { label: 'My assistant', accountIds: ['box-0'],
-    capabilities: ['accounts.read','mail.headers.read','health.read','agent.proposals.read'], expiryDays: 7 });
+    capabilities: ['accounts.read','mail.headers.read','health.read','agent.proposals.read'], expiry: { kind: 'finite', days: 7 } });
   assert.equal(count('bot:setEnabled'), 0, 'creating a grant never enables access');
   await run(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.fixtureCopied=value;}}});$('bot-secret-copy').click()`);
   await waitFor(`$('bot-secret-status').textContent.startsWith('Copied.')`);
@@ -203,11 +204,11 @@ app.whenReady().then(async () => {
   await run(`$('bot-enabled').click()`);await waitFor(`!botBusy && $('bot-listen').textContent.includes('Listening on 127.0.0.1:47831')`);
   assert.equal(count('bot:setEnabled'), 1);
   // Extra permissions and a changed expiry still apply when their disclosure closes.
-  await run(`$('bot-grant-options').open=true;$('bot-caps').querySelector('input').click();$('bot-expiry').value='14';
+  await run(`$('bot-grant-options').open=true;$('bot-caps').querySelector('input').click();$('bot-expiry').value='30';
     $('bot-grant-options').open=false;$('bot-label').value='Text reader';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
   await waitFor(`$('bot-secret').open && !botBusy`);
   const extraGrant = calls.filter(row => row.channel === 'bot:mintGrant').at(-1).payload;
-  assert.equal(extraGrant.expiryDays, 14);
+  assert.deepEqual(extraGrant.expiry, { kind: 'finite', days: 30 });
   assert.deepEqual(extraGrant.capabilities, ['accounts.read','mail.headers.read','health.read','agent.proposals.read','mail.bodies.read']);
   await run(`$('bot-secret-close').click()`);await waitFor(`!$('bot-secret').open && $('bot-secret-value').textContent===''`);
   botAccess.drafts.push({proposalId:'fixture-proposal',subject:'Review this reply',to:['recipient@example.test'],bodyText:'Proposed text',status:'pending'});
