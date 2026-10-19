@@ -2,7 +2,7 @@ const assert=require('node:assert/strict');
 const {renderer}=require('./check-ux-workflows');
 async function run(){
   const nodes=new Map();
-  const get=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',disabled:false,hidden:false,classList:{toggle(){}},setAttribute(){}});return nodes.get(id);};
+  const get=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',disabled:false,hidden:false,classList:{toggle(){}},appendChild(child){child.parentElement=this;},setAttribute(){}});return nodes.get(id);};
   const ui=renderer({document:{getElementById:get}});
   ui.run(`state.oauthStatus={google:false}; globalThis.calls=[]; globalThis.rejectSignIn=null;
     call=async(channel)=>{calls.push(channel); return new Promise((_,reject)=>{rejectSignIn=reject;});};

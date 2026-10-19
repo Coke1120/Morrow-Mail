@@ -91,7 +91,7 @@
         </button>
       </div>
       <div class="actions">
-        <div class="sync-slot">
+        <div id="page-refresh-slot"><div class="sync-slot" id="sync-control">
         <button type="button" class="ghost icon-label" id="refresh" aria-label="Sync mail" aria-busy="false">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="23 4 23 10 17 10"></polyline>
@@ -102,6 +102,7 @@
           <span id="sync-label">Sync</span>
         </button>
         <p id="sync-detail" class="sync-detail" role="status" hidden></p>
+        </div>
         </div>
         <form id="search-form" role="search">
           <label class="sr" for="search-query">Search downloaded mail</label>
@@ -129,7 +130,8 @@
         <div class="list-head" id="list-head">
           <div class="list-tools">
             <h2 class="list-title" id="list-title">Messages</h2>
-            <button type="button" class="select-visible" id="select-visible" aria-label="Select shown messages">Select shown (0)</button>
+            <div id="list-chips" class="chips" role="group" aria-label="Primary folders" hidden></div>
+            <div id="list-refresh-slot"></div>
           </div>
           <p id="list-coverage" class="list-filter-note" role="status"></p>
           <div id="search-scope" hidden>
@@ -142,21 +144,22 @@
             <p id="selection-count">0 selected</p>
             <div id="selection-actions" class="selection-actions" role="toolbar" aria-label="Selected messages"></div>
           </div>
+          <div class="list-filter">
+            <label class="page-select" title="Select messages shown on this page"><input type="checkbox" id="select-visible" aria-label="Select messages shown on this page" /></label>
+            <label class="sr" for="list-filter">Filter loaded messages</label>
+            <input id="list-filter" data-testid="list-filter" type="search" aria-describedby="list-filter-help" placeholder="Filter this page" autocomplete="off" spellcheck="false" />
+            <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
+          </div>
+        </div>
+        <div id="message-list" tabindex="0" aria-label="Downloaded messages"></div>
           <div id="list-paging" class="list-paging" role="group" aria-label="Message pages" hidden>
             <p id="list-page-status" class="list-filter-note" role="status"></p>
             <div class="row">
-              <button type="button" class="ghost icon-label" id="list-prev" aria-label="Previous message page"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>Previous</button>
-              <button type="button" class="ghost icon-label" id="list-next" aria-label="Next message page">Next<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg></button>
-              <button type="button" class="ghost" id="list-sync-more" hidden>Sync more</button>
+              <button type="button" class="ghost icon-label" id="list-prev" aria-label="Previous message page"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg><span class="sr">Previous</span></button>
+              <button type="button" class="ghost icon-label" id="list-next" aria-label="Next message page"><span class="sr">Next</span><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg></button>
+              <button type="button" class="ghost" id="list-sync-more" title="Continue downloading older messages within your Mail &amp; Sync history window" hidden>Load older messages</button>
             </div>
           </div>
-          <div id="list-chips" class="chips" role="group" aria-label="Primary folders" hidden></div>
-          <div class="list-filter">
-            <label class="sr" for="list-filter">Filter loaded messages</label>
-            <input id="list-filter" data-testid="list-filter" type="search" placeholder="Filter this list" autocomplete="off" spellcheck="false" />
-            <p class="list-filter-note">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
-          </div>
-        </div>
       </div>
       <div class="split" data-split="messages" role="separator" aria-orientation="vertical" aria-label="Resize message list" tabindex="0"></div>
       <article id="reader" aria-label="Message"></article>

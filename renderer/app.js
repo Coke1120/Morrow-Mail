@@ -2994,6 +2994,9 @@ function paintSyncControl() {
   const detail = $("sync-detail");
   const sync = currentFolderSync();
   const mail = state.view === "mail";
+  const control = $("sync-control");
+  const slot = $(mail ? "list-refresh-slot" : "page-refresh-slot");
+  if (control && slot && control.parentElement !== slot) slot.appendChild(control);
   const word = mail ? syncButtonLabel(sync) : "Refresh";
   const text = !mail ? "Refresh this page" : !state.accounts.length ? "No account connected"
     : syncDetail(sync) || "Not synced yet";
@@ -3357,9 +3360,11 @@ function paintSelectionBar(shown) {
   const list = $("messages");
   if (list) list.classList.toggle("has-selection", state.selectedIds.length > 0);
   if (selectAll) {
-    selectAll.hidden = !shown.length;
-    selectAll.textContent = "Select shown (" + shown.length + ")";
-    selectAll.setAttribute("aria-label", selectAll.textContent);
+    const selected = shown.filter(email => state.selectedIds.includes(email.id)).length;
+    selectAll.disabled = !shown.length;
+    selectAll.checked = shown.length > 0 && selected === shown.length;
+    selectAll.indeterminate = selected > 0 && selected < shown.length;
+    selectAll.setAttribute("aria-label", `Select ${shown.length} messages shown on this page`);
   }
   if (!bar) return;
   const wasHidden = bar.hidden;
@@ -3420,6 +3425,7 @@ function paintSearchCoverage(shown) {
   $("list-coverage").textContent = state.query
     ? `Search downloaded mail · ${account ? accountLabel(account) : "All connected accounts"} · ${state.emails.length} returned (up to 100) · ${shown.length} shown`
     : `${shown.length} shown of ${state.emails.length} on this page`;
+  $("list-coverage").hidden = !state.query && !filter;
   const chip = $("filter-chip");
   chip.hidden = !filter;
   chip.textContent = "Filter: " + filter + " × Clear filter";
@@ -3463,9 +3469,8 @@ function renderList() {
   paintSyncControl();
   paintListPaging();
   rememberLoadedSelection();
-  const list = $("messages");
-  list.classList.toggle("compact-list", state.prefs.compactList === true);
-  const head = $("list-head");
+  const list = $("message-list");
+  $("messages").classList.toggle("compact-list", state.prefs.compactList === true);
   const account = selectedAccount();
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = $("list-title");
@@ -3473,6 +3478,7 @@ function renderList() {
     title.textContent = state.query ? `Search: ${state.query}` : (chipLabel(folder) || "Messages");
   }
   renderChips(account);
+  if (title) title.classList.toggle("sr", !state.query && state.prefs.chips && chipFolders(account).some(item => item.id === state.folderId));
   const shown = shownEmails();
   paintSelectionBar(shown);
   paintSearchCoverage(shown);
@@ -3500,7 +3506,7 @@ function renderList() {
     }
     list.appendChild(empty);
   } else {
-    let previous = head;
+    let previous = null;
     const selected = new Set(state.selectedIds);
     for (const email of shown) {
       const key = email.accountId + "\0" + email.id;
@@ -3533,7 +3539,8 @@ function renderList() {
         if (current) button.setAttribute("aria-current", "true");
         else button.removeAttribute("aria-current");
       }
-      if (previous.nextElementSibling !== row) list.insertBefore(row, previous.nextElementSibling);
+      const next = previous ? previous.nextElementSibling : list.firstElementChild;
+      if (next !== row) list.insertBefore(row, next);
       previous = row;
     }
   }
@@ -4445,10 +4452,10 @@ function paintListPaging() {
   $("list-prev").disabled = state.listLoading || state.listOffset === 0;
   $("list-next").disabled = state.listLoading || end >= state.listTotal;
   $("list-sync-more").hidden = state.listSyncDone || isStarredFolder(state.folderId);
-  $("list-sync-more").disabled = state.listLoading;
+  $("list-sync-more").disabled = state.listLoading || currentFolderSync()?.state === "syncing";
   $("list-page-status").textContent = state.listLoading ? "Loading messages…"
-    : (state.emails.length ? `${state.listOffset + 1}–${end} of ${state.listTotal} downloaded`
-      : "0 downloaded") + (state.listSyncDone ? "" : " · More history to sync");
+    : (state.emails.length ? `${(state.listOffset + 1).toLocaleString()}–${end.toLocaleString()} / ${state.listTotal.toLocaleString()} downloaded`
+      : "0 downloaded");
 }
 
 async function changeListPage(direction) {
@@ -4460,7 +4467,7 @@ async function changeListPage(direction) {
     state.selectedIds = [];
     state.selectionAnchor = "";
     renderList();
-    $("messages").scrollTop = 0;
+    $("message-list").scrollTop = 0;
   }
 }
 
@@ -5533,8 +5540,12 @@ function wireSelection() {
   bar.append(add, remove, selectionButton("selection-clear", "Clear", clear, () => commitSelection(clearListSelection())));
   const selectAll = $("select-visible");
   if (selectAll) {
-    selectAll.addEventListener("click", () => {
-      commitSelection(selectAllVisible(shownEmails().map((email) => email && email.id)));
+    selectAll.addEventListener("change", () => {
+      const shown = shownEmails().map(email => email.id);
+      const ids = selectAll.checked
+        ? selectionIds(state.selectedIds.concat(shown))
+        : state.selectedIds.filter(id => !shown.includes(id));
+      commitSelection({ ids, anchor: ids[0] || "" });
     });
   }
 }
