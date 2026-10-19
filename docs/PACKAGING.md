@@ -102,4 +102,4 @@ Mail, settings, and `ai.json` follow Electron's userData path for Morrow Mail on
 
 ## Version
 
-`package.json` version drives the app and the release tag `v${version}`. Semver from `package.json` (currently `0.2.4`).
+`package.json` version drives the app and the release tag `v${version}`. Semver from `package.json` (currently `0.2.5`).
