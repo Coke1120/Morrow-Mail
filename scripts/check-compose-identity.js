@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const vm = require("node:vm");
 const policy = require("../shared/compose-policy");
 const { recipientHeaders } = require("../host/mail/recipient-headers");
 
@@ -266,29 +267,59 @@ async function rendererFlows() {
     await ui.run(`openCompose(composeSeed(original, '${kind}', fixtureAccount.email))`);
     assert.equal(get("compose-from").value, "leo@hkbscl.com");
     assert.match(get("compose-cc").value, /manager@hkbscl.com/);
+    assert.match(get("compose-bcc").value, /audit@hkbscl.com/);
     assert.doesNotMatch(get("compose-cc").value, /leo@/);
+    assert.equal(ui.run("state.composeIdentity.seeds.cc.locked || state.composeIdentity.seeds.bcc.locked"), false);
     if (kind === "all") assert.match(get("compose-cc").value, /other@other.example/);
     if (kind === "forward") assert.equal(get("compose-to").value, "");
     get("compose-from").value = "leo@second.example"; ui.run("changeComposeFrom()");
     assert.match(get("compose-cc").value, /ops@second.example/);
     assert.doesNotMatch(get("compose-cc").value, /manager@hkbscl.com/);
-    get("compose-cc").value = ""; ui.run("state.composeIdentity.ccEdited=true");
+    assert.equal(get("compose-bcc").value, "");
+    get("compose-cc").value = ""; ui.run("state.composeIdentity.seeds.cc.locked=true");
     get("compose-from").value = "leo@hkbscl.com"; ui.run("changeComposeFrom(); syncCompose(); paintComposeNote()");
     assert.equal(get("compose-cc").value, "", "From changes and repaint must respect a manual clear");
+    assert.equal(get("compose-bcc").value, "audit@hkbscl.com");
     get("compose-to").value = "client@client.example";
     await ui.run("saveDraft()"); await ui.run("scheduleMail()");
     ui.run("state.composeQueued=false"); await ui.run("sendMail()");
   }
   const writes = ui.run("calls.filter(row => ['mail:upsertDraft','mail:scheduleSend','mail:send'].includes(row.channel))");
   assert.equal(writes.length, 9);
-  assert.ok(writes.every((row) => row.payload.fromAddress === "leo@hkbscl.com" && !row.payload.cc));
-  await ui.run("openCompose({draftId:'saved',accountId:'aliases',fromAddress:'leo@hkbscl.com',cc:'',body:'Saved'})");
-  assert.equal(get("compose-from").value, "leo@hkbscl.com"); assert.equal(get("compose-cc").value, "");
+  assert.ok(writes.every((row) => row.payload.fromAddress === "leo@hkbscl.com" && !row.payload.cc && row.payload.bcc === "audit@hkbscl.com"));
+  await ui.run("openCompose({draftId:'saved',accountId:'aliases',fromAddress:'leo@hkbscl.com',cc:'',bcc:'secret@example.com',body:'Saved'})");
+  assert.equal(get("compose-from").value, "leo@hkbscl.com");
+  assert.equal(get("compose-cc").value, "");
+  assert.equal(get("compose-bcc").value, "secret@example.com");
+  assert.equal(ui.run("state.composeIdentity.seeds.cc.locked && state.composeIdentity.seeds.bcc.locked"), true);
   get("compose-from").value = "leo@second.example"; ui.run("changeComposeFrom()");
   assert.equal(get("compose-cc").value, "", "resumed drafts never acquire new recipients");
+  assert.equal(get("compose-bcc").value, "secret@example.com");
+  ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
+  await ui.run(`openCompose({accountId:'aliases',to:'client@client.example',cc:'kept@example.com',bcc:'secret@example.com',body:'Proposal',botDraft:{proposalId:'p',accountId:'aliases',to:'client@client.example',cc:'kept@example.com',bcc:'secret@example.com',subject:'',body:'Proposal'}})`);
+  assert.equal(get("compose-cc").value, "kept@example.com");
+  assert.equal(get("compose-bcc").value, "secret@example.com");
+  get("compose-from").value = "leo@hkbscl.com"; ui.run("changeComposeFrom()");
+  assert.equal(get("compose-cc").value, "kept@example.com");
+  assert.equal(get("compose-bcc").value, "secret@example.com");
+  ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
+  await ui.run("openCompose(composeSeed(original, 'reply', fixtureAccount.email))");
+  ui.run("state.composeIdentity.seeds.bcc.locked=true");
+  get("compose-bcc").value = "typed@example.com";
+  get("compose-from").value = "leo@second.example"; ui.run("changeComposeFrom()");
+  assert.equal(get("compose-bcc").value, "typed@example.com");
+  assert.match(get("compose-cc").value, /ops@second.example/);
+  assert.doesNotMatch(get("compose-cc").value, /manager@hkbscl.com/);
+  ui.run("state.composeIdentity.seeds.cc.locked=true");
+  get("compose-cc").value = "typed-cc@example.com";
+  get("compose-from").value = "leo@hkbscl.com"; ui.run("changeComposeFrom()");
+  assert.equal(get("compose-cc").value, "typed-cc@example.com");
+  assert.equal(get("compose-bcc").value, "typed@example.com");
+  ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
   ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
   await ui.run("openCompose()"); assert.equal(get("compose-from").value, "leo@second.example");
   assert.equal(get("compose-cc").value, "ops@second.example");
+  assert.equal(get("compose-bcc").value, "");
   await ui.run("requestComposeClose()"); ui.run("failed=true");
   await ui.run("openCompose()"); get("compose-to").value = "client@client.example";
   const count = ui.run("calls.length"); await ui.run("saveDraft(); scheduleMail(); sendMail()");
@@ -296,6 +327,16 @@ async function rendererFlows() {
   assert.equal(get("compose-send").disabled, true);
 }
 
-async function run() { decisions(); await hostRoundTrips(); await rendererFlows(); console.log("compose-identity-ok"); }
+function brainLines() {
+  const context = vm.createContext({ window: { morrowComposePolicy: policy }, document: { getElementById() { return null; } } });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../renderer/brain-compose.js"), "utf8"), context);
+  const parse = (text, label) => JSON.parse(JSON.stringify(context.window.morrowBrainCompose.parseDomainLines(text, label)));
+  assert.deepEqual(parse("@HKBSCL.com = Audit@hkbscl.com; audit@hkbscl.com", "BCC"), { "hkbscl.com": ["Audit@hkbscl.com", "audit@hkbscl.com"] });
+  assert.throws(() => parse("@hkbscl.com = a@hkbscl.com\nhkbscl.com = b@hkbscl.com", "BCC"), /Each BCC domain can appear only once/);
+  assert.throws(() => parse("@hkbscl.com = a@hkbscl.com\n@hkbscl.com = b@hkbscl.com", "CC"), /Each CC domain can appear only once/);
+  assert.throws(() => parse("not a domain = a@hkbscl.com", "BCC"), /each BCC line/);
+}
+
+async function run() { decisions(); brainLines(); await hostRoundTrips(); await rendererFlows(); console.log("compose-identity-ok"); }
 module.exports = { run };
 if (require.main === module) run().catch((error) => { console.error(error); process.exitCode = 1; });

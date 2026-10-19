@@ -6834,17 +6834,22 @@ async function initializeComposeIdentity(fields) {
     $("compose-to").value = parties.to;
     $("compose-cc").value = parties.cc;
   }
-  state.composeIdentity = { ...context, kind: fields.kind || "new", baseCc: $("compose-cc").value,
-    ccEdited: !!fields.draftId || !!fields.botDraft };
-  applyComposeCc();
+  const savedRecipients = !!fields.draftId || !!fields.botDraft;
+  state.composeIdentity = { ...context, kind: fields.kind || "new",
+    seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
+  applyComposeRecipients();
   paintComposeIdentity();
 }
 
-function applyComposeCc() {
+function applyComposeRecipients() {
   const context = state.composeIdentity;
-  if (!context || context.ccEdited) return;
-  $("compose-cc").value = window.morrowComposePolicy.seedCc(context.baseCc,
-    context.defaultCc, $("compose-to").value, $("compose-bcc").value, context.selfAddresses);
+  if (!context || !context.seeds) return;
+  const seeded = window.morrowComposePolicy.applyRecipientSeeds(context.seeds,
+    { cc: context.defaultCc, bcc: context.defaultBcc },
+    { to: $("compose-to").value, cc: $("compose-cc").value, bcc: $("compose-bcc").value },
+    context.selfAddresses);
+  $("compose-cc").value = seeded.cc;
+  $("compose-bcc").value = seeded.bcc;
   syncComposeRecipientRows();
 }
 
@@ -6866,9 +6871,12 @@ function changeComposeFrom() {
   const context = state.composeIdentity;
   const fromAddress = $("compose-from").value;
   state.composeMeta.fromAddress = fromAddress;
-  context.domain = window.morrowComposePolicy.ccDomain(fromAddress, composeAccount(), context.settings, context.kind);
-  context.defaultCc = context.settings.ccByDomain[context.domain] || [];
-  applyComposeCc();
+  const defaults = window.morrowComposePolicy.recipientDefaults(fromAddress, composeAccount(), context.settings, context.kind);
+  context.domain = defaults.ccDomain;
+  context.policyDomain = defaults.policyDomain;
+  context.defaultCc = defaults.cc;
+  context.defaultBcc = defaults.bcc;
+  applyComposeRecipients();
   paintComposeIdentity();
   paintComposeNote();
 }
@@ -11689,7 +11697,10 @@ function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
   $("compose-from").addEventListener("change", changeComposeFrom);
   $("compose-cc").addEventListener("input", () => {
-    if (state.composeIdentity) state.composeIdentity.ccEdited = true;
+    if (state.composeIdentity && state.composeIdentity.seeds) state.composeIdentity.seeds.cc.locked = true;
+  });
+  $("compose-bcc").addEventListener("input", () => {
+    if (state.composeIdentity && state.composeIdentity.seeds) state.composeIdentity.seeds.bcc.locked = true;
   });
   $("inbox-rules-account").addEventListener("change", () => changeInboxRulesAccount($("inbox-rules-account").value).catch((error) => showInboxRuleStatus(error.message, true)));
   document.addEventListener("keydown", onShellKey);

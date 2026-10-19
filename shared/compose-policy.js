@@ -153,10 +153,6 @@
     return [String(base || "").trim(), ...added].filter(Boolean).join(", ");
   }
 
-  function seedCc(baseCc, defaults, to, bcc, self) {
-    return seedRecipients(baseCc, defaults, [to, bcc], self);
-  }
-
   function openRecipientSeeds(savedRecipients, ccText, bccText) {
     const locked = !!savedRecipients;
     return { cc: { base: ccText == null ? "" : String(ccText), locked }, bcc: { base: bccText == null ? "" : String(bccText), locked } };
@@ -189,5 +185,5 @@
 
   return { address, addresses, domain, emptySettings, normalizeSettings, accountSettings, identities, preferredFrom,
     policyDomain, ccDomain, recipientDefaults, resolve, seedRecipients, openRecipientSeeds, applyRecipientSeeds,
-    normalizeDomainKeys, seedCc };
+    normalizeDomainKeys };
 });
