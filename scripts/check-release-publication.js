@@ -46,6 +46,8 @@ function mock({ failUpload = false, corruptDownload = false, existing = false, w
     }
     const args = { context: { repo: { owner: 'Coke1120', repo: 'Morrow-Mail' }, sha, eventName: 'push', ref: `refs/tags/v${version}` }, artifactDirectory: staging, version, publicKey, runId, runAttempt };
     const good = mock(); await publish({ ...args, github: good });
+    assert.match(good.calls[0][1].body, /not Apple Developer ID signed or notarized/);
+    assert.match(good.calls[0][1].body, /manual installation through Finder/);
     assert.equal(good.calls[0][0], 'create'); assert.equal(good.calls[0][1].draft, true);
     assert.equal(good.calls.at(-1)[0], 'promote'); assert.equal(good.calls.at(-1)[1].make_latest, 'true');
     assert.equal(good.calls.filter(c => c[0] === 'upload').length, 11);

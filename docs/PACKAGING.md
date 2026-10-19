@@ -8,7 +8,7 @@ The packaged app boots the first-party renderer shipped in `renderer/` (see [IND
 
 ## Windows packaging
 
-The draft signed-updater workflow requires Gatekeeper acceptance of the final extracted app as well as an approved public root and `MORROW_UPDATE_SIGNING_KEY`; the legacy public root is now bundled, but a missing/mismatched private signing secret blocks publication. The ad hoc build is still expected to fail the additional Gatekeeper gate even with the correct key. Manual distribution is not evidence of automatic-update readiness. See [signed update gates](SIGNED_UPDATES.md#release-workflow-gate).
+The signed-updater workflow distributes ad hoc macOS artifacts with Ed25519 source authentication, without requiring Apple Developer Program membership. The legacy public root is bundled; `MORROW_UPDATE_SIGNING_KEY` must match it. Archive and strict bundle integrity failures block publication. Build-host Gatekeeper rejection is reported as requiring manual review, not converted into an execution approval or a publication blocker. Destination-Mac trust checks and user prompts still apply. See [signed update gates](SIGNED_UPDATES.md#release-workflow-gate).
 
 Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an ad hoc signed macOS zip to the same GitHub release. Pull requests stay on the `ci` check job.
 
@@ -66,9 +66,8 @@ Before approving the fix, also extract the generated ZIP into a fresh temporary 
 ## Updater reads
 
 The current macOS source uses the authenticated manifest/installer described in
-[SIGNED_UPDATES.md](SIGNED_UPDATES.md). Its production public key is deliberately
-unset, so macOS automatic updates fail closed. Publication gating and native
-transition tests are still required before shipping this migration. Electron
+[SIGNED_UPDATES.md](SIGNED_UPDATES.md). Its legacy production public key is bundled. Release signing must match that root,
+and native transition tests are still required before shipping this migration. Electron
 0.2.4/0.2.5 installations require a one-time manual bridge installation; a future
 release cannot retroactively change their updater. The feed behavior below remains
 applicable to Windows and describes the historical macOS Squirrel path.

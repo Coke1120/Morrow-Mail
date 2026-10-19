@@ -10,9 +10,15 @@ async function verifyReleaseMacos({ artifact, version, extract = extractZip, ver
   try {
     const bundle = await extract(artifact, path.join(temporary, 'extracted'));
     await verify(bundle, { version, arch: 'arm64' });
-    // Authenticated auto-install publication requires platform trust as well as
-    // intact seals. Rejection/timeouts must stop before manifest signing.
-    await assess(bundle);
+    // Distribution authenticates bytes; it never grants execution permission.
+    // Ad hoc releases remain distributable for user-mediated installation.
+    try {
+      await assess(bundle);
+      return { integrity: 'verified', platformTrust: 'accepted-on-build-host' };
+    } catch (error) {
+      if (error.code !== 'UPDATE_MANUAL_TRUST') throw error;
+      return { integrity: 'verified', platformTrust: 'manual-review-required' };
+    }
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 if (require.main === module) {
@@ -26,7 +32,10 @@ if (require.main === module) {
     process.exitCode = 1;
   } else {
     verifyReleaseMacos({ artifact: path.join('dist', `Morrow Mail-${version}-arm64-mac.zip`), version })
-      .then(() => console.log('Extracted release ZIP passed path, bundle identity, architecture, strict signature verification and Gatekeeper assessment.'))
+      .then(result => {
+        console.log('Extracted release ZIP passed path, bundle identity, architecture and strict integrity checks.');
+        console.log(`Build-host policy assessment: ${result.platformTrust}. Distribution is ad hoc, without Apple notarization; installation remains subject to each Mac and user approval.`);
+      })
       .catch(() => { console.error('Native archive verification failed; do not sign or publish this release.'); process.exitCode = 1; });
   }
 }

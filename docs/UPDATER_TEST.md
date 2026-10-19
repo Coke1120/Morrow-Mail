@@ -1,7 +1,7 @@
 # Updater test checklist
 
 For the current macOS manifest migration, use [SIGNED_UPDATES.md](SIGNED_UPDATES.md)
-and its disposable-profile native test plan. No production public key is bundled;
+and its disposable-profile native test plan. The legacy production public key is bundled;
 this branch is not ready for a release. The macOS feed checklist below is retained
 as the historical Electron 0.2.4/0.2.5 behavior, not a successful transition claim.
 Windows keeps its existing updater.

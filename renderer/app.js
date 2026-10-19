@@ -7315,7 +7315,7 @@ function updateView(snapshot, version) {
     status = "Installing…";
     busy = true;
   } else if (snap.downloaded) {
-    status = snap.version ? "Update " + snap.version + " ready." : "Update ready.";
+    status = snap.requiresExplicitInstall ? "Update download verified. Installation checks run before restart; macOS may require manual approval." : (snap.version ? "Update " + snap.version + " ready." : "Update ready.");
     install = true;
   } else if (snap.downloading) {
     const pct = typeof snap.progress === "number" ? Math.round(snap.progress) : 0;

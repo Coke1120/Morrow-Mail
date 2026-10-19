@@ -57,7 +57,7 @@ const { verifyManifest } = require('../host/update-manifest');
   let extractedPath;
   let verified = false;
   let assessed = false;
-  await verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
+  const accepted = await verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
     extract: async (file, destination) => {
       assert.equal(file, 'fixture.zip');
       extractedPath = destination;
@@ -75,6 +75,7 @@ const { verifyManifest } = require('../host/update-manifest');
       assessed = true;
     }
   });
+  assert.deepEqual(accepted, { integrity: 'verified', platformTrust: 'accepted-on-build-host' });
   assert.equal(verified, true);
   assert.equal(assessed, true);
   await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
@@ -85,15 +86,16 @@ const { verifyManifest } = require('../host/update-manifest');
   await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
 
   for (const reason of ['Gatekeeper rejected', 'Gatekeeper timed out']) {
-    await assert.rejects(verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
+    const manual = await verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
       extract: async (_file, destination) => {
         extractedPath = destination;
         await fs.mkdir(destination);
         return path.join(destination, 'Morrow Mail.app');
       },
       verify: async () => {},
-      assess: async () => { throw new Error(reason); }
-    }), new RegExp(reason));
+      assess: async () => { throw Object.assign(new Error(reason), { code: 'UPDATE_MANUAL_TRUST' }); }
+    });
+    assert.deepEqual(manual, { integrity: 'verified', platformTrust: 'manual-review-required' });
     await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
   }
   await assert.rejects(verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
@@ -101,6 +103,11 @@ const { verifyManifest } = require('../host/update-manifest');
     verify: async () => { throw new Error('broken seal'); },
     assess: async () => assert.fail('Broken seals must not reach policy assessment')
   }), /broken seal/);
+
+  await assert.rejects(verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
+    extract: async () => '/fixture.app', verify: async () => {},
+    assess: async () => { throw new Error('unexpected verifier fault'); }
+  }), /unexpected verifier fault/);
 
   // Structural regression checks for authority boundaries and release ordering.
   const workflow = await fs.readFile(path.join(__dirname, '..', '.github/workflows/release.yml'), 'utf8');

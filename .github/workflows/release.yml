@@ -74,7 +74,9 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run dist:mac -- --arm64 --publish never
-      - name: Verify final macOS integrity and Gatekeeper trust without signing credentials
+      # Ad hoc distribution does not promise notarization or unattended installation.
+      # Integrity errors block publication; policy rejection is reported for manual installation.
+      - name: Verify final macOS integrity and report platform trust
         run: node scripts/verify-release-macos.js
       # Uses the existing secret NAME only when an authorized release runs.
       # Never log it, persist it to disk, or accept a public-root env override.
