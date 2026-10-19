@@ -127,6 +127,24 @@ const { verifyManifest } = require('../host/update-manifest');
     await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
   }
 
+  // macOS /var -> /private/var (and Windows directory junctions) must not
+  // turn valid internal archive links into apparent extraction escapes.
+  const aliasRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'morrow-temp-alias-'));
+  try {
+    const actual = path.join(await fs.realpath(aliasRoot), 'actual');
+    const alias = path.join(aliasRoot, 'alias');
+    await fs.mkdir(actual);
+    await fs.symlink(actual, alias, 'junction');
+    await verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6', tempRoot: alias,
+      extract: async (_file, destination) => {
+        assert.equal(path.dirname(path.dirname(destination)), actual);
+        await fs.mkdir(destination);
+        return path.join(destination, 'Morrow Mail.app');
+      }, verify: async () => {}, assess: async () => {}
+    });
+    assert.deepEqual(await fs.readdir(actual), [], 'Canonical temporary extraction is cleaned');
+  } finally { await fs.rm(aliasRoot, { recursive: true, force: true }); }
+
   // Structural regression checks for authority boundaries and release ordering.
   const source = (await fs.readFile(path.join(__dirname, '..', '.github/workflows/release.yml'), 'utf8')).replace(/\r\n/g, '\n');
   for (const checkout of [source, source.replace(/\n/g, '\r\n')]) {

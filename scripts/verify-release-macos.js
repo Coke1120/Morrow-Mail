@@ -5,8 +5,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { extractZip, verifyBundle, assessBundleTrust } = require('../host/update-installer');
 
-async function verifyReleaseMacos({ artifact, version, extract = extractZip, verify = verifyBundle, assess = assessBundleTrust }) {
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'morrow-release-verify-'));
+async function verifyReleaseMacos({ artifact, version, extract = extractZip, verify = verifyBundle, assess = assessBundleTrust, tempRoot = os.tmpdir() }) {
+  // macOS TMPDIR may use /var while realpath resolves /private/var. Anchor
+  // extraction at the canonical directory so internal links compare correctly.
+  const temporary = await fs.realpath(await fs.mkdtemp(path.join(tempRoot, 'morrow-release-verify-')));
   try {
     const bundle = await extract(artifact, path.join(temporary, 'extracted'));
     await verify(bundle, { version, arch: 'arm64' });
@@ -36,7 +38,13 @@ if (require.main === module) {
         console.log('Extracted release ZIP passed path, bundle identity, architecture and strict integrity checks.');
         console.log(`Build-host policy assessment: ${result.platformTrust}. Distribution is ad hoc, without Apple notarization; installation remains subject to each Mac and user approval.`);
       })
-      .catch(() => { console.error('Native archive verification failed; do not sign or publish this release.'); process.exitCode = 1; });
+      .catch(error => {
+        // This CLI refuses signing credentials above; report bounded native/path
+        // diagnostics without dumping environments or archive contents.
+        const detail = String(error.message || error).replace(/[\r\n\x00-\x1f\x7f]/g, ' ').slice(0, 2000);
+        console.error('Native archive verification failed; do not sign or publish this release. ' + detail);
+        process.exitCode = 1;
+      });
   }
 }
 module.exports = { verifyReleaseMacos };
