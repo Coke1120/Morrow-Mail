@@ -46,7 +46,7 @@ function observed() {
   return new Date().toISOString();
 }
 
-function failure({ statusCode, code, requestId, installationId, retryAfterMs, contentTrust }) {
+function failure({ statusCode, code, requestId, installationId, retryAfterMs, contentTrust, auditId, state, messageId }) {
   const spec = ERRORS[code] || ERRORS.INTERNAL;
   const error = {
     code: spec === ERRORS[code] ? code : "INTERNAL",
@@ -55,6 +55,9 @@ function failure({ statusCode, code, requestId, installationId, retryAfterMs, co
   };
   if (spec.action) error.action = spec.action;
   if (retryAfterMs) error.retryAfterMs = retryAfterMs;
+  if (auditId) error.auditId = auditId;
+  if (state) error.state = state;
+  if (messageId) error.messageId = messageId;
   const meta = { observedAt: observed(), source: "host" };
   if (contentTrust) meta.contentTrust = contentTrust;
   return {
@@ -174,6 +177,8 @@ async function handleAdmitted(req, res) {
       return;
     }
     const bytes = write(res, payload);
+    const envelopeError = payload.envelope && payload.envelope.error;
+    const envelopeData = payload.envelope && payload.envelope.data;
     audit.record({
       at: observed(),
       clientId,
@@ -182,7 +187,8 @@ async function handleAdmitted(req, res) {
       requestId: requestId || "",
       durationMs: Date.now() - started,
       bytes,
-      accountId: payload.envelope.ok ? accountId : accountId,
+      accountId,
+      auditId: (envelopeError && envelopeError.auditId) || (envelopeData && envelopeData.auditId) || "",
     });
     if (payload.envelope.ok && clientId) {
       budget.commitBytes(clientId, bytes);
@@ -318,7 +324,7 @@ async function handleAdmitted(req, res) {
       return;
     }
     try {
-      const envelope = service.execute({
+      const envelope = await service.execute({
         grant: principal,
         installationId: principal.installationId,
         requestId,
@@ -360,6 +366,9 @@ async function handleAdmitted(req, res) {
       requestId,
       installationId: code === "UNAUTHENTICATED" ? null : installationId,
       retryAfterMs: error && error.retryAfterMs,
+      auditId: error && error.auditId,
+      state: error && error.state,
+      messageId: error && error.messageId,
       contentTrust: trust,
     }));
   }
@@ -375,7 +384,7 @@ function start() {
       }
     });
   });
-  server.requestTimeout = 5000;
+  server.requestTimeout = 30000;
   server.headersTimeout = 2000;
   server.keepAliveTimeout = 5000;
   server.maxHeadersCount = 40;
@@ -438,4 +447,5 @@ module.exports = {
   status,
   setBeforeRelease,
   handle,
+  markerOk,
 };

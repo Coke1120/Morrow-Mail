@@ -18,7 +18,7 @@ const accounts=['a','b'].map(id=>({id,email:id+'@example.test',platform:'imap',i
 const messages=[{id:'one',accountId:'a',folderId:'Inbox',threadId:'thread-a',subject:'Alpha report',from:'Ada <ada@example.test>',textBody:'Alpha source',snippet:'Alpha preview',messageId:'<alpha@test>',date:'2026-10-18T08:00:00Z'},
 {id:'two',accountId:'b',folderId:'Inbox',threadId:'thread-b',subject:'Beta report',from:'Ben <ben@example.test>',textBody:'Beta source',snippet:'Beta preview',messageId:'<beta@test>',date:'2026-10-18T07:00:00Z'}];
 let draft={id:'saved-draft',accountId:'b',isDraft:true,to:['ben@example.test'],subject:'Saved Beta',textBody:'Saved body',inReplyTo:'<beta@test>',threadId:'thread-b'};
-const access={enabled:true,listen:{listening:false,error:'port_in_use'},accounts:accounts.map(a=>({accountId:a.id,email:a.email})),grants:[{clientId:'fixture-client',label:'Fixture client',keyId:'fixture-id',live:true,accountIds:['a'],capabilities:['accounts.read','mail.headers.read'],expiresAt:'2090-10-25T00:00:00Z'}],drafts:[]};
+const access={enabled:true,listen:{listening:false,error:'port_in_use'},accounts:accounts.map(a=>({accountId:a.id,email:a.email})),grants:[{clientId:'fixture-client',label:'Fixture client',keyId:'fixture-id',live:true,accountIds:['a'],capabilities:['accounts.read','mail.headers.read'],expiry:{kind:'finite',expiresAt:'2090-10-25T00:00:00Z'}}],drafts:[]};
 const ok=data=>({success:true,data});
 contextBridge.exposeInMainWorld('morrow',{
  async invoke(channel,payload){calls.push({channel,payload});

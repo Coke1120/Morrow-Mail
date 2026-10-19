@@ -5,7 +5,8 @@ const fs = require("fs");
 const http = require("http");
 const https = require("https");
 const crypto = require("crypto");
-const { API_VERSION, CALL_PATH, HOST, PORT, SERVE_CAPABILITY, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES } = require("../host/bot/constants");
+const { API_VERSION, CALL_PATH, HOST, PORT, MAX_RESPONSE_BYTES } = require("../host/bot/constants");
+const catalog = require("../host/bot/catalog");
 
 function fail(message, code) {
   process.stderr.write(`${message}\n`);
@@ -28,8 +29,12 @@ const tokenFile = flag("--token-file");
 const installation = flag("--installation");
 const operation = flag("--operation");
 const paramsFile = flag("--params-file");
+const requestFlag = flag("--request-id");
 if (!tokenFile || !installation || !operation) {
   fail("Required: --token-file --installation --operation", 2);
+}
+if (operation === "mail.send" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestFlag)) {
+  fail("mail.send requires --request-id with a UUID. Retry that same id.", 2);
 }
 
 let url;
@@ -64,13 +69,13 @@ if (paramsFile) {
 
 const body = JSON.stringify({
   apiVersion: API_VERSION,
-  requestId: crypto.randomUUID(),
+  requestId: operation === "mail.send" ? requestFlag : (requestFlag || crypto.randomUUID()),
   installationId: installation,
   operation,
   params,
 });
-if (Buffer.byteLength(body) > MAX_REQUEST_BYTES) fail("The request is too large.", 2);
-const marker = JSON.stringify({ [SERVE_CAPABILITY]: [{ readBridge: true }] });
+if (Buffer.byteLength(body) > catalog.requestBytes(operation)) fail("The request is too large.", 2);
+const marker = catalog.markerJson();
 const transport = url.protocol === "https:" ? https : http;
 const req = transport.request({
   hostname: url.hostname,
@@ -115,9 +120,10 @@ const req = transport.request({
     process.exit(parsed.ok ? 0 : 1);
   });
 });
-const deadline = setTimeout(() => req.destroy(new Error("deadline")), 5000);
+const deadline = setTimeout(() => req.destroy(new Error("deadline")), catalog.responseTimeoutMs(operation));
 req.on("error", () => {
   clearTimeout(deadline);
+  if (operation === "mail.send") fail("The bridge did not answer within the send deadline. Retry the same --request-id.", 1);
   fail("The bridge did not answer securely within the call deadline.", 1);
 });
 req.end(body);

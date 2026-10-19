@@ -39,6 +39,9 @@ const BYTES_PER_DAY = 10 * 1024 * 1024;
 const DRAFTS_PER_DAY = 10;
 const DRAFTS_PENDING = 20;
 const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
+const SEND_PER_GRANT_PER_MINUTE = 1;
+const SEND_PER_GRANT_PER_DAY = 10;
+const SEND_PER_INSTALLATION_PER_DAY = 20;
 const MAX_DEPTH = 8;
 
 const FOLDERS = ["inbox", "sent", "drafts", "archive", "trash", "spam"];
@@ -65,6 +68,16 @@ const ERRORS = {
     message: "This client cannot access that account or operation.",
     retryable: false,
     action: "REVIEW_ACCESS_IN_MORROW",
+  },
+  SEND_OUTCOME_UNKNOWN: {
+    status: 409,
+    message: "The send outcome is unknown. Morrow will not send it again.",
+    retryable: false,
+  },
+  SEND_REJECTED: {
+    status: 400,
+    message: "The mail server refused the message.",
+    retryable: false,
   },
   NOT_FOUND: {
     status: 404,
@@ -158,6 +171,9 @@ module.exports = {
   DRAFTS_PER_DAY,
   DRAFTS_PENDING,
   DRAFT_TTL_MS,
+  SEND_PER_GRANT_PER_MINUTE,
+  SEND_PER_GRANT_PER_DAY,
+  SEND_PER_INSTALLATION_PER_DAY,
   MAX_DEPTH,
   FOLDERS,
   ERRORS,

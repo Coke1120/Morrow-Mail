@@ -5,6 +5,7 @@ const audit = require("./audit");
 const catalog = require("./catalog");
 const drafts = require("./drafts");
 const prompt = require("./prompt");
+const send = require("./send");
 const { DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, PORT, SERVE_CAPABILITY } = require("./constants");
 const server = require("./server");
 
@@ -71,7 +72,7 @@ function snapshot() {
     grants: view.grants || [],
     drafts: local.proposals,
     draftsAvailable: local.available,
-    sends: [],
+    sends: send.recentForSettings(),
     audit: audit.recent(8),
   };
 }

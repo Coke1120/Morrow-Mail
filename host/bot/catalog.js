@@ -11,6 +11,9 @@ const {
   MAX_REQUEST_BYTES,
   PORT,
   SEARCHES_PER_MINUTE,
+  SEND_PER_GRANT_PER_DAY,
+  SEND_PER_GRANT_PER_MINUTE,
+  SEND_PER_INSTALLATION_PER_DAY,
   SERVE_CAPABILITY,
 } = require("./constants");
 
@@ -120,6 +123,20 @@ const ROWS = [
     responseTimeoutMs: ORDINARY_TIMEOUT_MS,
     requestId: "echo",
     budgets: null,
+  },
+  {
+    operation: "mail.send",
+    caps: ["mail.send"],
+    params: ["accountId", "fromAddress", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"],
+    kind: "send",
+    requestBytes: LARGE_BYTES,
+    responseTimeoutMs: 30000,
+    requestId: "required-uuid",
+    budgets: {
+      perGrantPerMinute: SEND_PER_GRANT_PER_MINUTE,
+      perGrantPerDay: SEND_PER_GRANT_PER_DAY,
+      perInstallationPerDay: SEND_PER_INSTALLATION_PER_DAY,
+    },
   },
 ];
 

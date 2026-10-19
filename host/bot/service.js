@@ -5,6 +5,7 @@ const auth = require("./auth");
 const drafts = require("./drafts");
 const reads = require("./reads");
 const catalog = require("./catalog");
+const send = require("./send");
 const {
   API_VERSION,
   CALLS_PER_MINUTE,
@@ -332,6 +333,10 @@ function submitDraft(ctx) {
   };
 }
 
+async function sendMail(ctx) {
+  return send.perform(ctx);
+}
+
 function listDrafts(ctx) {
   const params = ctx.params;
   if (!closed(params, ["accountId", "limit"])) throw coded("INVALID_REQUEST");
@@ -366,6 +371,7 @@ const HANDLERS = {
   "agent.proposals.list": proposals,
   "draft.proposals.submit": submitDraft,
   "draft.proposals.list": listDrafts,
+  "mail.send": sendMail,
 };
 
 const catalogNames = catalog.operations();
@@ -373,12 +379,12 @@ if (catalogNames.length !== Object.keys(HANDLERS).length || catalogNames.some((n
   throw new Error("Bot operation handlers do not match the catalog.");
 }
 
-function execute(ctx) {
+async function execute(ctx) {
   const spec = ctx && catalog.operation(ctx.operation);
   if (!spec) throw coded("UNKNOWN_OPERATION");
   if (spec.caps.some((cap) => !ctx.grant.capabilities.includes(cap))) throw coded("FORBIDDEN");
   const handler = HANDLERS[ctx.operation];
-  const result = handler(ctx);
+  const result = await handler(ctx);
   return fit({
     apiVersion: API_VERSION,
     requestId: ctx.requestId,

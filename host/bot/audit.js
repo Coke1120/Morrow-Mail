@@ -16,6 +16,7 @@ function record(entry) {
     durationMs: Number.isFinite(entry.durationMs) ? Math.max(0, Math.round(entry.durationMs)) : 0,
     bytes: Number.isFinite(entry.bytes) ? Math.max(0, Math.round(entry.bytes)) : 0,
     accountId: typeof entry.accountId === "string" ? entry.accountId : "",
+    auditId: typeof entry.auditId === "string" ? entry.auditId : "",
   };
   const line = JSON.stringify(row);
   if (line.includes("mmb_v1_") || line.includes("Bearer ")) return;
@@ -68,6 +69,7 @@ function recent(limit = 8) {
         durationMs: row.durationMs || 0,
         bytes: row.bytes || 0,
         accountId: row.accountId || "",
+        auditId: row.auditId || "",
       });
     } catch {
       /* skip a damaged line */

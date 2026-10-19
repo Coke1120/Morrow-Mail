@@ -4,7 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const { DRAFTS_PENDING, DRAFTS_PER_DAY, DRAFT_TTL_MS, MAX_RECIPIENTS } = require("./constants");
 const { draftPath, writePrivate } = require("./store");
-const { byteLength, trimUtf8 } = require("./text");
+const { addressList, byteLength, trimUtf8 } = require("./text");
 
 const STORE_CAP = 2 * 1024 * 1024;
 
@@ -227,21 +227,6 @@ function dismiss(proposalId) {
   return { proposalId, status: "dismissed", sends: false };
 }
 
-function addressList(value, allowEmpty) {
-  if (value == null && allowEmpty) return [];
-  if (!Array.isArray(value)) return null;
-  if (!allowEmpty && !value.length) return null;
-  if (value.length > MAX_RECIPIENTS) return null;
-  const out = [];
-  for (const item of value) {
-    if (typeof item !== "string") return null;
-    const text = item.trim();
-    if (!text || byteLength(text) > 320 || /[\s\u0000]/.test(text) || !text.includes("@")) return null;
-    out.push(text);
-  }
-  return out;
-}
-
 function normalizeSubmission(params) {
   const to = addressList(params.to, false);
   const cc = addressList(params.cc || [], true);
@@ -277,5 +262,6 @@ module.exports = {
   composeSeed,
   dismiss,
   normalizeSubmission,
+  addressList,
   contentHash,
 };

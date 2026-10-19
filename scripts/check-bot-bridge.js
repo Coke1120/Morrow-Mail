@@ -260,7 +260,7 @@ async function run() {
   assert.strictEqual(contract.transport.bind, "127.0.0.1");
   assert.strictEqual(contract.transport.port, 47831);
   assert.strictEqual(contract.transport.funnel, false);
-  assert.strictEqual(contract.transport.sending, false);
+  assert.ok(!Object.prototype.hasOwnProperty.call(contract.transport, "sending"));
 
   const serviceSrc = read("host/bot/service.js");
   const serverSrc = read("host/bot/server.js");
@@ -284,6 +284,8 @@ async function run() {
   assert.ok(mainSrc.includes("bot/server"));
   assert.ok(html.includes('id="settings-bot"'));
   assert.ok(html.includes("Do not enable Funnel"));
+  assert.ok(html.includes('id="bot-sections"'));
+  assert.ok(html.includes("This bot can send mail as you."));
   assert.ok(appSrc.includes("Nothing is sent until you press Send."));
   assert.ok(appSrc.includes("bot:mintGrant"));
   assert.ok(appSrc.includes("window.morrowMotion") || appSrc.includes("morrowMotion"));
@@ -331,6 +333,8 @@ async function run() {
   const manage = require("../host/bot/manage");
   const service = require("../host/bot/service");
   assert.deepStrictEqual(Object.keys(service.HANDLERS).sort(), catalog.operations().slice().sort());
+  assert.strictEqual(server.markerOk(catalog.markerJson()), true);
+  assert.strictEqual(server.markerOk(JSON.stringify({ "com.coke1120.morrow-mail/bot-access": [{ readBridge: false }] })), false);
   const { createIpc } = require("../host/ipc");
   const secrets = require("../host/mail/secrets");
   const openai = require("../host/openai-client");
@@ -656,7 +660,162 @@ async function run() {
     });
     assert.strictEqual(missingPart.status, 404);
     assert.strictEqual(missingPart.json.error.code, "ATTACHMENT_NOT_IN_CACHE");
+    assert.strictEqual(missingPart.json.meta.contentTrust, "untrusted_mail_data");
     assert.strictEqual(bytesForHits, 0);
+
+    const sendApi = require("../host/bot/send");
+    let smtpCalls = 0;
+    sendApi.setSmtpForTest(async () => {
+      smtpCalls += 1;
+      return { messageId: "<smtp-stub@example.test>" };
+    });
+    const sendParams = {
+      accountId: "acct-a",
+      to: ["ada@example.test"],
+      subject: "Hello",
+      bodyText: "Plain body",
+    };
+    const deniedSend = await callBridge({ ...base, operation: "mail.send", params: sendParams });
+    assert.strictEqual(deniedSend.status, 403);
+    assert.strictEqual(deniedSend.json.error.code, "FORBIDDEN");
+    assert.strictEqual(smtpCalls, 0);
+    const sender = auth.mint({
+      label: "sender",
+      accountIds: ["acct-a"],
+      capabilities: catalog.DEFAULT_CAPABILITIES.concat(["mail.send"]),
+    });
+    const sendId = crypto.randomUUID();
+    const sent = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: sendId,
+      params: sendParams,
+    });
+    assert.strictEqual(sent.status, 200, sent.text);
+    assert.strictEqual(smtpCalls, 1);
+    assert.strictEqual(sent.json.data.idempotentReplay, false);
+    assert.strictEqual(sent.json.data.state, "submitted");
+    assert.strictEqual(sent.json.data.messageId, "<smtp-stub@example.test>");
+    assert.strictEqual(sent.json.meta.contentTrust, "untrusted_mail_data");
+    const sendReplay = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: sendId,
+      params: sendParams,
+    });
+    assert.strictEqual(sendReplay.status, 200, sendReplay.text);
+    assert.strictEqual(smtpCalls, 1);
+    assert.strictEqual(sendReplay.json.data.auditId, sent.json.data.auditId);
+    assert.strictEqual(sendReplay.json.data.idempotentReplay, true);
+    const mismatched = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: sendId,
+      params: { ...sendParams, subject: "Different" },
+    });
+    assert.strictEqual(mismatched.status, 400);
+    assert.strictEqual(mismatched.json.error.code, "INVALID_REQUEST");
+    assert.strictEqual(smtpCalls, 1);
+    const receiptFile = path.join(dir, "bot-send-receipts.json");
+    const ageReceipts = () => {
+      const stored = JSON.parse(fs.readFileSync(receiptFile, "utf8"));
+      const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+      for (const row of stored.receipts) row.claimedAt = old;
+      fs.writeFileSync(receiptFile, JSON.stringify(stored));
+    };
+    ageReceipts();
+    sendApi.resetForTest();
+    sendApi.setSmtpForTest(async () => {
+      smtpCalls += 1;
+      const error = new Error("socket hang up");
+      error.code = "ECONNRESET";
+      throw error;
+    });
+    const unknownId = crypto.randomUUID();
+    const unknownParams = { ...sendParams, subject: "Unknown outcome" };
+    const unknown = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: unknownId,
+      params: unknownParams,
+    });
+    assert.strictEqual(unknown.status, 409, unknown.text);
+    assert.strictEqual(unknown.json.error.code, "SEND_OUTCOME_UNKNOWN");
+    assert.strictEqual(unknown.json.error.retryable, false);
+    assert.strictEqual(unknown.json.error.state, "claimed");
+    assert.ok(unknown.json.error.auditId);
+    const smtpAfterUnknown = smtpCalls;
+    sendApi.resetForTest();
+    sendApi.setSmtpForTest(async () => {
+      smtpCalls += 1;
+      return { messageId: "<should-not-send@example.test>" };
+    });
+    const unknownAgain = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: unknownId,
+      params: unknownParams,
+    });
+    assert.strictEqual(unknownAgain.status, 409);
+    assert.strictEqual(unknownAgain.json.error.code, "SEND_OUTCOME_UNKNOWN");
+    assert.strictEqual(smtpCalls, smtpAfterUnknown);
+    const loose = await callBridge({
+      ...base,
+      operation: "mail.list_cached",
+      requestId: "not-a-uuid",
+      params: { accountId: "acct-a", folder: "inbox", limit: 5 },
+    });
+    assert.strictEqual(loose.status, 200);
+    const beforeLooseSend = JSON.parse(fs.readFileSync(receiptFile, "utf8")).receipts.length;
+    const looseSend = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      requestId: "not-a-uuid",
+      params: sendParams,
+    });
+    assert.strictEqual(looseSend.status, 400);
+    assert.strictEqual(looseSend.json.error.code, "INVALID_REQUEST");
+    assert.strictEqual(JSON.parse(fs.readFileSync(receiptFile, "utf8")).receipts.length, beforeLooseSend);
+    assert.strictEqual(smtpCalls, smtpAfterUnknown);
+    ageReceipts();
+    const fatList = JSON.stringify({
+      apiVersion: "1.0",
+      requestId: crypto.randomUUID(),
+      installationId,
+      operation: "mail.list_cached",
+      params: { accountId: "acct-a", folder: "inbox", limit: 1, note: "n".repeat(9000) },
+    });
+    assert.ok(Buffer.byteLength(fatList) > 8192);
+    const tooBigList = await callBridge({ ...base, raw: fatList, operation: "mail.list_cached" });
+    assert.strictEqual(tooBigList.status, 413);
+    const fatSend = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      params: { ...sendParams, subject: "Large", bodyText: "y".repeat(9000) },
+    });
+    assert.strictEqual(fatSend.status, 200, fatSend.text);
+    assert.ok(Buffer.byteLength(JSON.stringify(fatSend.json)) > 0);
+    assert.ok(!fs.readFileSync(receiptFile, "utf8").includes("Plain body"));
+    assert.ok(!fs.readFileSync(receiptFile, "utf8").includes("y".repeat(200)));
+    const badFrom = await callBridge({
+      token: sender.secret,
+      installationId,
+      operation: "mail.send",
+      params: { ...sendParams, fromAddress: "other@example.test", subject: "Wrong from" },
+    });
+    assert.strictEqual(badFrom.status, 400);
+    assert.strictEqual(badFrom.json.error.code, "INVALID_REQUEST");
+    const settingsView = await manage.answer("bot:getAccess", {}, settingsEvent());
+    assert.ok(settingsView.data.sends.some((row) => row.auditId === sent.json.data.auditId));
+    assert.ok(!JSON.stringify(settingsView.data.sends).includes("Plain body"));
+    sendApi.setSmtpForTest(null);
 
     const htmlBody = await callBridge({
       ...base,
@@ -1121,6 +1280,16 @@ async function run() {
     assert.strictEqual(refused.status, 2);
     assert.ok(!refused.stderr.includes(token));
     assert.ok(!refused.stdout.includes(token));
+    const missingSendId = spawnSync(process.execPath, [
+      path.join(root, "scripts/morrow-bot-call.js"),
+      "--token-file", tokenFile,
+      "--installation", installationId,
+      "--operation", "mail.send",
+      "--params-file", paramsFile,
+    ], { encoding: "utf8" });
+    assert.strictEqual(missingSendId.status, 2);
+    assert.match(missingSendId.stderr, /request-id/);
+    assert.ok(!missingSendId.stderr.includes(token));
 
     server.setBeforeRelease(async () => { auth.setEnabledFlag(false); });
     let droppedText = "";
@@ -1173,6 +1342,11 @@ async function run() {
     try { await server.stop(); } catch { /* listener already closed */ }
     try { budget.resetLimitsForTest(); } catch { /* budget module failed to load */ }
     try { reads.setCorpusCapForTest(50000); } catch { /* reads module failed to load */ }
+    try {
+      const sendApi = require("../host/bot/send");
+      sendApi.setSmtpForTest(null);
+      sendApi.resetForTest();
+    } catch { /* send module failed to load */ }
     secrets.getPassword = originalPassword;
     openai.complete = originalComplete;
     engine.bytesFor = originalBytesFor;

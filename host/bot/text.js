@@ -1,5 +1,7 @@
 "use strict";
 
+const { MAX_RECIPIENTS } = require("./constants");
+
 function trimUtf8(value, maxBytes) {
   const text = value == null ? "" : String(value);
   const buf = Buffer.from(text, "utf8");
@@ -34,4 +36,28 @@ function byteLength(value) {
   return Buffer.byteLength(String(value || ""), "utf8");
 }
 
-module.exports = { trimUtf8, htmlToText, byteLength };
+function addressList(value, allowEmpty) {
+  if (value == null && allowEmpty) return [];
+  if (!Array.isArray(value)) return null;
+  if (!allowEmpty && !value.length) return null;
+  if (value.length > MAX_RECIPIENTS) return null;
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== "string") return null;
+    const text = item.trim();
+    if (!text || byteLength(text) > 320 || /[\s\u0000]/.test(text) || !text.includes("@")) return null;
+    out.push(text);
+  }
+  return out;
+}
+
+function escapePlain(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/\r\n|\r|\n/g, "<br>");
+}
+
+module.exports = { trimUtf8, htmlToText, byteLength, addressList, escapePlain };

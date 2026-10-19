@@ -11364,7 +11364,8 @@ function paintBotAccounts(accounts) {
 function botPermissionNames(capabilities) {
   const names = { "accounts.read": "account details", "mail.headers.read": "cached mail headers",
     "health.read": "sync health", "agent.proposals.read": "Agent proposals", "mail.bodies.read": "message text",
-    "mail.attachments.read": "attachment names", "draft.proposals.create": "draft proposals" };
+    "mail.attachments.read": "attachment names", "draft.proposals.create": "draft proposals",
+    "mail.send": "send mail as you" };
   return (capabilities || []).map((cap) => names[cap] || cap).join(", ");
 }
 
@@ -11531,7 +11532,7 @@ function paintBotSends(rows) {
   for (const row of items) {
     const item = document.createElement("li");
     const to = row.recipientSummary && row.recipientSummary.to ? row.recipientSummary.to.join(", ") : "";
-    item.textContent = `${row.auditId || ""} · ${row.state || ""} · ${row.accountId || ""} · ${to} · ${row.subject || ""}`;
+    item.textContent = `${row.auditId || ""} · ${row.state || ""} · ${row.accountId || ""} · ${to} · ${row.subject || ""} · ${row.claimedAt || ""} · ${row.finishedAt || ""}`;
     list.append(item);
   }
 }
