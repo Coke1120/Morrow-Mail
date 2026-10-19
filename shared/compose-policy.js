@@ -143,7 +143,6 @@
 
   function seedRecipients(base, defaults, exclude, self) {
     const seen = new Set(addresses([...(exclude || []), ...(self || [])]));
-    // Keep the original Reply All/display-name text; append only missing defaults.
     for (const email of addresses(base)) seen.add(email);
     const added = addresses(defaults).filter((email) => {
       if (seen.has(email)) return false;
