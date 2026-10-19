@@ -180,8 +180,8 @@ html[data-nav="collapsed"] .rail-name {
   padding: 0;
   border: 0;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.26);
-  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.88);
   cursor: pointer;
 }
 
@@ -249,11 +249,16 @@ html[data-nav="expanded"] .nav-toggle .chev-right { display: none; }
 
 html[data-nav="expanded"] .nav-toggle .chev-left { display: block; }
 
-.rail-btn:hover { background: rgba(255, 255, 255, 0.34); }
+.rail-btn:hover,
+.rail-btn:focus-visible {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
 
 .rail-btn[aria-current="page"] {
   background: #fff;
   color: var(--plum);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
 }
 
 .rail-btn[aria-current="page"]:hover { background: #fff; }
@@ -275,9 +280,18 @@ html[data-nav="expanded"] .nav-toggle .chev-left { display: block; }
 .workspace[data-view="agent"] .leading,
 .workspace[data-view="calendar"] .leading,
 .workspace[data-view="brain"] .leading,
-.workspace[data-view="folders"] .leading {
+.workspace[data-view="folders"] .leading,
+.workspace[data-view="log"] .leading {
   flex-basis: auto;
   width: auto;
+}
+
+.workspace[data-view="agent"] #search-form,
+.workspace[data-view="calendar"] #search-form,
+.workspace[data-view="brain"] #search-form,
+.workspace[data-view="folders"] #search-form,
+.workspace[data-view="log"] #search-form {
+  display: none;
 }
 
 h1, h2, p { margin: 0; }
@@ -398,6 +412,34 @@ textarea:focus-visible {
 
 #prefs .field label,
 #ai-fields label { margin: 0 0 4px; }
+
+.accent-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.accent-control input[type="color"] {
+  flex: none;
+  width: 36px;
+  height: 34px;
+  padding: 2px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.accent-control #pref-accent {
+  flex: 1 1 92px;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.accent-control #pref-accent-reset {
+  flex: none;
+  height: 34px;
+  padding: 0 10px;
+}
 
 #prefs .checks {
   grid-column: 1 / -1;
@@ -1533,9 +1575,32 @@ body.is-folder-drag * { cursor: grabbing !important; }
 }
 
 .split {
+  position: relative;
   cursor: col-resize;
   background: transparent;
   touch-action: none;
+}
+
+.split::after {
+  content: "";
+  position: absolute;
+  top: 24px;
+  bottom: 24px;
+  left: 3px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background-color 140ms ease;
+}
+
+.split:hover::after,
+.split:focus-visible::after {
+  background: rgba(255, 255, 255, 0.36);
+}
+
+#split-list:hover::after,
+#split-list:focus-visible::after {
+  background: var(--line);
 }
 
 .split:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
@@ -1845,7 +1910,7 @@ button.message:focus-visible { outline-offset: -2px; }
 .row-actions {
   position: absolute;
   top: 50%;
-  right: 6px;
+  right: 8px;
   z-index: 1;
   display: flex;
   align-items: center;
@@ -1854,7 +1919,7 @@ button.message:focus-visible { outline-offset: -2px; }
   border-radius: 8px;
   background: var(--paper);
   color: var(--ink);
-  box-shadow: 0 0 0 1px var(--line);
+  box-shadow: 0 0 0 1px var(--line), 0 4px 12px rgba(16, 40, 34, 0.14);
   transform: translateY(-50%);
   visibility: hidden;
 }
@@ -1862,11 +1927,8 @@ button.message:focus-visible { outline-offset: -2px; }
 .message-row:hover .row-actions,
 .message-row:focus-within .row-actions { visibility: visible; }
 
-.message-row:hover .row-main,
-.message-row:focus-within .row-main { padding-right: 124px; }
-
 .message-row:hover .when,
-.message-row:focus-within .when { display: none; }
+.message-row:focus-within .when { visibility: hidden; }
 
 /* Compact is opt-in; retain the same row buttons, selection, and actions. */
 #messages.compact-list .message-row { contain-intrinsic-size: auto 32px; }
@@ -1890,8 +1952,6 @@ button.message:focus-visible { outline-offset: -2px; }
 #messages.compact-list .subject-line { flex: 1; align-items: center; }
 #messages.compact-list .when { flex: none; }
 #messages.compact-list .row-action { width: 24px; height: 24px; }
-#messages.compact-list .message-row:hover .row-main,
-#messages.compact-list .message-row:focus-within .row-main { padding-right: 108px; }
 
 .row-action {
   width: 28px;
@@ -2470,8 +2530,12 @@ dialog > form,
 
 dialog::backdrop { background: rgba(16, 40, 34, 0.72); }
 
-/* Keep About centered on both axes without conflicting with Motion transforms. */
-#about-dialog { inset: 0; margin: auto; }
+/* Keep compact utility and confirmation dialogs centered on both axes without conflicting with Motion transforms. */
+#about-dialog,
+#confirm,
+#compose-close-review,
+#bot-secret,
+#move-picker { inset: 0; margin: auto; }
 
 dialog h2 {
   margin-bottom: 8px;
@@ -2637,7 +2701,7 @@ label.check input { width: auto; accent-color: var(--accent-ink); }
 
 textarea { min-height: 140px; resize: vertical; }
 
-#compose textarea { min-height: 160px; margin-top: 10px; }
+#compose textarea { min-height: 180px; margin-top: 8px; }
 
 .compose-fields {
   margin-top: 8px;
@@ -2653,6 +2717,34 @@ textarea { min-height: 140px; resize: vertical; }
   min-height: 36px;
   padding: 0 10px;
   border-bottom: 1px solid var(--line);
+}
+
+.field-row.field-row-to {
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.field-row-toggles {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#compose button.field-toggle {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#compose button.field-toggle:hover,
+#compose button.field-toggle:focus-visible {
+  background: var(--hover);
+  color: var(--ink);
 }
 
 .field-row:last-child { border-bottom: 0; }
@@ -2680,7 +2772,7 @@ textarea { min-height: 140px; resize: vertical; }
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .ai-write label { margin: 0; }
@@ -2701,7 +2793,7 @@ textarea { min-height: 140px; resize: vertical; }
 #compose .row {
   position: sticky;
   bottom: 0;
-  margin-top: 12px;
+  margin-top: 10px;
   padding-top: 8px;
   background: var(--paper);
 }
@@ -2783,9 +2875,30 @@ textarea { min-height: 140px; resize: vertical; }
 #support-dialog { width: min(840px, calc(100vw - 32px)); }
 #support-preview { width: 100%; min-height: 280px; font-family: monospace; font-size: 12px; }
 
-#compose-ai-tools, #compose-schedule-tools { margin-top: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
-#compose details > summary { cursor: pointer; color: var(--accent-ink); }
+.compose-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  align-items: start;
+  margin-top: 8px;
+}
+
+#compose-ai-tools, #compose-schedule-tools { margin: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
+#compose-ai-tools[open], #compose-schedule-tools[open] { grid-column: 1 / -1; }
+#compose details > summary { cursor: pointer; color: var(--accent-ink); font-size: 13px; font-weight: 600; }
 #compose details > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 4px; }
+
+.signature-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.signature-head label { margin: 0; font-size: 13px; color: var(--muted); }
+.signature-head #signature { width: auto; flex: 1 1 160px; height: 32px; padding: 0 10px; }
+.signature-head #signature-empty { margin: 0; font-size: 13px; flex: 1 1 auto; }
 
 #scheduled-dialog #scheduled { max-height: none; overflow: visible; padding-left: 0; }
 #side-mail > #scheduled-open { margin: 4px 8px; color: #fff; border-color: rgba(255,255,255,.3); }
