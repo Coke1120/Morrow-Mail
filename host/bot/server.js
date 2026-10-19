@@ -1,4 +1,5 @@
 "use strict";
+const { gate: updateGate } = require("../update-quiescence");
 
 const http = require("http");
 const auth = require("./auth");
@@ -152,6 +153,10 @@ function accountFrom(params) {
 }
 
 async function handle(req, res) {
+  return updateGate.run(() => handleAdmitted(req, res));
+}
+
+async function handleAdmitted(req, res) {
   const started = Date.now();
   let requestId = null;
   let installationId = null;

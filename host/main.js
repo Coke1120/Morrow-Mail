@@ -19,6 +19,7 @@ const FIRST_PARTY_DIR = path.join(__dirname, "..", "renderer");
 const FIRST_PARTY_PRELOAD = path.join(FIRST_PARTY_DIR, "preload.js");
 const FIRST_PARTY_HTML = path.join(FIRST_PARTY_DIR, "index.html");
 const updater = require("./updater");
+const { gate: updateGate, requestRendererQuiescence } = require("./update-quiescence");
 
 function resolveAppIcon() {
   // Windows needs native small icon sizes for the titlebar and taskbar.
@@ -162,14 +163,16 @@ function attachIpc(preloadFile) {
   fs.appendFileSync(LOG, `# channels ${channels.size}\n`);
   // registerHostAi and updater.registerIpc already own these. A second ipcMain.handle throws.
   const directHost = new Set([...updater.CHANNELS, ...AI_CHANNELS]);
+  for (const name of ["host:updatePrepared", "host:updatePrepareForInstall", "host:updateResume", "host:updateStartupReady"]) directHost.add(name);
   for (const channel of channels) {
     if (directHost.has(channel)) continue;
-    ipcMain.handle(channel, (event, ...args) => bus.handle(event, channel, ...args));
+    ipcMain.handle(channel, (event, ...args) => updateGate.run(() => bus.handle(event, channel, ...args)));
     ipcMain.on(channel, (event, ...args) => {
+      if (updateGate.closed) { event.returnValue = null; return; }
       bus.send(event, channel, ...args);
       // sendSync reads event.returnValue. Leaving it unset comes back as an
       // object, and locale resolution calls .split on that.
-      event.returnValue = bus.handle(event, channel, ...args);
+      event.returnValue = updateGate.run(() => bus.handle(event, channel, ...args));
     });
   }
 }
@@ -177,6 +180,7 @@ function attachIpc(preloadFile) {
 let setupWindow = null;
 
 function openAiSetup() {
+  if (updateGate.closed) return;
   if (setupWindow && !setupWindow.isDestroyed()) {
     setupWindow.focus();
     return;
@@ -232,7 +236,7 @@ function installMenu() {
 
 function registerHostAi() {
   ipcMain.handle("host:aiGetConfig", () => publicConfig());
-  ipcMain.handle("host:aiSaveConfig", (_event, input) => saveConfig(input));
+  ipcMain.handle("host:aiSaveConfig", (_event, input) => updateGate.run(() => saveConfig(input)));
   ipcMain.handle("host:aiTest", async () => {
     try {
       const text = await complete([
@@ -337,8 +341,23 @@ async function createWindow(preloadFile, mode) {
   win.on("close", () => {
     try { require("./mail/engine").answer("mail:cancelOAuth", []); } catch { /* mail is not open */ }
   });
-  if (external) await win.loadURL("morrow://local/index.html#/shell");
-  else await win.loadFile(FIRST_PARTY_HTML);
+  const updateLaunch = process.argv.some(arg => arg.startsWith("--morrow-update-receipt="));
+  let rendererReady = false;
+  const onUpdateReady = event => {
+    if (event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame) rendererReady = true;
+  };
+  if (updateLaunch) ipcMain.on("host:updateStartupReady", onUpdateReady);
+  try {
+    if (external) await win.loadURL("morrow://local/index.html#/shell");
+    else await win.loadFile(FIRST_PARTY_HTML);
+    if (updateLaunch) {
+      const deadline = Date.now() + 30000;
+      while (!rendererReady) {
+        if (win.isDestroyed() || Date.now() >= deadline) throw new Error("Updated application did not finish initialization.");
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+  } finally { ipcMain.removeListener("host:updateStartupReady", onUpdateReady); }
   if (!external) win.setTitle("Morrow Mail");
   return win;
 }
@@ -364,12 +383,42 @@ app.whenReady().then(async () => {
   applyDockIcon();
   installMenu();
   registerHostAi();
+  updater.configureInstall({
+    getWindow: () => shellWindow,
+    async prepare() {
+      if (externalAsarPath() || BrowserWindow.getAllWindows().some(w => w !== shellWindow)) {
+        throw new Error("Close other application windows before installing an update.");
+      }
+      const resumeRenderer = await requestRendererQuiescence(shellWindow, ipcMain);
+      const resume = () => {
+        updateGate.resume(); resumeRenderer();
+        try { startBackgroundSync(); } catch { /* normal sync can resume */ }
+        require("./bot/server").startIfEnabled().catch(() => {});
+      };
+      try {
+        await updateGate.prepare();
+        await require("./bot/server").stop();
+        await require("./mail/engine").stopIdle();
+        await require("./mail/db").checkpoint();
+      } catch (error) {
+        resume();
+        throw error;
+      }
+      return resume;
+    },
+    quit: () => app.quit(),
+  });
   updater.registerIpc();
   updater.init();
   if (process.env.MORROW_AI_SELFTEST === "1") {
     const code = runAiSelfTest();
     app.exit(code);
     return;
+  }
+  if (process.platform === "darwin" && app.isPackaged) {
+    await require("./update-launcher").registerStartup({
+      argv: process.argv, target: path.resolve(process.resourcesPath, "..", ".."), version: app.getVersion(),
+    });
   }
   await initMail();
   if (process.env.MORROW_MAIL_SELFTEST === "1") {
@@ -399,6 +448,11 @@ app.whenReady().then(async () => {
     attachIpc(preloadFile);
     const win = await createWindow(preloadFile, mode);
     shellWindow = win;
+    if (process.platform === "darwin" && app.isPackaged) {
+      await require("./update-launcher").acknowledge({
+        argv: process.argv, target: path.resolve(process.resourcesPath, "..", ".."), version: app.getVersion(),
+      });
+    }
     startBackgroundSync();
     try { await require("./bot/server").startIfEnabled(); } catch { /* a missing grant leaves the bridge off */ }
     try {

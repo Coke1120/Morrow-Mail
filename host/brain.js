@@ -1,3 +1,4 @@
+const { gate: updateGate } = require("./update-quiescence");
 const fs = require("fs");
 const path = require("path");
 const { BrowserWindow } = require("electron");
@@ -341,6 +342,10 @@ function applyGenerated(store, parsed, sample, mode) {
 }
 
 async function analyzeMail(mode) {
+  return updateGate.run(() => analyzeMailAdmitted(mode));
+}
+
+async function analyzeMailAdmitted(mode) {
   const refresh = mode === "refresh";
   if (refresh) emit("emailBrain:refreshState", { refreshing: true, error: null });
   else emit("emailBrain:rebuildState", { rebuilding: true, phase: "reading", percent: 15, error: null });
@@ -429,18 +434,18 @@ function answer(channel, args) {
         emit("emailBrain:refreshState", { refreshing: false, error: null });
         return ok({ accepted: true, mode: "refresh", cached: true });
       }
-      setImmediate(() => {
-        refreshFromMail().catch(() => {});
-      });
+      updateGate.run(() => new Promise(resolve => {
+        setImmediate(() => { refreshFromMail().catch(() => {}).finally(resolve); });
+      })).catch(() => {});
       return ok({ accepted: true, mode: "refresh" });
     case "emailBrain:rebuild":
       if (!loadConfig().apiKey) {
         emit("emailBrain:rebuildState", { rebuilding: false, phase: "ready", percent: null, error: null });
         return ok({ accepted: false, mode: "rebuild" });
       }
-      setImmediate(() => {
-        rebuildFromMail().catch(() => {});
-      });
+      updateGate.run(() => new Promise(resolve => {
+        setImmediate(() => { rebuildFromMail().catch(() => {}).finally(resolve); });
+      })).catch(() => {});
       return ok({ accepted: true, mode: "rebuild" });
     case "emailBrain:addWritingRule": {
       const text = params && typeof params.text === "string" ? params.text.trim() : "";

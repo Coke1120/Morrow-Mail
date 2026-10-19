@@ -63,6 +63,14 @@ Before approving the fix, also extract the generated ZIP into a fresh temporary 
 
 ## Updater reads
 
+The current macOS source uses the authenticated manifest/installer described in
+[SIGNED_UPDATES.md](SIGNED_UPDATES.md). Its production public key is deliberately
+unset, so macOS automatic updates fail closed. Publication gating and native
+transition tests are still required before shipping this migration. Electron
+0.2.4/0.2.5 installations require a one-time manual bridge installation; a future
+release cannot retroactively change their updater. The feed behavior below remains
+applicable to Windows and describes the historical macOS Squirrel path.
+
 `build.publish` is GitHub `Coke1120/Morrow-Mail`, `private: false`, `releaseType: release`. The packaged app writes that into `resources/app-update.yml`. With `allowPrerelease` on, electron-updater reads the public prerelease feed (`https://github.com/Coke1120/Morrow-Mail/releases.atom`, then `alpha.yml` or `alpha-mac.yml` for an alpha tag, and `latest.yml` or `latest-mac.yml` when that channel file is absent).
 
 A packaged install checks and downloads that feed with no GitHub token. `npm start` leaves the updater off.

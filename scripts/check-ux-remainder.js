@@ -62,6 +62,7 @@ async function run() {
   const host={module:{exports:{}},setTimeout(){},setImmediate(){},Date,require(name){
     if(name==='electron')return {app:{isPackaged:true},ipcMain:{handle:(name,fn)=>{ipc[name]=fn;}}};
     if(name==='electron-updater')return {autoUpdater:updater};
+    if(name==='node:process')return {platform:'win32'};
     if(name==='./update-auth')return {resolveGithubToken:()=>null,githubFeed:()=>({}),explainUpdateError:e=>e.message,authFailureKind:()=>''};
     throw new Error('Unexpected dependency '+name);
   }};
