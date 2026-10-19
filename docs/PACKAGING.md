@@ -6,29 +6,31 @@ The packaged app boots the first-party renderer shipped in `renderer/` (see [IND
 
 `MORROW_ASAR` is an optional override that loads an external `app.asar` instead. The app does not look for `resources/ui.asar` on its own. Do not commit an external asar.
 
-## Windows alpha (Leo)
+## Windows packaging
+
+The signed-updater workflow distributes ad hoc macOS artifacts with Ed25519 source authentication, without requiring Apple Developer Program membership. The legacy public root is bundled; `MORROW_UPDATE_SIGNING_KEY` must match it. Archive and strict bundle integrity failures block publication. Build-host Gatekeeper rejection is reported as requiring manual review, not converted into an execution approval or a publication blocker. Destination-Mac trust checks and user prompts still apply. See [signed update gates](SIGNED_UPDATES.md#release-workflow-gate).
 
 Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an ad hoc signed macOS zip to the same GitHub release. Pull requests stay on the `ci` check job.
 
-1. Bump `package.json` `version` (the first alpha is already `0.1.0-alpha.1`) and merge to `main`. The GitHub tag is `v` plus that version.
+1. For an authorized release, use a new stable `major.minor.patch` package version and reviewed source on `main`. The GitHub tag is `v` plus that version.
 2. Actions → **release** → **Run workflow**, branch `main`.
 3. The job runs `npm run check`, then unsigned Windows x64:
 
 ```bash
-CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win -- --publish always
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win -- --publish never
 ```
 
 `dist:win` is `electron-builder --win nsis portable --x64`. `build.win.signAndEditExecutable` is `false`. Authenticode is not configured. SignPath Foundation signing is pending approval and is not in this workflow. See [Code signing policy](../CODE_SIGNING_POLICY.md) and [SIGNPATH.md](SIGNPATH.md).
 
 That flag also skips electron-builder's own resource edit, which would leave the installed `Morrow Mail.exe` as Electron's icon and product name. `build.afterPack` (`scripts/windows-icon.js`) writes `build/icon.ico` and the Morrow Mail version strings into that exe after the pack, and does not sign it. The hook reopens the edited executable and verifies every icon image and product version, plus preservation of unrelated resources (including Electron's ASAR integrity record). The NSIS installer and uninstaller icons are the same `build/icon.ico`. The taskbar, desktop shortcut, and installed exe use the icon inside `Morrow Mail.exe`.
 
-4. The job uploads the NSIS setup exe, its `.blockmap`, the portable exe, and `latest.yml` to a GitHub **release** on public `Coke1120/Morrow-Mail`. `latest.yml` is the Windows electron-updater feed and names the NSIS setup. The portable exe is a no-install download. `detectUpdateChannel` is `false`, so `0.1.0-alpha.N` still publishes `latest.yml`.
+4. After both builds succeed, the final publisher uploads the NSIS setup exe, its `.blockmap`, the portable exe, `latest.yml`, the macOS ZIP/feed/blockmap, signed manifest pair and provenance records to a draft release. It verifies downloaded bytes before promotion. `latest.yml` remains the Windows electron-updater feed and names the NSIS setup; the portable exe is a no-install download.
 
-The feed URL uses dashes (`Morrow-Mail-Setup-0.1.0-alpha.4.exe`). That is the GitHub Release asset name. The copy in `dist/` keeps the spaces in `Morrow Mail Setup 0.1.0-alpha.4.exe`. This rename does not republish `0.1.0-alpha.4`; electron-builder will not replace assets already uploaded for that tag.
+The feed URL uses dashes (`Morrow-Mail-Setup-VERSION.exe`); local build filenames may contain spaces. Staging checks that feed hashes and sizes match the final artifacts.
 
-Run the workflow from `main`. electron-builder creates the release tag from the repo default branch when the tag does not already exist.
+The final publisher binds a new release tag to the exact workflow source SHA, after both platform artifacts pass validation.
 
-Optional tag: push `v0.1.0-alpha.N` only when it matches `package.json` `version`. A mismatch fails the job before publish.
+A version tag must match the stable package version and exact source commit. Existing releases are rejected without overwriting assets.
 
 Same unsigned build on a dev machine, without uploading:
 
@@ -41,11 +43,11 @@ Artifacts land in `dist/` (`latest.yml`, `*Setup*.exe`, `*.exe.blockmap`, portab
 
 On Linux, the NSIS uninstaller step needs Wine, including `wine32:i386`. The release job runs on `windows-latest` and does not use Wine.
 
-electron-builder attaches files to an existing release only for about two hours after publish. The next alpha needs a new `version`. Re-running the same version later skips the upload.
+The publisher stages a draft, uploads both platform sets and verifies downloaded bytes before promotion. Failed drafts require review; automatic reruns do not overwrite them.
 
 ## macOS
 
-The same **release** workflow runs on `macos-latest` after Windows and publishes an ad hoc signed zip plus `latest-mac.yml`. `build.mac.sign` invokes `scripts/sign-macos.js` after bundle/resource edits and before ZIP creation. The existing `@electron/osx-sign` dependency signs nested code inside-out with identity `-`, then seals the outer app. A failing `codesign --verify --deep --strict` aborts packaging before upload. No certificate, private key, or provisioning profile is used; notarization is explicitly disabled.
+The same **release** workflow runs on `macos-latest` after Windows and publishes an ad hoc signed zip plus `latest-mac.yml`. `build.mac.sign` invokes `scripts/sign-macos.js` after bundle/resource edits and before ZIP creation. The existing `@electron/osx-sign` dependency signs nested code inside-out with identity `-`, then seals the outer app. A failing `codesign --verify --deep --strict` aborts packaging before upload. No Apple certificate or provisioning profile is used; notarization is explicitly disabled. The separate Ed25519 manifest requires the approved release signing secret and does not establish Gatekeeper trust.
 
 Previously `mac.identity: null` made electron-builder 25.1.8 return before signing, leaving the modified Electron bundle without a fresh resource seal. The official v0.2.3 ARM64 ZIP was reported to fail verification with `code has no resources but signature indicates they must be present` on macOS. A GitHub-matching ZIP hash does not establish signature validity.
 
@@ -62,6 +64,13 @@ codesign -dv --verbose=4 "dist/mac-arm64/Morrow Mail.app"
 Before approving the fix, also extract the generated ZIP into a fresh temporary directory using `ditto -x -k`, and run both commands on that extracted `.app`. Require successful strict verification for both copies and `Signature=adhoc` with no Developer ID/TeamIdentifier. Compare the extracted app's files and symlinks with the packaged app. `spctl --assess --type execute --verbose=4` may still reject an ad hoc app; this is not the integrity test. Linux hook tests mock signing and cannot establish native signature validity. Do not launch the app as part of this check.
 
 ## Updater reads
+
+The current macOS source uses the authenticated manifest/installer described in
+[SIGNED_UPDATES.md](SIGNED_UPDATES.md). Its legacy production public key is bundled. Release signing must match that root,
+and native transition tests are still required before shipping this migration. Electron
+0.2.4/0.2.5 installations require a one-time manual bridge installation; a future
+release cannot retroactively change their updater. The feed behavior below remains
+applicable to Windows and describes the historical macOS Squirrel path.
 
 `build.publish` is GitHub `Coke1120/Morrow-Mail`, `private: false`, `releaseType: release`. The packaged app writes that into `resources/app-update.yml`. With `allowPrerelease` on, electron-updater reads the public prerelease feed (`https://github.com/Coke1120/Morrow-Mail/releases.atom`, then `alpha.yml` or `alpha-mac.yml` for an alpha tag, and `latest.yml` or `latest-mac.yml` when that channel file is absent).
 

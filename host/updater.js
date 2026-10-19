@@ -1,5 +1,6 @@
 const { app, ipcMain } = require("electron");
 const auth = require("./update-auth");
+const { platform } = require("node:process");
 
 const state = {
   checking: false,
@@ -19,6 +20,21 @@ const state = {
 
 let autoUpdater = null;
 let listenersBound = false;
+let macUpdater = null;
+let installLifecycle = null;
+function signedMacUpdater() {
+  if (!macUpdater) macUpdater = require("./update-macos").createMacUpdater({ app, state });
+  if (installLifecycle) macUpdater.configure(installLifecycle);
+  return macUpdater;
+}
+function configureInstall(lifecycle) { installLifecycle = lifecycle; }
+function authorizeInstall(event) {
+  const win = installLifecycle && installLifecycle.getWindow();
+  if (!win || win.isDestroyed() || !event || event.sender !== win.webContents ||
+      event.senderFrame !== win.webContents.mainFrame) {
+    throw new Error("Update installation is only available from the main application window.");
+  }
+}
 
 function snapshot() {
   return { ...state };
@@ -93,6 +109,12 @@ function init() {
     state.needsToken = false;
     return snapshot();
   }
+  if (platform === "darwin") {
+    const mac = signedMacUpdater();
+    const initial = mac.init();
+    if (initial.enabled) setTimeout(() => { mac.check(); }, 4000);
+    return initial;
+  }
   try {
     const updater = prepareUpdater();
     if (!updater) return snapshot();
@@ -107,9 +129,10 @@ function init() {
 }
 
 function registerIpc() {
-  ipcMain.handle("host:updateGetState", () => snapshot());
+  ipcMain.handle("host:updateGetState", () => platform === "darwin" && app.isPackaged ? signedMacUpdater().refreshStatus() : snapshot());
   ipcMain.handle("host:updateCheck", async () => {
     if (!app.isPackaged) return snapshot();
+    if (platform === "darwin") return signedMacUpdater().check();
     try {
       const updater = prepareUpdater();
       if (!updater) return snapshot();
@@ -121,7 +144,16 @@ function registerIpc() {
     }
     return snapshot();
   });
-  ipcMain.handle("host:updateInstall", () => {
+  ipcMain.handle("host:updateManual", (event) => {
+    if (platform !== "darwin") return snapshot();
+    authorizeInstall(event);
+    return signedMacUpdater().manual();
+  });
+  ipcMain.handle("host:updateInstall", (event) => {
+    if (platform === "darwin") {
+      authorizeInstall(event);
+      return signedMacUpdater().install();
+    }
     if (!autoUpdater || !state.downloaded) return snapshot();
     state.installing = true;
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
@@ -129,6 +161,6 @@ function registerIpc() {
   });
 }
 
-const CHANNELS = ["host:updateGetState", "host:updateCheck", "host:updateInstall"];
+const CHANNELS = ["host:updateGetState", "host:updateCheck", "host:updateInstall", "host:updateManual"];
 
-module.exports = { init, registerIpc, snapshot, state, CHANNELS };
+module.exports = { init, registerIpc, snapshot, state, CHANNELS, configureInstall };

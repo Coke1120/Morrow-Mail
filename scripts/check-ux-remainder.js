@@ -41,6 +41,10 @@ async function run() {
   assert.equal(ui.run('updateView({}).status'),'Updates have not been checked yet.');
   assert.equal(ui.run(`updateView({lastCheckedAt:'2026-10-18T08:00:00Z'}).status`),'Up to date.');
   assert.equal(ui.run('updateView({downloaded:true}).install'),true);
+  assert.match(ui.run('updateView({downloaded:true,requiresExplicitInstall:true}).status'),/macOS may require manual approval/);
+  assert.equal(ui.run('updateView({manualRequired:true,manualAvailable:true,downloaded:true}).install'),false);
+  assert.equal(ui.run('updateView({manualRequired:true,manualAvailable:true}).manual'),true);
+  assert.match(ui.run('updateView({manualRequired:true}).status'),/has not been replaced/);
   const raw='{"password":"private words", "refresh_token":"private-refresh"} bearer private-bearer sk-proj-1234567890_secret';
   ui.context.raw=raw;
   const redacted=ui.run('redactDebugText(raw)');
@@ -62,6 +66,7 @@ async function run() {
   const host={module:{exports:{}},setTimeout(){},setImmediate(){},Date,require(name){
     if(name==='electron')return {app:{isPackaged:true},ipcMain:{handle:(name,fn)=>{ipc[name]=fn;}}};
     if(name==='electron-updater')return {autoUpdater:updater};
+    if(name==='node:process')return {platform:'win32'};
     if(name==='./update-auth')return {resolveGithubToken:()=>null,githubFeed:()=>({}),explainUpdateError:e=>e.message,authFailureKind:()=>''};
     throw new Error('Unexpected dependency '+name);
   }};

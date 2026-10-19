@@ -91,6 +91,11 @@ let updateTimer = null;
 let brainSnapshot = null;
 let brainEditId = "";
 let brainCategories = [];
+let updateCategoriesBaseline = "[]";
+let updateMemoryBaseline = "";
+let updateAiBaseline = null;
+let updateFreezeNonce = null;
+let updateWasInert = false;
 let brainCategoryDefaults = [];
 let brainCategoryIndex = -1;
 let brainCategoryGen = 0;
@@ -7302,13 +7307,15 @@ function updateView(snapshot, version) {
   let install = false;
   let busy = false;
   const error = snap.error ? String(snap.error) : "";
-  if (error) {
+  if (snap.manualRequired) {
+    status = "Manual installation required. Your current app has not been replaced.";
+  } else if (error) {
     status = "Update failed.";
   } else if (snap.installing) {
     status = "Installing…";
     busy = true;
   } else if (snap.downloaded) {
-    status = snap.version ? "Update " + snap.version + " ready." : "Update ready.";
+    status = snap.requiresExplicitInstall ? "Update download verified. Installation checks run before restart; macOS may require manual approval." : (snap.version ? "Update " + snap.version + " ready." : "Update ready.");
     install = true;
   } else if (snap.downloading) {
     const pct = typeof snap.progress === "number" ? Math.round(snap.progress) : 0;
@@ -7322,7 +7329,7 @@ function updateView(snapshot, version) {
   } else if (snap.enabled === false) {
     status = "Updater is off until the app is packaged.";
   }
-  return { version: current, status: status, error: error, install: install, busy: busy, lastCheckedAt: snap.lastCheckedAt || null };
+  return { version: current, status: status, error: error, install: install, busy: busy, manual: !!snap.manualAvailable, downloaded: !!snap.downloaded, explicitInstall: !!snap.requiresExplicitInstall, lastCheckedAt: snap.lastCheckedAt || null };
 }
 
 function paintUpdate(view) {
@@ -7336,6 +7343,11 @@ function paintUpdate(view) {
   install.textContent = "Restart and install";
   install.disabled = !!view.busy;
   $("about-update-quit").hidden = !view.install;
+  $("about-update-quit").textContent = view.explicitInstall ? "Restart and install closes Morrow after you finish active work. Quitting alone does not install this update." : "This update will also install automatically when you quit Morrow. Restart and install closes the app now.";
+  const manual = $("about-update-manual");
+  manual.hidden = !view.manual;
+  manual.disabled = !!view.busy;
+  manual.textContent = view.downloaded ? "Show downloaded update" : "Open official releases";
 }
 
 function openAbout() {
@@ -7381,6 +7393,39 @@ async function installUpdate() {
   } catch (error) {
     bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
+}
+
+// No implicit saves or sends: the user must resolve editing before restart.
+function updateRestartBlocked() {
+  if (Array.from(document.querySelectorAll("dialog[open]")).some(node => node.id !== "about-dialog")) return true;
+  if (state.composePending || state.composeQueued || state.composeInitializing || state.oauthPending || state.connectPending || state.busy || sendTimer) return true;
+  if (agentChatBusy || brainSkillBusy || brainFixBusy || brainCategoryBusy || brainView.refreshing || brainView.rebuilding) return true;
+  if (oooDirty()) return true;
+  if (inboxRuleBaseline && JSON.stringify(inboxRuleFieldsFromForm()) !== inboxRuleBaseline) return true;
+  if ($("ai-key")?.value) return true;
+  if (updateAiBaseline !== null && JSON.stringify([$("ai-base")?.value, $("ai-model")?.value]) !== updateAiBaseline) return true;
+  if (JSON.stringify(brainCategories) !== updateCategoriesBaseline) return true;
+  if ($("agent-memory") && $("agent-memory").value !== updateMemoryBaseline) return true;
+  if ($("agent-input")?.value.trim()) return true;
+  return false;
+}
+
+function prepareUpdateRestart(payload) {
+  if (typeof payload?.nonce !== "string") return;
+  if (updateFreezeNonce || updateRestartBlocked()) {
+    api.replyUpdatePreparation({ nonce: payload.nonce, ok: false });
+    return;
+  }
+  updateFreezeNonce = payload.nonce;
+  updateWasInert = document.body.inert;
+  document.body.inert = true;
+  api.replyUpdatePreparation({ nonce: payload.nonce, ok: true });
+}
+
+function resumeAfterUpdate(payload) {
+  if (payload?.nonce !== updateFreezeNonce) return;
+  document.body.inert = updateWasInert;
+  updateFreezeNonce = null;
 }
 
 function shellLook(prefs) {
@@ -7841,6 +7886,7 @@ async function loadAiSettings() {
     $("ai-base").value = cfg && cfg.baseUrl ? cfg.baseUrl : "";
     $("ai-model").value = cfg && cfg.model ? cfg.model : "";
     $("ai-key").placeholder = aiKeyPlaceholder(cfg);
+    updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
   } catch (error) {
     setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -7858,6 +7904,7 @@ async function saveAiSettings() {
     $("ai-base").value = saved && saved.baseUrl ? saved.baseUrl : $("ai-base").value;
     $("ai-model").value = saved && saved.model ? saved.model : $("ai-model").value;
     $("ai-key").placeholder = aiKeyPlaceholder(saved);
+    updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
     setAiStatus("Saved.", false);
   } catch (error) {
     setAiStatus(error instanceof Error ? error.message : String(error), true);
@@ -9074,6 +9121,7 @@ async function loadBrainCategories(gen) {
   const parsed = readCategoryPayload(await call("emailBrain:getCategories"));
   if (gen !== brainCategoryGen) return;
   brainCategories = parsed.categories;
+  updateCategoriesBaseline = JSON.stringify(brainCategories);
   brainCategoryDefaults = parsed.defaults;
   brainCategoriesReady = true;
   if (brainIsOpen()) paintCategories();
@@ -9087,6 +9135,7 @@ async function saveBrainCategories() {
   const parsed = readCategoryPayload(await call("emailBrain:getCategories"));
   if (gen !== brainCategoryGen) return;
   brainCategories = parsed.categories;
+  updateCategoriesBaseline = JSON.stringify(brainCategories);
   brainCategoryDefaults = parsed.defaults;
   resetCategoryForm();
   // shortcut: an empty save reads back as the host defaults, change readStore if an empty list must stick
@@ -10504,7 +10553,7 @@ function applyChatPayload(data) {
   if (!data) return;
   if (Array.isArray(data.turns)) agentTurns = data.turns;
   const notes = $("agent-memory");
-  if (notes && data.memory && document.activeElement !== notes) notes.value = data.memory.notes || "";
+  if (notes && data.memory && document.activeElement !== notes) notes.value = updateMemoryBaseline = data.memory.notes || "";
   if (data.triage) paintAgent(data.triage, "");
   else {
     const status = $("agent-status");
@@ -10580,7 +10629,7 @@ async function sendAgentText(text) {
 async function saveAgentMemory() {
   const notes = $("agent-memory");
   const data = await call("nativeAgent:memorySet", { notes: notes ? notes.value : "" });
-  if (notes && data && typeof data.notes === "string") notes.value = data.notes;
+  if (notes && data && typeof data.notes === "string") notes.value = updateMemoryBaseline = data.notes;
   const status = $("agent-memory-status");
   if (status) status.textContent = "Notes saved.";
 }
@@ -10603,7 +10652,7 @@ async function loadAgent(options) {
     if (gen !== agentGen || state.view !== "agent") return;
     agentTurns = chat && Array.isArray(chat.turns) ? chat.turns : [];
     const notes = $("agent-memory");
-    if (notes && document.activeElement !== notes) notes.value = (chat && chat.memory && chat.memory.notes) || "";
+    if (notes && document.activeElement !== notes) notes.value = updateMemoryBaseline = (chat && chat.memory && chat.memory.notes) || "";
     const runs = history && Array.isArray(history.runs) ? history.runs : triage && triage.runs;
     const payload = Object.assign({}, triage, { runs });
     paintAgent(payload, "");
@@ -11601,6 +11650,10 @@ function wire() {
   $("about-close").addEventListener("click", () => closeDialog("about-dialog"));
   $("about-update-check").addEventListener("click", checkForUpdates);
   $("about-update-install").addEventListener("click", installUpdate);
+  $("about-update-manual").addEventListener("click", async () => {
+    try { bumpUpdate(await api.invoke("host:updateManual")); }
+    catch (error) { bumpUpdate({ error: error.message }); }
+  });
   $("log-source").addEventListener("change", filterSupportLog);
   $("log-preview").addEventListener("click", previewSupportLog);
   $("support-copy").addEventListener("click", copySupportLog);
@@ -11807,6 +11860,8 @@ async function boot() {
     showStatus("Mail preload is unavailable.", true);
     return;
   }
+  api.on("host:updatePrepareForInstall", prepareUpdateRestart);
+  api.on("host:updateResume", resumeAfterUpdate);
   wire();
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
@@ -11844,6 +11899,7 @@ async function boot() {
   await loadOauthStatus();
   await loadShellPrefs();
   await loadAccounts();
+  if (typeof api.reportUpdateReady === "function") api.reportUpdateReady();
 }
 
 boot().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));

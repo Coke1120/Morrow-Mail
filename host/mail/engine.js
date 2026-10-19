@@ -1,3 +1,4 @@
+const { gate: updateGate } = require("../update-quiescence");
 const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
@@ -742,6 +743,10 @@ function finishSync(jobs, paused, allDone, accountId) {
 }
 
 async function syncFolderPath(account, folderPath) {
+  return updateGate.run(() => syncFolderPathAdmitted(account, folderPath));
+}
+
+async function syncFolderPathAdmitted(account, folderPath) {
   return exclusive(account.id, async () => {
     const password = await secretFor(account);
     const result = await remote.withClient(account, password, (client) => syncFolderPolicy(client, account, folderPath));
@@ -778,6 +783,10 @@ function jobFolders(folders, options, accountId) {
 }
 
 async function syncAccount(account, options) {
+  return updateGate.run(() => syncAccountAdmitted(account, options));
+}
+
+async function syncAccountAdmitted(account, options) {
   if (!gateOpen(account.id)) {
     emitSync("paused", { accountId: account.id, message: "Paused for rate limit" });
     return;
@@ -808,6 +817,10 @@ async function syncAccount(account, options) {
 }
 
 async function syncAll(options) {
+  return updateGate.run(() => syncAllAdmitted(options));
+}
+
+async function syncAllAdmitted(options) {
   const scope = options && (options.folderKey || options.onlyPath || options.onlyInbox || options.background)
     ? options
     : { background: true };
@@ -1918,6 +1931,10 @@ async function deliver(params) {
 }
 
 async function pumpScheduled() {
+  return updateGate.run(() => pumpScheduledAdmitted());
+}
+
+async function pumpScheduledAdmitted() {
   if (!ready || pumping) return;
   pumping = true;
   try {

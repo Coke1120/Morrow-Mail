@@ -1,3 +1,4 @@
+const { gate: updateGate } = require("./update-quiescence");
 const fs = require("fs");
 const path = require("path");
 const { userDataDir, loadConfig } = require("./ai-config");
@@ -1460,6 +1461,10 @@ async function runScheduled(skillId, contactEmail) {
 }
 
 function pumpDueSkills(now) {
+  return updateGate.run(() => pumpDueSkillsAdmitted(now));
+}
+
+function pumpDueSkillsAdmitted(now) {
   const clock = now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date();
   const store = readStore();
   const installed = new Set(installedIds(store));
@@ -1483,11 +1488,15 @@ function pumpDueSkills(now) {
     queued += 1;
     const skillId = schedule.skillId;
     const contactEmail = schedule.contactEmail || "";
-    setImmediate(() => {
-      runScheduled(skillId, contactEmail).catch(() => {}).finally(() => {
-        inflightSkills.delete(skillId);
+    // Admit before deferring: shutdown must include queued scheduled work.
+    updateGate.run(() => new Promise(resolve => {
+      setImmediate(() => {
+        runScheduled(skillId, contactEmail).catch(() => {}).finally(() => {
+          inflightSkills.delete(skillId);
+          resolve();
+        });
       });
-    });
+    })).catch(() => {});
   }
   if (changed) writeStore(store);
   return { queued };

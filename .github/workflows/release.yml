@@ -7,7 +7,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: morrow-release
@@ -22,67 +22,85 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      # Presence only: Windows never receives the release-signing private key.
+      # The committed legacy public root is fixed; a missing secret blocks publication.
+      - name: Validate release source and signing prerequisites
+        env:
+          SIGNING_KEY_AVAILABLE: ${{ secrets.MORROW_UPDATE_SIGNING_KEY != '' }}
+        run: node scripts/release-preflight.js
       - run: npm ci
       - run: npm run check
-      - name: Tag matches package.json version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          version=$(node -p "require('./package.json').version")
-          tag="${GITHUB_REF_NAME#v}"
-          if [ "$tag" != "$version" ]; then
-            echo "tag v${tag} does not match package.json ${version}"
-            exit 1
-          fi
-      # Missing or invalid Desktop client JSON fails the job. The secret is not printed.
       - name: Bake Google Desktop OAuth client
         shell: bash
         env:
           GOOGLE_DESKTOP_OAUTH_JSON: ${{ secrets.GOOGLE_DESKTOP_OAUTH_JSON }}
         run: node scripts/bake-google-desktop-oauth.js
-      - name: Build unsigned Windows x64 and publish
+      - name: Build unsigned Windows x64 without publishing
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run dist:win -- --publish always
-      - name: List Windows feed artifacts
-        if: always()
-        shell: bash
-        run: ls -lh dist/*.{exe,yml,blockmap} dist/*.exe.blockmap 2>/dev/null || ls -lh dist
+        run: npm run dist:win -- --publish never
+      - name: Stage Windows assets and provenance
+        run: node scripts/prepare-release-assets.js --platform windows --output staging/release-windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: staging/release-windows/
+          if-no-files-found: error
+          retention-days: 7
 
   macos:
     needs: windows
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+      - name: Validate release source and signing prerequisites
+        env:
+          SIGNING_KEY_AVAILABLE: ${{ secrets.MORROW_UPDATE_SIGNING_KEY != '' }}
+        run: node scripts/release-preflight.js
       - run: npm ci
       - run: npm run check
-      - name: Tag matches package.json version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          version=$(node -p "require('./package.json').version")
-          tag="${GITHUB_REF_NAME#v}"
-          if [ "$tag" != "$version" ]; then
-            echo "tag v${tag} does not match package.json ${version}"
-            exit 1
-          fi
-      # Missing or invalid Desktop client JSON fails the job. The secret is not printed.
       - name: Bake Google Desktop OAuth client
         shell: bash
         env:
           GOOGLE_DESKTOP_OAUTH_JSON: ${{ secrets.GOOGLE_DESKTOP_OAUTH_JSON }}
         run: node scripts/bake-google-desktop-oauth.js
-      - name: Ad hoc sign, verify macOS bundle, and publish zip
+      - name: Ad hoc sign and verify macOS ARM64 bundle without publishing
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run dist:mac -- --publish always
-      - name: List macOS feed artifacts
-        if: always()
-        shell: bash
-        run: ls -lh dist/*.zip dist/latest-mac.yml dist/*.blockmap 2>/dev/null || ls -lh dist
+        run: npm run dist:mac -- --arm64 --publish never
+      # Ad hoc distribution does not promise notarization or unattended installation.
+      # Integrity errors block publication; policy rejection is reported for manual installation.
+      - name: Verify final macOS integrity and report platform trust
+        run: node scripts/verify-release-macos.js
+      # Uses the existing secret NAME only when an authorized release runs.
+      # Never log it, persist it to disk, or accept a public-root env override.
+      - name: Sign final macOS archive manifest
+        env:
+          MORROW_UPDATE_SIGNING_KEY: ${{ secrets.MORROW_UPDATE_SIGNING_KEY }}
+        run: node scripts/sign-release-manifest.js
+      - name: Stage macOS assets and provenance
+        run: node scripts/prepare-release-assets.js --platform macos --output staging/release-macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: staging/release-macos/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: staging/release-windows
+      # Publication begins only after both builds and manifest authentication.
+      # Publisher verifies provenance and paired assets before promoting a draft.
+      - name: Publish and verify paired release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const publish = require('./scripts/publish-release.js');
+            await publish({ github, context, artifactDirectory: 'staging' });

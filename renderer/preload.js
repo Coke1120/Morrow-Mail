@@ -5,6 +5,7 @@ const INVOKE = [
   "host:updateGetState",
   "host:updateCheck",
   "host:updateInstall",
+  "host:updateManual",
   "config:getTheme",
   "config:setTheme",
   "morrow:configGetAccent",
@@ -151,6 +152,8 @@ const INVOKE = [
 ];
 
 const EVENTS = [
+  "host:updatePrepareForInstall",
+  "host:updateResume",
   "mail:accountsUpdated",
   "mail:emailsUpdated",
   "mail:syncStatus",
@@ -166,6 +169,12 @@ const invokeSet = new Set(INVOKE);
 const eventSet = new Set(EVENTS);
 
 contextBridge.exposeInMainWorld("morrow", {
+  reportUpdateReady() { ipcRenderer.send("host:updateStartupReady"); },
+  replyUpdatePreparation(payload) {
+    if (typeof payload?.nonce === "string" && typeof payload.ok === "boolean") {
+      ipcRenderer.send("host:updatePrepared", { nonce: payload.nonce, ok: payload.ok });
+    }
+  },
   invoke(channel, payload) {
     if (!invokeSet.has(channel)) {
       return Promise.reject(new Error("Unsupported channel"));
