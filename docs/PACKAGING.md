@@ -8,7 +8,7 @@ The packaged app boots the first-party renderer shipped in `renderer/` (see [IND
 
 ## Windows alpha (Leo)
 
-Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an unsigned macOS zip to the same prerelease. Pull requests stay on the `ci` check job.
+Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an unsigned macOS zip to the same GitHub release. Pull requests stay on the `ci` check job.
 
 1. Bump `package.json` `version` (the first alpha is already `0.1.0-alpha.1`) and merge to `main`. The GitHub tag is `v` plus that version.
 2. Actions → **release** → **Run workflow**, branch `main`.
@@ -22,7 +22,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win -- --publish always
 
 That flag also skips electron-builder's own resource edit, which would leave the installed `Morrow Mail.exe` as Electron's icon and product name. `build.afterPack` (`scripts/windows-icon.js`) writes `build/icon.ico` and the Morrow Mail version strings into that exe after the pack, and does not sign it. The hook reopens the edited executable and verifies every icon image and product version, plus preservation of unrelated resources (including Electron's ASAR integrity record). The NSIS installer and uninstaller icons are the same `build/icon.ico`. The taskbar, desktop shortcut, and installed exe use the icon inside `Morrow Mail.exe`.
 
-4. The job uploads the NSIS setup exe, its `.blockmap`, the portable exe, and `latest.yml` to a **prerelease** on public `Coke1120/Morrow-Mail`. `latest.yml` is the Windows electron-updater feed and names the NSIS setup. The portable exe is a no-install download. `detectUpdateChannel` is `false`, so `0.1.0-alpha.N` still publishes `latest.yml`.
+4. The job uploads the NSIS setup exe, its `.blockmap`, the portable exe, and `latest.yml` to a GitHub **release** on public `Coke1120/Morrow-Mail`. `latest.yml` is the Windows electron-updater feed and names the NSIS setup. The portable exe is a no-install download. `detectUpdateChannel` is `false`, so `0.1.0-alpha.N` still publishes `latest.yml`.
 
 The feed URL uses dashes (`Morrow-Mail-Setup-0.1.0-alpha.4.exe`). That is the GitHub Release asset name. The copy in `dist/` keeps the spaces in `Morrow Mail Setup 0.1.0-alpha.4.exe`. This rename does not republish `0.1.0-alpha.4`; electron-builder will not replace assets already uploaded for that tag.
 
@@ -45,7 +45,7 @@ electron-builder attaches files to an existing release only for about two hours 
 
 ## macOS
 
-The same **release** workflow runs on `macos-latest` after the Windows job, and publishes an unsigned zip plus `latest-mac.yml` (and a blockmap when electron-builder writes one) to that prerelease. Windows creates the prerelease first. `build.mac.identity` is `null`. The job sets `CSC_IDENTITY_AUTO_DISCOVERY=false` and does not codesign or notarize. The zip arch is the runner's (Apple silicon on `macos-latest`).
+The same **release** workflow runs on `macos-latest` after the Windows job, and publishes an unsigned zip plus `latest-mac.yml` (and a blockmap when electron-builder writes one) to that release. Windows creates the release first. `build.mac.identity` is `null`. The job sets `CSC_IDENTITY_AUTO_DISCOVERY=false` and does not codesign or notarize. The zip arch is the runner's (Apple silicon on `macos-latest`).
 
 ```bash
 CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac -- --publish always
@@ -59,7 +59,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
 
 ## Updater reads
 
-`build.publish` is GitHub `Coke1120/Morrow-Mail`, `private: false`, `releaseType: prerelease`. The packaged app writes that into `resources/app-update.yml`. With `allowPrerelease` on, electron-updater reads the public prerelease feed (`https://github.com/Coke1120/Morrow-Mail/releases.atom`, then `alpha.yml` or `alpha-mac.yml` for an alpha tag, and `latest.yml` or `latest-mac.yml` when that channel file is absent).
+`build.publish` is GitHub `Coke1120/Morrow-Mail`, `private: false`, `releaseType: release`. The packaged app writes that into `resources/app-update.yml`. With `allowPrerelease` on, electron-updater reads the public prerelease feed (`https://github.com/Coke1120/Morrow-Mail/releases.atom`, then `alpha.yml` or `alpha-mac.yml` for an alpha tag, and `latest.yml` or `latest-mac.yml` when that channel file is absent).
 
 A packaged install checks and downloads that feed with no GitHub token. `npm start` leaves the updater off.
 
