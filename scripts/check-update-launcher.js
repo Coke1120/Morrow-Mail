@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { recoveryStatus, childEnvironment, acknowledge, registerStartup, validateStaging, writeExclusive, start } = require('../host/update-launcher');
+const { trustedParent, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, acknowledge, registerStartup, validateStaging, writeExclusive, start } = require('../host/update-launcher');
 const { launchTrusted, waitReady } = require('../host/update-helper');
 (async () => {
   let launches = 0;
@@ -19,9 +19,25 @@ const { launchTrusted, waitReady } = require('../host/update-helper');
     console.log('Update launcher: environment isolation and non-macOS rejection passed; POSIX permission/ownership handoff checks skipped on this platform.');
     return;
   }
+  const platform = { platform: 'darwin', uid: 501 };
+  assert.equal(trustedParent('/Applications', { uid: 0, gid: 80, mode: 0o40775 }, platform), true);
+  for (const [folder, stat] of [
+    ['/Applications', { uid: 0, gid: 20, mode: 0o40775 }],
+    ['/Applications', { uid: 0, gid: 80, mode: 0o40777 }],
+    ['/shared', { uid: 0, gid: 80, mode: 0o40775 }],
+    ['/private', { uid: 502, gid: 20, mode: 0o40755 }]
+  ]) assert.equal(trustedParent(folder, stat, platform), false);
+  assert.equal(trustedParent('/private', { uid: 501, gid: 20, mode: 0o40700 }, platform), true);
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'morrow-launcher-test-'));
   await fs.chmod(root, 0o700);
   try {
+    const pinned = path.join(root, 'pinned');
+    await fs.mkdir(pinned);
+    const identity = await directoryIdentity(pinned);
+    await assertDirectoryIdentity(pinned, identity);
+    await fs.rename(pinned, path.join(root, 'original'));
+    await fs.mkdir(pinned);
+    await assert.rejects(assertDirectoryIdentity(pinned, identity), /identity changed/);
     const target = path.join(root, 'Morrow Mail.app');
     await fs.mkdir(target);
     const staging = await fs.mkdtemp(path.join(root, '.morrow-update-'));

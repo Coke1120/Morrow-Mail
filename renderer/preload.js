@@ -5,6 +5,7 @@ const INVOKE = [
   "host:updateGetState",
   "host:updateCheck",
   "host:updateInstall",
+  "host:updateManual",
   "config:getTheme",
   "config:setTheme",
   "morrow:configGetAccent",

@@ -41,6 +41,9 @@ async function run() {
   assert.equal(ui.run('updateView({}).status'),'Updates have not been checked yet.');
   assert.equal(ui.run(`updateView({lastCheckedAt:'2026-10-18T08:00:00Z'}).status`),'Up to date.');
   assert.equal(ui.run('updateView({downloaded:true}).install'),true);
+  assert.equal(ui.run('updateView({manualRequired:true,manualAvailable:true,downloaded:true}).install'),false);
+  assert.equal(ui.run('updateView({manualRequired:true,manualAvailable:true}).manual'),true);
+  assert.match(ui.run('updateView({manualRequired:true}).status'),/has not been replaced/);
   const raw='{"password":"private words", "refresh_token":"private-refresh"} bearer private-bearer sk-proj-1234567890_secret';
   ui.context.raw=raw;
   const redacted=ui.run('redactDebugText(raw)');

@@ -7307,7 +7307,9 @@ function updateView(snapshot, version) {
   let install = false;
   let busy = false;
   const error = snap.error ? String(snap.error) : "";
-  if (error) {
+  if (snap.manualRequired) {
+    status = "Manual installation required. Your current app has not been replaced.";
+  } else if (error) {
     status = "Update failed.";
   } else if (snap.installing) {
     status = "Installing…";
@@ -7327,7 +7329,7 @@ function updateView(snapshot, version) {
   } else if (snap.enabled === false) {
     status = "Updater is off until the app is packaged.";
   }
-  return { version: current, status: status, error: error, install: install, busy: busy, lastCheckedAt: snap.lastCheckedAt || null };
+  return { version: current, status: status, error: error, install: install, busy: busy, manual: !!snap.manualAvailable, downloaded: !!snap.downloaded, explicitInstall: !!snap.requiresExplicitInstall, lastCheckedAt: snap.lastCheckedAt || null };
 }
 
 function paintUpdate(view) {
@@ -7341,6 +7343,11 @@ function paintUpdate(view) {
   install.textContent = "Restart and install";
   install.disabled = !!view.busy;
   $("about-update-quit").hidden = !view.install;
+  $("about-update-quit").textContent = view.explicitInstall ? "Restart and install closes Morrow after you finish active work. Quitting alone does not install this update." : "This update will also install automatically when you quit Morrow. Restart and install closes the app now.";
+  const manual = $("about-update-manual");
+  manual.hidden = !view.manual;
+  manual.disabled = !!view.busy;
+  manual.textContent = view.downloaded ? "Show downloaded update" : "Open official releases";
 }
 
 function openAbout() {
@@ -11643,6 +11650,10 @@ function wire() {
   $("about-close").addEventListener("click", () => closeDialog("about-dialog"));
   $("about-update-check").addEventListener("click", checkForUpdates);
   $("about-update-install").addEventListener("click", installUpdate);
+  $("about-update-manual").addEventListener("click", async () => {
+    try { bumpUpdate(await api.invoke("host:updateManual")); }
+    catch (error) { bumpUpdate({ error: error.message }); }
+  });
   $("log-source").addEventListener("change", filterSupportLog);
   $("log-preview").addEventListener("click", previewSupportLog);
   $("support-copy").addEventListener("click", copySupportLog);

@@ -6,7 +6,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { verifyManifest, validateArtifact } = require('./update-manifest');
 const { extractZip, verifyBundle, waitForExit, replaceAndLaunch, preserveQuarantine, requireQuarantine, assessBundleTrust } = require('./update-installer');
-const { childEnvironment, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay } = require('./update-launcher');
+const { childEnvironment, assertDirectoryIdentity, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay } = require('./update-launcher');
 async function journal(staging, state, extra = {}) {
   const temp = path.join(staging, 'journal.next');
   await writeExclusive(temp, JSON.stringify({ state, at: new Date().toISOString(), ...extra }));
@@ -50,6 +50,13 @@ async function run(staging) {
   const config = await readPrivateJSON(path.join(staging, 'config.json'));
   const { target, signature, currentVersion, arch, pid, nonce, version } = config;
   await validateStaging(staging, target);
+  const checkLocation = async () => {
+    await validateStaging(staging, target);
+    await assertDirectoryIdentity(path.dirname(target), config.identities?.parent);
+    await assertDirectoryIdentity(staging, config.identities?.staging);
+  };
+  await checkLocation();
+  await assertDirectoryIdentity(target, config.identities?.target);
   if (!/^[a-f0-9]{64}$/.test(nonce) || !Number.isSafeInteger(pid) || pid < 2 || pid === process.pid) throw new Error('Invalid installer handoff.');
   for (const name of ['manifest.json', 'public-key.pem', 'artifact.zip']) await privatePath(path.join(staging, name));
   const manifestBytes = await fs.readFile(path.join(staging, 'manifest.json'));
@@ -78,8 +85,11 @@ async function run(staging) {
   const launchState = { exited: false, code: null };
   const appEnvironment = childEnvironment();
   await verifyBundle(target, { version: currentVersion, arch });
+  await checkLocation();
+  await assertDirectoryIdentity(target, config.identities?.target);
   replacementAttempted = true;
   const result = await replaceAndLaunch({ target, staged, backup }, {
+    guard: checkLocation,
     launch: bundle => launchTrusted(bundle, () => new Promise((resolve, reject) => {
       const child = spawn('/usr/bin/open', ['-W', '-n', bundle, '--args', `--morrow-update-receipt=${path.join(staging, 'receipt.json')}`, `--morrow-update-nonce=${nonce}`], { stdio: 'ignore', env: appEnvironment });
       child.once('error', reject);

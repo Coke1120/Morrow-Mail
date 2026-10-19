@@ -144,6 +144,11 @@ function registerIpc() {
     }
     return snapshot();
   });
+  ipcMain.handle("host:updateManual", (event) => {
+    if (platform !== "darwin") return snapshot();
+    authorizeInstall(event);
+    return signedMacUpdater().manual();
+  });
   ipcMain.handle("host:updateInstall", (event) => {
     if (platform === "darwin") {
       authorizeInstall(event);
@@ -156,6 +161,6 @@ function registerIpc() {
   });
 }
 
-const CHANNELS = ["host:updateGetState", "host:updateCheck", "host:updateInstall"];
+const CHANNELS = ["host:updateGetState", "host:updateCheck", "host:updateInstall", "host:updateManual"];
 
 module.exports = { init, registerIpc, snapshot, state, CHANNELS, configureInstall };

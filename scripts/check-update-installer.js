@@ -62,12 +62,12 @@ async function main() {
     assert.equal(await requireQuarantine('archive', { run: async () => ({ stdout: '30 30 38 33' }) }), '30303833');
     await assert.rejects(requireQuarantine('archive', { run: async () => ({ stdout: '' }) }), /quarantine/);
     await assert.rejects(requireQuarantine('archive', { run: async () => { throw new Error('No such xattr'); } }), /No such xattr/);
-    await assert.rejects(requireQuarantine('archive', { run: async () => ({ stdout: '30303832' }) }), /Inactive quarantine/);
+    assert.equal(await requireQuarantine('archive', { run: async () => ({ stdout: '30303832' }) }), '30303832', 'Preserve existing system-managed quarantine flags');
     await assert.rejects(preserveQuarantine('archive', 'bundle', { run: async () => ({ stdout: '' }) }), /quarantine/);
     const assessments = [];
     await assessBundleTrust(bundle, { run: async (...args) => { assessments.push(args); return { stdout: '' }; } });
     assert.deepEqual(assessments[0], ['/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle], { timeout: 60000, maxBuffer: 1024 * 1024 }]);
-    for (const message of ['rejected', 'timed out']) await assert.rejects(assessBundleTrust(bundle, { run: async () => { throw new Error(message); } }), new RegExp(message));
+    for (const message of ['rejected', 'timed out']) await assert.rejects(assessBundleTrust(bundle, { run: async () => { throw new Error(message); } }), error => error.code === 'UPDATE_MANUAL_TRUST' && error.cause.message === message);
     const attrs = [];
     await preserveQuarantine('archive', 'bundle', { run: async (cmd, args) => { attrs.push(args); return { stdout: args.length === 1 ? 'com.apple.quarantine\n' : args[0] === '-px' ? '30 30 38 33' : '' }; } });
     assert.deepEqual(attrs.at(-1), ['-wx', 'com.apple.quarantine', '30303833', 'bundle']);
@@ -103,6 +103,19 @@ async function main() {
       if (['exited', 'launch-failed'].includes(outcome)) { await assert.rejects(action); assert.equal(await fs.readFile(path.join(target, 'version'), 'utf8'), 'old'); assert(restarted); }
       else { const result = await action; assert.equal(result.state, outcome === 'ready' ? 'installed' : 'recovery-required'); assert.equal(await fs.readFile(path.join(backup, 'version'), 'utf8'), 'old'); }
     }
+    // Refuse an unrelated destination observed between renames.
+    const parent = path.join(root, 'race'); await fs.mkdir(parent);
+    const target = path.join(parent, 'Morrow Mail.app'); await fs.mkdir(target);
+    await fs.writeFile(path.join(target, 'version'), 'old');
+    const dir = await createStaging(target), staged = path.join(dir, 'candidate.app'), backup = path.join(dir, 'previous.app');
+    await fs.mkdir(staged); let guards = 0, launches = 0;
+    await assert.rejects(replaceAndLaunch({ target, staged, backup }, {
+      guard: async () => { if (++guards === 2) { await fs.mkdir(target); await fs.writeFile(path.join(target, 'unrelated'), 'preserve'); } },
+      launch: async () => { launches++; }, waitReady: async () => 'ready'
+    }), /destination appeared/);
+    assert.equal(launches, 0);
+    assert.equal(await fs.readFile(path.join(target, 'unrelated'), 'utf8'), 'preserve');
+    assert.equal(await fs.readFile(path.join(backup, 'version'), 'utf8'), 'old');
     console.log('update installer: ZIP attacks, framework links, identity/arch/strict checks, exit timeout, replacement and rollback passed');
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 }

@@ -34,8 +34,9 @@ function createMacUpdater(options) {
   }
   function init() {
     state.channel = "stable";
+    state.requiresExplicitInstall = true;
     try { requireTrust(); state.enabled = !!app.isPackaged; }
-    catch (err) { state.enabled = false; error(err); }
+    catch (err) { state.enabled = false; state.manualAvailable = true; error(err); }
     return snapshot();
   }
   async function performCheck() {
@@ -88,6 +89,8 @@ function createMacUpdater(options) {
     let started;
     state.error = null;
     state.installing = true;
+    state.manualRequired = false;
+    state.manualAvailable = false;
     try {
       requireTrust();
       // Closing the write gate and renderer consent happen before helper start.
@@ -113,7 +116,30 @@ function createMacUpdater(options) {
       if (started && started.cancel) await started.cancel().catch(() => {});
       if (resume) resume();
       error(err);
+      if (['UPDATE_MANUAL_TRUST', 'UPDATE_MANUAL_LOCATION', 'EACCES', 'EPERM', 'EROFS'].includes(err.code)) {
+        state.manualRequired = true;
+        state.manualAvailable = true;
+      }
     }
+    return snapshot();
+  }
+  async function manual() {
+    if (installing || state.installing || checking || !state.manualAvailable) return snapshot();
+    try {
+      const shell = options.shell || require('electron').shell;
+      if (!candidate) {
+        await shell.openExternal('https://github.com/Coke1120/Morrow-Mail/releases/latest');
+        return snapshot();
+      }
+      requireTrust();
+      const manifest = verifyManifest(candidate.manifestBytes, candidate.signature, { publicKey, currentVersion: app.getVersion(), platform: 'darwin', arch });
+      await (options.validateArtifact || manifestTools.validateArtifact)(candidate.archive, manifest);
+      await (options.requireQuarantine || require('./update-installer').requireQuarantine)(candidate.archive);
+      // Reveal only: never open/execute a policy-rejected candidate or quit here.
+      shell.showItemInFolder(candidate.archive);
+      state.manualRequired = true;
+      state.error = 'The verified download is shown in Finder. Save your work and quit Morrow before manually replacing the app. Follow macOS security and permission prompts; installation and restart have not been completed by Morrow.';
+    } catch (err) { state.manualAvailable = false; error(err); }
     return snapshot();
   }
   function install() {
@@ -127,6 +153,6 @@ function createMacUpdater(options) {
     }
     return snapshot();
   }
-  return { init, configure, check, install, snapshot, refreshStatus };
+  return { init, configure, check, install, manual, snapshot, refreshStatus };
 }
 module.exports = { createMacUpdater };

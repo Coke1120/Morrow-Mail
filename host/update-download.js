@@ -71,7 +71,7 @@ async function recordInternetDownload(file, { platform = process.platform, run =
   }
   const value = (await run('/usr/bin/xattr', ['-p', 'com.apple.quarantine', file], options)).stdout.trim();
   const flags = value.split(';')[0];
-  if (value.length > 16384 || !/^[a-fA-F0-9]{4,8}$/.test(flags) || !(Number.parseInt(flags, 16) & 1)) {
+  if (value.length > 16384 || !/^[a-fA-F0-9]{4,8}$/.test(flags)) {
     throw new Error('Downloaded update quarantine could not be established. Use the manual download.');
   }
 }

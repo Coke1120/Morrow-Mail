@@ -20,6 +20,10 @@ async function main() {
   assert.match(attrs.get('/fixture.zip'), /^0083;[a-f0-9]+;Morrow Mail;/);
   await recordInternetDownload('/fixture.zip', { platform: 'darwin', run: xattr });
   assert.equal(writes, 1, 'existing quarantine is retained');
+  attrs.set('/fixture.zip', '0082;12345678;Safari;existing');
+  await recordInternetDownload('/fixture.zip', { platform: 'darwin', run: xattr });
+  assert.equal(writes, 1, 'Do not overwrite system-managed approval/quarantine flags');
+  assert.equal(attrs.get('/fixture.zip'), '0082;12345678;Safari;existing');
   await assert.rejects(recordInternetDownload('/fixture.zip', { platform: 'darwin', run: async () => ({ stdout: '' }) }), /quarantine/);
   await assert.rejects(recordInternetDownload('/fixture.zip', { platform: 'darwin', run: async () => { throw Error('xattr denied'); } }), /denied/);
   // Ephemeral test-only roots: never written to disk or reused by the application.

@@ -151,13 +151,16 @@ async function verifyBundle(bundle, { version, arch, appId = 'com.coke1120.morro
 async function assessBundleTrust(bundle, { run = execFile } = {}) {
   // Integrity and publisher authenticity do not establish Apple platform trust.
   // Propagate rejection/timeouts; callers must never launch a rejected bundle.
-  await run('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle], NATIVE_OPTIONS);
+  try { await run('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle], NATIVE_OPTIONS); }
+  catch (cause) {
+    throw Object.assign(new Error('macOS has not approved this update for automatic installation. Use Show downloaded update to review it in Finder and follow macOS security prompts.', { cause }), { code: 'UPDATE_MANUAL_TRUST' });
+  }
 }
 async function requireQuarantine(source, { run = execFile } = {}) {
   const value = (await run('/usr/bin/xattr', ['-px', 'com.apple.quarantine', source], NATIVE_OPTIONS)).stdout.replace(/\s/g, '');
   if (!/^(?:[0-9a-fA-F]{2})+$/.test(value) || value.length > 32768) fail('Missing or invalid quarantine metadata.');
   const flags = Buffer.from(value, 'hex').toString('utf8').split(';')[0];
-  if (!/^[a-fA-F0-9]{4,8}$/.test(flags) || !(Number.parseInt(flags, 16) & 1)) fail('Inactive quarantine metadata.');
+  if (!/^[a-fA-F0-9]{4,8}$/.test(flags)) fail('Invalid quarantine flags.');
   return value;
 }
 async function preserveQuarantine(source, destination, { run = execFile } = {}) {
@@ -177,12 +180,24 @@ async function waitForExit(pids, { timeout = 60000, alive = pid => { try { proce
   const deadline = now() + timeout;
   while (pids.some(alive)) { if (now() >= deadline) fail('Application did not exit; update was not installed.'); await sleep(100); }
 }
-async function replaceAndLaunch({ target, staged, backup }, { launch, waitReady, relaunchOld }) {
+async function replaceAndLaunch({ target, staged, backup }, { launch, waitReady, relaunchOld, guard = async () => {} }) {
   if (await fsp.realpath(target) !== target || await fsp.realpath(staged) !== staged || path.dirname(backup) !== path.dirname(staged) || path.dirname(path.dirname(staged)) !== path.dirname(target)) fail('Invalid installation paths.');
   try { await fsp.lstat(backup); fail('Previous backup already exists.'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const identity = async file => { const s = await fsp.lstat(file); if (!s.isDirectory() || s.isSymbolicLink()) fail('Update path changed.'); return `${s.dev}:${s.ino}`; };
+  const original = await identity(target), candidate = await identity(staged);
+  const unchanged = async (file, expected) => { if (await identity(file) !== expected) fail('Update path identity changed.'); };
+  const absent = async file => { try { await fsp.lstat(file); } catch (e) { if (e.code === 'ENOENT') return; throw e; } fail('Update destination appeared; recovery files retained.'); };
+  await guard();
+  await unchanged(target, original);
+  await unchanged(staged, candidate);
+  await absent(backup);
   await fsp.rename(target, backup);
   let installed = false, launched = false;
   try {
+    await guard();
+    await unchanged(backup, original);
+    await unchanged(staged, candidate);
+    await absent(target);
     await fsp.rename(staged, target); installed = true;
     await launch(target); launched = true;
     const outcome = await waitReady();
@@ -193,7 +208,10 @@ async function replaceAndLaunch({ target, staged, backup }, { launch, waitReady,
   } catch (error) {
     // A thrown readiness check is uncertain: never rename an app that may run.
     if (launched) return { state: 'recovery-required', backup, message: 'Readiness check failed; backup retained.' };
-    if (installed) await fsp.rename(target, staged);
+    await guard();
+    await unchanged(backup, original);
+    if (installed) { await unchanged(target, candidate); await absent(staged); await fsp.rename(target, staged); }
+    await absent(target);
     await fsp.rename(backup, target);
     if (relaunchOld) await relaunchOld(target);
     throw error;

@@ -43,11 +43,34 @@ const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => "/tmp"
   const interrupted = createMacUpdater({ app, state: {}, arch: "arm64", publicKey,
     fetchBytes: async url => Buffer.from(url.endsWith(".sig") ? sig : bytes), downloadArtifact: async () => { throw Error("interrupted"); } });
   await interrupted.check(); assert.equal(interrupted.snapshot().downloaded, false); assert.equal(interrupted.snapshot().downloading, false);
+  let revealed = 0, checked = 0, recovered = 0, forbiddenQuits = 0;
+  const handoff = createMacUpdater({ app, state: {}, arch: "arm64", publicKey,
+    resourcesPath: "/tmp/Morrow Mail.app/Contents/Resources",
+    fetchBytes: async url => Buffer.from(url.endsWith('.sig') ? sig : bytes),
+    downloadArtifact: async () => '/tmp/authenticated-fixture.zip',
+    startInstaller: async () => { throw Object.assign(Error('Policy needs user review'), { code: 'UPDATE_MANUAL_TRUST' }); },
+    validateArtifact: async () => { if (++checked > 1) throw Error('checksum changed'); }, requireQuarantine: async () => {},
+    shell: { showItemInFolder: file => { assert.equal(file, '/tmp/authenticated-fixture.zip'); revealed++; }, openExternal: () => assert.fail('Candidate handoff must use verified download') }
+  });
+  handoff.configure({ prepare: async () => () => { recovered++; }, quit: () => { forbiddenQuits++; } });
+  handoff.init(); await handoff.check(); await handoff.install();
+  assert.equal(handoff.snapshot().manualRequired, true);
+  assert.equal(handoff.snapshot().installing, false);
+  assert.equal(recovered, 1); assert.equal(forbiddenQuits, 0);
+  await handoff.manual(); assert.equal(checked, 1); assert.equal(revealed, 1);
+  assert.match(handoff.snapshot().error, /have not been completed/);
+  await handoff.manual(); assert.equal(revealed, 1, 'Changed archive must not be revealed');
+  assert.equal(handoff.snapshot().manualAvailable, false);
+  assert.match(handoff.snapshot().error, /checksum changed/);
+  let website;
+  const unconfigured = createMacUpdater({ app, state: {}, publicKey: '', shell: { openExternal: async url => { website = url; }, showItemInFolder: () => assert.fail() } });
+  unconfigured.init(); await unconfigured.manual();
+  assert.equal(website, 'https://github.com/Coke1120/Morrow-Mail/releases/latest');
   // Exercise the actual macOS IPC branch; the Windows provider is not loaded.
   const vm = require("node:vm"), fs = require("node:fs");
   const handlers = {}, contents = { mainFrame: {} }, win = { isDestroyed: () => false, webContents: contents };
-  let installs = 0;
-  const mac = { configure() {}, init: () => ({}), check: async () => ({}), refreshStatus: async () => ({}), install: async () => { installs++; return {}; } };
+  let installs = 0, handoffs = 0;
+  const mac = { manual: async () => { handoffs++; return {}; }, configure() {}, init: () => ({}), check: async () => ({}), refreshStatus: async () => ({}), install: async () => { installs++; return {}; } };
   const host = { module: { exports: {} }, setTimeout() {}, setImmediate() {}, Date,
     require(name) {
       if (name === "electron") return { app: { isPackaged: true }, ipcMain: { handle: (name, fn) => { handlers[name] = fn; } } };
@@ -63,5 +86,8 @@ const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => "/tmp"
   assert.throws(() => handlers["host:updateInstall"]({ sender: contents, senderFrame: {} }), /main application window/);
   await handlers["host:updateInstall"]({ sender: contents, senderFrame: contents.mainFrame });
   assert.equal(installs, 1);
+  assert.throws(() => handlers['host:updateManual']({ sender: contents, senderFrame: {} }), /main application window/);
+  await handlers['host:updateManual']({ sender: contents, senderFrame: contents.mainFrame });
+  assert.equal(handoffs, 1);
   console.log("signed-macos-controller-ok (fixtures; native transition still required)");
 })().catch(error => { console.error(error); process.exitCode = 1; });
