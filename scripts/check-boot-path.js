@@ -129,7 +129,7 @@ assert.deepStrictEqual(
     owner: "Coke1120",
     repo: "Morrow-Mail",
     private: false,
-    releaseType: "prerelease",
+    releaseType: "release",
   },
 );
 
