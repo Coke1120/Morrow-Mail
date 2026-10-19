@@ -74,7 +74,7 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run dist:mac -- --arm64 --publish never
-      - name: Verify extracted final macOS archive without signing credentials
+      - name: Verify final macOS integrity and Gatekeeper trust without signing credentials
         run: node scripts/verify-release-macos.js
       # Uses the existing secret NAME only when an authorized release runs.
       # Never log it, persist it to disk, or accept a public-root env override.

@@ -3,13 +3,16 @@
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { extractZip, verifyBundle } = require('../host/update-installer');
+const { extractZip, verifyBundle, assessBundleTrust } = require('../host/update-installer');
 
-async function verifyReleaseMacos({ artifact, version, extract = extractZip, verify = verifyBundle }) {
+async function verifyReleaseMacos({ artifact, version, extract = extractZip, verify = verifyBundle, assess = assessBundleTrust }) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'morrow-release-verify-'));
   try {
     const bundle = await extract(artifact, path.join(temporary, 'extracted'));
     await verify(bundle, { version, arch: 'arm64' });
+    // Authenticated auto-install publication requires platform trust as well as
+    // intact seals. Rejection/timeouts must stop before manifest signing.
+    await assess(bundle);
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 if (require.main === module) {
@@ -23,7 +26,7 @@ if (require.main === module) {
     process.exitCode = 1;
   } else {
     verifyReleaseMacos({ artifact: path.join('dist', `Morrow Mail-${version}-arm64-mac.zip`), version })
-      .then(() => console.log('Extracted release ZIP passed path, bundle identity, architecture and strict signature verification.'))
+      .then(() => console.log('Extracted release ZIP passed path, bundle identity, architecture, strict signature verification and Gatekeeper assessment.'))
       .catch(() => { console.error('Native archive verification failed; do not sign or publish this release.'); process.exitCode = 1; });
   }
 }

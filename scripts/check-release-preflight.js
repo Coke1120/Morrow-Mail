@@ -41,6 +41,7 @@ const { verifyManifest } = require('../host/update-manifest');
 
   let extractedPath;
   let verified = false;
+  let assessed = false;
   await verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
     extract: async (file, destination) => {
       assert.equal(file, 'fixture.zip');
@@ -52,15 +53,39 @@ const { verifyManifest } = require('../host/update-manifest');
       verified = true;
       assert.equal(bundle, path.join(extractedPath, 'Morrow Mail.app'));
       assert.deepEqual(options, { version: '0.2.6', arch: 'arm64' });
+    },
+    assess: async bundle => {
+      assert.equal(verified, true, 'Integrity must pass before policy assessment');
+      assert.equal(bundle, path.join(extractedPath, 'Morrow Mail.app'));
+      assessed = true;
     }
   });
   assert.equal(verified, true);
+  assert.equal(assessed, true);
   await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
   await assert.rejects(verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
     extract: async (file, destination) => { extractedPath = destination; throw new Error('unsafe archive'); },
     verify: async () => assert.fail('Invalid archive must not reach codesign')
   }), /unsafe archive/);
   await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
+
+  for (const reason of ['Gatekeeper rejected', 'Gatekeeper timed out']) {
+    await assert.rejects(verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
+      extract: async (_file, destination) => {
+        extractedPath = destination;
+        await fs.mkdir(destination);
+        return path.join(destination, 'Morrow Mail.app');
+      },
+      verify: async () => {},
+      assess: async () => { throw new Error(reason); }
+    }), new RegExp(reason));
+    await assert.rejects(fs.stat(path.dirname(extractedPath)), { code: 'ENOENT' });
+  }
+  await assert.rejects(verifyReleaseMacos({ artifact: 'fixture.zip', version: '0.2.6',
+    extract: async () => '/fixture.app',
+    verify: async () => { throw new Error('broken seal'); },
+    assess: async () => assert.fail('Broken seals must not reach policy assessment')
+  }), /broken seal/);
 
   // Structural regression checks for authority boundaries and release ordering.
   const workflow = await fs.readFile(path.join(__dirname, '..', '.github/workflows/release.yml'), 'utf8');
