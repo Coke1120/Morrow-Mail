@@ -2,8 +2,10 @@
 
 const auth = require("./auth");
 const audit = require("./audit");
+const catalog = require("./catalog");
 const drafts = require("./drafts");
-const { CAPABILITIES, DEFAULT_CAPABILITIES, DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, PORT, SERVE_CAPABILITY } = require("./constants");
+const prompt = require("./prompt");
+const { DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, PORT, SERVE_CAPABILITY } = require("./constants");
 const server = require("./server");
 
 function settingsUrl(value) {
@@ -59,16 +61,18 @@ function snapshot() {
     bindHost: "127.0.0.1",
     port: PORT,
     listen: server.status(),
-    capabilities: CAPABILITIES,
-    defaultCapabilities: DEFAULT_CAPABILITIES,
+    capabilities: catalog.capabilities(),
+    defaultCapabilities: catalog.DEFAULT_CAPABILITIES,
     defaultExpiryDays: DEFAULT_EXPIRY_DAYS,
     maxExpiryDays: MAX_EXPIRY_DAYS,
+    endpoints: catalog.endpoints(view.serveHost),
+    markerJson: catalog.markerJson(),
     accounts: accounts(),
     grants: view.grants || [],
     drafts: local.proposals,
     draftsAvailable: local.available,
+    sends: [],
     audit: audit.recent(8),
-    sending: false,
   };
 }
 
@@ -97,6 +101,10 @@ async function apply(channel, payload) {
   if (channel === "bot:revokeGrant") {
     auth.revoke(payload && payload.clientId);
     return snapshot();
+  }
+  if (channel === "bot:setupText") {
+    const target = payload && payload.target === "serve" ? "serve" : "local";
+    return prompt.renderSetup(catalog.factsFrom(auth.view(), target));
   }
   if (channel === "bot:draftComposeSeed") return drafts.composeSeed(payload && payload.proposalId);
   if (channel === "bot:dismissDraftProposal") {

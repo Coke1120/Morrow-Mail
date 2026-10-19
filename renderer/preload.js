@@ -142,6 +142,7 @@ const INVOKE = [
   "nativeAgent:memoryGet",
   "nativeAgent:memorySet",
   "bot:getAccess",
+  "bot:setupText",
   "bot:setEnabled",
   "bot:setServeHost",
   "bot:mintGrant",

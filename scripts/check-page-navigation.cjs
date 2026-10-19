@@ -180,8 +180,12 @@ app.whenReady().then(async () => {
   assert.equal(await run(`$('settings-account').checkVisibility()`), false);
   assert.equal(await run(`$('bot-enabled').disabled`), true);
   assert.equal(await run(`$('bot-expiry').checkVisibility()`), false);
-  assert.equal(await run(`$('bot-serve-host').checkVisibility() && $('bot-add-client').open`), true);
+  assert.match(await run(`$('bot-listen').textContent`), /listener on this computer/);
+  await run(`showBotSection('tailscale')`);
+  assert.equal(await run(`$('bot-serve-host').checkVisibility()`), true);
   assert.match(await run(`$('bot-remote-status').textContent`), /No Tailscale host/);
+  await run(`showBotSection('grants')`);
+  assert.equal(await run(`$('bot-add-client').open`), true);
   assert.deepEqual(await run(`selectedBotAccounts()`), [], 'mailbox access remains opt-in');
   await shot('settings-bot-first-run');
   await run(`$('bot-expiry').value='never';$('bot-label').value='My assistant';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
@@ -213,10 +217,10 @@ app.whenReady().then(async () => {
   await run(`$('bot-secret-close').click()`);await waitFor(`!$('bot-secret').open && $('bot-secret-value').textContent===''`);
   botAccess.drafts.push({proposalId:'fixture-proposal',subject:'Review this reply',to:['recipient@example.test'],bodyText:'Proposed text',status:'pending'});
   await run(`loadBotAccess()`);
-  await run(`$('bot-advanced').querySelector('summary').focus()`);await key('RETURN');
-  assert.equal(await run(`$('bot-serve-host').checkVisibility() && $('bot-grants').querySelector('button').checkVisibility()`), true);
+  await run(`showBotSection('grants')`);
+  assert.equal(await run(`$('bot-grants').querySelector('button').checkVisibility()`), true);
   await shot('settings-bot-advanced');
-  await run(`$('bot-advanced').open=false;$('bot-review-link').click()`);
+  await run(`$('bot-review-link').click()`);
   assert.equal(await run(`$('bot-review').open && document.activeElement.id==='bot-draft-heading' && $('bot-drafts').checkVisibility()`), true);
   assert.equal(await run(`$('bot-drafts').querySelector('button').checkVisibility()`), true, 'the proposal review action remains reachable');
   await key('TAB');

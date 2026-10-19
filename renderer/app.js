@@ -11370,10 +11370,11 @@ function botPermissionNames(capabilities) {
 
 function botListenerStatus(access) {
   const listen = (access && access.listen) || {};
-  if (listen.listening) return `Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}.`;
-  if (listen.error === "port_in_use") return "Could not start the bridge: port 47831 is in use. This bridge is not listening.";
-  if (listen.error) return "The bridge could not start. " + listen.error;
-  return "The bridge is not listening.";
+  const where = "This is the listener on this computer.";
+  if (listen.listening) return `${where} Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}.`;
+  if (listen.error === "port_in_use") return `${where} Could not start the bridge: port 47831 is in use. This bridge is not listening.`;
+  if (listen.error) return `${where} The bridge could not start. ${listen.error}`;
+  return `${where} The bridge is not listening.`;
 }
 
 function paintBotGrants(grants) {
@@ -11497,6 +11498,44 @@ function paintBotDrafts(rows) {
   }
 }
 
+function paintBotAudit(rows) {
+  const list = $("bot-audit");
+  if (!list || typeof list.replaceChildren !== "function") return;
+  list.replaceChildren();
+  const items = rows || [];
+  if (!items.length) {
+    const item = document.createElement("li");
+    item.textContent = "No recent bridge activity.";
+    list.append(item);
+    return;
+  }
+  for (const row of items) {
+    const item = document.createElement("li");
+    const audit = row.auditId ? `${row.auditId} · ` : "";
+    item.textContent = `${audit}${row.at || ""} · ${row.operation || "call"} · ${row.code || "ok"} · ${row.accountId || "no account"}`;
+    list.append(item);
+  }
+}
+
+function paintBotSends(rows) {
+  const list = $("bot-sends");
+  if (!list || typeof list.replaceChildren !== "function") return;
+  list.replaceChildren();
+  const items = rows || [];
+  if (!items.length) {
+    const item = document.createElement("li");
+    item.textContent = "No send receipts.";
+    list.append(item);
+    return;
+  }
+  for (const row of items) {
+    const item = document.createElement("li");
+    const to = row.recipientSummary && row.recipientSummary.to ? row.recipientSummary.to.join(", ") : "";
+    item.textContent = `${row.auditId || ""} · ${row.state || ""} · ${row.accountId || ""} · ${to} · ${row.subject || ""}`;
+    list.append(item);
+  }
+}
+
 function paintBotAccess(data) {
   const access = data || {};
   state.botAccess = access;
@@ -11517,17 +11556,29 @@ function paintBotAccess(data) {
   $("bot-remote-status").textContent = access.serveHost
     ? "Tailscale host saved. Remote connectivity has not been verified by this app."
     : "No Tailscale host saved. Same-computer access can still be used.";
-  $("bot-endpoint").textContent = access.serveHost
-    ? `Remote endpoint: https://${access.serveHost}/api/bot/v1/call`
+  const endpoints = access.endpoints || {};
+  $("bot-local-endpoint").textContent = endpoints.local
+    ? `Loopback endpoint ${endpoints.local}`
+    : "";
+  $("bot-endpoint").textContent = endpoints.serve
+    ? endpoints.serve
     : "Save your Tailscale hostname and port to see the remote endpoint.";
+  $("bot-marker").textContent = access.markerJson
+    ? `Capability marker ${access.markerJson}`
+    : "";
   const enabled = $("bot-enabled");
   enabled.checked = access.enabled === true;
   enabled.disabled = access.enabled !== true && !live;
-  $("bot-enable-help").textContent = live ? "Copy your secret before enabling. Tailscale Serve forwards this local listener; enabling does not configure Serve." : "Create an unexpired grant first. The listener stays on 127.0.0.1 only.";
-  $("bot-serve-host").value = access.serveHost || "";
+  $("bot-enable-help").textContent = live ? "Copy your secret before enabling. Enabling does not configure Serve." : "Create an unexpired grant first. The listener stays on 127.0.0.1 only.";
+  const hostField = $("bot-serve-host");
+  if (typeof document === "undefined" || document.activeElement !== hostField) {
+    hostField.value = access.serveHost || "";
+  }
   paintBotAccounts(access.accounts || []);
   paintBotGrants(grants);
   paintBotDrafts(access.draftsAvailable === false ? null : (access.drafts || []));
+  if (typeof paintBotAudit === "function") paintBotAudit(access.audit || []);
+  if (typeof paintBotSends === "function") paintBotSends(access.sends || []);
 }
 
 async function openBotDraft(proposalId) {
@@ -11579,12 +11630,84 @@ function selectedBotCaps() {
   return caps;
 }
 
+function showBotSection(name) {
+  const nav = $("bot-sections");
+  if (!nav) return;
+  const tabs = [...nav.querySelectorAll('[role="tab"]')];
+  const known = tabs.some((tab) => tab.dataset.botSection === name);
+  if (!known) return;
+  for (const tab of tabs) {
+    const active = tab.dataset.botSection === name;
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.tabIndex = active ? 0 : -1;
+    const panel = $(tab.getAttribute("aria-controls"));
+    if (!panel) continue;
+    const show = active;
+    const wasHidden = panel.hidden;
+    panel.hidden = !show;
+    if (show && wasHidden) {
+      const motion = motionApi();
+      if (motion && motion.fadePane) motion.fadePane(panel, "y");
+    }
+  }
+}
+
+function botSetupChoice() {
+  const picked = document.querySelector('input[name="bot-setup-target"]:checked');
+  return picked && picked.value === "serve" ? "serve" : "local";
+}
+
+function wireBotSections() {
+  const nav = $("bot-sections");
+  if (!nav || nav.dataset.wired === "1") return;
+  nav.dataset.wired = "1";
+  nav.addEventListener("click", (event) => {
+    const tab = event.target.closest && event.target.closest('[role="tab"]');
+    if (!tab || !nav.contains(tab)) return;
+    showBotSection(tab.dataset.botSection);
+    tab.focus({ preventScroll: true });
+  });
+  nav.addEventListener("keydown", (event) => {
+    const tabs = [...nav.querySelectorAll('[role="tab"]')];
+    const current = tabs.indexOf(document.activeElement);
+    if (current < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    showBotSection(tabs[next].dataset.botSection);
+    tabs[next].focus({ preventScroll: true });
+  });
+}
+
 function wireBot() {
+  wireBotSections();
   $("bot-review-link").addEventListener("click", () => {
+    showBotSection("grants");
     $("bot-review").open = true;
     $("bot-draft-heading").scrollIntoView({ block: "center" });
     $("bot-draft-heading").focus({ preventScroll: true });
   });
+  $("bot-copy-setup").addEventListener("click", () => botGuard(async () => {
+    const text = await call("bot:setupText", { target: botSetupChoice() });
+    if (!navigator.clipboard) {
+      setBotStatus("Could not copy the setup prompt.", true);
+      return;
+    }
+    await navigator.clipboard.writeText(text.prompt);
+    setBotStatus("Setup prompt copied.");
+  }));
+  $("bot-download-skill").addEventListener("click", () => botGuard(async () => {
+    const text = await call("bot:setupText", { target: botSetupChoice() });
+    const blob = new Blob([text.skillMarkdown], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "SKILL.md";
+    link.click();
+    URL.revokeObjectURL(url);
+    setBotStatus("SKILL.md downloaded.");
+  }));
   $("bot-verify").addEventListener("click", () => botGuard(async () => {
     const access = await loadBotAccess();
     setBotStatus(botListenerStatus(access), !!(access.listen && access.listen.error));

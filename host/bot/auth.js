@@ -3,12 +3,11 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const {
-  CAPABILITIES,
-  DEFAULT_CAPABILITIES,
   DEFAULT_EXPIRY_DAYS,
   MAX_ACCOUNTS,
   MAX_EXPIRY_DAYS,
 } = require("./constants");
+const { CAPABILITIES, DEFAULT_CAPABILITIES } = require("./catalog");
 const { accessPath, writePrivate } = require("./store");
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

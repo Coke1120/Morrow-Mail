@@ -4,10 +4,10 @@ const agent = require("../agent");
 const auth = require("./auth");
 const drafts = require("./drafts");
 const reads = require("./reads");
+const catalog = require("./catalog");
 const {
   API_VERSION,
   CALLS_PER_MINUTE,
-  CAPABILITIES,
   DEFAULT_BODY_BYTES,
   DEFAULT_LIMIT,
   FOLDERS,
@@ -16,24 +16,11 @@ const {
   MAX_BODY_BYTES,
   MAX_LIMIT,
   MAX_RESPONSE_BYTES,
-  OPERATIONS,
   PORT,
   SERVE_CAPABILITY,
   STALE_AFTER_SECONDS,
   SYNC_WINDOW_DAYS,
 } = require("./constants");
-
-const OP = {
-  "bridge.describe": { caps: [] },
-  "accounts.list": { caps: ["accounts.read"] },
-  "mail.list_cached": { caps: ["mail.headers.read"], account: true },
-  "mail.search_cached": { caps: ["mail.headers.read"], account: true, kind: "search" },
-  "mail.get_cached": { caps: ["mail.headers.read", "mail.bodies.read"], account: true, kind: "body" },
-  "health.get": { caps: ["health.read"], account: true },
-  "agent.proposals.list": { caps: ["agent.proposals.read", "mail.headers.read"], account: true },
-  "draft.proposals.submit": { caps: ["draft.proposals.create"], account: true },
-  "draft.proposals.list": { caps: ["draft.proposals.create"], account: true },
-};
 
 function coded(code, extra) {
   const error = new Error(code);
@@ -124,8 +111,8 @@ function fit(envelope) {
 
 function describe(ctx) {
   if (!closed(ctx.params, [])) throw coded("INVALID_REQUEST");
-  const allowed = OPERATIONS.filter((name) => {
-    const spec = OP[name];
+  const allowed = catalog.operations().filter((name) => {
+    const spec = catalog.operation(name);
     return spec.caps.every((cap) => ctx.grant.capabilities.includes(cap));
   });
   return {
@@ -364,11 +351,14 @@ const HANDLERS = {
   "draft.proposals.list": listDrafts,
 };
 
+const catalogNames = catalog.operations();
+if (catalogNames.length !== Object.keys(HANDLERS).length || catalogNames.some((name) => typeof HANDLERS[name] !== "function")) {
+  throw new Error("Bot operation handlers do not match the catalog.");
+}
+
 function execute(ctx) {
-  if (!ctx || typeof ctx.operation !== "string" || !Object.prototype.hasOwnProperty.call(OP, ctx.operation)) {
-    throw coded("UNKNOWN_OPERATION");
-  }
-  const spec = OP[ctx.operation];
+  const spec = ctx && catalog.operation(ctx.operation);
+  if (!spec) throw coded("UNKNOWN_OPERATION");
   if (spec.caps.some((cap) => !ctx.grant.capabilities.includes(cap))) throw coded("FORBIDDEN");
   const handler = HANDLERS[ctx.operation];
   const result = handler(ctx);
@@ -383,14 +373,12 @@ function execute(ctx) {
 }
 
 function kindFor(operation) {
-  const spec = OP[operation];
+  const spec = catalog.operation(operation);
   return spec && spec.kind ? spec.kind : "call";
 }
 
 module.exports = {
   execute,
   kindFor,
-  OP,
-  OPERATIONS,
-  CAPABILITIES,
+  HANDLERS,
 };

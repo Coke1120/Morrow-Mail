@@ -17,6 +17,7 @@ const MAX_BODY_BYTES = 32 * 1024;
 const DEFAULT_BODY_BYTES = 8 * 1024;
 const HTML_INPUT_CAP = 128 * 1024;
 const MAX_REQUEST_BYTES = 8 * 1024;
+const MAX_TRANSPORT_BYTES = 48 * 1024;
 const MAX_HEADER_BYTES = 16 * 1024;
 const MAX_AUTH_HEADER = 512;
 const MAX_CAP_HEADER = 1024;
@@ -40,36 +41,7 @@ const DRAFTS_PENDING = 20;
 const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_DEPTH = 8;
 
-const CAPABILITIES = [
-  "accounts.read",
-  "mail.headers.read",
-  "mail.bodies.read",
-  "health.read",
-  "agent.proposals.read",
-  "mail.attachments.read",
-  "draft.proposals.create",
-];
-
-const DEFAULT_CAPABILITIES = [
-  "accounts.read",
-  "mail.headers.read",
-  "health.read",
-  "agent.proposals.read",
-];
-
 const FOLDERS = ["inbox", "sent", "drafts", "archive", "trash", "spam"];
-
-const OPERATIONS = [
-  "bridge.describe",
-  "accounts.list",
-  "mail.list_cached",
-  "mail.search_cached",
-  "mail.get_cached",
-  "health.get",
-  "agent.proposals.list",
-  "draft.proposals.submit",
-  "draft.proposals.list",
-];
 
 const ERRORS = {
   INVALID_REQUEST: {
@@ -159,6 +131,7 @@ module.exports = {
   DEFAULT_BODY_BYTES,
   HTML_INPUT_CAP,
   MAX_REQUEST_BYTES,
+  MAX_TRANSPORT_BYTES,
   MAX_HEADER_BYTES,
   MAX_AUTH_HEADER,
   MAX_CAP_HEADER,
@@ -181,9 +154,6 @@ module.exports = {
   DRAFTS_PENDING,
   DRAFT_TTL_MS,
   MAX_DEPTH,
-  CAPABILITIES,
-  DEFAULT_CAPABILITIES,
   FOLDERS,
-  OPERATIONS,
   ERRORS,
 };

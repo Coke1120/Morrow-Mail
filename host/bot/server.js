@@ -6,6 +6,7 @@ const auth = require("./auth");
 const audit = require("./audit");
 const budget = require("./budget");
 const { parseStrict } = require("./json");
+const catalog = require("./catalog");
 const service = require("./service");
 const {
   API_VERSION,
@@ -17,6 +18,7 @@ const {
   MAX_DEPTH,
   MAX_HEADER_BYTES,
   MAX_REQUEST_BYTES,
+  MAX_TRANSPORT_BYTES,
   PORT,
   SERVE_CAPABILITY,
 } = require("./constants");
@@ -128,7 +130,7 @@ function readBody(req) {
     req.on("data", (chunk) => {
       if (failed) return;
       size += chunk.length;
-      if (size > MAX_REQUEST_BYTES) {
+      if (size > MAX_TRANSPORT_BYTES) {
         if (!failed) {
           failed = true;
           reject(Object.assign(new Error("REQUEST_TOO_LARGE"), { code: "REQUEST_TOO_LARGE", expose: true }));
@@ -253,7 +255,18 @@ async function handleAdmitted(req, res) {
       return;
     }
     let parsed;
-    try { parsed = parseStrict(text, MAX_DEPTH); } catch {
+    try { parsed = parseStrict(text, MAX_DEPTH); } catch { parsed = undefined; }
+    const operationName = parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.operation === "string"
+      ? parsed.operation
+      : "";
+    if (body.length > catalog.requestBytes(operationName)) {
+      finish(failure({ code: "REQUEST_TOO_LARGE", requestId, installationId }));
+      return;
+    }
+    const timeoutMs = catalog.responseTimeoutMs(operationName);
+    req.setTimeout(timeoutMs);
+    res.setTimeout(timeoutMs);
+    if (parsed === undefined) {
       finish(failure({ code: "INVALID_REQUEST", installationId }));
       return;
     }

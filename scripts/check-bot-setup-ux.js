@@ -18,11 +18,12 @@ function run() {
   assert.equal($('bot-enabled').disabled, true);
   assert.match($('bot-remote-status').textContent, /No Tailscale host/);
   $('bot-add-client').open = false;
-  ctx.paintBotAccess({ enabled: true, grants: [{ live: true }], serveHost: 'mac.tailnet.ts.net:8443', installationId: 'fixture-install' });
+  ctx.paintBotAccess({ enabled: true, grants: [{ live: true }], serveHost: 'mac.tailnet.ts.net:8443', installationId: 'fixture-install',
+    endpoints: { local: 'http://127.0.0.1:47831/api/bot/v1/call', serve: 'https://mac.tailnet.ts.net:8443/api/bot/v1/call' } });
   assert.equal($('bot-add-client').open, false, 'refresh preserves user disclosure choice');
   assert.equal($('bot-enabled').checked, true);
   assert.match($('bot-remote-status').textContent, /not been verified/);
-  assert.equal($('bot-endpoint').textContent, 'Remote endpoint: https://mac.tailnet.ts.net:8443/api/bot/v1/call');
+  assert.equal($('bot-endpoint').textContent, 'https://mac.tailnet.ts.net:8443/api/bot/v1/call');
   assert.equal($('bot-serve-host').value, 'mac.tailnet.ts.net:8443');
   assert.equal(state.botAccess.installationId, 'fixture-install');
   nodes.clear();
