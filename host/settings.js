@@ -14,7 +14,7 @@ const DEFAULTS = {
   sidebarGmailFoldersExpanded: true,
   sidebarOutlookFoldersExpanded: false,
   composeQuoteWidth: 420,
-  brainCompose: { ccByDomain: {}, accounts: {} },
+  brainCompose: { ccByDomain: {}, bccByDomain: {}, accounts: {} },
   syncHorizonDays: 180, // 0 means all available history.
   compactMessageList: false,
 };
