@@ -853,14 +853,24 @@
         </section>
         <section class="fold" id="settings-bot" data-fold="bot" role="tabpanel" aria-labelledby="settings-tab-bot" tabindex="0" hidden>
           <div class="fold-panel" id="settings-bot-panel" hidden>
-          <h3 id="settings-bot-title">Bot access</h3>
+          <h3 id="settings-bot-title">Connect a bot over Tailscale</h3>
           <div class="settings-intro">
-            <p class="hint">Connect a bot to selected mailboxes. The bridge cannot send mail.</p>
+            <p class="hint">Use selected mailboxes from another device on your tailnet. Your bot still needs its own access grant and secret. It cannot send mail.</p>
             <button type="button" class="ghost" id="bot-review-link" aria-controls="bot-drafts">Review draft proposals</button>
           </div>
+          <h4>Access status</h4>
+          <p id="bot-remote-status" class="hint" role="status"></p>
+          <p id="bot-listen" class="hint" role="status"></p>
+          <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" aria-describedby="bot-enable-help" /> Enable bot access on this computer</label>
+          <p id="bot-enable-help" class="hint">Create an unexpired grant first.</p>
+          <div class="row"><button type="button" class="ghost" id="bot-verify">Refresh local status</button><button type="button" class="ghost" id="bot-retry" hidden>Retry listener</button></div>
+          <h4>Your bots</h4>
+          <p class="hint">Last successful use is shown below. Disabling access stops every bot without revoking its grant.</p>
+          <ul id="bot-grants" aria-label="Bot grants"></ul>
+          <details class="settings-disclosure" id="bot-add-client" open>
+          <summary>Add a bot</summary>
           <ol class="bot-setup-steps" aria-label="Bot setup">
-          <li>
-          <h4>Name your client</h4>
+          <li><h4>Choose a name and mailboxes</h4>
           <form id="bot-mint">
             <label class="sr" for="bot-label">Client name</label>
             <input id="bot-label" type="text" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. My assistant" />
@@ -892,29 +902,22 @@
             </div>
           </form>
           </li>
-          <li>
-            <h4>Copy your secret once</h4>
-            <p class="hint">The secret appears after you create the grant. Copy it to your bot’s private credential file before closing.</p>
+          <li><h4>Save the secret on your other device</h4>
+            <p class="hint">Copy the secret shown after creating the grant into your bot’s private credential file. It is shown only once. Then enable bot access above.</p>
           </li>
-          <li>
-            <h4>Enable local access</h4>
-            <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" aria-describedby="bot-enable-help" /> Enable the loopback bridge</label>
-            <p id="bot-enable-help" class="hint">Create an unexpired grant first.</p>
-            <p id="bot-listen" class="hint" role="status"></p>
-            <div class="row"><button type="button" class="ghost" id="bot-verify">Verify listener status</button><button type="button" class="ghost" id="bot-retry" hidden>Retry listener</button></div>
+          <li><h4>Connect through Tailscale</h4>
+            <p class="hint">Use the connection steps below. Creating a grant does not enable access or configure your network.</p>
           </li>
           </ol>
-          <p id="bot-status" role="status"></p>
-          <details class="settings-disclosure" id="bot-advanced"><summary>Advanced: grants &amp; connection</summary>
-            <h4>Access grants &amp; activity</h4>
-            <p class="hint">Disabling the bridge stops every client. Grants stay valid until expiry or revocation.</p>
-            <ul id="bot-grants" aria-label="Bot grants"></ul>
-            <h4>Connection details</h4>
-            <p id="bot-install" class="hint"></p>
-            <p id="bot-intent" class="hint"></p>
-            <p class="hint">Local access uses 127.0.0.1:47831 only. Tailscale Serve may forward it. Do not enable Funnel.</p>
-            <label for="bot-serve-host">Allowed Tailscale Serve host <span class="optional">(optional)</span>
-              <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="hostname:8443" />
+          </details>
+          <h4>Tailscale connection</h4>
+          <ol class="bot-setup-steps" aria-label="Tailscale connection steps">
+            <li>On the computer running Morrow, configure Tailscale Serve to forward HTTPS to <code>http://127.0.0.1:47831</code>, with the Morrow app capability. Do not enable Funnel.</li>
+            <li>Save that computer’s exact Tailscale hostname and port below. Saving only allows that hostname; it does not configure Serve or your tailnet policy.</li>
+            <li>On your other device, use the HTTPS endpoint below with your private secret file and this installation ID. Test access from that device; local status does not verify the Tailscale connection.</li>
+          </ol>
+            <label for="bot-serve-host">Tailscale hostname and port
+              <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="your-mac.your-tailnet.ts.net:8443" />
             </label>
           <p class="hint">Saving a host does not install or configure Tailscale Serve.</p>
           <div class="row">
@@ -925,6 +928,14 @@
               <span>Save allowed Serve host</span>
             </button>
           </div>
+
+          <p id="bot-endpoint" class="hint"></p>
+          <p id="bot-install" class="hint"></p>
+          <p id="bot-status" role="status"></p>
+          <details class="settings-disclosure" id="bot-advanced"><summary>Advanced: local access &amp; diagnostics</summary>
+            <p class="hint">Same-computer bots can continue using <code>http://127.0.0.1:47831/api/bot/v1/call</code> with their existing secret, installation ID, and capability marker. No Tailscale host is required for local access.</p>
+            <p class="hint">Serve must forward the <code>com.coke1120.morrow-mail/bot-access</code> capability with <code>readBridge: true</code>. Tailscale does not replace Morrow’s mailbox permissions or secret.</p>
+            <p id="bot-intent" class="hint"></p>
           </details>
           <details class="settings-disclosure" id="bot-review">
             <summary id="bot-draft-heading">Draft proposals</summary>
@@ -974,7 +985,7 @@
           <button type="button" class="ghost" id="bot-secret-close">Close</button>
         </div>
         <details class="settings-disclosure"><summary>Lost a secret?</summary>
-          <p class="hint">Replace it under Bot access → Advanced: grants &amp; connection. The old secret stops working immediately. Morrow stores only a verifier.</p>
+          <p class="hint">Replace it under Bot access → Your bots. The old secret stops working immediately. Morrow stores only a verifier.</p>
         </details>
       </form>
     </dialog>

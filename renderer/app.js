@@ -11314,10 +11314,21 @@ function paintBotAccess(data) {
     : "The installation id is created with the first grant.";
   const grants = access.grants || [];
   const live = grants.some((grant) => grant.live);
+  const setup = $("bot-add-client");
+  if (!setup.dataset.initialized) {
+    setup.open = !live;
+    setup.dataset.initialized = "true";
+  }
+  $("bot-remote-status").textContent = access.serveHost
+    ? "Tailscale host saved. Remote connectivity has not been verified by this app."
+    : "No Tailscale host saved. Same-computer access can still be used.";
+  $("bot-endpoint").textContent = access.serveHost
+    ? `Remote endpoint: https://${access.serveHost}/api/bot/v1/call`
+    : "Save your Tailscale hostname and port to see the remote endpoint.";
   const enabled = $("bot-enabled");
   enabled.checked = access.enabled === true;
   enabled.disabled = access.enabled !== true && !live;
-  $("bot-enable-help").textContent = live ? "Copy your secret before enabling. Local access only: 127.0.0.1." : "Create an unexpired grant first. Local access only: 127.0.0.1.";
+  $("bot-enable-help").textContent = live ? "Copy your secret before enabling. Tailscale Serve forwards this local listener; enabling does not configure Serve." : "Create an unexpired grant first. The listener stays on 127.0.0.1 only.";
   $("bot-serve-host").value = access.serveHost || "";
   paintBotAccounts(access.accounts || []);
   paintBotGrants(grants);

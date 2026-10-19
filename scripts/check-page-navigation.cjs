@@ -179,7 +179,9 @@ app.whenReady().then(async () => {
   await run(`setSettingsFold('bot',true,false);loadBotAccess()`);
   assert.equal(await run(`$('settings-account').checkVisibility()`), false);
   assert.equal(await run(`$('bot-enabled').disabled`), true);
-  assert.equal(await run(`$('bot-expiry').checkVisibility() || $('bot-serve-host').checkVisibility()`), false);
+  assert.equal(await run(`$('bot-expiry').checkVisibility()`), false);
+  assert.equal(await run(`$('bot-serve-host').checkVisibility() && $('bot-add-client').open`), true);
+  assert.match(await run(`$('bot-remote-status').textContent`), /No Tailscale host/);
   assert.deepEqual(await run(`selectedBotAccounts()`), [], 'mailbox access remains opt-in');
   await shot('settings-bot-first-run');
   // An invalid expiry must reveal itself even if More options was closed.
