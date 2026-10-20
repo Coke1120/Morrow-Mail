@@ -1465,6 +1465,7 @@ button.provider-mini {
 }
 
 button.folder.drop-target,
+.folder-line.drop-target > button.folder,
 .provider-row.drop-target,
 .folder-root.drop-target {
   background: rgba(185, 213, 173, 0.22);
@@ -1473,6 +1474,7 @@ button.folder.drop-target,
 }
 
 button.folder.drop-target .name,
+.folder-line.drop-target > button.folder .name,
 .provider-row.drop-target .name,
 .folder-root.drop-target .name {
   position: relative;
@@ -1482,6 +1484,7 @@ button.folder.drop-target .name,
 }
 
 button.folder.drop-reject,
+.folder-line.drop-reject > button.folder,
 .provider-row.drop-reject,
 .folder-root.drop-reject {
   background: rgba(159, 18, 57, 0.28);
@@ -1883,6 +1886,46 @@ button.folder .name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.folder-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.folder-line > button.folder {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  padding-left: 4px;
+}
+
+button.folder-twist,
+.folder-twist-spacer {
+  flex: none;
+  width: 16px;
+  height: 22px;
+}
+
+button.folder-twist {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+button.folder-twist svg { display: block; }
+
+button.folder-twist:hover,
+button.folder-twist:focus-visible {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
 }
 
 button.message {

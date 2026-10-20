@@ -49,6 +49,7 @@ const state = {
     quoteWidth: 420,
     syncHorizon: 180,
     compactList: false,
+    collapsedFolders: {},
   },
   providerFolders: null,
   dragMessage: null,
@@ -118,6 +119,7 @@ let brainDragIndex = -1;
 let listMotionKey = "";
 let listOpenKey = "";
 let folderRenderKey = "";
+let folderCollapseGen = 0;
 let chipRenderKey = "";
 let searchAccountKey = "";
 const messageRows = new Map();
@@ -337,7 +339,20 @@ function folderDelimiter(folders) {
   return "/";
 }
 
+function isAllMailFolder(folder) {
+  if (typeof morrowMailboxRoles === "object" && morrowMailboxRoles && typeof morrowMailboxRoles.isAllMail === "function") {
+    return morrowMailboxRoles.isAllMail(folder);
+  }
+  return !!(folder && folder.wellKnownName === "all");
+}
+
+function folderCollapse() {
+  if (typeof morrowFolderCollapse === "object" && morrowFolderCollapse) return morrowFolderCollapse;
+  return null;
+}
+
 function imapParent(folder, byId, sep) {
+  if (isAllMailFolder(folder)) return null;
   let id = String(folder.id);
   let cut = id.lastIndexOf(sep);
   while (cut > 0) {
@@ -1559,6 +1574,7 @@ function paneWidth(current, delta, min, max) {
 
 function folderIcon(wellKnownName) {
   switch (String(wellKnownName || "").toLowerCase()) {
+    case "all": return "📨";
     case "inbox": return "📥";
     case "starred": return "⭐";
     case "unread": return "✉️";
@@ -2262,12 +2278,52 @@ function allInboxButton() {
   return button;
 }
 
+function sidebarFolderRows(tree, accountId) {
+  const collapse = folderCollapse();
+  if (!collapse) return (Array.isArray(tree) ? tree : []).map((folder) => Object.assign({}, folder, { hasChild: false, expanded: true }));
+  return collapse.visibleRows(tree, state.prefs.collapsedFolders, accountId);
+}
+
+function mirrorFolderTarget(line, button) {
+  const keys = ["dropKind", "dropId", "dropAccount", "dropCopy", "nestKind", "nestId", "nestAccount", "nestRoot"];
+  for (const key of keys) {
+    if (button.dataset[key]) line.dataset[key] = button.dataset[key];
+  }
+}
+
+function folderTwist(folder, accountId, labelText) {
+  const open = folder.expanded !== false;
+  const label = labelText || "folder";
+  const twist = document.createElement("button");
+  twist.type = "button";
+  twist.className = "folder-twist";
+  twist.setAttribute("aria-expanded", open ? "true" : "false");
+  twist.setAttribute("aria-label", (open ? "Collapse " : "Expand ") + label);
+  twist.title = twist.getAttribute("aria-label");
+  twist.appendChild(strokeIcon([open ? MOVE_CHEVRON_DOWN : MOVE_CHEVRON_RIGHT], 12));
+  twist.addEventListener("mousedown", (event) => {
+    event.stopPropagation();
+  });
+  twist.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleSidebarFolder(accountId, folder.id).catch((error) => showStatus(error.message, true));
+  });
+  return twist;
+}
+
 function renderAccounts() {
   renderSettingsAccounts();
   refreshMailVacation();
   const nav = $("folders");
   // Sync status and folder selection do not change the folder tree.
-  const key = JSON.stringify([state.accounts, state.accountId, state.prefs.gmailOpen, state.prefs.outlookOpen]);
+  const key = JSON.stringify([
+    state.accounts,
+    state.accountId,
+    state.prefs.gmailOpen,
+    state.prefs.outlookOpen,
+    state.prefs.collapsedFolders || {},
+  ]);
   if (key === folderRenderKey) {
     const all = nav.querySelector("button.all-inbox");
     if (all) {
@@ -2331,7 +2387,12 @@ function renderAccounts() {
     }
     if (expanded) {
     nav.appendChild(folderRootDrop("imap", account.id));
-    for (const folder of folderTree(foldersOf(account), accountDelimiter(account))) {
+    const tree = folderTree(foldersOf(account), accountDelimiter(account));
+    const rows = sidebarFolderRows(tree, account.id);
+    for (const folder of rows) {
+      const line = document.createElement("div");
+      line.className = "folder-line";
+      line.style.paddingLeft = (4 + folder.depth * 14) + "px";
       const button = document.createElement("button");
       button.type = "button";
       button.className = "folder";
@@ -2348,7 +2409,6 @@ function renderAccounts() {
         button.dataset.dropId = folder.id;
         button.dataset.dropAccount = account.id;
       }
-      button.style.paddingLeft = (8 + folder.depth * 14) + "px";
       if (!state.allInbox && account.id === state.accountId && folder.id === state.folderId) {
         button.setAttribute("aria-current", "true");
       }
@@ -2383,12 +2443,21 @@ function renderAccounts() {
       button.addEventListener("click", () => {
         selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
       });
-      if (!virtual) button.addEventListener("contextmenu", (event) => {
+      if (folder.hasChild) line.appendChild(folderTwist(folder, account.id, labelText));
+      else {
+        const spacer = document.createElement("span");
+        spacer.className = "folder-twist-spacer";
+        spacer.setAttribute("aria-hidden", "true");
+        line.appendChild(spacer);
+      }
+      mirrorFolderTarget(line, button);
+      line.appendChild(button);
+      if (!virtual) line.addEventListener("contextmenu", (event) => {
         event.preventDefault();
         event.stopPropagation();
         openImapFolderMenu(folder, account, event.clientX, event.clientY);
       });
-      nav.appendChild(button);
+      nav.appendChild(line);
     }
     }
   }
@@ -7922,6 +7991,10 @@ async function loadShellPrefs() {
     for (const [channel, key] of Object.entries(READER_PREFS)) {
       next[key] = (await api.invoke(channel)) === true;
     }
+    const collapse = folderCollapse();
+    next.collapsedFolders = collapse
+      ? collapse.normalize(await api.invoke("morrow:configGetSidebarCollapsedFolders"))
+      : (state.prefs.collapsedFolders || {});
     next.undoSend = sendDelayMs(await api.invoke("morrow:configGetUndoSendDelaySeconds")) / 1000;
     next.quoteWidth = quoteWidthPref(await api.invoke("morrow:configGetComposeQuoteWidth"));
     next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
@@ -7998,6 +8071,25 @@ async function toggleProviderFolders(provider) {
     await loadShellPrefs();
   }
   renderAccounts();
+}
+
+async function toggleSidebarFolder(accountId, folderId) {
+  const collapse = folderCollapse();
+  if (!collapse) return;
+  const gen = ++folderCollapseGen;
+  const next = collapse.toggle(state.prefs.collapsedFolders, accountId, folderId);
+  state.prefs.collapsedFolders = next;
+  renderAccounts();
+  try {
+    const saved = collapse.normalize(await api.invoke("morrow:configSetSidebarCollapsedFolders", next));
+    if (gen !== folderCollapseGen) return;
+    state.prefs.collapsedFolders = saved;
+  } catch (error) {
+    if (gen !== folderCollapseGen) return;
+    showStatus(error instanceof Error ? error.message : String(error), true);
+    await loadShellPrefs();
+  }
+  if (gen === folderCollapseGen) renderAccounts();
 }
 
 function prefRows() {

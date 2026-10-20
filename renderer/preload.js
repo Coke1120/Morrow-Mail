@@ -26,6 +26,8 @@ const INVOKE = [
   "morrow:configSetSidebarGmailFoldersExpanded",
   "morrow:configGetSidebarOutlookFoldersExpanded",
   "morrow:configSetSidebarOutlookFoldersExpanded",
+  "morrow:configGetSidebarCollapsedFolders",
+  "morrow:configSetSidebarCollapsedFolders",
   "morrow:configGetComposeQuoteWidth",
   "morrow:configSetComposeQuoteWidth",
   "morrow:configGetSyncHorizonDays",
