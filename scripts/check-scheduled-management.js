@@ -3,6 +3,16 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 async function run() {
+  const textEncoding = require('../host/mail/text-encoding');
+  const sentence = '你好，這是一封中文郵件。明天見面。Café';
+  const mojibake = (text) => Buffer.from(text, 'utf8').toString('latin1');
+  assert.equal(textEncoding.repairMojibake(mojibake(sentence)), sentence);
+  assert.equal(textEncoding.repairMojibake(Buffer.from(mojibake('你好'), 'utf8').toString('latin1')), '你好');
+  assert.equal(textEncoding.repairMojibake('Café déjà'), 'Café déjà');
+  assert.equal(textEncoding.repairMojibake('He said “hello”—done.'), 'He said “hello”—done.');
+  assert.equal(textEncoding.presentMessage({
+    subject: 'Hello', htmlBody: '<p>你好</p>', textBody: 'Hello team, the meeting is tomorrow.',
+  }).textBody, 'Hello team, the meeting is tomorrow.');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'morrow-scheduled-'));
   const env = { MORROW_MAIL_DIR: process.env.MORROW_MAIL_DIR, MORROW_MAIL_SECRETS: process.env.MORROW_MAIL_SECRETS };
   process.env.MORROW_MAIL_DIR = dir; process.env.MORROW_MAIL_SECRETS = 'memory';
@@ -40,6 +50,66 @@ async function run() {
     assert.equal(engine.answer('mail:cancelScheduled',[{id:'second'}]).success,true);
     release(); await pumping;
     assert.equal(sends,1,'a due row canceled while another send awaits I/O must not be delivered');
+    const sentence = '你好，這是一封中文郵件。明天見面。Café';
+    const mojibake = (text) => Buffer.from(text, 'utf8').toString('latin1');
+    const legacy = engine.answer('mail:scheduleSend', [{
+      accountId: 'queue', to: 'recipient@example.invalid', subject: mojibake('會議：中文主題'),
+      body: mojibake('<p>' + sentence + '</p>'), sendAt: '2099-01-02T08:00:00Z',
+    }]);
+    assert.equal(legacy.success, true);
+    const stored = JSON.parse(db.scheduledById(legacy.data.id).payload_json);
+    assert.ok(stored.subject.includes('會議') && stored.body.includes('你好') && stored.body.includes('Café'), 'schedule stores repaired Chinese');
+    const resumed = engine.answer('mail:editScheduled', [{ id: legacy.data.id }]);
+    assert.equal(resumed.success, true);
+    const opened = await engine.answer('mail:openEmail', [{ emailId: resumed.data.emailId }]);
+    assert.equal(opened.success, true);
+    assert.ok(opened.data.email.subject.includes('會議'));
+    assert.ok(opened.data.email.textBody.includes('你好') && opened.data.email.textBody.includes('明天見面') && opened.data.email.textBody.includes('Café'));
+    assert.ok(opened.data.email.htmlBody.includes('你好') && !opened.data.email.textBody.includes('ä½'));
+    const intact = engine.answer('mail:scheduleSend', [{
+      accountId: 'queue', to: 'recipient@example.invalid', subject: '會議：中文主題',
+      body: '<p>' + sentence + '</p>', sendAt: '2099-01-03T08:00:00Z',
+    }]);
+    const intactPayload = JSON.parse(db.scheduledById(intact.data.id).payload_json);
+    assert.equal(intactPayload.subject, '會議：中文主題');
+    assert.ok(intactPayload.body.includes(sentence), 'already-correct Chinese is not decoded again');
+    const iconv = require('iconv-lite');
+    const lossy = iconv.decode(Buffer.from(sentence, 'utf8'), 'windows-1252');
+    assert.ok(lossy.includes('\uFFFD'));
+    function store(id, fields) {
+      db.insertMessage({
+        id, accountId: 'queue', folderPath: 'Drafts', threadId: id, subject: fields.subject || '',
+        from: 'queue@example.invalid', to: ['recipient@example.invalid'], date: new Date().toISOString(),
+        listSortTs: Date.now(), isDraft: true, htmlBody: fields.htmlBody, textBody: fields.textBody,
+        bodyComplete: true, recipientHeaders: {},
+      });
+    }
+    store('split-mime', { subject: mojibake('會議'), htmlBody: '<p>' + sentence + '</p>', textBody: mojibake(sentence) });
+    store('lossy-text', { subject: 'Notes', htmlBody: '<p>' + sentence + '</p>', textBody: lossy });
+    store('english-text', { subject: 'Hello', htmlBody: '<p>你好</p>', textBody: 'Hello team, the meeting is tomorrow.' });
+    store('entity-html', { subject: 'Hi', htmlBody: '<p>&#20320;&#22909;</p>', textBody: '' });
+    store('french-text', { subject: 'Café déjà', htmlBody: '<p>Café déjà</p>', textBody: 'Café déjà' });
+    db.insertMessage({
+      id: 'header-only', accountId: 'queue', folderPath: 'Drafts', threadId: 'header-only',
+      subject: 'Header only', from: 'queue@example.invalid', to: [], date: new Date().toISOString(),
+      listSortTs: Date.now(), bodyComplete: false, textBody: '', htmlBody: null,
+    });
+    const split = await engine.answer('mail:openEmail', [{ emailId: 'split-mime' }]);
+    assert.ok(split.data.email.textBody.includes('你好') && split.data.email.htmlBody.includes('你好') && split.data.email.subject.includes('會議'));
+    const recovered = await engine.answer('mail:openEmail', [{ emailId: 'lossy-text' }]);
+    assert.ok(recovered.data.email.textBody.includes('你好') && !recovered.data.email.textBody.includes('\uFFFD'));
+    const english = await engine.answer('mail:openEmail', [{ emailId: 'english-text' }]);
+    assert.equal(english.data.email.textBody, 'Hello team, the meeting is tomorrow.');
+    const entities = await engine.answer('mail:openEmail', [{ emailId: 'entity-html' }]);
+    assert.equal(entities.data.email.textBody, '你好');
+    const french = await engine.answer('mail:openEmail', [{ emailId: 'french-text' }]);
+    assert.equal(french.data.email.subject, 'Café déjà');
+    assert.equal(french.data.email.textBody, 'Café déjà');
+    const listed = engine.answer('mail:listFromCache', [{ accountId: 'queue', folderId: 'Drafts' }]);
+    const complete = (listed.data.emails || []).find((row) => row.id === 'split-mime');
+    const headerOnly = (listed.data.emails || []).find((row) => row.id === 'header-only');
+    assert.equal(complete && complete.bodyComplete, true);
+    assert.equal(headerOnly && headerOnly.bodyComplete, false);
   } finally {
     remote.sendSmtp = sendSmtp; secrets.deletePassword("queue");
     db.close(); for(const [key,value] of Object.entries(env)){if(value===undefined)delete process.env[key];else process.env[key]=value;}

@@ -4,6 +4,7 @@ const MailComposer = require("nodemailer/lib/mail-composer");
 const { simpleParser } = require("mailparser");
 const { isRateLimit } = require("./provider-http");
 const mailboxRoles = require("../../shared/mailbox-roles");
+const textEncoding = require("./text-encoding");
 
 const SOURCE_CAP = 96 * 1024;
 const FULL_CAP = 3 * 1024 * 1024;
@@ -298,6 +299,11 @@ async function readFetched(msg, validity, cap) {
   const limit = cap || SOURCE_CAP;
   const truncated = !!(source && source.length >= limit - 1);
   const parsed = await parseSource(source, truncated);
+  const presented = textEncoding.presentMessage({
+    subject: envelope.subject || "",
+    htmlBody: parsed && parsed.html,
+    textBody: parsed && parsed.text,
+  });
   const attachments = attachmentsOf(msg.bodyStructure);
   const flags = msg.flags;
   const seen = !!(flags && flags.has("\\Seen"));
@@ -310,8 +316,8 @@ async function readFetched(msg, validity, cap) {
     threadId: threadIdOf(parsed, envelope, `thr:${validity}:${uid}`),
     rfcMessageId: (parsed && parsed.messageId) || envelope.messageId || null,
     inReplyTo: (parsed && parsed.inReplyTo) || envelope.inReplyTo || null,
-    subject: envelope.subject || "",
-    snippet: snippetOf(parsed && parsed.text, parsed && parsed.html),
+    subject: presented.subject,
+    snippet: snippetOf(presented.textBody, presented.htmlBody),
     from: formatList(envelope.from).join(", "),
     to: formatList(envelope.to),
     cc: formatList(envelope.cc),
@@ -323,8 +329,8 @@ async function readFetched(msg, validity, cap) {
     starred: !!(flags && flags.has("\\Flagged")),
     isDraft: !!(flags && flags.has("\\Draft")),
     hasAttachments: hasFileAttachment(attachments),
-    htmlBody: parsed && parsed.html,
-    textBody: parsed && parsed.text,
+    htmlBody: presented.htmlBody,
+    textBody: presented.textBody,
     attachments,
     bodyComplete: !!(parsed && parsed.complete),
   };
