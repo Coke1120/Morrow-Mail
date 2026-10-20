@@ -142,6 +142,9 @@ async function run() {
     assert.strictEqual(starred.success, true);
     assert.strictEqual(starred.data.isStarred, true);
     assert.strictEqual(db.messageById("notes-star").starred, 1);
+    assert.deepStrictEqual(flagCalls, []);
+    const starredRemote = await engine.settleActions();
+    assert.strictEqual(starredRemote.outcomes[0].status, "completed");
     assert.deepStrictEqual(flagCalls, [{ folder: "Notes", uid: 8, add: ["\\Flagged"], remove: [] }]);
 
     const local = await engine.answer("mail:toggleStar", [{ emailId: "local-star", isStarred: true }]);
@@ -149,6 +152,7 @@ async function run() {
     assert.strictEqual(db.messageById("local-star").starred, 1);
     assert.strictEqual(flagCalls.length, 1);
     assert.strictEqual(clientUses, 1);
+    await engine.settleActions();
 
     const listed = engine.answer("mail:listFromCache", [{ accountId: "star-acct", folderId: "__morrow_starred__", limit: 20 }]);
     assert.deepStrictEqual(listed.data.emails.map((row) => row.id).sort(), ["local-star", "notes-star"]);
@@ -167,8 +171,11 @@ async function run() {
 
     secrets.deletePassword("star-acct");
     const noSecret = await engine.answer("mail:toggleStar", [{ emailId: "inbox-plain", isStarred: true }]);
-    assert.strictEqual(noSecret.success, false);
-    assert.match(noSecret.error.message, /password|keychain/i);
+    assert.strictEqual(noSecret.success, true);
+    assert.strictEqual(db.messageById("inbox-plain").starred, 1);
+    const noSecretRemote = await engine.settleActions();
+    assert.strictEqual(noSecretRemote.outcomes[0].status, "failed");
+    assert.match(noSecretRemote.outcomes[0].error, /password|keychain/i);
     assert.strictEqual(db.messageById("inbox-plain").starred, 0);
     secrets.setPassword("star-acct", "pw");
 
@@ -176,9 +183,12 @@ async function run() {
       throw new Error("flag rejected");
     };
     const failed = await engine.answer("mail:toggleStar", [{ emailId: "inbox-plain", isStarred: true }]);
-    assert.strictEqual(failed.success, false);
-    assert.match(failed.error.message, /flag rejected/);
-    assert.strictEqual(db.messageById("inbox-plain").starred, 0);
+    assert.strictEqual(failed.success, true);
+    assert.strictEqual(db.messageById("inbox-plain").starred, 1);
+    const failedRemote = await engine.settleActions();
+    assert.strictEqual(failedRemote.outcomes[0].status, "unknown");
+    assert.match(failedRemote.outcomes[0].error, /flag rejected/);
+    assert.strictEqual(db.messageById("inbox-plain").starred, 1);
 
     const gone = await engine.answer("mail:toggleStar", [{ emailId: "missing", isStarred: true }]);
     assert.strictEqual(gone.success, false);
@@ -190,18 +200,20 @@ async function run() {
     const cleared = await engine.answer("mail:toggleStar", [{ emailId: "notes-star", isStarred: false }]);
     assert.strictEqual(cleared.success, true);
     assert.strictEqual(db.messageById("notes-star").starred, 0);
+    await engine.settleActions();
     assert.deepStrictEqual(flagCalls[flagCalls.length - 1], { folder: "Notes", uid: 8, add: [], remove: ["\\Flagged"] });
     const after = engine.answer("mail:listFromCache", [{ accountId: "star-acct", folderId: "__morrow_starred__", limit: 20 }]);
-    assert.deepStrictEqual(after.data.emails.map((row) => row.id), ["local-star"]);
+    assert.deepStrictEqual(after.data.emails.map((row) => row.id), ["local-star", "inbox-plain"]);
 
     const batch = await engine.answer("mail:toggleStarBatch", [{
       isStarred: true,
       items: [{ emailId: "inbox-plain" }, { emailId: "notes-star" }],
     }]);
     assert.strictEqual(batch.success, true);
-    assert.ok(batch.data.outcomes.every((row) => row.status === "completed"));
     assert.strictEqual(db.messageById("inbox-plain").starred, 1);
     assert.strictEqual(db.messageById("notes-star").starred, 1);
+    const batchRemote = await engine.settleActions();
+    assert.ok(batchRemote.outcomes.every((row) => row.status === "completed"));
     assert.ok(flagCalls.some((row) => row.folder === "INBOX" && row.add[0] === "\\Flagged"));
 
     const usesBeforeMove = clientUses;
@@ -323,6 +335,7 @@ async function run() {
     const missing = await engine.answer("mail:setAccountLabel", [{ accountId: "missing-acct", label: "Nope" }]);
     assert.strictEqual(missing.success, false);
   } finally {
+    await engine.settleActions().catch(() => {});
     Object.assign(remote, saved);
     secrets.deletePassword("star-acct");
     db.close();

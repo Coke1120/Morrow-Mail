@@ -69,7 +69,7 @@ async function main() {
   const row = { id: 'a:1', account_id: 'a', uid: 1, body_complete: 0 };
   let fetched = 0;
   const bodyCtx = vm.createContext({ db: { accountById: () => ({ id: 'a' }), messageById: () => ({ ...row, body_complete: 1, recipient_headers_json: '{}', html_body: '<p>Complete</p>' }) }, exclusive: async (_id, fn) => fn(), secretFor: () => { fetched++; throw Error('should not fetch'); } });
-  vm.runInContext(between(engine, 'async function ensureBody', 'async function mutateFlags'), bodyCtx);
+  vm.runInContext(between(engine, 'async function ensureBody', 'function pushRows'), bodyCtx);
   assert.equal((await bodyCtx.ensureBody(row)).html_body, '<p>Complete</p>');
   assert.equal(fetched, 0);
   console.log('mail reader synthetic checks passed');

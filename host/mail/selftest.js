@@ -1,7 +1,7 @@
 const fs = require("fs");
 const db = require("./db");
 const presets = require("./presets");
-const { answer } = require("./engine");
+const { answer, settleActions } = require("./engine");
 
 function problem(list, message) {
   list.push(message);
@@ -180,7 +180,13 @@ async function run() {
     bodyComplete: true,
   });
   const refused = await answer("mail:markRead", [{ emailId: "m-remote", accountId: "imap-test", isRead: true }]);
-  if (!refused || refused.success !== false) problem(problems, "mark read without a password should fail");
+  if (!refused || refused.success !== true || db.messageById("m-remote").unread !== 0) {
+    problem(problems, "mark read should commit locally before the password check");
+  }
+  const refusedRemote = await settleActions();
+  if (!refusedRemote.outcomes.some((row) => row.id === "m-remote" && row.status === "failed")) {
+    problem(problems, "mark read without a password should fail");
+  }
   if (db.messageById("m-remote").unread !== 1) problem(problems, "failed mark read changed the local row");
   const unreadBefore = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "__morrow_unread__", limit: 50 }]);
   if (!unreadBefore || !unreadBefore.data || !unreadBefore.data.emails.some((row) => row.id === "m-test")) {
