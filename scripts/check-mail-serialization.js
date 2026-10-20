@@ -44,15 +44,19 @@ async function run() {
     const first = engine.answer("mail:markRead", [{ emailId: "queue-a-message", isRead: true }]);
     pending.push(first);
     await firstEntered;
+    assert.equal(db.messageById("queue-a-message").unread, 0);
     const second = engine.answer("mail:toggleStar", [{ emailId: "queue-a-message", isStarred: true }]);
     const unrelated = engine.answer("mail:markRead", [{ emailId: "queue-b-message", isRead: true }]);
     pending.push(second, unrelated);
     assert.equal((await unrelated).success, true, "another account must remain independent");
+    assert.equal(db.messageById("queue-a-message").starred, 1);
+    await engine.settleAccount("queue-b");
     assert.deepEqual(calls, ["queue-a:\\Seen", "queue-b:\\Seen"], "a second request must wait for its mailbox queue");
     release();
-    assert.equal((await first).success, false);
+    await engine.settleAccount("queue-a");
+    assert.equal((await first).success, true);
     assert.equal((await second).success, true, "a failed operation must release its mailbox queue");
-    assert.equal(db.messageById("queue-a-message").unread, 1);
+    assert.equal(db.messageById("queue-a-message").unread, 0);
     assert.equal(db.messageById("queue-a-message").starred, 1);
     assert.equal(db.messageById("queue-b-message").unread, 0);
   } finally {

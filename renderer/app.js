@@ -4428,13 +4428,71 @@ function paintStars(emails, isStarred, focus) {
   }
 }
 
+const actionGeneration = new Map();
+
+function rememberActionGeneration(rows) {
+  for (const row of rows || []) {
+    if (!row || typeof row.generation !== "number" || !row.id) continue;
+    if ((actionGeneration.get(row.id) || 0) <= row.generation) actionGeneration.set(row.id, row.generation);
+  }
+}
+
+function takeEmails(rows) {
+  const previous = new Map((state.emails || []).map((row) => [row.id, row]));
+  return (rows || []).map((row) => {
+    const prior = previous.get(row && row.id);
+    const memory = row && actionGeneration.get(row.id) || 0;
+    const incoming = row && row.actionGeneration || 0;
+    if (prior && memory > incoming) {
+      return Object.assign({}, row, {
+        isStarred: prior.isStarred,
+        unread: prior.unread,
+        isRead: prior.isRead,
+        folderId: prior.folderId,
+        actionGeneration: memory,
+      });
+    }
+    return row;
+  });
+}
+
+function applyActionSettlement(batch) {
+  const outcomes = batch && Array.isArray(batch.outcomes) ? batch.outcomes : [];
+  let moved = false;
+  for (const outcome of outcomes) {
+    if (!outcome || !outcome.id) continue;
+    const memory = actionGeneration.get(outcome.id) || 0;
+    if (typeof outcome.generation === "number" && outcome.generation < memory) continue;
+    if (typeof outcome.generation === "number") actionGeneration.set(outcome.id, outcome.generation);
+    const projection = outcome.projection;
+    if ((outcome.status === "failed" || outcome.status === "not_attempted") && projection) {
+      paintStars([{ id: outcome.id }], !!projection.isStarred);
+      eachStarRow({ id: outcome.id }, (row) => {
+        row.unread = !!projection.unread;
+        row.isRead = !projection.unread;
+        if (projection.folderId) row.folderId = projection.folderId;
+      });
+    }
+    if (outcome.kind === "remove" || outcome.kind === "undo") moved = true;
+  }
+  const bad = outcomes.some((row) => row.status && row.status !== "completed");
+  const receipt = receiptText("Mailbox", { outcomes });
+  if (batch && Array.isArray(batch.opIds) && batch.opIds.length) {
+    const current = $("status") && $("status").textContent;
+    showUndo(bad || !current ? receipt : current, batch.opIds, bad);
+  } else if (bad) showStatus(receipt, true);
+  if (moved) loadList(false).catch(() => {});
+}
+
 async function toggleStar(email) {
   if (!email || !email.id) throw new Error("That message is no longer in the mailbox.");
   const next = !email.isStarred;
   const previous = !!email.isStarred;
   paintStars([email], next, true);
   try {
-    await call("mail:toggleStar", { emailId: email.id, accountId: email.accountId, isStarred: next });
+    const data = await call("mail:toggleStar", { emailId: email.id, accountId: email.accountId, isStarred: next });
+    rememberActionGeneration(data && data.pending);
+    rememberActionGeneration(data && data.outcomes);
   } catch (error) {
     paintStars([email], previous, true);
     throw error;
@@ -4458,7 +4516,14 @@ async function setRead(email, isRead) {
   paint(!isRead);
   const write = call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead });
   readWrites.set(email.id, write);
-  try { await write; paint(!isRead); }
+  try {
+    const data = await write;
+    if (typeof rememberActionGeneration === "function") {
+      rememberActionGeneration(data && data.pending);
+      rememberActionGeneration(data && data.outcomes);
+    }
+    paint(!isRead);
+  }
   catch (error) { paint(previous); throw error; }
   finally { if (readWrites.get(email.id) === write) readWrites.delete(email.id); }
   await settleOpenView();
@@ -4662,7 +4727,7 @@ async function loadList(fromNetwork, requestedOffset) {
     if (state.query) {
       const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
       if (gen !== listGen) return null;
-      state.emails = Array.isArray(data) ? data : [];
+      state.emails = takeEmails(Array.isArray(data) ? data : []);
       renderList();
       return null;
     }
@@ -4697,7 +4762,7 @@ async function loadList(fromNetwork, requestedOffset) {
       if (gen !== listGen) return null;
     }
     state.listOffset = offset;
-    state.emails = (data && data.emails) || [];
+    state.emails = takeEmails((data && data.emails) || []);
     state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
     state.listSyncDone = data?.initialSyncDone !== false;
     if (!state.allInbox && data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
@@ -5444,7 +5509,10 @@ function operationIds(spec) {
 }
 
 function receiptRows(data, spec) {
-  if (data && Array.isArray(data.outcomes)) return data.outcomes;
+  const pending = data && Array.isArray(data.pending)
+    ? data.pending.map((row) => ({ id: row.id, status: "completed", phase: "accepted" }))
+    : [];
+  if (data && Array.isArray(data.outcomes)) return [...pending, ...data.outcomes];
   const ids = operationIds(spec);
   // Legacy multi-message/thread responses do not establish per-message outcomes.
   const verified = ids.length === 1 && !spec.params.threadId && data != null;
@@ -5500,7 +5568,9 @@ async function finishBulkRemoval(label, outcome, ids) {
   }
   state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
   const text = receiptText(label, outcome);
+  const waiting = (outcome.outcomes || []).some((row) => row.phase === "accepted");
   if (outcome.opIds.length) showUndo(text, outcome.opIds, !!outcome.error);
+  else if (waiting) showStatus(text, !!outcome.error);
   else { clearUndo(); showStatus(text, !!outcome.error); }
   if (completed.size) await loadList();
   else renderList();
@@ -5531,15 +5601,17 @@ async function bulkTrash() {
 async function bulkSetRead(isRead) {
   const messages = selectedMessages();
   if (!messages.length || refusePaused(messages)) return;
+  const previous = new Map(messages.map((email) => [email.id, !!email.unread]));
+  for (const email of messages) {
+    eachStarRow(email, (row) => { row.unread = !isRead; row.isRead = !!isRead; });
+  }
+  renderList();
   const outcome = await runBulk(bulkFlagCalls(messages, isRead ? "read" : "unread"));
   const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
-  for (const email of messages.filter((row) => completed.has(row.id))) {
-    email.unread = !isRead;
-    email.isRead = isRead;
-    if (state.email && state.email.id === email.id) {
-      state.email.unread = email.unread;
-      state.email.isRead = email.isRead;
-    }
+  for (const email of messages) {
+    if (completed.has(email.id)) continue;
+    const unread = previous.get(email.id) === true;
+    eachStarRow(email, (row) => { row.unread = unread; row.isRead = !unread; });
   }
   renderList();
   renderReader(false);
@@ -12502,6 +12574,7 @@ async function boot() {
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
+  api.on("mail:actionsSettled", applyActionSettlement);
   api.on("mail:syncStatus", (payload) => {
     rememberSyncStatus(payload);
     paintSyncControl();

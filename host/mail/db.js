@@ -189,6 +189,24 @@ function migrate() {
     id TEXT PRIMARY KEY,
     payload_json TEXT NOT NULL
   )`);
+  run(`CREATE TABLE IF NOT EXISTS mail_actions (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    intent_json TEXT NOT NULL,
+    prior_json TEXT NOT NULL,
+    prior_row_json TEXT,
+    source_json TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    receipt TEXT,
+    error TEXT,
+    undo_op_id TEXT,
+    created_at INTEGER NOT NULL
+  )`);
+  run(`CREATE INDEX IF NOT EXISTS mail_actions_message ON mail_actions(message_id, generation)`);
+  run(`CREATE INDEX IF NOT EXISTS mail_actions_account ON mail_actions(account_id, phase, created_at)`);
   run(`CREATE TABLE IF NOT EXISTS signatures (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
@@ -771,6 +789,7 @@ function applyFolderSync(accountId, folderPath, report) {
         // uid <= 0 is a local-only copy (a send or draft not yet given a server uid).
         if (Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
         if (report.retainOlderThan && Number(row.list_sort_ts) < report.retainOlderThan) continue;
+        if (messageHeld(row.id)) continue;
         forgetIndex(row.id);
         run("DELETE FROM messages WHERE id = ?", [row.id]);
       }
@@ -798,12 +817,21 @@ function applyFolderSync(accountId, folderPath, report) {
         );
       }
       const id = found ? found.id : (message.id || newMessageId());
+      let unreadBit = message.unread ? 1 : 0;
+      let starredBit = message.starred ? 1 : 0;
+      if (found && messageHeld(found.id)) {
+        const existing = get("SELECT unread, starred FROM messages WHERE id = ?", [found.id]);
+        if (existing) {
+          unreadBit = existing.unread;
+          starredBit = existing.starred;
+        }
+      }
       const fields = [
         message.threadId || null, message.rfcMessageId || null, message.inReplyTo || null,
         message.subject || "", message.snippet || "",
         message.from || "", JSON.stringify(message.to || []), JSON.stringify(message.cc || []),
         JSON.stringify(message.bcc || []), message.date || null, Number(message.listSortTs) || 0,
-        message.unread ? 1 : 0, message.starred ? 1 : 0, message.isDraft ? 1 : 0,
+        unreadBit, starredBit, message.isDraft ? 1 : 0,
         message.hasAttachments ? 1 : 0, message.htmlBody || null, message.textBody || null,
         JSON.stringify(message.attachments || []), message.bodyComplete ? 1 : 0,
         JSON.stringify(message.recipientHeaders || {}),
@@ -906,6 +934,7 @@ function pruneMissing(accountId, folderPath, liveUids, retainOlderThan) {
     for (const row of stored) {
       if (Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
       if (retainOlderThan && Number(row.list_sort_ts) < retainOlderThan) continue;
+      if (messageHeld(row.id)) continue;
       forgetIndex(row.id);
       run("DELETE FROM messages WHERE id = ?", [row.id]);
     }
@@ -1208,6 +1237,70 @@ function readBlob(id) {
 
 function saveOp(id, payload) {
   transaction(() => run("INSERT OR REPLACE INTO ops (id, payload_json) VALUES (?, ?)", [id, JSON.stringify(payload)]));
+}
+
+function insertMailAction(row) {
+  transaction(() => run(
+    `INSERT INTO mail_actions (
+      id, batch_id, message_id, account_id, generation, intent_json, prior_json, prior_row_json,
+      source_json, phase, receipt, error, undo_op_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      row.id, row.batchId, row.messageId, row.accountId, row.generation, row.intentJson, row.priorJson,
+      row.priorRowJson || null, row.sourceJson, row.phase, row.receipt || null, row.error || null,
+      row.undoOpId || null, row.createdAt,
+    ]
+  ));
+}
+
+function updateMailAction(id, patch) {
+  transaction(() => updateChanged("mail_actions", patch, "id = ?", [id]));
+}
+
+function mailActionById(id) {
+  return get("SELECT * FROM mail_actions WHERE id = ?", [id]);
+}
+
+function mailActionsForMessage(messageId) {
+  return all("SELECT * FROM mail_actions WHERE message_id = ? ORDER BY generation DESC", [messageId]);
+}
+
+function openMailAction(messageId) {
+  return get(
+    "SELECT * FROM mail_actions WHERE message_id = ? AND phase IN ('accepted', 'publishing') ORDER BY generation DESC LIMIT 1",
+    [messageId]
+  );
+}
+
+function acceptedMailActions(accountId) {
+  return all(
+    "SELECT * FROM mail_actions WHERE account_id = ? AND phase = 'accepted' ORDER BY created_at ASC, id ASC",
+    [accountId]
+  );
+}
+
+function publishingMailActions() {
+  return all("SELECT * FROM mail_actions WHERE phase = 'publishing' ORDER BY created_at ASC");
+}
+
+function acceptedAccountIds() {
+  return all("SELECT DISTINCT account_id FROM mail_actions WHERE phase = 'accepted'").map((row) => row.account_id);
+}
+
+function maxActionGeneration(messageId) {
+  const row = get("SELECT MAX(generation) AS n FROM mail_actions WHERE message_id = ?", [messageId]);
+  return row && row.n ? Number(row.n) : 0;
+}
+
+function messageHeld(id) {
+  const rows = mailActionsForMessage(id);
+  return rows.some((row) => {
+    let intent = {};
+    try { intent = JSON.parse(row.intent_json); } catch { intent = {}; }
+    if (!intent || intent.kind !== "remove") return false;
+    if (row.phase === "accepted" || row.phase === "publishing") return true;
+    return row.phase === "closed" && row.receipt === "unknown";
+  });
 }
 
 function readOp(id) {
@@ -1576,6 +1669,17 @@ module.exports = {
   readBlob,
   saveOp,
   readOp,
+  transaction,
+  insertMailAction,
+  updateMailAction,
+  mailActionById,
+  mailActionsForMessage,
+  openMailAction,
+  acceptedMailActions,
+  publishingMailActions,
+  acceptedAccountIds,
+  maxActionGeneration,
+  messageHeld,
   recentForAi,
   recentInWellKnown,
   recentInbox,

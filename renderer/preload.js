@@ -158,6 +158,7 @@ const EVENTS = [
   "host:updateResume",
   "mail:accountsUpdated",
   "mail:emailsUpdated",
+  "mail:actionsSettled",
   "mail:syncStatus",
   "mail:translate:event",
   "aiDraftWrite:event",

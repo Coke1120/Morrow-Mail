@@ -1,4 +1,4 @@
-const { answer } = require("./engine");
+const { answer, settleActions } = require("./engine");
 
 function problem(list, message) {
   list.push(message);
@@ -64,6 +64,7 @@ async function run() {
     const body = opened && opened.data && opened.data.email && (opened.data.email.textBody || opened.data.email.htmlBody || "");
     if (!String(body).includes(token)) problem(problems, "opened message is missing its body");
     const marked = await answer("mail:markRead", [{ emailId: row.id, accountId, isRead: true }]);
+    await settleActions();
     if (!marked || marked.success !== true) problem(problems, "mark read failed");
   }
 
@@ -78,6 +79,7 @@ async function run() {
       folderId: "INBOX",
     }]);
     if (!moved || moved.success !== true) problem(problems, `move failed: ${moved && moved.error && moved.error.message}`);
+    await settleActions();
     const inNotes = await answer("mail:listFromNetwork", [{ accountId, folderId: "Notes", limit: 50 }]);
     if (!inNotes || !inNotes.data || !inNotes.data.emails.some((item) => item.id === row.id || item.subject === token)) {
       problem(problems, "moved message is not in Notes");
