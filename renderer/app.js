@@ -13717,6 +13717,12 @@ function botIcon(name) {
       ["line", { x1: "18", y1: "6", x2: "6", y2: "18" }],
       ["line", { x1: "6", y1: "6", x2: "18", y2: "18" }],
     ],
+    trash: [
+      ["polyline", { points: "3 6 5 6 21 6" }],
+      ["path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }],
+      ["line", { x1: "10", y1: "11", x2: "10", y2: "17" }],
+      ["line", { x1: "14", y1: "11", x2: "14", y2: "17" }],
+    ],
     mail: [
       ["path", { d: "M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" }],
       ["polyline", { points: "22,6 12,13 2,6" }],
@@ -13767,7 +13773,7 @@ function botListenerStatus(access) {
   const listen = (access && access.listen) || {};
   const where = "This is the listener on this computer.";
   if (listen.listening) return `${where} Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}.`;
-  if (listen.error === "port_in_use") return `${where} Could not start the bridge: port 47831 is in use. This bridge is not listening.`;
+  if (listen.error === "port_in_use") return `${where} Could not start the bridge: port 47831 is in use. This bridge is not listening. Quit the other program using port 47831, or restart Morrow.`;
   if (listen.error) return `${where} The bridge could not start. ${listen.error}`;
   return `${where} The bridge is not listening.`;
 }
@@ -13777,7 +13783,7 @@ function paintBotGrants(grants) {
   list.replaceChildren();
   if (!grants.length) {
     const item = document.createElement("li");
-    item.textContent = "No grants.";
+    item.textContent = "No bots yet.";
     list.append(item);
     return;
   }
@@ -13829,13 +13835,34 @@ function paintBotGrants(grants) {
     revoke.append(botIcon("x"), document.createElement("span"));
     revoke.lastChild.textContent = "Revoke";
     revoke.disabled = !!grant.revokedAt;
+    revoke.title = "Invalidate the secret and stop this bot’s access. The row stays.";
     revoke.addEventListener("click", () => {
       botGuard(async () => {
         paintBotAccess(await call("bot:revokeGrant", { clientId: grant.clientId }));
-        setBotStatus(`Access revoked for ${grant.label}. Other grants are unchanged.`);
+        setBotStatus(`Access revoked for ${grant.label}. The secret no longer works. Other bots are unchanged.`);
       });
     });
-    row.append(rotate, revoke);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost icon-label";
+    remove.dataset.botAction = "delete";
+    remove.append(botIcon("trash"), document.createElement("span"));
+    remove.lastChild.textContent = "Delete";
+    remove.title = "Remove this bot from the list after you confirm.";
+    remove.addEventListener("click", () => {
+      botGuard(async () => {
+        const answer = await askConfirm({
+          title: "Delete " + grant.label + "?",
+          body: "This removes the bot from your list. Its secret stops working immediately. This cannot be undone.",
+          confirm: "Delete bot",
+          cancel: "Cancel",
+        });
+        if (!answer || !answer.ok) return;
+        paintBotAccess(await call("bot:deleteGrant", { clientId: grant.clientId }));
+        setBotStatus(`Deleted ${grant.label}. Its secret no longer works.`);
+      });
+    });
+    row.append(rotate, revoke, remove);
     item.append(title, meta, used, row);
     list.append(item);
   }
@@ -13935,12 +13962,16 @@ function paintBotAccess(data) {
   const access = data || {};
   state.botAccess = access;
   $("bot-listen").textContent = botListenerStatus(access);
-  $("bot-intent").textContent = access.enabled ? "Configured intent: enabled." : "Configured intent: disabled.";
+  const listenFix = $("bot-listen-fix");
+  if (listenFix) listenFix.hidden = !(access.listen && access.listen.error === "port_in_use");
+  $("bot-intent").textContent = access.enabled
+    ? "Saved choice on this computer: on. This is separate from the listener status above."
+    : "Saved choice on this computer: off.";
   $("bot-retry").hidden = !access.enabled || !!(access.listen && access.listen.listening);
   $("bot-review-link").textContent = "Review draft proposals (" + ((access.drafts || []).length) + ")";
   $("bot-install").textContent = access.installationId
-    ? `Installation ${access.installationId}`
-    : "The installation id is created with the first grant.";
+    ? `Installation id ${access.installationId}`
+    : "The installation id appears after you create the first bot.";
   const grants = access.grants || [];
   const live = grants.some((grant) => grant.live);
   const setup = $("bot-add-client");
@@ -13948,23 +13979,20 @@ function paintBotAccess(data) {
     setup.open = !live;
     setup.dataset.initialized = "true";
   }
-  $("bot-remote-status").textContent = access.serveHost
-    ? "Tailscale host saved. Remote connectivity has not been verified by this app."
-    : "No Tailscale host saved. Same-computer access can still be used.";
   const endpoints = access.endpoints || {};
   $("bot-local-endpoint").textContent = endpoints.local
-    ? `Loopback endpoint ${endpoints.local}`
+    ? `Address on this computer ${endpoints.local}`
     : "";
   $("bot-endpoint").textContent = endpoints.serve
-    ? endpoints.serve
-    : "Save your Tailscale hostname and port to see the remote endpoint.";
+    ? `HTTPS address ${endpoints.serve}`
+    : "Save an address and port to see the HTTPS address.";
   $("bot-marker").textContent = access.markerJson
     ? `Capability marker ${access.markerJson}`
     : "";
   const enabled = $("bot-enabled");
   enabled.checked = access.enabled === true;
   enabled.disabled = access.enabled !== true && !live;
-  $("bot-enable-help").textContent = live ? "Copy your secret before enabling. Enabling does not configure Serve." : "Create an unexpired grant first. The listener stays on 127.0.0.1 only.";
+  $("bot-enable-help").textContent = live ? "Copy the secret before turning this on. Turning it on does not create the address other devices use." : "Create a bot that has not expired first. The listener stays on this computer only.";
   const hostField = $("bot-serve-host");
   if (typeof document === "undefined" || document.activeElement !== hostField) {
     hostField.value = access.serveHost || "";
@@ -13974,6 +14002,86 @@ function paintBotAccess(data) {
   paintBotDrafts(access.draftsAvailable === false ? null : (access.drafts || []));
   if (typeof paintBotAudit === "function") paintBotAudit(access.audit || []);
   if (typeof paintBotSends === "function") paintBotSends(access.sends || []);
+  paintBotProbe(access);
+}
+
+function botServeCommands(serveHost) {
+  const host = String(serveHost || "").trim();
+  const match = /:([0-9]{1,5})$/.exec(host);
+  let port = 8443;
+  if (match) {
+    const parsed = Number(match[1]);
+    if (parsed >= 1 && parsed <= 65535) port = parsed;
+  }
+  return {
+    port,
+    status: "tailscale serve status",
+    serve: `tailscale serve --bg --https=${port} --accept-app-caps=com.coke1120.morrow-mail/bot-access http://127.0.0.1:47831`,
+  };
+}
+
+function botProbeReason(reason) {
+  if (reason === "timeout") return "The address did not answer in time.";
+  if (reason === "tls") return "The certificate check failed.";
+  if (reason === "unreachable") return "Morrow could not open a connection.";
+  if (reason === "unsafe") return "Morrow will not check this address.";
+  if (reason === "inconclusive") return "The answer was not clear enough to call it Morrow or another app.";
+  if (reason === "no_host") return "Save an address first.";
+  return "Morrow could not check this address.";
+}
+
+function syncBotProbe(access) {
+  const host = (access && access.serveHost) || "";
+  if (!state.botProbe || state.botProbe.host !== host) {
+    state.botProbe = { host, state: "not_checked", checked: false, reason: "", snippet: "", statusCode: null };
+  }
+}
+
+function botRemoteStatusText(access) {
+  const host = access && access.serveHost;
+  const probe = state.botProbe;
+  if (!host) return "No address saved yet. Not checked.";
+  if (!probe || probe.host !== host || !probe.checked) return "Not checked. Saving an address does not set up the secure link.";
+  if (probe.state === "foreign") return "Another app is using this address.";
+  if (probe.state === "morrow") return "This address answered like Morrow’s bot bridge. Saving the address did not set up the secure link.";
+  return `Not checked. ${botProbeReason(probe.reason)}`;
+}
+
+function setBotButtonLabel(button, label) {
+  if (!button) return;
+  const span = button.querySelector && button.querySelector("span");
+  if (span) span.textContent = label;
+  else button.textContent = label;
+}
+
+function paintBotCommands(access) {
+  const saved = access && access.serveCommands;
+  const commands = saved && saved.serve && saved.status ? saved : botServeCommands(access && access.serveHost);
+  for (const id of ["bot-cmd-status", "bot-fix-status"]) {
+    const node = $(id);
+    if (node) node.textContent = commands.status;
+  }
+  for (const id of ["bot-cmd-serve", "bot-fix-serve"]) {
+    const node = $(id);
+    if (node) node.textContent = commands.serve;
+  }
+}
+
+function paintBotProbe(access) {
+  syncBotProbe(access);
+  const probe = state.botProbe || {};
+  const remote = $("bot-remote-status");
+  if (remote) remote.textContent = botRemoteStatusText(access);
+  paintBotCommands(access);
+  const foreign = !!(probe.checked && probe.state === "foreign");
+  const box = $("bot-probe-conflict");
+  if (box) box.hidden = !foreign;
+  const saw = $("bot-probe-saw");
+  if (saw) {
+    const snippet = probe.snippet || "a response that is not Morrow’s bot bridge";
+    saw.textContent = foreign ? `Morrow asked the saved address and saw ${snippet}.` : "";
+  }
+  setBotButtonLabel($("bot-probe"), probe.checked ? "Check again" : "Check connection");
 }
 
 async function openBotDraft(proposalId) {
@@ -14128,9 +14236,52 @@ function wireBot() {
   $("bot-serve-save").addEventListener("click", () => {
     botGuard(async () => {
       paintBotAccess(await call("bot:setServeHost", { serveHost: $("bot-serve-host").value }));
-      setBotStatus("Allowed Serve host saved. This does not configure Tailscale Serve.");
+      setBotStatus("Address saved. This does not set up the secure link.");
     });
   });
+  $("bot-panel-tailscale").addEventListener("click", (event) => {
+    const button = event.target.closest && event.target.closest("[data-copy-command]");
+    if (!button || !$("bot-panel-tailscale").contains(button)) return;
+    const kind = button.dataset.copyCommand === "status" ? "status" : "serve";
+    botGuard(async () => {
+      const access = state.botAccess || {};
+      const saved = access.serveCommands;
+      const commands = saved && saved.serve && saved.status ? saved : botServeCommands(access.serveHost);
+      const text = kind === "status" ? commands.status : commands.serve;
+      if (!text || !navigator.clipboard) {
+        setBotStatus("Could not copy. Select the command and copy it.", true);
+        return;
+      }
+      await navigator.clipboard.writeText(text);
+      setBotStatus(kind === "status"
+        ? "Status command copied. Morrow did not run it."
+        : "Morrow command copied. Morrow did not run it.");
+    });
+  });
+  $("bot-probe").addEventListener("click", () => botGuard(async () => {
+    const access = state.botAccess || {};
+    if (!access.serveHost) {
+      state.botProbe = { host: "", state: "not_checked", checked: true, reason: "no_host", snippet: "" };
+      paintBotProbe(access);
+      setBotStatus("Save an address first. Not checked.");
+      return;
+    }
+    setBotStatus("Checking the saved address…");
+    const result = await call("bot:probeServe");
+    const stateName = result && (result.state === "foreign" || result.state === "morrow") ? result.state : "not_checked";
+    state.botProbe = {
+      host: access.serveHost,
+      checked: true,
+      state: stateName,
+      reason: (result && result.reason) || "",
+      snippet: (result && result.snippet) || "",
+      statusCode: result && result.statusCode,
+    };
+    paintBotProbe(access);
+    if (stateName === "foreign") setBotStatus("Another app is using this address. Follow the fix steps, then check again.", true);
+    else if (stateName === "morrow") setBotStatus("This address answered like Morrow’s bot bridge. This check did not set up the secure link.");
+    else setBotStatus(botRemoteStatusText(access));
+  }));
   $("bot-mint").addEventListener("submit", (event) => {
     event.preventDefault();
     botGuard(async () => {

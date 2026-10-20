@@ -362,6 +362,21 @@ function revoke(clientId) {
   });
 }
 
+function removeGrant(clientId) {
+  const loaded = load();
+  if (!loaded.ok || !loaded.store) throw publicError("Bot access storage cannot be read.");
+  const store = loaded.store;
+  const index = store.grants.findIndex((item) => item.clientId === clientId);
+  if (index < 0) throw publicError("That client is not on this installation.");
+  store.grants.splice(index, 1);
+  try {
+    save(store);
+  } catch {
+    throw publicError("Morrow could not store the grant.");
+  }
+  return view();
+}
+
 function setEnabledFlag(enabled) {
   if (typeof enabled !== "boolean") throw publicError("Say whether the bridge is on.");
   const store = ensureStore();
@@ -495,6 +510,7 @@ module.exports = {
   mint,
   rotate,
   revoke,
+  removeGrant,
   setEnabledFlag,
   setServeHost,
   authenticate,

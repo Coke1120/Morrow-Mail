@@ -16,14 +16,19 @@ function run() {
   ctx.paintBotAccess({ enabled: false, grants: [], accounts: [] });
   assert.equal($('bot-add-client').open, true);
   assert.equal($('bot-enabled').disabled, true);
-  assert.match($('bot-remote-status').textContent, /No Tailscale host/);
+  assert.match($('bot-remote-status').textContent, /Not checked/);
+  assert.equal($('bot-probe-conflict').hidden, true);
   $('bot-add-client').open = false;
   ctx.paintBotAccess({ enabled: true, grants: [{ live: true }], serveHost: 'mac.tailnet.ts.net:8443', installationId: 'fixture-install',
     endpoints: { local: 'http://127.0.0.1:47831/api/bot/v1/call', serve: 'https://mac.tailnet.ts.net:8443/api/bot/v1/call' } });
   assert.equal($('bot-add-client').open, false, 'refresh preserves user disclosure choice');
   assert.equal($('bot-enabled').checked, true);
-  assert.match($('bot-remote-status').textContent, /not been verified/);
-  assert.equal($('bot-endpoint').textContent, 'https://mac.tailnet.ts.net:8443/api/bot/v1/call');
+  assert.match($('bot-remote-status').textContent, /Not checked/);
+  assert.match($('bot-remote-status').textContent, /does not set up/);
+  assert.doesNotMatch($('bot-remote-status').textContent, /configured|connected/i);
+  assert.equal($('bot-probe-conflict').hidden, true);
+  assert.equal($('bot-endpoint').textContent, 'HTTPS address https://mac.tailnet.ts.net:8443/api/bot/v1/call');
+  assert.match($('bot-cmd-serve').textContent, /tailscale serve --bg --https=8443 --accept-app-caps=com\.coke1120\.morrow-mail\/bot-access http:\/\/127\.0\.0\.1:47831/);
   assert.equal($('bot-serve-host').value, 'mac.tailnet.ts.net:8443');
   assert.equal(state.botAccess.installationId, 'fixture-install');
   nodes.clear();

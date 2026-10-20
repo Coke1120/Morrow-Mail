@@ -4,6 +4,7 @@ const auth = require("./auth");
 const audit = require("./audit");
 const catalog = require("./catalog");
 const drafts = require("./drafts");
+const probe = require("./probe");
 const prompt = require("./prompt");
 const send = require("./send");
 const { DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, PORT, SERVE_CAPABILITY } = require("./constants");
@@ -67,6 +68,7 @@ function snapshot() {
     defaultExpiryDays: DEFAULT_EXPIRY_DAYS,
     maxExpiryDays: MAX_EXPIRY_DAYS,
     endpoints: catalog.endpoints(view.serveHost),
+    serveCommands: catalog.serveCommands(view.serveHost),
     markerJson: catalog.markerJson(),
     accounts: accounts(),
     grants: view.grants || [],
@@ -103,6 +105,11 @@ async function apply(channel, payload) {
     auth.revoke(payload && payload.clientId);
     return snapshot();
   }
+  if (channel === "bot:deleteGrant") {
+    auth.removeGrant(payload && payload.clientId);
+    return snapshot();
+  }
+  if (channel === "bot:probeServe") return probe.probeServeHost(auth.serveHost());
   if (channel === "bot:setupText") {
     const target = payload && payload.target === "serve" ? "serve" : "local";
     return prompt.renderSetup(catalog.factsFrom(auth.view(), target));

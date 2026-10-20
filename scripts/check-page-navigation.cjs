@@ -184,9 +184,51 @@ app.whenReady().then(async () => {
   assert.equal(await run(`$('bot-enabled').disabled`), true);
   assert.equal(await run(`$('bot-expiry').checkVisibility()`), false);
   assert.match(await run(`$('bot-listen').textContent`), /listener on this computer/);
+  await shot('settings-bot-local');
   await run(`showBotSection('tailscale')`);
   assert.equal(await run(`$('bot-serve-host').checkVisibility()`), true);
-  assert.match(await run(`$('bot-remote-status').textContent`), /No Tailscale host/);
+  assert.match(await run(`$('bot-remote-status').textContent`), /Not checked/);
+  assert.equal(await run(`$('bot-probe-conflict').hidden`), true);
+  assert.equal(await run(`$('bot-probe').textContent.trim()`), 'Check connection');
+  assert.match(await run(`$('bot-cmd-serve').textContent`), /--https=8443/);
+  routes.set('bot:setServeHost', payload => {
+    botAccess.serveHost = String(payload.serveHost || '').trim().toLowerCase();
+    const port = (botAccess.serveHost.match(/:(\d+)$/) || [])[1] || '8443';
+    botAccess.serveCommands = {
+      port: Number(port),
+      status: 'tailscale serve status',
+      serve: `tailscale serve --bg --https=${port} --accept-app-caps=com.coke1120.morrow-mail/bot-access http://127.0.0.1:47831`,
+    };
+    botAccess.endpoints = {
+      local: 'http://127.0.0.1:47831/api/bot/v1/call',
+      serve: `https://${botAccess.serveHost}/api/bot/v1/call`,
+    };
+    return ok(botAccess);
+  });
+  routes.set('bot:probeServe', () => ok({
+    state: 'foreign',
+    serveHost: botAccess.serveHost,
+    statusCode: 200,
+    snippet: 'HTTP 200 · Phase',
+    reason: '',
+    endpoint: botAccess.endpoints && botAccess.endpoints.serve,
+    commands: botAccess.serveCommands,
+  }));
+  await run(`$('bot-serve-host').value='leos-macbook-air.tail48056.ts.net:8443';$('bot-serve-save').click()`);
+  await waitFor(`!botBusy && $('bot-endpoint').textContent.includes('leos-macbook-air')`);
+  assert.match(await run(`$('bot-status').textContent`), /does not set up/);
+  await run(`$('bot-probe').click()`);
+  await waitFor(`!botBusy && !$('bot-probe-conflict').hidden`);
+  assert.match(await run(`$('bot-probe-conflict').textContent`), /Another app is using this address/);
+  assert.match(await run(`$('bot-probe-saw').textContent`), /HTTP 200 · Phase/);
+  assert.match(await run(`$('bot-probe-conflict').textContent`), /Option A/);
+  assert.match(await run(`$('bot-probe-conflict').textContent`), /Option B/);
+  assert.match(await run(`$('bot-fix-serve').textContent`), /--https=8443/);
+  assert.match(await run(`$('bot-fix-status').textContent`), /tailscale serve status/);
+  assert.equal(await run(`$('bot-probe').textContent.trim()`), 'Check again');
+  assert.equal(count('bot:probeServe'), 1);
+  await run(`$('bot-probe-conflict').scrollIntoView({block:'center'})`);
+  await shot('settings-bot-serve-conflict');
   await run(`showBotSection('grants')`);
   assert.equal(await run(`$('bot-add-client').open`), true);
   assert.deepEqual(await run(`selectedBotAccounts()`), [], 'mailbox access remains opt-in');
@@ -222,7 +264,28 @@ app.whenReady().then(async () => {
   await run(`loadBotAccess()`);
   await run(`showBotSection('grants')`);
   assert.equal(await run(`$('bot-grants').querySelector('button').checkVisibility()`), true);
+  assert.match(await run(`$('bot-panel-grants').textContent`), /Revoke invalidates the secret/);
+  assert.match(await run(`$('bot-panel-grants').textContent`), /Delete removes the bot/);
+  assert.equal(await run(`$('bot-grants').querySelector('[data-bot-action="delete"]').textContent.trim()`), 'Delete');
+  await run(`$('bot-grants').querySelector('[data-bot-action="delete"]').click()`);
+  await waitFor(`$('confirm').open`);
+  assert.match(await run(`$('confirm-body').textContent`), /removes the bot/);
+  await run(`$('confirm-cancel').click()`);
+  await waitFor(`!$('confirm').open && !botBusy`);
+  assert.equal(count('bot:deleteGrant'), 0, 'canceling delete writes nothing');
+  await run(`$('bot-grants').querySelector('[data-bot-action="delete"]').scrollIntoView({block:'center'})`);
+  await shot('settings-bot-delete');
   await shot('settings-bot-advanced');
+  const listening = botAccess.listen;
+  botAccess.listen = { listening: false, error: 'port_in_use' };
+  await run(`showBotSection('local');loadBotAccess().then(()=>setBotStatus(botListenerStatus(state.botAccess), true))`);
+  await waitFor(`$('bot-listen').textContent.includes('Quit the other program using port 47831') && $('bot-status').textContent.includes('Could not start') && !$('bot-listen-fix').hidden`);
+  assert.match(await run(`$('bot-listen').textContent`), /Could not start.*not listening/);
+  assert.doesNotMatch(await run(`$('bot-listen').textContent`), /enabled|Listening on/);
+  await run(`$('bot-listen-fix').scrollIntoView({block:'center'})`);
+  await shot('settings-bot-port-conflict');
+  botAccess.listen = listening;
+  await run(`loadBotAccess()`);
   await run(`$('bot-review-link').click()`);
   assert.equal(await run(`$('bot-review').open && document.activeElement.id==='bot-draft-heading' && $('bot-drafts').checkVisibility()`), true);
   assert.equal(await run(`$('bot-drafts').querySelector('button').checkVisibility()`), true, 'the proposal review action remains reachable');
