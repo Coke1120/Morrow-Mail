@@ -1724,7 +1724,7 @@ button.agenda-item {
 
 #calendar-event-dialog { width: min(480px, calc(100vw - 24px)); }
 
-#calendar-event-dialog #calendar-create input,
+#calendar-event-dialog #calendar-create input:not([type="checkbox"]),
 #calendar-event-dialog #calendar-create select,
 #calendar-event-dialog #calendar-create textarea {
   width: 100%;
@@ -1737,7 +1737,16 @@ button.agenda-item {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: fit-content;
   margin: 8px 0;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.calendar-all-day-label input {
+  width: auto;
+  flex: none;
+  margin: 0;
 }
 
 #calendar-form-status { min-height: 1.2em; margin: 4px 0 8px; color: var(--danger); }
@@ -3190,7 +3199,13 @@ dialog::backdrop { background: rgba(16, 40, 34, 0.72); }
 #confirm,
 #compose-close-review,
 #bot-secret,
-#move-picker,
+#move-picker {
+  inset: 0;
+  margin: auto;
+  height: max-content;
+  max-height: calc(100vh - 32px);
+}
+
 #calendar-event-dialog {
   inset: 0;
   margin: auto;
