@@ -3,6 +3,7 @@ const nodemailer = require("nodemailer");
 const MailComposer = require("nodemailer/lib/mail-composer");
 const { simpleParser } = require("mailparser");
 const { isRateLimit } = require("./provider-http");
+const mailboxRoles = require("../../shared/mailbox-roles");
 
 const SOURCE_CAP = 96 * 1024;
 const FULL_CAP = 3 * 1024 * 1024;
@@ -241,6 +242,7 @@ async function parseSource(source, truncated) {
 
 function wellKnownOf(box) {
   const special = box.specialUse || "";
+  if (special === "\\All") return "all";
   const mapped = {
     "\\Inbox": "inbox",
     "\\Sent": "sentitems",
@@ -250,6 +252,7 @@ function wellKnownOf(box) {
     "\\Archive": "archive",
   }[special];
   if (mapped) return mapped;
+  if (mailboxRoles.isGmailAllPath(box.path)) return "all";
   if (String(box.path || "").toUpperCase() === "INBOX") return "inbox";
   const name = String(box.name || box.path || "").toLowerCase();
   if (name === "sent" || name === "sent items" || name === "sent mail") return "sentitems";
@@ -264,7 +267,7 @@ function wellKnownOf(box) {
 
 function skipBox(box) {
   const special = box.specialUse || "";
-  if (special === "\\All" || special === "\\Flagged" || special === "\\Important") return true;
+  if (special === "\\Flagged" || special === "\\Important") return true;
   const flags = box.flags;
   if (flags && typeof flags.has === "function" && (flags.has("\\Noselect") || flags.has("\\NonExistent"))) return true;
   return false;
@@ -596,6 +599,10 @@ async function sendSmtp(account, password, options) {
 }
 
 module.exports = {
+  GMAIL_ALL_PATHS: mailboxRoles.GMAIL_ALL_PATHS,
+  isGmailAllPath: mailboxRoles.isGmailAllPath,
+  isAllMail: mailboxRoles.isAllMail,
+  allMailLabel: mailboxRoles.allMailLabel,
   explain,
   withClient,
   openIdleClient,

@@ -24,7 +24,7 @@ const composeIdentity = require("./compose-identity");
 const composePolicy = require("../../shared/compose-policy");
 const { syncHorizonDays } = require("../settings");
 
-const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
+const PRIMARY_ORDER = ["all", "inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
 const STARRED_FOLDER_ID = virtuals.STARRED_ID;
 const UNREAD_FOLDER_ID = virtuals.UNREAD_ID;
 const KEY_TO_WELL = {
@@ -53,7 +53,7 @@ const POLL_MS = 45000;
 // A sendAt that passes while the app is closed is sent the next time the app is open.
 const SCHEDULE_TICK_MS = 15000;
 const SEARCH_LIMIT = 100;
-const GMAIL_ALL = ["[Gmail]/All Mail", "[Google Mail]/All Mail"];
+const GMAIL_ALL = remote.GMAIL_ALL_PATHS;
 
 let ready = false;
 const tails = new Map();
@@ -116,16 +116,17 @@ function accountView(row, index) {
   const primary = [];
   const more = [];
   for (const folder of folders) {
+    const well = remote.isAllMail(folder) ? "all" : folder.well_known;
     const view = {
       id: folder.path,
-      name: folder.name,
-      wellKnownName: folder.well_known,
+      name: remote.isAllMail(folder) ? remote.allMailLabel(folder) : folder.name,
+      wellKnownName: well,
       unreadCount: folder.unread || 0,
       totalCount: folder.total || 0,
-      type: folder.well_known ? "system" : "user",
+      type: well ? "system" : "user",
       children: [],
     };
-    if (folder.well_known && PRIMARY_ORDER.includes(folder.well_known)) primary.push(view);
+    if (well && PRIMARY_ORDER.includes(well)) primary.push(view);
     else more.push(view);
   }
   primary.sort((a, b) => PRIMARY_ORDER.indexOf(a.wellKnownName) - PRIMARY_ORDER.indexOf(b.wellKnownName));

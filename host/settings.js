@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { userDataDir } = require("./paths");
+const folderCollapse = require("../shared/folder-collapse");
 
 const DEFAULTS = {
   theme: "light",
@@ -13,6 +14,7 @@ const DEFAULTS = {
   showFolderChips: true,
   sidebarGmailFoldersExpanded: true,
   sidebarOutlookFoldersExpanded: false,
+  sidebarCollapsedFolders: {},
   composeQuoteWidth: 420,
   brainCompose: { ccByDomain: {}, bccByDomain: {}, accounts: {} },
   syncHorizonDays: 180, // 0 means all available history.
@@ -30,6 +32,7 @@ const GET = {
   "morrow:configGetShowFolderChips": "showFolderChips",
   "morrow:configGetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
   "morrow:configGetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
+  "morrow:configGetSidebarCollapsedFolders": "sidebarCollapsedFolders",
   "morrow:configGetComposeQuoteWidth": "composeQuoteWidth",
   "emailBrain:getComposeSettings": "brainCompose",
   "morrow:configGetSyncHorizonDays": "syncHorizonDays",
@@ -47,6 +50,7 @@ const SET = {
   "morrow:configSetShowFolderChips": "showFolderChips",
   "morrow:configSetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
   "morrow:configSetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
+  "morrow:configSetSidebarCollapsedFolders": "sidebarCollapsedFolders",
   "morrow:configSetComposeQuoteWidth": "composeQuoteWidth",
   "emailBrain:saveComposeSettings": "brainCompose",
   "morrow:configSetSyncHorizonDays": "syncHorizonDays",
@@ -78,6 +82,10 @@ function reject(key) {
 }
 
 function cast(key, value, loose) {
+  if (key === "sidebarCollapsedFolders") {
+    if (loose) return folderCollapse.normalize(value);
+    return folderCollapse.cast(value);
+  }
   if (key === "brainCompose") {
     const policy = require("../shared/compose-policy");
     try { return policy.normalizeSettings(value); }

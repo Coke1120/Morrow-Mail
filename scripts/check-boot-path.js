@@ -363,6 +363,7 @@ assert.strictEqual(paneWidth(200, 300, 140, 400), 400);
 assert.strictEqual(paneWidth(200, 20, 140, 400), 220);
 
 const folderIcon = extractFunction(appJs, "folderIcon");
+assert.strictEqual(folderIcon("all"), "📨");
 assert.strictEqual(folderIcon("inbox"), "📥");
 assert.strictEqual(folderIcon("starred"), "⭐");
 assert.strictEqual(folderIcon("unread"), "✉️");
@@ -835,6 +836,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetShowFolderChips", []), true);
     assert.strictEqual(answer("morrow:configGetSidebarGmailFoldersExpanded", []), true);
     assert.strictEqual(answer("morrow:configGetSidebarOutlookFoldersExpanded", []), false);
+    assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), {});
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
@@ -847,6 +849,10 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configSetShowFolderChips", [false]), false);
     assert.strictEqual(answer("morrow:configSetSidebarGmailFoldersExpanded", [false]), false);
     assert.strictEqual(answer("morrow:configSetSidebarOutlookFoldersExpanded", [true]), true);
+    assert.deepStrictEqual(answer("morrow:configSetSidebarCollapsedFolders", [{
+      leo: ["AriesCPA.com", "AriesCPA.com", "  "],
+      "  ": ["Nope"],
+    }]), { leo: ["AriesCPA.com"] });
     assert.strictEqual(answer("morrow:configSetComposeQuoteWidth", [560]), 560);
     assert.strictEqual(answer("config:getTheme", []), "dark");
     assert.strictEqual(answer("morrow:configGetAccent", []), "#112233");
@@ -873,6 +879,7 @@ function checkSettingsRoundTrip() {
         chips: answer("morrow:configGetShowFolderChips", []),
         gmailFolders: answer("morrow:configGetSidebarGmailFoldersExpanded", []),
         outlookFolders: answer("morrow:configGetSidebarOutlookFoldersExpanded", []),
+        collapsed: answer("morrow:configGetSidebarCollapsedFolders", []),
         quoteWidth: answer("morrow:configGetComposeQuoteWidth", []),
       }));
     `], { encoding: "utf8" });
@@ -888,6 +895,7 @@ function checkSettingsRoundTrip() {
       chips: false,
       gmailFolders: false,
       outlookFolders: true,
+      collapsed: { leo: ["AriesCPA.com"] },
       quoteWidth: 560,
     });
     assert.throws(() => answer("config:setTheme", ["neon"]), /light or dark/);
@@ -904,9 +912,12 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 560);
     assert.throws(() => answer("morrow:configSetComposeQuoteWidth", [800]), /220 to 720/);
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 560);
+    assert.throws(() => answer("morrow:configSetSidebarCollapsedFolders", ["nope"]), /folder ids/);
+    assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), { leo: ["AriesCPA.com"] });
     fs.writeFileSync(file, "{");
     assert.strictEqual(answer("config:getTheme", []), "light");
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
+    assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), {});
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
     assert.strictEqual(answer("config:getTheme", []), "dark");
   } finally {
@@ -1876,6 +1887,7 @@ const organizeUi = loadFunctions(appJs, [
   "providerCopy",
   "folderDelimiter",
   "nestRows",
+  "isAllMailFolder",
   "imapParent",
   "folderTree",
   "providerParent",
@@ -1911,6 +1923,52 @@ assert.deepStrictEqual(organizeUi.folderTree([
   ["INBOX", 0, ""],
   ["INBOX.Work", 1, "INBOX"],
 ]);
+global.morrowMailboxRoles = require("../shared/mailbox-roles");
+const folderCollapse = require("../shared/folder-collapse");
+assert.strictEqual(global.morrowMailboxRoles.allMailLabel({ path: "[Gmail]/All Mail", name: "[Gmail]/All Mail" }), "All Mail");
+assert.strictEqual(global.morrowMailboxRoles.allMailLabel({ path: "[Gmail]/All Mail", name: "All Mail", wellKnownName: "all" }), "All Mail");
+assert.strictEqual(global.morrowMailboxRoles.allMailLabel({ path: "[Gmail]/All Mail", name: "Tous les messages", well_known: "all" }), "Tous les messages");
+assert.strictEqual(global.morrowMailboxRoles.allMailLabel({ path: "Everything", name: "Everything", well_known: "all" }), "Everything");
+assert.strictEqual(organizeUi.isAllMailFolder({ id: "[Gmail]/All Mail", name: "All Mail" }), true);
+assert.strictEqual(organizeUi.isAllMailFolder({ id: "All Mail", name: "All Mail" }), false);
+assert.deepStrictEqual(organizeUi.folderTree([
+  { id: "[Gmail]/All Mail", name: "All Mail", wellKnownName: "all" },
+  { id: "INBOX", name: "Inbox", wellKnownName: "inbox" },
+  { id: "[Gmail]", name: "[Gmail]" },
+  { id: "[Gmail]/Sent Mail", name: "Sent Mail" },
+  { id: "All Mail", name: "All Mail" },
+]).map((folder) => [folder.id, folder.depth, folder.parentId]), [
+  ["[Gmail]/All Mail", 0, ""],
+  ["INBOX", 0, ""],
+  ["[Gmail]", 0, ""],
+  ["[Gmail]/Sent Mail", 1, "[Gmail]"],
+  ["All Mail", 0, ""],
+]);
+const ariesTree = [
+  { id: "AriesCPA.com", parentId: "", unreadCount: 84, depth: 0 },
+  { id: "AriesCPA.com/1 Internal", parentId: "AriesCPA.com", unreadCount: 1, depth: 1 },
+  { id: "AriesCPA.com/AsiaBs", parentId: "AriesCPA.com", unreadCount: 2, depth: 1 },
+  { id: "AriesCPA.com/AsiaBs/Q1", parentId: "AriesCPA.com/AsiaBs", unreadCount: 3, depth: 2 },
+  { id: "AriesCPA.com/1 Archive", parentId: "AriesCPA.com", unreadCount: 0, depth: 1 },
+  { id: "INBOX", parentId: "", unreadCount: 4, depth: 0 },
+];
+const ariesOpen = folderCollapse.visibleRows(ariesTree, {}, "leo");
+assert.strictEqual(ariesOpen.length, 6);
+assert.strictEqual(ariesOpen[0].hasChild, true);
+assert.strictEqual(ariesOpen[0].expanded, true);
+assert.strictEqual(ariesOpen[0].unreadCount, 84);
+const ariesShut = folderCollapse.visibleRows(ariesTree, { leo: ["AriesCPA.com"] }, "leo");
+assert.deepStrictEqual(ariesShut.map((folder) => folder.id), ["AriesCPA.com", "INBOX"]);
+assert.strictEqual(ariesShut[0].expanded, false);
+assert.strictEqual(ariesShut[0].unreadCount, 84);
+assert.deepStrictEqual(folderCollapse.visibleRows(ariesTree, { leo: ["AriesCPA.com/AsiaBs"] }, "leo").map((folder) => folder.id), [
+  "AriesCPA.com",
+  "AriesCPA.com/1 Internal",
+  "AriesCPA.com/AsiaBs",
+  "AriesCPA.com/1 Archive",
+  "INBOX",
+]);
+assert.deepStrictEqual(folderCollapse.toggle(folderCollapse.toggle({}, "leo", "AriesCPA.com"), "leo", "AriesCPA.com"), {});
 assert.deepStrictEqual(organizeUi.providerLabelTree([
   { id: "INBOX", name: "INBOX", editable: false },
   { id: "L1", name: "Work", editable: true },
@@ -2059,11 +2117,19 @@ assert.ok(parity.includes("right-click"));
 assert.ok(parity.includes("Dragging a message row"));
 assert.ok(parity.includes("Multi-select"));
 assert.ok(parity.includes("one message"));
+assert.ok(parity.includes("morrow:configSetSidebarCollapsedFolders"));
+assert.ok(parity.includes("[Gmail]/All Mail"));
+assert.ok(appJs.includes("folder-twist"));
+assert.ok(appJs.includes("morrow:configGetSidebarCollapsedFolders"));
+assert.ok(css.includes("button.folder-twist"));
+assert.ok(html.includes("shared/mailbox-roles.js"));
+assert.ok(html.includes("shared/folder-collapse.js"));
 assert.ok(independentDoc.includes("Right-click"));
 assert.ok(independentDoc.includes("Drag a message row"));
 const folderChrome = loadFunctions(appJs, [
   "folderDelimiter",
   "nestRows",
+  "isAllMailFolder",
   "imapParent",
   "folderTree",
   "providerParent",
@@ -4056,6 +4122,128 @@ async function checkTidy() {
     process.env.MORROW_PAGE_DELAY_MS = "0";
     const remote = require("../host/mail/remote");
     const secrets = require("../host/mail/secrets");
+    const discovered = await remote.listFolderRecords({
+      list: async () => [
+        { path: "INBOX", name: "INBOX", specialUse: "\\Inbox" },
+        { path: "[Gmail]/All Mail", name: "All Mail", specialUse: "\\All" },
+        { path: "[Google Mail]/All Mail", name: "[Google Mail]/All Mail" },
+        { path: "All Mail", name: "All Mail" },
+        { path: "Everything", name: "Everything", specialUse: "\\All" },
+        { path: "[Gmail]/Starred", name: "Starred", specialUse: "\\Flagged" },
+        { path: "[Gmail]/Important", name: "Important", specialUse: "\\Important" },
+      ],
+    });
+    assert.deepStrictEqual(discovered.folders.map((folder) => [folder.path, folder.wellKnown]), [
+      ["INBOX", "inbox"],
+      ["[Gmail]/All Mail", "all"],
+      ["[Google Mail]/All Mail", "all"],
+      ["All Mail", null],
+      ["Everything", "all"],
+    ]);
+    function insertMailbox(id, email, profile) {
+      db.insertAccount({
+        id,
+        email,
+        username: email,
+        profile,
+        imapHost: "imap.example.test",
+        imapPort: 993,
+        imapTls: true,
+        smtpHost: "smtp.example.test",
+        smtpPort: 465,
+        smtpTls: true,
+        delimiter: "/",
+        createdAt: Date.now(),
+      });
+    }
+    insertMailbox("gmail-all", "leo@hkbscl.com", "gmail");
+    db.replaceFolders("gmail-all", [
+      { path: "INBOX", name: "INBOX", wellKnown: "inbox" },
+      { path: "[Gmail]/All Mail", name: "[Gmail]/All Mail", wellKnown: null },
+      { path: "[Gmail]/Sent Mail", name: "Sent Mail", wellKnown: "sentitems" },
+      { path: "[Gmail]", name: "[Gmail]", wellKnown: null },
+      { path: "Notes", name: "Notes", wellKnown: null },
+      { path: "[Gmail]/Trash", name: "Trash", wellKnown: "deleteditems" },
+    ], "/");
+    const gmailAccount = engine.answer("mail:listAccounts").data.find((row) => row.id === "gmail-all");
+    const gmailPrimary = gmailAccount.folders.primary.map((folder) => folder.wellKnownName);
+    assert.deepStrictEqual(gmailPrimary, ["all", "inbox", "sentitems", "starred", "unread", "deleteditems"]);
+    assert.strictEqual(gmailAccount.folders.primary[0].name, "All Mail");
+    assert.strictEqual(gmailAccount.folders.primary[0].id, "[Gmail]/All Mail");
+    assert.ok(gmailPrimary.indexOf("all") < gmailPrimary.indexOf("inbox"));
+    assert.ok(gmailAccount.folders.more.some((folder) => folder.id === "Notes"));
+    insertMailbox("plain-all", "plain@example.com", "custom");
+    db.replaceFolders("plain-all", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "All Mail", name: "All Mail", wellKnown: null },
+    ], "/");
+    const plainAccount = engine.answer("mail:listAccounts").data.find((row) => row.id === "plain-all");
+    assert.ok(!plainAccount.folders.primary.some((folder) => folder.wellKnownName === "all"));
+    assert.ok(plainAccount.folders.more.some((folder) => folder.id === "All Mail" && folder.name === "All Mail"));
+    insertMailbox("special-all", "special@example.com", "custom");
+    db.replaceFolders("special-all", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Everything", name: "Everything", wellKnown: "all" },
+    ], "/");
+    const specialAccount = engine.answer("mail:listAccounts").data.find((row) => row.id === "special-all");
+    assert.strictEqual(specialAccount.folders.primary[0].wellKnownName, "all");
+    assert.strictEqual(specialAccount.folders.primary[0].name, "Everything");
+    db.insertMessage({
+      id: "m-all-archived",
+      accountId: "gmail-all",
+      folderPath: "[Gmail]/All Mail",
+      uid: 1,
+      uidValidity: 3,
+      threadId: "thr-all",
+      subject: "Archived client note",
+      snippet: "kept",
+      from: "Client <client@example.com>",
+      date: "2026-10-01T00:00:00.000Z",
+      listSortTs: 1759276800000,
+      unread: false,
+      bodyComplete: true,
+    });
+    db.insertMessage({
+      id: "m-all-inbox",
+      accountId: "gmail-all",
+      folderPath: "INBOX",
+      uid: 2,
+      uidValidity: 3,
+      threadId: "thr-in",
+      subject: "Inbox only",
+      snippet: "new",
+      from: "Client <client@example.com>",
+      date: "2026-10-02T00:00:00.000Z",
+      listSortTs: 1759363200000,
+      unread: true,
+      bodyComplete: true,
+    });
+    db.insertMessage({
+      id: "m-all-trash",
+      accountId: "gmail-all",
+      folderPath: "[Gmail]/Trash",
+      uid: 3,
+      uidValidity: 3,
+      threadId: "thr-trash",
+      subject: "Trash only",
+      snippet: "gone",
+      from: "Client <client@example.com>",
+      date: "2026-10-03T00:00:00.000Z",
+      listSortTs: 1759449600000,
+      unread: false,
+      bodyComplete: true,
+    });
+    assert.deepStrictEqual(
+      engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderId: "[Gmail]/All Mail", limit: 20 }]).data.emails.map((row) => row.subject),
+      ["Archived client note"],
+    );
+    assert.deepStrictEqual(
+      engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderId: "INBOX", limit: 20 }]).data.emails.map((row) => row.subject),
+      ["Inbox only"],
+    );
+    db.removeAccount("gmail-all");
+    db.removeAccount("plain-all");
+    db.removeAccount("special-all");
     savedRemote = {
       withClient: remote.withClient,
       searchUids: remote.searchUids,
