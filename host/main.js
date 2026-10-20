@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, ipcMain, session, Menu, powerMonitor, nativeImage } = require("electron");
+const { app, BrowserWindow, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -325,6 +325,14 @@ async function createWindow(preloadFile, mode) {
     winOpts.trafficLightPosition = { x: 14, y: 16 };
   }
   const win = new BrowserWindow(winOpts);
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    let parsed;
+    try { parsed = new URL(url); } catch { return { action: "deny" }; }
+    if (parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "mailto:") {
+      shell.openExternal(url).catch(() => {});
+    }
+    return { action: "deny" };
+  });
   win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     const text = `[console ${level}] ${message} (${sourceId}:${line})`;
     fs.appendFileSync(LOG, text + "\n");
