@@ -403,6 +403,15 @@ textarea:focus-visible {
 
 .hint, .optional, #about-version { color: var(--muted); }
 
+#about-dialog .product-name { font-weight: 600; }
+
+#about-summary {
+  margin: 6px 0 10px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 #prefs {
   display: grid;
   grid-template-columns: 1fr 1fr;

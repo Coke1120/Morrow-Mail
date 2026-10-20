@@ -249,6 +249,14 @@ assert.ok(html.includes('src="./morrow-icon.svg"') && html.includes('class="rail
 assert.ok(html.includes('class="rail-name"') && html.includes(">Morrow Mail</span>"));
 assert.ok(html.includes('aria-label="Settings sections"'));
 assert.ok(html.includes('id="product-name"') && html.includes('class="product-name"') && html.includes(">Morrow Mail</p>"));
+const aboutSummary = html.match(/id="about-summary">([^<]+)</);
+assert.ok(aboutSummary, "About dialog needs a product summary");
+assert.match(aboutSummary[1], /open-source Electron mail client/);
+assert.match(aboutSummary[1], /IMAP or OAuth/);
+assert.match(aboutSummary[1], /GitHub Releases/);
+assert.match(aboutSummary[1], /MIT License/);
+assert.ok(!/SwiftUI|WinUI|native app/i.test(aboutSummary[1]));
+assert.ok(css.includes("#about-summary"));
 assert.ok(html.includes('id="list-chips"') && html.includes('aria-label="Primary folders"'));
 assert.ok(html.includes('aria-label="Email Brain"') && html.includes('id="rail-brain"'));
 assert.ok(!html.includes('id="agent-open"') && !html.includes('id="brain-open"'));
