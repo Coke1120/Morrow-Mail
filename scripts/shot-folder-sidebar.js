@@ -279,6 +279,154 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(await evaluate("window.folderShot().subjects.includes('Inbox only')"), false);
   assert.equal(await evaluate("window.folderShot().subjects.includes('Trash only')"), false);
   await shot("gmail-all-mail-list");
+  const fit = async () => evaluate(`(() => {
+    const folders = document.getElementById("folders");
+    const box = folders.getBoundingClientRect();
+    const limit = box.left + folders.clientLeft + folders.clientWidth;
+    const origin = box.left + folders.clientLeft;
+    const bad = [];
+    const nodes = folders.querySelectorAll(".folder-line, button.account, h2, button.ghost");
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width === 0) continue;
+      if (rect.right > limit + 1 || rect.left < origin - 1) bad.push((node.innerText || node.className || "").trim().slice(0, 80));
+    }
+    for (const count of folders.querySelectorAll(".count")) {
+      const rect = count.getBoundingClientRect();
+      if (rect.right > limit + 1 || rect.left < origin - 1 || rect.width < 12) bad.push("count " + count.textContent);
+    }
+    for (const twist of folders.querySelectorAll("button.folder-twist, .folder-twist-mark")) {
+      const rect = twist.getBoundingClientRect();
+      if (rect.right > limit + 1 || rect.left < origin - 1 || rect.width < 10) bad.push("twist " + (twist.getAttribute("aria-label") || "mark"));
+    }
+    const longName = [...folders.querySelectorAll("button.folder .name")].find((node) => node.scrollWidth > node.clientWidth + 1);
+    return {
+      bad,
+      overflowX: getComputedStyle(folders).overflowX,
+      overflowY: getComputedStyle(folders).overflowY,
+      scrollWidth: folders.scrollWidth,
+      clientWidth: folders.clientWidth,
+      truncated: longName ? longName.textContent : "",
+      title: longName ? longName.title : "",
+    };
+  })()`);
+  const initialFit = await fit();
+  assert.equal(initialFit.overflowX, "hidden");
+  assert.equal(initialFit.overflowY, "auto");
+  assert.ok(initialFit.scrollWidth <= initialFit.clientWidth + 1, JSON.stringify(initialFit));
+  assert.deepEqual(initialFit.bad, []);
+  await evaluate(`(() => {
+    const input = document.getElementById("folder-filter");
+    input.value = "asia";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  assert.deepEqual(await names(), ["leo:AriesCPA.com", "leo:AsiaBs"]);
+  assert.equal(await evaluate("document.querySelector('button.all-inbox')"), null);
+  const headings = await evaluate("[...document.querySelectorAll('#folders :is(h2, button.account)')].map((node) => node.textContent.trim())");
+  assert.deepEqual(headings, ["leo@hkbscl.com"]);
+  assert.equal(await evaluate("document.querySelector('button.folder.is-filter-match .name').textContent"), "AsiaBs");
+  assert.equal(await evaluate("!!document.querySelector('button.folder.is-filter-match')"), true);
+  assert.equal(await evaluate("document.getElementById('folder-filter-clear').hidden"), false);
+  await shot("folder-filter-asia");
+  await evaluate(`document.getElementById("folder-filter-clear").click()`);
+  assert.equal(await evaluate("document.getElementById('folder-filter').value"), "");
+  assert.equal(await evaluate("document.getElementById('folder-filter-clear').hidden"), true);
+  assert.ok((await names()).includes("leo:1 Internal"));
+  await evaluate(`(() => {
+    const input = document.getElementById("folder-filter");
+    input.value = "asia";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  assert.deepEqual(await names(), ["leo:AriesCPA.com", "leo:AsiaBs"]);
+  await evaluate(`(() => {
+    state.selectedIds = ["keep-me"];
+    const input = document.getElementById("folder-filter");
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  })()`);
+  assert.equal(await evaluate("document.getElementById('folder-filter').value"), "");
+  assert.deepEqual(await evaluate("state.selectedIds"), ["keep-me"]);
+  assert.equal(await evaluate("document.activeElement === document.getElementById('folder-filter')"), true);
+  await evaluate(`document.getElementById("folder-filter").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))`);
+  assert.equal(await evaluate("document.activeElement === document.getElementById('folder-filter')"), false);
+  assert.ok((await names()).includes("leo:1 Internal"));
+  assert.ok((await names()).includes("gmail:Inbox"));
+  await evaluate(`(() => {
+    const input = document.getElementById("folder-filter");
+    input.value = "Inbox";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  const inboxNames = await names();
+  assert.ok(inboxNames.includes("leo:Inbox") && inboxNames.includes("gmail:Inbox"), JSON.stringify(inboxNames));
+  assert.equal(inboxNames.includes("leo:AsiaBs"), false);
+  assert.equal(await evaluate("!!document.querySelector('button.all-inbox')"), true);
+  await evaluate(`(() => {
+    document.getElementById("folder-filter").value = "";
+    document.getElementById("folder-filter").dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await evaluate(`(() => {
+    const account = state.accounts.find((row) => row.id === "leo");
+    account.folders.more.push({ id: "AriesCPA.com/AsiaBs/Q1", name: "Q1", unreadCount: 0 });
+    let parent = "AriesCPA.com";
+    for (let i = 0; i < 24; i += 1) {
+      const id = parent + "/Level " + i + " Very long label name that should truncate";
+      account.folders.more.push({
+        id,
+        name: "Level " + i + " Very long label name that should truncate",
+        unreadCount: i === 23 ? 178 : 0,
+      });
+      parent = id;
+    }
+    const input = document.getElementById("folder-filter");
+    input.value = "q1";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  assert.deepEqual(await names(), ["leo:AriesCPA.com", "leo:AsiaBs", "leo:Q1"]);
+  await evaluate(`(() => {
+    const input = document.getElementById("folder-filter");
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  const deepFit = await fit();
+  assert.equal(deepFit.overflowX, "hidden");
+  assert.ok(deepFit.scrollWidth <= deepFit.clientWidth + 1, JSON.stringify(deepFit));
+  assert.deepEqual(deepFit.bad, [], JSON.stringify(deepFit));
+  assert.ok(deepFit.truncated.includes("Very long label"), JSON.stringify(deepFit));
+  assert.equal(deepFit.title, deepFit.truncated);
+  assert.ok(await evaluate("[...document.querySelectorAll('#folders .count')].some((node) => node.textContent === '178')"));
+  await evaluate(`[...document.querySelectorAll("#folders .count")].find((node) => node.textContent === "178").scrollIntoView({ block: "center", inline: "nearest" })`);
+  await shot("folder-tree-truncated");
+  const rowBox = await evaluate(`(() => {
+    const node = document.querySelector(".message-row");
+    node.scrollIntoView({ block: "center", inline: "nearest" });
+    const rect = node.getBoundingClientRect();
+    return { x: rect.x + Math.min(80, rect.width / 2), y: rect.y + rect.height / 2 };
+  })()`);
+  await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: rowBox.x, y: rowBox.y });
+  await shot("mail-row-hover-actions");
+  const listFit = await evaluate(`(() => {
+    const list = document.getElementById("message-list");
+    return { scrollWidth: list.scrollWidth, clientWidth: list.clientWidth };
+  })()`);
+  assert.ok(listFit.scrollWidth <= listFit.clientWidth + 1, JSON.stringify(listFit));
+  const actions = await evaluate("[...document.querySelectorAll('[data-testid=\"mail-row-actions\"] button')].map((button) => button.getAttribute('aria-label'))");
+  assert.deepEqual(actions, ["Star", "Mark unread", "Reply", "Reply All", "Forward", "Delete"]);
+  await evaluate(`document.querySelector('[data-testid="mail-row-actions"] [data-action="star"]').click()`);
+  await waitFor("state.busy === false && window.fixtureCalls.some((call) => call.channel === 'mail:toggleStar')", "star toggle");
+  assert.equal(await evaluate("document.querySelector('[data-action=\"star\"]').getAttribute('aria-label')"), "Unstar");
+  assert.equal(await evaluate("document.querySelector('[data-action=\"star\"]').getAttribute('aria-pressed')"), "true");
+  assert.equal(await evaluate("document.querySelector('.message-row').mailMessage.isStarred"), true);
+  const starCall = await evaluate("window.fixtureCalls.filter((call) => call.channel === 'mail:toggleStar').pop()");
+  assert.equal(starCall.payload.isStarred, true);
+  await evaluate(`(() => {
+    const row = document.querySelector(".message-row");
+    state.email = row.mailMessage;
+    row.querySelector('[data-action="forward"]').click();
+  })()`);
+  await waitFor("document.getElementById('compose').open === true", "forward compose");
+  assert.equal(await evaluate("document.getElementById('compose-title').textContent"), "Forward");
+  assert.equal(await evaluate("document.getElementById('compose-subject').value"), "Fwd: Archived client note");
+  await shot("folder-filter-and-hover");
   assert.deepEqual(errors, []);
   fs.writeFileSync(path.join(output, "folder-sidebar-results.json"), JSON.stringify({
     output,
@@ -287,6 +435,10 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       "folder-parent-collapsed.png",
       "gmail-all-mail-above-inbox.png",
       "gmail-all-mail-list.png",
+      "folder-filter-asia.png",
+      "folder-tree-truncated.png",
+      "mail-row-hover-actions.png",
+      "folder-filter-and-hover.png",
     ],
     errors,
   }, null, 2));

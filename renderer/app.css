@@ -397,9 +397,60 @@ textarea:focus-visible {
 #side-mail {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
+
+.folder-filter {
+  position: relative;
+  flex: 0 0 auto;
+  margin: 2px 8px 6px;
+  min-width: 0;
+}
+
+.folder-filter input {
+  display: block;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  padding: 0 28px 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 12px;
+}
+
+.folder-filter input::placeholder { color: rgba(255, 255, 255, 0.62); }
+
+.folder-filter input::-webkit-search-cancel-button,
+.folder-filter input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
+.folder-filter-clear {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #fff;
+}
+
+.folder-filter-clear[hidden] { display: none; }
+
+.folder-filter-clear:hover,
+.folder-filter-clear:focus-visible { background: rgba(255, 255, 255, 0.14); }
 
 .hint, .optional, #about-version { color: var(--muted); }
 
@@ -1640,9 +1691,18 @@ nav.rail { overflow: visible; }
 
 #folders {
   flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: transparent;
   color: #fff;
   padding: 4px 8px 12px;
+}
+
+#folders > button.ghost {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #messages,
@@ -1654,7 +1714,7 @@ nav.rail { overflow: visible; }
 
 nav h2,
 button.account {
-  margin: 10px 8px 2px;
+  margin: 10px 0 2px;
   padding: 2px 8px;
   border: 0;
   background: transparent;
@@ -1665,6 +1725,8 @@ button.account {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
+  min-width: 0;
 }
 
 button.account { display: block; width: 100%; border-radius: 6px; }
@@ -1877,12 +1939,15 @@ button.folder .folder-label {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
 .folder-icon { flex: none; width: 1.25em; text-align: center; opacity: 0.92; }
 
 button.folder .name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1891,22 +1956,45 @@ button.folder .name {
 .folder-line {
   display: flex;
   align-items: center;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+}
+
+.folder-indent {
+  flex: 0 1 auto;
+  min-width: 0;
+  align-self: stretch;
 }
 
 .folder-line > button.folder {
   flex: 1 1 auto;
   width: auto;
   min-width: 0;
+  max-width: 100%;
   padding-left: 4px;
 }
 
+button.folder.is-filter-match:not([aria-current="true"]) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 button.folder-twist,
-.folder-twist-spacer {
+.folder-twist-spacer,
+.folder-twist-mark {
   flex: none;
   width: 16px;
   height: 22px;
 }
+
+.folder-twist-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.folder-twist-mark svg { display: block; }
 
 button.folder-twist {
   display: inline-flex;
@@ -2011,7 +2099,7 @@ button.message:focus-visible { outline-offset: -2px; }
 .message-row:focus-within .row-actions { visibility: visible; }
 
 .message-row:hover .when,
-.message-row:focus-within .when { visibility: hidden; }
+.message-row:focus-within .when { display: none; }
 
 /* Compact is opt-in; retain the same row buttons, selection, and actions. */
 #messages.compact-list .message-row { contain-intrinsic-size: auto 32px; }
@@ -2034,11 +2122,13 @@ button.message:focus-visible { outline-offset: -2px; }
 #messages.compact-list .from { flex: 0 1 28%; font-size: 12px; }
 #messages.compact-list .subject-line { flex: 1; align-items: center; }
 #messages.compact-list .when { flex: none; }
-#messages.compact-list .row-action { width: 24px; height: 24px; }
+#messages.compact-list .row-action { width: 22px; height: 22px; }
+#messages.compact-list .message-row:hover .row-main,
+#messages.compact-list .message-row:focus-within .row-main { padding-right: 140px; }
 
 .row-action {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -2048,10 +2138,15 @@ button.message:focus-visible { outline-offset: -2px; }
   color: var(--ink);
 }
 
+.message-row:hover .row-main,
+.message-row:focus-within .row-main { padding-right: 152px; }
+
 .row-action svg { display: block; }
 
 .row-action:hover,
 .row-action:focus-visible { background: var(--hover); }
+
+.row-action.is-starred { color: var(--star); }
 
 .row-action:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 1px; }
 
@@ -3014,7 +3109,15 @@ textarea { min-height: 140px; resize: vertical; }
 
 /* Verified disabled replies remain a status line; active/unknown/error keep details. */
 .mail-ooo.is-off { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
-.mail-ooo.is-off .hint { margin: 0; flex: 1; font-size: 12px; white-space: nowrap; }
+.mail-ooo.is-off .hint {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  white-space: nowrap;
+}
 .mail-ooo.is-off .row { margin: 0; flex: 0 0 auto; }
 .mail-ooo.is-off button { padding: 3px 6px; font-size: 12px; }
 @media (max-height: 600px) {
@@ -3067,7 +3170,7 @@ textarea { min-height: 140px; resize: vertical; }
   #message-list, #reader, #folders { scrollbar-color: auto; }
 }
 @media (max-width: 800px) {
-  .side { overflow: auto; }
-  #side-mail { flex: 0 0 auto; }
-  #folders { overflow: visible; }
+  .side { overflow-x: hidden; overflow-y: auto; }
+  #side-mail { flex: 0 0 auto; min-width: 0; }
+  #folders { overflow-x: hidden; overflow-y: visible; }
 }
