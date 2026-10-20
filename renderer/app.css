@@ -2360,8 +2360,11 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   width: min(1180px, calc(100vw - 24px));
 }
 
+/* Grow with the draft and the quote. The ceiling is the only forced height. */
 #compose[open].is-quoting {
-  height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  height: max-content;
   max-height: calc(100vh - 32px);
   overflow: hidden;
 }
@@ -2369,9 +2372,10 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
 #compose[open].is-quoting > form {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
-  height: 100%;
-  max-height: none;
+  flex: 0 1 auto;
+  min-height: 0;
+  height: auto;
+  max-height: calc(100vh - 32px);
   overflow: hidden;
 }
 
@@ -2401,7 +2405,8 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
 }
 
 #compose.is-quoting .compose-split {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
+  min-height: 0;
   margin-top: 8px;
 }
 
@@ -2425,12 +2430,14 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   flex: 0 0 var(--compose-quote, 420px);
   width: var(--compose-quote, 420px);
   max-width: calc(100% - 300px);
+  max-height: 100%;
 }
 
 #compose[data-layout="narrow"][data-quote="shown"] .compose-quote {
-  flex: 0 1 38%;
+  flex: 0 1 auto;
   width: 100%;
-  max-height: 38%;
+  /* 38% needs a definite parent. A viewport cap still leaves the draft usable. */
+  max-height: min(38vh, 320px);
   min-height: 0;
   margin-bottom: 10px;
   overflow: hidden;
@@ -2534,9 +2541,15 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
 
 #compose.is-quoting .compose-draft { overflow: auto; }
 
+#compose.is-quoting .compose-head,
+#compose.is-quoting #compose-note,
+#compose.is-quoting #compose-status,
+#compose.is-quoting .row {
+  flex: none;
+}
+
 #compose.is-quoting .row {
   position: static;
-  flex: none;
 }
 
 #compose-quote-note { margin: 0 0 8px; }
@@ -2548,7 +2561,7 @@ dialog {
   left: 0;
   right: 0;
   width: min(520px, calc(100vw - 24px));
-  height: auto;
+  height: max-content;
   max-height: calc(100vh - 32px);
   /* Auto margins center the dialog so Motion can animate transform. */
   margin: 0 auto;
@@ -2570,12 +2583,17 @@ dialog > form,
 
 dialog::backdrop { background: rgba(16, 40, 34, 0.72); }
 
-/* Keep compact utility and confirmation dialogs centered on both axes without conflicting with Motion transforms. */
+/* Center without a transform so Motion can animate translate. max-content keeps the vertical insets from stretching a short dialog. */
 #about-dialog,
 #confirm,
 #compose-close-review,
 #bot-secret,
-#move-picker { inset: 0; margin: auto; }
+#move-picker {
+  inset: 0;
+  margin: auto;
+  height: max-content;
+  max-height: calc(100vh - 32px);
+}
 
 dialog h2 {
   margin-bottom: 8px;

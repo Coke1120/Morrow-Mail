@@ -241,7 +241,14 @@ assert.ok(appJs.includes("ArrowDown") && appJs.includes("moveCursor"), "message 
 const css = fs.readFileSync(path.join(root, "renderer/app.css"), "utf8");
 assert.ok(css.includes(".list-title") && css.includes(".when"), "shell css missing dense list styles");
 assert.ok(/button\.message \{\s*display:\s*flex;[^}]*min-height:\s*60px/.test(css), "message rows are 60px");
-assert.ok(css.includes("#compose[open].is-quoting") && css.includes("height: calc(100vh - 32px)"), "quoting dialog fills the window");
+const quotingAt = css.indexOf("#compose[open].is-quoting {");
+assert.ok(quotingAt >= 0, "quoting compose keeps a layout rule");
+const quotingRule = css.slice(quotingAt, css.indexOf("}", quotingAt));
+assert.match(quotingRule, /height:\s*max-content/, "quoting dialog sizes to its content");
+assert.match(quotingRule, /max-height:\s*calc\(100vh - 32px\)/, "quoting dialog keeps a viewport ceiling");
+assert.ok(!/(^|[^-])height:\s*calc\(100vh - 32px\)/.test(quotingRule), "quoting dialog does not force the viewport height");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#bot-secret,\s*#move-picker\s*\{[^}]*height:\s*max-content/, "compact dialogs hug their content");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#bot-secret,\s*#move-picker\s*\{[^}]*margin:\s*auto/, "compact dialogs stay centered without a transform");
 assert.ok(!css.includes("min(820px"), "quoting dialog no longer stops at 820px");
 assert.ok(css.includes('#compose[data-quote-collapsed="true"] .compose-quote-body'), "collapse hides the quote body");
 assert.ok(css.includes("#193c34") && css.includes("#102822") && css.includes("#b9d5ad") && css.includes("[data-theme=\"dark\"]"), "shell css missing logo green tokens");
