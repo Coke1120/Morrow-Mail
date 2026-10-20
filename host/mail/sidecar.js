@@ -30,6 +30,8 @@ const CHANNELS = new Set([
   "calendar:connect",
   "calendar:list",
   "calendar:createEvent",
+  "calendar:updateEvent",
+  "calendar:deleteEvent",
 ]);
 
 const MONTH_MS = 62 * 24 * 60 * 60 * 1000;
@@ -990,6 +992,39 @@ async function createCalendarEvent(params) {
   }
 }
 
+async function updateCalendarEvent(params) {
+  const ready = await withPurpose(params, "calendar");
+  if (ready.error) return ready.error;
+  try {
+    const event = await calendar.updateEvent(
+      ready.provider,
+      ready.token.accessToken,
+      params && params.calendarId,
+      params && params.eventId,
+      params
+    );
+    return ok(event);
+  } catch (error) {
+    return failFrom(error);
+  }
+}
+
+async function deleteCalendarEvent(params) {
+  const ready = await withPurpose(params, "calendar");
+  if (ready.error) return ready.error;
+  try {
+    const event = await calendar.deleteEvent(
+      ready.provider,
+      ready.token.accessToken,
+      params && params.calendarId,
+      params && params.eventId
+    );
+    return ok(event);
+  } catch (error) {
+    return failFrom(error);
+  }
+}
+
 function rulesMessage(backend) {
   if (backend === "gmail") {
     return "Gmail stores these filters and applies them to mail that arrives after you save. Morrow Mail does not forward mail.";
@@ -1194,6 +1229,10 @@ function answer(channel, args) {
         return listCalendar(params || {});
       case "calendar:createEvent":
         return createCalendarEvent(params || {});
+      case "calendar:updateEvent":
+        return updateCalendarEvent(params || {});
+      case "calendar:deleteEvent":
+        return deleteCalendarEvent(params || {});
       default:
         return undefined;
     }

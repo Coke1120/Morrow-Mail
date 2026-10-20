@@ -74,6 +74,8 @@ const INVOKE = [
   "calendar:connect",
   "calendar:list",
   "calendar:createEvent",
+  "calendar:updateEvent",
+  "calendar:deleteEvent",
   "mail:listFromCache",
   "mail:getSyncStatus",
   "mail:listFromNetwork",

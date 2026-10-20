@@ -37,6 +37,25 @@ function normalizeGraphCalendar(item) {
   };
 }
 
+function plainDescription(value) {
+  const stripped = String(value || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\r\n/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!stripped) return "";
+  return stripped.length > 8000 ? stripped.slice(0, 8000) : stripped;
+}
+
 function normalizeGoogleEvent(item, calendarId) {
   if (!item || !safeId(item.id) || item.status === "cancelled") return null;
   const start = item.start && (item.start.dateTime || item.start.date) || "";
@@ -51,6 +70,7 @@ function normalizeGoogleEvent(item, calendarId) {
     end: end ? (allDay ? String(end).slice(0, 10) : end) : "",
     allDay,
     location: cleanName(item.location) || "",
+    description: plainDescription(item.description),
   };
 }
 
@@ -79,29 +99,43 @@ function normalizeGraphEvent(item, calendarId) {
     end: rawEnd ? zonedDateTime(rawEnd, endZone, allDay) : "",
     allDay,
     location: cleanName(item.location && item.location.displayName) || "",
+    description: plainDescription((item.body && item.body.content) || item.bodyPreview),
   };
 }
 
 function googleEventBody(draft) {
-  const body = {
-    summary: draft.title,
-    start: { dateTime: draft.start, timeZone: "UTC" },
-    end: { dateTime: draft.end, timeZone: "UTC" },
-  };
+  const allDay = !!(draft && draft.allDay);
+  const body = { summary: draft.title };
+  if (allDay) {
+    body.start = { date: String(draft.start).slice(0, 10) };
+    body.end = { date: String(draft.end).slice(0, 10) };
+  } else {
+    body.start = { dateTime: draft.start, timeZone: "UTC" };
+    body.end = { dateTime: draft.end, timeZone: "UTC" };
+  }
   const location = cleanName(draft && draft.location);
   if (location) body.location = location;
+  if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) {
+    body.description = String(draft.description || "");
+  }
   return body;
 }
 
 function graphEventBody(draft) {
-  const body = {
-    subject: draft.title,
-    start: { dateTime: draft.start, timeZone: "UTC" },
-    end: { dateTime: draft.end, timeZone: "UTC" },
-    isAllDay: false,
-  };
+  const allDay = !!(draft && draft.allDay);
+  const body = { subject: draft.title, isAllDay: allDay };
+  if (allDay) {
+    body.start = { dateTime: String(draft.start).slice(0, 10) + "T00:00:00", timeZone: "UTC" };
+    body.end = { dateTime: String(draft.end).slice(0, 10) + "T00:00:00", timeZone: "UTC" };
+  } else {
+    body.start = { dateTime: draft.start, timeZone: "UTC" };
+    body.end = { dateTime: draft.end, timeZone: "UTC" };
+  }
   const location = cleanName(draft && draft.location);
   if (location) body.location = { displayName: location };
+  if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) {
+    body.body = { contentType: "Text", content: String(draft.description || "") };
+  }
   return body;
 }
 
@@ -198,7 +232,7 @@ async function listGraphEvents(accessToken, calendarId, range, fetchImpl) {
   url.searchParams.set("startDateTime", range.timeMin);
   url.searchParams.set("endDateTime", range.timeMax);
   url.searchParams.set("$top", "100");
-  url.searchParams.set("$select", "id,subject,start,end,isAllDay,location");
+  url.searchParams.set("$select", "id,subject,start,end,isAllDay,location,bodyPreview");
   let next = url.toString();
   const seen = new Set();
   let pages = 0;
@@ -238,42 +272,60 @@ async function listEvents(provider, accessToken, calendarId, range, fetchImpl) {
   return { events: [], truncated: false };
 }
 
-async function createEvent(provider, accessToken, calendarId, draft, fetchImpl) {
+function invalidEvent(message) {
+  const error = new Error(message);
+  error.code = "invalid";
+  return error;
+}
+
+function writeEvent(draft) {
   const title = cleanName(draft && draft.title);
-  const start = draft && draft.start;
-  const end = draft && draft.end;
-  if (!title) {
-    const error = new Error("Add a title.");
-    error.code = "invalid";
-    throw error;
-  }
-  const startMs = Date.parse(start);
-  const endMs = Date.parse(end);
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
-    const error = new Error("Pick a start and a later end.");
-    error.code = "invalid";
-    throw error;
-  }
-  const body = { title, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
+  if (!title) throw invalidEvent("Add a title.");
+  const description = plainDescription(draft && draft.description);
   const location = cleanName(draft && draft.location);
+  if (draft && draft.allDay === true) {
+    const start = String(draft.start || "").slice(0, 10);
+    const end = String(draft.end || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end <= start) {
+      throw invalidEvent("Pick a start date and a later end date.");
+    }
+    const body = { title, start, end, allDay: true, description };
+    if (location) body.location = location;
+    return body;
+  }
+  const startMs = Date.parse(draft && draft.start);
+  const endMs = Date.parse(draft && draft.end);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    throw invalidEvent("Pick a start and a later end.");
+  }
+  const body = {
+    title,
+    start: new Date(startMs).toISOString(),
+    end: new Date(endMs).toISOString(),
+    allDay: false,
+    description,
+  };
   if (location) body.location = location;
+  return body;
+}
+
+async function sendEvent(provider, accessToken, calendarId, url, body, method, fetchImpl) {
+  if (!url) throw invalidEvent("Choose a calendar.");
   if (provider === "google") {
-    const url = calendarPath("google", calendarId, "/events");
-    const json = await apiJson(url, accessToken, { method: "POST", fetchImpl, body: googleEventBody(body) });
+    const json = await apiJson(url, accessToken, { method, fetchImpl, body: googleEventBody(body) });
     const event = normalizeGoogleEvent(json, calendarId);
     if (!event) {
-      const error = new Error("Google Calendar did not return the new event.");
+      const error = new Error(method === "POST" ? "Google Calendar did not return the new event." : "Google Calendar did not return the event.");
       error.code = "provider";
       throw error;
     }
     return event;
   }
   if (provider === "microsoft") {
-    const url = calendarPath("microsoft", calendarId, "/events");
-    const json = await apiJson(url, accessToken, { method: "POST", fetchImpl, body: graphEventBody(body) });
+    const json = await apiJson(url, accessToken, { method, fetchImpl, body: graphEventBody(body) });
     const event = normalizeGraphEvent(json, calendarId);
     if (!event) {
-      const error = new Error("Outlook did not return the new event.");
+      const error = new Error(method === "POST" ? "Outlook did not return the new event." : "Outlook did not return the event.");
       error.code = "provider";
       throw error;
     }
@@ -282,6 +334,36 @@ async function createEvent(provider, accessToken, calendarId, draft, fetchImpl) 
   const error = new Error("Calendar needs a Google or Microsoft account.");
   error.code = "imap_only";
   throw error;
+}
+
+async function createEvent(provider, accessToken, calendarId, draft, fetchImpl) {
+  const body = writeEvent(draft);
+  const suffix = "/events";
+  const url = provider === "google" || provider === "microsoft" ? calendarPath(provider, calendarId, suffix) : "";
+  return sendEvent(provider, accessToken, calendarId, url, body, "POST", fetchImpl);
+}
+
+async function updateEvent(provider, accessToken, calendarId, eventId, draft, fetchImpl) {
+  const id = safeId(eventId);
+  if (!id) throw invalidEvent("Choose an event.");
+  const body = writeEvent(draft);
+  const suffix = "/events/" + encodeURIComponent(id);
+  const url = provider === "google" || provider === "microsoft" ? calendarPath(provider, calendarId, suffix) : "";
+  return sendEvent(provider, accessToken, calendarId, url, body, "PATCH", fetchImpl);
+}
+
+async function deleteEvent(provider, accessToken, calendarId, eventId, fetchImpl) {
+  const id = safeId(eventId);
+  if (!id) throw invalidEvent("Choose an event.");
+  if (provider !== "google" && provider !== "microsoft") {
+    const error = new Error("Calendar needs a Google or Microsoft account.");
+    error.code = "imap_only";
+    throw error;
+  }
+  const url = calendarPath(provider, calendarId, "/events/" + encodeURIComponent(id));
+  if (!url) throw invalidEvent("Choose a calendar.");
+  await apiJson(url, accessToken, { method: "DELETE", fetchImpl });
+  return { id, calendarId: safeId(calendarId) || "", deleted: true };
 }
 
 function preferredCalendarId(calendars) {
@@ -304,6 +386,10 @@ module.exports = {
   listCalendars,
   listEvents,
   createEvent,
+  updateEvent,
+  deleteEvent,
+  plainDescription,
+  writeEvent,
   preferredCalendarId,
   pageToken,
 };

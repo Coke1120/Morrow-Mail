@@ -175,51 +175,73 @@
     </div>
     <section id="provider-panel" class="primary-space" hidden aria-labelledby="provider-title">
       <div class="space-head motion-block"><h2 id="provider-title">Folders &amp; labels</h2></div>
-      <p class="hint">Manage Gmail labels and Outlook folders. Right-click a row to rename, delete, or move it. Drag a row onto another folder to nest it, or onto Top level to unnest it.</p>
+      <p class="hint">Columns work like Finder. Select a folder to show what is inside it on the right. Filter matches a name and keeps the folders above it. Right-click to rename, delete, or move. Drag a row to nest it, or drop a message on a row to add a Gmail label or move an Outlook message.</p>
       <label for="provider-account">Mailbox</label>
       <select id="provider-account"></select>
+      <div class="folder-filter provider-filter">
+        <label class="sr" for="provider-filter">Filter labels and folders</label>
+        <input id="provider-filter" type="search" placeholder="Filter labels and folders" autocomplete="off" spellcheck="false" aria-controls="provider-content" />
+        <button type="button" class="folder-filter-clear" id="provider-filter-clear" hidden aria-label="Clear label filter" title="Clear label filter">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+        </button>
+      </div>
       <div id="provider-content"></div>
     </section>
     <section id="calendar-panel" hidden aria-label="Calendar">
       <div class="calendar-bar motion-block">
-        <button type="button" class="ghost" id="calendar-prev">Previous month</button>
-        <h2 id="calendar-heading">Calendar</h2>
-        <button type="button" class="ghost" id="calendar-next">Next month</button>
         <button type="button" class="ghost" id="calendar-today">Today</button>
+        <button type="button" class="ghost icon-btn" id="calendar-prev" aria-label="Previous month" title="Previous month">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </button>
+        <button type="button" class="ghost icon-btn" id="calendar-next" aria-label="Next month" title="Next month">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        </button>
+        <h2 id="calendar-heading">Calendar</h2>
+        <span class="calendar-bar-spacer"></span>
         <label class="sr" for="calendar-account">Account</label>
         <select id="calendar-account"></select>
         <button type="button" class="ghost" id="calendar-grant">Enable mailbox features</button>
+        <button type="button" class="primary" id="calendar-add">Create</button>
       </div>
-      <nav class="section-nav" id="calendar-nav" aria-label="Calendar sections">
-        <button type="button" data-scroll="calendar-layout" aria-current="true">Month</button>
-        <button type="button" data-scroll="calendar-side">Agenda</button>
-        <button type="button" data-scroll="calendar-create">Add event</button>
-      </nav>
       <p id="calendar-status" class="motion-block" role="status"></p>
       <div id="calendar-layout" class="motion-block" hidden>
-        <div id="calendar-body"></div>
-        <div id="calendar-side">
+        <aside id="calendar-side">
+          <div id="calendar-mini" aria-label="Mini month"></div>
+          <h3>Calendars</h3>
+          <div id="calendar-list"></div>
           <h3>Agenda</h3>
           <div id="calendar-agenda"></div>
+        </aside>
+        <div id="calendar-main">
+          <div id="calendar-body"></div>
         </div>
       </div>
-      <div id="calendar-detail" class="motion-block" hidden></div>
-      <form id="calendar-create" class="motion-block" hidden>
-        <label for="calendar-pick">Calendar</label>
-        <select id="calendar-pick"></select>
+      <div id="calendar-detail" hidden></div>
+    </section>
+    <dialog id="calendar-event-dialog" aria-labelledby="calendar-dialog-title">
+      <form id="calendar-create">
+        <h2 id="calendar-dialog-title">Add event</h2>
         <label for="calendar-event-title">Title</label>
         <input id="calendar-event-title" type="text" maxlength="200" />
+        <label for="calendar-pick">Calendar</label>
+        <select id="calendar-pick"></select>
         <label for="calendar-location">Location <span class="optional">(optional)</span></label>
         <input id="calendar-location" type="text" maxlength="200" />
+        <label for="calendar-description">Description <span class="optional">(optional)</span></label>
+        <textarea id="calendar-description" maxlength="8000" rows="4"></textarea>
+        <label class="calendar-all-day-label" for="calendar-all-day"><input id="calendar-all-day" type="checkbox" /> All day</label>
         <label for="calendar-start">Start</label>
         <input id="calendar-start" type="datetime-local" />
         <label for="calendar-end">End</label>
         <input id="calendar-end" type="datetime-local" />
+        <p id="calendar-form-status" role="status"></p>
         <div class="row">
-          <button type="submit" class="primary">Add event</button>
+          <button type="submit" class="primary" id="calendar-save">Add event</button>
+          <button type="button" class="ghost" id="calendar-delete" hidden>Delete</button>
+          <button type="button" class="ghost" id="calendar-cancel">Cancel</button>
         </div>
       </form>
-    </section>
+    </dialog>
     <section id="agent-panel" class="primary-space" hidden aria-label="Agent">
       <div class="space-head motion-block">
         <div>
