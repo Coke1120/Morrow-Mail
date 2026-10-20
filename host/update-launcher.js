@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const execFile = require('node:util').promisify(require('node:child_process').execFile);
 const { verifyManifest, validateArtifact } = require('./update-manifest');
-const { preserveQuarantine, requireQuarantine, extractZip, verifyBundle, assessBundleTrust } = require('./update-installer');
+const { preserveQuarantine, requireQuarantine, extractZip, verifyBundle, assessBundleTrust, removeTree } = require('./update-installer');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const PREFIX = '.morrow-update-';
 function childEnvironment(runAsNode = false) {
@@ -69,7 +69,7 @@ async function cleanupUnstarted({ staging, target, identities }) {
   const allowed = new Set(['update-helper.js', 'update-launcher.js', 'update-manifest.js', 'update-installer.js',
     'artifact.zip', 'preflight', 'manifest.json', 'public-key.pem', 'config.json', 'cancel']);
   if ((await fs.readdir(staging)).some(name => !allowed.has(name))) throw new Error('Update transaction may have started; recovery files retained.');
-  await fs.rm(staging, { recursive: true });
+  await removeTree(staging);
 }
 async function start(options) {
   if (process.platform !== 'darwin') throw new Error('This installer requires macOS.');
@@ -112,7 +112,7 @@ async function start(options) {
     // The helper re-extracts authenticated bytes after quit. This preview is no
     // longer needed and must not accumulate beside the retained backup.
     await assertDirectoryIdentity(staging, identities.staging);
-    await fs.rm(path.join(staging, 'preflight'), { recursive: true });
+    await removeTree(path.join(staging, 'preflight'));
     const nonce = crypto.randomBytes(32).toString('hex');
     await writeExclusive(path.join(staging, 'manifest.json'), manifestBytes);
     await writeExclusive(path.join(staging, 'public-key.pem'), publicKey);
