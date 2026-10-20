@@ -2278,10 +2278,63 @@ function allInboxButton() {
   return button;
 }
 
+function folderFilterQuery() {
+  const input = $("folder-filter");
+  return input ? String(input.value || "") : "";
+}
+
+function filterSidebarTree(rows, query) {
+  const list = Array.isArray(rows) ? rows.filter((folder) => folder && folder.id != null && folder.id !== "") : [];
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return list.map((folder) => Object.assign({}, folder, { filterMatch: false }));
+  const byId = new Map(list.map((folder) => [String(folder.id), folder]));
+  const keep = new Set();
+  const match = new Set();
+  for (const folder of list) {
+    if (!chipLabel(folder).toLowerCase().includes(q)) continue;
+    const id = String(folder.id);
+    match.add(id);
+    keep.add(id);
+    let parent = folder.parentId ? String(folder.parentId) : "";
+    const seen = new Set();
+    while (parent && byId.has(parent) && !seen.has(parent)) {
+      seen.add(parent);
+      keep.add(parent);
+      const next = byId.get(parent);
+      parent = next && next.parentId ? String(next.parentId) : "";
+    }
+  }
+  return list.filter((folder) => keep.has(String(folder.id))).map((folder) => Object.assign({}, folder, {
+    filterMatch: match.has(String(folder.id)),
+  }));
+}
+
+function sidebarRowsFor(tree, accountId, collapsed, query, collapse) {
+  const q = String(query || "").trim().toLowerCase();
+  const list = Array.isArray(tree) ? tree : [];
+  if (q) {
+    const filtered = filterSidebarTree(list, q);
+    const parents = new Set();
+    for (const folder of filtered) {
+      if (folder && folder.parentId) parents.add(String(folder.parentId));
+    }
+    return filtered.map((folder) => {
+      const hasChild = parents.has(String(folder.id));
+      return Object.assign({}, folder, {
+        hasChild: hasChild,
+        expanded: hasChild,
+        filtering: true,
+      });
+    });
+  }
+  if (!collapse || typeof collapse.visibleRows !== "function") {
+    return list.map((folder) => Object.assign({}, folder, { hasChild: false, expanded: true }));
+  }
+  return collapse.visibleRows(list, collapsed, accountId);
+}
+
 function sidebarFolderRows(tree, accountId) {
-  const collapse = folderCollapse();
-  if (!collapse) return (Array.isArray(tree) ? tree : []).map((folder) => Object.assign({}, folder, { hasChild: false, expanded: true }));
-  return collapse.visibleRows(tree, state.prefs.collapsedFolders, accountId);
+  return sidebarRowsFor(tree, accountId, state.prefs.collapsedFolders, folderFilterQuery(), folderCollapse());
 }
 
 function mirrorFolderTarget(line, button) {
@@ -2289,6 +2342,14 @@ function mirrorFolderTarget(line, button) {
   for (const key of keys) {
     if (button.dataset[key]) line.dataset[key] = button.dataset[key];
   }
+}
+
+function folderTwistMark(open) {
+  const mark = document.createElement("span");
+  mark.className = "folder-twist-mark";
+  mark.setAttribute("aria-hidden", "true");
+  mark.appendChild(strokeIcon([open ? MOVE_CHEVRON_DOWN : MOVE_CHEVRON_RIGHT], 12));
+  return mark;
 }
 
 function folderTwist(folder, accountId, labelText) {
@@ -2316,6 +2377,7 @@ function renderAccounts() {
   renderSettingsAccounts();
   refreshMailVacation();
   const nav = $("folders");
+  const folderQuery = String(folderFilterQuery() || "").trim().toLowerCase();
   // Sync status and folder selection do not change the folder tree.
   const key = JSON.stringify([
     state.accounts,
@@ -2323,6 +2385,7 @@ function renderAccounts() {
     state.prefs.gmailOpen,
     state.prefs.outlookOpen,
     state.prefs.collapsedFolders || {},
+    folderQuery,
   ]);
   if (key === folderRenderKey) {
     const all = nav.querySelector("button.all-inbox");
@@ -2346,10 +2409,17 @@ function renderAccounts() {
     nav.append(empty, connectButton());
     return;
   }
-  nav.appendChild(allInboxButton());
+  const showAllInbox = !folderQuery || "all inbox".includes(folderQuery);
+  let shownFolder = showAllInbox;
+  if (showAllInbox) nav.appendChild(allInboxButton());
   for (const account of state.accounts) {
     const provider = folderProvider(account);
-    const expanded = providerExpanded(provider, state.prefs);
+    const filtering = !!folderQuery;
+    const expanded = filtering || providerExpanded(provider, state.prefs);
+    const tree = expanded ? folderTree(foldersOf(account), accountDelimiter(account)) : [];
+    const rows = expanded ? sidebarFolderRows(tree, account.id) : [];
+    if (filtering && !rows.length) continue;
+    shownFolder = true;
     let heading;
     if (provider) {
       heading = document.createElement("button");
@@ -2382,17 +2452,20 @@ function renderAccounts() {
       const reconnect = document.createElement("button");
       reconnect.type = "button"; reconnect.className = "ghost";
       reconnect.textContent = "Reconnect " + account.email;
+      reconnect.title = reconnect.textContent;
       reconnect.onclick = () => openConnectFor(account);
       nav.append(note, reconnect);
     }
     if (expanded) {
     nav.appendChild(folderRootDrop("imap", account.id));
-    const tree = folderTree(foldersOf(account), accountDelimiter(account));
-    const rows = sidebarFolderRows(tree, account.id);
     for (const folder of rows) {
       const line = document.createElement("div");
       line.className = "folder-line";
-      line.style.paddingLeft = (4 + folder.depth * 14) + "px";
+      const indent = document.createElement("span");
+      indent.className = "folder-indent";
+      indent.style.width = ((folder.depth || 0) * 14) + "px";
+      indent.setAttribute("aria-hidden", "true");
+      line.appendChild(indent);
       const button = document.createElement("button");
       button.type = "button";
       button.className = "folder";
@@ -2422,6 +2495,7 @@ function renderAccounts() {
       name.className = "name";
       const labelText = chipLabel(folder);
       name.textContent = labelText;
+      if (folder.filterMatch) button.classList.add("is-filter-match");
       label.append(icon, name);
       button.appendChild(label);
       if (folder.unreadCount) {
@@ -2433,6 +2507,7 @@ function renderAccounts() {
       const unread = folder.unreadCount ? `, ${folder.unreadCount} unread` : "";
       const serverName = String(folder.name || folder.id || "");
       const baseTitle = serverName && serverName !== labelText ? serverName : labelText;
+      name.title = baseTitle;
       const baseLabel = `${labelText || "Folder"}${unread}. Right-click to move.`;
       if (virtual) {
         button.title = folder.title || labelText;
@@ -2443,7 +2518,9 @@ function renderAccounts() {
       button.addEventListener("click", () => {
         selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
       });
-      if (folder.hasChild) line.appendChild(folderTwist(folder, account.id, labelText));
+      if (folder.hasChild) {
+        line.appendChild(folder.filtering ? folderTwistMark(folder.expanded !== false) : folderTwist(folder, account.id, labelText));
+      }
       else {
         const spacer = document.createElement("span");
         spacer.className = "folder-twist-spacer";
@@ -2460,6 +2537,12 @@ function renderAccounts() {
       nav.appendChild(line);
     }
     }
+  }
+  if (!shownFolder) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No matching folders.";
+    nav.appendChild(empty);
   }
 }
 
@@ -3318,6 +3401,7 @@ const ROW_ICON = {
   Delete: "M5 7h14M9.5 7V4.5h5V7M7 7l1 13h8l1-13",
   Reply: "M9 17 4 12 9 7M20 18v-2a4 4 0 0 0-4-4H4",
   "Reply All": "M8 17 3 12 8 7M13 17 8 12 13 7M21 18v-2a4 4 0 0 0-4-4H8",
+  Forward: ["M15 14 20 9 15 4", "M4 20v-7a4 4 0 0 1 4-4h12"],
 };
 
 function rowIcon(label) {
@@ -3326,25 +3410,34 @@ function rowIcon(label) {
   svg.setAttribute("width", "16");
   svg.setAttribute("height", "16");
   svg.setAttribute("aria-hidden", "true");
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke", "currentColor");
-  path.setAttribute("stroke-width", "1.8");
-  path.setAttribute("stroke-linecap", "round");
-  path.setAttribute("stroke-linejoin", "round");
-  path.setAttribute("d", ROW_ICON[label] || "");
-  svg.appendChild(path);
+  const spec = ROW_ICON[label];
+  const paths = Array.isArray(spec) ? spec : [spec || ""];
+  for (const d of paths) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.8");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  }
   return svg;
 }
 
-function rowAction(action, label, run) {
+function rowAction(action, label, run, iconNode) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "row-action";
   button.dataset.action = action;
   button.setAttribute("aria-label", label);
   button.title = label;
-  button.appendChild(rowIcon(label));
+  if (action === "star") {
+    const on = label === "Unstar";
+    button.classList.toggle("is-starred", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  button.appendChild(iconNode || rowIcon(label));
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -3461,11 +3554,14 @@ function messageRow(email) {
   actions.className = "row-actions";
   actions.setAttribute("data-testid", "mail-row-actions");
   const unread = !!email.unread;
+  const starred = !!email.isStarred;
   actions.append(
+    rowAction("star", starred ? "Unstar" : "Star", () => toggleStar(row.mailMessage), starIcon(starred, 16)),
     rowAction("read", unread ? "Mark read" : "Mark unread", () => setRead(row.mailMessage, !!row.mailMessage.unread)),
-    rowAction("delete", "Delete", () => deleteFromList(row.mailMessage)),
     rowAction("reply", "Reply", () => replyFromList(row.mailMessage, "reply")),
     rowAction("reply-all", "Reply All", () => replyFromList(row.mailMessage, "all")),
+    rowAction("forward", "Forward", () => replyFromList(row.mailMessage, "forward")),
+    rowAction("delete", "Delete", () => deleteFromList(row.mailMessage)),
   );
   row.append(rowCheck(email, selected), button, actions);
   return row;
@@ -12391,6 +12487,38 @@ function wire() {
   if (listFilter) {
     listFilter.addEventListener("input", () => renderList());
     listFilter.addEventListener("search", () => renderList());
+  }
+  const folderFilter = $("folder-filter");
+  const folderFilterClear = $("folder-filter-clear");
+  if (folderFilter) {
+    const syncFolderFilterClear = () => {
+      if (folderFilterClear) folderFilterClear.hidden = !String(folderFilter.value || "");
+    };
+    const applyFolderFilter = () => {
+      syncFolderFilterClear();
+      renderAccounts();
+    };
+    folderFilter.addEventListener("input", applyFolderFilter);
+    folderFilter.addEventListener("search", applyFolderFilter);
+    folderFilter.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (folderFilter.value) {
+        folderFilter.value = "";
+        applyFolderFilter();
+        return;
+      }
+      folderFilter.blur();
+    });
+    if (folderFilterClear) {
+      folderFilterClear.addEventListener("click", () => {
+        folderFilter.value = "";
+        applyFolderFilter();
+        folderFilter.focus();
+      });
+    }
+    syncFolderFilterClear();
   }
   $("refresh").addEventListener("click", () => guard(refresh));
   $("list-prev").addEventListener("click", () => guard(() => changeListPage(-1)));

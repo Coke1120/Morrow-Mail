@@ -122,6 +122,14 @@
         <div id="side-mail" class="side-pane">
           <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled</button>
           <section id="mail-ooo" class="mail-ooo" aria-label="Mailbox automatic replies" hidden><p id="mail-ooo-status" class="hint" role="status"></p><div class="row"><button type="button" class="ghost" id="mail-ooo-manage">Manage / disable</button><button type="button" class="ghost" id="mail-ooo-refresh">Refresh status</button></div></section>
+          <div class="folder-filter">
+            <label class="sr" for="folder-filter">Filter folders and labels</label>
+            <input id="folder-filter" data-testid="folder-filter" type="search" placeholder="Filter folders" autocomplete="off" spellcheck="false" aria-controls="folders" aria-describedby="folder-filter-help" />
+            <button type="button" class="folder-filter-clear" id="folder-filter-clear" hidden aria-label="Clear folder filter" title="Clear folder filter">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+            </button>
+          </div>
+          <p class="sr" id="folder-filter-help">Matches folder and label names in every mailbox. A match stays with its parent folders. Clear the field to show the full list.</p>
           <nav id="folders" aria-label="Folders"></nav>
         </div>
       </div>

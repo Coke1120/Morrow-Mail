@@ -341,6 +341,20 @@ assert.ok(!rowActionSrc.includes("textContent"), "row actions still render text 
 assert.ok(rowActionSrc.includes('setAttribute("aria-label", label)') && rowActionSrc.includes("button.title = label"), "row actions missing accessible names");
 assert.ok(appJs.includes('className = "row-actions"') && appJs.includes("Mark unread"), "message rows have no hover actions");
 assert.ok(css.includes(".row-action svg"), "row actions are not icon buttons");
+assert.ok(html.includes('id="folder-filter"') && html.includes("Filter folders and labels"), "mailbox list has no folder filter");
+assert.ok(css.includes(".folder-filter") && css.includes(".folder-indent"), "folder filter or indent layout missing");
+assert.ok(css.includes("#folders {\n  flex: 1 1 auto;\n  min-width: 0;\n  overflow-x: hidden;\n  overflow-y: auto;"), "folder list still scrolls horizontally");
+const messageRowSrc = functionSource(appJs, "messageRow");
+const rowOrder = ['"star"', '"read"', '"reply"', '"reply-all"', '"forward"', '"delete"'];
+let rowAt = -1;
+for (const token of rowOrder) {
+  const next = messageRowSrc.indexOf("rowAction(" + token);
+  assert.ok(next > rowAt, "row action order missing " + token);
+  rowAt = next;
+}
+assert.ok(messageRowSrc.includes("toggleStar(row.mailMessage)"), "row star does not use toggleStar");
+assert.ok(messageRowSrc.includes('replyFromList(row.mailMessage, "forward")'), "row forward does not open forward compose");
+assert.ok(messageRowSrc.includes("starIcon(starred, 16)"), "row star does not use the shared star icon");
 const filteredEmails = extractFunction(appJs, "filteredEmails");
 assert.deepStrictEqual(filteredEmails([
   { subject: "Engine", from: "Charles", snippet: "table" },
@@ -1967,6 +1981,44 @@ assert.deepStrictEqual(folderCollapse.visibleRows(ariesTree, { leo: ["AriesCPA.c
   "AriesCPA.com/AsiaBs",
   "AriesCPA.com/1 Archive",
   "INBOX",
+]);
+const sidebarFilter = loadFunctions(appJs, ["chipLabel", "filterSidebarTree", "sidebarRowsFor"]);
+const filterTree = [
+  { id: "AriesCPA.com", name: "AriesCPA.com", parentId: "", depth: 0 },
+  { id: "AriesCPA.com/1 Internal", name: "1 Internal", parentId: "AriesCPA.com", depth: 1 },
+  { id: "AriesCPA.com/AsiaBs", name: "AsiaBs", parentId: "AriesCPA.com", depth: 1 },
+  { id: "AriesCPA.com/AsiaBs/Q1", name: "Q1", parentId: "AriesCPA.com/AsiaBs", depth: 2 },
+  { id: "INBOX", name: "INBOX", parentId: "", depth: 0 },
+  { id: "HKBSCL.com", name: "HKBSCL.com", parentId: "", depth: 0 },
+];
+assert.deepStrictEqual(sidebarFilter.filterSidebarTree(filterTree, "  ").map((folder) => folder.id), filterTree.map((folder) => folder.id));
+assert.deepStrictEqual(sidebarFilter.filterSidebarTree(filterTree, "asia").map((folder) => folder.id), [
+  "AriesCPA.com",
+  "AriesCPA.com/AsiaBs",
+]);
+assert.deepStrictEqual(sidebarFilter.filterSidebarTree(filterTree, "ASIA").map((folder) => [folder.id, folder.filterMatch]), [
+  ["AriesCPA.com", false],
+  ["AriesCPA.com/AsiaBs", true],
+]);
+assert.deepStrictEqual(sidebarFilter.filterSidebarTree(filterTree, "q1").map((folder) => folder.id), [
+  "AriesCPA.com",
+  "AriesCPA.com/AsiaBs",
+  "AriesCPA.com/AsiaBs/Q1",
+]);
+assert.deepStrictEqual(sidebarFilter.filterSidebarTree(filterTree, "nomatch"), []);
+assert.ok(sidebarFilter.filterSidebarTree(filterTree, "inbox").some((folder) => folder.id === "INBOX" && folder.filterMatch === true));
+assert.deepStrictEqual(sidebarFilter.sidebarRowsFor(filterTree, "leo", { leo: ["AriesCPA.com"] }, "q1", folderCollapse).map((folder) => [folder.id, folder.hasChild, folder.expanded, folder.filtering]), [
+  ["AriesCPA.com", true, true, true],
+  ["AriesCPA.com/AsiaBs", true, true, true],
+  ["AriesCPA.com/AsiaBs/Q1", false, false, true],
+]);
+assert.deepStrictEqual(sidebarFilter.sidebarRowsFor(filterTree, "leo", { leo: ["AriesCPA.com"] }, "", folderCollapse).map((folder) => folder.id), [
+  "AriesCPA.com",
+  "INBOX",
+  "HKBSCL.com",
+]);
+assert.deepStrictEqual(sidebarFilter.sidebarRowsFor(filterTree, "leo", {}, "Aries", null).map((folder) => folder.id), [
+  "AriesCPA.com",
 ]);
 assert.deepStrictEqual(folderCollapse.toggle(folderCollapse.toggle({}, "leo", "AriesCPA.com"), "leo", "AriesCPA.com"), {});
 assert.deepStrictEqual(organizeUi.providerLabelTree([
