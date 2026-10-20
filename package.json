@@ -1,7 +1,7 @@
 {
   "name": "morrow-mail",
   "version": "0.2.12",
-  "description": "Morrow Mail. Open-source Electron mail client.",
+  "description": "Morrow Mail. Open-source Electron mail client for Windows and macOS. Connect your own accounts, read and send mail, and install from GitHub Releases.",
   "main": "host/main.js",
   "private": true,
   "author": "Leo Ho",
