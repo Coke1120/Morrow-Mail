@@ -124,6 +124,9 @@ async function main() {
     for (const cause of [Object.assign(Error('rejected'), { code: 3, killed: false, signal: null }), Object.assign(Error('timed out'), { code: null, killed: true, signal: 'SIGTERM' })]) {
       await assert.rejects(assessBundleTrust(bundle, { run: async () => { throw cause; } }), error => error.code === 'UPDATE_MANUAL_TRUST' && error.cause === cause);
     }
+    // Signed-manifest updater: explicit Gatekeeper denial is tolerated, other failures are not.
+    await assessBundleTrust(bundle, { enforce: false, run: async () => { throw Object.assign(Error('rejected'), { code: 3, killed: false, signal: null }); } });
+    await assert.rejects(assessBundleTrust(bundle, { enforce: false, run: async () => { throw Object.assign(Error('missing'), { code: 'ENOENT' }); } }), /missing/);
     const attrs = [];
     await preserveQuarantine('archive', 'bundle', { run: async (cmd, args) => { attrs.push(args); return { stdout: args.length === 1 ? 'com.apple.quarantine\n' : args[0] === '-px' ? '30 30 38 33' : '' }; } });
     assert.deepEqual(attrs.at(-1), ['-wx', 'com.apple.quarantine', '30303833', 'bundle']);

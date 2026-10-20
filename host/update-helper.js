@@ -48,7 +48,7 @@ async function waitReady({ receipt, nonce, version, launchState, timeout = 60000
   }
   return 'timeout';
 }
-async function launchTrusted(bundle, launch, assess = assessBundleTrust) {
+async function launchTrusted(bundle, launch, assess = bundle => assessBundleTrust(bundle, { enforce: false })) {
   await assess(bundle);
   return launch();
 }
@@ -87,7 +87,7 @@ async function run(staging) {
   const extracted = await extractZip(path.join(staging, 'artifact.zip'), path.join(staging, 'extracted'));
   await preserveQuarantine(path.join(staging, 'artifact.zip'), extracted);
   await verifyBundle(extracted, { version, arch });
-  await assessBundleTrust(extracted);
+  await assessBundleTrust(extracted, { enforce: false });
   const staged = path.join(staging, 'candidate.app');
   await fs.rename(extracted, staged);
   const backup = path.join(staging, 'previous.app');
