@@ -320,7 +320,47 @@ app.whenReady().then(async () => {
   await waitFor(`$('calendar-agenda').textContent.includes('Remaining account')`);
   statusRequests.forEach(resolve => resolve(ok({ google: true, accounts: accounts.map(row => ({ id: row.id, calendar: true })) })));
 
-  // One outer Agent scroller; all tabs and long skill/history content are reachable.
+  // Cached bodies stay quiet. An incomplete body shows a reader spinner and leaves the list mounted.
+  await run(`$('settings').close();showMail();`);
+  const cachedBody = { id: 'cached-body', accountId: 'box-0', folderId: 'Inbox', subject: 'Cached body', from: 'ada@example.test', date: '2026-10-20T12:00:00.000Z', unread: false, bodyComplete: true, snippet: 'Ready' };
+  const slowBody = { id: 'slow-body', accountId: 'box-0', folderId: 'Inbox', subject: 'Slow download', from: 'ada@example.test', date: '2026-10-20T12:00:00.000Z', unread: false, bodyComplete: false, snippet: 'Waiting' };
+  let releaseOpen;
+  routes.set('mail:openEmail', (payload) => new Promise((resolve) => {
+    releaseOpen = () => resolve(ok({
+      email: payload.emailId === 'cached-body'
+        ? { ...cachedBody, textBody: 'Cached text', htmlBody: null }
+        : { ...slowBody, bodyComplete: true, textBody: 'Loaded body text', htmlBody: null },
+      isThread: false,
+      threadMessages: [{ id: payload.emailId }],
+    }));
+  }));
+  await run(`state.emails=${JSON.stringify([cachedBody, slowBody])};state.email=null;state.thread=[];renderList();window.cachedOpen=openMessage('cached-body');0`);
+  for (let i = 0; i < 50 && !releaseOpen; i += 1) await sleep(10);
+  assert.equal(typeof releaseOpen, 'function');
+  await sleep(40);
+  assert.equal(await run(`document.querySelector('#reader .body-pending')===null`), true, 'cached body does not flash a spinner');
+  releaseOpen();
+  const cachedResult = await run(`cachedOpen.then(() => '', (error) => String(error && error.stack || error))`);
+  if (cachedResult) throw new Error(cachedResult);
+  assert.match(await run(`$('reader').textContent`), /Cached text/);
+  releaseOpen = null;
+  await run(`window.slowOpen=openMessage('slow-body');0`);
+  for (let i = 0; i < 50 && !releaseOpen; i += 1) await sleep(10);
+  await waitFor(`!!document.querySelector('#reader .body-pending')`);
+  assert.equal(await run(`$('reader').getAttribute('aria-busy')`), 'true');
+  assert.match(await run(`$('reader').textContent`), /Loading message/);
+  assert.equal(await run(`document.querySelector('#reader .reader-actions')===null`), true, 'reply stays unavailable until the body arrives');
+  assert.equal(await run(`!!$('message-list').querySelector('[aria-current="true"]') && !!$('folders')`), true, 'list and folders stay mounted while the body loads');
+  await shot('reader-body-pending');
+  releaseOpen();
+  const slowResult = await run(`slowOpen.then(() => '', (error) => String(error && error.stack || error))`);
+  if (slowResult) throw new Error(slowResult);
+  assert.equal(await run(`document.querySelector('#reader .body-pending')===null`), true);
+  assert.match(await run(`$('reader').textContent`), /Loaded body text/);
+  assert.equal(await run(`$('reader').hasAttribute('aria-busy')`), false);
+  routes.delete('mail:openEmail');
+
+  // Todos and Skills keep one outer scroller. Conversation scrolls the transcript and pins the composer.
   await run(`showPrimary('agent','agent-panel');
     for(const id of ['agent-home','agent-tools']){const p=document.createElement('p');p.textContent='Long fixture content '.repeat(1000);$(id).append(p);}
     agentTurns=Array.from({length:50},(_,i)=>({role:'user',text:'Saved turn '+i}));paintThread();
@@ -330,14 +370,28 @@ app.whenReady().then(async () => {
     await run(`$('agent-tab-${name}').click()`);
     assert.equal(await run(`$('agent-tab-${name}').getAttribute('aria-selected')`), 'true');
     const scrollers = await run(`[...$('agent-panel').querySelectorAll('*')].filter(n=>!n.closest('[hidden]')&&n.tagName!=='TEXTAREA'&&['auto','scroll'].includes(getComputedStyle(n).overflowY)&&n.scrollHeight>n.clientHeight+1).map(n=>n.id||n.className)`);
-    assert.deepEqual(scrollers, [], 'tab content has no competing scroll containers');
+    if (name === 'conversation') {
+      assert.deepEqual(scrollers, ['agent-sections'], 'conversation scrolls the transcript only');
+      assert.equal(await run(`(()=>{
+        const panel=$('agent-panel').getBoundingClientRect();
+        const before=$('agent-composer').getBoundingClientRect();
+        $('agent-sections').scrollTop=$('agent-sections').scrollHeight;
+        const after=$('agent-composer').getBoundingClientRect();
+        return getComputedStyle($('agent-panel')).overflowY==='hidden'
+          && before.height>0 && before.bottom<=panel.bottom+1 && before.top>=panel.top
+          && Math.abs(after.top-before.top)<1 && after.bottom<=panel.bottom+1
+          && $('agent-input').getBoundingClientRect().height>0;
+      })()`), true, 'composer stays pinned while the transcript scrolls');
+    } else {
+      assert.deepEqual(scrollers, [], 'tab content has no competing scroll containers');
+    }
   }
   assert.equal(await run(`getComputedStyle($('agent-panel')).overflowY`), 'auto');
   await run(`$('agent-tab-tools').focus();$('agent-tab-tools').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}))`);
   assert.equal(await run(`agentTab`), 'conversation');
-  await run(`$('agent-panel').scrollTop=100;window.savedScroll=$('agent-panel').scrollTop;showAgentTab('conversation')`);
-  assert.equal(await run(`$('agent-panel').scrollTop===savedScroll && savedScroll>0`),true,'staying in Conversation preserves reading position');
-  await shot('agent-single-scroll');
+  await run(`$('agent-sections').scrollTop=100;window.savedScroll=$('agent-sections').scrollTop;showAgentTab('conversation')`);
+  assert.equal(await run(`$('agent-sections').scrollTop===savedScroll && savedScroll>0`),true,'staying in Conversation preserves reading position');
+  await shot('agent-composer-pinned');
   win.setSize(800,600);
   await run(`showAgentTab('tools')`);
   assert.equal(await run(`$('agent-panel').scrollWidth<=$('agent-panel').clientWidth+1`), true);

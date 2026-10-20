@@ -1096,6 +1096,33 @@ button.brain-skill {
   scrollbar-gutter: stable;
 }
 
+#agent-panel.primary-space[data-agent-pane="conversation"] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#agent-panel.primary-space[data-agent-pane="conversation"] > :not(#agent-conversation) {
+  flex: 0 0 auto;
+}
+
+#agent-panel.primary-space[data-agent-pane="conversation"] #agent-nav {
+  overflow: visible;
+}
+
+#agent-panel.primary-space[data-agent-pane="conversation"] #agent-conversation {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#agent-panel.primary-space[data-agent-pane="conversation"] #agent-sections {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
 .page-busy {
   position: absolute;
   inset: 0;
@@ -2406,6 +2433,23 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   font: inherit;
   padding-top: 12px;
   padding-bottom: 24px;
+}
+
+.body-pending {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 180px;
+  padding: 28px 20px 36px;
+}
+
+.body-pending-label {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
 }
 
 .body.is-plain { white-space: pre-wrap; }
