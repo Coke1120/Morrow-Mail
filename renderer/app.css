@@ -790,6 +790,86 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 #settings .settings-group > h4 { margin-top: 0; }
 #settings .settings-group > .row:first-child { margin-top: 0; }
 #settings .settings-short-field { max-width: 200px; }
+/* Mail & Sync only. The schedule control is not a .field: a nested
+   label inside .field inherits block layout and full-width inputs,
+   which pulled Hours and Minutes away from their boxes. */
+#settings-mail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#settings-mail-panel > h3,
+#settings-mail .settings-group > h4,
+#settings-mail .field > label,
+#settings-mail .field > .hint,
+#settings-mail .settings-save-note,
+#settings-mail .settings-disclosure,
+#settings-mail .settings-group,
+#settings-mail .checks label.check {
+  margin: 0;
+}
+#settings-mail .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+#settings-mail .field > .hint { margin-top: 2px; }
+#settings-mail .checks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#settings-mail .settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#settings-mail .settings-save-note { margin-top: 4px; }
+#settings-mail .schedule-delay-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+#settings-mail #pref-schedule-delay-label {
+  display: block;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+#settings-mail .schedule-delay {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 16px;
+  width: min(200px, 100%);
+  margin: 0;
+}
+#settings-mail .schedule-delay-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+#settings-mail .schedule-delay-cell label {
+  display: block;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+#settings-mail .schedule-delay-cell input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+#settings-mail .schedule-delay-field > .hint {
+  align-self: stretch;
+  margin: 2px 0 0;
+}
 .settings-field-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 16px; }
 .settings-full-width { grid-column: 1 / -1; }
 #settings .settings-field-grid p, #settings .settings-field-grid .row { margin: 0; }
@@ -2827,18 +2907,6 @@ dialog h2 {
   background: var(--hover);
   font: inherit;
 }
-.schedule-delay {
-  display: grid;
-  width: max-content;
-  max-width: 100%;
-  grid-template-columns: auto 88px auto 88px;
-  gap: 8px;
-  align-items: center;
-  justify-content: start;
-  margin-top: 4px;
-}
-.schedule-delay label { margin: 0; }
-
 #agent-peek { width: min(720px, calc(100vw - 24px)); }
 
 #move-picker { width: min(480px, calc(100vw - 24px)); }
