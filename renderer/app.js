@@ -50,6 +50,8 @@ const state = {
     syncHorizon: 180,
     compactList: false,
     collapsedFolders: {},
+    scheduleDelay: 0,
+    layout: { folders: 260, list: 360, reading: 0 },
   },
   providerFolders: null,
   dragMessage: null,
@@ -89,6 +91,11 @@ let signatureEditId = "";
 let signatureEditorAccountId = "";
 let signatureEditorPack = null;
 let scheduledGen = 0;
+let scheduleUndo = null;
+let scheduleUndoTimer = null;
+let scheduleUndoBusy = false;
+let previewDraftState = null;
+let layoutSaveTimer = null;
 let sendTimer = null;
 let sendGen = 0;
 let appVersion = "";
@@ -1477,6 +1484,18 @@ function askConfirm(copy) {
   return pending;
 }
 
+function confirmSettled() {
+  const dialog = $("confirm");
+  if (!dialog || !dialog.open) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 500);
+    dialog.addEventListener("close", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
+}
+
 function finishConfirm(result) {
   const pending = confirmResult;
   confirmResult = null;
@@ -1624,8 +1643,142 @@ function scheduleAt(preset, custom, now) {
   return when;
 }
 
+const SCHEDULE_UNDO_MS = 8000;
+
+function scheduleDelayMinutes(value) {
+  const n = typeof value === "number" ? value : (typeof value === "string" && /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN);
+  if (!Number.isInteger(n) || n < 0 || n > 10080) return 0;
+  return n;
+}
+
+function splitScheduleDelay(minutes) {
+  const delay = scheduleDelayMinutes(minutes);
+  return { hours: Math.floor(delay / 60), minutes: delay % 60 };
+}
+
+function joinScheduleDelay(hours, minutes) {
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+  if (hours < 0 || minutes < 0 || hours > 168 || minutes > 59) return null;
+  const total = hours * 60 + minutes;
+  if (total > 10080) return null;
+  return total;
+}
+
+function formatScheduleDelay(minutes) {
+  const parts = splitScheduleDelay(minutes);
+  if (!parts.hours && !parts.minutes) return "";
+  if (parts.hours && parts.minutes) return parts.hours + "h " + parts.minutes + "m";
+  if (parts.hours) return parts.hours + "h";
+  return parts.minutes + "m";
+}
+
+function defaultSendAt(now, minutes) {
+  const delay = scheduleDelayMinutes(minutes);
+  if (!delay) return null;
+  const start = now instanceof Date ? new Date(now.getTime()) : new Date(now);
+  if (Number.isNaN(start.getTime())) return null;
+  return new Date(start.getTime() + delay * 60 * 1000);
+}
+
+function sendButtonLabel(minutes, review) {
+  if (review) return "Send";
+  const text = formatScheduleDelay(minutes);
+  return text ? "Schedule in " + text : "Send";
+}
+
+function layoutBound(value, min, max) {
+  const n = typeof value === "number" ? value : (typeof value === "string" && /^-?\d+$/.test(String(value).trim()) ? Number(String(value).trim()) : NaN);
+  if (!Number.isInteger(n) || n < min || n > max) return null;
+  return n;
+}
+
+function layoutPanesPref(value) {
+  const fallback = { folders: 260, list: 360, reading: 0 };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ...fallback };
+  const folders = layoutBound(value.folders, 140, 1600);
+  const list = layoutBound(value.list, 200, 2000);
+  const reading = layoutBound(value.reading, 0, 4000);
+  if (folders == null || list == null || reading == null) return { ...fallback };
+  return { folders, list, reading };
+}
+
+function clampLayoutMeasure(value, min, max, fallback) {
+  const n = Math.round(Number(value));
+  if (!Number.isInteger(n)) return fallback;
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
+}
+
+function measuredLayoutPanes(folders, list, reading) {
+  return {
+    folders: clampLayoutMeasure(folders, 140, 1600, 260),
+    list: clampLayoutMeasure(list, 200, 2000, 360),
+    reading: clampLayoutMeasure(reading, 0, 4000, 0),
+  };
+}
+
+function applyLayoutPanes(value) {
+  const root = document.documentElement;
+  if (!root || !root.style || typeof root.style.setProperty !== "function") return;
+  const panes = layoutPanesPref(value);
+  root.style.setProperty("--folders", panes.folders + "px");
+  root.style.setProperty("--list", panes.list + "px");
+}
+
+function rememberLayoutPanes() {
+  const side = sideColumn();
+  const list = $("messages");
+  const reader = $("reader");
+  if (!side || !list || !reader || !api || typeof side.getBoundingClientRect !== "function") return;
+  const panes = measuredLayoutPanes(
+    side.getBoundingClientRect().width,
+    list.getBoundingClientRect().width,
+    reader.getBoundingClientRect().width
+  );
+  state.prefs.layout = panes;
+  clearTimeout(layoutSaveTimer);
+  layoutSaveTimer = setTimeout(() => {
+    layoutSaveTimer = null;
+    api.invoke("morrow:configSetLayoutPanes", panes).catch(() => {});
+  }, 200);
+}
+
+function previewDraft(fields, quote, when) {
+  const source = fields && typeof fields === "object" ? fields : {};
+  const to = String(source.to || "").trim();
+  const cc = String(source.cc || "").trim();
+  const bcc = String(source.bcc || "").trim();
+  const subject = String(source.subject || "").trim() || "(no subject)";
+  const body = outgoingBody(source.body, quote);
+  const schedule = when instanceof Date && !Number.isNaN(when.getTime()) ? when : null;
+  return {
+    kind: schedule ? "schedule" : "send",
+    to,
+    cc,
+    bcc,
+    subject,
+    body,
+    sendAt: schedule ? schedule.toISOString() : "",
+  };
+}
+
 function scheduledRows(data) {
   return Array.isArray(data) ? data.filter((row) => row && row.id) : [];
+}
+
+function scheduledEmptyCopy() {
+  return "No pending or failed scheduled mail on this computer.";
+}
+
+function scheduledSummary(rows) {
+  const list = scheduledRows(rows);
+  if (!list.length) return "";
+  const accounts = new Set(list.map((row) => row && row.accountId).filter(Boolean));
+  const noun = list.length === 1 ? "message" : "messages";
+  const count = accounts.size;
+  if (!count) return list.length + " scheduled " + noun + ".";
+  return list.length + " scheduled " + noun + " from " + count + " " + (count === 1 ? "account" : "accounts") + ".";
 }
 
 function scheduledLine(row, accounts = []) {
@@ -7099,6 +7252,14 @@ function syncCompose() {
   const locked = state.composePending || state.composeQueued || state.composeInitializing;
   for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked || !!state.composeIdentityError;
   $("compose-schedule").disabled = !live || locked || !!state.composeIdentityError || !!state.botDraftReview;
+  const sendButton = $("compose-send");
+  if (sendButton) sendButton.textContent = sendButtonLabel(state.prefs.scheduleDelay, state.botDraftReview);
+  const sendNow = $("compose-send-now");
+  if (sendNow) {
+    const offerNow = !state.botDraftReview && scheduleDelayMinutes(state.prefs.scheduleDelay) > 0;
+    sendNow.hidden = !offerNow;
+    sendNow.disabled = !live || locked || !!state.composeIdentityError;
+  }
   $("compose-close").disabled = state.composePending || state.composeInitializing;
   for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
   syncComposeRecipientRows();
@@ -7127,6 +7288,10 @@ function paintComposeNote() {
   if (state.composeQuote && state.composeQuote.kind === "forward" && attachmentNote(state.composeQuote.email)) {
     text += " Attachments are not included in this forward. This composer cannot attach the original files.";
   }
+  const delayLabel = formatScheduleDelay(state.prefs.scheduleDelay);
+  if (live && !review && delayLabel) {
+    text += " Send schedules " + delayLabel + " ahead. Send now delivers immediately.";
+  }
   $("compose-note").textContent = text;
 }
 
@@ -7140,10 +7305,12 @@ function syncScheduleFields() {
 
 function renderScheduled(rows) {
   const list = $("scheduled");
+  const summary = $("scheduled-summary");
+  if (summary) summary.textContent = scheduledSummary(rows);
   list.replaceChildren();
   if (!rows.length) {
     const item = document.createElement("li");
-    item.textContent = "No pending or failed scheduled mail on this computer.";
+    item.textContent = scheduledEmptyCopy();
     list.append(item);
     return;
   }
@@ -7158,7 +7325,7 @@ function renderScheduled(rows) {
     const subject = String((row && row.subject) || "").trim() || "(no subject)";
     cancel.setAttribute("aria-label", `Cancel scheduled send ${subject}`);
     cancel.addEventListener("click", () => {
-      cancelScheduled(row.id).catch((error) => {
+      requestCancelScheduled(row).catch((error) => {
         $("scheduled-status").textContent = error.message || String(error);
       });
     });
@@ -7890,6 +8057,8 @@ function composeSnapshot() {
 }
 
 async function requestComposeClose() {
+  const preview = $("compose-preview");
+  if (preview && preview.open) return false;
   if (state.composePending || state.composeInitializing) return false;
   if (!state.composeQueued && composeSnapshot() !== state.composeBaseline) {
     const choice = await new Promise((resolve) => {
@@ -7939,15 +8108,95 @@ async function loadScheduled() {
   }
 }
 
-async function cancelScheduled(id) {
-  await call("mail:cancelScheduled", { id });
-  $("scheduled-status").textContent = "Scheduled delivery canceled.";
+function paintScheduleUndo() {
+  const on = !!scheduleUndo;
+  for (const id of ["undo-schedule", "scheduled-undo"]) {
+    const button = $(id);
+    if (button) button.hidden = !on;
+  }
+}
+
+function clearScheduleUndoTimer() {
+  if (scheduleUndoTimer) clearTimeout(scheduleUndoTimer);
+  scheduleUndoTimer = null;
+}
+
+function hideScheduleUndo() {
+  clearScheduleUndoTimer();
+  scheduleUndo = null;
+  paintScheduleUndo();
+}
+
+function armScheduleUndo(snapshot) {
+  clearScheduleUndoTimer();
+  scheduleUndo = snapshot;
+  paintScheduleUndo();
+  scheduleUndoTimer = setTimeout(() => {
+    scheduleUndo = null;
+    scheduleUndoTimer = null;
+    paintScheduleUndo();
+  }, SCHEDULE_UNDO_MS);
+}
+
+async function commitCancelScheduled(row) {
+  const removed = await call("mail:cancelScheduled", { id: row.id });
+  const snapshot = removed && removed.snapshot;
+  const status = $("scheduled-status");
+  if (snapshot) {
+    armScheduleUndo(snapshot);
+    if (status) status.textContent = "Scheduled delivery canceled. Undo is available for a few seconds.";
+    showStatus("Scheduled send canceled. Undo is available for a few seconds.");
+  } else if (status) {
+    status.textContent = "Scheduled delivery canceled.";
+  }
   await loadScheduled();
+}
+
+async function requestCancelScheduled(row) {
+  if (!row || !row.id || row.status === "sending") return;
+  const line = scheduledLine(row, state.accounts);
+  const first = await askConfirm({
+    title: "Cancel scheduled send?",
+    body: line + "\nNothing is canceled yet. You will be asked to confirm again.",
+    confirm: "Continue",
+    cancel: "Keep scheduled",
+  });
+  if (!first || !first.ok) return;
+  await confirmSettled();
+  const second = await askConfirm({
+    title: "Confirm cancel?",
+    body: line + "\nCancel this scheduled send? You can undo for a few seconds.",
+    confirm: "Cancel send",
+    cancel: "Keep scheduled",
+  });
+  if (!second || !second.ok) return;
+  await commitCancelScheduled(row);
+}
+
+async function undoCancelScheduled() {
+  const snapshot = scheduleUndo;
+  if (!snapshot || scheduleUndoBusy) return;
+  scheduleUndoBusy = true;
+  try {
+    await call("mail:restoreScheduled", { snapshot });
+    hideScheduleUndo();
+    const status = $("scheduled-status");
+    if (status) status.textContent = "Scheduled send restored.";
+    showStatus("Scheduled send restored.");
+    await loadScheduled();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = $("scheduled-status");
+    if (status) status.textContent = message;
+    showStatus(message, true);
+  } finally {
+    scheduleUndoBusy = false;
+  }
 }
 
 async function showScheduled() {
   if ($("compose").open && !(await requestComposeClose())) return;
-  $("scheduled-status").textContent = "";
+  if (!scheduleUndo) $("scheduled-status").textContent = "";
   openDialog("scheduled-dialog");
   await loadScheduled();
 }
@@ -7980,7 +8229,7 @@ async function composeOperation(work) {
   finally { state.composePending = false; syncCompose(); }
 }
 
-async function scheduleMail() {
+async function scheduleMail(whenOverride) {
   if (state.botDraftReview) { setComposeStatus("Review this Bot proposal and use Send when ready. It cannot be scheduled from proposal review."); return false; }
   const account = composeAccount();
   if (!isLive(account)) return false;
@@ -7989,8 +8238,9 @@ async function scheduleMail() {
     $("compose-to").focus();
     return false;
   }
-  const when = scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
-  if (!when) { setComposeStatus("Pick a time in the future.", true); $("schedule-at").focus(); return false; }
+  const picked = whenOverride instanceof Date && !Number.isNaN(whenOverride.getTime()) ? whenOverride : null;
+  const when = picked || scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
+  if (!when || when.getTime() <= Date.now() + 1000) { setComposeStatus("Pick a time in the future.", true); $("schedule-at").focus(); return false; }
   return composeOperation(async () => {
     setComposeStatus("Scheduling…");
     await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
@@ -8000,6 +8250,107 @@ async function scheduleMail() {
     setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${state.composeMeta.fromAddress || account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
     await loadScheduled();
   });
+}
+
+function composeFields() {
+  return {
+    to: $("compose-to").value,
+    cc: $("compose-cc").value,
+    bcc: $("compose-bcc").value,
+    subject: $("compose-subject").value,
+    body: $("compose-body").value,
+  };
+}
+
+function composeReady() {
+  const account = composeAccount();
+  if (!isLive(account)) return false;
+  if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError) return false;
+  if (!composeHasRecipient()) {
+    setComposeStatus("Add at least one recipient.", true);
+    $("compose-to").focus();
+    return false;
+  }
+  return true;
+}
+
+function pendingScheduleWhen() {
+  if (state.botDraftReview) return null;
+  return defaultSendAt(new Date(), state.prefs.scheduleDelay);
+}
+
+function paintPreview(draft) {
+  const schedule = draft && draft.kind === "schedule";
+  $("compose-preview-title").textContent = schedule ? "Preview scheduled send" : "Preview send";
+  const when = $("compose-preview-when");
+  const date = schedule && draft.sendAt ? new Date(draft.sendAt) : null;
+  if (date && !Number.isNaN(date.getTime())) {
+    when.hidden = false;
+    when.textContent = "Scheduled for " + date.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ").";
+  } else {
+    when.hidden = true;
+    when.textContent = "";
+  }
+  $("compose-preview-to").textContent = draft.to || "";
+  const ccRow = $("compose-preview-cc-row");
+  const bccRow = $("compose-preview-bcc-row");
+  if (ccRow) ccRow.hidden = !draft.cc;
+  if (bccRow) bccRow.hidden = !draft.bcc;
+  $("compose-preview-cc").textContent = draft.cc || "";
+  $("compose-preview-bcc").textContent = draft.bcc || "";
+  $("compose-preview-subject").textContent = draft.subject || "(no subject)";
+  $("compose-preview-body").textContent = draft.body ? draft.body : "(empty message)";
+  $("compose-preview-confirm").textContent = schedule ? "Confirm schedule" : "Confirm send";
+}
+
+function openComposePreview(when) {
+  if (!composeReady()) return false;
+  const draft = previewDraft(composeFields(), state.composeQuote && state.composeQuote.text, when);
+  previewDraftState = draft;
+  paintPreview(draft);
+  openDialog("compose-preview");
+  const confirm = $("compose-preview-confirm");
+  if (confirm && typeof confirm.focus === "function") confirm.focus();
+  return true;
+}
+
+function requestSendPreview() {
+  return openComposePreview(pendingScheduleWhen());
+}
+
+function requestSendNowPreview() {
+  if (state.botDraftReview) return false;
+  return openComposePreview(null);
+}
+
+function requestSchedulePreview() {
+  if (state.botDraftReview) {
+    setComposeStatus("Review this Bot proposal and use Send when ready. It cannot be scheduled from proposal review.");
+    return false;
+  }
+  if (!composeReady()) return false;
+  const when = scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
+  if (!when) {
+    setComposeStatus("Pick a time in the future.", true);
+    $("schedule-at").focus();
+    return false;
+  }
+  return openComposePreview(when);
+}
+
+async function confirmComposePreview() {
+  const draft = previewDraftState;
+  if (!draft) return false;
+  previewDraftState = null;
+  await closeDialog("compose-preview");
+  if (draft.kind === "schedule") return scheduleMail(new Date(draft.sendAt));
+  await sendMail();
+  return true;
+}
+
+function cancelComposePreview() {
+  previewDraftState = null;
+  closeDialog("compose-preview");
 }
 
 async function saveDraft() {
@@ -8230,6 +8581,7 @@ function wireSplits() {
       event.stopPropagation();
       const pane = handle.dataset.split === "folders" ? sideColumn() : $("messages");
       setPane(handle.dataset.split, pane.getBoundingClientRect().width + step);
+      rememberLayoutPanes();
     });
     handle.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
@@ -8244,6 +8596,7 @@ function wireSplits() {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", stop);
         window.removeEventListener("pointercancel", stop);
+        rememberLayoutPanes();
       }
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", stop);
@@ -8520,12 +8873,15 @@ async function loadShellPrefs() {
     next.undoSend = sendDelayMs(await api.invoke("morrow:configGetUndoSendDelaySeconds")) / 1000;
     next.quoteWidth = quoteWidthPref(await api.invoke("morrow:configGetComposeQuoteWidth"));
     next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
+    next.scheduleDelay = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
+    next.layout = layoutPanesPref(await api.invoke("morrow:configGetLayoutPanes"));
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
   }
   state.prefs = next;
   applyLook(next);
+  applyLayoutPanes(next.layout);
   document.documentElement.style.setProperty("--compose-quote", state.prefs.quoteWidth + "px");
 }
 
@@ -8672,6 +9028,56 @@ async function loadSettings() {
     applyPref(kind, $(id), state.prefs[keys[channel]]);
   }
   syncAccentPicker(state.prefs.accent);
+  paintScheduleDelay(state.prefs.scheduleDelay);
+}
+
+function paintScheduleDelay(minutes) {
+  const parts = splitScheduleDelay(minutes);
+  const hours = $("pref-schedule-hours");
+  const mins = $("pref-schedule-minutes");
+  if (hours) hours.value = String(parts.hours);
+  if (mins) mins.value = String(parts.minutes);
+}
+
+function readWhole(value) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) return 0;
+  if (!/^\d+$/.test(raw)) return NaN;
+  return Number(raw);
+}
+
+async function saveScheduleDelay() {
+  const status = $("settings-status");
+  const hours = readWhole($("pref-schedule-hours") && $("pref-schedule-hours").value);
+  const minutes = readWhole($("pref-schedule-minutes") && $("pref-schedule-minutes").value);
+  const total = joinScheduleDelay(hours, minutes);
+  if (total == null) {
+    if (status) {
+      status.textContent = "Default schedule delay must be 0 to 168 hours, with minutes from 0 to 59, and at most 7 days.";
+      status.classList.add("error");
+    }
+    paintScheduleDelay(state.prefs.scheduleDelay);
+    return;
+  }
+  try {
+    await api.invoke("morrow:configSetDefaultScheduleDelayMinutes", total);
+    const saved = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
+    state.prefs.scheduleDelay = saved;
+    paintScheduleDelay(saved);
+    if (status) {
+      status.textContent = saved
+        ? "Default schedule delay saved. Send schedules " + formatScheduleDelay(saved) + " ahead."
+        : "Default schedule delay saved. Send delivers immediately.";
+      status.classList.remove("error");
+    }
+    if ($("compose") && $("compose").open) syncCompose();
+  } catch (error) {
+    if (status) {
+      status.textContent = error instanceof Error ? error.message : String(error);
+      status.classList.add("error");
+    }
+    paintScheduleDelay(state.prefs.scheduleDelay);
+  }
 }
 
 const settingsFoldPending = new Map();
@@ -13062,8 +13468,14 @@ function wire() {
     clearBotSecret();
     loadShellPrefs().then(() => {
       paintPrefs();
+      if ($("compose") && $("compose").open) syncCompose();
     }).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
   });
+  for (const id of ["pref-schedule-hours", "pref-schedule-minutes"]) {
+    $(id).addEventListener("change", () => {
+      saveScheduleDelay().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+    });
+  }
   for (const row of prefRows()) {
     $(row[0]).addEventListener("change", () => {
       savePref(row);
@@ -13195,10 +13607,23 @@ function wire() {
     startDraftWrite().catch((error) => showStatus(error.message, true));
   });
   $("compose-save").addEventListener("click", () => guard(saveDraft));
-  $("compose-schedule").addEventListener("click", () => guard(scheduleMail));
+  $("compose-schedule").addEventListener("click", () => guard(requestSchedulePreview));
+  $("compose-send-now").addEventListener("click", () => guard(requestSendNowPreview));
   $("compose-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    guard(sendMail);
+    guard(requestSendPreview);
+  });
+  $("compose-preview-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    guard(confirmComposePreview);
+  });
+  $("compose-preview-cancel").addEventListener("click", () => cancelComposePreview());
+  $("compose-preview").addEventListener("close", () => { previewDraftState = null; });
+  $("undo-schedule").addEventListener("click", () => {
+    undoCancelScheduled().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+  });
+  $("scheduled-undo").addEventListener("click", () => {
+    undoCancelScheduled().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
   });
 }
 
@@ -13217,6 +13642,11 @@ async function boot() {
     showStatus("Mail preload is unavailable.", true);
     return;
   }
+  api.invoke("morrow:configGetLayoutPanes").then((value) => {
+    const panes = layoutPanesPref(value);
+    state.prefs.layout = panes;
+    applyLayoutPanes(panes);
+  }).catch(() => {});
   api.on("host:updatePrepareForInstall", prepareUpdateRestart);
   api.on("host:updateResume", resumeAfterUpdate);
   wire();

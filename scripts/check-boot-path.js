@@ -7,6 +7,7 @@ const root = path.join(__dirname, "..");
 
 const syntax = [
   "host/main.js",
+  "host/window-state.js",
   "host/asar.js",
   "host/ipc.js",
   "host/mail/engine.js",
@@ -853,6 +854,8 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetSidebarOutlookFoldersExpanded", []), false);
     assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), {});
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
+    assert.strictEqual(answer("morrow:configGetDefaultScheduleDelayMinutes", []), 0);
+    assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 260, list: 360, reading: 0 });
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
     assert.strictEqual(answer("morrow:configSetAccent", ["#112233"]), "#112233");
@@ -869,6 +872,8 @@ function checkSettingsRoundTrip() {
       "  ": ["Nope"],
     }]), { leo: ["AriesCPA.com"] });
     assert.strictEqual(answer("morrow:configSetComposeQuoteWidth", [560]), 560);
+    assert.strictEqual(answer("morrow:configSetDefaultScheduleDelayMinutes", [90]), 90);
+    assert.deepStrictEqual(answer("morrow:configSetLayoutPanes", [{ folders: 300, list: 480, reading: 640 }]), { folders: 300, list: 480, reading: 640 });
     assert.strictEqual(answer("config:getTheme", []), "dark");
     assert.strictEqual(answer("morrow:configGetAccent", []), "#112233");
     assert.strictEqual(answer("morrow:configGetConversationViewEnabled", []), false);
@@ -880,6 +885,8 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetSidebarGmailFoldersExpanded", []), false);
     assert.strictEqual(answer("morrow:configGetSidebarOutlookFoldersExpanded", []), true);
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 560);
+    assert.strictEqual(answer("morrow:configGetDefaultScheduleDelayMinutes", []), 90);
+    assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 300, list: 480, reading: 640 });
     assert.strictEqual(answer("morrow:configSetAccent", ["#abcdef"]), "#ABCDEF");
     const reloaded = spawnSync(process.execPath, ["-e", `
       const { answer } = require(${JSON.stringify(path.join(root, "host/settings.js"))});
@@ -927,11 +934,17 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 560);
     assert.throws(() => answer("morrow:configSetComposeQuoteWidth", [800]), /220 to 720/);
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 560);
+    assert.throws(() => answer("morrow:configSetDefaultScheduleDelayMinutes", [10081]), /0 to 10080/);
+    assert.strictEqual(answer("morrow:configGetDefaultScheduleDelayMinutes", []), 90);
+    assert.throws(() => answer("morrow:configSetLayoutPanes", [{ folders: 10, list: 480, reading: 640 }]), /folder, list, and reading/);
+    assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 300, list: 480, reading: 640 });
     assert.throws(() => answer("morrow:configSetSidebarCollapsedFolders", ["nope"]), /folder ids/);
     assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), { leo: ["AriesCPA.com"] });
     fs.writeFileSync(file, "{");
     assert.strictEqual(answer("config:getTheme", []), "light");
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
+    assert.strictEqual(answer("morrow:configGetDefaultScheduleDelayMinutes", []), 0);
+    assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 260, list: 360, reading: 0 });
     assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), {});
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
     assert.strictEqual(answer("config:getTheme", []), "dark");
@@ -1107,6 +1120,7 @@ assert.ok(parityDoc.includes("host:getDebugLog") && independentDoc.includes("mai
 assert.ok(engineSrc.includes('case "mail:scheduleSend"'));
 assert.ok(engineSrc.includes('case "mail:listScheduled"'));
 assert.ok(engineSrc.includes('case "mail:cancelScheduled"'));
+assert.ok(engineSrc.includes('case "mail:restoreScheduled"'));
 assert.ok(!engineSrc.includes("imap_schedule_send_unsupported"));
 assert.ok(!engineSrc.includes("imap_signatures_unsupported"));
 assert.ok(!engineSrc.includes('require("../mailbox")'));
@@ -1123,7 +1137,7 @@ for (const name of ["mail:deleteScheduled", "mail:unschedule", "mail:cancelSched
   assert.ok(!engineSrc.includes(name), `${name} appeared`);
   assert.ok(!appJs.includes(name), `renderer calls ${name}`);
 }
-for (const channel of ["mail:scheduleSend", "mail:listScheduled", "mail:cancelScheduled"]) {
+for (const channel of ["mail:scheduleSend", "mail:listScheduled", "mail:cancelScheduled", "mail:restoreScheduled"]) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
@@ -7368,7 +7382,7 @@ require("./check-bot-setup-ux").run();
 
 require("./check-macos-sign").run().then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
-}).then(() => {
+}).then(() => require("./check-batch-b").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

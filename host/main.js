@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell, screen } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -19,7 +19,9 @@ const FIRST_PARTY_DIR = path.join(__dirname, "..", "renderer");
 const FIRST_PARTY_PRELOAD = path.join(FIRST_PARTY_DIR, "preload.js");
 const FIRST_PARTY_HTML = path.join(FIRST_PARTY_DIR, "index.html");
 const updater = require("./updater");
+const windowState = require("./window-state");
 const { gate: updateGate, requestRendererQuiescence } = require("./update-quiescence");
+const ZOOM_STEP = 0.5;
 
 function resolveAppIcon() {
   // Windows needs native small icon sizes for the titlebar and taskbar.
@@ -209,6 +211,25 @@ function openAiSetup() {
   }).catch(() => {});
 }
 
+function shellForZoom() {
+  if (shellWindow && !shellWindow.isDestroyed()) return shellWindow;
+  return null;
+}
+
+function applyZoom(level) {
+  const win = shellForZoom();
+  if (!win) return;
+  const next = windowState.clampZoom(level);
+  win.webContents.setZoomLevel(next);
+  windowState.update({ zoomLevel: next });
+}
+
+function bumpZoom(delta) {
+  const win = shellForZoom();
+  if (!win) return;
+  applyZoom(win.webContents.getZoomLevel() + delta);
+}
+
 function installMenu() {
   const template = [
     {
@@ -228,10 +249,88 @@ function installMenu() {
       ],
     },
     { role: "editMenu" },
-    { role: "viewMenu" },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { label: "Actual Size", accelerator: "CommandOrControl+0", click: () => applyZoom(0) },
+        { label: "Zoom In", accelerator: "CommandOrControl+Plus", click: () => bumpZoom(ZOOM_STEP) },
+        { label: "Zoom In", accelerator: "CommandOrControl+=", visible: false, click: () => bumpZoom(ZOOM_STEP) },
+        { label: "Zoom Out", accelerator: "CommandOrControl+-", click: () => bumpZoom(-ZOOM_STEP) },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
     { role: "windowMenu" },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function rememberWindow(win, includeZoom) {
+  if (!win || win.isDestroyed()) return;
+  let bounds;
+  try {
+    bounds = typeof win.getNormalBounds === "function" ? win.getNormalBounds() : win.getBounds();
+  } catch {
+    return;
+  }
+  const patch = {
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height),
+    maximized: !!win.isMaximized(),
+    fullscreen: !!win.isFullScreen(),
+  };
+  if (includeZoom) {
+    try { patch.zoomLevel = windowState.clampZoom(win.webContents.getZoomLevel()); } catch { /* keep the saved zoom */ }
+  }
+  try { windowState.update(patch); } catch { /* a failed write keeps the previous file */ }
+}
+
+function trackWindow(win, savedZoom) {
+  let timer = null;
+  let zoomLive = false;
+  let suppressZoom = false;
+  let currentZoom = windowState.clampZoom(savedZoom);
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => rememberWindow(win, false), 250);
+  };
+  const restoreZoom = () => {
+    suppressZoom = true;
+    try { win.webContents.setZoomLevel(currentZoom); } catch { /* zoom restores on the next launch */ }
+    setTimeout(() => { suppressZoom = false; }, 300);
+  };
+  win.on("resize", schedule);
+  win.on("move", schedule);
+  win.on("maximize", () => rememberWindow(win, false));
+  win.on("unmaximize", () => rememberWindow(win, false));
+  win.on("enter-full-screen", () => rememberWindow(win, false));
+  win.on("leave-full-screen", () => rememberWindow(win, false));
+  win.on("close", () => {
+    clearTimeout(timer);
+    rememberWindow(win, zoomLive);
+  });
+  win.webContents.on("did-finish-load", () => {
+    restoreZoom();
+    zoomLive = true;
+  });
+  win.webContents.on("did-fail-load", () => {
+    restoreZoom();
+    zoomLive = true;
+  });
+  win.webContents.on("zoom-changed", () => {
+    if (!zoomLive || suppressZoom) return;
+    try {
+      currentZoom = windowState.clampZoom(win.webContents.getZoomLevel());
+      windowState.update({ zoomLevel: currentZoom });
+    } catch { /* closing */ }
+  });
+  restoreZoom();
 }
 
 function registerHostAi() {
@@ -307,9 +406,14 @@ function runAiSelfTest() {
 
 async function createWindow(preloadFile, mode) {
   const external = mode === "asar";
-  const winOpts = {
+  let displays = [];
+  try { displays = screen.getAllDisplays(); } catch { displays = []; }
+  const placed = windowState.place(windowState.read(), displays, {
     width: external ? 1720 : 1200,
     height: external ? 1040 : 800,
+  });
+  const winOpts = {
+    ...placed.bounds,
     title: "Morrow Mail",
     icon: APP_ICON,
     backgroundColor: external ? "#193c34" : "#e7f0e4",
@@ -325,6 +429,9 @@ async function createWindow(preloadFile, mode) {
     winOpts.trafficLightPosition = { x: 14, y: 16 };
   }
   const win = new BrowserWindow(winOpts);
+  if (placed.fullscreen) win.setFullScreen(true);
+  else if (placed.maximized) win.maximize();
+  trackWindow(win, placed.zoomLevel);
   win.webContents.setWindowOpenHandler(({ url }) => {
     let parsed;
     try { parsed = new URL(url); } catch { return { action: "deny" }; }

@@ -114,6 +114,7 @@
       <p id="status" role="status"></p>
       <button type="button" class="ghost" id="undo" hidden>Undo</button>
       <button type="button" class="ghost" id="undo-send" hidden>Undo send</button>
+      <button type="button" class="ghost" id="undo-schedule" hidden>Undo cancel</button>
     </div>
     <div class="stage">
     <div class="stage-main">
@@ -469,9 +470,13 @@
     <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>
-        <p class="hint">Messages send while Morrow is open. A missed time sends on the next launch. Edit/reschedule removes the queued delivery and saves a local draft; scheduling again requires your explicit action.</p>
+        <p class="hint">Messages send while Morrow is open. A missed time sends on the next launch. This list includes every account, whichever mailbox is selected. Edit/reschedule removes the queued delivery and saves a local draft; scheduling again requires your explicit action. Cancel asks twice, then Undo restores that queued send for a few seconds.</p>
+        <p id="scheduled-summary" class="hint"></p>
         <p id="scheduled-status" role="status"></p>
-        <button type="button" class="ghost" id="scheduled-refresh">Refresh queue</button>
+        <div class="row">
+          <button type="button" class="ghost" id="scheduled-refresh">Refresh queue</button>
+          <button type="button" class="ghost" id="scheduled-undo" hidden>Undo cancel</button>
+        </div>
         <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
       </div>
     </dialog>
@@ -630,6 +635,7 @@
         <p id="compose-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>
+          <button type="button" class="ghost" id="compose-send-now" hidden>Send now</button>
           <button type="button" class="ghost" id="compose-save">Save draft</button>
           <button type="button" class="ghost" id="compose-close">Close</button>
         </div>
@@ -735,6 +741,16 @@
             <div class="field settings-short-field">
               <label for="pref-undo">Undo send (seconds)</label>
               <input id="pref-undo" type="number" min="0" max="30" step="1" />
+            </div>
+            <div class="field" id="pref-schedule-delay">
+              <span id="pref-schedule-delay-label">Default schedule delay</span>
+              <div class="schedule-delay">
+                <label for="pref-schedule-hours">Hours</label>
+                <input id="pref-schedule-hours" type="number" min="0" max="168" step="1" inputmode="numeric" aria-describedby="pref-schedule-delay-help" />
+                <label for="pref-schedule-minutes">Minutes</label>
+                <input id="pref-schedule-minutes" type="number" min="0" max="59" step="1" inputmode="numeric" aria-describedby="pref-schedule-delay-help" />
+              </div>
+              <p class="hint" id="pref-schedule-delay-help">0 sends immediately. Any other delay makes Send schedule that far ahead. Send now is still available in compose. The longest delay is 7 days.</p>
             </div>
             <div class="checks">
               <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
@@ -1067,6 +1083,23 @@
           <button type="button" class="ghost" id="agent-peek-close">Close</button>
         </div>
       </div>
+    </dialog>
+    <dialog id="compose-preview" aria-labelledby="compose-preview-title">
+      <form id="compose-preview-form">
+        <h2 id="compose-preview-title">Preview send</h2>
+        <p id="compose-preview-when" class="hint" hidden></p>
+        <dl class="preview-meta">
+          <div class="preview-row"><dt>To</dt><dd id="compose-preview-to"></dd></div>
+          <div class="preview-row" id="compose-preview-cc-row" hidden><dt>Cc</dt><dd id="compose-preview-cc"></dd></div>
+          <div class="preview-row" id="compose-preview-bcc-row" hidden><dt>Bcc</dt><dd id="compose-preview-bcc"></dd></div>
+          <div class="preview-row"><dt>Subject</dt><dd id="compose-preview-subject"></dd></div>
+        </dl>
+        <pre id="compose-preview-body"></pre>
+        <div class="row">
+          <button type="submit" class="primary" id="compose-preview-confirm">Confirm send</button>
+          <button type="button" class="ghost" id="compose-preview-cancel">Cancel</button>
+        </div>
+      </form>
     </dialog>
     <dialog id="confirm" aria-labelledby="confirm-title">
       <form id="confirm-form">

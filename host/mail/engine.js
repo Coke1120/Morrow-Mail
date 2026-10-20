@@ -1736,11 +1736,55 @@ function listScheduled(params) {
   return ok(db.listScheduled(accountId).map(publicScheduled));
 }
 
+function scheduledSnapshot(row) {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    payloadJson: row.payload_json,
+    sendAt: row.send_at,
+    status: row.status === "failed" ? "failed" : "pending",
+    error: row.error || "",
+    createdAt: row.created_at,
+  };
+}
+
 function cancelScheduled(params) {
   const id = params && params.id ? String(params.id) : "";
   if (scheduledDelivering.has(id)) return fail("sending", "Delivery has started. It can no longer be canceled or edited. Check Sent before retrying.");
+  const row = db.scheduledById(id);
+  if (!row) return fail("not-found", "That scheduled send is gone.");
+  const snapshot = scheduledSnapshot(row);
   if (!db.deleteScheduled(id)) return fail("not-found", "That scheduled send is gone.");
-  return ok(true);
+  return ok({ id, snapshot });
+}
+
+function restoreScheduled(params) {
+  const snap = params && params.snapshot;
+  if (!snap || typeof snap !== "object") return fail("invalid", "That scheduled send cannot be restored.");
+  const id = String(snap.id || "");
+  if (!/^[\w.-]{1,80}$/.test(id)) return fail("invalid", "That scheduled send cannot be restored.");
+  const account = db.accountById(String(snap.accountId || ""));
+  if (!account) return fail("not-found", "That mailbox is no longer connected.");
+  if (scheduledDelivering.has(id)) return fail("sending", "Delivery has started. It can no longer be canceled or edited. Check Sent before retrying.");
+  if (db.scheduledById(id)) return fail("conflict", "That scheduled send is already queued.");
+  const raw = typeof snap.payloadJson === "string" ? snap.payloadJson : "";
+  let payload;
+  try { payload = JSON.parse(raw); } catch { return fail("invalid", "That scheduled send cannot be restored."); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return fail("invalid", "That scheduled send cannot be restored.");
+  if (!hasRecipient(payload.to, payload.cc, payload.bcc)) return fail("invalid", "That scheduled send cannot be restored.");
+  const when = Number(snap.sendAt);
+  if (!Number.isFinite(when)) return fail("invalid", "That scheduled send cannot be restored.");
+  const status = snap.status === "failed" ? "failed" : "pending";
+  const saved = db.insertScheduled({
+    id,
+    accountId: account.id,
+    payloadJson: raw,
+    sendAt: when,
+    createdAt: Number(snap.createdAt) || Date.now(),
+    status,
+    error: status === "failed" ? String(snap.error || "Send failed.") : null,
+  });
+  return ok(publicScheduled(saved));
 }
 
 function editScheduled(params) {
@@ -2423,6 +2467,8 @@ function answer(channel, args) {
       return editScheduled(params || {});
     case "mail:cancelScheduled":
       return cancelScheduled(params || {});
+    case "mail:restoreScheduled":
+      return restoreScheduled(params || {});
     case "mail:downloadAttachment":
       return (async () => {
         try {
