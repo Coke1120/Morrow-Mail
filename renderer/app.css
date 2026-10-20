@@ -2403,20 +2403,37 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
 .meta { color: var(--muted); font-size: 13px; }
 
 .body {
-  white-space: pre-wrap;
   font: inherit;
   padding-top: 12px;
   padding-bottom: 24px;
 }
 
-.body p { margin: 0 0 0.75em; }
+.body.is-plain { white-space: pre-wrap; }
 
-.body img.remote {
-  display: block;
-  max-width: min(100%, 330px);
-  height: auto;
-  margin: 0 0 12px;
+/* HTML mail is authored for white paper and content-box table widths.
+   pre-wrap here turns the source whitespace between cells into extra columns. */
+.body.is-html {
+  white-space: normal;
+  color: #1c1c1c;
+  background: #fff;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  position: relative;
+  contain: paint;
 }
+
+.body.is-html,
+.body.is-html * { box-sizing: content-box; }
+
+.body.is-html img {
+  max-width: 100%;
+  border: 0;
+  vertical-align: middle;
+}
+
+.body.is-html a { color: #1a56c4; }
+
+.body p { margin: 0 0 0.75em; }
 
 .remote-gate {
   display: flex;

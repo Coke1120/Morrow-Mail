@@ -1817,36 +1817,382 @@ function readable(email) {
   return text || (email && email.snippet) || "";
 }
 
-// Parse in an inert template, then reconstruct formatting only. Never copy
-// source attributes (CSS, handlers, URLs, forms, SVG or embedded documents).
+// Layout attributes and a filtered CSS subset. Handlers, embedded documents, and
+// active URLs stay out. Declarations are applied through CSSOM so the app CSP
+// can keep style-src 'self' (inline style attributes would not run).
+const MAIL_ALIGN = new Set("left right center justify top middle bottom baseline absbottom absmiddle texttop".split(" "));
+const MAIL_CSS_PROPS = new Set(("color background background-color background-image background-repeat background-position background-size " +
+  "font font-family font-size font-weight font-style font-variant line-height letter-spacing word-spacing word-break overflow-wrap " +
+  "text-align text-decoration text-transform text-indent white-space vertical-align " +
+  "margin margin-top margin-right margin-bottom margin-left padding padding-top padding-right padding-bottom padding-left " +
+  "border border-width border-style border-color border-collapse border-spacing border-radius " +
+  "border-top border-right border-bottom border-left " +
+  "border-top-width border-right-width border-bottom-width border-left-width " +
+  "border-top-style border-right-style border-bottom-style border-left-style " +
+  "border-top-color border-right-color border-bottom-color border-left-color " +
+  "width height max-width min-width max-height min-height display float clear table-layout empty-cells " +
+  "list-style list-style-type list-style-position overflow overflow-x overflow-y opacity direction box-sizing position").split(/\s+/));
+const MAIL_LAYOUT = {
+  table: ["width", "height", "align", "border", "cellpadding", "cellspacing", "bgcolor"],
+  thead: ["align", "valign", "bgcolor"],
+  tbody: ["align", "valign", "bgcolor"],
+  tfoot: ["align", "valign", "bgcolor"],
+  tr: ["align", "valign", "bgcolor", "height"],
+  td: ["width", "height", "align", "valign", "colspan", "rowspan", "bgcolor", "nowrap"],
+  th: ["width", "height", "align", "valign", "colspan", "rowspan", "bgcolor", "nowrap"],
+  col: ["width", "span", "align"],
+  colgroup: ["width", "span", "align"],
+  caption: ["align"],
+  img: ["width", "height", "align", "border"],
+  font: ["color", "face", "size"],
+  p: ["align"], div: ["align"], span: ["align"], hr: ["width", "align"],
+  h1: ["align"], h2: ["align"], h3: ["align"], h4: ["align"], h5: ["align"], h6: ["align"],
+};
+
+function mailMeasure(value) {
+  const v = String(value || "").trim();
+  if (/^\d{1,4}$/.test(v) || /^\d{1,4}%$/.test(v)) return v;
+  const px = v.match(/^(\d{1,4})px$/i);
+  return px ? px[1] : "";
+}
+
+function mailInt(value, max) {
+  const v = String(value || "").trim();
+  if (!/^\d{1,3}$/.test(v)) return "";
+  const n = Number(v);
+  return n <= max ? String(n) : "";
+}
+
+function mailColor(value) {
+  const v = String(value || "").trim();
+  if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v)) return v;
+  if (/^[a-z]{3,20}$/i.test(v)) return v.toLowerCase();
+  if (/^rgba?\(\s*(?:\d{1,3}\s*,\s*){2}\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(v)) return v.replace(/\s+/g, "");
+  return "";
+}
+
+function mailRemoteUrl(value) {
+  const v = String(value || "").trim();
+  if (/^https?:\/\/[^\s"'<>]+$/i.test(v) && v.length <= 2000) return v;
+  return "";
+}
+
+function mailHref(value) {
+  const v = String(value || "").trim();
+  if (mailRemoteUrl(v)) return v;
+  if (/^mailto:[^\s"'<>]+$/i.test(v) && v.length <= 500) return v;
+  return "";
+}
+
+function mailImageSrc(src, imagesOn) {
+  const value = String(src || "").replace(/\s+/g, "").trim();
+  if (/^https?:\/\/[^\s"'<>]+$/i.test(value) && value.length <= 2000) return imagesOn ? value : "";
+  if (/^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(value) && value.length <= 8000000) return value;
+  return "";
+}
+
+function mailScopeToken(name) {
+  const clean = String(name || "").replace(/[^\w-]/g, "");
+  if (!/^[_a-zA-Z][\w-]*$/.test(clean)) return "";
+  return "mmail-" + clean.slice(0, 80);
+}
+
+function mailScopeClass(value) {
+  return String(value || "").split(/\s+/).map(mailScopeToken).filter(Boolean).join(" ");
+}
+
+function mailSelectorToken(token) {
+  if (token === "*") return true;
+  return /^(?:[a-z][\w-]*)?(?:[.#][-_a-zA-Z0-9]+)+$/i.test(token) || /^[a-z][\w-]*$/i.test(token);
+}
+
+function mailSelectorOk(selector) {
+  if (!selector || selector.length > 500) return false;
+  if (/[{}<>]|url\s*\(|expression\s*\(|javascript\s*:|@|\\|:/i.test(selector)) return false;
+  return selector.split(",").every((group) => {
+    const tokens = group.trim().split(/\s*[>+~]\s*|\s+/).filter(Boolean);
+    return tokens.length > 0 && tokens.length <= 8 && tokens.every(mailSelectorToken);
+  });
+}
+
+function mailScopeSelector(selector) {
+  return selector.split(",").map((group) => group.trim()
+    .replace(/\.(-?[_a-zA-Z][\w-]*)/g, (_, name) => ".mmail-" + name.slice(0, 80))
+    .replace(/#(-?[_a-zA-Z][\w-]*)/g, (_, name) => "#mmail-" + name.slice(0, 80))).join(", ");
+}
+
+function mailSplitDecls(css) {
+  const out = [];
+  let cur = "";
+  let quote = "";
+  let paren = 0;
+  const text = String(css || "");
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      cur += ch;
+      if (ch === quote && text[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
+    if (ch === "(") paren++;
+    if (ch === ")") paren = Math.max(0, paren - 1);
+    if (ch === ";" && paren === 0) { out.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur);
+  return out;
+}
+
+function mailCssValue(prop, raw, imagesOn) {
+  let value = String(raw || "").trim();
+  if (!value || value.length > 100000) return "";
+  if (/[{}<>]|expression\s*\(|javascript\s*:|@import|-moz-binding|behavior\s*:|\\/i.test(value)) return "";
+  const urls = [];
+  const urlRe = /url\(\s*(?:(['"])([\s\S]*?)\1|([^)'"\s]+))\s*\)/gi;
+  value.replace(urlRe, (_all, _q, quoted, bare) => { urls.push(String(quoted || bare || "").trim()); return ""; });
+  if (urls.length && !imagesOn) {
+    value = value.replace(/url\(\s*(?:(['"])([\s\S]*?)\1|([^)'"\s]+))\s*\)/gi, " ").replace(/\s+/g, " ").trim();
+    urls.length = 0;
+    if (!value) return "";
+  }
+  for (const url of urls) {
+    const remote = /^https?:\/\/[^\s"'<>]+$/i.test(url) && url.length <= 2000;
+    const raster = /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(url.replace(/\s+/g, "")) && url.length <= 500000;
+    if (!remote && !raster) return "";
+  }
+  const name = String(prop || "").toLowerCase();
+  if (name === "position" && !/^(static|relative)$/i.test(value)) return "";
+  if (name === "display" && !/^(block|inline|inline-block|inline-table|table|table-row|table-cell|table-row-group|table-header-group|table-footer-group|none|flex|inline-flex|list-item)$/i.test(value)) return "";
+  if ((name === "overflow" || name === "overflow-x" || name === "overflow-y") && !/^(visible|hidden|auto|scroll)$/i.test(value)) return "";
+  if (name === "white-space" && !/^(normal|nowrap|pre-line)$/i.test(value)) return "";
+  return value;
+}
+
+function mailApplyCss(el, css, imagesOn, wantImportant) {
+  if (!el || !el.style || typeof el.style.setProperty !== "function") return;
+  for (const part of mailSplitDecls(css)) {
+    const idx = part.indexOf(":");
+    if (idx <= 0) continue;
+    const prop = part.slice(0, idx).trim().toLowerCase();
+    let raw = part.slice(idx + 1).trim();
+    const important = /!important\s*$/i.test(raw);
+    if (important !== !!wantImportant) continue;
+    raw = raw.replace(/!important\s*$/i, "").trim();
+    if (!MAIL_CSS_PROPS.has(prop)) continue;
+    const value = mailCssValue(prop, raw, imagesOn);
+    if (!value) continue;
+    try { el.style.setProperty(prop, value, important ? "important" : ""); } catch { /* ignore a rejected declaration */ }
+  }
+}
+
+function mailMediaMatches(selector) {
+  const query = String(selector || "").replace(/^@media\s+/i, "").trim();
+  if (!query || query.length > 240 || /[{};]|url\s*\(|expression|javascript:|@|\\/i.test(query)) return false;
+  try { return typeof matchMedia === "function" && matchMedia(query).matches; } catch { return false; }
+}
+
+function mailStyleRules(css) {
+  const text = String(css || "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/@import[^;]*;?/gi, "").replace(/@charset[^;]*;?/gi, "").slice(0, 100000);
+  const rules = [];
+  function walk(body) {
+    let i = 0;
+    while (i < body.length && rules.length < 300) {
+      while (i < body.length && /\s/.test(body[i])) i++;
+      const open = body.indexOf("{", i);
+      if (open < 0) break;
+      const selector = body.slice(i, open).trim();
+      let depth = 1;
+      let j = open + 1;
+      let quote = "";
+      for (; j < body.length && depth; j++) {
+        const ch = body[j];
+        if (quote) { if (ch === quote && body[j - 1] !== "\\") quote = ""; continue; }
+        if (ch === '"' || ch === "'") { quote = ch; continue; }
+        if (ch === "{") depth++;
+        else if (ch === "}") depth--;
+      }
+      const inner = body.slice(open + 1, j - 1);
+      if (/^@media\b/i.test(selector)) { if (mailMediaMatches(selector)) walk(inner); }
+      else if (selector && !selector.startsWith("@") && mailSelectorOk(selector)) rules.push({ selector: mailScopeSelector(selector), body: inner });
+      i = j;
+    }
+  }
+  walk(text);
+  return rules;
+}
+
+function mailSet(el, name, value) {
+  if (value == null || value === "" || !el || typeof el.setAttribute !== "function") return;
+  el.setAttribute(name, value);
+}
+
+function mailCopyLayout(el, tag, source, imagesOn) {
+  const names = MAIL_LAYOUT[tag] || [];
+  for (const name of names) {
+    if (name === "nowrap") {
+      if (source.getAttribute("nowrap") != null) el.setAttribute("nowrap", "");
+      continue;
+    }
+    const raw = source.getAttribute(name);
+    if (raw == null || String(raw).trim() === "") continue;
+    if (name === "align" || name === "valign") {
+      const token = String(raw).trim().toLowerCase();
+      if (MAIL_ALIGN.has(token)) mailSet(el, name, token);
+    } else if (name === "bgcolor" || name === "color") {
+      const color = mailColor(raw);
+      if (color) mailSet(el, name, color);
+    } else if (name === "face") {
+      if (/^[\w\s,"'-]{1,80}$/.test(String(raw).trim())) mailSet(el, "face", String(raw).trim());
+    } else if (name === "size") {
+      if (/^[1-7]$/.test(String(raw).trim())) mailSet(el, "size", String(raw).trim());
+    } else if (name === "colspan" || name === "rowspan" || name === "span") {
+      const n = mailInt(raw, 24);
+      if (n) mailSet(el, name, n);
+    } else if (name === "border" || name === "cellpadding" || name === "cellspacing") {
+      const n = mailInt(raw, 40);
+      if (n) mailSet(el, name, n);
+    } else if (name === "width" || name === "height") {
+      const measure = mailMeasure(raw);
+      if (measure) mailSet(el, name, measure);
+    }
+  }
+  const klass = mailScopeClass(source.getAttribute("class"));
+  if (klass) mailSet(el, "class", klass);
+  const id = mailScopeToken(source.getAttribute("id"));
+  if (id) mailSet(el, "id", id);
+  if (imagesOn && /^(table|thead|tbody|tfoot|tr|td|th)$/.test(tag)) {
+    const bg = mailRemoteUrl(source.getAttribute("background"));
+    if (bg) mailSet(el, "background", bg);
+  }
+}
+
 function appendSafeMailHtml(parent, html, imagesOn) {
   const template = document.createElement("template");
   template.innerHTML = String(html || "");
-  const allowed = new Set("p div span br hr b strong i em u s small sub sup blockquote pre code ul ol li table tbody thead tfoot tr td th h1 h2 h3 h4 h5 h6".split(" "));
-  const blocked = new Set("script style head title template iframe object embed svg math form input button textarea select link meta base audio video source".split(" "));
-  function copy(source, target) {
-    if (source.nodeType === 3) { target.appendChild(document.createTextNode(source.textContent)); return; }
-    if (source.nodeType !== 1) return;
-    const tag = source.localName.toLowerCase();
-    if (blocked.has(tag)) return;
-    if (tag === "img") {
-      const alt = source.getAttribute("alt") || "";
-      const src = source.getAttribute("src") || "";
-      if (imagesOn && /^https?:\/\//i.test(src)) {
-        const image = document.createElement("img");
-        image.className = "remote";
-        image.alt = alt;
-        image.referrerPolicy = "no-referrer";
-        image.src = src;
-        target.appendChild(image);
-      } else if (alt) target.appendChild(document.createTextNode(alt));
+  const allowed = new Set("p div span br hr b strong i em u s small sub sup blockquote pre code ul ol li table tbody thead tfoot tr td th col colgroup caption center font h1 h2 h3 h4 h5 h6 a".split(" "));
+  const blocked = new Set("script iframe object embed svg math title template link meta base audio video source input textarea select noscript".split(" "));
+  const styles = [];
+  const inlines = [];
+  function decorate(dest, tag, source) {
+    mailCopyLayout(dest, tag, source, imagesOn);
+    const inline = source.getAttribute("style");
+    if (inline) inlines.push({ el: dest, css: inline });
+  }
+  function placeImage(source, target) {
+    const alt = String(source.getAttribute("alt") || "").slice(0, 300);
+    const shown = mailImageSrc(source.getAttribute("src"), imagesOn);
+    const remote = mailRemoteUrl(source.getAttribute("src"));
+    const width = mailMeasure(source.getAttribute("width"));
+    const height = mailMeasure(source.getAttribute("height"));
+    if (shown) {
+      const image = document.createElement("img");
+      image.alt = alt;
+      image.referrerPolicy = "no-referrer";
+      image.src = shown;
+      if (width) image.setAttribute("width", width);
+      if (height) image.setAttribute("height", height);
+      const align = String(source.getAttribute("align") || "").trim().toLowerCase();
+      if (MAIL_ALIGN.has(align)) image.setAttribute("align", align);
+      const klass = mailScopeClass(source.getAttribute("class"));
+      if (klass) image.setAttribute("class", klass);
+      const id = mailScopeToken(source.getAttribute("id"));
+      if (id) image.setAttribute("id", id);
+      const inline = source.getAttribute("style");
+      if (inline) inlines.push({ el: image, css: inline });
+      if (typeof image.addEventListener === "function") {
+        image.addEventListener("load", () => {
+          if (image.naturalWidth > image.clientWidth + 1 && image.style && image.style.setProperty) image.style.setProperty("height", "auto");
+        });
+      }
+      target.appendChild(image);
       return;
     }
-    const dest = allowed.has(tag) ? document.createElement(tag) : document.createElement("span");
+    if (remote && (width || height)) {
+      const hold = document.createElement("span");
+      hold.className = "mail-image-hold";
+      if (typeof hold.setAttribute === "function") {
+        hold.setAttribute("class", "mail-image-hold");
+        hold.setAttribute("role", "img");
+        if (alt) hold.setAttribute("aria-label", alt);
+      }
+      const px = (measure) => /^\d+$/.test(measure) ? measure + "px" : measure;
+      if (hold.style && hold.style.setProperty) {
+        hold.style.setProperty("display", "inline-block");
+        hold.style.setProperty("max-width", "100%");
+        hold.style.setProperty("vertical-align", "middle");
+        hold.style.setProperty("background", "#eef1f4");
+        if (width) hold.style.setProperty("width", px(width));
+        if (height) hold.style.setProperty("height", px(height));
+      }
+      target.appendChild(hold);
+      return;
+    }
+    if (alt) target.appendChild(document.createTextNode(alt));
+  }
+  function copy(source, target) {
+    if (!source) return;
+    if (source.nodeType === 3) { target.appendChild(document.createTextNode(source.textContent)); return; }
+    if (source.nodeType !== 1) return;
+    const tag = String(source.localName || "").toLowerCase();
+    if (!tag) return;
+    if (tag === "style") { styles.push(source.textContent || ""); return; }
+    if (tag === "head") {
+      for (const child of source.childNodes) if (child.nodeType === 1) copy(child, target);
+      return;
+    }
+    if (tag === "html" || tag === "body" || tag === "form") {
+      if (tag === "body" && target.style && target.style.setProperty) {
+        const bg = mailColor(source.getAttribute("bgcolor"));
+        if (bg) target.style.setProperty("background-color", bg);
+        const text = mailColor(source.getAttribute("text"));
+        if (text) target.style.setProperty("color", text);
+        if (imagesOn) {
+          const bgUrl = mailRemoteUrl(source.getAttribute("background"));
+          if (bgUrl) target.style.setProperty("background-image", 'url("' + bgUrl.replace(/"/g, "") + '")');
+        }
+      }
+      for (const child of source.childNodes) copy(child, target);
+      return;
+    }
+    if (blocked.has(tag)) return;
+    if (tag === "img") { placeImage(source, target); return; }
+    if (tag === "a") {
+      const href = mailHref(source.getAttribute("href"));
+      const dest = href ? document.createElement("a") : document.createElement("span");
+      if (href) {
+        dest.setAttribute("href", href);
+        dest.setAttribute("target", "_blank");
+        dest.setAttribute("rel", "noopener noreferrer");
+        const title = String(source.getAttribute("title") || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 200);
+        if (title) dest.setAttribute("title", title);
+      }
+      decorate(dest, href ? "a" : "span", source);
+      for (const child of source.childNodes) copy(child, dest);
+      target.appendChild(dest);
+      return;
+    }
+    const keep = allowed.has(tag);
+    const dest = keep ? document.createElement(tag) : document.createElement("span");
+    decorate(dest, keep ? tag : "span", source);
     for (const child of source.childNodes) copy(child, dest);
     target.appendChild(dest);
   }
-  for (const child of template.content.childNodes) copy(child, parent);
+  const fragment = template.content || template;
+  for (const child of fragment.childNodes) copy(child, parent);
+  const rules = styles.flatMap(mailStyleRules);
+  const applySheet = (important) => {
+    if (typeof parent.querySelectorAll !== "function") return;
+    for (const rule of rules) {
+      let nodes = [];
+      try { nodes = parent.querySelectorAll(rule.selector); } catch { continue; }
+      for (const node of nodes) mailApplyCss(node, rule.body, imagesOn, important);
+    }
+  };
+  applySheet(false);
+  for (const item of inlines) mailApplyCss(item.el, item.css, imagesOn, false);
+  applySheet(true);
+  for (const item of inlines) mailApplyCss(item.el, item.css, imagesOn, true);
 }
 
 // shortcut: one string is one address, upgrade if the host sends a comma-separated To.
@@ -4279,7 +4625,7 @@ function renderReader(focus) {
 
 function appendMessageBody(parent, email, imagesOn) {
   const wrap = document.createElement("div");
-  wrap.className = "body";
+  wrap.className = email && email.htmlBody ? "body is-html" : "body is-plain";
   if (email && email.htmlBody) {
     appendSafeMailHtml(wrap, email.htmlBody, imagesOn);
   } else {
@@ -7117,7 +7463,7 @@ function paintQuoteBody() {
     const text = String(quote.text || "").trim();
     if (!text) return;
     const block = document.createElement("p");
-    block.className = "body";
+    block.className = "body is-plain";
     block.textContent = text;
     root.appendChild(block);
     return;
