@@ -83,6 +83,41 @@ function assertMode(file) {
   assert.strictEqual(mode, 0o600, file);
 }
 
+function documentedOperations(markdown) {
+  return markdown.replace(/\r\n/g, "\n").split("\n").map((line) => {
+    const match = /^- `([^`]+)`$/.exec(line);
+    return match ? match[1] : "";
+  }).filter(Boolean);
+}
+
+function assertSendReceiptDurableOnWindows(dir) {
+  const store = require("../host/bot/store");
+  const file = path.join(dir, "bot-send-receipts.json");
+  const text = "{\"version\":1,\"receipts\":[]}\n";
+  const originalOpen = fs.openSync;
+  const previous = Object.getOwnPropertyDescriptor(process, "platform");
+  let directoryOpens = 0;
+  fs.openSync = function (target, ...args) {
+    if (String(target) === path.dirname(file)) {
+      directoryOpens += 1;
+      const error = new Error("EISDIR");
+      error.code = "EISDIR";
+      throw error;
+    }
+    return originalOpen.call(this, target, ...args);
+  };
+  try {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    store.writeDurable(file, text);
+    assert.strictEqual(directoryOpens, 0);
+    assert.strictEqual(fs.readFileSync(file, "utf8"), text);
+  } finally {
+    Object.defineProperty(process, "platform", previous);
+    fs.openSync = originalOpen;
+    fs.rmSync(file, { force: true });
+  }
+}
+
 function seedAccount(db, id, email) {
   db.insertAccount({
     id,
@@ -211,12 +246,21 @@ async function checkGrantExpiry(auth) {
     assert.ok(saved.grants.every((grant) => grant.expiry.kind === "finite"));
 
     fs.writeFileSync(file, JSON.stringify(version1));
-    fs.chmodSync(dir, 0o500);
+    // Directory mode 0500 blocks the rewrite on POSIX. On Windows the
+    // read-only target file blocks the replace.
+    let restoreWrite;
+    if (process.platform === "win32") {
+      fs.chmodSync(file, 0o400);
+      restoreWrite = () => fs.chmodSync(file, 0o600);
+    } else {
+      fs.chmodSync(dir, 0o500);
+      restoreWrite = () => fs.chmodSync(dir, 0o700);
+    }
     try {
       assert.strictEqual(auth.load().ok, false);
       assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).version, 1);
     } finally {
-      fs.chmodSync(dir, 0o700);
+      restoreWrite();
     }
   } finally {
     process.env.MORROW_USER_DATA = home;
@@ -233,11 +277,12 @@ async function run() {
   for (const name of catalog.operations()) {
     assert.deepStrictEqual(contract.operations[name], catalog.operation(name).params, name);
   }
-  const listed = read("docs/BOT_BRIDGE.md").split("\n").map((line) => {
-    const match = /^- `([^`]+)`$/.exec(line);
-    return match ? match[1] : "";
-  }).filter(Boolean);
-  assert.deepStrictEqual(listed, catalog.operations());
+  // Git for Windows checks out LF sources as CRLF. The published list stays
+  // the live catalog, including attachment metadata and mail.send.
+  const doc = read("docs/BOT_BRIDGE.md").replace(/\r\n/g, "\n");
+  for (const checkout of [doc, doc.replace(/\n/g, "\r\n")]) {
+    assert.deepStrictEqual(documentedOperations(checkout), catalog.operations());
+  }
   const facts = catalog.factsFrom({
     installationId: "6c2e1a40-1111-4222-8333-444455556666",
     serveHost: "mac.example.ts.net:8443",
@@ -354,6 +399,7 @@ async function run() {
   let opened = false;
   let releaseHold = null;
   try {
+    assertSendReceiptDurableOnWindows(dir);
     db.close();
     await db.open(path.join(dir, "mail.sqlite"));
     opened = true;

@@ -18,6 +18,14 @@ function writePrivate(file, text) {
   try { fs.chmodSync(file, 0o600); } catch { /* Windows permissions differ */ }
 }
 
+function syncParentDirectory(file) {
+  // Node cannot open a directory for FlushFileBuffers on Windows. File fsync
+  // and same-directory rename are the durable order there.
+  if (process.platform === "win32") return;
+  const dir = fs.openSync(path.dirname(file), "r");
+  try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+}
+
 function writeDurable(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString("hex")}.tmp`;
@@ -31,8 +39,7 @@ function writeDurable(file, text) {
   try { fs.chmodSync(tmp, 0o600); } catch { /* Windows permissions differ */ }
   fs.renameSync(tmp, file);
   try { fs.chmodSync(file, 0o600); } catch { /* Windows permissions differ */ }
-  const dir = fs.openSync(path.dirname(file), "r");
-  try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+  syncParentDirectory(file);
 }
 
 function accessPath() {
