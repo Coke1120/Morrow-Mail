@@ -343,7 +343,7 @@ assert.ok(appJs.includes('className = "row-actions"') && appJs.includes("Mark un
 assert.ok(css.includes(".row-action svg"), "row actions are not icon buttons");
 assert.ok(html.includes('id="folder-filter"') && html.includes("Filter folders and labels"), "mailbox list has no folder filter");
 assert.ok(css.includes(".folder-filter") && css.includes(".folder-indent"), "folder filter or indent layout missing");
-assert.ok(css.includes("#folders {\n  flex: 1 1 auto;\n  min-width: 0;\n  overflow-x: hidden;\n  overflow-y: auto;"), "folder list still scrolls horizontally");
+assert.match(css, /#folders \{\s*flex: 1 1 auto;\s*min-width: 0;\s*overflow-x: hidden;\s*overflow-y: auto;/, "folder list still scrolls horizontally");
 const messageRowSrc = functionSource(appJs, "messageRow");
 const rowOrder = ['"star"', '"read"', '"reply"', '"reply-all"', '"forward"', '"delete"'];
 let rowAt = -1;
