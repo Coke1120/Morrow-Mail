@@ -1,7 +1,17 @@
 'use strict';
 // Artifact authenticity is established by update-manifest before this module is
 // called. codesign below checks bundle integrity, not Apple notarization/trust.
-const fs = require('node:fs');
+const nodeFs = require('node:fs');
+// Packaged Electron patches node:fs. Any path containing ".asar" is opened as a
+// virtual archive, so preflight throws "Invalid package .../app.asar" while
+// writing the updated bundle (electron#9304, #17389). original-fs is absent in
+// plain Node. Stream calls also take this module as options.fs: createWriteStream
+// otherwise does require('fs').open and re-enters the patch (electron#15543).
+function unpatchedFs() {
+  try { return require('original-fs'); }
+  catch (error) { if (error && error.code !== 'MODULE_NOT_FOUND') throw error; return nodeFs; }
+}
+const fs = unpatchedFs();
 const fsp = fs.promises;
 const path = require('node:path');
 const zlib = require('node:zlib');
@@ -105,8 +115,8 @@ async function extractZip(archive, destination, { bundleName = 'Morrow Mail.app'
         if (length > entry.size) return callback(new Error('ZIP expansion exceeds declared size.'));
         crc = crcUpdate(crc, chunk); callback(null, chunk);
       } });
-      const source = entry.compressed ? fs.createReadStream(archive, { fd: handle.fd, autoClose: false, start: entry.start, end: entry.start + entry.compressed - 1 }) : require('node:stream').Readable.from([]);
-      const sink = entry.isDirectory || entry.type === 0xa000 ? new Transform({ transform(chunk, encoding, callback) { chunks.push(chunk); callback(); } }) : fs.createWriteStream(target, { flags: 'wx', mode: entry.mode & 0o111 ? 0o755 : 0o644 });
+      const source = entry.compressed ? fs.createReadStream(archive, { fd: handle.fd, autoClose: false, start: entry.start, end: entry.start + entry.compressed - 1, fs }) : require('node:stream').Readable.from([]);
+      const sink = entry.isDirectory || entry.type === 0xa000 ? new Transform({ transform(chunk, encoding, callback) { chunks.push(chunk); callback(); } }) : fs.createWriteStream(target, { flags: 'wx', mode: entry.mode & 0o111 ? 0o755 : 0o644, fs });
       const inflater = entry.method === 8 ? zlib.createInflateRaw() : null;
       await pipeline(...[source, inflater, meter, sink].filter(Boolean));
       if (inflater && inflater.bytesWritten !== entry.compressed) fail('ZIP deflate stream has trailing data.');
@@ -236,4 +246,19 @@ async function replaceAndLaunch({ target, staged, backup }, { launch, waitReady,
     throw error;
   }
 }
-module.exports = { requireQuarantine, assessBundleTrust, preserveQuarantine, extractZip, verifyBundle, createStaging, waitForExit, replaceAndLaunch };
+async function removeTree(target) {
+  // fs.rm goes through rimraf, which calls require('fs').lstat. That stays
+  // patched in Electron even for original-fs.promises.rm, so deleting a
+  // preflight tree throws "Invalid package" on app.asar. Unlink the real
+  // file and do not follow symlinks into the installed app.
+  let stat;
+  try { stat = await fsp.lstat(target); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    try { await fsp.unlink(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return;
+  }
+  for (const name of await fsp.readdir(target)) await removeTree(path.join(target, name));
+  try { await fsp.rmdir(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
+module.exports = { requireQuarantine, assessBundleTrust, preserveQuarantine, extractZip, verifyBundle, createStaging, waitForExit, replaceAndLaunch, removeTree };

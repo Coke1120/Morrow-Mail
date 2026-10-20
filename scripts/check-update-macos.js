@@ -55,6 +55,16 @@ const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => fixtur
   failed.configure({ prepare: async () => () => { resumes++; }, quit: () => { throw Error("must not quit"); } });
   await failed.check(); await failed.install();
   assert.match(failed.snapshot().error, /helper refused/); assert.equal(resumes, 1); assert.equal(failed.snapshot().installing, false);
+  const asarPreflight = createMacUpdater({ app, state: {}, arch: 'arm64', publicKey, resourcesPath,
+    fetchBytes: async url => Buffer.from(url.endsWith('.sig') ? sig : bytes), downloadArtifact: async () => archive,
+    startInstaller: async () => { throw new Error('Invalid package /Applications/.morrow-update-x/preflight/Morrow Mail.app/Contents/Resources/app.asar'); } });
+  asarPreflight.configure({ prepare: async () => () => {}, quit: () => { throw Error('must not quit'); } });
+  await asarPreflight.check(); await asarPreflight.install();
+  assert.match(asarPreflight.snapshot().error, /virtual package/);
+  assert.match(asarPreflight.snapshot().error, /Show downloaded update/);
+  assert.equal(asarPreflight.snapshot().manualAvailable, true);
+  assert.equal(asarPreflight.snapshot().manualRequired, false);
+  assert.equal(asarPreflight.snapshot().installing, false);
   const busy = createMacUpdater({ app, state: {}, arch: "arm64", publicKey,
     fetchBytes: async url => Buffer.from(url.endsWith(".sig") ? sig : bytes), downloadArtifact: async () => archive,
     startInstaller: async () => { throw Error("must not start"); } });

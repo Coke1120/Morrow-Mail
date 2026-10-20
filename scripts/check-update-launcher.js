@@ -114,6 +114,12 @@ const { launchTrusted, waitReady } = require('../host/update-helper');
     await assert.rejects(cleanupUnstarted(swapped), /identity changed/);
     // Fault injection through the real launcher catch path: native checks are
     // mocked, but staging/copy/cleanup operate on the isolated filesystem.
+    const launcherSource = await fs.readFile(require.resolve('../host/update-launcher'), 'utf8');
+    assert.match(launcherSource, /removeTree\(staging\)/);
+    assert.match(launcherSource, /removeTree\(path\.join\(staging, 'preflight'\)\)/);
+    assert.doesNotMatch(launcherSource, /fs\.rm\(/);
+    const helperSource = await fs.readFile(require.resolve('../host/update-helper'), 'utf8');
+    assert.match(helperSource, /extractZip\(path\.join\(staging, 'artifact\.zip'\), path\.join\(staging, 'extracted'\)\)/);
     const vm = require('node:vm'), localRequire = require('node:module').createRequire(require.resolve('../host/update-launcher'));
     const denied = Object.assign(Error('fixture Gatekeeper denial'), { code: 'UPDATE_MANUAL_TRUST' });
     let attempts = 0;
@@ -122,7 +128,8 @@ const { launchTrusted, waitReady } = require('../host/update-helper');
       require(name) {
         if (name === './update-manifest') return { verifyManifest: () => ({ version }), validateArtifact: async () => {} };
         if (name === './update-installer') return { preserveQuarantine: async () => {}, requireQuarantine: async () => {}, verifyBundle: async () => {},
-          extractZip: async (_file, destination) => { await fs.mkdir(destination); return destination; }, assessBundleTrust: async () => { throw denied; } };
+          extractZip: async (_file, destination) => { await fs.mkdir(destination); return destination; }, assessBundleTrust: async () => { throw denied; },
+          removeTree: async target => fs.rm(target, { recursive: true, force: true }) };
         if (name === 'node:util') return { promisify: () => async () => ({ stdout: '' }) };
         if (name === 'node:child_process') return { spawn: () => { attempts++; assert.fail('Denied candidate must not spawn'); } };
         return localRequire(name);

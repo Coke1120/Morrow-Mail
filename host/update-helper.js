@@ -82,6 +82,8 @@ async function run(staging) {
   await validateArtifact(path.join(staging, 'artifact.zip'), manifest);
   await requireQuarantine(path.join(staging, 'artifact.zip'));
   await journal(staging, 'verifying');
+  // extractZip uses original-fs. This process is still the Electron binary under
+  // ELECTRON_RUN_AS_NODE, so patched fs would reject Contents/Resources/app.asar.
   const extracted = await extractZip(path.join(staging, 'artifact.zip'), path.join(staging, 'extracted'));
   await preserveQuarantine(path.join(staging, 'artifact.zip'), extracted);
   await verifyBundle(extracted, { version, arch });

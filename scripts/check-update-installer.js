@@ -3,7 +3,61 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { requireQuarantine, assessBundleTrust, preserveQuarantine, extractZip, verifyBundle, createStaging, waitForExit, replaceAndLaunch } = require('../host/update-installer');
+const Module = require('node:module');
+const nodeFs = require('node:fs');
+// Simulate Electron's patched fs before the installer loads. Paths containing
+// ".asar" throw "Invalid package <path>" unless the caller uses original-fs
+// (or process.noAsar). original-fs here is a snapshot of Node's fs taken
+// before the patch; its createWriteStream still calls require('fs').open
+// unless options.fs is the unpatched module (electron#15543).
+function pathText(value) {
+  if (typeof value === 'string') return value;
+  if (Buffer.isBuffer(value)) return value.toString();
+  if (value instanceof URL) return value.pathname;
+  return '';
+}
+const asarPath = value => /\.asar/i.test(pathText(value));
+const originalFs = { constants: nodeFs.constants, promises: {} };
+for (const key of Object.getOwnPropertyNames(nodeFs)) {
+  if (key === 'promises') continue;
+  if (typeof nodeFs[key] === 'function') originalFs[key] = nodeFs[key];
+}
+for (const key of Object.getOwnPropertyNames(nodeFs.promises)) {
+  if (typeof nodeFs.promises[key] === 'function') originalFs.promises[key] = nodeFs.promises[key].bind(nodeFs.promises);
+}
+const builtinRequire = Module.prototype.require;
+Module.prototype.require = function (request) {
+  if (request === 'original-fs') return originalFs;
+  return builtinRequire.apply(this, arguments);
+};
+function invalidPackage(value) { return new Error(`Invalid package ${pathText(value)}`); }
+function wrapCallback(fn) {
+  return function (target, ...rest) {
+    if (!process.noAsar && asarPath(target)) {
+      const error = invalidPackage(target);
+      const callback = rest[rest.length - 1];
+      if (typeof callback === 'function') { process.nextTick(callback, error); return; }
+      throw error;
+    }
+    return fn.call(this, target, ...rest);
+  };
+}
+function wrapPromise(fn) {
+  return function (target, ...rest) {
+    if (!process.noAsar && asarPath(target)) return Promise.reject(invalidPackage(target));
+    return fn.call(this, target, ...rest);
+  };
+}
+for (const name of ['open', 'openSync', 'lstat', 'lstatSync', 'stat', 'statSync', 'unlink', 'unlinkSync', 'realpath', 'realpathSync', 'symlink', 'symlinkSync', 'mkdir', 'mkdirSync', 'readdir', 'readdirSync', 'rm', 'rmSync', 'readFile', 'readFileSync', 'writeFile', 'writeFileSync', 'copyFile', 'copyFileSync']) {
+  if (typeof nodeFs[name] === 'function') nodeFs[name] = wrapCallback(nodeFs[name]);
+  if (typeof nodeFs.promises[name] === 'function') nodeFs.promises[name] = wrapPromise(nodeFs.promises[name]);
+}
+const realCreateWriteStream = nodeFs.createWriteStream;
+nodeFs.createWriteStream = function (target, options) {
+  if (!process.noAsar && asarPath(target)) throw invalidPackage(target);
+  return realCreateWriteStream(target, options);
+};
+const { requireQuarantine, assessBundleTrust, preserveQuarantine, extractZip, verifyBundle, createStaging, waitForExit, replaceAndLaunch, removeTree } = require('../host/update-installer');
 function crc(bytes) { let c = 0xffffffff; for (const b of bytes) { c ^= b; for (let i = 0; i < 8; i++) c = c >>> 1 ^ (0xedb88320 & -(c & 1)); } return (c ^ 0xffffffff) >>> 0; }
 function zip(entries) {
   const locals = [], centrals = []; let offset = 0;
@@ -128,7 +182,23 @@ async function main() {
     assert.equal(launches, 0);
     assert.equal(await fs.readFile(path.join(target, 'unrelated'), 'utf8'), 'preserve');
     assert.equal(await fs.readFile(path.join(backup, 'version'), 'utf8'), 'old');
-    console.log('update installer: ZIP attacks, framework links, identity/arch/strict checks, exit timeout, replacement and rollback passed');
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
+    const asarBody = Buffer.from('morrow-fake-asar');
+    const asarFlag = process.noAsar;
+    await assert.rejects(fs.writeFile(path.join(root, 'direct.asar'), asarBody), /Invalid package/);
+    const asarBundle = await extract([['Morrow Mail.app/Contents/Resources/app.asar', asarBody], ['Morrow Mail.app/Contents/Info.plist', 'plist']]);
+    assert.equal(process.noAsar, asarFlag, 'Extract must not leave Electron asar interception disabled');
+    const asarFile = path.join(asarBundle, 'Contents/Resources/app.asar');
+    const asarStat = await originalFs.promises.lstat(asarFile);
+    assert.equal(asarStat.isFile(), true);
+    assert.equal(asarStat.isDirectory(), false);
+    assert.deepEqual(await originalFs.promises.readFile(asarFile), asarBody);
+    assert.equal(await originalFs.promises.readFile(path.join(asarBundle, 'Contents/Info.plist'), 'utf8'), 'plist');
+    await assert.rejects(fs.lstat(asarFile), /Invalid package/);
+    const extractedRoot = path.dirname(asarBundle);
+    await assert.rejects(fs.rm(extractedRoot, { recursive: true }), /Invalid package/);
+    await removeTree(extractedRoot);
+    await assert.rejects(originalFs.promises.lstat(asarFile), { code: 'ENOENT' });
+    console.log('update installer: ZIP attacks, framework links, app.asar extract, identity/arch/strict checks, exit timeout, replacement and rollback passed');
+  } finally { await removeTree(root); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -39,7 +39,13 @@ function createMacUpdater(options) {
     state.checking = false;
     state.downloading = false;
     state.installing = false;
-    state.error = err.message || "Authenticated update failed.";
+    const message = err && err.message ? err.message : "";
+    if (/Invalid package\b/.test(message) && /\bapp\.asar\b/i.test(message)) {
+      state.manualAvailable = true;
+      state.error = "Electron's filesystem treated app.asar as a virtual package during preflight. Use Show downloaded update to install the zip manually, then retry after the next update.";
+      return;
+    }
+    state.error = message || "Authenticated update failed.";
   }
   function requireTrust() {
     if (!publicKey) throw new Error("Signed macOS updates are not configured. No trusted release public key is bundled. Use a verified manual release installation.");
