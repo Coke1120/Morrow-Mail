@@ -70,6 +70,8 @@ const state = {
   calendarEventId: "",
   calendarStatus: null,
   calendarPayload: null,
+  providerColumnPath: [],
+  calendarFocusDay: "",
 };
 
 let accountGen = 0;
@@ -446,6 +448,100 @@ function providerLabelTree(folders) {
     if (!byName.has(folder.name)) byName.set(folder.name, folder);
   }
   return nestRows(rows, (folder) => providerParent(folder, byId, byName), providerLabelText);
+}
+
+function providerColumns(tree, pathIds, query) {
+  const rows = Array.isArray(tree) ? tree.filter((folder) => folder && folder.id) : [];
+  const q = String(query || "").trim().toLowerCase();
+  const children = new Map();
+  for (let i = 0; i < rows.length; i += 1) {
+    const folder = rows[i];
+    const parent = folder.parentId ? String(folder.parentId) : "";
+    const list = children.get(parent);
+    if (list) list.push(folder);
+    else children.set(parent, [folder]);
+  }
+  function textHits(folder) {
+    const label = String(folder.label || folder.name || folder.id).toLowerCase();
+    const name = String(folder.name || "").toLowerCase();
+    return label.indexOf(q) >= 0 || name.indexOf(q) >= 0;
+  }
+  function visibleMatch(folder, seen) {
+    if (!q) return true;
+    if (textHits(folder)) return true;
+    const id = String(folder.id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    const kids = children.get(id) || [];
+    for (let n = 0; n < kids.length; n += 1) {
+      if (visibleMatch(kids[n], seen)) return true;
+    }
+    return false;
+  }
+  function columnFor(parentId) {
+    const kids = children.get(parentId) || [];
+    const out = [];
+    for (let n = 0; n < kids.length; n += 1) {
+      if (visibleMatch(kids[n], new Set())) out.push(kids[n]);
+    }
+    return out;
+  }
+  const requested = [];
+  const raw = Array.isArray(pathIds) ? pathIds : [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const id = String(raw[i] || "");
+    if (id) requested.push(id);
+  }
+  const columns = [];
+  const path = [];
+  let parent = "";
+  for (let depth = 0; depth < 24; depth += 1) {
+    const column = columnFor(parent);
+    if (!column.length && depth > 0) break;
+    columns.push(column);
+    const wanted = requested[depth] || "";
+    let chosen = null;
+    for (let n = 0; n < column.length; n += 1) {
+      if (String(column[n].id) === wanted) {
+        chosen = column[n];
+        break;
+      }
+    }
+    if (!chosen) break;
+    path.push(String(chosen.id));
+    const next = columnFor(String(chosen.id));
+    if (!next.length) break;
+    parent = String(chosen.id);
+  }
+  return { columns: columns, path: path };
+}
+
+function providerFilterReveal(tree, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return null;
+  const rows = Array.isArray(tree) ? tree.filter((folder) => folder && folder.id) : [];
+  const byId = new Map();
+  for (let i = 0; i < rows.length; i += 1) byId.set(String(rows[i].id), rows[i]);
+  let match = null;
+  for (let i = 0; i < rows.length; i += 1) {
+    const folder = rows[i];
+    const label = String(folder.label || folder.name || folder.id).toLowerCase();
+    const name = String(folder.name || "").toLowerCase();
+    if (label.indexOf(q) >= 0 || name.indexOf(q) >= 0) {
+      match = folder;
+      break;
+    }
+  }
+  if (!match) return [];
+  const path = [];
+  const seen = new Set();
+  let current = match;
+  while (current && !seen.has(String(current.id))) {
+    seen.add(String(current.id));
+    path.unshift(String(current.id));
+    current = current.parentId ? byId.get(String(current.parentId)) : null;
+  }
+  return path;
 }
 
 function joinedPath(node, byId, sep) {
@@ -1061,6 +1157,12 @@ function eventCoversDay(event, key) {
   return startKey === key;
 }
 
+function allDayContinues(event, key) {
+  if (!event || !event.allDay || !key) return false;
+  const startKey = eventDay(event);
+  return !!(startKey && key > startKey && eventCoversDay(event, key));
+}
+
 function eventsOnDay(events, key) {
   return (Array.isArray(events) ? events : []).filter((event) => eventCoversDay(event, key));
 }
@@ -1083,6 +1185,21 @@ function formatEventWhen(event) {
   const end = clockLabel(event.end);
   if (start && end) return `${start}–${end}`;
   return start;
+}
+
+function formatEventDetailWhen(event) {
+  if (!event || !event.start) return "";
+  if (event.allDay) {
+    const start = String(event.start).slice(0, 10);
+    const end = String(event.end || "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(end) && end > start) return start + " – " + end + " (end date is exclusive)";
+    return "All day · " + start;
+  }
+  const startMs = Date.parse(event.start);
+  if (!Number.isFinite(startMs)) return formatEventWhen(event);
+  const date = new Date(startMs).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  const when = formatEventWhen(event);
+  return when ? date + " · " + when : date;
 }
 
 function eventChip(event) {
@@ -1113,6 +1230,39 @@ function sameDay(year, month, day, now) {
 function calendarNameOf(calendars, id) {
   const row = (Array.isArray(calendars) ? calendars : []).find((item) => item && item.id === id);
   return row ? (row.name || row.id) : "";
+}
+
+function calendarColor(id) {
+  const palette = ["#1a73e8", "#188038", "#d93025", "#e37400", "#a142f4", "#039be5", "#0b8043"];
+  const text = String(id || "");
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) hash = (hash + text.charCodeAt(i)) % palette.length;
+  return palette[hash];
+}
+
+function localDateStamp(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return y + "-" + m + "-" + d;
+}
+
+function plusDays(stamp, count) {
+  const parts = String(stamp || "").split("-");
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  if (!y || !m || !d) return "";
+  return localDateStamp(new Date(y, m - 1, d + count));
+}
+
+function toDateTimeLocal(value) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return localDateStamp(date) + "T" + hh + ":" + mm;
 }
 
 function vacationProvider(account) {
@@ -1265,18 +1415,45 @@ function calendarDraft(input) {
   if (!calendarId) return { error: "Choose a calendar." };
   if (!title) return { error: "Add a title." };
   const location = String((input && input.location) || "").trim();
+  const description = String((input && input.description) || "").trim();
+  const allDay = !!(input && input.allDay);
+  const eventId = String((input && input.eventId) || "").trim();
+  if (allDay) {
+    const start = startRaw.slice(0, 10);
+    const end = endRaw.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end <= start) {
+      return { error: "Pick a start date and a later end date." };
+    }
+    const body = {
+      error: "",
+      accountId: accountId,
+      calendarId: calendarId,
+      title: title,
+      location: location,
+      description: description,
+      allDay: true,
+      start: start,
+      end: end,
+    };
+    if (eventId) body.eventId = eventId;
+    return body;
+  }
   const start = Date.parse(startRaw);
   const end = Date.parse(endRaw);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return { error: "Pick a start and a later end." };
-  return {
+  const body = {
     error: "",
-    accountId,
-    calendarId,
-    title,
-    location,
+    accountId: accountId,
+    calendarId: calendarId,
+    title: title,
+    location: location,
+    description: description,
+    allDay: false,
     start: new Date(start).toISOString(),
     end: new Date(end).toISOString(),
   };
+  if (eventId) body.eventId = eventId;
+  return body;
 }
 
 function envelopeError(result) {
@@ -3092,9 +3269,212 @@ function fillAccountOptions(select, rows, selected, emptyLabel = "No mailbox") {
 }
 
 let providerPageKey = "";
+let providerPageAccountId = "";
+
+function providerFilterQuery() {
+  const input = $("provider-filter");
+  return input ? String(input.value || "") : "";
+}
+
+function providerColumnHasChild(tree, pathPrefix, id, query) {
+  const probe = providerColumns(tree, pathPrefix.concat([String(id)]), query);
+  return probe.columns.length > pathPrefix.length + 1;
+}
+
+function renderProviderColumns(block) {
+  const host = block && block.querySelector(".provider-columns");
+  if (!host) return;
+  const account = selectedAccount();
+  const provider = folderProvider(account);
+  const payload = providerPayloadFor(account);
+  const tree = providerLabelTree((payload && payload.folders) || []);
+  const query = providerFilterQuery();
+  const view = providerColumns(tree, state.providerColumnPath, query);
+  state.providerColumnPath = view.path.slice();
+  const restore = host.dataset.restoreFocus === "1";
+  delete host.dataset.restoreFocus;
+  host.replaceChildren();
+  const focusId = view.path.length ? view.path[view.path.length - 1] : "";
+  view.columns.forEach((column, index) => {
+    const col = document.createElement("div");
+    col.className = "provider-column";
+    col.dataset.column = String(index);
+    col.setAttribute("role", "listbox");
+    col.setAttribute("aria-label", index ? "Contents" : (provider === "outlook" ? "Folders" : "Labels"));
+    const selectedId = view.path[index] || "";
+    if (!column.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = query.trim() ? "No matching labels." : "Nothing in this column.";
+      col.appendChild(empty);
+    }
+    column.forEach((folder) => {
+      const row = document.createElement("div");
+      row.className = "provider-row";
+      row.dataset.dropKind = provider === "outlook" ? "outlook" : "gmail";
+      row.dataset.dropId = folder.id;
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-haspopup", "menu");
+      const selected = String(folder.id) === selectedId;
+      const hasChild = providerColumnHasChild(tree, view.path.slice(0, index), folder.id, query);
+      row.setAttribute("aria-selected", selected ? "true" : "false");
+      row.setAttribute("aria-expanded", hasChild ? (selected ? "true" : "false") : "false");
+      row.tabIndex = selected || (!selectedId && index === 0 && column[0] === folder) ? 0 : -1;
+      const shown = folder.label || folder.name;
+      applyNestDrag(row, provider, folder, account.id, folder.name || shown, shown + ".");
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = shown;
+      row.append(providerMark(provider), name);
+      if (hasChild) {
+        const chevron = strokeIcon([MOVE_CHEVRON_RIGHT], 14);
+        chevron.classList.add("provider-chevron");
+        row.appendChild(chevron);
+      }
+      row.addEventListener("click", () => {
+        host.dataset.restoreFocus = "1";
+        const next = state.providerColumnPath.slice(0, index);
+        next.push(String(folder.id));
+        state.providerColumnPath = next;
+        renderProviderColumns(block);
+      });
+      row.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openFolderMenu(folder, provider, event.clientX, event.clientY);
+      });
+      col.appendChild(row);
+    });
+    host.appendChild(col);
+  });
+  paintProviderActions(block, account, provider, tree, state.providerColumnPath);
+  if (host.dataset.motion !== "1") {
+    host.dataset.motion = "1";
+    const motion = motionApi();
+    if (motion) motion.rows(host.querySelectorAll(".provider-row"));
+  }
+  if (restore && focusId) {
+    const row = Array.from(host.querySelectorAll(".provider-row")).find((node) => node.dataset.dropId === focusId && node.getAttribute("aria-selected") === "true");
+    if (row) row.focus();
+  }
+}
+
+function imapFolderForProvider(account, folder) {
+  if (!account || !folder) return null;
+  const id = String(folder.id || "");
+  const name = String(folder.name || "");
+  const label = String(folder.label || "");
+  return foldersOf(account).find((item) => {
+    if (!item) return false;
+    const itemId = String(item.id || "");
+    const itemName = String(item.name || "");
+    return itemId === id || (name && itemName === name) || (label && itemName === label);
+  }) || null;
+}
+
+function paintProviderActions(block, account, provider, tree, path) {
+  const actions = block.querySelector("#provider-actions");
+  if (!actions) return;
+  actions.replaceChildren();
+  const id = path.length ? path[path.length - 1] : "";
+  if (!id) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "Drag a message onto a row.";
+    actions.appendChild(hint);
+    return;
+  }
+  const folder = tree.find((item) => item && String(item.id) === id) || null;
+  const label = document.createElement("p");
+  label.className = "provider-selection";
+  label.textContent = (folder && (folder.label || folder.name)) || id;
+  actions.appendChild(label);
+  const row = document.createElement("div");
+  row.className = "row";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "ghost";
+  open.textContent = "Open in Mail";
+  const imap = imapFolderForProvider(account, folder);
+  open.disabled = !imap;
+  open.title = imap ? "Open this folder in Mail" : "No matching mailbox folder";
+  open.addEventListener("click", () => {
+    if (!imap) return;
+    selectFolder(account.id, imap.id).then(() => showMail()).catch((error) => showStatus(error.message, true));
+  });
+  row.appendChild(open);
+  if (provider === "gmail") {
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "ghost";
+    add.textContent = "Add label to open message";
+    const email = state.email;
+    const ready = !!(email && account && email.accountId === account.id);
+    add.disabled = !ready;
+    add.title = ready ? "Add this label to the open message" : "Open a message in this mailbox first";
+    add.addEventListener("click", () => {
+      if (!state.email || state.email.accountId !== account.id) return;
+      guard(() => changeLabels(state.email, [id], []));
+    });
+    row.appendChild(add);
+  } else if (provider === "outlook") {
+    const move = document.createElement("button");
+    move.type = "button";
+    move.className = "ghost";
+    move.textContent = "Move open message here";
+    const email = state.email;
+    const ready = !!(email && account && email.accountId === account.id);
+    move.disabled = !ready;
+    move.title = ready ? "Move the open message into this folder" : "Open a message in this mailbox first";
+    move.addEventListener("click", () => {
+      if (!state.email || state.email.accountId !== account.id) return;
+      guard(() => moveOutlook(state.email, id));
+    });
+    row.appendChild(move);
+  }
+  actions.appendChild(row);
+}
+
+function onProviderColumnKey(event) {
+  const row = event.target && event.target.closest ? event.target.closest(".provider-row") : null;
+  const root = $("provider-content");
+  if (!row || !root || !root.contains(row)) return;
+  const key = event.key;
+  if (key !== "ArrowUp" && key !== "ArrowDown" && key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Enter") return;
+  const column = row.parentElement;
+  const index = Number(column && column.dataset.column);
+  if (!Number.isFinite(index)) return;
+  event.preventDefault();
+  const rows = Array.from(column.querySelectorAll(".provider-row"));
+  const at = rows.indexOf(row);
+  if (key === "ArrowUp" || key === "ArrowDown") {
+    const next = rows[at + (key === "ArrowDown" ? 1 : -1)];
+    if (!next) return;
+    const path = state.providerColumnPath.slice(0, index);
+    path.push(next.dataset.dropId);
+    state.providerColumnPath = path;
+  } else if (key === "ArrowLeft") {
+    if (!index) return;
+    state.providerColumnPath = state.providerColumnPath.slice(0, index);
+  } else {
+    const path = state.providerColumnPath.slice(0, index);
+    path.push(row.dataset.dropId);
+    state.providerColumnPath = path;
+  }
+  const host = row.closest(".provider-columns");
+  if (host) host.dataset.restoreFocus = "1";
+  const block = $("provider-folders");
+  if (block) renderProviderColumns(block);
+}
+
 function paintProviderPage() {
   const account = selectedAccount();
   fillAccountOptions($("provider-account"), state.accounts, account?.id);
+  const accountId = account ? account.id : "";
+  if (accountId !== providerPageAccountId) {
+    providerPageAccountId = accountId;
+    state.providerColumnPath = [];
+  }
   const key = JSON.stringify([account?.id, account && folderProvider(account), state.providerFolders]);
   if (key === providerPageKey) return;
   providerPageKey = key;
@@ -3158,27 +3538,13 @@ function appendProviderBlock(nav, account) {
     block.appendChild(note);
   }
   block.appendChild(folderRootDrop(provider, account.id));
-  for (const folder of providerLabelTree(view.folders)) {
-    const row = document.createElement("div");
-    row.className = "provider-row";
-    row.dataset.dropKind = provider === "outlook" ? "outlook" : "gmail";
-    row.dataset.dropId = folder.id;
-    row.tabIndex = 0;
-    row.setAttribute("aria-haspopup", "menu");
-    const shown = folder.label || folder.name;
-    applyNestDrag(row, provider, folder, account.id, folder.name || shown, shown + ".");
-    row.style.paddingLeft = (folder.depth * 14) + "px";
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = shown;
-    row.append(providerMark(provider), name);
-    row.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openFolderMenu(folder, provider, event.clientX, event.clientY);
-    });
-    block.appendChild(row);
-  }
+  const columns = document.createElement("div");
+  columns.className = "provider-columns";
+  block.appendChild(columns);
+  const actions = document.createElement("div");
+  actions.id = "provider-actions";
+  actions.className = "provider-actions";
+  block.appendChild(actions);
   const form = document.createElement("form");
   form.className = "provider-create";
   let parentSelect = null;
@@ -3207,6 +3573,7 @@ function appendProviderBlock(nav, account) {
     guard(() => createProviderFolder(input.value, parentId));
   });
   block.appendChild(form);
+  renderProviderColumns(block);
   nav.appendChild(block);
 }
 
@@ -12615,10 +12982,18 @@ function fillCalendarAccounts() {
 
 function fillCalendarPick(calendars) {
   const select = $("calendar-pick");
+  if (!select) return;
+  const dialog = $("calendar-event-dialog");
+  const editing = !!(dialog && dialog.open);
+  const keep = editing ? select.value : "";
   const key = JSON.stringify(calendars.map(row => [row.id, row.name]));
   if (select.dataset.optionsKey !== key) {
     select.dataset.optionsKey = key;
     select.replaceChildren(...calendars.map(calendar => option(calendar.id, calendar.name || calendar.id)));
+  }
+  if (editing && keep && Array.from(select.options).some((item) => item.value === keep)) {
+    select.value = keep;
+    return;
   }
   if (state.calendarId && calendars.some(calendar => calendar.id === state.calendarId)) select.value = state.calendarId;
   else if (select.value) state.calendarId = select.value;
@@ -12630,6 +13005,22 @@ function selectedCalendarEvent(payload) {
 }
 
 let calendarDetailKey = "";
+let calendarEditingId = "";
+
+function calendarDetailLine(paths, label, value, empty) {
+  const line = document.createElement("p");
+  line.className = "calendar-detail-line";
+  line.appendChild(strokeIcon(paths, 16));
+  const name = document.createElement("span");
+  name.className = "calendar-detail-label";
+  name.textContent = label;
+  const text = document.createElement("span");
+  text.textContent = value;
+  if (empty) text.classList.add("is-empty");
+  line.append(name, text);
+  return line;
+}
+
 function paintCalendarDetail(event, calendarName) {
   const root = $("calendar-detail");
   if (!root) return;
@@ -12645,20 +13036,48 @@ function paintCalendarDetail(event, calendarName) {
   const title = document.createElement("h3");
   title.textContent = event.title || "(no title)";
   root.appendChild(title);
-  const when = document.createElement("p");
-  when.textContent = formatEventWhen(event) || "Time not provided.";
-  root.appendChild(when);
-  if (event.location) {
-    const where = document.createElement("p");
-    where.textContent = event.location;
-    root.appendChild(where);
+  root.appendChild(calendarDetailLine(
+    ["M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z", "M12 6v6l4 2"],
+    "When",
+    formatEventDetailWhen(event) || "Time not provided.",
+    false,
+  ));
+  root.appendChild(calendarDetailLine(
+    ["M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z", "M16 2v4M8 2v4M3 10h18"],
+    "Calendar",
+    calendarName || "Calendar",
+    !calendarName,
+  ));
+  root.appendChild(calendarDetailLine(
+    ["M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z", "M12 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"],
+    "Location",
+    event.location || "No location",
+    !event.location,
+  ));
+  const description = document.createElement("p");
+  description.className = "calendar-detail-description";
+  if (event.description) description.textContent = event.description;
+  else {
+    description.textContent = "No description";
+    description.classList.add("is-empty");
   }
-  if (calendarName) {
-    const name = document.createElement("p");
-    name.className = "hint";
-    name.textContent = calendarName;
-    root.appendChild(name);
-  }
+  root.appendChild(description);
+  const actions = document.createElement("div");
+  actions.className = "row";
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "ghost";
+  edit.textContent = "Edit";
+  edit.addEventListener("click", () => openCalendarEditor(event));
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "ghost";
+  remove.textContent = "Delete";
+  remove.addEventListener("click", () => {
+    guard(() => deleteCalendarEvent(event));
+  });
+  actions.append(edit, remove);
+  root.appendChild(actions);
 }
 
 function paintAgenda(events) {
@@ -12681,6 +13100,11 @@ function paintAgenda(events) {
     if (event.id === state.calendarEventId) button.classList.add("is-selected");
     button.textContent = agendaLine(event);
     button.addEventListener("click", () => selectCalendarEvent(event));
+    button.addEventListener("dblclick", (click) => {
+      click.preventDefault();
+      selectCalendarEvent(event);
+      openCalendarEditor(event);
+    });
     root.appendChild(button);
   }
 }
@@ -12720,8 +13144,11 @@ function paintCalendar(payload) {
   statusEl.textContent = status;
   statusEl.classList.toggle("error", view.error === true);
   statusEl.classList.toggle("is-empty", !view.showGrid);
-  $("calendar-create").hidden = !view.showForm;
-  syncCalendarNav(view);
+  const add = $("calendar-add");
+  if (add) {
+    add.disabled = !view.showForm;
+    add.title = view.showForm ? "Create an event" : "Shown when this month has a calendar.";
+  }
   const grant = $("calendar-grant");
   grant.disabled = !connection.canGrant;
   grant.textContent = connection.label;
@@ -12734,6 +13161,8 @@ function paintCalendar(payload) {
     return;
   }
   fillCalendarPick(view.calendars);
+  paintCalendarList(view.calendars);
+  paintMiniMonth(year, month);
   if (calendarGridKey !== range.timeMin) {
     calendarGridKey = range.timeMin;
     calendarEventsKey = "";
@@ -12752,11 +13181,24 @@ function paintCalendar(payload) {
       cell.className = "calendar-day";
       if (!day) cell.classList.add("pad");
       else {
-        cell.dataset.day = day;
+        cell.dataset.day = String(day);
         const num = document.createElement("span");
         num.className = "calendar-num";
         num.textContent = String(day);
-        cell.appendChild(num);
+        const events = document.createElement("div");
+        events.className = "calendar-day-events";
+        cell.append(num, events);
+        const stamp = dayKey(year, month, day);
+        cell.addEventListener("click", () => {
+          state.calendarFocusDay = stamp;
+          paintCalendarFocus(year, month);
+        });
+        cell.addEventListener("dblclick", () => {
+          state.calendarFocusDay = stamp;
+          paintCalendarFocus(year, month);
+          const create = $("calendar-add");
+          if (create && !create.disabled) openCalendarEditor(null, stamp);
+        });
       }
       grid.appendChild(cell);
     }
@@ -12764,27 +13206,265 @@ function paintCalendar(payload) {
   }
   const eventsKey = JSON.stringify([account?.id, state.calendarId, view.events]);
   const changed = eventsKey !== calendarEventsKey;
+  const color = calendarColor(state.calendarId);
   for (const cell of body.querySelectorAll("[data-day]")) {
     const day = Number(cell.dataset.day);
-    cell.classList.toggle("today", sameDay(year, month, day));
+    const key = dayKey(year, month, day);
     if (!changed) continue;
-    for (const item of cell.querySelectorAll(".calendar-event")) item.remove();
-    for (const event of eventsOnDay(view.events, dayKey(year, month, day))) {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = "calendar-event";
-      item.dataset.eventId = event.id;
-      item.textContent = eventChip(event);
-      item.title = [event.title || "(no title)", event.location].filter(Boolean).join(" — ");
-      item.addEventListener("click", () => selectCalendarEvent(event));
-      cell.appendChild(item);
-    }
+    const bucket = cell.querySelector(".calendar-day-events") || cell;
+    for (const item of bucket.querySelectorAll(".calendar-event")) item.remove();
+    const rows = eventsOnDay(view.events, key).slice().sort((left, right) => {
+      if (!!left.allDay !== !!right.allDay) return left.allDay ? -1 : 1;
+      return String((left && left.start) || "").localeCompare(String((right && right.start) || ""));
+    });
+    for (const event of rows) appendCalendarEvent(bucket, event, key, calendarColor(event.calendarId || state.calendarId) || color);
   }
+  paintCalendarFocus(year, month);
   if (changed) {
     calendarEventsKey = eventsKey;
     paintAgenda(view.events);
   }
   paintCalendarSelection(payload);
+}
+
+function appendCalendarEvent(parent, event, key, color) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "calendar-event";
+  item.dataset.eventId = event.id;
+  item.style.setProperty("--event-color", color || calendarColor(event.calendarId));
+  if (event.allDay) {
+    item.classList.add("is-all-day");
+    if (allDayContinues(event, key)) item.classList.add("is-continued");
+    item.textContent = event.title || "(no title)";
+  } else {
+    item.classList.add("is-timed");
+    const dot = document.createElement("span");
+    dot.className = "calendar-dot";
+    dot.setAttribute("aria-hidden", "true");
+    const when = document.createElement("span");
+    when.className = "calendar-when";
+    when.textContent = clockLabel(event.start);
+    const title = document.createElement("span");
+    title.className = "calendar-title";
+    title.textContent = event.title || "(no title)";
+    item.append(dot, when, title);
+  }
+  item.title = [event.title || "(no title)", event.location].filter(Boolean).join(" — ");
+  item.addEventListener("click", (click) => {
+    click.stopPropagation();
+    selectCalendarEvent(event);
+  });
+  item.addEventListener("dblclick", (click) => {
+    click.stopPropagation();
+    click.preventDefault();
+    selectCalendarEvent(event);
+    openCalendarEditor(event);
+  });
+  parent.appendChild(item);
+}
+
+function paintCalendarFocus(year, month) {
+  const focus = state.calendarFocusDay || "";
+  const body = $("calendar-body");
+  if (body) {
+    for (const cell of body.querySelectorAll("[data-day]")) {
+      const day = Number(cell.dataset.day);
+      const stamp = day ? dayKey(year, month, day) : "";
+      cell.classList.toggle("is-focus", !!stamp && stamp === focus);
+      cell.classList.toggle("today", sameDay(year, month, day));
+      const num = cell.querySelector(".calendar-num");
+      if (num) num.classList.toggle("is-today", sameDay(year, month, day));
+    }
+  }
+  const mini = $("calendar-mini");
+  if (!mini) return;
+  for (const button of mini.querySelectorAll(".mini-day")) {
+    button.classList.toggle("is-focus", button.dataset.stamp === focus);
+  }
+}
+
+function focusCalendarDay(year, month, day) {
+  const stamp = dayKey(year, month, day);
+  const cursor = state.calendarCursor || new Date();
+  state.calendarFocusDay = stamp;
+  if (cursor.getFullYear() === year && cursor.getMonth() === month) {
+    paintCalendarFocus(year, month);
+    return;
+  }
+  state.calendarCursor = new Date(year, month, 1);
+  loadCalendar().catch((error) => showStatus(error.message, true));
+}
+
+function paintMiniMonth(year, month) {
+  const root = $("calendar-mini");
+  if (!root) return;
+  const monthKey = String(year) + "-" + String(month);
+  if (root.dataset.month === monthKey && root.querySelector(".mini-day")) return;
+  root.dataset.month = monthKey;
+  root.replaceChildren();
+  const bar = document.createElement("div");
+  bar.className = "mini-bar";
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "ghost icon-btn";
+  prev.setAttribute("aria-label", "Previous month");
+  prev.appendChild(strokeIcon(["M15 18l-6-6 6-6"], 16));
+  prev.addEventListener("click", () => shiftMonth(-1));
+  const label = document.createElement("span");
+  label.textContent = monthRange(year, month).label;
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "ghost icon-btn";
+  next.setAttribute("aria-label", "Next month");
+  next.appendChild(strokeIcon([MOVE_CHEVRON_RIGHT], 16));
+  next.addEventListener("click", () => shiftMonth(1));
+  bar.append(prev, label, next);
+  const grid = document.createElement("div");
+  grid.className = "mini-grid";
+  for (const name of ["S", "M", "T", "W", "T", "F", "S"]) {
+    const dow = document.createElement("div");
+    dow.className = "mini-dow";
+    dow.textContent = name;
+    grid.appendChild(dow);
+  }
+  const first = new Date(year, month, 1);
+  const start = new Date(year, month, 1 - first.getDay());
+  for (let i = 0; i < 42; i += 1) {
+    const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mini-day";
+    const cellYear = date.getFullYear();
+    const cellMonth = date.getMonth();
+    const cellDay = date.getDate();
+    button.dataset.stamp = dayKey(cellYear, cellMonth, cellDay);
+    button.textContent = String(cellDay);
+    if (cellMonth !== month) button.classList.add("is-outside");
+    if (sameDay(cellYear, cellMonth, cellDay)) button.classList.add("is-today");
+    button.addEventListener("click", () => focusCalendarDay(cellYear, cellMonth, cellDay));
+    grid.appendChild(button);
+  }
+  root.append(bar, grid);
+}
+
+function paintCalendarList(calendars) {
+  const root = $("calendar-list");
+  if (!root) return;
+  const rows = Array.isArray(calendars) ? calendars : [];
+  const key = JSON.stringify([rows.map((row) => [row.id, row.name]), state.calendarId]);
+  if (root.dataset.key === key) return;
+  root.dataset.key = key;
+  root.replaceChildren();
+  for (const calendar of rows) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "calendar-source";
+    button.style.setProperty("--event-color", calendarColor(calendar.id));
+    button.setAttribute("aria-pressed", calendar.id === state.calendarId ? "true" : "false");
+    const mark = document.createElement("span");
+    mark.className = "calendar-source-mark";
+    mark.setAttribute("aria-hidden", "true");
+    const name = document.createElement("span");
+    name.textContent = calendar.name || calendar.id;
+    button.append(mark, name);
+    button.addEventListener("click", () => {
+      if (state.calendarId === calendar.id) return;
+      state.calendarId = calendar.id;
+      state.calendarEventId = "";
+      loadCalendar().catch((error) => showStatus(error.message, true));
+    });
+    root.appendChild(button);
+  }
+}
+
+function syncAllDayInputs() {
+  const allDay = $("calendar-all-day");
+  const start = $("calendar-start");
+  const end = $("calendar-end");
+  if (!allDay || !start || !end) return;
+  const enabled = !!allDay.checked;
+  start.type = enabled ? "date" : "datetime-local";
+  end.type = enabled ? "date" : "datetime-local";
+  const endLabel = document.querySelector("label[for='calendar-end']");
+  if (endLabel) endLabel.textContent = enabled ? "End (exclusive)" : "End";
+  if (enabled) {
+    if (start.value.length > 10) start.value = start.value.slice(0, 10);
+    if (end.value.length > 10) end.value = end.value.slice(0, 10);
+    if (start.value && (!end.value || end.value <= start.value)) end.value = plusDays(start.value, 1);
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(start.value)) {
+    start.value = start.value + "T09:00";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(end.value)) end.value = end.value + "T10:00";
+  }
+}
+
+function openCalendarEditor(event, dayStamp) {
+  const dialogTitle = $("calendar-dialog-title");
+  const save = $("calendar-save");
+  const remove = $("calendar-delete");
+  const title = $("calendar-event-title");
+  const location = $("calendar-location");
+  const description = $("calendar-description");
+  const allDay = $("calendar-all-day");
+  const start = $("calendar-start");
+  const end = $("calendar-end");
+  const status = $("calendar-form-status");
+  if (status) {
+    status.textContent = "";
+    status.classList.remove("error");
+  }
+  const editing = !!(event && event.id);
+  calendarEditingId = editing ? String(event.id) : "";
+  if (dialogTitle) dialogTitle.textContent = editing ? "Edit event" : "Add event";
+  if (save) save.textContent = editing ? "Save" : "Add event";
+  if (remove) remove.hidden = !editing;
+  if (title) title.value = editing ? (event.title || "") : "";
+  if (location) location.value = editing ? (event.location || "") : "";
+  if (description) description.value = editing ? (event.description || "") : "";
+  if (allDay) allDay.checked = editing ? !!event.allDay : false;
+  if (editing && event.allDay) {
+    start.value = String(event.start || "").slice(0, 10);
+    end.value = String(event.end || "").slice(0, 10);
+    if (!end.value || end.value <= start.value) end.value = plusDays(start.value, 1);
+  } else if (editing) {
+    start.value = toDateTimeLocal(event.start);
+    end.value = toDateTimeLocal(event.end);
+  } else {
+    const stamp = dayStamp || state.calendarFocusDay || localDateStamp(state.calendarCursor || new Date());
+    start.value = stamp + "T09:00";
+    end.value = stamp + "T10:00";
+  }
+  syncAllDayInputs();
+  const pick = $("calendar-pick");
+  const wanted = editing && event.calendarId ? event.calendarId : state.calendarId;
+  if (pick && wanted && Array.from(pick.options).some((item) => item.value === wanted)) pick.value = wanted;
+  openDialog("calendar-event-dialog");
+  if (title) title.focus();
+}
+
+async function deleteCalendarEvent(event) {
+  const id = (event && event.id) || calendarEditingId || state.calendarEventId;
+  if (!id) return;
+  const account = calendarAccount();
+  const answer = await askConfirm({
+    title: "Delete event",
+    body: "Delete this event from the calendar? This removes it from Google Calendar or Outlook.",
+    confirm: "Delete",
+    cancel: "Cancel",
+    needsName: false,
+  });
+  if (!answer || !answer.ok) return;
+  await call("calendar:deleteEvent", {
+    accountId: account && account.id,
+    calendarId: (event && event.calendarId) || state.calendarId || ($("calendar-pick") && $("calendar-pick").value),
+    eventId: id,
+  });
+  calendarEditingId = "";
+  if (state.calendarEventId === id) state.calendarEventId = "";
+  closeDialog("calendar-event-dialog");
+  showStatus("Event deleted.");
+  calendarCache.clear();
+  await loadCalendar({ fresh: true });
 }
 
 function syncCalendarNav(view) {
@@ -12896,7 +13576,7 @@ function showCalendar() {
   if (!state.calendarCursor) state.calendarCursor = new Date();
   if ((calendarAccount()?.id || "") !== calendarPaintedAccountId) {
     $("calendar-layout").hidden = true;
-    $("calendar-create").hidden = true;
+    closeDialog("calendar-event-dialog");
     $("calendar-detail").hidden = true;
     $("calendar-status").textContent = "Loading calendar…";
   }
@@ -12926,22 +13606,34 @@ async function grantCalendar() {
 async function submitCalendarEvent(event) {
   event.preventDefault();
   const account = calendarAccount();
+  const editing = calendarEditingId;
   const draft = calendarDraft({
     accountId: account && account.id,
-    calendarId: state.calendarId || $("calendar-pick").value,
+    calendarId: ($("calendar-pick") && $("calendar-pick").value) || state.calendarId,
     title: $("calendar-event-title").value,
     location: $("calendar-location").value,
+    description: $("calendar-description") ? $("calendar-description").value : "",
+    allDay: !!($("calendar-all-day") && $("calendar-all-day").checked),
     start: $("calendar-start").value,
     end: $("calendar-end").value,
+    eventId: editing,
   });
+  const status = $("calendar-form-status");
   if (draft.error) {
-    $("calendar-status").textContent = draft.error;
-    $("calendar-status").classList.add("error");
+    if (status) {
+      status.textContent = draft.error;
+      status.classList.add("error");
+    }
     throw new Error(draft.error);
   }
-  await call("calendar:createEvent", draft);
-  $("calendar-event-title").value = "";
-  $("calendar-location").value = "";
+  if (status) {
+    status.textContent = "";
+    status.classList.remove("error");
+  }
+  if (editing) await call("calendar:updateEvent", draft);
+  else await call("calendar:createEvent", draft);
+  calendarEditingId = "";
+  closeDialog("calendar-event-dialog");
   showStatus("Event saved on the calendar.");
   calendarCache.clear();
   await loadCalendar({ fresh: true });
@@ -12950,11 +13642,14 @@ async function submitCalendarEvent(event) {
 function shiftMonth(delta) {
   const cursor = state.calendarCursor || new Date();
   state.calendarCursor = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
+  state.calendarFocusDay = "";
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
 
 function showCalendarToday() {
-  state.calendarCursor = new Date();
+  const now = new Date();
+  state.calendarCursor = now;
+  state.calendarFocusDay = localDateStamp(now);
   state.calendarEventId = "";
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
@@ -13505,7 +14200,6 @@ function wire() {
   if (motion) motion.bindChrome(document);
   wireSettingsFolds();
   wireAgentTabs();
-  wireSectionNav("calendar-nav");
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
       if (dialog.id === "compose-close-review") return;
@@ -13582,17 +14276,35 @@ function wire() {
   $("calendar-next").addEventListener("click", () => shiftMonth(1));
   $("calendar-today").addEventListener("click", showCalendarToday);
   $("calendar-grant").addEventListener("click", () => guard(grantCalendar));
+  $("calendar-add").addEventListener("click", () => openCalendarEditor(null, state.calendarFocusDay));
   $("calendar-create").addEventListener("submit", (event) => guard(() => submitCalendarEvent(event)));
+  $("calendar-all-day").addEventListener("change", syncAllDayInputs);
+  $("calendar-delete").addEventListener("click", () => guard(() => deleteCalendarEvent({
+    id: calendarEditingId,
+    calendarId: ($("calendar-pick") && $("calendar-pick").value) || state.calendarId,
+  })));
+  $("calendar-cancel").addEventListener("click", () => {
+    calendarEditingId = "";
+    closeDialog("calendar-event-dialog");
+  });
+  $("calendar-event-dialog").addEventListener("close", () => {
+    calendarEditingId = "";
+  });
   $("calendar-account").addEventListener("change", () => {
     state.calendarAccountId = $("calendar-account").value;
     state.calendarId = "";
     state.calendarEventId = "";
+    state.calendarFocusDay = "";
     loadCalendar().catch((error) => showStatus(error.message, true));
   });
   $("calendar-pick").addEventListener("change", () => {
+    const dialog = $("calendar-event-dialog");
+    if (dialog && dialog.open) return;
     state.calendarId = $("calendar-pick").value;
+    state.calendarEventId = "";
     loadCalendar().catch((error) => showStatus(error.message, true));
   });
+  $("provider-content").addEventListener("keydown", onProviderColumnKey);
   wireSplits();
   wireQuoteSplit();
   $("undo").addEventListener("click", () => guard(undoRemoval));
@@ -13643,6 +14355,45 @@ function wire() {
       });
     }
     syncFolderFilterClear();
+  }
+  const providerFilter = $("provider-filter");
+  const providerFilterClear = $("provider-filter-clear");
+  if (providerFilter) {
+    const syncProviderFilterClear = () => {
+      if (providerFilterClear) providerFilterClear.hidden = !String(providerFilter.value || "");
+    };
+    const applyProviderFilter = () => {
+      syncProviderFilterClear();
+      const block = $("provider-folders");
+      if (!block) return;
+      const account = selectedAccount();
+      const payload = account ? providerPayloadFor(account) : null;
+      const tree = providerLabelTree((payload && payload.folders) || []);
+      const reveal = providerFilterReveal(tree, providerFilter.value);
+      if (reveal) state.providerColumnPath = reveal;
+      renderProviderColumns(block);
+    };
+    providerFilter.addEventListener("input", applyProviderFilter);
+    providerFilter.addEventListener("search", applyProviderFilter);
+    providerFilter.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (providerFilter.value) {
+        providerFilter.value = "";
+        applyProviderFilter();
+        return;
+      }
+      providerFilter.blur();
+    });
+    if (providerFilterClear) {
+      providerFilterClear.addEventListener("click", () => {
+        providerFilter.value = "";
+        applyProviderFilter();
+        providerFilter.focus();
+      });
+    }
+    syncProviderFilterClear();
   }
   $("refresh").addEventListener("click", () => guard(refresh));
   $("list-prev").addEventListener("click", () => guard(() => changeListPage(-1)));

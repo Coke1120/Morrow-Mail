@@ -235,12 +235,14 @@ app.whenReady().then(async () => {
   // Provider management lives on its own primary page, including drag listeners.
   calls.length = 0;
   await run(`$('rail-folders').click()`);
-  await waitFor(`$('provider-content').querySelectorAll('.provider-row').length===2`);
+  await waitFor(`$('provider-content').querySelectorAll('.provider-column').length===1 && $('provider-content').querySelectorAll('.provider-row').length===1`);
   assert.equal(await run(`$('folders').querySelector('.provider-block')`), null);
   assert.equal(await run(`$('shell').hidden && !$('provider-panel').hidden`), true);
   assert.equal(await run(`$('provider-content').querySelector('[data-nest-drag="1"]')!==null`), true);
   await run(`window.providerRow=$('provider-content').querySelector('.provider-row');paintProviderPage();`);
   assert.equal(await run(`providerRow.isConnected`), true);
+  await run(`$('provider-content').querySelector('.provider-row').click()`);
+  await waitFor(`$('provider-content').querySelectorAll('.provider-column').length===2 && $('provider-content').querySelectorAll('.provider-row').length===2 && $('provider-content').textContent.includes('Work')`);
   await run(`const input=$('provider-content').querySelector('input');input.value='Projects/New';input.form.requestSubmit();`);
   await waitCalls('mail:createProviderFolder', 1);
   assert.deepEqual(calls.find(row => row.channel === 'mail:createProviderFolder').payload, { accountId: 'box-0', name: 'Projects/New', parentId: '' });

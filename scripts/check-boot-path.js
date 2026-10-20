@@ -1876,6 +1876,8 @@ const providerUi = loadFunctions(appJs, [
   "agendaLine",
   "sameDay",
   "calendarDraft",
+  "providerColumns",
+  "providerFilterReveal",
   "vacationProvider",
   "vacationLink",
   "vacationDraft",
@@ -2965,6 +2967,48 @@ assert.strictEqual(providerUi.calendarDraft({
   start: "2026-10-17T10:00",
   end: "2026-10-17T11:00",
 }).location, "Room 2");
+assert.strictEqual(providerUi.calendarDraft({
+  accountId: "a",
+  calendarId: "c",
+  title: "Day",
+  allDay: true,
+  start: "2026-10-03",
+  end: "2026-10-03",
+}).error, "Pick a start date and a later end date.");
+const allDayDraft = providerUi.calendarDraft({
+  accountId: "a",
+  calendarId: "c",
+  title: "Day",
+  allDay: true,
+  start: "2026-10-03",
+  end: "2026-10-04",
+  description: " Bring notes ",
+});
+assert.strictEqual(allDayDraft.error, "");
+assert.strictEqual(allDayDraft.allDay, true);
+assert.strictEqual(allDayDraft.start, "2026-10-03");
+assert.strictEqual(allDayDraft.description, "Bring notes");
+const columnTree = [
+  { id: "L1", name: "Work", label: "Work", parentId: "" },
+  { id: "L2", name: "Travel", label: "Travel", parentId: "L1" },
+  { id: "L3", name: "2024", label: "2024", parentId: "L2" },
+  { id: "L4", name: "Solo", label: "Solo", parentId: "" },
+];
+const columnIds = (result) => result.columns.map((column) => column.map((folder) => folder.id));
+assert.deepStrictEqual(columnIds(providerUi.providerColumns(columnTree, [], "")), [["L1", "L4"]]);
+assert.deepStrictEqual(providerUi.providerColumns(columnTree, [], "").path, []);
+const drilled = providerUi.providerColumns(columnTree, ["L1", "L2"], "");
+assert.deepStrictEqual(columnIds(drilled), [["L1", "L4"], ["L2"], ["L3"]]);
+assert.deepStrictEqual(drilled.path, ["L1", "L2"]);
+const found = providerUi.providerColumns(columnTree, ["L1", "L2", "L3"], "2024");
+assert.deepStrictEqual(columnIds(found), [["L1"], ["L2"], ["L3"]]);
+assert.deepStrictEqual(found.path, ["L1", "L2", "L3"]);
+assert.deepStrictEqual(providerUi.providerFilterReveal(columnTree, "2024"), ["L1", "L2", "L3"]);
+assert.strictEqual(providerUi.providerFilterReveal(columnTree, ""), null);
+assert.deepStrictEqual(providerUi.providerFilterReveal(columnTree, "missing"), []);
+const invalidColumn = providerUi.providerColumns(columnTree, ["missing"], "");
+assert.deepStrictEqual(invalidColumn.path, []);
+assert.deepStrictEqual(columnIds(invalidColumn), [["L1", "L4"]]);
 assert.strictEqual(providerUi.vacationProvider({ imapSmtpProfile: "gmail" }), "google");
 assert.strictEqual(providerUi.vacationProvider({ profile: "outlook" }), "microsoft");
 assert.strictEqual(providerUi.vacationProvider({ imapSmtpProfile: "custom" }), "imap");
@@ -3031,6 +3075,8 @@ for (const channel of [
   "calendar:connect",
   "calendar:list",
   "calendar:createEvent",
+  "calendar:updateEvent",
+  "calendar:deleteEvent",
 ]) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
 }
@@ -3056,6 +3102,8 @@ for (const channel of [
   "calendar:connect",
   "calendar:list",
   "calendar:createEvent",
+  "calendar:updateEvent",
+  "calendar:deleteEvent",
 ]) {
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
@@ -5454,6 +5502,64 @@ async function checkProviderApi() {
     assert.strictEqual(posted[0].start.timeZone, "UTC");
     assert.strictEqual(createdEvent.location, "Room 2");
     assert.strictEqual(createdEvent.id, "evt-new");
+    assert.deepStrictEqual(calendarApi.googleEventBody({
+      title: "Offsite",
+      allDay: true,
+      start: "2026-10-01",
+      end: "2026-10-02",
+    }).start, { date: "2026-10-01" });
+    const described = calendarApi.normalizeGoogleEvent({
+      id: "evt-html",
+      summary: "Notes",
+      description: "<b>Hello</b><br>Next",
+      start: { date: "2026-10-03" },
+      end: { date: "2026-10-04" },
+    }, "cal-1");
+    assert.strictEqual(described.allDay, true);
+    assert.strictEqual(described.description, "Hello\nNext");
+    const preview = calendarApi.normalizeGraphEvent({
+      id: "evt-prev",
+      subject: "Brief",
+      start: { dateTime: "2026-10-06T15:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-10-06T16:00:00.0000000", timeZone: "UTC" },
+      isAllDay: false,
+      bodyPreview: "Bring the brief",
+    }, "cal-ms");
+    assert.strictEqual(preview.description, "Bring the brief");
+    let patched = null;
+    await calendarApi.updateEvent("google", "token", "cal-1", "evt-new", {
+      title: "Standup",
+      start: "2026-10-17T10:00:00.000Z",
+      end: "2026-10-17T11:00:00.000Z",
+      description: "Agenda",
+    }, async (url, init) => {
+      patched = { url: String(url), method: init.method, body: JSON.parse(init.body) };
+      return jsonResponse({
+        id: "evt-new",
+        summary: "Standup",
+        description: "Agenda",
+        start: { dateTime: "2026-10-17T10:00:00Z" },
+        end: { dateTime: "2026-10-17T11:00:00Z" },
+      });
+    });
+    assert.ok(patched.url.endsWith("/events/evt-new"));
+    assert.strictEqual(patched.method, "PATCH");
+    assert.strictEqual(patched.body.description, "Agenda");
+    let removedEvent = null;
+    const deleted = await calendarApi.deleteEvent("google", "token", "cal-1", "evt-new", async (url, init) => {
+      removedEvent = { url: String(url), method: init.method };
+      return jsonResponse({}, 204);
+    });
+    assert.strictEqual(removedEvent.method, "DELETE");
+    assert.strictEqual(deleted.deleted, true);
+    await assert.rejects(
+      () => calendarApi.updateEvent("google", "token", "cal-1", "", {
+        title: "Standup",
+        start: "2026-10-17T10:00:00.000Z",
+        end: "2026-10-17T11:00:00.000Z",
+      }, async () => jsonResponse({})),
+      (error) => error && error.code === "invalid",
+    );
     assert.strictEqual(sidecar.monthWindow("2026-01-01T00:00:00.000Z", "2026-06-01T00:00:00.000Z"), null);
     assert.ok(sidecar.monthWindow(october.timeMin, october.timeMax));
 
@@ -5636,6 +5742,23 @@ async function checkProviderApi() {
       end: "2026-10-17T11:00:00.000Z",
     }]);
     assert.strictEqual(deniedCreate.success, false);
+    assert.strictEqual(calls.length, 0);
+    const deniedUpdate = await engine.answer("calendar:updateEvent", [{
+      accountId: "gmail-live",
+      calendarId: "cal-1",
+      eventId: "evt-1",
+      title: "Nope",
+      start: "2026-10-17T10:00:00.000Z",
+      end: "2026-10-17T11:00:00.000Z",
+    }]);
+    assert.strictEqual(deniedUpdate.success, false);
+    assert.strictEqual(calls.length, 0);
+    const deniedDelete = await engine.answer("calendar:deleteEvent", [{
+      accountId: "gmail-live",
+      calendarId: "cal-1",
+      eventId: "evt-1",
+    }]);
+    assert.strictEqual(deniedDelete.success, false);
     assert.strictEqual(calls.length, 0);
 
     secrets.setPassword("gmail-live:organize", JSON.stringify({
