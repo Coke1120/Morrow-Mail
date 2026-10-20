@@ -225,6 +225,103 @@ async function run() {
     assert.match(movedUnread.error.message, /filter/);
     assert.strictEqual(db.messageById("inbox-unread").folder_path, "INBOX");
     assert.strictEqual(clientUses, usesBeforeUnreadMove);
+
+    db.insertAccount({
+      id: "other-acct",
+      email: "other@example.com",
+      username: "other@example.com",
+      profile: "gmail",
+      imapHost: "imap.gmail.com",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.gmail.com",
+      smtpPort: 465,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+      displayName: "Other Person",
+    });
+    db.replaceFolders("other-acct", [
+      { path: "Inbox", name: "Inbox", wellKnown: "inbox" },
+      { path: "INBOX", name: "Archive", wellKnown: "archive" },
+    ], "/");
+    const later = Date.now() + 100000;
+    db.insertMessage({
+      id: "other-inbox",
+      accountId: "other-acct",
+      folderPath: "Inbox",
+      uid: 1,
+      uidValidity: 1,
+      threadId: "thr-other-inbox",
+      subject: "Other inbox",
+      snippet: "From the other mailbox",
+      from: "Ada <ada@example.com>",
+      to: ["Leo <leo@example.com>"],
+      date: new Date(later).toISOString(),
+      listSortTs: later,
+      unread: true,
+      bodyComplete: true,
+    });
+    db.insertMessage({
+      id: "other-archive",
+      accountId: "other-acct",
+      folderPath: "INBOX",
+      uid: 2,
+      uidValidity: 1,
+      threadId: "thr-other-archive",
+      subject: "Not inbox",
+      snippet: "Same path as the other mailbox inbox",
+      from: "Ada <ada@example.com>",
+      to: ["Leo <leo@example.com>"],
+      date: new Date(later + 1000).toISOString(),
+      listSortTs: later + 1000,
+      unread: true,
+      bodyComplete: true,
+    });
+    db.setSnooze("star-acct", "thr-inbox-snooze", new Date(Date.now() + 86400000).toISOString());
+    const combined = await engine.answer("mail:listFromCache", [{ folderKey: "inbox", limit: 20 }]);
+    assert.strictEqual(combined.success, true);
+    assert.deepStrictEqual(combined.data.emails.map((row) => row.id), ["other-inbox", "inbox-unread", "inbox-plain"]);
+    assert.ok(combined.data.emails.every((row) => row.accountId === "other-acct" || row.accountId === "star-acct"));
+    const scoped = engine.answer("mail:listFromCache", [{ accountId: "star-acct", folderKey: "inbox", limit: 20 }]);
+    assert.deepStrictEqual(scoped.data.emails.map((row) => row.id), ["inbox-unread", "inbox-plain"]);
+
+    const named = await engine.answer("mail:setAccountLabel", [{ accountId: "star-acct", label: "  Leo Ho  " }]);
+    assert.strictEqual(named.success, true);
+    assert.strictEqual(named.data.label, "Leo Ho");
+    assert.strictEqual(named.data.name, null);
+    assert.strictEqual(named.data.email, "leo@example.com");
+    assert.strictEqual(db.accountById("star-acct").display_name, null);
+    assert.strictEqual(db.accountById("star-acct").imap_host, "imap.example.test");
+    const again = await engine.answer("mail:setAccountLabel", [{ accountId: "star-acct", label: "Leo Ho" }]);
+    assert.strictEqual(again.success, true);
+    assert.strictEqual(db.accountById("star-acct").label, "Leo Ho");
+    db.updateAccountLogin("star-acct", {
+      username: "leo@example.com",
+      profile: "custom",
+      imapHost: "imap.example.test",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.example.test",
+      smtpPort: 465,
+      smtpTls: true,
+      displayName: "Provider Name",
+      authKind: "password",
+    });
+    const afterLogin = db.accountById("star-acct");
+    assert.strictEqual(afterLogin.label, "Leo Ho");
+    assert.strictEqual(afterLogin.display_name, "Provider Name");
+    assert.strictEqual(afterLogin.email, "leo@example.com");
+    const clearedLabel = await engine.answer("mail:setAccountLabel", [{ accountId: "star-acct", label: "   " }]);
+    assert.strictEqual(clearedLabel.success, true);
+    assert.strictEqual(clearedLabel.data.label, null);
+    assert.strictEqual(clearedLabel.data.name, "Provider Name");
+    assert.strictEqual(db.accountById("star-acct").label, null);
+    const tooLong = await engine.answer("mail:setAccountLabel", [{ accountId: "star-acct", label: "x".repeat(201) }]);
+    assert.strictEqual(tooLong.success, false);
+    assert.strictEqual(db.accountById("star-acct").label, null);
+    const missing = await engine.answer("mail:setAccountLabel", [{ accountId: "missing-acct", label: "Nope" }]);
+    assert.strictEqual(missing.success, false);
   } finally {
     Object.assign(remote, saved);
     secrets.deletePassword("star-acct");

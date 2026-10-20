@@ -62,6 +62,7 @@ const INVOKE = [
   "mail:deleteInboxRule",
   "mail:grantRules",
   "mail:removeAccount",
+  "mail:setAccountLabel",
   "mail:setOnline",
   "calendar:status",
   "calendar:connect",
