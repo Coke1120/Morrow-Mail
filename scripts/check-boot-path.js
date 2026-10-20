@@ -177,6 +177,26 @@ const preferredAccountId = extractFunction(appJs, "preferredAccountId");
 assert.strictEqual(accountLabel({ name: "Grace Hopper", email: "grace@example.com" }), "Grace Hopper · grace@example.com");
 assert.strictEqual(accountLabel({ email: "grace@example.com" }), "grace@example.com");
 assert.strictEqual(accountLabel({ name: "Grace", email: "Grace" }), "Grace");
+assert.strictEqual(accountLabel({ label: "Leo Ho", name: "Provider", email: "howailok1120@hotmail.com" }), "Leo Ho · howailok1120@hotmail.com");
+assert.strictEqual(accountLabel({ label: "  ", name: "Provider", email: "howailok1120@hotmail.com" }), "Provider · howailok1120@hotmail.com");
+assert.strictEqual(accountLabel({ label: "", name: "", email: "howailoklineage@gmail.com" }), "howailoklineage@gmail.com");
+assert.strictEqual(accountLabel({ label: "howailoklineage@gmail.com", name: "Gmail", email: "howailoklineage@gmail.com" }), "howailoklineage@gmail.com");
+assert.strictEqual(accountLabel({ label: "Desk", email: "howailoklineage@gmail.com" }), "Desk · howailoklineage@gmail.com");
+const allInboxUnread = extractFunction(appJs, "allInboxUnread");
+assert.strictEqual(allInboxUnread([{ unreadCount: 2 }, { unreadCount: 3 }]), 5);
+assert.strictEqual(allInboxUnread([{ unreadCount: 0 }, { unreadCount: -1 }, {}]), 0);
+assert.strictEqual(allInboxUnread(null), 0);
+const mailListRequest = extractFunction(appJs, "mailListRequest");
+assert.deepStrictEqual(
+  mailListRequest({ allInbox: true, fromNetwork: true, accountId: "a", folderId: "INBOX", limit: 200, offset: 0 }),
+  { channel: "mail:listFromCache", params: { folderKey: "inbox", limit: 200, offset: 0 } },
+);
+assert.deepStrictEqual(
+  mailListRequest({ accountId: "beta", folderId: "inbox", fromNetwork: true, limit: 200, offset: 40 }),
+  { channel: "mail:listFromNetwork", params: { accountId: "beta", folderId: "inbox", limit: 200, offset: 40 } },
+);
+assert.strictEqual(mailListRequest({ query: "rent", searchAccountId: "", allInbox: true }).channel, "mail:searchLocal");
+assert.deepStrictEqual(mailListRequest({ query: "rent", searchAccountId: "a" }).params, { query: "rent", limit: 100, accountId: "a" });
 assert.strictEqual(preferredAccountId({ activeAccountId: "oauth-1", accountId: "other" }), "oauth-1");
 assert.strictEqual(preferredAccountId({ accountId: "other" }), "");
 assert.strictEqual(preferredAccountId(null), "");

@@ -95,7 +95,8 @@ function migrate() {
     delimiter TEXT NOT NULL DEFAULT '/',
     auth_error TEXT,
     created_at INTEGER NOT NULL,
-    display_name TEXT
+    display_name TEXT,
+    label TEXT
   )`);
   
   try {
@@ -167,6 +168,9 @@ function migrate() {
   }
   if (!all("PRAGMA table_info(accounts)").some((row) => row.name === "send_as_json")) {
     run("ALTER TABLE accounts ADD COLUMN send_as_json TEXT");
+  }
+  if (!all("PRAGMA table_info(accounts)").some((row) => row.name === "label")) {
+    run("ALTER TABLE accounts ADD COLUMN label TEXT");
   }
   run(`CREATE INDEX IF NOT EXISTS messages_thread ON messages(account_id, thread_id)`);
   run(`CREATE TABLE IF NOT EXISTS snooze (
@@ -950,6 +954,10 @@ function saveSendAs(accountId, value) {
   transaction(() => run("UPDATE accounts SET send_as_json = ? WHERE id = ?", [JSON.stringify(value), accountId]));
 }
 
+function saveAccountLabel(accountId, label) {
+  transaction(() => run("UPDATE accounts SET label = ? WHERE id = ?", [label, accountId]));
+}
+
 function selectBotHeaders(accountId, folderPaths, limit) {
   if (!db || !accountId || !Array.isArray(folderPaths) || !folderPaths.length) return [];
   const n = Math.min(Math.max(Number(limit) || 1, 1), 51);
@@ -1025,7 +1033,11 @@ function whereFor(query) {
     clauses.push("m.account_id = ?");
     params.push(query.accountId);
   }
-  if (query.folderPaths && query.folderPaths.length) {
+  if (query.mailboxes && query.mailboxes.length) {
+    // Shared path strings are different folders once two mailboxes are open.
+    clauses.push(`(${query.mailboxes.map(() => "(m.account_id = ? AND m.folder_path = ?)").join(" OR ")})`);
+    for (const box of query.mailboxes) params.push(box.accountId, box.path);
+  } else if (query.folderPaths && query.folderPaths.length) {
     clauses.push(`m.folder_path IN (${query.folderPaths.map(() => "?").join(", ")})`);
     params.push(...query.folderPaths);
   } else if (query.folderPath) {
@@ -1092,12 +1104,15 @@ function resolveScope(query) {
   const next = { ...query };
   if (query.folderKey) {
     const paths = pathsForKey(query.accountId, query.folderKey);
-    next.folderPaths = paths.map((row) => row.path);
+    next.excludeSnoozed = query.folderKey === "inbox";
     if (query.accountId) {
       next.folderPaths = paths.filter((row) => row.account_id === query.accountId).map((row) => row.path);
+      if (!next.folderPaths.length) next.folderPaths = ["__missing__"];
+    } else if (!paths.length) {
+      next.folderPaths = ["__missing__"];
+    } else {
+      next.mailboxes = paths.map((row) => ({ accountId: row.account_id, path: row.path }));
     }
-    next.excludeSnoozed = query.folderKey === "inbox";
-    if (!next.folderPaths.length) next.folderPaths = ["__missing__"];
   } else if (query.folderId && query.accountId) {
     const folder = folderByPath(query.accountId, query.folderId);
     next.folderPath = query.folderId;
@@ -1522,6 +1537,7 @@ module.exports = {
   insertAccount,
   updateAccountLogin,
   saveSendAs,
+  saveAccountLabel,
   setAuthError,
   clearAuthError,
   removeAccount,

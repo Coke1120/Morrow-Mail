@@ -3,6 +3,7 @@ const api = window.morrow;
 const state = {
   accounts: [],
   accountId: null,
+  allInbox: false,
   settingsAccountId: null,
   reconnectAccountId: null,
   folderId: null,
@@ -212,9 +213,35 @@ function visibleList(emails, query, folder) {
 
 function accountLabel(account) {
   const email = (account && (account.email || account.displayEmail)) || "";
-  const name = (account && account.name) || "";
+  const custom = String((account && account.label) || "").trim();
+  const name = custom || ((account && account.name) || "");
   if (name && email && name !== email) return `${name} · ${email}`;
   return email || name || (account && account.id) || "";
+}
+
+function allInboxUnread(accounts) {
+  return (Array.isArray(accounts) ? accounts : []).reduce((sum, account) => {
+    const count = Number(account && account.unreadCount);
+    return sum + (Number.isFinite(count) && count > 0 ? count : 0);
+  }, 0);
+}
+
+function mailListRequest(view) {
+  const source = view || {};
+  const limit = source.limit || 200;
+  const offset = Number.isFinite(source.offset) ? source.offset : 0;
+  if (source.query) {
+    const params = { query: source.query, limit: 100 };
+    if (source.searchAccountId) params.accountId = source.searchAccountId;
+    return { channel: "mail:searchLocal", params };
+  }
+  if (source.allInbox) {
+    return { channel: "mail:listFromCache", params: { folderKey: "inbox", limit, offset } };
+  }
+  return {
+    channel: source.fromNetwork ? "mail:listFromNetwork" : "mail:listFromCache",
+    params: { accountId: source.accountId, folderId: source.folderId, limit, offset },
+  };
 }
 
 function preferredAccountId(payload) {
@@ -1401,6 +1428,7 @@ function paintConfirm(copy) {
   const input = $("confirm-name");
   field.hidden = !copy.needsName;
   input.value = copy.needsName ? (copy.name || "") : "";
+  input.placeholder = copy.needsName ? (copy.placeholder || "") : "";
   $("confirm-ok").textContent = copy.confirm || "Confirm";
   $("confirm-cancel").textContent = copy.cancel || "Cancel";
 }
@@ -1444,7 +1472,7 @@ function finishConfirm(result) {
 function submitConfirm() {
   if (!confirmResult) return;
   const name = $("confirm-name").value.trim();
-  if (confirmCopy && confirmCopy.needsName && !name) {
+  if (confirmCopy && confirmCopy.needsName && !confirmCopy.allowEmpty && !name) {
     $("confirm-body").textContent = "Enter a name.";
     $("confirm-name").focus();
     return;
@@ -2211,6 +2239,29 @@ function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
   return nest;
 }
 
+function allInboxButton() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "account all-inbox";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = "All Inbox";
+  button.appendChild(name);
+  const unread = allInboxUnread(state.accounts);
+  if (unread) {
+    const count = document.createElement("span");
+    count.className = "count";
+    count.textContent = String(unread);
+    button.appendChild(count);
+  }
+  button.setAttribute("aria-label", unread ? `All Inbox, ${unread} unread` : "All Inbox");
+  if (state.allInbox) button.setAttribute("aria-current", "true");
+  button.addEventListener("click", () => {
+    selectAllInbox().catch((error) => showStatus(error.message, true));
+  });
+  return button;
+}
+
 function renderAccounts() {
   renderSettingsAccounts();
   refreshMailVacation();
@@ -2218,8 +2269,13 @@ function renderAccounts() {
   // Sync status and folder selection do not change the folder tree.
   const key = JSON.stringify([state.accounts, state.accountId, state.prefs.gmailOpen, state.prefs.outlookOpen]);
   if (key === folderRenderKey) {
+    const all = nav.querySelector("button.all-inbox");
+    if (all) {
+      if (state.allInbox) all.setAttribute("aria-current", "true");
+      else all.removeAttribute("aria-current");
+    }
     for (const button of nav.querySelectorAll("button.folder")) {
-      const current = button.dataset.accountId === state.accountId && button.dataset.folderId === state.folderId;
+      const current = !state.allInbox && button.dataset.accountId === state.accountId && button.dataset.folderId === state.folderId;
       if (current) button.setAttribute("aria-current", "true");
       else button.removeAttribute("aria-current");
     }
@@ -2234,6 +2290,7 @@ function renderAccounts() {
     nav.append(empty, connectButton());
     return;
   }
+  nav.appendChild(allInboxButton());
   for (const account of state.accounts) {
     const provider = folderProvider(account);
     const expanded = providerExpanded(provider, state.prefs);
@@ -2247,13 +2304,20 @@ function renderAccounts() {
       mark.setAttribute("aria-hidden", "true");
       mark.textContent = expanded ? "▾ " : "▸ ";
       heading.append(mark, accountLabel(account));
+      heading.title = accountLabel(account);
       heading.addEventListener("click", () => {
         toggleProviderFolders(provider).catch((error) => showStatus(error.message, true));
       });
     } else {
       heading = document.createElement("h2");
       heading.textContent = accountLabel(account);
+      heading.title = accountLabel(account);
     }
+    heading.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAccountLabelMenu(account, event.clientX, event.clientY);
+    });
     nav.appendChild(heading);
     if (account.needsReauth && account.reauthReason) {
       const note = document.createElement("p");
@@ -2285,7 +2349,7 @@ function renderAccounts() {
         button.dataset.dropAccount = account.id;
       }
       button.style.paddingLeft = (8 + folder.depth * 14) + "px";
-      if (account.id === state.accountId && folder.id === state.folderId) {
+      if (!state.allInbox && account.id === state.accountId && folder.id === state.folderId) {
         button.setAttribute("aria-current", "true");
       }
       const label = document.createElement("span");
@@ -3044,7 +3108,9 @@ function paintSyncControl() {
   if (control && slot && control.parentElement !== slot) slot.appendChild(control);
   const word = mail ? syncButtonLabel(sync) : "Refresh";
   const text = !mail ? "Refresh this page" : !state.accounts.length ? "No account connected"
-    : syncDetail(sync) || "Not synced yet";
+    : (state.allInbox && !(sync && ["syncing", "error", "paused"].includes(sync.state)))
+      ? "All Inbox shows mail already downloaded. Open an Inbox to sync that account."
+      : (syncDetail(sync) || "Not synced yet");
   if (label) label.textContent = word;
   if (button) {
     const busy = mail && !!(sync && sync.state === "syncing");
@@ -3306,7 +3372,10 @@ function messageRow(email) {
   const snippet = document.createElement("span");
   snippet.className = "snippet";
   const mailbox = state.accounts.find((row) => row.id === email.accountId);
-  snippet.textContent = (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "") + (email.snippet || "");
+  const prefix = state.allInbox && mailbox
+    ? accountLabel(mailbox) + " · "
+    : (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "");
+  snippet.textContent = prefix + (email.snippet || "");
   main.append(from, subjectLine, snippet);
   button.append(gutter, avatar, main);
   button.addEventListener("click", (event) => {
@@ -3335,7 +3404,8 @@ function messageRow(email) {
 
 function shownEmails() {
   const input = $("list-filter");
-  return visibleList(state.emails, input ? input.value : "", selectedFolderNode());
+  const folder = state.allInbox ? null : selectedFolderNode();
+  return visibleList(state.emails, input ? input.value : "", folder);
 }
 
 function rememberLoadedSelection() {
@@ -3520,10 +3590,10 @@ function renderList() {
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = $("list-title");
   if (title) {
-    title.textContent = state.query ? `Search: ${state.query}` : (chipLabel(folder) || "Messages");
+    title.textContent = state.query ? `Search: ${state.query}` : (state.allInbox ? "All Inbox" : (chipLabel(folder) || "Messages"));
   }
-  renderChips(account);
-  if (title) title.classList.toggle("sr", !state.query && state.prefs.chips && chipFolders(account).some(item => item.id === state.folderId));
+  renderChips(state.allInbox ? null : account);
+  if (title) title.classList.toggle("sr", !state.query && !state.allInbox && state.prefs.chips && chipFolders(account).some(item => item.id === state.folderId));
   const shown = shownEmails();
   paintSelectionBar(shown);
   paintSearchCoverage(shown);
@@ -3540,6 +3610,8 @@ function renderList() {
       empty.textContent = "Connect a mailbox to download messages here.";
     } else if (state.query && !state.emails.length) {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
+    } else if (state.allInbox && !state.emails.length && !listQuery) {
+      empty.textContent = "No downloaded messages in All Inbox. Open an account's Inbox and use Sync to download recent mail.";
     } else if (!listQuery && folder && folder.emptyCopy) {
       empty.textContent = folder.emptyCopy;
     } else if (!state.emails.length) {
@@ -3557,8 +3629,11 @@ function renderList() {
       const key = email.accountId + "\0" + email.id;
       // Compare displayed fields only: bodies and attachments can be large.
       // Retained rows keep keyboard focus and read the latest message for actions.
+      const mailbox = state.accounts.find((item) => item.id === email.accountId);
       const stamp = JSON.stringify([email.folderId, email.from, email.subject, email.snippet, email.date,
-        email.unread, email.isStarred, !!state.query, state.query ? state.accounts.find(a => a.id === email.accountId)?.email : ""]);
+        email.unread, email.isStarred, !!state.query, state.allInbox,
+        state.allInbox && mailbox ? accountLabel(mailbox) : "",
+        state.query && mailbox ? mailbox.email : ""]);
       let cached = messageRows.get(key);
       if (!cached || cached.stamp !== stamp) {
         const row = messageRow(email);
@@ -4487,7 +4562,9 @@ async function loadSnoozed() {
 }
 
 function rememberSelection(preferredId) {
+  if (!state.accounts.length) state.allInbox = false;
   if (preferredId && state.accounts.some((account) => account.id === preferredId)) {
+    if (state.accountId !== preferredId) state.allInbox = false;
     state.accountId = preferredId;
   }
   if (!state.accounts.some((account) => account.id === state.accountId)) {
@@ -4510,11 +4587,11 @@ function rememberSelection(preferredId) {
 function paintListPaging() {
   const pager = $("list-paging");
   if (!pager) return;
-  pager.hidden = !!state.query || !state.accountId || !state.folderId;
+  pager.hidden = !!state.query || (!state.allInbox && (!state.accountId || !state.folderId));
   const end = state.listOffset + state.emails.length;
   $("list-prev").disabled = state.listLoading || state.listOffset === 0;
   $("list-next").disabled = state.listLoading || end >= state.listTotal;
-  $("list-sync-more").hidden = state.listSyncDone || selectedFolderNode()?.syncs === false;
+  $("list-sync-more").hidden = state.allInbox || state.listSyncDone || selectedFolderNode()?.syncs === false;
   $("list-sync-more").disabled = state.listLoading || currentFolderSync()?.state === "syncing";
   $("list-page-status").textContent = state.listLoading ? "Loading messages…"
     : (state.emails.length ? `${(state.listOffset + 1).toLocaleString()}–${end.toLocaleString()} / ${state.listTotal.toLocaleString()} downloaded`
@@ -4536,7 +4613,7 @@ async function changeListPage(direction) {
 
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
-  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.searchAccountId]);
+  const scope = JSON.stringify([state.allInbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
   if (state.listScope !== scope) {
     state.listScope = scope;
     state.listOffset = 0;
@@ -4553,32 +4630,40 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     const account = selectedAccount();
-    if (!account || !state.folderId) {
+    if (!state.allInbox && (!account || !state.folderId)) {
       state.emails = [];
       renderList();
       return null;
     }
-    const channel = fromNetwork && isLive(account) ? "mail:listFromNetwork" : "mail:listFromCache";
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
-    const params = {
-      accountId: account.id,
+    const request = mailListRequest({
+      allInbox: state.allInbox,
+      fromNetwork: !state.allInbox && fromNetwork && isLive(account),
+      accountId: account && account.id,
       folderId: state.folderId,
       limit: LIST_PAGE_SIZE,
       offset,
-    };
-    let data = await call(channel, params);
+    });
+    let data = await call(request.channel, request.params);
     if (gen !== listGen) return null;
     // Deleting the last page or provider changes can shrink the cached list.
     if (offset > 0 && Number.isFinite(data?.total) && offset >= data.total) {
       offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
-      data = await call("mail:listFromCache", { ...params, offset });
+      const again = mailListRequest({
+        allInbox: state.allInbox,
+        accountId: account && account.id,
+        folderId: state.folderId,
+        limit: LIST_PAGE_SIZE,
+        offset,
+      });
+      data = await call(again.channel, again.params);
       if (gen !== listGen) return null;
     }
     state.listOffset = offset;
     state.emails = (data && data.emails) || [];
     state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
     state.listSyncDone = data?.initialSyncDone !== false;
-    if (data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
+    if (!state.allInbox && data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
     renderList();
     return data;
   } finally {
@@ -5203,6 +5288,33 @@ function openImapFolderMenu(folder, account, x, y) {
     });
   }
   placeMenu(menu, x, y);
+}
+
+function openAccountLabelMenu(account, x, y) {
+  if (!account || !account.id) return;
+  const menu = ensureOrganizeMenu();
+  menu.setAttribute("aria-label", "Account");
+  menu.replaceChildren();
+  appendMenuAction(menu, "Rename", () => {
+    renameAccountLabel(account).catch((error) => showStatus(error.message, true));
+  });
+  placeMenu(menu, x, y);
+}
+
+async function renameAccountLabel(account) {
+  if (!account || !account.id) return;
+  const result = await askConfirm({
+    title: "Rename account",
+    body: "This name is the label in the account list. Clear it to use the provider name, or the address when the provider has none. The address and From stay the same.",
+    confirm: "Save",
+    cancel: "Cancel",
+    needsName: true,
+    allowEmpty: true,
+    name: account.label || account.name || "",
+    placeholder: "Name",
+  });
+  if (!result.ok) return;
+  await call("mail:setAccountLabel", { accountId: account.id, label: result.name });
 }
 
 function appendMenuAction(menu, label, run) {
@@ -6001,8 +6113,29 @@ function wireOrganize() {
   }, true);
 }
 
+async function selectAllInbox() {
+  if (!state.accounts.length) return;
+  state.allInbox = true;
+  state.listScope = "";
+  state.query = "";
+  $("search-query").value = "";
+  const listFilter = $("list-filter");
+  if (listFilter) listFilter.value = "";
+  state.email = null;
+  state.thread = [];
+  state.selectedIds = [];
+  state.selectionAnchor = "";
+  renderAccounts();
+  if (state.view === "folders") paintProviderPage();
+  syncRemove();
+  renderReader(false);
+  if (!undoOpIds && !sendTimer) showStatus("");
+  await loadList();
+}
+
 async function selectFolder(accountId, folderId) {
   const previous = state.accountId;
+  state.allInbox = false;
   state.listScope = "";
   state.accountId = accountId;
   state.folderId = folderId;
@@ -7283,6 +7416,11 @@ async function refresh() {
     showStatus(receipt);
     return;
   }
+  if (state.allInbox) {
+    await loadList();
+    showStatus("All Inbox shows mail already downloaded. Open an Inbox to sync that account.");
+    return;
+  }
   const account = selectedAccount();
   if (!account || !state.folderId) return;
   beginSync({
@@ -8312,9 +8450,13 @@ function rememberVacation(data) {
   paintMailVacation();
 }
 function paintMailVacation() {
-  const account = selectedAccount();
   const box = $("mail-ooo");
   if (!box) return;
+  if (state.allInbox) {
+    box.hidden = true;
+    return;
+  }
+  const account = selectedAccount();
   box.hidden = !account;
   if (!account) return;
   const entry = mailVacation.get(account.id);

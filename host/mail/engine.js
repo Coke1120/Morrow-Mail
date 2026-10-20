@@ -136,6 +136,7 @@ function accountView(row, index) {
     defaultSenderName: row.display_name || null,
     ...composeIdentity.accountIdentity(row),
     name: row.display_name || null,
+    label: row.label || null,
     platform: "imap",
     needsReauth: !!row.auth_error,
     reauthReason: row.auth_error || null,
@@ -2077,6 +2078,16 @@ function answer(channel, args) {
     case "mail:refreshAccounts":
       setTimeout(() => { syncAll().catch(() => {}); }, 0);
       return ok({ refreshed: true, refreshedAt: Date.now() });
+    case "mail:setAccountLabel": {
+      const id = params && params.accountId ? String(params.accountId) : "";
+      const account = id && db.accountById(id);
+      if (!account) return fail("account", "Choose an account.");
+      const trimmed = String(params.label == null ? "" : params.label).trim();
+      if (trimmed.length > 200) return fail("label", "Use 200 characters or fewer.");
+      db.saveAccountLabel(id, trimmed || null);
+      emitAccounts();
+      return ok(accountViews().find((item) => item.id === id) || null);
+    }
     case "mail:listAccounts":
     case "mail:refreshUnreadCounts":
     case "mail:unreadCounts":

@@ -1668,6 +1668,24 @@ button.account { display: block; width: 100%; border-radius: 6px; }
 
 button.account:hover { background: rgba(255, 255, 255, 0.1); }
 
+button.all-inbox {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+button.all-inbox .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+button.all-inbox[aria-current="true"] {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
 .chips {
   display: flex;
   flex-wrap: nowrap;
