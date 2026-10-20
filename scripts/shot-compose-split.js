@@ -88,6 +88,17 @@ contextBridge.exposeInMainWorld("morrow", {
     if (channel === "mail:listFromCache" || channel === "mail:listFromNetwork") return Promise.resolve(envelope({ emails: [message] }));
     if (channel === "mail:openEmail") return Promise.resolve(envelope({ email: message, threadMessages: [message] }));
     if (channel === "mail:listSignatures") return Promise.resolve(envelope(signatures));
+    if (channel === "mail:getComposeContext") return Promise.resolve(envelope({
+      fromAddress: "ada.lovelace@example.com",
+      sendAs: [{ email: "ada.lovelace@example.com", source: "account" }],
+      selfAddresses: ["ada.lovelace@example.com"],
+      domain: "example.com",
+      policyDomain: "example.com",
+      defaultCc: [],
+      defaultBcc: [],
+      receivedAddress: "ada.lovelace@example.com",
+      fallback: false,
+    }));
     if (channel === "mail:listScheduled" || channel === "mail:listImapSmtpPresets") return Promise.resolve(envelope([]));
     if (channel === "mail:listSnoozed") return Promise.resolve(envelope({ records: [] }));
     if (channel === "mail:oauthStatus") return Promise.resolve(envelope({ google: false }));
@@ -133,6 +144,8 @@ async function shotState(win) {
       quote: dialog.dataset.quote,
       collapsed: dialog.dataset.quoteCollapsed,
       width: dialog.clientWidth,
+      height: Math.round(dialog.getBoundingClientRect().height),
+      inner: window.innerHeight,
       viewport: window.innerWidth,
       direction: getComputedStyle(split).flexDirection,
       quoteHidden: quote.hidden,
@@ -194,7 +207,7 @@ app.whenReady().then(async () => {
       brainToolbar: !!document.getElementById("brain-open"),
       railBrain: document.getElementById("rail-brain") ? document.getElementById("rail-brain").getAttribute("aria-label") : "",
       chips: chipText,
-      chipsInHead: !!(chips && chips.parentElement && chips.parentElement.id === "list-head"),
+      chipsInHead: !!(chips && chips.closest("#list-head")),
       rowMin: row ? getComputedStyle(row).minHeight : "",
       avatar: row && row.querySelector(".avatar") ? getComputedStyle(row.querySelector(".avatar")).width : "",
       listTitle: document.getElementById("list-title") ? document.getElementById("list-title").textContent : "",
@@ -226,6 +239,9 @@ app.whenReady().then(async () => {
   await sleep(400);
   const forwarded = await shotState(win);
   assertState(forwarded, { layout: "wide", quote: "hidden", quoteHidden: true, noteHidden: false, title: "Forward" });
+  if (!(forwarded.height < forwarded.inner - 80)) {
+    throw new Error("forward dialog is viewport-tall " + JSON.stringify(forwarded));
+  }
   await win.webContents.executeJavaScript(`document.getElementById("compose-close").click()`, true);
   await waitFor(win, `!document.getElementById("compose").open`, "forward close");
 
@@ -244,10 +260,19 @@ app.whenReady().then(async () => {
     image: false,
     title: "Reply",
     sendDisabled: false,
-    noteHidden: true,
+    noteHidden: false,
   });
   if (!(wide.width >= 900)) throw new Error("wide dialog is " + wide.width);
   if (!(wide.quoteLeft < wide.draftLeft)) throw new Error("quote is not on the left");
+  if (!(wide.height < wide.inner - 80)) throw new Error("short reply is viewport-tall " + JSON.stringify(wide));
+  const wideActions = await win.webContents.executeJavaScript(`(() => {
+    const dialog = document.getElementById("compose").getBoundingClientRect();
+    const row = document.querySelector("#compose .row").getBoundingClientRect();
+    return { rowBottom: row.bottom, dialogBottom: dialog.bottom, rowTop: row.top, dialogTop: dialog.top };
+  })()`, true);
+  if (wideActions.rowBottom > wideActions.dialogBottom + 1 || wideActions.rowTop < wideActions.dialogTop - 1) {
+    throw new Error("reply actions sit outside the dialog " + JSON.stringify(wideActions));
+  }
   if (!wide.text.includes("brass gears")) throw new Error("quoted text missing: " + wide.text);
   if (!wide.text.includes("Charles Babbage")) throw new Error("quoted from missing");
   if (!wide.text.includes("1 remote image is blocked.")) throw new Error("remote image was not sanitized");
@@ -303,8 +328,11 @@ app.whenReady().then(async () => {
   if (fit.bodyBottom > fit.dialogBottom + 1 || fit.bodyTop < fit.dialogTop - 1) {
     throw new Error("quote paints outside the dialog " + JSON.stringify(fit));
   }
-  if (fit.dialogHeight < fit.inner - 40) {
-    throw new Error("quoting dialog does not fill the window " + JSON.stringify(fit));
+  if (fit.dialogHeight > fit.inner - 16) {
+    throw new Error("quoting dialog exceeds the viewport ceiling " + JSON.stringify(fit));
+  }
+  if (fit.dialogHeight < 420) {
+    throw new Error("quoting dialog is too short to use " + JSON.stringify(fit));
   }
   const narrowPath = path.join(outDir, "compose-split-narrow.png");
   fs.writeFileSync(narrowPath, (await win.webContents.capturePage()).toPNG());
