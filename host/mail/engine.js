@@ -21,6 +21,7 @@ const providerApi = require("./provider-api");
 const idle = require("./idle");
 const debugLog = require("../debug-log");
 const composeIdentity = require("./compose-identity");
+const textEncoding = require("./text-encoding");
 const composePolicy = require("../../shared/compose-policy");
 const { syncHorizonDays } = require("../settings");
 
@@ -191,8 +192,8 @@ function listRow(row) {
     conversationId: row.thread_id,
     folderId: row.folder_path,
     folders: [row.folder_path],
-    subject: row.subject || "",
-    snippet: row.snippet || "",
+    subject: textEncoding.repairMojibake(row.subject || ""),
+    snippet: textEncoding.repairMojibake(row.snippet || ""),
     from: row.from_addr || "",
     to: db.jsonList(row.to_json),
     cc: db.jsonList(row.cc_json),
@@ -212,11 +213,22 @@ function listRow(row) {
     messageId: row.rfc_message_id || null,
     inReplyTo: row.in_reply_to || null,
     recipientHeaders: JSON.parse(row.recipient_headers_json || "{}"),
+    bodyComplete: row.body_complete === 1,
   };
 }
 
 function detailOf(row) {
-  return { ...listRow(row), htmlBody: row.html_body || null, textBody: row.text_body || null };
+  const presented = textEncoding.presentMessage({
+    subject: row.subject || "",
+    htmlBody: row.html_body,
+    textBody: row.text_body,
+  });
+  return {
+    ...listRow(row),
+    subject: presented.subject,
+    htmlBody: presented.htmlBody,
+    textBody: presented.textBody,
+  };
 }
 
 function threadMeta(rows) {
@@ -1690,12 +1702,16 @@ function scheduleSend(params) {
   if (!Number.isFinite(when) || when <= Date.now() + 1000) {
     return fail("send_at_in_past", "Pick a time in the future.");
   }
+  const presented = textEncoding.presentMessage({
+    subject: input.subject ? String(input.subject).trim() : "",
+    htmlBody: typeof input.body === "string" ? input.body : "",
+  });
   const payload = {
     to,
     cc,
     bcc,
-    subject: input.subject ? String(input.subject).trim() : "",
-    body: typeof input.body === "string" ? input.body : "",
+    subject: presented.subject,
+    body: presented.htmlBody || "",
     fromAddress,
   };
   if (input.draftId) payload.draftId = input.draftId;
@@ -1782,16 +1798,22 @@ function editScheduled(params) {
   let payload;
   try { payload = JSON.parse(row.payload_json); } catch { return fail("invalid", "The queued content cannot be read. It has not been changed."); }
   if (payload.attachments && payload.attachments.length) return fail("unsupported", "This composer cannot edit queued attachments. The queued message is unchanged.");
+  const presented = textEncoding.presentMessage({
+    subject: payload.subject || "",
+    htmlBody: payload.body || "",
+  });
+  const html = presented.htmlBody || "";
+  const text = presented.textBody || plainFromHtml(html);
   const now = new Date();
   const emailId = db.newMessageId();
   db.scheduledToDraft(id, {
     id: emailId, accountId: account.id, folderPath: drafts.path,
     threadId: payload.threadId || emailId, inReplyTo: payload.inReplyTo || null,
-    rfcMessageId: rfcMessageId(account.email), subject: payload.subject || "",
+    rfcMessageId: rfcMessageId(account.email), subject: presented.subject,
     from: payload.fromAddress || account.email, to: addrList(payload.to), cc: addrList(payload.cc), bcc: addrList(payload.bcc),
     date: now.toISOString(), listSortTs: now.getTime(), isDraft: true,
-    htmlBody: payload.body || "", textBody: plainFromHtml(payload.body || ""),
-    snippet: plainFromHtml(payload.body || "").slice(0, 180), bodyComplete: true,
+    htmlBody: html, textBody: text,
+    snippet: plainFromHtml(html).slice(0, 180), bodyComplete: true,
   });
   emitAccounts();
   return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString() });
@@ -1970,9 +1992,18 @@ async function pumpScheduledAdmitted() {
       scheduledDelivering.add(row.id);
       let payload = {};
       try { payload = JSON.parse(row.payload_json) || {}; } catch { payload = {}; }
+      const presented = textEncoding.presentMessage({
+        subject: payload.subject || "",
+        htmlBody: typeof payload.body === "string" ? payload.body : "",
+      });
       let result;
       try {
-        result = await deliver({ ...payload, accountId: row.account_id });
+        result = await deliver({
+          ...payload,
+          accountId: row.account_id,
+          subject: presented.subject,
+          body: presented.htmlBody || "",
+        });
       } catch (error) {
         result = fail("send", error instanceof Error ? error.message : String(error));
       }
@@ -2322,7 +2353,11 @@ function answer(channel, args) {
         const existing = db.messageById(emailId);
         if (existing && (existing.account_id !== account.id || !existing.is_draft)) return fail("invalid", "That draft does not belong to this mailbox.");
         const files = attachmentFiles(params && params.attachments);
-        const html = typeof params.body === "string" ? params.body : "";
+        const presented = textEncoding.presentMessage({
+          subject: params.subject || "",
+          htmlBody: typeof params.body === "string" ? params.body : "",
+        });
+        const html = presented.htmlBody || "";
         const when = new Date();
         const messageId = (existing && existing.rfc_message_id) || rfcMessageId(account.email);
         const record = {
@@ -2333,7 +2368,7 @@ function answer(channel, args) {
           uidValidity: existing ? existing.uid_validity : 0,
           threadId: (params && params.threadId) || emailId,
           rfcMessageId: messageId,
-          subject: params.subject || "",
+          subject: presented.subject,
           snippet: plainFromHtml(html).slice(0, 180),
           from: fromAddress,
           to: addrList(params.to),
@@ -2345,7 +2380,7 @@ function answer(channel, args) {
           isDraft: true,
           hasAttachments: files.length > 0,
           htmlBody: html,
-          textBody: plainFromHtml(html),
+          textBody: presented.textBody || plainFromHtml(html),
           bodyComplete: true,
           inReplyTo: params.inReplyTo || null,
         };
@@ -2376,7 +2411,10 @@ function answer(channel, args) {
         try {
           await exclusive(account.id, async () => {
             const password = await secretFor(account);
-            const raw = await remote.buildRaw({ ...mimeOptions(account, params, files), messageId });
+            const raw = await remote.buildRaw({
+              ...mimeOptions(account, { ...params, subject: presented.subject, body: html }, files),
+              messageId,
+            });
             const appended = await remote.withClient(account, password, async (client) => {
               if (existing && existing.uid) {
                 try { await remote.removeUid(client, existing.folder_path, existing.uid); } catch { /* replaced below */ }

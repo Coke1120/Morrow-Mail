@@ -76,6 +76,7 @@ let accountGen = 0;
 let listGen = 0;
 const LIST_PAGE_SIZE = 200;
 let openGen = 0;
+let pendingOpenId = "";
 let peekGen = 0;
 let peekEmail = null;
 let reloadTimer = null;
@@ -3980,7 +3981,7 @@ function messageRow(email) {
   button.draggable = true;
   button.setAttribute("data-testid", "mail-list-message-row");
   if (email.unread) button.classList.add("unread");
-  if (state.email && state.email.id === email.id) button.setAttribute("aria-current", "true");
+  if (readerCurrentId() === email.id) button.setAttribute("aria-current", "true");
   if (email.unread) {
     const flag = document.createElement("span");
     flag.className = "sr";
@@ -4302,7 +4303,7 @@ function renderList() {
       if (!cached || cached.stamp !== stamp) {
         const row = messageRow(email);
         if (cached) cached.row.replaceWith(row);
-        cached = { row, stamp, selected: selected.has(email.id), current: state.email?.id === email.id };
+        cached = { row, stamp, selected: selected.has(email.id), current: readerCurrentId() === email.id };
         messageRows.set(key, cached);
       }
       const row = cached.row;
@@ -4316,7 +4317,7 @@ function renderList() {
         check.setAttribute("aria-checked", String(isSelected));
         check.replaceChildren(strokeIcon(isSelected ? [CHECK_BOX, CHECK_MARK] : [CHECK_BOX], 16));
       }
-      const current = state.email?.id === email.id;
+      const current = readerCurrentId() === email.id;
       if (cached.current !== current) {
         cached.current = current;
         const button = row.querySelector("button.message");
@@ -4336,7 +4337,9 @@ function renderList() {
   }
   const current = list.querySelector('[aria-current="true"]');
   const filtering = document.activeElement && document.activeElement.id === "list-filter";
-  const openKey = state.email ? state.email.accountId + "\0" + state.email.id : "";
+  const currentId = readerCurrentId();
+  const currentRow = (state.emails || []).find((row) => row && row.id === currentId);
+  const openKey = currentRow ? currentRow.accountId + "\0" + currentRow.id : "";
   if (current && !filtering && openKey !== listOpenKey) current.scrollIntoView({ block: "nearest" });
   listOpenKey = openKey;
 }
@@ -4695,6 +4698,7 @@ function paintSuggestions(email) {
 
 function renderReader(focus) {
   const pane = $("reader");
+  pane.removeAttribute("aria-busy");
   const email = state.email;
   if (state.translate && (!email || state.translate.emailId !== email.id)) {
     stopTranslate();
@@ -6888,6 +6892,7 @@ function wireOrganize() {
 
 async function selectAllInbox() {
   if (!state.accounts.length) return;
+  invalidateReaderOpen();
   state.allInbox = true;
   state.listScope = "";
   state.query = "";
@@ -6907,6 +6912,7 @@ async function selectAllInbox() {
 }
 
 async function selectFolder(accountId, folderId) {
+  invalidateReaderOpen();
   const previous = state.accountId;
   state.allInbox = false;
   state.listScope = "";
@@ -6941,12 +6947,84 @@ async function selectFolder(accountId, folderId) {
   refreshMailVacation();
 }
 
+function readerCurrentId() {
+  return pendingOpenId || (state.email && state.email.id) || "";
+}
+
+function invalidateReaderOpen() {
+  openGen += 1;
+  pendingOpenId = "";
+}
+
+function listedMessage(emailId) {
+  const id = String(emailId);
+  const rows = [].concat(state.emails || [], state.thread || []);
+  return rows.find((row) => row && String(row.id) === id) || null;
+}
+
+function paintReaderPending(email) {
+  const pane = $("reader");
+  pane.replaceChildren();
+  pane.setAttribute("aria-busy", "true");
+  const heading = document.createElement("h2");
+  heading.textContent = (email && email.subject) || "(no subject)";
+  const from = document.createElement("p");
+  from.className = "meta";
+  from.textContent = (email && email.from) || "";
+  const when = document.createElement("p");
+  when.className = "meta";
+  const date = email && email.date ? new Date(email.date) : null;
+  when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  const pending = document.createElement("div");
+  pending.className = "body-pending";
+  pending.setAttribute("role", "status");
+  const spin = document.createElement("div");
+  spin.className = "page-busy-spin";
+  spin.setAttribute("aria-hidden", "true");
+  const label = document.createElement("p");
+  label.className = "body-pending-label";
+  label.textContent = "Loading message…";
+  pending.append(spin, label);
+  pane.append(heading, from, when, pending);
+}
+
 async function openMessage(emailId, focus) {
   const gen = ++openGen;
-  const data = await call("mail:openEmail", { emailId });
+  const known = listedMessage(emailId);
+  const showing = state.email && String(state.email.id) === String(emailId)
+    && (state.email.htmlBody || state.email.textBody);
+  const waitForBody = !!(known && known.bodyComplete === false && !showing);
+  const previousEmail = state.email;
+  const previousThread = state.thread;
+  pendingOpenId = emailId;
+  if (waitForBody) paintReaderPending(known);
+  renderList();
+  let data;
+  try {
+    data = await call("mail:openEmail", { emailId });
+  } catch (error) {
+    if (gen !== openGen) return;
+    pendingOpenId = "";
+    if (waitForBody) {
+      state.email = previousEmail;
+      state.thread = previousThread;
+      renderReader(false);
+    }
+    renderList();
+    throw error;
+  }
   if (gen !== openGen) return;
   const email = data && data.email;
-  if (!email) throw new Error("That message is no longer in the mailbox.");
+  if (!email) {
+    pendingOpenId = "";
+    if (waitForBody) {
+      state.email = previousEmail;
+      state.thread = previousThread;
+      renderReader(false);
+    }
+    renderList();
+    throw new Error("That message is no longer in the mailbox.");
+  }
   let listed = null;
   const fromOpen = data && data.threadMessages;
   if (shouldListThread(state.prefs.conversation, fromOpen, email.threadId)) {
@@ -6961,6 +7039,7 @@ async function openMessage(emailId, focus) {
     }
     if (gen !== openGen) return;
   }
+  pendingOpenId = "";
   state.email = email;
   state.thread = state.prefs.conversation === false ? [] : threadMembers(fromOpen, listed);
   renderReader(focus !== false);
@@ -6974,6 +7053,7 @@ async function openMessage(emailId, focus) {
 }
 
 async function applySearch() {
+  invalidateReaderOpen();
   const query = $("search-query").value.trim();
   state.query = query;
   state.email = null;
@@ -9431,6 +9511,8 @@ function showAgentTab(name) {
   if (!["home", "conversation", "tools"].includes(name)) return;
   const changed = agentTab !== name;
   agentTab = name;
+  const panel = $("agent-panel");
+  panel.dataset.agentPane = name;
   for (const tab of $("agent-nav").querySelectorAll("[data-agent-tab]")) {
     const active = tab.dataset.agentTab === name;
     tab.setAttribute("aria-selected", String(active));
@@ -9440,7 +9522,9 @@ function showAgentTab(name) {
   }
   $("agent-skill-chips").hidden = name !== "home";
   // Switching sections should never scroll two competing containers.
-  if (changed) $("agent-panel").scrollTop = 0;
+  if (!changed) return;
+  if (name === "conversation") $("agent-sections").scrollTop = 0;
+  else panel.scrollTop = 0;
 }
 
 function wireAgentTabs() {

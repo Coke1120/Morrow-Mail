@@ -11,6 +11,7 @@ const syntax = [
   "host/asar.js",
   "host/ipc.js",
   "host/mail/engine.js",
+  "host/mail/text-encoding.js",
   "host/mail/actions.js",
   "host/mail/idle.js",
   "host/mail/remote.js",
@@ -2523,6 +2524,8 @@ assert.ok(functionSource(appJs, "setAgentBusy").includes("syncAgentPageBusy"));
 assert.ok(functionSource(appJs, "loadAgent").includes("agentLoadOverlay"));
 assert.ok(css.includes(".drag-ghost") && css.includes(".folder-root") && css.includes(".page-busy"));
 assert.ok(css.includes("#agent-panel.primary-space") && css.includes("position: relative"));
+assert.ok(css.includes(".body-pending") && appJs.includes("Loading message") && functionSource(appJs, "openMessage").includes("bodyComplete"));
+assert.ok(functionSource(appJs, "showAgentTab").includes("agentPane") && css.includes('[data-agent-pane="conversation"]'));
 assert.ok(functionSource(appJs, "onMessagePointerDown").includes("modifierBlocksDrag"));
 assert.ok(functionSource(appJs, "clearMailDragChrome").includes("is-mail-drag"));
 const dragRows = [
