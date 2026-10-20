@@ -1050,7 +1050,7 @@ button.brain-skill {
   box-shadow: var(--shadow-pop);
 }
 
-#notice:not(:has(#status:not(:empty), #undo:not([hidden]), #undo-send:not([hidden]))) { display: none; }
+#notice:not(:has(#status:not(:empty), #undo:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) { display: none; }
 
 #notice #status { color: #fff; }
 
@@ -1064,7 +1064,7 @@ button.brain-skill {
 
 #status:empty { display: none; }
 
-#undo, #undo-send { padding: 2px 8px; }
+#undo, #undo-send, #undo-schedule { padding: 2px 8px; }
 
 #calendar-panel {
   flex: 1 1 auto;
@@ -2750,6 +2750,13 @@ dialog::backdrop { background: rgba(16, 40, 34, 0.72); }
   max-height: calc(100vh - 32px);
 }
 
+#compose-preview {
+  inset: 0;
+  margin: auto;
+  height: max-content;
+  max-height: calc(100vh - 32px);
+}
+
 dialog h2 {
   margin-bottom: 8px;
   font-size: 18px;
@@ -2758,6 +2765,35 @@ dialog h2 {
 }
 
 #confirm { width: min(440px, calc(100vw - 24px)); }
+
+#compose-preview { width: min(640px, calc(100vw - 24px)); }
+
+.preview-meta { margin: 8px 0 0; }
+.preview-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; margin-top: 4px; }
+.preview-meta dt { margin: 0; color: var(--muted); font-weight: 600; }
+.preview-meta dd { margin: 0; overflow-wrap: anywhere; }
+#compose-preview-body {
+  white-space: pre-wrap;
+  max-height: min(280px, 40vh);
+  overflow: auto;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--hover);
+  font: inherit;
+}
+.schedule-delay {
+  display: grid;
+  width: max-content;
+  max-width: 100%;
+  grid-template-columns: auto 88px auto 88px;
+  gap: 8px;
+  align-items: center;
+  justify-content: start;
+  margin-top: 4px;
+}
+.schedule-delay label { margin: 0; }
 
 #agent-peek { width: min(720px, calc(100vw - 24px)); }
 

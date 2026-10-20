@@ -1433,11 +1433,13 @@ function deleteSignature(id) {
 }
 
 function insertScheduled(row) {
+  const status = row.status === "failed" ? "failed" : "pending";
+  const error = status === "failed" ? String(row.error || "Send failed.") : null;
   transaction(() => {
     run(
       `INSERT INTO scheduled_sends (id, account_id, payload_json, send_at, status, error, created_at)
-       VALUES (?, ?, ?, ?, 'pending', NULL, ?)`,
-      [row.id, row.accountId, row.payloadJson, row.sendAt, row.createdAt]
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [row.id, row.accountId, row.payloadJson, row.sendAt, status, error, row.createdAt]
     );
   });
   return get("SELECT * FROM scheduled_sends WHERE id = ?", [row.id]);

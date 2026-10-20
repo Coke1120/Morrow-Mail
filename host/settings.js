@@ -19,6 +19,8 @@ const DEFAULTS = {
   brainCompose: { ccByDomain: {}, bccByDomain: {}, accounts: {} },
   syncHorizonDays: 180, // 0 means all available history.
   compactMessageList: false,
+  defaultScheduleDelayMinutes: 0, // 0 sends immediately. Otherwise Send schedules this far ahead.
+  layoutPanes: { folders: 260, list: 360, reading: 0 },
 };
 
 const GET = {
@@ -37,6 +39,8 @@ const GET = {
   "emailBrain:getComposeSettings": "brainCompose",
   "morrow:configGetSyncHorizonDays": "syncHorizonDays",
   "morrow:configGetCompactMessageList": "compactMessageList",
+  "morrow:configGetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
+  "morrow:configGetLayoutPanes": "layoutPanes",
 };
 
 const SET = {
@@ -55,6 +59,8 @@ const SET = {
   "emailBrain:saveComposeSettings": "brainCompose",
   "morrow:configSetSyncHorizonDays": "syncHorizonDays",
   "morrow:configSetCompactMessageList": "compactMessageList",
+  "morrow:configSetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
+  "morrow:configSetLayoutPanes": "layoutPanes",
 };
 
 const BOOLS = new Set([
@@ -78,7 +84,26 @@ function reject(key) {
   if (key === "undoSendDelaySeconds") throw new Error("Undo send delay must be 0 to 30 seconds");
   if (key === "composeQuoteWidth") throw new Error("Quote pane width must be 220 to 720");
   if (key === "syncHorizonDays") throw new Error("Sync history must be 180 days, 365 days, or All");
+  if (key === "defaultScheduleDelayMinutes") throw new Error("Default schedule delay must be 0 to 10080 minutes");
+  if (key === "layoutPanes") throw new Error("Layout panes must be folder, list, and reading widths");
   throw new Error("Expected on or off");
+}
+
+function layoutBound(value, min, max) {
+  return Number.isInteger(value) && value >= min && value <= max ? value : null;
+}
+
+function castLayoutPanes(value, loose) {
+  const fallback = { folders: 260, list: 360, reading: 0 };
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const folders = source ? layoutBound(source.folders, 140, 1600) : null;
+  const list = source ? layoutBound(source.list, 200, 2000) : null;
+  const reading = source ? layoutBound(source.reading, 0, 4000) : null;
+  if (folders == null || list == null || reading == null) {
+    if (loose) return { ...fallback };
+    reject("layoutPanes");
+  }
+  return { folders, list, reading };
 }
 
 function cast(key, value, loose) {
@@ -86,6 +111,7 @@ function cast(key, value, loose) {
     if (loose) return folderCollapse.normalize(value);
     return folderCollapse.cast(value);
   }
+  if (key === "layoutPanes") return castLayoutPanes(value, loose);
   if (key === "brainCompose") {
     const policy = require("../shared/compose-policy");
     try { return policy.normalizeSettings(value); }
@@ -103,6 +129,8 @@ function cast(key, value, loose) {
     if (Number.isInteger(value) && value >= 220 && value <= 720) return value;
   } else if (key === "syncHorizonDays") {
     if ([0, 180, 365].includes(value)) return value;
+  } else if (key === "defaultScheduleDelayMinutes") {
+    if (Number.isInteger(value) && value >= 0 && value <= 10080) return value;
   } else if (BOOLS.has(key) && typeof value === "boolean") {
     return value;
   }
