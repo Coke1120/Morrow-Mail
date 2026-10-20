@@ -2633,10 +2633,9 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   border: 0;
 }
 
-#compose { width: min(680px, calc(100vw - 24px)); }
-
+#compose,
 #compose.is-quoting {
-  width: min(1180px, calc(100vw - 24px));
+  width: min(85vw, calc(100vw - 24px));
 }
 
 /* Grow with the draft and the quote. The ceiling is the only forced height. */
@@ -3064,7 +3063,79 @@ label.check input { width: auto; accent-color: var(--accent-ink); }
 
 textarea { min-height: 140px; resize: vertical; }
 
-#compose textarea { min-height: 180px; margin-top: 8px; }
+#compose textarea,
+#compose .compose-editor { min-height: 180px; margin-top: 8px; }
+
+#compose textarea.compose-body-source {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.compose-format {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+#compose .compose-format button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+
+#compose .compose-format button[aria-pressed="true"] {
+  background: var(--selected);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+
+#compose .compose-format button:hover,
+#compose .compose-format button:focus-visible {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.compose-editor {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  overflow: auto;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.compose-editor:focus {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+.compose-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.compose-editor ul,
+.compose-editor ol {
+  margin: 0.35em 0;
+  padding-left: 1.4em;
+}
+
+.compose-editor p { margin: 0 0 0.45em; }
 
 .compose-fields {
   margin-top: 8px;

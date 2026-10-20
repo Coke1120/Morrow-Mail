@@ -2468,6 +2468,41 @@ function outgoingBody(draft, quote) {
   return text + "\n\n" + quoted;
 }
 
+function joinComposeHtml(html, quoteHtml) {
+  const body = String(html || "").trim();
+  const quote = String(quoteHtml || "").trim();
+  if (!quote) return body;
+  if (!body) return quote;
+  return body + "<br><br>" + quote;
+}
+
+function plainFromComposeHtml(html) {
+  return String(html || "")
+    .replace(/<(script|style|head|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|tr|li|h[1-6]|blockquote)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/\n\n\n+/g, "\n\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
+function splitComposeSignature(body, signature) {
+  const base = String(body || "");
+  const prev = String(signature || "");
+  if (!prev) return { message: base, signature: "" };
+  if (base === prev) return { message: "", signature: prev };
+  const tail = "\n\n" + prev;
+  if (base.endsWith(tail)) return { message: base.slice(0, -tail.length), signature: prev };
+  return { message: base, signature: "" };
+}
+
 function quoteWidthPref(value) {
   const raw = typeof value === "number" ? value : (typeof value === "string" && /^-?\d+$/.test(value.trim()) ? Number(value) : NaN);
   if (!Number.isInteger(raw) || raw < 220 || raw > 720) return 420;
@@ -7207,13 +7242,266 @@ function dismissConnect() {
   call("mail:cancelOAuth").catch(() => {});
 }
 
+function sanitizeComposeHtml(html) {
+  const root = document.createElement("div");
+  appendSafeMailHtml(root, html, false);
+  return root.innerHTML || "";
+}
+
+function composeEditorLive() {
+  const editor = $("compose-editor");
+  return !!(editor && editor.nodeType === 1 && typeof editor.appendChild === "function" && typeof editor.replaceChildren === "function");
+}
+
+function blankComposeHtml(html) {
+  const value = String(html || "").replace(/\s+/g, "").toLowerCase();
+  return !value || value === "<br>" || value === "<br/>" || value === "<div><br></div>" || value === "<div><br/></div>" || value === "<p><br></p>" || value === "<p><br/></p>";
+}
+
+function readComposeEditorHtml() {
+  const editor = $("compose-editor");
+  if (!editor || editor.nodeType !== 1) return "";
+  const html = typeof editor.innerHTML === "string" ? editor.innerHTML.trim() : "";
+  if (blankComposeHtml(html)) return "";
+  if (typeof sanitizeComposeHtml !== "function") return "";
+  try { return sanitizeComposeHtml(html); } catch { return ""; }
+}
+
+function composeEditorSnapshot() {
+  const editor = $("compose-editor");
+  if (!editor || editor.nodeType !== 1 || typeof editor.innerHTML !== "string") return "";
+  if (blankComposeHtml(editor.innerHTML)) return "";
+  return editor.innerHTML;
+}
+
+function paintComposeEditor(plain, html) {
+  if (!composeEditorLive()) return;
+  const editor = $("compose-editor");
+  editor.replaceChildren();
+  const markup = String(html || "");
+  if (markup.trim()) {
+    appendSafeMailHtml(editor, markup, false);
+    return;
+  }
+  const parts = splitComposeSignature(plain, state.signatureText);
+  if (parts.message) appendSafeMailHtml(editor, toHtml(parts.message), false);
+  if (!parts.signature) return;
+  if (editor.childNodes.length) {
+    editor.appendChild(document.createElement("br"));
+    editor.appendChild(document.createElement("br"));
+  }
+  const block = document.createElement("div");
+  block.setAttribute("data-compose-signature", "1");
+  appendSafeMailHtml(block, toHtml(parts.signature), false);
+  editor.appendChild(block);
+}
+
+function writeComposeBody(next, html) {
+  const body = $("compose-body");
+  const value = next == null ? "" : String(next);
+  if (body) body.value = value;
+  paintComposeEditor(value, html || "");
+}
+
+function updateComposeSignatureNode(text) {
+  const editor = $("compose-editor");
+  if (!composeEditorLive()) return;
+  const next = String(text || "");
+  let node = editor.querySelector("[data-compose-signature]");
+  if (!next) {
+    if (node) node.remove();
+    return;
+  }
+  if (!node) {
+    if (editor.childNodes.length) {
+      editor.appendChild(document.createElement("br"));
+      editor.appendChild(document.createElement("br"));
+    }
+    node = document.createElement("div");
+    node.setAttribute("data-compose-signature", "1");
+    editor.appendChild(node);
+  }
+  node.replaceChildren();
+  appendSafeMailHtml(node, toHtml(next), false);
+}
+
+function commitComposeSignature(previous, next) {
+  const body = $("compose-body");
+  const current = body && typeof body.value === "string" ? body.value : "";
+  const committed = commitPickerSignature(current, previous, next);
+  if (body) body.value = committed.body;
+  state.signatureText = committed.previous;
+  if (composeEditorLive() && signatureUntouched(current, previous)) {
+    updateComposeSignatureNode(next);
+    return;
+  }
+  paintComposeEditor(committed.body, "");
+}
+
+function syncComposePlainFromEditor() {
+  const editor = $("compose-editor");
+  const body = $("compose-body");
+  if (!composeEditorLive() || !body) return;
+  const sig = editor.querySelector("[data-compose-signature]");
+  if (sig) {
+    const clone = editor.cloneNode(true);
+    const sigClone = clone.querySelector("[data-compose-signature]");
+    if (sigClone) sigClone.remove();
+    const message = plainFromComposeHtml(clone.innerHTML);
+    const sigText = plainFromComposeHtml(sig.innerHTML);
+    body.value = message && sigText ? message + "\n\n" + sigText : (message || sigText);
+  } else {
+    body.value = plainFromComposeHtml(editor.innerHTML);
+  }
+  paintComposeNote();
+}
+
+function setComposeEditorEditable(editable) {
+  const editor = $("compose-editor");
+  if (!editor || editor.nodeType !== 1) return;
+  editor.contentEditable = editable ? "true" : "false";
+}
+
+function setComposeFormatLocked(locked) {
+  const editing = !locked && !(state.draftWrite && state.draftWrite.pending);
+  const bar = $("compose-format");
+  if (bar && typeof bar.querySelectorAll === "function") {
+    for (const button of bar.querySelectorAll("button")) button.disabled = !editing;
+  }
+  setComposeEditorEditable(editing);
+}
+
+function paintComposeFormatState() {
+  const bar = $("compose-format");
+  if (!bar || typeof bar.querySelectorAll !== "function" || typeof document.queryCommandState !== "function") return;
+  for (const button of bar.querySelectorAll("button[data-command]")) {
+    let on = false;
+    try { on = document.queryCommandState(button.getAttribute("data-command")) === true; } catch { on = false; }
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+function insertComposeFallback(command) {
+  const tag = command === "bold" ? "strong" : command === "italic" ? "em" : command === "underline" ? "u" : "";
+  if (!tag || typeof document.getSelection !== "function") return;
+  const sel = document.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  const el = document.createElement(tag);
+  try {
+    range.surroundContents(el);
+  } catch {
+    el.appendChild(range.extractContents());
+    range.insertNode(el);
+  }
+}
+
+function applyComposeCommand(command) {
+  const editor = $("compose-editor");
+  if (!composeEditorLive() || editor.contentEditable === "false") return;
+  editor.focus();
+  let applied = false;
+  try { applied = document.execCommand(command, false, null) === true; } catch { applied = false; }
+  if (!applied) insertComposeFallback(command);
+  syncComposePlainFromEditor();
+  paintComposeFormatState();
+}
+
+function insertComposeMarkup(markup) {
+  const editor = $("compose-editor");
+  if (!composeEditorLive()) return;
+  editor.focus();
+  let inserted = false;
+  try { inserted = document.execCommand("insertHTML", false, markup) === true; } catch { inserted = false; }
+  if (inserted) return;
+  const holder = document.createElement("div");
+  appendSafeMailHtml(holder, markup, false);
+  const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
+  if (!sel || !sel.rangeCount) {
+    while (holder.firstChild) editor.appendChild(holder.firstChild);
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  range.deleteContents();
+  const fragment = document.createDocumentFragment();
+  while (holder.firstChild) fragment.appendChild(holder.firstChild);
+  range.insertNode(fragment);
+}
+
+function onComposePaste(event) {
+  if (!event || !event.clipboardData) return;
+  const html = event.clipboardData.getData("text/html");
+  const text = event.clipboardData.getData("text/plain");
+  if (!html && !text) return;
+  event.preventDefault();
+  const markup = html ? sanitizeComposeHtml(html) : toHtml(text);
+  if (!markup) return;
+  insertComposeMarkup(markup);
+  syncComposePlainFromEditor();
+}
+
+function placeComposeCaret(editor) {
+  if (!editor || typeof document.createRange !== "function" || typeof window.getSelection !== "function") return;
+  const sel = window.getSelection();
+  if (!sel) return;
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function focusComposeBody() {
+  const editor = $("compose-editor");
+  if (editor && editor.nodeType === 1 && typeof editor.focus === "function") {
+    editor.focus();
+    placeComposeCaret(editor);
+    return;
+  }
+  const body = $("compose-body");
+  if (!body || typeof body.focus !== "function") return;
+  body.focus();
+  if (typeof body.setSelectionRange === "function") body.setSelectionRange(0, 0);
+  if (typeof body.scrollTop === "number") body.scrollTop = 0;
+}
+
+function wireComposeFormat() {
+  const bar = $("compose-format");
+  const editor = $("compose-editor");
+  if (bar) {
+    bar.addEventListener("mousedown", (event) => {
+      const button = event.target && event.target.closest && event.target.closest("button");
+      if (button) event.preventDefault();
+    });
+    bar.addEventListener("click", (event) => {
+      const button = event.target && event.target.closest && event.target.closest("button[data-command]");
+      if (!button || button.disabled) return;
+      applyComposeCommand(button.getAttribute("data-command"));
+    });
+  }
+  if (!editor || typeof editor.addEventListener !== "function") return;
+  editor.addEventListener("input", () => syncComposePlainFromEditor());
+  editor.addEventListener("paste", onComposePaste);
+  editor.addEventListener("keyup", paintComposeFormatState);
+  editor.addEventListener("mouseup", paintComposeFormatState);
+  editor.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
+    event.stopPropagation();
+  });
+}
+
 function composePayload(account) {
   const meta = state.composeMeta || {};
+  const plain = $("compose-body").value;
+  const quote = state.composeQuote && state.composeQuote.text;
+  const rich = readComposeEditorHtml();
   const payload = {
     accountId: account.id,
     to: $("compose-to").value.trim(),
     subject: $("compose-subject").value,
-    body: toHtml(outgoingBody($("compose-body").value, state.composeQuote && state.composeQuote.text)),
+    body: rich
+      ? joinComposeHtml(rich, toHtml(outgoingBody("", quote)))
+      : toHtml(outgoingBody(plain, quote)),
     fromAddress: meta.fromAddress || account.preferredFromAddress || account.email,
     draftId: state.draftId || undefined,
     emailId: state.draftId || undefined,
@@ -7262,6 +7550,7 @@ function syncCompose() {
   }
   $("compose-close").disabled = state.composePending || state.composeInitializing;
   for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
+  setComposeFormatLocked(locked);
   syncComposeRecipientRows();
   paintComposeNote();
 }
@@ -7369,8 +7658,7 @@ async function fillSignatures(preserveBody) {
   const identity = state.composeIdentity;
   if (!rows.length) {
     showSignatureEmpty("No signatures.");
-    $("compose-body").value = applySignature($("compose-body").value, state.signatureText, "");
-    state.signatureText = "";
+    commitComposeSignature(state.signatureText, "");
     if (identity) identity.signatureFollowsFrom = !preserveBody;
     return;
   }
@@ -7389,8 +7677,7 @@ async function fillSignatures(preserveBody) {
   const match = rows.find((row) => String(row.id) === id);
   select.value = match ? String(match.id) : "";
   const text = signaturePlain(match);
-  $("compose-body").value = applySignature($("compose-body").value, state.signatureText, text);
-  state.signatureText = text;
+  commitComposeSignature(state.signatureText, text);
   if (identity) identity.signatureFollowsFrom = true;
 }
 
@@ -7398,9 +7685,7 @@ function onSignatureChange() {
   if (state.composeQueued || state.composePending) return;
   const row = state.signatures.find((item) => String(item.id) === $("signature").value);
   const text = signaturePlain(row);
-  const committed = commitPickerSignature($("compose-body").value, state.signatureText, text);
-  $("compose-body").value = committed.body;
-  state.signatureText = committed.previous;
+  commitComposeSignature(state.signatureText, text);
   paintComposeNote();
 }
 
@@ -7577,6 +7862,7 @@ function resetDraftWrite() {
   if (go) go.disabled = false;
   const body = $("compose-body");
   if (body) body.readOnly = false;
+  setComposeEditorEditable(true);
 }
 
 function paintDraft() {
@@ -7590,12 +7876,13 @@ function paintDraft() {
   if (cancel) cancel.hidden = !pending;
   if (go) go.disabled = pending;
   if (body) body.readOnly = pending;
+  setComposeEditorEditable(!pending);
   if (error) {
     const message = view && view.error ? view.error : "";
     error.hidden = !message;
     error.textContent = message;
   }
-  if (view && body) body.value = shownDraft(view);
+  if (view && body) writeComposeBody(shownDraft(view));
 }
 
 function onDraftEvent(event) {
@@ -7951,6 +8238,7 @@ function changeComposeFrom() {
     state.signatureText = signature.previous;
     const select = $("signature");
     if (!select.hidden) select.value = signature.pickerId || "";
+    if (composeEditorLive()) updateComposeSignatureNode(signature.previous);
   }
   paintComposeIdentity();
   paintComposeNote();
@@ -7994,6 +8282,7 @@ async function openCompose(seed) {
   $("compose-bcc").value = fields.bcc || "";
   $("compose-subject").value = fields.subject || "";
   $("compose-body").value = fields.body || "";
+  paintComposeEditor(fields.body || "", fields.htmlBody || "");
   $("ai-prompt").value = "";
   $("schedule-preset").value = "1h";
   $("schedule-at").value = "";
@@ -8015,6 +8304,7 @@ async function openCompose(seed) {
   // A supplied proposal is unsaved work; an untouched new message is not.
   const baseline = JSON.parse(initial);
   baseline.body = fields.draftId ? baseline.body : applySignature(baseline.body, "", state.signatureText);
+  baseline.html = composeEditorSnapshot();
   state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
   syncCompose();
   paintComposeNote();
@@ -8027,19 +8317,15 @@ async function openCompose(seed) {
   $("compose-schedule-tools").open = false;
   if (openWrite) {
     const body = $("compose-body");
-    body.setSelectionRange(0, 0);
-    body.scrollTop = 0;
+    if (body && typeof body.setSelectionRange === "function") {
+      body.setSelectionRange(0, 0);
+      body.scrollTop = 0;
+    }
     $("ai-prompt").focus();
     return;
   }
-  if ($("compose-to").value.trim()) {
-    const body = $("compose-body");
-    body.focus();
-    body.setSelectionRange(0, 0);
-    body.scrollTop = 0;
-  } else {
-    $("compose-to").focus();
-  }
+  if ($("compose-to").value.trim()) focusComposeBody();
+  else $("compose-to").focus();
 }
 
 function setComposeStatus(text, isError) {
@@ -8053,6 +8339,7 @@ function composeSnapshot() {
     fromAddress: state.composeMeta && state.composeMeta.fromAddress,
     to: $("compose-to").value, cc: $("compose-cc").value, bcc: $("compose-bcc").value,
     subject: $("compose-subject").value, body: $("compose-body").value,
+    html: composeEditorSnapshot(),
     quote: state.composeQuote && state.composeQuote.text });
 }
 
@@ -8064,14 +8351,12 @@ async function requestComposeClose() {
     const choice = await new Promise((resolve) => {
       const dialog = $("compose-close-review");
       const finish = (value) => { dialog.close(); resolve(value); };
-      $("draft-close-save").onclick = () => finish("save");
       $("draft-close-discard").onclick = () => finish("discard");
       $("draft-close-keep").onclick = () => finish("keep");
       dialog.oncancel = (event) => { event.preventDefault(); finish("keep"); };
       openDialog("compose-close-review");
     });
-    if (choice === "keep") return false;
-    if (choice === "save" && !(await saveDraft())) return false;
+    if (choice !== "discard") return false;
   }
   // Await the exit before another composition reuses this dialog.
   await closeDialog("compose");
@@ -8085,7 +8370,9 @@ async function resumeDraft(email) {
   await openCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
     fromAddress: draft.from,
     to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
-    body: readable(draft), inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "" });
+    body: readable(draft),
+    htmlBody: typeof draft.htmlBody === "string" ? draft.htmlBody : "",
+    inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "" });
 }
 
 async function loadScheduled() {
@@ -8382,7 +8669,7 @@ function cancelUndoSend() {
   scheduleComposeLayout();
   setComposeStatus("Send canceled. Your draft is ready to edit.");
   showStatus("Send canceled. Your draft is ready to edit.");
-  $("compose-body").focus();
+  focusComposeBody();
   return true;
 }
 
@@ -13200,6 +13487,7 @@ function wireBot() {
 
 function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
+  wireComposeFormat();
   $("compose-from").addEventListener("change", changeComposeFrom);
   $("compose-cc").addEventListener("input", () => {
     if (state.composeIdentity && state.composeIdentity.seeds) state.composeIdentity.seeds.cc.locked = true;
