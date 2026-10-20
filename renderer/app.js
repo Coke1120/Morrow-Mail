@@ -3689,6 +3689,14 @@ function option(value, text) {
   return node;
 }
 
+const SUGGEST_ICON = [
+  "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z",
+  "M20 3v4",
+  "M22 5h-4",
+  "M4 17v2",
+  "M5 18H3",
+];
+
 const READER_ICON = {
   reply: "M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z",
   "reply-all": "M7 8V5l-7 7 7 7v-3l-4-4 4-4zm6 1V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z",
@@ -3794,6 +3802,14 @@ function renderActions(pane, email) {
   const self = (account && (account.preferredFromAddress || account.email)) || "";
   const reply = readerButton("reply", "Reply", () => openCompose(composeSeed(email, "reply", self)));
   const replyAll = readerButton("reply-all", "Reply All", () => openCompose(composeSeed(email, "all", self)));
+  const suggestPending = !!(state.suggestions && state.suggestions.emailId === email.id && state.suggestions.pending);
+  const suggest = readerButton("suggest", "Suggest", () => {
+    requestReplySuggestions(email);
+  }, strokeIcon(SUGGEST_ICON));
+  suggest.title = "Suggest a reply";
+  suggest.setAttribute("aria-label", "Suggest a reply");
+  suggest.setAttribute("aria-busy", suggestPending ? "true" : "false");
+  suggest.disabled = suggestPending;
   const forward = readerButton("forward", "Forward", () => openCompose(composeSeed(email, "forward", self)));
   const menus = document.createElement("div");
   menus.className = "reader-menus";
@@ -3807,7 +3823,7 @@ function renderActions(pane, email) {
     resume.addEventListener("click", () => guard(() => resumeDraft(email)));
     bar.appendChild(resume);
   }
-  bar.append(reply, replyAll, forward, star, archive, trash, menus);
+  bar.append(reply, replyAll, suggest, forward, star, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
 }
@@ -3906,6 +3922,7 @@ function renderSuggestions(pane, email) {
   const box = document.createElement("div");
   box.className = "suggestions";
   box.setAttribute("aria-label", "Reply suggestions");
+  box.hidden = true;
   const status = document.createElement("p");
   status.className = "hint";
   status.dataset.role = "suggest-status";
@@ -3915,32 +3932,49 @@ function renderSuggestions(pane, email) {
   list.className = "suggest-list";
   box.append(status, list);
   pane.appendChild(box);
-  const cached = state.suggestions;
-  const same = cached && cached.emailId === email.id;
-  if (!same || (cached.error && !cached.pending)) {
-    state.suggestions = { emailId: email.id, items: [], error: "", pending: true };
-    loadSuggestions(email);
-  }
   paintSuggestions(email);
+}
+
+function requestReplySuggestions(email) {
+  if (!email || !email.id) return;
+  const view = state.suggestions;
+  if (view && view.emailId === email.id && view.pending) return;
+  state.suggestions = { emailId: email.id, items: [], error: "", pending: true };
+  paintSuggestions(email);
+  syncSuggestControl(email);
+  return loadSuggestions(email);
+}
+
+function syncSuggestControl(email) {
+  const reader = $("reader");
+  const button = reader && reader.querySelector('[data-action="suggest"]');
+  if (!button) return;
+  const pending = !!(email && state.suggestions && state.suggestions.emailId === email.id && state.suggestions.pending);
+  button.disabled = pending;
+  button.setAttribute("aria-busy", pending ? "true" : "false");
 }
 
 async function loadSuggestions(email) {
   const gen = suggestGen += 1;
   const id = email.id;
+  let next;
   try {
     const data = await call("aiDraftWrite:replySuggestions", { email: suggestionEmail(email) });
-    if (gen !== suggestGen || !state.email || state.email.id !== id) return;
-    state.suggestions = { emailId: id, items: suggestionItems(data), error: "", pending: false };
+    next = { emailId: id, items: suggestionItems(data), error: "", pending: false };
   } catch (error) {
-    if (gen !== suggestGen || !state.email || state.email.id !== id) return;
-    state.suggestions = {
+    next = {
       emailId: id,
       items: [],
       error: error instanceof Error ? error.message : String(error),
       pending: false,
     };
   }
-  if (state.email && state.email.id === id) paintSuggestions(state.email);
+  if (gen !== suggestGen) return;
+  state.suggestions = next;
+  if (state.email && state.email.id === id) {
+    paintSuggestions(state.email);
+    syncSuggestControl(state.email);
+  }
 }
 
 function paintSuggestions(email) {
@@ -3973,7 +4007,10 @@ function paintSuggestions(email) {
   status.hidden = true;
   status.textContent = "";
   if (!view.items.length) {
-    box.hidden = true;
+    box.hidden = false;
+    status.hidden = false;
+    status.className = "hint";
+    status.textContent = "No reply suggestions.";
     return;
   }
   box.hidden = false;
