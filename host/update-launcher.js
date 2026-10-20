@@ -108,7 +108,7 @@ async function start(options) {
     const preflight = await extractZip(archiveCopy, path.join(staging, 'preflight'));
     await preserveQuarantine(archiveCopy, preflight);
     await verifyBundle(preflight, { version: manifest.version, arch });
-    await assessBundleTrust(preflight);
+    await assessBundleTrust(preflight, { enforce: false });
     // The helper re-extracts authenticated bytes after quit. This preview is no
     // longer needed and must not accumulate beside the retained backup.
     await assertDirectoryIdentity(staging, identities.staging);

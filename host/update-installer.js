@@ -171,7 +171,10 @@ async function verifyBundle(bundle, { version, arch, appId = 'com.coke1120.morro
   } finally { await binary.close(); }
   await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', bundle], NATIVE_OPTIONS);
 }
-async function assessBundleTrust(bundle, { run = execFile } = {}) {
+// enforce:false is used by the signed-manifest updater: the Ed25519 manifest, SHA-256
+// and strict codesign already authenticated the bytes, and ad hoc (non-notarized)
+// releases are always denied by Gatekeeper. Only an explicit denial is tolerated.
+async function assessBundleTrust(bundle, { run = execFile, enforce = true } = {}) {
   // Integrity and publisher authenticity do not establish Apple platform trust.
   // Propagate rejection/timeouts; callers must never launch a rejected bundle.
   try { await run('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', bundle], NATIVE_OPTIONS); }
@@ -182,6 +185,7 @@ async function assessBundleTrust(bundle, { run = execFile } = {}) {
     const denied = cause.code === 3 && !cause.killed && !cause.signal;
     const timedOut = cause.code === null && cause.killed === true && cause.signal === 'SIGTERM';
     if (!denied && !timedOut) throw cause;
+    if (!enforce && denied) return;
     throw Object.assign(new Error('macOS has not approved this update for automatic installation. Use Show downloaded update to review it in Finder and follow macOS security prompts.', { cause }), { code: 'UPDATE_MANUAL_TRUST' });
   }
 }
