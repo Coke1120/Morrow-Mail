@@ -1471,7 +1471,8 @@ async function ensureBody(row) {
     if (!row || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
     const password = await secretFor(account);
     const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid));
-    if (!fetched) return row;
+    // A FETCH row for another UID must not be written onto this message.
+    if (!fetched || Number(fetched.uid) !== Number(row.uid)) return row;
     db.updateMessage(row.id, {
       html_body: fetched.htmlBody,
       text_body: fetched.textBody,

@@ -83,6 +83,7 @@ let listGen = 0;
 const LIST_PAGE_SIZE = 200;
 let openGen = 0;
 let pendingOpenId = "";
+let pendingOpenBody = false;
 let peekGen = 0;
 let peekEmail = null;
 let reloadTimer = null;
@@ -5493,6 +5494,10 @@ function paintSuggestions(email) {
 }
 
 function renderReader(focus) {
+  if (pendingOpenBody && pendingOpenId) {
+    paintReaderPending(listedMessage(pendingOpenId));
+    return;
+  }
   const pane = $("reader");
   pane.removeAttribute("aria-busy");
   const email = state.email;
@@ -5530,6 +5535,27 @@ function renderReader(focus) {
       wrap.append(mark, title, hint);
     }
     pane.appendChild(wrap);
+    return;
+  }
+  if (email.bodyError) {
+    const heading = document.createElement("h2");
+    heading.textContent = email.subject || "(no subject)";
+    const from = document.createElement("p");
+    from.className = "meta";
+    from.textContent = email.from || "";
+    const when = document.createElement("p");
+    when.className = "meta";
+    const failedAt = email.date ? new Date(email.date) : null;
+    when.textContent = failedAt && !Number.isNaN(failedAt.getTime()) ? failedAt.toLocaleString() : "";
+    const error = document.createElement("p");
+    error.className = "hint error";
+    error.setAttribute("role", "status");
+    error.textContent = email.bodyError;
+    pane.append(heading, from, when, error);
+    if (focus) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
     return;
   }
   renderActions(pane, email);
@@ -8171,6 +8197,23 @@ function readerCurrentId() {
 function invalidateReaderOpen() {
   openGen += 1;
   pendingOpenId = "";
+  pendingOpenBody = false;
+}
+
+function abandonOpen(emailId, message) {
+  pendingOpenId = "";
+  pendingOpenBody = false;
+  const known = listedMessage(emailId) || {};
+  state.email = {
+    ...known,
+    id: String(emailId),
+    htmlBody: null,
+    textBody: null,
+    bodyError: message,
+  };
+  state.thread = [];
+  renderReader(false);
+  renderList();
 }
 
 function listedMessage(emailId) {
@@ -8211,9 +8254,8 @@ async function openMessage(emailId, focus) {
   const showing = state.email && String(state.email.id) === String(emailId)
     && (state.email.htmlBody || state.email.textBody);
   const waitForBody = !!(known && known.bodyComplete === false && !showing);
-  const previousEmail = state.email;
-  const previousThread = state.thread;
   pendingOpenId = emailId;
+  pendingOpenBody = waitForBody;
   if (waitForBody) paintReaderPending(known);
   renderList();
   let data;
@@ -8221,26 +8263,15 @@ async function openMessage(emailId, focus) {
     data = await call("mail:openEmail", { emailId });
   } catch (error) {
     if (gen !== openGen) return;
-    pendingOpenId = "";
-    if (waitForBody) {
-      state.email = previousEmail;
-      state.thread = previousThread;
-      renderReader(false);
-    }
-    renderList();
+    abandonOpen(emailId, error instanceof Error ? error.message : String(error));
     throw error;
   }
   if (gen !== openGen) return;
   const email = data && data.email;
-  if (!email) {
-    pendingOpenId = "";
-    if (waitForBody) {
-      state.email = previousEmail;
-      state.thread = previousThread;
-      renderReader(false);
-    }
-    renderList();
-    throw new Error("That message is no longer in the mailbox.");
+  if (!email || String(email.id) !== String(emailId)) {
+    const message = email ? "That message could not be loaded." : "That message is no longer in the mailbox.";
+    abandonOpen(emailId, message);
+    throw new Error(message);
   }
   let listed = null;
   const fromOpen = data && data.threadMessages;
@@ -8257,6 +8288,7 @@ async function openMessage(emailId, focus) {
     if (gen !== openGen) return;
   }
   pendingOpenId = "";
+  pendingOpenBody = false;
   state.email = email;
   state.thread = state.prefs.conversation === false ? [] : threadMembers(fromOpen, listed);
   renderReader(focus !== false);

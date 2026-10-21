@@ -177,7 +177,260 @@ async function main() {
   vm.runInContext(between(engine, 'async function ensureBody', 'function pushRows'), bodyCtx);
   assert.equal((await bodyCtx.ensureBody(row)).html_body, '<p>Complete</p>');
   assert.equal(fetched, 0);
+  await assertDownloadedBodyStaysOnTheRequestedUid();
+  await assertReaderKeepsTheSelectedMessage();
   console.log('mail reader synthetic checks passed');
+}
+
+function fakeImap(messages) {
+  return {
+    mailbox: { uidValidity: 4 },
+    async getMailboxLock() { return { release() {} }; },
+    async *fetch() {
+      for (const msg of messages) yield msg;
+    },
+  };
+}
+
+function source(subject, body) {
+  return Buffer.from(`Subject: ${subject}\r\n\r\n${body}\r\n`);
+}
+
+async function assertDownloadedBodyStaysOnTheRequestedUid() {
+  const remote = require('../host/mail/remote');
+  const other = { uid: 2, envelope: { subject: 'Other' }, source: source('Other', 'Other body'), flags: new Set() };
+  const chosen = { uid: 9, envelope: { subject: 'Chosen' }, source: source('Chosen', 'Chosen body'), flags: new Set(['\\Seen']) };
+  const fetched = await remote.fetchSource(fakeImap([other, chosen]), 'INBOX', 9);
+  assert.equal(fetched && fetched.uid, 9);
+  assert.match(fetched.textBody || '', /Chosen body/);
+  assert.doesNotMatch(fetched.textBody || '', /Other body/);
+  assert.equal(await remote.fetchSource(fakeImap([other]), 'INBOX', 9), null);
+  const flagsOnly = { uid: 9, envelope: { subject: 'Chosen' }, flags: new Set() };
+  const withBody = { uid: 9, envelope: { subject: 'Chosen' }, source: source('Chosen', 'Chosen body'), flags: new Set(['\\Seen']) };
+  const merged = await remote.fetchSource(fakeImap([flagsOnly, withBody]), 'INBOX', 9);
+  assert.match(merged.textBody || '', /Chosen body/);
+
+  const stored = new Map();
+  stored.set('a', {
+    id: 'a', account_id: 'acct', uid: 10, uid_validity: 1, folder_path: 'INBOX',
+    body_complete: 0, subject: 'Alpha', html_body: null, text_body: null, recipient_headers_json: null,
+  });
+  const mismatch = vm.createContext({
+    db: {
+      accountById: () => ({ id: 'acct' }),
+      messageById: (id) => stored.get(id) || null,
+      updateMessage(id, patch) { Object.assign(stored.get(id), patch); },
+    },
+    exclusive: async (_id, fn) => fn(),
+    secretFor: async () => 'secret',
+    remote: {
+      withClient: async (_account, _password, fn) => fn({}),
+      fetchSource: async () => ({
+        uid: 11, subject: 'Beta', htmlBody: '<p>Beta</p>', textBody: 'Beta body',
+        bodyComplete: true, snippet: 'Beta', attachments: [], hasAttachments: false, recipientHeaders: {},
+      }),
+    },
+  });
+  vm.runInContext(between(engine, 'async function ensureBody', 'function pushRows'), mismatch);
+  const opened = await mismatch.ensureBody(stored.get('a'));
+  assert.equal(opened.subject, 'Alpha');
+  assert.equal(opened.html_body, null);
+  assert.equal(stored.get('a').text_body, null);
+}
+
+function domNode(tag) {
+  const node = {
+    tag, children: [], className: '', hidden: false, disabled: false, textContent: '', value: '',
+    dataset: {}, attrs: {}, style: {}, parentNode: null,
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    getAttribute(name) { return this.attrs[name]; },
+    removeAttribute(name) { delete this.attrs[name]; },
+    hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name); },
+    append(...nodes) { for (const child of nodes) this.appendChild(child); },
+    appendChild(child) {
+      if (child && child.parentNode && child.parentNode !== this) {
+        child.parentNode.children = child.parentNode.children.filter((item) => item !== child);
+      }
+      if (child) child.parentNode = this;
+      this.children.push(child);
+      return child;
+    },
+    replaceChildren() { this.children = []; },
+    addEventListener() {},
+    removeEventListener() {},
+    focus() {},
+    getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 }; },
+    querySelector(selector) { return queryNode(this, selector); },
+  };
+  node.classList = {
+    add(...names) { node.className = `${node.className} ${names.join(' ')}`.trim(); },
+    remove() {},
+    toggle(name, force) {
+      const has = node.className.split(/\s+/).includes(name);
+      const on = force === undefined ? !has : !!force;
+      if (on && !has) node.className = `${node.className} ${name}`.trim();
+      if (!on && has) node.className = node.className.split(/\s+/).filter((part) => part !== name).join(' ');
+      return on;
+    },
+    contains(name) { return node.className.split(/\s+/).includes(name); },
+  };
+  return node;
+}
+
+function nodeMatches(node, selector) {
+  if (selector.startsWith('.')) return node.className.split(/\s+/).includes(selector.slice(1));
+  const attr = selector.match(/^\[([A-Za-z0-9-]+)=['"]([^'"]+)['"]\]$/);
+  if (!attr) return false;
+  const [, name, value] = attr;
+  if (name.startsWith('data-')) {
+    const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+    if (node.dataset[key] === value) return true;
+  }
+  return node.attrs[name] === value;
+}
+
+function queryNode(node, selector) {
+  for (const child of node.children || []) {
+    if (child && nodeMatches(child, selector)) return child;
+    const found = queryNode(child, selector);
+    if (found) return found;
+  }
+  return null;
+}
+
+function readerText(node) {
+  const parts = [];
+  const walk = (current) => {
+    if (!current || current.hidden) return;
+    if (current.textContent) parts.push(current.textContent);
+    for (const child of current.children || []) walk(child);
+  };
+  walk(node);
+  return parts.join('\n');
+}
+
+function loadReader() {
+  const reader = domNode('section');
+  const status = domNode('p');
+  const document = {
+    getElementById(id) {
+      if (id === 'reader') return reader;
+      if (id === 'status') return status;
+      return domNode('div');
+    },
+    createElement: domNode,
+    createElementNS: (_ns, tag) => domNode(tag),
+  };
+  const context = vm.createContext({
+    window: { morrow: { on() {}, invoke: async () => ({}) }, addEventListener() {} },
+    document,
+    console,
+    setTimeout,
+    clearTimeout,
+    navigator: { onLine: true },
+  });
+  const source = app.replace(
+    'boot().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));',
+    `globalThis.__readerApi = {
+      get state() { return state; },
+      openMessage,
+      renderReader,
+      set call(fn) { call = fn; },
+      set renderList(fn) { renderList = fn; },
+    };`
+  );
+  vm.runInContext(source, context);
+  const api = context.__readerApi;
+  api.reader = reader;
+  api.renderList = () => {};
+  api.state.accounts = [{ id: 'acct', email: 'ada@example.test' }];
+  api.state.accountId = 'acct';
+  api.state.prefs.conversation = true;
+  return api;
+}
+
+function listed(id, subject, bodyComplete) {
+  return {
+    id, subject, from: subject + ' sender', date: '2026-10-20T12:00:00.000Z',
+    accountId: 'acct', unread: false, bodyComplete, snippet: subject + ' snippet',
+  };
+}
+
+function opened(id, subject, text) {
+  return { ...listed(id, subject, true), textBody: text, htmlBody: null, threadId: id };
+}
+
+async function flushReader() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function assertReaderKeepsTheSelectedMessage() {
+  const ui = loadReader();
+  const alpha = listed('A', 'Alpha', false);
+  const beta = listed('B', 'Beta', false);
+  ui.state.emails = [alpha, beta];
+  ui.state.thread = [];
+  ui.state.email = opened('prev', 'Previous', 'previous body');
+
+  let releaseA;
+  let releaseB;
+  ui.call = (channel, payload) => {
+    if (channel !== 'mail:openEmail') return Promise.resolve({});
+    return new Promise((resolve) => {
+      const finish = () => resolve({
+        email: opened(payload.emailId, payload.emailId === 'A' ? 'Alpha' : 'Beta', payload.emailId === 'A' ? 'alpha body' : 'beta body'),
+        threadMessages: [{ id: payload.emailId }],
+      });
+      if (payload.emailId === 'A') releaseA = finish;
+      else releaseB = finish;
+    });
+  };
+  const openA = ui.openMessage('A', false);
+  await flushReader();
+  ui.renderReader(false);
+  let shown = readerText(ui.reader);
+  assert.match(shown, /Loading message/);
+  assert.match(shown, /Alpha/);
+  assert.doesNotMatch(shown, /previous body/);
+  assert.doesNotMatch(shown, /beta body/);
+  const openB = ui.openMessage('B', false);
+  await flushReader();
+  releaseA();
+  await flushReader();
+  shown = readerText(ui.reader);
+  assert.doesNotMatch(shown, /alpha body/);
+  assert.match(shown, /Beta/);
+  releaseB();
+  await Promise.all([openA.catch((error) => error), openB]);
+  shown = readerText(ui.reader);
+  assert.match(shown, /beta body/);
+  assert.doesNotMatch(shown, /alpha body/);
+  assert.doesNotMatch(shown, /previous body/);
+
+  const failed = loadReader();
+  failed.state.emails = [alpha, beta];
+  failed.state.thread = [];
+  failed.state.email = opened('prev', 'Previous', 'previous body');
+  failed.call = async () => { throw new Error('download failed'); };
+  await assert.rejects(failed.openMessage('A', false), /download failed/);
+  shown = readerText(failed.reader);
+  assert.match(shown, /Alpha/);
+  assert.match(shown, /download failed/);
+  assert.doesNotMatch(shown, /previous body/);
+
+  const mismatched = loadReader();
+  mismatched.state.emails = [alpha];
+  mismatched.state.thread = [];
+  mismatched.state.email = opened('prev', 'Previous', 'previous body');
+  mismatched.call = async () => ({
+    email: opened('B', 'Beta', 'beta body'),
+    threadMessages: [{ id: 'B' }],
+  });
+  await assert.rejects(mismatched.openMessage('A', false), /could not be loaded/);
+  shown = readerText(mismatched.reader);
+  assert.match(shown, /Alpha/);
+  assert.doesNotMatch(shown, /beta body/);
+  assert.doesNotMatch(shown, /previous body/);
 }
 module.exports = { run: main };
 if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });
