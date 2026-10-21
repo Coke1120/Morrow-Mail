@@ -308,8 +308,8 @@ const quotingRule = css.slice(quotingAt, css.indexOf("}", quotingAt));
 assert.match(quotingRule, /height:\s*max-content/, "quoting dialog sizes to its content");
 assert.match(quotingRule, /max-height:\s*calc\(100vh - 32px\)/, "quoting dialog keeps a viewport ceiling");
 assert.ok(!/(^|[^-])height:\s*calc\(100vh - 32px\)/.test(quotingRule), "quoting dialog does not force the viewport height");
-assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#bot-secret,\s*#move-picker\s*\{[^}]*height:\s*max-content/, "compact dialogs hug their content");
-assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#bot-secret,\s*#move-picker\s*\{[^}]*margin:\s*auto/, "compact dialogs stay centered without a transform");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker\s*\{[^}]*height:\s*max-content/, "compact dialogs hug their content");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker\s*\{[^}]*margin:\s*auto/, "compact dialogs stay centered without a transform");
 assert.ok(!css.includes("min(820px"), "quoting dialog no longer stops at 820px");
 assert.ok(css.includes('#compose[data-quote-collapsed="true"] .compose-quote-body'), "collapse hides the quote body");
 assert.ok(css.includes("#193c34") && css.includes("#102822") && css.includes("#b9d5ad") && css.includes("[data-theme=\"dark\"]"), "shell css missing logo green tokens");
@@ -567,6 +567,39 @@ assert.ok(functionSource(appJs, "saveAttachmentsZip").includes("mail:downloadAtt
 assert.ok(attachmentUi.includes("Preview") && attachmentUi.includes("mail:fetchAttachmentBytes") === false);
 assert.ok(functionSource(appJs, "previewAttachment").includes("mail:fetchAttachmentBytes"));
 assert.ok(attachmentUi.includes("mail:downloadAttachment") && attachmentUi.includes("mail:openAttachmentExternally"));
+assert.strictEqual((appJs.match(/function readerIcon\(/g) || []).length, 1, "toolbar readerIcon stays the only readerIcon");
+assert.ok(appJs.includes("function attachmentIcon("), "attachment glyphs use attachmentIcon");
+assert.ok(functionSource(appJs, "readerIcon").includes("READER_ICON[name]"));
+assert.ok(attachmentUi.includes('attachmentIcon("paperclip")') && attachmentUi.includes('attachmentIcon("download")'));
+assert.equal(attachmentUi.includes("readerIcon("), false);
+{
+  const mapStart = appJs.indexOf("const READER_ICON = {");
+  const readerIconMap = appJs.slice(mapStart, appJs.indexOf("\n};", mapStart) + 3);
+  const iconDom = {
+    createElementNS(_ns, tag) {
+      return {
+        tag,
+        attrs: {},
+        children: [],
+        setAttribute(key, value) { this.attrs[key] = String(value); },
+        appendChild(child) { this.children.push(child); return child; },
+      };
+    },
+  };
+  const drawn = new Function("document", `${readerIconMap}\n${functionSource(appJs, "readerIcon")}\n${functionSource(appJs, "attachmentIcon")}\nreturn { READER_ICON, readerIcon, attachmentIcon };`)(iconDom);
+  for (const name of ["reply", "reply-all", "forward", "archive", "trash", "move", "organize"]) {
+    const node = drawn.readerIcon(name);
+    assert.ok(node && node.children[0], name);
+    assert.strictEqual(node.children[0].attrs.d, drawn.READER_ICON[name], name);
+  }
+  assert.strictEqual(drawn.readerIcon("paperclip"), null);
+  assert.strictEqual(drawn.readerIcon("download"), null);
+  const paperclip = drawn.attachmentIcon("paperclip");
+  const download = drawn.attachmentIcon("download");
+  assert.strictEqual(paperclip.children[0].attrs.d, "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48");
+  assert.strictEqual(download.children[0].attrs.d, "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4");
+  assert.strictEqual(download.children[1].attrs.points, "7 10 12 15 17 10");
+}
 const readerUi = functionSource(appJs, "renderReader");
 assert.ok(readerUi.indexOf("renderAttachments") < readerUi.indexOf("renderBody"), "attachments stay above the body");
 const zipBytes = require("../host/mail/zip-bytes");
@@ -1870,6 +1903,18 @@ assert.ok(html.includes(">Brain<") && html.includes(">Add<") && html.includes("W
 assert.ok(html.includes('id="brain-category-list"') && html.includes('id="brain-category-name"') && html.includes('id="brain-category-description"'));
 assert.ok(html.includes('id="brain-category-collapse"') && html.includes('id="brain-category-save"') && html.includes('id="brain-category-ai"'));
 assert.ok(html.includes('id="brain-skills"') && html.includes('id="brain-home-skills"') && html.includes('id="brain-library-skills"') && html.includes('id="brain-skill-status"'));
+assert.ok(html.includes('id="brain-skill-dialog"') && html.includes('id="brain-skill-dialog-title"') && html.includes('id="settings-tab-compose"') && html.includes('id="settings-compose"'));
+assert.ok(html.includes("Compose defaults live in") && html.includes('id="brain-open-compose-settings"'));
+const brainProfileHtml = html.slice(html.indexOf('id="brain-profile"'), html.indexOf('id="brain-categories"'));
+assert.ok(!brainProfileHtml.includes('id="brain-compose-form"') && !brainProfileHtml.includes("<summary>Compose defaults and aliases</summary>"), "compose form leaves Brain profile");
+assert.ok(brainProfileHtml.includes('id="brain-open-compose-settings"'));
+const composePanelHtml = html.slice(html.indexOf('id="settings-compose"'), html.indexOf('id="settings-ooo"'));
+assert.ok(composePanelHtml.includes('id="brain-compose-form"') && composePanelHtml.includes('id="brain-compose-bcc"') && composePanelHtml.includes('id="brain-compose-from"') && composePanelHtml.includes('id="brain-compose-aliases"'));
+assert.ok(html.indexOf('id="settings-tab-mailbox"') < html.indexOf('id="settings-tab-compose"') && html.indexOf('id="settings-tab-compose"') < html.indexOf('id="settings-tab-ai"'));
+assert.ok(!functionSource(appJs, "paintBrainSkillList").includes("appendSkillSchedule"), "Brain skill cards do not inline the schedule editor");
+assert.ok(functionSource(appJs, "paintBrainSkillDialog").includes("appendSkillSchedule"));
+assert.ok(functionSource(appJs, "paintBrainSkillList").includes('textContent = "Manage"') && functionSource(appJs, "paintBrainSkillList").includes("brain-skill-chip"));
+assert.ok(appJs.includes('revealSettingsFold("compose")') && appJs.includes("Loading compose defaults"));
 assert.deepStrictEqual(brainUi.brainSkillLists().map((row) => row[1]), [
   "emailBrain:getSkills",
   "emailBrain:getLibrarySkills",
@@ -1898,6 +1943,7 @@ const agentUi = loadFunctions(appJs, [
   "historyLine",
   "proposalLine",
   "runModeLabel",
+  "skillStatusChip",
   "scheduleFormValue",
 ]);
 assert.deepStrictEqual(agentUi.skillBlocks(null), []);
@@ -1919,6 +1965,11 @@ assert.match(agentUi.runModeLabel({ schedule: "disabled", runMode: "on_demand" }
 assert.match(agentUi.runModeLabel({ schedule: "interval", everyMinutes: 30 }), /Every 30 min/);
 assert.match(agentUi.runModeLabel({ schedule: "paused", paused: true, kind: "cron", cron: "0 8 * * 1" }), /Paused/);
 assert.match(agentUi.runModeLabel({ schedule: "cron", cron: "0 8 * * 1-5" }), /0 8 \* \* 1-5/);
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "disabled", runMode: "on_demand" }, "run"), { label: "On demand", tone: "demand" });
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "paused", paused: true, kind: "interval", everyMinutes: 30 }, "run"), { label: "Paused", tone: "paused" });
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "interval", kind: "interval", everyMinutes: 30 }, "run"), { label: "Every 30 min", tone: "scheduled" });
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "cron", kind: "cron", cron: "0 8 * * 1-5" }, "run"), { label: "Cron", tone: "scheduled" });
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "disabled" }, "install"), { label: "Not installed", tone: "library" });
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "off" }).action, "delete");
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 15 }).everyMinutes, 15);
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 0 }).error.includes("10080"), true);
@@ -2077,6 +2128,9 @@ assert.ok(!parity.includes("Other host preferences, calendar"));
 assert.ok(!parity.includes("full skills library"));
 assert.ok(!parity.includes("AI Studio, calendar"));
 assert.ok(parity.includes("skills library"));
+assert.ok(parity.includes("Settings → Compose") && parity.includes("Manage opens a dialog"));
+assert.ok(independentDoc.includes("Settings → Compose") && independentDoc.includes("Manage opens a dialog"));
+assert.ok(brainDoc.includes("Settings → **Compose**") || brainDoc.includes("Settings → Compose"));
 assert.ok(parity.includes("config:setTheme") && parity.includes("morrow:configSetSnoozeEffective"));
 assert.ok(!parity.includes("the list is read-only"));
 assert.ok(!parity.includes("full Brain category/skills UI"));
@@ -7931,7 +7985,7 @@ require("./check-win-secrets").run();
 require("./check-bot-client").run();
 require("./check-bot-setup-ux").run();
 
-require("./check-bot-probe").run().then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
+require("./check-bot-probe").run().then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
 }).then(() => require("./check-batch-b").run()).then(() => {
   console.log("ui-path-ok");

@@ -121,6 +121,7 @@ let brainCategoryDefaults = [];
 let brainCategoryIndex = -1;
 let brainCategoryGen = 0;
 let brainSkillBusy = false;
+let brainSkillDialogId = "";
 let brainFixBusy = false;
 let brainCategoryBusy = false;
 let brainSkillCache = {};
@@ -6026,7 +6027,7 @@ let attachmentPreviewToken = 0;
 let attachmentPreviewUrl = "";
 let attachmentPreviewEmailId = "";
 
-function readerIcon(kind) {
+function attachmentIcon(kind) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("width", "16");
@@ -6249,7 +6250,7 @@ function renderAttachments(pane, email) {
   const head = document.createElement("div");
   head.className = "attachment-card-head";
   const title = document.createElement("h3");
-  title.appendChild(readerIcon("paperclip"));
+  title.appendChild(attachmentIcon("paperclip"));
   const titleText = document.createElement("span");
   titleText.textContent = "Attachments";
   title.appendChild(titleText);
@@ -6264,7 +6265,7 @@ function renderAttachments(pane, email) {
     const zip = document.createElement("button");
     zip.type = "button";
     zip.className = "attachment-zip";
-    zip.appendChild(readerIcon("download"));
+    zip.appendChild(attachmentIcon("download"));
     const zipLabel = document.createElement("span");
     zipLabel.textContent = "Save as ZIP";
     zip.appendChild(zipLabel);
@@ -6766,6 +6767,7 @@ async function loadAccounts(preferredId) {
     loadCalendar({ preferCache: true }).catch(error => showStatus(error.message, true));
   }
   syncRemove();
+  if (window.morrowBrainCompose && typeof window.morrowBrainCompose.sync === "function") window.morrowBrainCompose.sync();
   await loadSnoozed();
   if (gen !== accountGen) return;
   await loadList();
@@ -10537,6 +10539,107 @@ async function showScheduled() {
   await loadScheduled();
 }
 
+let quitScheduledPrompt = null;
+let quitScheduledDismissed = "";
+
+function replyQuitScheduled(choice) {
+  const pending = quitScheduledPrompt;
+  if (!pending) return;
+  quitScheduledPrompt = null;
+  const dialog = $("quit-scheduled");
+  if (dialog) dialog.oncancel = null;
+  closeDialog("quit-scheduled");
+  const allowed = choice === "quit" || choice === "view" ? choice : "stay";
+  if (api && typeof api.replyQuitScheduled === "function") {
+    api.replyQuitScheduled({ nonce: pending.nonce, choice: allowed });
+  }
+}
+
+function presentQuitScheduled(payload) {
+  const dialog = $("quit-scheduled");
+  if (!dialog || !payload || typeof payload.nonce !== "string") return;
+  const count = Number(payload.count) || 0;
+  const noun = count === 1 ? "message" : "messages";
+  $("quit-scheduled-title").textContent = payload.title || (count === 1 ? "1 scheduled message is still pending" : `${count} scheduled messages are still pending`);
+  $("quit-scheduled-body").textContent = payload.body || `Scheduled ${noun} will not send while Morrow Mail is closed. A time that passes while the app is closed is sent the next time you open it.`;
+  const list = $("quit-scheduled-list");
+  list.replaceChildren();
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  for (const item of items) {
+    const li = document.createElement("li");
+    const subject = String((item && item.subject) || "").trim() || "(no subject)";
+    const time = String((item && (item.time || item.sendAt)) || "").trim() || "Unknown time";
+    const sending = item && item.status === "sending" ? " · Sending now" : "";
+    li.textContent = `${subject} · ${time}${sending}`;
+    list.appendChild(li);
+  }
+  list.hidden = items.length === 0;
+  const hidden = Number(payload.hidden) || 0;
+  const more = $("quit-scheduled-more");
+  if (more) {
+    more.hidden = hidden <= 0;
+    more.textContent = hidden === 1 ? "1 more scheduled message." : hidden > 1 ? `${hidden} more scheduled messages.` : "";
+  }
+  if (dialog.dataset) delete dialog.dataset.closing;
+  dialog.oncancel = null;
+  if (dialog.open && typeof dialog.close === "function") dialog.close();
+  quitScheduledPrompt = { nonce: payload.nonce };
+  const stay = () => replyQuitScheduled("stay");
+  const form = $("quit-scheduled-form");
+  if (form) {
+    form.onsubmit = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      stay();
+    };
+  }
+  const stayButton = $("quit-scheduled-stay");
+  if (stayButton) stayButton.onclick = stay;
+  const quitButton = $("quit-scheduled-quit");
+  if (quitButton) quitButton.onclick = () => replyQuitScheduled("quit");
+  const viewButton = $("quit-scheduled-view");
+  if (viewButton) {
+    viewButton.onclick = () => {
+      replyQuitScheduled("view");
+      showScheduled().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+    };
+  }
+  dialog.oncancel = (event) => {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    stay();
+  };
+  openDialog("quit-scheduled");
+  if (stayButton && typeof stayButton.focus === "function") stayButton.focus();
+}
+
+function acceptQuitScheduled(payload) {
+  if (!payload || typeof payload.nonce !== "string") return;
+  if (payload.nonce === quitScheduledDismissed) return;
+  if (quitScheduledPrompt) {
+    if (api && typeof api.replyQuitScheduledShown === "function") api.replyQuitScheduledShown({ nonce: payload.nonce });
+    if (api && typeof api.replyQuitScheduled === "function") api.replyQuitScheduled({ nonce: payload.nonce, choice: "stay" });
+    return;
+  }
+  try {
+    presentQuitScheduled(payload);
+  } catch {
+    return;
+  }
+  if (!quitScheduledPrompt || quitScheduledPrompt.nonce !== payload.nonce) return;
+  if (api && typeof api.replyQuitScheduledShown === "function") api.replyQuitScheduledShown({ nonce: payload.nonce });
+}
+
+function dismissQuitScheduled(payload) {
+  if (!payload || typeof payload.nonce !== "string") return;
+  quitScheduledDismissed = payload.nonce;
+  if (!quitScheduledPrompt || quitScheduledPrompt.nonce !== payload.nonce) return;
+  quitScheduledPrompt = null;
+  const dialog = $("quit-scheduled");
+  if (dialog) dialog.oncancel = null;
+  const form = $("quit-scheduled-form");
+  if (form) form.onsubmit = null;
+  closeDialog("quit-scheduled");
+}
+
 async function editScheduledMail(row) {
   const answer = await askConfirm({ title: "Remove from queue and edit?", body: scheduledLine(row, state.accounts) + "\nThe queued delivery will be removed and saved as a local draft. Review it, then explicitly Schedule send again. A failed delivery may already have reached the recipient; check Sent before retrying.", confirm: "Remove and edit", cancel: "Keep queued" });
   if (!answer || !answer.ok) return;
@@ -11660,6 +11763,7 @@ const settingsFoldLoadingLabels = {
   mail: "Loading mail and sync settings…",
   mailbox: "Loading mailbox tools…",
   ai: "Loading AI settings…",
+  compose: "Loading compose defaults…",
   ooo: "Checking Out of Office status…",
   bot: "Loading Bot access…",
 };
@@ -11688,10 +11792,21 @@ function setSettingsFoldLoading(fold, label) {
 function settingsFoldKey(name) {
   return name + ":" + (["mailbox", "ooo"].includes(name) ? settingsAccount()?.id || "" : "");
 }
+function loadComposeSettings() {
+  if (!window.morrowBrainCompose) return Promise.resolve();
+  return window.morrowBrainCompose.load({
+    call,
+    accounts: () => state.accounts,
+    selectedId: () => state.accountId,
+  });
+}
 function loadSettingsFold(name) {
   if (!$("settings").open) return Promise.resolve();
   const key = settingsFoldKey(name);
-  if (settingsFoldLoaded.has(key)) return Promise.resolve();
+  if (settingsFoldLoaded.has(key)) {
+    if (name === "compose") return loadComposeSettings();
+    return Promise.resolve();
+  }
   if (settingsFoldPending.has(key)) return settingsFoldPending.get(key);
   const fold = document.querySelector('#settings .fold[data-fold="' + name + '"]');
   if (!fold) return Promise.resolve();
@@ -11704,6 +11819,7 @@ function loadSettingsFold(name) {
     if (name === "prefs" || name === "mail") await loadSettings();
     else if (name === "ai") { await loadSettings(); if (!aiDirty()) await loadAiSettings(); }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); }
+    else if (name === "compose") await loadComposeSettings();
     else if (name === "ooo" && !oooDirty()) await loadVacation();
     else if (name === "bot") await loadBotAccess();
     settingsFoldLoaded.add(key);
@@ -13150,9 +13266,6 @@ function clearBrainEdit() {
 async function loadBrain() {
   brainSnapshot = await call("emailBrain:getCached");
   if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
-  if (brainIsOpen() && window.morrowBrainCompose) {
-    await window.morrowBrainCompose.load({ call, accounts: () => state.accounts, selectedId: () => state.accountId });
-  }
 }
 
 function showCategoryStatus(text, isError) {
@@ -13793,6 +13906,18 @@ function runModeLabel(row) {
   return text;
 }
 
+function skillStatusChip(row, mode) {
+  if (mode === "install") return { label: "Not installed", tone: "library" };
+  if (row && (row.schedule === "paused" || row.paused === true)) return { label: "Paused", tone: "paused" };
+  const minutes = Number(row && row.everyMinutes);
+  const scheduled = !!(row && row.schedule && row.schedule !== "disabled");
+  if (scheduled && (row.schedule === "interval" || row.kind === "interval") && Number.isInteger(minutes) && minutes > 0) {
+    return { label: "Every " + minutes + " min", tone: "scheduled" };
+  }
+  if (scheduled && (row.schedule === "cron" || row.kind === "cron") && row.cron) return { label: "Cron", tone: "scheduled" };
+  return { label: "On demand", tone: "demand" };
+}
+
 function scheduleFormValue(input) {
   const source = input && typeof input === "object" ? input : {};
   const kind = String(source.kind || "off").trim();
@@ -13859,7 +13984,7 @@ function skillPayload(row) {
 }
 
 function setSkillStatus(text, isError) {
-  for (const id of ["brain-skill-status", "agent-skill-status"]) {
+  for (const id of ["brain-skill-status", "agent-skill-status", "brain-skill-dialog-status"]) {
     const status = $(id);
     if (!status) continue;
     status.textContent = text || "";
@@ -14240,6 +14365,7 @@ async function saveSkillSchedule(row, input) {
     setSkillStatus("Saved the schedule for " + name + ".", false);
   }
   await Promise.all([loadBrainSkills(), loadStudio()]);
+  refreshBrainSkillDialog(true);
 }
 
 async function pauseSkillSchedule(row, paused) {
@@ -14249,6 +14375,7 @@ async function pauseSkillSchedule(row, paused) {
   const name = skillName(row) || skillId;
   setSkillStatus((paused ? "Paused " : "Resumed ") + name + ".", false);
   await Promise.all([loadBrainSkills(), loadStudio()]);
+  refreshBrainSkillDialog(true);
 }
 
 function scheduleEditorFocused() {
@@ -14339,6 +14466,15 @@ function paintSkillList(root, rows, empty, mode) {
   }
 }
 
+function skillActionButton(className, action, busy) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.dataset.skillAction = action;
+  if (busy) button.disabled = true;
+  return button;
+}
+
 function paintBrainSkillList(root, rows, empty, mode) {
   root.replaceChildren();
   if (!rows.length) {
@@ -14352,7 +14488,7 @@ function paintBrainSkillList(root, rows, empty, mode) {
     const skillId = skillIdOf(row);
     const card = document.createElement("article");
     card.className = "brain-skill-card";
-    const title = document.createElement("p");
+    const title = document.createElement("h3");
     title.className = "brain-skill";
     const name = row && typeof row === "object" ? String(row.name || row.title || "").trim() : "";
     title.textContent = name || skillLine(row) || "Skill";
@@ -14360,27 +14496,27 @@ function paintBrainSkillList(root, rows, empty, mode) {
     const description = row && typeof row === "object" ? String(row.description || "").trim() : "";
     if (description) {
       const detail = document.createElement("p");
-      detail.className = "hint";
+      detail.className = "hint brain-skill-detail";
       detail.textContent = description;
       card.appendChild(detail);
     }
-    const demand = runModeLabel(row);
-    if (demand) {
-      const modeLine = document.createElement("p");
-      modeLine.className = "hint";
-      modeLine.textContent = demand;
-      card.appendChild(modeLine);
-    }
+    const chipInfo = skillStatusChip(row, mode);
+    const chip = document.createElement("span");
+    chip.className = "brain-skill-chip" + (chipInfo.tone ? " is-" + chipInfo.tone : "");
+    chip.textContent = chipInfo.label;
+    card.appendChild(chip);
     if (!skillId) {
       root.appendChild(card);
       continue;
     }
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      openBrainSkillDialog(row, mode);
+    });
     const actions = document.createElement("div");
     actions.className = "row brain-skill-actions";
     if (mode === "install") {
-      const install = document.createElement("button");
-      install.type = "button";
-      install.className = "primary";
+      const install = skillActionButton("primary", "install", false);
       install.textContent = "Install";
       install.setAttribute("aria-label", "Install " + title.textContent);
       install.addEventListener("click", () => {
@@ -14388,29 +14524,125 @@ function paintBrainSkillList(root, rows, empty, mode) {
       });
       actions.appendChild(install);
     } else {
-      const run = document.createElement("button");
-      run.type = "button";
-      run.className = "primary";
+      const run = skillActionButton("primary", "run", brainSkillBusy);
       run.textContent = "Run";
-      run.disabled = brainSkillBusy;
       run.setAttribute("aria-label", "Run " + title.textContent);
       run.addEventListener("click", () => {
         runBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "ghost";
+      actions.appendChild(run);
+    }
+    const manage = skillActionButton("ghost", "manage", false);
+    manage.textContent = "Manage";
+    manage.setAttribute("aria-label", "Manage " + title.textContent);
+    manage.addEventListener("click", () => openBrainSkillDialog(row, mode));
+    actions.appendChild(manage);
+    card.appendChild(actions);
+    root.appendChild(card);
+  }
+}
+
+function findBrainSkill(skillId) {
+  const lists = brainSkillCache || {};
+  for (const [id] of brainSkillLists()) {
+    const row = skillRows(lists[id]).find((item) => skillIdOf(item) === skillId);
+    if (row) return { row, mode: id === "brain-library-skills" ? "install" : "run" };
+  }
+  return null;
+}
+
+function paintBrainSkillDialog(row, mode) {
+  const skillId = skillIdOf(row);
+  const name = (row && typeof row === "object" ? String(row.name || row.title || "").trim() : "") || skillLine(row) || "Skill";
+  const title = $("brain-skill-dialog-title");
+  if (title) title.textContent = name;
+  const detail = $("brain-skill-dialog-detail");
+  const description = row && typeof row === "object" ? String(row.description || "").trim() : "";
+  if (detail) {
+    detail.textContent = description;
+    detail.hidden = !description;
+  }
+  const modeLine = $("brain-skill-dialog-mode");
+  if (modeLine) modeLine.textContent = mode === "install" ? "This skill is in the library until you install it." : runModeLabel(row);
+  const scheduleTitle = $("brain-skill-dialog-schedule-title");
+  if (scheduleTitle) scheduleTitle.hidden = mode === "install";
+  const actions = $("brain-skill-dialog-actions");
+  if (actions) {
+    actions.replaceChildren();
+    if (mode === "install") {
+      const install = skillActionButton("primary", "install", false);
+      install.textContent = "Install";
+      install.setAttribute("aria-label", "Install " + name);
+      install.addEventListener("click", () => {
+        installBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+      });
+      actions.appendChild(install);
+    } else {
+      const run = skillActionButton("primary", "run", brainSkillBusy);
+      run.textContent = "Run";
+      run.setAttribute("aria-label", "Run " + name);
+      run.addEventListener("click", () => {
+        runBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+      });
+      const remove = skillActionButton("ghost", "remove", brainSkillBusy);
       remove.textContent = "Remove";
-      remove.disabled = brainSkillBusy;
-      remove.setAttribute("aria-label", "Remove " + title.textContent);
+      remove.setAttribute("aria-label", "Remove " + name);
       remove.addEventListener("click", () => {
         removeBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
       actions.append(run, remove);
     }
-    card.appendChild(actions);
-    if (mode !== "install") appendSkillSchedule(card, row);
-    root.appendChild(card);
+  }
+  const schedule = $("brain-skill-dialog-schedule");
+  if (schedule) {
+    schedule.replaceChildren();
+    if (mode !== "install" && skillId) appendSkillSchedule(schedule, row);
+  }
+}
+
+function openBrainSkillDialog(row, mode) {
+  const skillId = skillIdOf(row);
+  if (!skillId) return;
+  const switching = brainSkillDialogId !== skillId;
+  brainSkillDialogId = skillId;
+  paintBrainSkillDialog(row, mode);
+  if (switching) {
+    const result = $("brain-skill-dialog-result");
+    if (result) result.replaceChildren();
+    const status = $("brain-skill-dialog-status");
+    if (status) {
+      status.textContent = "";
+      status.classList.remove("error");
+    }
+  }
+  const dialog = $("brain-skill-dialog");
+  if (dialog && !dialog.open) openDialog("brain-skill-dialog");
+  const primary = dialog && dialog.querySelector("[data-skill-action='run'], [data-skill-action='install']");
+  if (primary) primary.focus();
+}
+
+function refreshBrainSkillDialog(force) {
+  const dialog = $("brain-skill-dialog");
+  if (!dialog || !dialog.open || !brainSkillDialogId) return;
+  const editing = scheduleEditorFocused();
+  if (!force && editing) return;
+  const lists = brainSkillCache || {};
+  const known = brainSkillLists().every(([id]) => Object.prototype.hasOwnProperty.call(lists, id));
+  const found = findBrainSkill(brainSkillDialogId);
+  if (!found) {
+    if (!known) return;
+    brainSkillDialogId = "";
+    closeDialog("brain-skill-dialog");
+    return;
+  }
+  const restore = dialog.contains(document.activeElement);
+  paintBrainSkillDialog(found.row, found.mode);
+  if (editing) {
+    const select = $("brain-skill-dialog-schedule") && $("brain-skill-dialog-schedule").querySelector("select");
+    if (select) select.focus();
+  } else if (restore) {
+    const primary = dialog.querySelector("[data-skill-action='run'], [data-skill-action='install']");
+    if (primary) primary.focus();
   }
 }
 
@@ -14426,6 +14658,7 @@ function paintBrainSkills(lists, errorText) {
     const mode = id === "brain-library-skills" ? "install" : "run";
     paintBrainSkillList($(id), skillRows(byId[id]), empty, mode);
   }
+  refreshBrainSkillDialog(false);
 }
 
 async function reviewDraft(draft) {
@@ -14542,6 +14775,9 @@ async function runBrainSkill(row) {
     const message = skillResultMessage(data);
     setSkillStatus(message.text, message.error);
     paintSkillBlocks($("brain-skill-result"), data);
+    if ($("brain-skill-dialog") && $("brain-skill-dialog").open && brainSkillDialogId === skillId) {
+      paintSkillBlocks($("brain-skill-dialog-result"), data);
+    }
     paintSkillBlocks($("agent-result"), data);
     if (data && Array.isArray(data.proposals)) paintProposals($("agent-proposals"), data.proposals);
     if ($("agent-panel") && !$("agent-panel").hidden) {
@@ -14562,6 +14798,7 @@ async function installBrainSkill(row) {
   await call("emailBrain:installSkill", { skillId });
   setSkillStatus("Installed " + (row.name || skillId) + ".", false);
   await Promise.all([loadBrainSkills(), loadStudio()]);
+  refreshBrainSkillDialog(true);
 }
 
 async function removeBrainSkill(row) {
@@ -14569,6 +14806,10 @@ async function removeBrainSkill(row) {
   if (!skillId) throw new Error("That skill has no id.");
   await call("emailBrain:removeSkill", { skillId });
   setSkillStatus("Removed " + (row.name || skillId) + ". It is in the library.", false);
+  if (brainSkillDialogId === skillId) {
+    brainSkillDialogId = "";
+    closeDialog("brain-skill-dialog");
+  }
   await Promise.all([loadBrainSkills(), loadStudio()]);
 }
 
@@ -16492,6 +16733,12 @@ function wire() {
   wireAgentTabs();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "quit-scheduled") {
+        event.preventDefault();
+        if (quitScheduledPrompt) replyQuitScheduled("stay");
+        else closeDialog("quit-scheduled");
+        return;
+      }
       if (dialog.id === "compose-close-review") return;
       if (dialog.id === "connect") {
         event.preventDefault();
@@ -16882,6 +17129,14 @@ function wire() {
     });
   });
   $("brain-close").addEventListener("click", closeBrain);
+  $("brain-open-compose-settings").addEventListener("click", () => {
+    openSettings();
+    revealSettingsFold("compose");
+  });
+  $("brain-skill-dialog-close").addEventListener("click", () => closeDialog("brain-skill-dialog"));
+  $("brain-skill-dialog").addEventListener("close", () => {
+    brainSkillDialogId = "";
+  });
   $("brain-category-cancel").addEventListener("click", () => {
     resetCategoryForm();
     paintCategories();
@@ -17059,6 +17314,8 @@ async function boot() {
   api.on("host:menuAction", onMenuAction);
   api.on("host:updatePrepareForInstall", prepareUpdateRestart);
   api.on("host:updateResume", resumeAfterUpdate);
+  api.on("app:confirmQuitScheduled", acceptQuitScheduled);
+  api.on("app:dismissQuitScheduled", dismissQuitScheduled);
   wire();
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
