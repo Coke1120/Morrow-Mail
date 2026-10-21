@@ -1557,6 +1557,60 @@ function setPageBusy(panel, on, label) {
   if (text) text.textContent = label || "Working…";
 }
 
+// Field-level errors: attach aria-invalid and aria-describedby to the control
+// so the message is tied to the field, not only to the shared status line.
+function insertFieldError(input, node) {
+  const label = input.closest && input.closest("label");
+  if (label && label.contains(input) && label.parentNode) {
+    label.parentNode.insertBefore(node, label.nextSibling);
+    return;
+  }
+  const fieldset = input.closest && input.closest("fieldset");
+  if (fieldset && fieldset.parentNode) {
+    fieldset.parentNode.insertBefore(node, fieldset.nextSibling);
+    return;
+  }
+  const field = input.closest && input.closest(".field");
+  if (field) {
+    const help = field.querySelector(".hint");
+    field.insertBefore(node, help || null);
+    return;
+  }
+  if (input.parentNode) input.parentNode.insertBefore(node, input.nextSibling);
+}
+
+function setFieldError(id, message) {
+  const input = $(id);
+  if (!input) return;
+  const errorId = id + "-error";
+  const existing = document.getElementById(errorId);
+  const describedBy = String(input.getAttribute("aria-describedby") || "")
+    .split(/\s+/)
+    .filter(value => value && value !== errorId);
+  if (!message) {
+    if (existing) existing.remove();
+    input.removeAttribute("aria-invalid");
+    if (describedBy.length) input.setAttribute("aria-describedby", describedBy.join(" "));
+    else input.removeAttribute("aria-describedby");
+    return;
+  }
+  let node = existing;
+  if (!node) {
+    node = document.createElement("p");
+    node.id = errorId;
+    node.className = "field-error";
+    insertFieldError(input, node);
+  }
+  node.textContent = message;
+  input.setAttribute("aria-invalid", "true");
+  describedBy.push(errorId);
+  input.setAttribute("aria-describedby", describedBy.join(" "));
+}
+
+function clearFieldErrors(ids) {
+  for (const id of ids) setFieldError(id, "");
+}
+
 let agentLoadOverlay = false;
 let agentLoaded = false;
 
@@ -9740,6 +9794,36 @@ async function saveScheduleDelay() {
 
 const settingsFoldPending = new Map();
 const settingsFoldLoaded = new Set();
+const settingsFoldLoadingLabels = {
+  prefs: "Loading settings…",
+  mail: "Loading mail and sync settings…",
+  mailbox: "Loading mailbox tools…",
+  ai: "Loading AI settings…",
+  ooo: "Checking Out of Office status…",
+  bot: "Loading Bot access…",
+};
+function setSettingsFoldLoading(fold, label) {
+  if (!fold) return;
+  let loading = fold.querySelector(":scope > .fold-loading");
+  if (!label) {
+    if (loading) loading.remove();
+    return;
+  }
+  if (!loading) {
+    loading = document.createElement("div");
+    loading.className = "fold-loading";
+    loading.setAttribute("role", "status");
+    const spin = document.createElement("span");
+    spin.className = "fold-loading-spin";
+    spin.setAttribute("aria-hidden", "true");
+    const text = document.createElement("span");
+    text.className = "fold-loading-label";
+    loading.append(spin, text);
+    fold.insertBefore(loading, fold.firstChild);
+  }
+  const text = loading.querySelector(".fold-loading-label");
+  if (text) text.textContent = label;
+}
 function settingsFoldKey(name) {
   return name + ":" + (["mailbox", "ooo"].includes(name) ? settingsAccount()?.id || "" : "");
 }
@@ -9755,6 +9839,7 @@ function loadSettingsFold(name) {
     if (!$("settings").open || !fold.classList.contains("is-open") || key !== settingsFoldKey(name)) return;
     panel.inert = true;
     panel.setAttribute("aria-busy", "true");
+    setSettingsFoldLoading(fold, settingsFoldLoadingLabels[name] || "Loading…");
     if (name === "prefs" || name === "mail") await loadSettings();
     else if (name === "ai") { await loadSettings(); if (!aiDirty()) await loadAiSettings(); }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); }
@@ -9769,13 +9854,36 @@ function loadSettingsFold(name) {
     else { $("settings-status").textContent = message; $("settings-status").classList.add("error"); }
   }).finally(() => {
     settingsFoldPending.delete(key);
-    if (key === settingsFoldKey(name)) {
+    const pendingForFold = [...settingsFoldPending.keys()].some(other => other.startsWith(name + ":"));
+    if (!pendingForFold) {
       panel.inert = false;
       panel.removeAttribute("aria-busy");
+      setSettingsFoldLoading(fold, "");
     }
   });
   settingsFoldPending.set(key, pending);
   return pending;
+}
+
+const OOO_FIELD_IDS = ["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience"];
+
+function vacationFieldForError(message) {
+  const text = String(message || "");
+  if (text === "Choose Disabled, Always, or Scheduled.") return "ooo-mode";
+  if (text === "The subject must fit on one line.") return "ooo-subject";
+  if (text === "Enter a reply message." || text === "The reply must be plain text.") return "ooo-message";
+  if (text === "Enter the external reply.") return "ooo-external";
+  if (text === "Choose a valid reply audience." || text === "IMAP vacation replies go to every sender.") return "ooo-audience";
+  if (text === "The end must be after the start." || text === "Choose an end time in the future.") return "ooo-end";
+  if (text === "Outlook needs a start and an end." || text === "Enter a start or an end.") {
+    return String(($("ooo-start") && $("ooo-start").value) || "").trim() ? "ooo-end" : "ooo-start";
+  }
+  if (text === "Shorten the automatic reply.") {
+    if (String(($("ooo-subject") && $("ooo-subject").value) || "").length > 200) return "ooo-subject";
+    if (String(($("ooo-external") && $("ooo-external").value) || "").length > 10000) return "ooo-external";
+    return "ooo-message";
+  }
+  return "";
 }
 
 function setOooStatus(text, isError) {
@@ -9783,6 +9891,11 @@ function setOooStatus(text, isError) {
   if (!status) return;
   status.textContent = text || "";
   status.classList.toggle("error", !!isError && !!text);
+  clearFieldErrors(OOO_FIELD_IDS);
+  if (isError && text) {
+    const field = vacationFieldForError(text);
+    if (field) setFieldError(field, text);
+  }
 }
 
 function vacationLocalValue(value) {
@@ -9962,10 +10075,25 @@ async function grantVacationAccess() {
   setOooStatus("Out of Office settings permission saved.", false);
 }
 
+const AI_FIELD_IDS = ["ai-base", "ai-model", "ai-key"];
+
+function aiFieldForError(message) {
+  const text = String(message || "");
+  if (/api key|unconfigured|unauthori[sz]ed|\b401\b|\b403\b|bearer/i.test(text)) return "ai-key";
+  if (/base url|endpoint|\burl\b|network|fetch failed|enotfound|econnrefused/i.test(text)) return "ai-base";
+  if (/\bmodel\b/i.test(text)) return "ai-model";
+  return "";
+}
+
 function setAiStatus(text, isError) {
   const status = $("ai-status");
   status.textContent = text || "";
   status.classList.toggle("error", !!isError && !!text);
+  clearFieldErrors(AI_FIELD_IDS);
+  if (isError && text) {
+    const field = aiFieldForError(text);
+    if (field) setFieldError(field, text);
+  }
 }
 
 function aiKeyPlaceholder(cfg) {
@@ -13769,11 +13897,26 @@ async function loadOauthStatus() {
   paintConnectPending();
 }
 
+const BOT_FIELD_IDS = ["bot-label", "bot-accounts", "bot-serve-host"];
+
+function botFieldForError(message) {
+  const text = String(message || "");
+  if (/name the client|client name|1 to 60 characters/i.test(text)) return "bot-label";
+  if (/choose a connected account|connect an account|at least one mailbox/i.test(text)) return "bot-accounts";
+  if (/serve host|save an address first|hostname and optional port|address is too long/i.test(text)) return "bot-serve-host";
+  return "";
+}
+
 function setBotStatus(text, isError) {
   const status = $("bot-status");
   if (!status) return;
   status.textContent = text || "";
   status.classList.toggle("error", !!isError && !!text);
+  clearFieldErrors(BOT_FIELD_IDS);
+  if (isError && text) {
+    const field = botFieldForError(text);
+    if (field) setFieldError(field, text);
+  }
 }
 
 function clearBotSecret() {
@@ -14760,6 +14903,16 @@ function wire() {
     confirmCopy = null;
     pending({ ok: false, name: "" });
   });
+  for (const id of AI_FIELD_IDS) {
+    $(id).addEventListener("input", () => setFieldError(id, ""));
+  }
+  for (const id of OOO_FIELD_IDS) {
+    $(id).addEventListener("input", () => setFieldError(id, ""));
+    $(id).addEventListener("change", () => setFieldError(id, ""));
+  }
+  $("bot-label").addEventListener("input", () => setFieldError("bot-label", ""));
+  $("bot-serve-host").addEventListener("input", () => setFieldError("bot-serve-host", ""));
+  $("bot-accounts").addEventListener("change", () => setFieldError("bot-accounts", ""));
   $("ai-save").addEventListener("click", () => {
     saveAiSettings().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
   });
