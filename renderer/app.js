@@ -4,6 +4,7 @@ const state = {
   accounts: [],
   accountId: null,
   allInbox: false,
+  allInboxUnreadOnly: false,
   settingsAccountId: null,
   reconnectAccountId: null,
   folderId: null,
@@ -239,6 +240,51 @@ function allInboxUnread(accounts) {
   }, 0);
 }
 
+function allAccountMailLabel() {
+  return "All Account Mail";
+}
+
+function allAccountMailTitle(unreadOnly) {
+  return unreadOnly ? "All Account Mail · Unread" : "All Account Mail";
+}
+
+function allAccountMailSyncCopy() {
+  return "All Account Mail shows mail already downloaded. Open an Inbox to sync that account.";
+}
+
+function allAccountMailEmptyCopy(unreadOnly) {
+  if (unreadOnly) return "No unread messages in All Account Mail.";
+  return "No downloaded messages in All Account Mail. Open an account's Inbox and use Sync to download recent mail.";
+}
+
+function allAccountMailMatches(query) {
+  const q = String(query || "").trim().toLowerCase();
+  return !q || "all account mail".includes(q);
+}
+
+function allAccountUnreadChip(count, pressed) {
+  const n = Number(count);
+  const unread = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  const on = pressed === true;
+  const action = on
+    ? "Showing unread messages in All Account Mail. Show every message."
+    : "Show only unread messages in All Account Mail.";
+  return {
+    text: unread ? "Unread " + unread : "Unread",
+    pressed: on,
+    label: (unread ? "Unread, " + unread + ". " : "Unread. ") + action,
+  };
+}
+
+function allAccountMailChoice(current, control) {
+  const view = current && typeof current === "object" ? current : {};
+  if (control === "unread") {
+    if (view.allInbox === true && view.unreadOnly === true) return { allInbox: true, unreadOnly: false };
+    return { allInbox: true, unreadOnly: true };
+  }
+  return { allInbox: true, unreadOnly: false };
+}
+
 function mailListRequest(view) {
   const source = view || {};
   const limit = source.limit || 200;
@@ -249,7 +295,9 @@ function mailListRequest(view) {
     return { channel: "mail:searchLocal", params };
   }
   if (source.allInbox) {
-    return { channel: "mail:listFromCache", params: { folderKey: "inbox", limit, offset } };
+    const params = { folderKey: "inbox", limit, offset };
+    if (source.unreadOnly) params.filterUnread = true;
+    return { channel: "mail:listFromCache", params };
   }
   return {
     channel: source.fromNetwork ? "mail:listFromNetwork" : "mail:listFromCache",
@@ -3178,27 +3226,55 @@ function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
   return nest;
 }
 
-function allInboxButton() {
+function applyAllAccountMailChrome(root) {
+  if (!root) return;
+  const current = !!state.allInbox;
+  root.classList.toggle("is-current", current);
+  const all = root.querySelector("button.all-inbox");
+  if (all) {
+    if (current) all.setAttribute("aria-current", "true");
+    else all.removeAttribute("aria-current");
+    all.setAttribute("aria-label", allAccountMailLabel());
+  }
+  const chip = root.querySelector("button.all-account-unread");
+  if (!chip) return;
+  const model = allAccountUnreadChip(allInboxUnread(state.accounts), current && !!state.allInboxUnreadOnly);
+  chip.textContent = model.text;
+  chip.title = model.label;
+  chip.setAttribute("aria-label", model.label);
+  chip.setAttribute("aria-pressed", model.pressed ? "true" : "false");
+}
+
+function allAccountMailRow() {
+  const row = document.createElement("div");
+  row.className = "all-account-mail";
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", allAccountMailLabel());
   const button = document.createElement("button");
   button.type = "button";
   button.className = "account all-inbox";
+  button.setAttribute("data-testid", "all-account-mail");
   const name = document.createElement("span");
   name.className = "name";
-  name.textContent = "All Inbox";
+  name.textContent = allAccountMailLabel();
   button.appendChild(name);
-  const unread = allInboxUnread(state.accounts);
-  if (unread) {
-    const count = document.createElement("span");
-    count.className = "count";
-    count.textContent = String(unread);
-    button.appendChild(count);
-  }
-  button.setAttribute("aria-label", unread ? `All Inbox, ${unread} unread` : "All Inbox");
-  if (state.allInbox) button.setAttribute("aria-current", "true");
   button.addEventListener("click", () => {
-    selectAllInbox().catch((error) => showStatus(error.message, true));
+    const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "mail");
+    selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
-  return button;
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "count all-account-unread";
+  chip.setAttribute("data-testid", "all-account-unread");
+  chip.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "unread");
+    selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
+  });
+  row.append(button, chip);
+  applyAllAccountMailChrome(row);
+  return row;
 }
 
 function folderFilterQuery() {
@@ -3311,11 +3387,7 @@ function renderAccounts() {
     folderQuery,
   ]);
   if (key === folderRenderKey) {
-    const all = nav.querySelector("button.all-inbox");
-    if (all) {
-      if (state.allInbox) all.setAttribute("aria-current", "true");
-      else all.removeAttribute("aria-current");
-    }
+    applyAllAccountMailChrome(nav.querySelector(".all-account-mail"));
     for (const button of nav.querySelectorAll("button.folder")) {
       const current = !state.allInbox && button.dataset.accountId === state.accountId && button.dataset.folderId === state.folderId;
       if (current) button.setAttribute("aria-current", "true");
@@ -3332,9 +3404,9 @@ function renderAccounts() {
     nav.append(empty, connectButton());
     return;
   }
-  const showAllInbox = !folderQuery || "all inbox".includes(folderQuery);
-  let shownFolder = showAllInbox;
-  if (showAllInbox) nav.appendChild(allInboxButton());
+  const showAllAccountMail = allAccountMailMatches(folderQuery);
+  let shownFolder = showAllAccountMail;
+  if (showAllAccountMail) nav.appendChild(allAccountMailRow());
   for (const account of state.accounts) {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
@@ -4374,7 +4446,7 @@ function paintSyncControl() {
   const word = mail ? syncButtonLabel(sync) : "Refresh";
   const text = !mail ? "Refresh this page" : !state.accounts.length ? "No account connected"
     : (state.allInbox && !(sync && ["syncing", "error", "paused"].includes(sync.state)))
-      ? "All Inbox shows mail already downloaded. Open an Inbox to sync that account."
+      ? allAccountMailSyncCopy()
       : (syncDetail(sync) || "Not synced yet");
   if (label) label.textContent = word;
   if (button) {
@@ -4682,7 +4754,9 @@ function messageRow(email) {
 
 function shownEmails() {
   const input = $("list-filter");
-  const folder = state.allInbox ? null : selectedFolderNode();
+  const folder = state.allInbox
+    ? (state.allInboxUnreadOnly ? { view: { unread: true } } : null)
+    : selectedFolderNode();
   return visibleList(state.emails, input ? input.value : "", folder);
 }
 
@@ -4866,7 +4940,7 @@ function renderList() {
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = $("list-title");
   if (title) {
-    title.textContent = state.query ? `Search: ${state.query}` : (state.allInbox ? "All Inbox" : (chipLabel(folder) || "Messages"));
+    title.textContent = state.query ? `Search: ${state.query}` : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly) : (chipLabel(folder) || "Messages"));
   }
   renderChips(state.allInbox ? null : account);
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && state.prefs.chips && chipFolders(account).some(item => item.id === state.folderId));
@@ -4886,8 +4960,8 @@ function renderList() {
       empty.textContent = "Connect a mailbox to download messages here.";
     } else if (state.query && !state.emails.length) {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
-    } else if (state.allInbox && !state.emails.length && !listQuery) {
-      empty.textContent = "No downloaded messages in All Inbox. Open an account's Inbox and use Sync to download recent mail.";
+    } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || !state.emails.length)) {
+      empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly);
     } else if (!listQuery && folder && folder.emptyCopy) {
       empty.textContent = folder.emptyCopy;
     } else if (!state.emails.length) {
@@ -4940,7 +5014,7 @@ function renderList() {
       previous = row;
     }
   }
-  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset].join("\0");
+  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.allInboxUnreadOnly ? "unread" : ""].join("\0");
   if (motionKey !== listMotionKey) {
     listMotionKey = motionKey;
     const motion = motionApi();
@@ -6243,9 +6317,15 @@ async function loadSnoozed() {
 }
 
 function rememberSelection(preferredId) {
-  if (!state.accounts.length) state.allInbox = false;
+  if (!state.accounts.length) {
+    state.allInbox = false;
+    state.allInboxUnreadOnly = false;
+  }
   if (preferredId && state.accounts.some((account) => account.id === preferredId)) {
-    if (state.accountId !== preferredId) state.allInbox = false;
+    if (state.accountId !== preferredId) {
+      state.allInbox = false;
+      state.allInboxUnreadOnly = false;
+    }
     state.accountId = preferredId;
   }
   if (!state.accounts.some((account) => account.id === state.accountId)) {
@@ -6294,7 +6374,7 @@ async function changeListPage(direction) {
 
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
-  const scope = JSON.stringify([state.allInbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
+  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.accountId, state.folderId, state.query, state.searchAccountId]);
   if (state.listScope !== scope) {
     state.listScope = scope;
     state.listOffset = 0;
@@ -6319,6 +6399,7 @@ async function loadList(fromNetwork, requestedOffset) {
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
     const request = mailListRequest({
       allInbox: state.allInbox,
+      unreadOnly: state.allInbox && state.allInboxUnreadOnly,
       fromNetwork: !state.allInbox && fromNetwork && isLive(account),
       accountId: account && account.id,
       folderId: state.folderId,
@@ -6332,6 +6413,7 @@ async function loadList(fromNetwork, requestedOffset) {
       offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
       const again = mailListRequest({
         allInbox: state.allInbox,
+        unreadOnly: state.allInbox && state.allInboxUnreadOnly,
         accountId: account && account.id,
         folderId: state.folderId,
         limit: LIST_PAGE_SIZE,
@@ -7909,23 +7991,31 @@ function wireOrganize() {
   }, true);
 }
 
-async function selectAllInbox() {
+async function selectAllInbox(unreadOnly) {
   if (!state.accounts.length) return;
-  invalidateReaderOpen();
+  const nextUnread = unreadOnly === true;
+  const staying = state.allInbox && !state.query;
+  if (!staying) {
+    invalidateReaderOpen();
+    state.email = null;
+    state.thread = [];
+    state.selectedIds = [];
+    state.selectionAnchor = "";
+    state.query = "";
+    $("search-query").value = "";
+    const listFilter = $("list-filter");
+    if (listFilter) listFilter.value = "";
+  } else if (state.allInboxUnreadOnly !== nextUnread) {
+    state.selectedIds = [];
+    state.selectionAnchor = "";
+  }
   state.allInbox = true;
+  state.allInboxUnreadOnly = nextUnread;
   state.listScope = "";
-  state.query = "";
-  $("search-query").value = "";
-  const listFilter = $("list-filter");
-  if (listFilter) listFilter.value = "";
-  state.email = null;
-  state.thread = [];
-  state.selectedIds = [];
-  state.selectionAnchor = "";
   renderAccounts();
   if (state.view === "folders") paintProviderPage();
   syncRemove();
-  renderReader(false);
+  if (!staying) renderReader(false);
   if (!undoOpIds && !sendTimer) showStatus("");
   await loadList();
 }
@@ -7934,6 +8024,7 @@ async function selectFolder(accountId, folderId) {
   invalidateReaderOpen();
   const previous = state.accountId;
   state.allInbox = false;
+  state.allInboxUnreadOnly = false;
   state.listScope = "";
   state.accountId = accountId;
   state.folderId = folderId;
@@ -9914,7 +10005,7 @@ async function refresh() {
   }
   if (state.allInbox) {
     await loadList();
-    showStatus("All Inbox shows mail already downloaded. Open an Inbox to sync that account.");
+    showStatus(allAccountMailSyncCopy());
     return;
   }
   const account = selectedAccount();

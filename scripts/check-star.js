@@ -294,6 +294,9 @@ async function run() {
     const combined = await engine.answer("mail:listFromCache", [{ folderKey: "inbox", limit: 20 }]);
     assert.strictEqual(combined.success, true);
     assert.deepStrictEqual(combined.data.emails.map((row) => row.id), ["other-inbox", "inbox-unread", "inbox-plain"]);
+    const unreadCombined = engine.answer("mail:listFromCache", [{ folderKey: "inbox", filterUnread: true, limit: 20 }]);
+    assert.strictEqual(unreadCombined.success, true);
+    assert.deepStrictEqual(unreadCombined.data.emails.map((row) => row.id), ["other-inbox", "inbox-unread"]);
     assert.ok(combined.data.emails.every((row) => row.accountId === "other-acct" || row.accountId === "star-acct"));
     const scoped = engine.answer("mail:listFromCache", [{ accountId: "star-acct", folderKey: "inbox", limit: 20 }]);
     assert.deepStrictEqual(scoped.data.emails.map((row) => row.id), ["inbox-unread", "inbox-plain"]);

@@ -201,6 +201,53 @@ assert.deepStrictEqual(
   { channel: "mail:listFromNetwork", params: { accountId: "beta", folderId: "inbox", limit: 200, offset: 40 } },
 );
 assert.strictEqual(mailListRequest({ query: "rent", searchAccountId: "", allInbox: true }).channel, "mail:searchLocal");
+assert.deepStrictEqual(
+  mailListRequest({ allInbox: true, unreadOnly: true, fromNetwork: true, limit: 200, offset: 200 }),
+  { channel: "mail:listFromCache", params: { folderKey: "inbox", filterUnread: true, limit: 200, offset: 200 } },
+);
+assert.strictEqual(mailListRequest({ allInbox: true, unreadOnly: false, limit: 200, offset: 0 }).params.filterUnread, undefined);
+assert.strictEqual(mailListRequest({ allInbox: false, unreadOnly: true, accountId: "a", folderId: "INBOX", limit: 200, offset: 0 }).params.filterUnread, undefined);
+const allAccountMailLabel = extractFunction(appJs, "allAccountMailLabel");
+const allAccountMailTitle = extractFunction(appJs, "allAccountMailTitle");
+const allAccountMailMatches = extractFunction(appJs, "allAccountMailMatches");
+const allAccountUnreadChip = extractFunction(appJs, "allAccountUnreadChip");
+const allAccountMailChoice = extractFunction(appJs, "allAccountMailChoice");
+const allAccountMailEmptyCopy = extractFunction(appJs, "allAccountMailEmptyCopy");
+const allAccountMailSyncCopy = extractFunction(appJs, "allAccountMailSyncCopy");
+assert.strictEqual(allAccountMailLabel(), "All Account Mail");
+assert.strictEqual(allAccountMailTitle(false), "All Account Mail");
+assert.strictEqual(allAccountMailTitle(true), "All Account Mail · Unread");
+assert.strictEqual(allAccountMailMatches(""), true);
+assert.strictEqual(allAccountMailMatches("  Account "), true);
+assert.strictEqual(allAccountMailMatches("inbox"), false);
+assert.strictEqual(allAccountMailMatches("unread"), false);
+assert.deepStrictEqual(allAccountUnreadChip(204, false), {
+  text: "Unread 204",
+  pressed: false,
+  label: "Unread, 204. Show only unread messages in All Account Mail.",
+});
+assert.deepStrictEqual(allAccountUnreadChip(0, true), {
+  text: "Unread",
+  pressed: true,
+  label: "Unread. Showing unread messages in All Account Mail. Show every message.",
+});
+assert.strictEqual(allAccountUnreadChip(-3, false).text, "Unread");
+assert.strictEqual(allAccountUnreadChip(1.9, false).text, "Unread 1");
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: false, unreadOnly: false }, "mail"), { allInbox: true, unreadOnly: false });
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: true }, "mail"), { allInbox: true, unreadOnly: false });
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: false, unreadOnly: false }, "unread"), { allInbox: true, unreadOnly: true });
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: false }, "unread"), { allInbox: true, unreadOnly: true });
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: true }, "unread"), { allInbox: true, unreadOnly: false });
+assert.deepStrictEqual(allAccountMailChoice(null, "unread"), { allInbox: true, unreadOnly: true });
+assert.strictEqual(allAccountMailEmptyCopy(false), "No downloaded messages in All Account Mail. Open an account's Inbox and use Sync to download recent mail.");
+assert.strictEqual(allAccountMailEmptyCopy(true), "No unread messages in All Account Mail.");
+assert.match(allAccountMailSyncCopy(), /All Account Mail shows mail already downloaded/);
+assert.ok(!appJs.includes("All Inbox"), "sidebar still says All Inbox");
+const allAccountRow = functionSource(appJs, "allAccountMailRow");
+assert.ok(allAccountRow.includes("all-account-unread") && allAccountRow.includes('data-testid", "all-account-unread"'), "All Account Mail is missing the unread chip");
+assert.ok(allAccountRow.includes('"unread"') && functionSource(appJs, "selectAllInbox").includes("allInboxUnreadOnly"), "unread chip does not toggle the unified filter");
+assert.ok(functionSource(appJs, "selectFolder").includes("allInboxUnreadOnly = false"), "leaving All Account Mail keeps the unread filter");
+assert.ok(functionSource(appJs, "loadList").includes("unreadOnly: state.allInbox && state.allInboxUnreadOnly"), "All Account Mail unread filter is not sent to the cache");
 assert.deepStrictEqual(mailListRequest({ query: "rent", searchAccountId: "a" }).params, { query: "rent", limit: 100, accountId: "a" });
 assert.strictEqual(preferredAccountId({ activeAccountId: "oauth-1", accountId: "other" }), "oauth-1");
 assert.strictEqual(preferredAccountId({ accountId: "other" }), "");
@@ -346,6 +393,7 @@ assert.ok(rowActionSrc.includes('setAttribute("aria-label", label)') && rowActio
 assert.ok(appJs.includes('className = "row-actions"') && appJs.includes("Mark unread"), "message rows have no hover actions");
 assert.ok(css.includes(".row-action svg"), "row actions are not icon buttons");
 assert.ok(html.includes('id="folder-filter"') && html.includes("Filter folders and labels"), "mailbox list has no folder filter");
+assert.ok(css.includes(".all-account-mail") && css.includes("button.all-account-unread") && css.includes("button.all-account-unread[aria-pressed=\"true\"]"), "All Account Mail unread chip styling missing");
 assert.ok(css.includes(".folder-filter") && css.includes(".folder-indent"), "folder filter or indent layout missing");
 assert.match(css, /#folders \{\s*flex: 1 1 auto;\s*min-width: 0;\s*overflow-x: hidden;\s*overflow-y: auto;/, "folder list still scrolls horizontally");
 const messageRowSrc = functionSource(appJs, "messageRow");
@@ -1141,6 +1189,11 @@ assert.ok(!functionSource(appJs, "filteredEmails").includes("mail:search"));
 assert.ok(!functionSource(appJs, "filteredEmails").includes("textBody"));
 const independentDoc = fs.readFileSync(path.join(root, "docs/INDEPENDENT_UI.md"), "utf8");
 const parityDoc = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
+assert.ok(independentDoc.includes("All Account Mail"));
+assert.ok(parityDoc.includes("All Account Mail"));
+assert.ok(independentDoc.includes("Unread chip"));
+assert.ok(parityDoc.includes("filters this view to unread Inbox messages"));
+assert.ok(!independentDoc.includes("All Inbox") && !parityDoc.includes("All Inbox"));
 assert.ok(independentDoc.includes("All removes the date bound"));
 assert.ok(independentDoc.includes("already downloaded"));
 assert.ok(independentDoc.includes("last 180 days"));
