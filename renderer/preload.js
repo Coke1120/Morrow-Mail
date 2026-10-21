@@ -180,6 +180,7 @@ const EVENTS = [
   "emailBrain:refreshState",
   "emailBrain:rebuildState",
   "emailBrain:scheduleFired",
+  "host:menuAction",
   "app:confirmQuitScheduled",
   "app:dismissQuitScheduled",
 ];

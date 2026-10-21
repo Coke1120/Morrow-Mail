@@ -281,6 +281,7 @@ html[data-nav="expanded"] .nav-toggle .chev-left { display: block; }
 .workspace[data-view="calendar"] .leading,
 .workspace[data-view="brain"] .leading,
 .workspace[data-view="folders"] .leading,
+.workspace[data-view="shortcuts"] .leading,
 .workspace[data-view="log"] .leading {
   flex-basis: auto;
   width: auto;
@@ -290,6 +291,7 @@ html[data-nav="expanded"] .nav-toggle .chev-left { display: block; }
 .workspace[data-view="calendar"] #search-form,
 .workspace[data-view="brain"] #search-form,
 .workspace[data-view="folders"] #search-form,
+.workspace[data-view="shortcuts"] #search-form,
 .workspace[data-view="log"] #search-form {
   display: none;
 }
@@ -600,6 +602,41 @@ button.icon-label svg { display: block; flex: none; }
 }
 
 button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
+
+#shortcuts-panel {
+  overflow: auto;
+  padding: 20px 24px 28px;
+}
+
+.shortcut-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-width: 760px;
+}
+
+.shortcut-group {
+  margin: 18px 0 0;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 16rem) minmax(0, 1fr);
+  gap: 8px 20px;
+  align-items: baseline;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.shortcut-keys { font-weight: 650; }
+
+.shortcut-action { min-width: 0; }
 
 #log-panel {
   display: flex;

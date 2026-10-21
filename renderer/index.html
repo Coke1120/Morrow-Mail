@@ -56,6 +56,20 @@
       </button>
       </div>
       <div class="rail-foot">
+      <button type="button" class="rail-btn nav-item" id="rail-shortcuts" aria-current="false" aria-label="Shortcuts" data-label="Shortcuts" title="Shortcuts">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
+          <path d="M6 8h.01"></path>
+          <path d="M10 8h.01"></path>
+          <path d="M14 8h.01"></path>
+          <path d="M18 8h.01"></path>
+          <path d="M8 12h.01"></path>
+          <path d="M12 12h.01"></path>
+          <path d="M16 12h.01"></path>
+          <path d="M7 16h10"></path>
+        </svg>
+        <span class="nav-label">Shortcuts</span>
+      </button>
       <button type="button" class="rail-btn nav-item" id="rail-log" aria-current="false" aria-label="Debug log" data-label="Debug log" title="Debug log">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -70,7 +84,7 @@
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg>
         <span class="nav-label">About &amp; updates</span>
       </button>
-      <button type="button" class="rail-btn nav-item" id="settings-open" aria-label="Settings" data-label="Settings" title="Settings">
+      <button type="button" class="rail-btn nav-item" id="settings-open" aria-label="Settings" data-label="Settings" title="Settings" aria-keyshortcuts="Control+, Meta+,">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3"></circle>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -83,7 +97,7 @@
     <header>
       <h1 class="sr">Morrow Mail</h1>
       <div class="leading">
-        <button type="button" class="primary" id="compose-open">
+        <button type="button" class="primary" id="compose-open" aria-keyshortcuts="Control+N Meta+N">
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
             <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25ZM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z" />
           </svg>
@@ -434,6 +448,16 @@
         </div>
       </section>
     </section>
+    <section id="shortcuts-panel" class="primary-space" hidden aria-label="Shortcuts">
+      <div class="space-head">
+        <div>
+          <p class="space-kicker">Help</p>
+          <h2>Shortcuts</h2>
+        </div>
+      </div>
+      <p class="hint" id="shortcuts-note"></p>
+      <ul id="shortcuts-list" class="shortcut-list"></ul>
+    </section>
     <section id="log-panel" class="primary-space" hidden aria-label="Debug log">
       <div class="space-head">
         <div>
@@ -691,9 +715,9 @@
         </div>
         <p id="compose-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
-          <button type="submit" class="primary" id="compose-send">Send</button>
+          <button type="submit" class="primary" id="compose-send" aria-keyshortcuts="Control+Enter Meta+Enter">Send</button>
           <button type="button" class="ghost" id="compose-send-now" hidden>Send now</button>
-          <button type="button" class="ghost" id="compose-save">Save draft</button>
+          <button type="button" class="ghost" id="compose-save" aria-keyshortcuts="Control+S Meta+S">Save draft</button>
           <button type="button" class="ghost" id="compose-close">Close</button>
         </div>
       </form>

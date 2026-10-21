@@ -468,6 +468,7 @@ app.whenReady().then(async () => {
   assert.equal(await run(`$('sync-detail').parentElement===$('refresh').parentElement`), true);
   await run(`currentFolderSync().updatedAt=1;paintSyncControl();`);
   assert.equal(await run(`$('sync-detail').hidden`), true);
+  assert.equal(await run(`$('rail-shortcuts').nextElementSibling.id`), 'rail-log');
   assert.equal(await run(`$('rail-log').nextElementSibling.id`), 'rail-about');
   await run(`$('rail-about').click()`);
   await waitFor(`!$('about-update-install').hidden`);
