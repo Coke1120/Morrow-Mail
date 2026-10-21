@@ -20,6 +20,7 @@ const inboxRules = require("./inbox-rules");
 const http = require("./provider-http");
 const providerApi = require("./provider-api");
 const idle = require("./idle");
+const syncRetry = require("../../shared/sync-retry");
 const debugLog = require("../debug-log");
 const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
@@ -388,6 +389,8 @@ let syncState = {
   lastSuccessAt: null,
   lastError: "",
   lastErrorAt: null,
+  retrying: false,
+  retryAt: null,
 };
 
 function syncLabels(extra) {
@@ -448,6 +451,8 @@ function emitSync(state, extra) {
     lastSuccessAt: state === "done" && place.accountId && place.folderId ? now : (prev.lastSuccessAt || null),
     lastError: state === "error" ? message : (prev.lastError || ""),
     lastErrorAt: state === "error" ? now : (prev.lastErrorAt || null),
+    retrying: state === "error" && !!(extra && extra.retrying),
+    retryAt: state === "error" && extra && extra.retryAt ? extra.retryAt : null,
   };
   syncScopes.set(scopeKey, syncState);
   debugLog.note("sync", [state, phase, place.accountLabel, place.folderLabel, message].filter(Boolean).join(" · "));
@@ -481,7 +486,7 @@ function publicSync(params) {
   if (!accountId || !folderId) return { ...syncState };
   const saved = syncScopes.get(JSON.stringify([accountId, folderId]));
   const gate = syncGates.get(accountId);
-  if (gate && gate.until > Date.now()) return { ...(saved || {}), ...syncLabels(params), state: "paused", message: "Paused by the provider", retryAt: gate.until };
+  if (gate && gate.until > Date.now()) return { ...(saved || {}), ...syncLabels(params), state: "paused", message: "Paused by the provider", retryAt: gate.until, retrying: false };
   if (saved) return { ...saved };
   const folder = db.folderByPath(accountId, folderId);
   const lastSuccessAt = folder && windowOpen(folder) ? folder.synced_at : null;
@@ -553,6 +558,67 @@ function noteStorm(accountId) {
 function clearStrikes(accountId) {
   const row = syncGates.get(accountId);
   if (row) row.strikes = 0;
+}
+
+function explainSyncError(account, error, secret) {
+  let hidden = secret || "";
+  if (!hidden && account && account.id) {
+    try { hidden = secrets.getPassword(account.id) || ""; } catch { hidden = ""; }
+  }
+  return remote.explain(error, hidden);
+}
+
+// One schedule per failure. The folder catch sets syncReported before rethrowing
+// so an outer catch does not consume the next delay. The mark stays on that
+// throw only as a signal; a later attempt may reuse the same Error object.
+function planSyncFailure(account, error, secret) {
+  if (!account || !account.id) return { kind: "none", message: remote.explain(error) };
+  if (http.isRateLimit(error)) return { kind: "rate", message: "Paused for rate limit" };
+  const message = explainSyncError(account, error, secret);
+  if (account.auth_error || syncRetry.isStickyAuthSyncError(message, error)) {
+    syncRetryScheduler.clear(account.id);
+    if (!account.auth_error) db.setAuthError(account.id, message);
+    return { kind: "auth", message: account.auth_error || message };
+  }
+  const scheduled = syncRetryScheduler.noteFailure(account.id, message, { stickyAuth: false });
+  return {
+    kind: "error",
+    message,
+    retrying: scheduled.retry === true,
+    retryAt: scheduled.retryAt,
+    exhausted: scheduled.exhausted === true,
+  };
+}
+
+function reportSyncFailure(account, error, extra) {
+  const plan = planSyncFailure(account, error, extra && extra.secret);
+  if (plan.kind === "rate") {
+    if (account && account.id) {
+      noteRateLimit(account.id, error);
+      syncRetryScheduler.clear(account.id);
+    }
+    return plan;
+  }
+  if (plan.kind !== "error") {
+    if (plan.kind === "auth" && extra && extra.emitAuth && account && account.id && syncState.state !== "paused") {
+      emitSync("error", {
+        accountId: account.id,
+        folderId: extra.folderId,
+        message: plan.message,
+        retrying: false,
+      });
+    }
+    return plan;
+  }
+  if (!account || !account.id || syncState.state === "paused") return plan;
+  emitSync("error", {
+    accountId: account.id,
+    folderId: extra && extra.folderId,
+    message: plan.message,
+    retrying: plan.retrying,
+    retryAt: plan.retryAt,
+  });
+  return plan;
 }
 
 function localInboxRules(account) {
@@ -724,11 +790,8 @@ async function syncFolderPolicy(client, account, folderPath) {
     if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
   } catch (error) {
-    if (http.isRateLimit(error)) {
-      noteRateLimit(account.id, error);
-      return { paused: true, bootstrapped: false };
-    }
-    emitSync("error", { accountId: account.id, folderId: folderPath, message: remote.explain(error) });
+    const plan = reportSyncFailure(account, error, { folderId: folderPath, emitAuth: true });
+    if (plan.kind === "rate") return { paused: true, bootstrapped: false };
     emitFolderSync(account.id, folderPath, false);
     if (error && typeof error === "object") error.syncReported = true;
     throw error;
@@ -810,7 +873,10 @@ async function syncAccountAdmitted(account, options) {
       }
     });
     finishSync(jobs, paused, allDone, account.id);
-    if (!paused) db.clearAuthError(account.id);
+    if (!paused) {
+      db.clearAuthError(account.id);
+      syncRetryScheduler.noteSuccess(account.id);
+    }
   });
 }
 
@@ -832,16 +898,17 @@ async function syncAllAdmitted(options) {
       idle.IDLE_SAFETY_POLL_MS,
     )) continue;
     if (pushed) idleSafetyAt.set(account.id, Date.now());
+    // A sticky sign-in failure waits for reconnect. The 45s poll must not keep
+    // opening the mailbox or refreshing a rejected token.
+    if (account.auth_error) {
+      syncRetryScheduler.clear(account.id);
+      continue;
+    }
     try {
       await syncAccount(account, scope);
     } catch (error) {
-      if (http.isRateLimit(error)) {
-        noteRateLimit(account.id, error);
-        continue;
-      }
-      const message = remote.explain(error, secrets.getPassword(account.id));
-      if (/password|keychain|rejected the password/i.test(message)) db.setAuthError(account.id, message);
-      else if (syncState.state !== "paused") emitSync("error", { accountId: account.id, message });
+      if (error && error.syncReported) continue;
+      reportSyncFailure(account, error);
     }
   }
   emitAccounts();
@@ -850,6 +917,10 @@ async function syncAllAdmitted(options) {
 let pollTimer = null;
 let scheduleTimer = null;
 let syncing = false;
+const syncRetryScheduler = syncRetry.createRetryScheduler({
+  delays: syncRetry.SYNC_RETRY_DELAYS_MS,
+  onRetry: (accountId) => runBackgroundRetry(accountId),
+});
 let pumping = false;
 let oauthGeneration = 0;
 const oauthCommitted = new Set();
@@ -877,9 +948,7 @@ function ensureIdle() {
         return await syncFolderPath(row, folderPath);
       } catch (error) {
         if (http.isRateLimit(error)) throw error;
-        if (!error || !error.syncReported) {
-          emitSync("error", { accountId: row.id, folderId: folderPath, message: remote.explain(error) });
-        }
+        if (!error || !error.syncReported) reportSyncFailure(row, error, { folderId: folderPath, emitAuth: true });
         return null;
       }
     },
@@ -958,6 +1027,32 @@ function cancelOAuth() {
   return ok({ canceled: true });
 }
 
+function runBackgroundRetry(accountId) {
+  if (!ready || !accountId) return;
+  const account = db.accountById(accountId);
+  if (!account || account.auth_error) {
+    syncRetryScheduler.clear(accountId);
+    return;
+  }
+  if (!gateOpen(accountId)) {
+    const gate = syncGates.get(accountId);
+    const wait = Math.max(1000, (gate && gate.until ? gate.until : Date.now() + 1000) - Date.now());
+    syncRetryScheduler.hold(accountId, wait);
+    return;
+  }
+  if (syncing) {
+    syncRetryScheduler.hold(accountId, 1000);
+    return;
+  }
+  syncing = true;
+  syncAccount(account, { background: true }).catch((error) => {
+    if (!error || !error.syncReported) reportSyncFailure(account, error);
+  }).finally(() => {
+    syncing = false;
+    try { emitAccounts(); } catch { /* the window may already be gone */ }
+  });
+}
+
 function startBackgroundSync() {
   if (!ready) return;
   const tick = () => {
@@ -987,12 +1082,10 @@ function finishOAuthPage(signed, okFlag, message) {
 }
 
 function noteOAuthSyncFailure(id, error, secret) {
-  if (http.isRateLimit(error)) {
-    noteRateLimit(id, error);
-    return;
-  }
-  const message = remote.explain(error, secret);
-  if (/password|keychain|rejected/i.test(message)) db.setAuthError(id, message);
+  if (error && error.syncReported) return;
+  const account = db.accountById(id);
+  if (!account) return;
+  reportSyncFailure(account, error, { secret });
 }
 
 async function settleOAuthMailbox(id) {
@@ -1138,6 +1231,7 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
       });
     }
     oauthCommitted.add(id);
+    syncRetryScheduler.clear(id);
   } catch (error) {
     let restored = true;
     for (const key of written.reverse()) {
@@ -1235,6 +1329,7 @@ async function connectAccount(params) {
       smtpPort: draft.smtp_port,
       smtpTls: draft.smtp_tls === 1,
     });
+    syncRetryScheduler.clear(id);
   } else {
     db.insertAccount({
       id,
@@ -1266,7 +1361,12 @@ async function connectAccount(params) {
       await syncFolderPath(account, inbox.path);
     } catch (error) {
       if (http.isRateLimit(error)) noteRateLimit(id, error);
-      else db.setAuthError(id, remote.explain(error, password));
+      else {
+        const message = remote.explain(error, password);
+        db.setAuthError(id, message);
+        syncRetryScheduler.clear(id);
+        emitSync("error", { accountId: id, message, retrying: false });
+      }
     }
   }
   emitAccounts();
@@ -1275,7 +1375,8 @@ async function connectAccount(params) {
     const row = db.accountById(id);
     if (!row) return;
     syncAccount(row, { background: true }).then(() => emitAccounts()).catch((error) => {
-      if (http.isRateLimit(error)) noteRateLimit(id, error);
+      if (!error || !error.syncReported) reportSyncFailure(row, error);
+      emitAccounts();
     });
   }, 200);
   const view = accountView(db.accountById(id), 0);
@@ -1296,6 +1397,7 @@ async function removeAccount(params) {
   }
   idleSafetyAt.delete(id);
   idleReported.delete(id);
+  syncRetryScheduler.clear(id);
   db.removeAccount(id);
   emitAccounts();
   return ok(true);
@@ -2166,7 +2268,11 @@ function answer(channel, args) {
   }
   if (channel === "mail:removeAccount") return removeAccount(params || {});
   if (channel === "mail:clearAuthFailures") {
-    if (ready) db.clearAuthError(params && params.accountId);
+    if (ready) {
+      db.clearAuthError(params && params.accountId);
+      if (params && params.accountId) syncRetryScheduler.clear(String(params.accountId));
+      else syncRetryScheduler.stop();
+    }
     return ok(true);
   }
   if (channel === "mail:cancelOAuth") return cancelOAuth();
@@ -2238,6 +2344,8 @@ function answer(channel, args) {
         }
         const account = query.accountId ? db.accountById(query.accountId) : null;
         if (account && query.folderId) noteActive(account.id, query.folderId);
+        // A manual Sync starts a fresh sequence. The in-flight read is the attempt.
+        if (account) syncRetryScheduler.clear(account.id);
         try {
           if (account && query.folderId) {
             await syncFolderPath(account, query.folderId);
@@ -2245,8 +2353,10 @@ function answer(channel, args) {
             await syncAccount(account, { onlyInbox: true });
           }
         } catch (error) {
-          if (http.isRateLimit(error) && account) noteRateLimit(account.id, error);
-          else if (db.countMessages(queryFrom(query)) === 0) return fail("sync", remote.explain(error));
+          if (!(error && error.syncReported) && account) {
+            reportSyncFailure(account, error, { folderId: query.folderId, emitAuth: true });
+          }
+          if (!http.isRateLimit(error) && db.countMessages(queryFrom(query)) === 0) return fail("sync", remote.explain(error));
         }
         emitAccounts();
         return ok({ ...listPayload(query), sync: publicSync(query) });
@@ -2760,6 +2870,8 @@ module.exports = {
     rateLimitMs: RATE_LIMIT_MS,
     stormMs: STORM_MS,
     pollMs: POLL_MS,
+    syncRetryDelaysMs: syncRetry.SYNC_RETRY_DELAYS_MS.slice(),
+    vacationRetryDelaysMs: syncRetry.OOO_RETRY_DELAYS_MS.slice(),
     idleRenewMs: idle.IDLE_RENEW_MS,
     idleSafetyPollMs: idle.IDLE_SAFETY_POLL_MS,
     idleBackoffCapMs: idle.IDLE_BACKOFF_CAP_MS,
