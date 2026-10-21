@@ -67,7 +67,7 @@ contextBridge.exposeInMainWorld('morrow',{
  return ok(null);
  },on(channel,callback){listeners[channel]=callback;return()=>{};}
 });
-contextBridge.exposeInMainWorld('uxFixture',{queueWorks(){queueReady=true;queue.push({id:'failed-fixture',accountId:'a',subject:'Failed queued mail',to:'recipient@example.test',sendAt:'2026-10-18T08:00:00Z',status:'failed',error:'Fixture failure'});},readyUpdate(){update={enabled:true,downloaded:true,version:'9.9.9-fixture',lastCheckedAt:'2026-10-18T08:00:00Z'};},failRead(){failRead=true;messages[0].unread=true;},populate(){populated=true;},saveWorks(){failSave=false;},counts(){return calls.reduce((out,row)=>(out[row.channel]=(out[row.channel]||0)+1,out),{});},emit(channel,payload){if(listeners[channel])listeners[channel](payload);}});
+contextBridge.exposeInMainWorld('uxFixture',{queueWorks(){queueReady=true;queue.push({id:'failed-fixture',accountId:'a',subject:'Failed queued mail',to:'recipient@example.test',sendAt:'2026-10-18T08:00:00Z',status:'failed',error:'Fixture failure'});},readyUpdate(){update={enabled:true,downloaded:true,version:'9.9.9-fixture',lastCheckedAt:'2026-10-18T08:00:00Z'};},failRead(){failRead=true;messages[0].unread=true;},populate(){populated=true;},saveWorks(){failSave=false;},counts(){return calls.reduce((out,row)=>(out[row.channel]=(out[row.channel]||0)+1,out),{});},last(channel){for(let i=calls.length-1;i>=0;i-=1)if(calls[i].channel===channel)return calls[i].payload;return null;},emit(channel,payload){if(listeners[channel])listeners[channel](payload);}});
 `);
 let win;const run=async code=>{try{return await win.webContents.executeJavaScript(code,true);}catch(error){throw new Error('Fixture step failed: '+code.slice(0,100)+' '+error.message);}};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -112,7 +112,7 @@ app.whenReady().then(async()=>{
  await run(`$('list-filter').value='unmatched';$('search-query').value='report';applySearch()`);
  assert.match(await run(`$('list-coverage').textContent`),/2 returned.*0 shown/);assert.equal(await run(`$('filter-chip').hidden`),false);
  await shot('search-filter-coverage');await run(`$('filter-chip').click();state.selectedIds=['one','two'];$('list-filter').value='Alpha';renderList()`);
- assert.match(await run(`$('selection-count').textContent`),/2 selected.*1 hidden/);assert.equal(await run(`$('select-visible').textContent`),'Select shown (1)');
+ assert.match(await run(`$('selection-count').textContent`),/2 selected.*1 hidden/);assert.equal(await run(`$('select-visible').getAttribute('aria-label')`),'Select 1 messages shown on this page');
  await run(`openSelectionMove('imap')`);assert.match(await run(`$('move-picker-source').textContent`),/1 excluded.*stay selected/);await run(`closeMovePicker()`);
  await run(`void applyBulkMove(selectedMessages(),{kind:'imap',id:'Archive',accountId:'a'},'Archive')`);await waitFor(`$('confirm').open`);
  assert.match(await run(`$('confirm-body').textContent`),/1 excluded.*stay selected/);await run(`$('confirm-cancel').click()`);await sleep(200);
@@ -192,6 +192,80 @@ app.whenReady().then(async()=>{
  const support=await run(`$('support-preview').value`);assert.doesNotMatch(support,/fixture-private-value/);assert.match(support,/addresses.*may remain/);assert.match(support,/2026/);assert.match(support,/address@example.test/);
  await shot('support-preview');await run(`$('support-dialog').close();showMail();uxFixture.failRead();openMessage('one',false)`);
  assert.equal(await run(`state.email.id`),'one');assert.match(await run(`$('status').textContent`),/marking it read was not confirmed/);
+ await run(`(() => {
+  const account = state.accounts.find((row) => row.id === 'a');
+  account.platform = 'imap';
+  account.imapSmtpProfile = 'gmail';
+  state.accountId = 'a';
+  state.prefs.snooze = true;
+  state.folderId = 'Work';
+  state.providerFolders = { accountId: 'a', api: true, source: 'gmail', provider: 'google', folders: [
+    { id: 'L1', name: 'Work', editable: true },
+    { id: 'L2', name: 'Work/Travel', editable: true },
+    { id: 'INBOX', name: 'INBOX', editable: false },
+  ]};
+  const email = state.email;
+  email.folderId = 'Work';
+  email.folders = ['Work'];
+  delete email.labelIds;
+  renderReader(false);
+ })()`);
+ const readerActions = await run(`[...document.querySelectorAll('#reader .reader-actions [data-action]')].map((node) => node.dataset.action)`);
+ const starAt = readerActions.indexOf('star');
+ assert.equal(readerActions[starAt + 1], 'translate-lang');
+ assert.equal(readerActions[starAt + 2], 'translate');
+ assert.equal(readerActions.includes('snooze'), true);
+ assert.equal(readerActions.includes('labels'), true);
+ assert.equal(await run(`document.querySelector('#reader .translate') !== null`), true);
+ assert.equal(await run(`[...document.querySelectorAll('#reader > .translate')].length`), 0);
+ assert.equal(await run(`document.querySelector('#reader select[aria-label="Add Gmail label"]')`), null);
+ assert.equal(await run(`document.querySelector('#reader select[aria-label="Remove Gmail label"]')`), null);
+ await shot('reader-labels-translate');
+ await run(`document.querySelector('#reader [data-action="labels"]').click()`);
+ await waitFor(`$('label-picker').open`);
+ assert.equal(await run(`$('label-picker-filter').placeholder`), 'Filter labels');
+ const beforeFilter = await run(`[...document.querySelectorAll('#label-picker-list input')].map((node) => node.value + ':' + node.checked)`);
+ assert.deepEqual(beforeFilter, ['L1:true', 'L2:false']);
+ await run(`$('label-picker-filter').value = 'travel'; $('label-picker-filter').dispatchEvent(new Event('input'))`);
+ assert.deepEqual(await run(`[...document.querySelectorAll('#label-picker-list input')].map((node) => node.value)`), ['L2']);
+ await shot('labels-filter');
+ await run(`$('label-picker-filter').value = 'nomatch'; $('label-picker-filter').dispatchEvent(new Event('input'))`);
+ assert.equal(await run(`$('label-picker-empty').hidden`), false);
+ await run(`const box = document.querySelector('#label-picker-list input'); if (box) { box.checked = false; } $('label-picker-filter').value = 'travel'; $('label-picker-filter').dispatchEvent(new Event('input')); const travel = document.querySelector('#label-picker-list input'); travel.checked = true; travel.dispatchEvent(new Event('change')); $('label-picker-ok').click()`);
+ await waitFor(`!$('label-picker').open && $('status').textContent.includes('Label added')`);
+ assert.deepEqual(await run(`state.email.labelIds`), ['L1', 'L2']);
+ assert.deepEqual(await run(`uxFixture.last('mail:modifyMessageLabels')`), {
+  accountId: 'a', emailId: 'one', addLabelIds: ['L2'], removeLabelIds: [],
+ });
+ await run(`state.selectedIds = ['one']; renderList()`);
+ assert.equal(await run(`$('selection-add-label')`), null);
+ assert.equal(await run(`$('selection-remove-label')`), null);
+ assert.equal(await run(`$('selection-labels').hidden`), false);
+ await shot('selection-labels');
+ await run(`$('selection-labels').click()`);
+ await waitFor(`$('label-picker').open`);
+ assert.match(await run(`$('label-picker-source').textContent`), /messages from/);
+ await run(`closeLabelPicker()`);
+ await waitFor(`!$('label-picker').open`);
+ await run(`openOrganizeMenu(state.email, 24, 24)`);
+ assert.match(await run(`$('organize-menu').textContent`), /Labels…/);
+ assert.doesNotMatch(await run(`$('organize-menu').textContent`), /Add Gmail label|Remove Gmail label/);
+ await run(`closeOrganizeMenu()`);
+ await run(`(() => {
+  state.accounts.find((row) => row.id === 'a').imapSmtpProfile = 'outlook';
+  state.providerFolders = { accountId: 'a', api: true, source: 'graph', provider: 'microsoft', folders: [
+    { id: 'in', name: 'Inbox', parentId: 'root', editable: false },
+    { id: 'c1', name: 'Receipts', parentId: 'in', editable: true },
+  ]};
+  renderReader(false);
+  renderList();
+ })()`);
+ assert.equal(await run(`document.querySelector('#reader [data-action="labels"]')`), null);
+ assert.equal(await run(`document.querySelector('#reader [data-action="move-outlook"]').textContent`), 'Move in Outlook');
+ assert.equal(await run(`document.querySelector('#reader [data-action="snooze"]') !== null`), true);
+ assert.equal(await run(`$('selection-labels').hidden`), true);
+ assert.equal(await run(`$('selection-outlook').hidden`), false);
+ assert.equal(await run(`!!$('move-picker-filter')`), true);
  await run(`setNavCollapsed(true)`);assert.equal(await run(`readNavCollapsed()`),true);await run(`setNavCollapsed(false)`);assert.equal(await run(`readNavCollapsed()`),false);
  const counts=await run('uxFixture.counts()');
  const result={result:'UX_FIXTURE_OK',network:'blocked',mailSendCalls:counts['mail:send'],explicitScheduleCalls:counts['mail:scheduleSend'],liveProviderCalls:0};

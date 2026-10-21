@@ -21,8 +21,28 @@ function element(tag) {
     classList: null,
     setAttribute(name, value) { this.attrs[name] = String(value); },
     getAttribute(name) { return this.attrs[name]; },
+    removeAttribute(name) { delete this.attrs[name]; },
+    hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name); },
     append(...nodes) { for (const child of nodes) this.appendChild(child); },
-    appendChild(child) { this.children.push(child); return child; },
+    appendChild(child) {
+      if (child && child.parentNode && child.parentNode !== this) {
+        child.parentNode.children = child.parentNode.children.filter((item) => item !== child);
+      }
+      child.parentNode = this;
+      this.children.push(child);
+      return child;
+    },
+    insertBefore(child, before) {
+      if (child && child.parentNode && child.parentNode !== this) {
+        child.parentNode.children = child.parentNode.children.filter((item) => item !== child);
+      }
+      child.parentNode = this;
+      const index = before ? this.children.indexOf(before) : -1;
+      if (index < 0) this.children.push(child);
+      else this.children.splice(index, 0, child);
+      return child;
+    },
+    getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 }; },
     replaceChildren() { this.children = []; },
     addEventListener(type, fn) { this.listeners.push({ type, fn }); },
     removeEventListener() {},
@@ -162,7 +182,14 @@ async function main() {
   await flush();
   assert.equal(suggestionCount(calls), 0, "opening mail must not request reply suggestions");
   assert.equal(ui.reader.querySelector(".suggestions").hidden, true);
-  assert.deepEqual(actions(ui.reader).slice(0, 4), ["reply", "reply-all", "suggest", "forward"]);
+  const readerActions = actions(ui.reader);
+  assert.deepEqual(readerActions.slice(0, 4), ["reply", "reply-all", "suggest", "forward"]);
+  const starAt = readerActions.indexOf("star");
+  assert.equal(readerActions[starAt + 1], "translate-lang");
+  assert.equal(readerActions[starAt + 2], "translate");
+  assert.equal(readerActions.includes("translate-cancel"), true);
+  assert.equal(readerActions.includes("snooze"), true);
+  assert.equal(ui.reader.children.some((child) => child.className === "translate"), false);
   const suggest = ui.reader.querySelector('[data-action="suggest"]');
   assert.equal(suggest.attrs["aria-label"], "Suggest a reply");
   assert.equal(suggest.children.some((child) => child.textContent === "Suggest"), true);
