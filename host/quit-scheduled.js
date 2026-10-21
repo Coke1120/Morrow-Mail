@@ -1,7 +1,9 @@
 "use strict";
 
-// Scheduled sends leave only while this process is alive. Quit and window close
-// share this decision so a missed warning cannot drop a pending message.
+// Scheduled sends leave only while this process is alive. Quit, and a window
+// close that means quit, share this decision so a missed warning cannot drop a
+// pending message. On macOS the red close button hides the window and is not a
+// quit; Cmd+Q still is. Windows and Linux window close still quits.
 
 const QUIT_LIST_LIMIT = 5;
 
@@ -120,7 +122,12 @@ function readPrompt(listRows) {
   }
 }
 
-function createQuitController({ listRows, requestChoice, quitApp, cleanup }) {
+// macOS keeps the process when the main window closes. Other platforms quit.
+function hidesWindowOnClose(platform) {
+  return platform === "darwin";
+}
+
+function createQuitController({ listRows, requestChoice, quitApp, cleanup, platform }) {
   let confirmed = false;
   let cleaning = false;
   let prompting = null;
@@ -149,7 +156,14 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup }) {
   }
 
   function onClose(event) {
+    // A real quit sets cleaning before Electron closes the window, because the
+    // first before-quit is held until cleanup calls quit again. That close must
+    // destroy the window. Every other macOS close hides and skips the confirm.
     if (confirmed || cleaning) return "allow";
+    if (hidesWindowOnClose(platform) && !prompting) {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      return "hide";
+    }
     const prompt = readPrompt(listRows);
     if (!prompt) return "allow";
     if (event && typeof event.preventDefault === "function") event.preventDefault();
@@ -192,5 +206,6 @@ module.exports = {
   nativeDialogOptions,
   choiceAllowsQuit,
   nativeResponseChoice,
+  hidesWindowOnClose,
   createQuitController,
 };
