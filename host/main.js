@@ -4,7 +4,7 @@ const os = require("os");
 const path = require("path");
 const { openAsar, readFile } = require("./asar");
 const { createIpc } = require("./ipc");
-const { publicConfig, saveConfig, completionsUrl, modelsUrl, DEFAULTS } = require("./ai-config");
+const { loadConfig, publicConfig, saveConfig, completionsUrl, modelsUrl, DEFAULTS } = require("./ai-config");
 const { complete, extractJson, modelIds, listModels } = require("./openai-client");
 
 const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels"];
@@ -336,12 +336,22 @@ function trackWindow(win, savedZoom) {
 function registerHostAi() {
   ipcMain.handle("host:aiGetConfig", () => publicConfig());
   ipcMain.handle("host:aiSaveConfig", (_event, input) => updateGate.run(() => saveConfig(input)));
-  ipcMain.handle("host:aiTest", async () => {
+  ipcMain.handle("host:aiTest", async (_event, input) => {
     try {
+      // Renderer sends the visible form values so a dirty form is tested as
+      // shown. Blank fields keep using the saved config.
+      const saved = loadConfig();
+      const draft = input && typeof input === "object" ? input : {};
+      const cfg = {
+        baseUrl: typeof draft.baseUrl === "string" && draft.baseUrl.trim() ? draft.baseUrl.trim() : saved.baseUrl,
+        model: typeof draft.model === "string" && draft.model.trim() ? draft.model.trim() : saved.model,
+        apiKey: typeof draft.apiKey === "string" && draft.apiKey.trim() ? draft.apiKey.trim() : saved.apiKey,
+      };
+      if (!cfg.apiKey) throw new Error("Add an API key in Morrow Mail → AI Setup.");
       const text = await complete([
         { role: "system", content: "Reply with one short sentence and nothing else." },
         { role: "user", content: "Say hello in five words or fewer." },
-      ], { temperature: 0 });
+      ], { temperature: 0, config: cfg });
       const preview = String(text).replace(/\s+/g, " ").trim().slice(0, 160);
       return { ok: true, preview: preview || "The model returned an empty reply." };
     } catch (error) {

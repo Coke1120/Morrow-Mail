@@ -756,7 +756,7 @@
               <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Expand Outlook folders</label>
             </div>
           </div>
-          <p class="hint settings-save-note">Changes save automatically.</p>
+          <p class="hint settings-save-note">Changes save automatically. Saved or error messages appear beside each setting.</p>
           </div>
         </section>
         <section class="fold" id="settings-mail" data-fold="mail" role="tabpanel" aria-labelledby="settings-tab-mail" tabindex="0" hidden>
@@ -796,6 +796,7 @@
                   </div>
                 </div>
                 <p class="hint" id="pref-schedule-delay-help">0 sends immediately. Any other delay makes Send schedule that far ahead. Send now is still available in compose. The longest delay is 7 days.</p>
+                <p class="hint settings-inline-status" id="pref-schedule-status" role="status" hidden></p>
               </div>
               <div class="checks">
                 <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
@@ -803,7 +804,7 @@
                 <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
               </div>
             </div>
-            <p class="hint settings-save-note">Changes save automatically.</p>
+            <p class="hint settings-save-note">Changes save automatically. Saved or error messages appear beside each setting.</p>
           </div>
         </section>
         <section class="fold" id="settings-ai" data-fold="ai" role="tabpanel" aria-labelledby="settings-tab-ai" tabindex="0" hidden>
@@ -829,8 +830,9 @@
               <button type="button" class="ghost" id="ai-fetch">Fetch models</button>
               <button type="button" class="ghost" id="ai-test">Test connection</button>
             </div>
+            <p id="ai-dirty" class="hint settings-dirty settings-full-width" role="status" hidden></p>
             <p id="ai-status" class="settings-full-width" role="status"></p>
-            <p class="hint settings-full-width">Test connection uses the saved config. Save AI first after making changes.</p>
+            <p class="hint settings-full-width">Save AI to keep changes. Test connection and Fetch models use the values in this form; a blank API key uses the saved key.</p>
           </div>
           <details class="settings-disclosure"><summary>Connection details</summary>
             <p class="hint">The key is saved on this computer and shared with Morrow Mail → AI Setup. Fetch models uses the form above and the saved key when the key field is blank.</p>
@@ -838,7 +840,7 @@
           <div class="settings-group">
             <h4>Writing</h4>
             <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
-            <p class="hint">This preference saves automatically.</p>
+            <p class="hint">This preference saves automatically. Saved or error messages appear beside it.</p>
           </div>
           </div>
         </section>
@@ -932,6 +934,7 @@
             <details class="settings-disclosure" id="ooo-details"><summary>Provider details &amp; formatting</summary>
               <p id="ooo-help" class="hint"></p>
             </details>
+            <p id="ooo-dirty" class="hint settings-dirty" role="status" hidden></p>
             <div class="row">
               <button type="button" class="primary" id="ooo-save">Save and enable…</button>
               <button type="button" class="ghost" id="ooo-disable">Disable automatic replies…</button>
