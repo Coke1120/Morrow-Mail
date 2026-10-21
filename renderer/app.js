@@ -10530,6 +10530,107 @@ async function showScheduled() {
   await loadScheduled();
 }
 
+let quitScheduledPrompt = null;
+let quitScheduledDismissed = "";
+
+function replyQuitScheduled(choice) {
+  const pending = quitScheduledPrompt;
+  if (!pending) return;
+  quitScheduledPrompt = null;
+  const dialog = $("quit-scheduled");
+  if (dialog) dialog.oncancel = null;
+  closeDialog("quit-scheduled");
+  const allowed = choice === "quit" || choice === "view" ? choice : "stay";
+  if (api && typeof api.replyQuitScheduled === "function") {
+    api.replyQuitScheduled({ nonce: pending.nonce, choice: allowed });
+  }
+}
+
+function presentQuitScheduled(payload) {
+  const dialog = $("quit-scheduled");
+  if (!dialog || !payload || typeof payload.nonce !== "string") return;
+  const count = Number(payload.count) || 0;
+  const noun = count === 1 ? "message" : "messages";
+  $("quit-scheduled-title").textContent = payload.title || (count === 1 ? "1 scheduled message is still pending" : `${count} scheduled messages are still pending`);
+  $("quit-scheduled-body").textContent = payload.body || `Scheduled ${noun} will not send while Morrow Mail is closed. A time that passes while the app is closed is sent the next time you open it.`;
+  const list = $("quit-scheduled-list");
+  list.replaceChildren();
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  for (const item of items) {
+    const li = document.createElement("li");
+    const subject = String((item && item.subject) || "").trim() || "(no subject)";
+    const time = String((item && (item.time || item.sendAt)) || "").trim() || "Unknown time";
+    const sending = item && item.status === "sending" ? " · Sending now" : "";
+    li.textContent = `${subject} · ${time}${sending}`;
+    list.appendChild(li);
+  }
+  list.hidden = items.length === 0;
+  const hidden = Number(payload.hidden) || 0;
+  const more = $("quit-scheduled-more");
+  if (more) {
+    more.hidden = hidden <= 0;
+    more.textContent = hidden === 1 ? "1 more scheduled message." : hidden > 1 ? `${hidden} more scheduled messages.` : "";
+  }
+  if (dialog.dataset) delete dialog.dataset.closing;
+  dialog.oncancel = null;
+  if (dialog.open && typeof dialog.close === "function") dialog.close();
+  quitScheduledPrompt = { nonce: payload.nonce };
+  const stay = () => replyQuitScheduled("stay");
+  const form = $("quit-scheduled-form");
+  if (form) {
+    form.onsubmit = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      stay();
+    };
+  }
+  const stayButton = $("quit-scheduled-stay");
+  if (stayButton) stayButton.onclick = stay;
+  const quitButton = $("quit-scheduled-quit");
+  if (quitButton) quitButton.onclick = () => replyQuitScheduled("quit");
+  const viewButton = $("quit-scheduled-view");
+  if (viewButton) {
+    viewButton.onclick = () => {
+      replyQuitScheduled("view");
+      showScheduled().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+    };
+  }
+  dialog.oncancel = (event) => {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    stay();
+  };
+  openDialog("quit-scheduled");
+  if (stayButton && typeof stayButton.focus === "function") stayButton.focus();
+}
+
+function acceptQuitScheduled(payload) {
+  if (!payload || typeof payload.nonce !== "string") return;
+  if (payload.nonce === quitScheduledDismissed) return;
+  if (quitScheduledPrompt) {
+    if (api && typeof api.replyQuitScheduledShown === "function") api.replyQuitScheduledShown({ nonce: payload.nonce });
+    if (api && typeof api.replyQuitScheduled === "function") api.replyQuitScheduled({ nonce: payload.nonce, choice: "stay" });
+    return;
+  }
+  try {
+    presentQuitScheduled(payload);
+  } catch {
+    return;
+  }
+  if (!quitScheduledPrompt || quitScheduledPrompt.nonce !== payload.nonce) return;
+  if (api && typeof api.replyQuitScheduledShown === "function") api.replyQuitScheduledShown({ nonce: payload.nonce });
+}
+
+function dismissQuitScheduled(payload) {
+  if (!payload || typeof payload.nonce !== "string") return;
+  quitScheduledDismissed = payload.nonce;
+  if (!quitScheduledPrompt || quitScheduledPrompt.nonce !== payload.nonce) return;
+  quitScheduledPrompt = null;
+  const dialog = $("quit-scheduled");
+  if (dialog) dialog.oncancel = null;
+  const form = $("quit-scheduled-form");
+  if (form) form.onsubmit = null;
+  closeDialog("quit-scheduled");
+}
+
 async function editScheduledMail(row) {
   const answer = await askConfirm({ title: "Remove from queue and edit?", body: scheduledLine(row, state.accounts) + "\nThe queued delivery will be removed and saved as a local draft. Review it, then explicitly Schedule send again. A failed delivery may already have reached the recipient; check Sent before retrying.", confirm: "Remove and edit", cancel: "Keep queued" });
   if (!answer || !answer.ok) return;
@@ -16262,6 +16363,12 @@ function wire() {
   wireAgentTabs();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "quit-scheduled") {
+        event.preventDefault();
+        if (quitScheduledPrompt) replyQuitScheduled("stay");
+        else closeDialog("quit-scheduled");
+        return;
+      }
       if (dialog.id === "compose-close-review") return;
       if (dialog.id === "connect") {
         event.preventDefault();
@@ -16827,6 +16934,8 @@ async function boot() {
   }).catch(() => {});
   api.on("host:updatePrepareForInstall", prepareUpdateRestart);
   api.on("host:updateResume", resumeAfterUpdate);
+  api.on("app:confirmQuitScheduled", acceptQuitScheduled);
+  api.on("app:dismissQuitScheduled", dismissQuitScheduled);
   wire();
   setNavCollapsed(readNavCollapsed());
   watchNetwork();

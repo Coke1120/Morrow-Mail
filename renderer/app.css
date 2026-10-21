@@ -3532,6 +3532,7 @@ dialog::backdrop { background: rgba(16, 40, 34, 0.72); }
 #about-dialog,
 #confirm,
 #compose-close-review,
+#quit-scheduled,
 #bot-secret,
 #move-picker {
   inset: 0;
@@ -4229,6 +4230,10 @@ textarea { min-height: 140px; resize: vertical; }
 
 #compose-close-review { padding: 22px; width: min(560px, calc(100vw - 32px)); }
 #compose-close-review .row { flex-wrap: wrap; }
+#quit-scheduled { width: min(560px, calc(100vw - 32px)); }
+#quit-scheduled .row { flex-wrap: wrap; }
+#quit-scheduled-list { margin: 8px 0 12px; padding-left: 18px; }
+#quit-scheduled-list li { margin: 4px 0; overflow-wrap: anywhere; }
 #compose-status { margin: 8px 0; }
 
 /* Account context and queue management */
