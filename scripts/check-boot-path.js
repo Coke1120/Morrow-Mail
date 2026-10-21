@@ -41,6 +41,7 @@ const syntax = [
   "scripts/check-brain-persona.js",
   "scripts/check-brain-profile-layout.js",
   "host/agent.js",
+  "host/compose-window.js",
   "host/bot/constants.js",
   "host/bot/json.js",
   "host/bot/store.js",
@@ -326,6 +327,44 @@ assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css mi
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.strictEqual(pkg.name, "morrow-mail");
 assert.strictEqual(pkg.version, "0.2.25");
+const composeHost = require("../host/compose-window");
+assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
+assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
+assert.strictEqual(composeHost.composeWindowTitle({}), "New message — Morrow Mail");
+assert.strictEqual(composeHost.composeWindowTitle({ title: "x".repeat(200) }).slice(0, 180), "x".repeat(180));
+assert.deepEqual(composeHost.sanitizeComposeSeed(null), {});
+assert.throws(() => composeHost.sanitizeComposeSeed("nope"), /Compose could not be opened/);
+assert.throws(() => composeHost.sanitizeComposeSeed({ body: "x".repeat(composeHost.MAX_SEED_CHARS) }), /too large/);
+const composePlaced = composeHost.composeWindowBounds({ x: 10, y: 20, width: 800, height: 600 }, 1);
+assert.strictEqual(composePlaced.x, 10 + 48 + 28);
+assert.strictEqual(composePlaced.y, 20 + 48 + 28);
+assert.strictEqual(composePlaced.width, 1040);
+assert.strictEqual(composePlaced.minHeight, 560);
+const composeUnplaced = composeHost.composeWindowBounds(null, 0);
+assert.strictEqual(composeUnplaced.x, undefined);
+assert.ok(main.includes('require("./compose-window")'));
+assert.ok(main.includes("composeWindows.CHANNELS"));
+assert.ok(main.indexOf("createComposeHost") < main.lastIndexOf("attachIpc(preloadFile)"));
+assert.ok(preload.includes('"compose:open"') && preload.includes('"compose:pullSeed"') && preload.includes('"compose:allowClose"') && preload.includes('"compose:setTitle"') && preload.includes('"compose:requestClose"'));
+assert.ok(functionSource(appJs, "presentCompose").includes("openComposeWindow"));
+assert.ok(functionSource(appJs, "presentCompose").includes("openCompose(seed"));
+assert.ok(functionSource(appJs, "bootComposeWindow").includes("compose:requestClose"));
+assert.ok(functionSource(appJs, "bootComposeWindow").includes("openCompose(seed"));
+assert.ok(!functionSource(appJs, "bootComposeWindow").includes("presentCompose"));
+assert.ok(!functionSource(appJs, "bootComposeWindow").includes("mail:emailsUpdated"));
+assert.ok(!functionSource(appJs, "bootComposeWindow").includes("watchNetwork"));
+assert.ok(!functionSource(appJs, "bootComposeWindow").includes("reportUpdateReady"));
+assert.ok(functionSource(appJs, "boot").includes("isComposeWindow"));
+assert.ok(functionSource(appJs, "boot").includes("bootComposeWindow"));
+assert.ok(functionSource(appJs, "requestComposeWindowClose").includes("allowComposeClose"));
+assert.ok(functionSource(appJs, "requestComposeWindowClose").includes("hideUndoSend"));
+assert.ok(functionSource(appJs, "deliverMail").includes("allowComposeClose"));
+assert.ok(functionSource(appJs, "editScheduledMail").includes("schedulePreset"));
+assert.ok(functionSource(appJs, "editScheduledMail").includes("openComposeWindow"));
+assert.ok(appJs.includes("presentCompose(newMailSeed())"));
+assert.ok(html.includes("compose-role.js"));
+assert.ok(css.includes('html[data-window="compose"]'));
+assert.ok(fs.existsSync(path.join(root, "docs/adr/2026-10-21-compose-window.md")));
 assert.strictEqual(pkg.build.productName, "Morrow Mail");
 assert.strictEqual(pkg.build.appId, "com.coke1120.morrow-mail");
 assert.notStrictEqual(pkg.build.appId, "org.morrowmail.desktop");
@@ -1259,6 +1298,14 @@ assert.ok(!functionSource(appJs, "filteredEmails").includes("mail:search"));
 assert.ok(!functionSource(appJs, "filteredEmails").includes("textBody"));
 const independentDoc = fs.readFileSync(path.join(root, "docs/INDEPENDENT_UI.md"), "utf8");
 const parityDoc = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
+assert.ok(independentDoc.includes("compose window"));
+assert.ok(parityDoc.includes("compose window"));
+assert.ok(!independentDoc.includes("then the compose dialog"));
+assert.ok(!parityDoc.includes("same compose dialog"));
+assert.ok(!independentDoc.includes("85% of the window width"));
+assert.ok(!parityDoc.includes("85% of the window width"));
+assert.ok(fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8").includes("Drafts open in a compose window."));
+assert.ok(fs.readFileSync(path.join(root, "docs/adr/2026-10-21-macos-close-hides.md"), "utf8").includes("compose window"));
 assert.ok(independentDoc.includes("All Account Mail"));
 assert.ok(parityDoc.includes("All Account Mail"));
 assert.ok(independentDoc.includes("Unread chip"));
@@ -2021,6 +2068,9 @@ const requestUi = loadFunctions(appJs, [
   "isLive",
   "agentContact",
   "agentContextCopy",
+  "agentMessageContext",
+  "agentReadIntent",
+  "agentTodoActionNames",
   "agentFollowUps",
   "agentWhen",
   "skillName",
@@ -2044,6 +2094,19 @@ assert.deepStrictEqual(requestUi.skillRequest({ id: "brief-this-person" }, {
 assert.ok(!requestUi.skillRequest({ id: "morning-brief" }, { contact: "ada@example.com" }).contactEmail);
 assert.match(requestUi.agentContextCopy(null), /No message is open/);
 assert.match(requestUi.agentContextCopy({ id: "m1", from: "Ada", subject: "Hi" }), /Ada — Hi/);
+assert.strictEqual(requestUi.agentMessageContext(null), null);
+assert.strictEqual(requestUi.agentMessageContext({ summary: "No mail" }), null);
+assert.deepStrictEqual(requestUi.agentMessageContext({ messageId: " m1 ", accountId: "acct" }), {
+  messageId: "m1",
+  accountId: "acct",
+});
+assert.strictEqual(requestUi.agentReadIntent({ summary: "No mail" }), "skip");
+assert.strictEqual(requestUi.agentReadIntent({ messageId: "m1", unread: false }), "already");
+assert.strictEqual(requestUi.agentReadIntent({ messageId: "m1", unread: true }), "mark");
+assert.deepStrictEqual(requestUi.agentTodoActionNames({ summary: "Note" }), []);
+assert.deepStrictEqual(requestUi.agentTodoActionNames({ messageId: "m1" }), [
+  "Open", "Reply", "Reply All", "Mark as read", "Mark todo done", "Dismiss",
+]);
 assert.strictEqual(requestUi.agentFollowUps({ messageId: "m1", followUps: [] }).length, 1);
 assert.strictEqual(requestUi.agentFollowUps({
   messageId: "m1",
@@ -2115,6 +2178,15 @@ assert.ok(!functionSource(appJs, "peekMessage").includes("showMail"));
 assert.ok(functionSource(appJs, "openPeekInMail").includes("showMail"));
 assert.ok(!appJs.includes("Done and Dismiss only update this local Agent list. They do not archive, delete, or reply."));
 assert.ok(appJs.includes("Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply."));
+assert.ok(appJs.includes('agentActionButton("open", "Open"') && appJs.includes('agentActionButton("reply", "Reply"'));
+assert.ok(appJs.includes('agentActionButton("reply-all", "Reply All"') && appJs.includes('agentActionButton("read", "Mark as read"'));
+assert.ok(appJs.includes('agentActionButton("done", "Mark todo done"') && appJs.includes('agentActionButton("dismiss", "Dismiss"'));
+assert.ok(functionSource(appJs, "replyToAgentItem").includes("presentCompose"));
+assert.ok(functionSource(appJs, "presentCompose").includes("openComposeWindow"));
+assert.ok(preload.includes('"compose:open"') && preload.includes("compose:requestClose"));
+assert.ok(html.includes("compose-role.js") && css.includes('html[data-window="compose"]') && css.includes("button.agent-action"));
+assert.ok(main.includes("createComposeHost") && !ipcSrc.includes("host:openComposeWindow"));
+assert.ok(!appJs.includes("host:openComposeWindow") && !html.includes("surface.js"));
 assert.ok(html.includes('id="agent-composer"') && html.includes('id="agent-send"') && html.includes('id="agent-input"'));
 assert.ok(html.includes('id="agent-memory"') && html.includes('id="rail-brain"') && html.includes('id="agent-home"') && html.includes('id="side-mail"'));
 assert.ok(!html.includes('id="side-agent"') && !html.includes('id="side-brain"') && !html.includes("side-switch"));

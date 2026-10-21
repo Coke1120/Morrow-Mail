@@ -5676,7 +5676,7 @@ function paintSuggestions(email) {
     button.className = "ghost";
     button.textContent = text;
     button.addEventListener("click", () => {
-      openCompose(withSuggestion(composeSeed(email, "reply", self), text))
+      presentCompose(withSuggestion(composeSeed(email, "reply", self), text))
         .catch((error) => showStatus(error.message, true));
     });
     list.appendChild(button);
@@ -6520,7 +6520,7 @@ async function replyFromList(email, kind) {
   if (!opened) throw new Error("That message is no longer in the mailbox.");
   const account = state.accounts.find((item) => item.id === opened.accountId) || selectedAccount();
   const self = (account && (account.preferredFromAddress || account.email)) || "";
-  await openCompose(composeSeed(opened, kind, self));
+  await presentCompose(composeSeed(opened, kind, self));
 }
 
 async function finishRemoval(email, label, data) {
@@ -10290,6 +10290,141 @@ function changeComposeFrom() {
   paintComposeNote();
 }
 
+function isComposeWindow() {
+  try {
+    const root = document.documentElement;
+    if (root && root.dataset && root.dataset.window === "compose") return true;
+    const search = window.location && window.location.search;
+    if (typeof search === "string" && new URLSearchParams(search).get("role") === "compose") {
+      if (root && root.dataset) root.dataset.window = "compose";
+      return true;
+    }
+  } catch { /* vm checks have no location */ }
+  return false;
+}
+
+let composeWindowClosing = false;
+let composeCloseQueued = false;
+
+function newMailSeed() {
+  const account = selectedAccount();
+  return { title: "New message", kind: "new", accountId: (account && account.id) || state.accountId || "" };
+}
+
+function cloneComposeSeed(seed) {
+  try {
+    return JSON.parse(JSON.stringify(seed || {}));
+  } catch {
+    throw new Error("That message could not be opened in a compose window.");
+  }
+}
+
+async function presentCompose(seed) {
+  if (api && typeof api.openComposeWindow === "function") {
+    await api.openComposeWindow(cloneComposeSeed(seed));
+    return;
+  }
+  await openCompose(seed || {});
+}
+
+function publishComposeTitle(text) {
+  if (!isComposeWindow()) return;
+  const title = String(text || "New message").trim() || "New message";
+  document.title = title + " — Morrow Mail";
+  if (api && typeof api.setComposeTitle === "function") api.setComposeTitle(title).catch(() => {});
+}
+
+function dismissComposeSurface() {
+  if (isComposeWindow()) {
+    requestComposeWindowClose().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+    return;
+  }
+  requestComposeClose();
+}
+
+async function requestComposeWindowClose() {
+  if (!isComposeWindow()) return requestComposeClose();
+  if (composeWindowClosing) return;
+  if (state.composeInitializing) {
+    composeCloseQueued = true;
+    return;
+  }
+  if (state.composePending && !sendTimer) {
+    setComposeStatus("Finish the current action before closing.", true);
+    showStatus("Finish the current action before closing.", true);
+    return;
+  }
+  composeWindowClosing = true;
+  try {
+    if (sendTimer) {
+      hideUndoSend();
+      setComposeStatus("Send canceled. Your draft is ready to edit.");
+    }
+    const closed = await requestComposeClose();
+    if (!closed) {
+      if (!$("compose").open) {
+        openDialog("compose");
+        scheduleComposeLayout();
+      }
+      return;
+    }
+    if (api && typeof api.allowComposeClose === "function") api.allowComposeClose();
+  } finally {
+    composeWindowClosing = false;
+  }
+}
+
+function flushComposeWindowClose() {
+  if (!composeCloseQueued || !isComposeWindow()) return;
+  composeCloseQueued = false;
+  requestComposeWindowClose().catch(() => {});
+}
+
+function finishComposeOpen(fields) {
+  if (fields && fields.status && !state.composeIdentityError) setComposeStatus(fields.status);
+  flushComposeWindowClose();
+}
+
+async function loadComposeAccounts() {
+  const data = await call("mail:listAccounts");
+  state.accounts = Array.isArray(data) ? data : [];
+  if (!state.accountId && state.accounts[0]) state.accountId = state.accounts[0].id;
+}
+
+async function bootComposeWindow() {
+  try { document.documentElement.dataset.window = "compose"; } catch { /* the page is still the compose surface */ }
+  if (!api) {
+    showStatus("Mail preload is unavailable.", true);
+    return;
+  }
+  api.on("compose:requestClose", () => {
+    requestComposeWindowClose().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+  });
+  api.on("aiDraftWrite:event", onDraftEvent);
+  api.on("mail:accountsUpdated", (payload) => {
+    const accounts = payload && Array.isArray(payload.accounts) ? payload.accounts : null;
+    if (accounts) state.accounts = accounts;
+  });
+  wire();
+  let seed = {};
+  try {
+    if (typeof api.pullComposeSeed === "function") seed = (await api.pullComposeSeed()) || {};
+  } catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+  }
+  publishComposeTitle((seed && seed.title) || "New message");
+  await loadLook();
+  await loadShellPrefs();
+  try { await loadComposeAccounts(); }
+  catch (error) { showStatus(error instanceof Error ? error.message : String(error), true); }
+  if (seed && seed.accountId) state.accountId = seed.accountId;
+  try { await openCompose(seed || {}); }
+  catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+    flushComposeWindowClose();
+  }
+}
+
 async function openCompose(seed) {
   if (sendTimer || state.composePending || state.composeInitializing) {
     showStatus("Finish the pending message first. Use Undo send to resume editing during the send delay.");
@@ -10328,6 +10463,7 @@ async function openCompose(seed) {
   } : null;
   setComposeStatus("");
   $("compose-title").textContent = fields.title || "New message";
+  publishComposeTitle(fields.title || "New message");
   $("compose-to").value = fields.to || "";
   $("compose-cc").value = fields.cc || "";
   $("compose-bcc").value = fields.bcc || "";
@@ -10335,8 +10471,8 @@ async function openCompose(seed) {
   $("compose-body").value = fields.body || "";
   paintComposeEditor(fields.body || "", fields.htmlBody || "");
   $("ai-prompt").value = "";
-  $("schedule-preset").value = "1h";
-  $("schedule-at").value = "";
+  $("schedule-preset").value = fields.schedulePreset || "1h";
+  $("schedule-at").value = typeof fields.scheduleAt === "string" ? fields.scheduleAt : "";
   const fileInput = $("compose-file");
   if (fileInput) fileInput.value = "";
   resetComposeDrop();
@@ -10364,18 +10500,23 @@ async function openCompose(seed) {
   state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
   syncCompose();
   paintComposeNote();
-  if (!$("compose").open) return;
+  if (!$("compose").open) {
+    finishComposeOpen(fields);
+    return;
+  }
   scheduleComposeLayout();
   setAiMode(defaultAiMode(fields));
   $("compose-schedule-tools").open = false;
   showComposeSuggestions(fields).catch(() => {});
   if (opensAiWrite(fields, state.prefs)) {
     openComposeAi();
+    finishComposeOpen(fields);
     return;
   }
   closeComposeAi();
   if ($("compose-to").value.trim()) focusComposeBody();
   else $("compose-to").focus();
+  finishComposeOpen(fields);
 }
 
 function setComposeStatus(text, isError) {
@@ -10414,17 +10555,18 @@ async function requestComposeClose() {
   return true;
 }
 
-async function resumeDraft(email) {
+async function resumeDraft(email, extra) {
   const data = await call("mail:openEmail", { emailId: email.id });
   const draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
-  await openCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
+  await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
     fromAddress: draft.from,
     to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
     body: readable(draft),
     htmlBody: typeof draft.htmlBody === "string" ? draft.htmlBody : "",
     attachments: draft.attachments,
-    inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "" });
+    inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "",
+    ...(extra || {}) });
 }
 
 async function loadScheduled() {
@@ -10648,16 +10790,23 @@ async function editScheduledMail(row) {
   $("scheduled-status").textContent = "Removed from queue. A local draft is saved in Drafts.";
   await loadScheduled();
   await closeDialog("scheduled-dialog");
+  const handoff = {
+    schedulePreset: "custom",
+    scheduleAt: vacationLocalValue(draft.sendAt),
+    status: "Removed from queue; local draft saved. Review and choose a future time, then Schedule send.",
+  };
   try {
-    await resumeDraft({ id: draft.emailId, accountId: draft.accountId });
+    await resumeDraft({ id: draft.emailId, accountId: draft.accountId }, handoff);
   } catch (error) {
     openDialog("scheduled-dialog");
     throw new Error("Removed from queue and saved in local Drafts, but the editor could not open. Resume it from Drafts. " + (error.message || String(error)));
   }
-  $("schedule-preset").value = "custom";
-  $("schedule-at").value = vacationLocalValue(draft.sendAt);
-  syncScheduleFields();
-  setComposeStatus("Removed from queue; local draft saved. Review and choose a future time, then Schedule send.");
+  if (!(api && typeof api.openComposeWindow === "function")) {
+    $("schedule-preset").value = handoff.schedulePreset;
+    $("schedule-at").value = handoff.scheduleAt;
+    syncScheduleFields();
+    setComposeStatus(handoff.status);
+  }
 }
 
 async function composeOperation(work) {
@@ -10686,6 +10835,8 @@ async function scheduleMail(whenOverride) {
     await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
     state.composeQueued = true;
     $("compose-title").textContent = "Scheduled receipt";
+    // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
+    if (typeof publishComposeTitle === "function") publishComposeTitle("Scheduled receipt");
     state.composeBaseline = composeSnapshot();
     setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${state.composeMeta.fromAddress || account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
     await loadScheduled();
@@ -10856,6 +11007,10 @@ async function deliverMail(payload) {
     showStatus(message, true);
     return;
   } finally { state.composePending = false; syncCompose(); }
+  if (isComposeWindow()) {
+    if (api && typeof api.allowComposeClose === "function") api.allowComposeClose();
+    return;
+  }
   await loadList();
 }
 
@@ -11012,7 +11167,7 @@ function shortcutCatalog(platform) {
     { group: "Mail", keys: chord("F") + " or /", action: "Focus mail search" },
     { group: "Compose", keys: chord("Enter"), action: "Send" },
     { group: "Compose", keys: chord("S"), action: "Save draft" },
-    { group: "Window", keys: "Esc", action: "Close compose or dismiss an overlay. Also clears a message selection when that is already the Esc action." },
+    { group: "Window", keys: "Esc", action: "Close the compose window or dismiss an overlay. Also clears a message selection when that is already the Esc action." },
     { group: "Window", keys: chord(","), action: "Settings" },
     { group: "List", keys: "↑ or ↓", action: "Move through the message list" },
     { group: "List", keys: "Enter", action: "Open the highlighted message" },
@@ -11148,7 +11303,7 @@ function openReaderCompose(kind) {
   if (!email) return;
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
   const self = (account && (account.preferredFromAddress || account.email)) || "";
-  return openCompose(composeSeed(email, kind, self));
+  return presentCompose(composeSeed(email, kind, self));
 }
 
 function focusMailSearch() {
@@ -14058,6 +14213,27 @@ function agentWhen(value) {
   return new Date(time).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+function agentMessageContext(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  const messageId = String(item.messageId || "").trim();
+  if (!messageId) return null;
+  return {
+    messageId: messageId,
+    accountId: String(item.accountId || "").trim(),
+  };
+}
+
+function agentReadIntent(item) {
+  if (!agentMessageContext(item)) return "skip";
+  if (item.unread === false) return "already";
+  return "mark";
+}
+
+function agentTodoActionNames(item) {
+  if (!agentMessageContext(item)) return [];
+  return ["Open", "Reply", "Reply All", "Mark as read", "Mark todo done", "Dismiss"];
+}
+
 function agentFollowUps(item) {
   const follows = Array.isArray(item && item.followUps) ? item.followUps.filter((follow) => follow && follow.messageId) : [];
   const messageId = item && item.messageId ? String(item.messageId) : "";
@@ -14398,42 +14574,142 @@ function setAgentSkillStatus(text, isError) {
   status.classList.toggle("error", !!isError && !!text);
 }
 
-function agentCard(item) {
-  const card = document.createElement("div");
+const AGENT_ICON = {
+  open: ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M22 6l-10 7L2 6"],
+  done: ["M20 6 9 17l-5-5"],
+  dismiss: ["M18 6 6 18", "M6 6l12 12"],
+  draft: ["M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"],
+  attachment: ["M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"],
+};
+
+const agentMarkedRead = new Set();
+
+function iconShapes(spec) {
+  if (!spec) return [];
+  return Array.isArray(spec) ? spec : [spec];
+}
+
+function agentIconSpec(action) {
+  if (action === "reply") return ROW_ICON.Reply;
+  if (action === "reply-all") return ROW_ICON["Reply All"];
+  if (action === "read") return ROW_ICON["Mark read"];
+  return AGENT_ICON[action] || "";
+}
+
+function agentLooksUnread(item) {
+  if (!item || item.unread !== true) return false;
+  const id = String(item.messageId || "");
+  return !id || !agentMarkedRead.has(id);
+}
+
+function agentActionButton(action, label, run) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "agent-action";
+  button.dataset.action = action;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  const spec = agentIconSpec(action);
+  if (spec) button.appendChild(strokeIcon(iconShapes(spec), 16));
+  const text = document.createElement("span");
+  text.textContent = label;
+  button.appendChild(text);
+  button.addEventListener("click", () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    Promise.resolve().then(run).catch((error) => {
+      showStatus(error instanceof Error ? error.message : String(error), true);
+    }).finally(() => {
+      button.disabled = false;
+    });
+  });
+  return button;
+}
+
+function styleFollowButton(follow) {
+  const button = followButton(follow);
+  button.classList.remove("ghost");
+  button.classList.add("agent-action");
+  const kind = follow && follow.kind === "draft" ? "draft" : follow && follow.kind === "flag-attachment" ? "attachment" : "open";
+  const spec = kind === "open" ? AGENT_ICON.open : AGENT_ICON[kind];
+  if (spec) button.prepend(strokeIcon(iconShapes(spec), 16));
+  return button;
+}
+
+function agentCard(item, options) {
+  const card = document.createElement("article");
   card.className = "agent-item";
-  if (item && item.unread) card.classList.add("unread");
+  if (agentLooksUnread(item)) card.classList.add("unread");
+  const messageId = item && item.messageId ? String(item.messageId) : "";
+  if (messageId) card.dataset.messageId = messageId;
+  const main = document.createElement("div");
+  main.className = "agent-item-main";
+  const name = senderName(item && item.from);
+  const avatar = document.createElement("span");
+  avatar.className = "avatar";
+  avatar.setAttribute("aria-hidden", "true");
+  avatar.textContent = senderInitial(name);
+  avatar.style.backgroundColor = avatarColor(name);
+  const copy = document.createElement("div");
+  copy.className = "agent-item-copy";
+  const line = document.createElement("div");
+  line.className = "agent-item-line";
+  const sender = document.createElement("div");
+  sender.className = "agent-sender";
+  if (agentLooksUnread(item)) {
+    const dot = document.createElement("span");
+    dot.className = "unread-dot";
+    dot.setAttribute("aria-hidden", "true");
+    sender.appendChild(dot);
+  }
   const from = document.createElement("p");
   from.className = "agent-from";
-  from.textContent = (item && item.from) || "(unknown sender)";
+  from.textContent = name;
+  if (item && item.from) from.title = String(item.from);
+  sender.appendChild(from);
+  line.appendChild(sender);
+  const when = agentWhen(item && item.date);
+  if (when) {
+    const time = document.createElement("time");
+    time.className = "agent-when";
+    if (item && item.date) time.dateTime = String(item.date);
+    time.textContent = when;
+    line.appendChild(time);
+  }
+  copy.appendChild(line);
   const subject = document.createElement("p");
   subject.className = "agent-subject";
   subject.textContent = (item && item.subject) || "(no subject)";
-  card.append(from, subject);
-  const when = agentWhen(item && item.date);
-  if (when) {
-    const time = document.createElement("p");
-    time.className = "hint";
-    time.textContent = when;
-    card.appendChild(time);
-  }
+  copy.appendChild(subject);
   const summary = String((item && item.summary) || "").trim();
   if (summary) {
-    const line = document.createElement("p");
-    line.textContent = summary;
-    card.appendChild(line);
+    const summaryLine = document.createElement("p");
+    summaryLine.className = "agent-summary";
+    summaryLine.textContent = summary;
+    copy.appendChild(summaryLine);
   }
   if (item && item.hasAttachments) {
-    const line = document.createElement("p");
-    line.className = "hint";
-    line.textContent = "Has an attachment.";
-    card.appendChild(line);
+    const attach = document.createElement("p");
+    attach.className = "agent-attach";
+    attach.appendChild(strokeIcon(iconShapes(AGENT_ICON.attachment), 14));
+    const attachText = document.createElement("span");
+    attachText.textContent = "Has an attachment.";
+    attach.appendChild(attachText);
+    copy.appendChild(attach);
   }
-  const follows = agentFollowUps(item);
-  if (follows.length) {
-    const actions = document.createElement("div");
-    actions.className = "agent-actions row";
-    for (const follow of follows) actions.appendChild(followButton(follow));
-    card.appendChild(actions);
+  main.append(avatar, copy);
+  card.appendChild(main);
+  if (!(options && options.actions === false)) {
+    const follows = agentFollowUps(item);
+    if (follows.length) {
+      const actions = document.createElement("div");
+      actions.className = "agent-actions";
+      const group = document.createElement("div");
+      group.className = "agent-action-group";
+      for (const follow of follows) group.appendChild(styleFollowButton(follow));
+      actions.appendChild(group);
+      card.appendChild(actions);
+    }
   }
   return card;
 }
@@ -14910,7 +15186,7 @@ async function reviewDraft(draft) {
   if (!account) throw new Error("The proposal's mailbox is no longer connected. Reconnect it before reviewing this reply.");
   const self = account.preferredFromAddress || account.email || "";
   const seed = composeSeed(email, "reply", self);
-  await openCompose(withSuggestion(seed, body));
+  await presentCompose(withSuggestion(seed, body));
 }
 
 function paintMailBody(pane, email, repaint) {
@@ -14979,7 +15255,7 @@ async function openReplyCompose(messageId) {
   const account = state.accounts.find((item) => item.id === email.accountId);
   if (!account) throw new Error("The mailbox is no longer connected.");
   const self = account.preferredFromAddress || account.email || "";
-  await openCompose(composeSeed(email, "reply", self));
+  await presentCompose(composeSeed(email, "reply", self));
 }
 
 async function showStoredRun(run) {
@@ -15094,9 +15370,15 @@ function paintSkillChips(rows) {
   const root = $("agent-skill-chips");
   if (!root) return;
   root.replaceChildren();
-  for (const row of rows) {
+  const visible = rows.filter((row) => skillName(row) && skillIdOf(row));
+  if (visible.length) {
+    const caption = document.createElement("span");
+    caption.className = "agent-chip-label";
+    caption.textContent = "Home skills";
+    root.appendChild(caption);
+  }
+  for (const row of visible) {
     const name = skillName(row);
-    if (!name || !skillIdOf(row)) continue;
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = name;
@@ -15231,7 +15513,9 @@ function paintAgent(payload, errorText) {
   const status = $("agent-status");
   const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
   if (status) {
-    status.textContent = copy.text;
+    const updated = payload && payload.updatedAt;
+    const rawUpdated = updated ? "Updated " + updated : "";
+    status.textContent = !errorText && copy.text === rawUpdated ? "Updated " + formatBrainTime(updated) : copy.text;
     status.classList.toggle("error", copy.error);
   }
   const context = $("agent-context");
@@ -15251,74 +15535,136 @@ function paintAgentHome(payload) {
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
   root.replaceChildren();
-  const note = document.createElement("p");
-  note.id = "agent-todo-note";
-  note.className = "hint";
-  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply.";
-  root.appendChild(note);
   const reason = payload && payload.reason;
-  for (const section of agentSections(payload)) {
+  const sections = agentSections(payload);
+  if (!sections.length) {
+    const empty = document.createElement("p");
+    empty.className = "agent-empty";
+    empty.textContent = sectionEmptyCopy(reason) || "Nothing suggested yet.";
+    root.appendChild(empty);
+  }
+  for (const section of sections) {
     const block = document.createElement("section");
     block.className = "agent-section";
     if (section.collapseView) block.classList.add("is-collapsed");
     const items = Array.isArray(section.items) ? section.items : [];
+    const head = document.createElement("div");
+    head.className = "agent-section-head";
+    const titles = document.createElement("div");
+    titles.className = "agent-section-copy";
     const title = document.createElement("h3");
-    title.textContent = (section.name || section.title || "Section") + (items.length ? " · " + items.length : "");
-    block.appendChild(title);
+    const name = document.createElement("span");
+    name.textContent = section.name || section.title || "Section";
+    const count = document.createElement("span");
+    count.className = "agent-count";
+    count.textContent = String(items.length);
+    title.append(name, count);
+    titles.appendChild(title);
     if (section.description) {
       const desc = document.createElement("p");
       desc.className = "hint";
       desc.textContent = section.description;
-      block.appendChild(desc);
+      titles.appendChild(desc);
     }
+    head.appendChild(titles);
     if (section.collapseView && items.length) {
       const toggle = document.createElement("button");
       toggle.type = "button";
-      toggle.className = "ghost";
+      toggle.className = "ghost agent-section-toggle";
       toggle.textContent = "Show";
+      toggle.setAttribute("aria-expanded", "false");
       toggle.addEventListener("click", () => {
         const collapsed = block.classList.toggle("is-collapsed");
         toggle.textContent = collapsed ? "Show" : "Hide";
+        toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
       });
-      block.appendChild(toggle);
+      head.appendChild(toggle);
     }
+    block.appendChild(head);
     const empty = sectionEmptyCopy(reason);
     if (!items.length && empty) {
-      const note = document.createElement("p");
-      note.className = "hint";
-      note.textContent = empty;
-      block.appendChild(note);
+      const emptyNote = document.createElement("p");
+      emptyNote.className = "agent-empty";
+      emptyNote.textContent = empty;
+      block.appendChild(emptyNote);
     }
     for (const item of items) {
       if (item && typeof item === "object") block.appendChild(agentTodoCard(item));
     }
     root.appendChild(block);
   }
+  const note = document.createElement("p");
+  note.id = "agent-todo-note";
+  note.className = "agent-note";
+  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. Reply, Reply All, and Mark as read use the linked message and leave this list in place.";
+  root.appendChild(note);
   paintMotionRows("agent", root.querySelectorAll(".agent-section"));
 }
 
-function agentTodoCard(item) {
-  const card = agentCard(item);
-  const messageId = item && item.messageId ? String(item.messageId) : "";
-  if (!messageId) return card;
+async function replyToAgentItem(item, kind) {
+  const context = agentMessageContext(item);
+  if (!context) return;
+  const data = await call("mail:openEmail", { emailId: context.messageId });
+  const email = data && data.email;
+  if (!email || !email.accountId) throw new Error("That message is no longer in the mailbox.");
+  const account = state.accounts.find((row) => row.id === email.accountId);
+  if (!account) throw new Error("The mailbox is no longer connected.");
+  const self = account.preferredFromAddress || account.email || "";
+  await presentCompose(composeSeed(email, kind === "all" ? "all" : "reply", self));
+}
+
+async function markAgentMessageRead(item, card) {
+  const context = agentMessageContext(item);
+  if (!context) return;
+  if (agentReadIntent(item) === "already" || agentMarkedRead.has(context.messageId)) {
+    showStatus("Already read.");
+    return;
+  }
+  await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
+  item.unread = false;
+  agentMarkedRead.add(context.messageId);
+  if (card && card.classList) {
+    card.classList.remove("unread");
+    const dot = card.querySelector(".unread-dot");
+    if (dot) dot.remove();
+  }
+  showStatus("Marked as read.");
+}
+
+function agentTodoActions(item) {
+  const context = agentMessageContext(item);
+  if (!context) return null;
   const actions = document.createElement("div");
-  actions.className = "agent-actions row";
-  const done = document.createElement("button");
-  done.type = "button";
-  done.className = "ghost";
-  done.textContent = "Mark todo done";
-  done.addEventListener("click", () => {
-    updateTodo(messageId, "done").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
-  });
-  const dismiss = document.createElement("button");
-  dismiss.type = "button";
-  dismiss.className = "ghost";
-  dismiss.textContent = "Dismiss";
-  dismiss.addEventListener("click", () => {
-    updateTodo(messageId, "dismissed").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
-  });
-  actions.append(done, dismiss);
-  card.append(actions);
+  actions.className = "agent-actions";
+  actions.setAttribute("data-testid", "agent-todo-actions");
+  const mail = document.createElement("div");
+  mail.className = "agent-action-group";
+  const card = () => actions.closest && actions.closest(".agent-item");
+  mail.append(
+    agentActionButton("open", "Open", () => peekMessage(context.messageId)),
+    agentActionButton("reply", "Reply", () => replyToAgentItem(item, "reply")),
+    agentActionButton("reply-all", "Reply All", () => replyToAgentItem(item, "all")),
+    agentActionButton("read", "Mark as read", () => markAgentMessageRead(item, card())),
+  );
+  for (const follow of agentFollowUps(item)) {
+    if (!follow || follow.kind === "open") continue;
+    mail.appendChild(styleFollowButton(follow));
+  }
+  const local = document.createElement("div");
+  local.className = "agent-action-group agent-action-local";
+  local.append(
+    agentActionButton("done", "Mark todo done", () => updateTodo(context.messageId, "done")),
+    agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed")),
+  );
+  actions.append(mail, local);
+  return actions;
+}
+
+function agentTodoCard(item) {
+  if (!agentMessageContext(item)) return agentCard(item);
+  const card = agentCard(item, { actions: false });
+  const actions = agentTodoActions(item);
+  if (actions) card.appendChild(actions);
   return card;
 }
 
@@ -16726,7 +17072,7 @@ function paintBotProbe(access) {
 
 async function openBotDraft(proposalId) {
   const seed = await call("bot:draftComposeSeed", { proposalId });
-  await openCompose({
+  await presentCompose({
     accountId: seed.accountId,
     to: seed.to,
     cc: seed.cc,
@@ -17042,7 +17388,7 @@ function wire() {
           dismissComposeAi().catch(() => {});
           return;
         }
-        requestComposeClose();
+        dismissComposeSurface();
         return;
       }
       const apiMotion = motionApi();
@@ -17493,7 +17839,7 @@ function wire() {
   $("oauth-microsoft").addEventListener("click", () => connectOAuth("microsoft"));
   $("remove").addEventListener("click", () => guard(removeAccount));
   $("compose-open").addEventListener("click", () => {
-    openCompose().catch((error) => showStatus(error.message, true));
+    presentCompose(newMailSeed()).catch((error) => showStatus(error.message, true));
   });
   $("compose-show-cc")?.addEventListener("click", () => {
     state.composeShowCc = true;
@@ -17514,7 +17860,7 @@ function wire() {
     closeComposeAi();
   });
   $("compose-close").addEventListener("click", () => {
-    requestComposeClose();
+    dismissComposeSurface();
   });
   const aiOpen = $("compose-ai-open");
   if (aiOpen && typeof aiOpen.addEventListener === "function") {
@@ -17594,6 +17940,10 @@ function watchNetwork() {
 }
 
 async function boot() {
+  if (isComposeWindow()) {
+    await bootComposeWindow();
+    return;
+  }
   if (!api) {
     showStatus("Mail preload is unavailable.", true);
     return;
