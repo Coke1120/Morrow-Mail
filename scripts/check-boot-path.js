@@ -42,7 +42,6 @@ const syntax = [
   "scripts/check-brain-profile-layout.js",
   "host/agent.js",
   "host/compose-window.js",
-  "renderer/surface.js",
   "host/bot/constants.js",
   "host/bot/json.js",
   "host/bot/store.js",
@@ -328,6 +327,44 @@ assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css mi
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.strictEqual(pkg.name, "morrow-mail");
 assert.strictEqual(pkg.version, "0.2.25");
+const composeHost = require("../host/compose-window");
+assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
+assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
+assert.strictEqual(composeHost.composeWindowTitle({}), "New message — Morrow Mail");
+assert.strictEqual(composeHost.composeWindowTitle({ title: "x".repeat(200) }).slice(0, 180), "x".repeat(180));
+assert.deepEqual(composeHost.sanitizeComposeSeed(null), {});
+assert.throws(() => composeHost.sanitizeComposeSeed("nope"), /Compose could not be opened/);
+assert.throws(() => composeHost.sanitizeComposeSeed({ body: "x".repeat(composeHost.MAX_SEED_CHARS) }), /too large/);
+const composePlaced = composeHost.composeWindowBounds({ x: 10, y: 20, width: 800, height: 600 }, 1);
+assert.strictEqual(composePlaced.x, 10 + 48 + 28);
+assert.strictEqual(composePlaced.y, 20 + 48 + 28);
+assert.strictEqual(composePlaced.width, 1040);
+assert.strictEqual(composePlaced.minHeight, 560);
+const composeUnplaced = composeHost.composeWindowBounds(null, 0);
+assert.strictEqual(composeUnplaced.x, undefined);
+assert.ok(main.includes('require("./compose-window")'));
+assert.ok(main.includes("composeWindows.CHANNELS"));
+assert.ok(main.indexOf("createComposeHost") < main.lastIndexOf("attachIpc(preloadFile)"));
+assert.ok(preload.includes('"compose:open"') && preload.includes('"compose:pullSeed"') && preload.includes('"compose:allowClose"') && preload.includes('"compose:setTitle"') && preload.includes('"compose:requestClose"'));
+assert.ok(functionSource(appJs, "presentCompose").includes("openComposeWindow"));
+assert.ok(functionSource(appJs, "presentCompose").includes("openCompose(seed"));
+assert.ok(functionSource(appJs, "bootComposeWindow").includes("compose:requestClose"));
+assert.ok(functionSource(appJs, "bootComposeWindow").includes("openCompose(seed"));
+assert.ok(!functionSource(appJs, "bootComposeWindow").includes("presentCompose"));
+assert.ok(!functionSource(appJs, "bootComposeWindow").includes("mail:emailsUpdated"));
+assert.ok(!functionSource(appJs, "bootComposeWindow").includes("watchNetwork"));
+assert.ok(!functionSource(appJs, "bootComposeWindow").includes("reportUpdateReady"));
+assert.ok(functionSource(appJs, "boot").includes("isComposeWindow"));
+assert.ok(functionSource(appJs, "boot").includes("bootComposeWindow"));
+assert.ok(functionSource(appJs, "requestComposeWindowClose").includes("allowComposeClose"));
+assert.ok(functionSource(appJs, "requestComposeWindowClose").includes("hideUndoSend"));
+assert.ok(functionSource(appJs, "deliverMail").includes("allowComposeClose"));
+assert.ok(functionSource(appJs, "editScheduledMail").includes("schedulePreset"));
+assert.ok(functionSource(appJs, "editScheduledMail").includes("openComposeWindow"));
+assert.ok(appJs.includes("presentCompose(newMailSeed())"));
+assert.ok(html.includes("compose-role.js"));
+assert.ok(css.includes('html[data-window="compose"]'));
+assert.ok(fs.existsSync(path.join(root, "docs/adr/2026-10-21-compose-window.md")));
 assert.strictEqual(pkg.build.productName, "Morrow Mail");
 assert.strictEqual(pkg.build.appId, "com.coke1120.morrow-mail");
 assert.notStrictEqual(pkg.build.appId, "org.morrowmail.desktop");
@@ -1261,6 +1298,14 @@ assert.ok(!functionSource(appJs, "filteredEmails").includes("mail:search"));
 assert.ok(!functionSource(appJs, "filteredEmails").includes("textBody"));
 const independentDoc = fs.readFileSync(path.join(root, "docs/INDEPENDENT_UI.md"), "utf8");
 const parityDoc = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
+assert.ok(independentDoc.includes("compose window"));
+assert.ok(parityDoc.includes("compose window"));
+assert.ok(!independentDoc.includes("then the compose dialog"));
+assert.ok(!parityDoc.includes("same compose dialog"));
+assert.ok(!independentDoc.includes("85% of the window width"));
+assert.ok(!parityDoc.includes("85% of the window width"));
+assert.ok(fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8").includes("Drafts open in a compose window."));
+assert.ok(fs.readFileSync(path.join(root, "docs/adr/2026-10-21-macos-close-hides.md"), "utf8").includes("compose window"));
 assert.ok(independentDoc.includes("All Account Mail"));
 assert.ok(parityDoc.includes("All Account Mail"));
 assert.ok(independentDoc.includes("Unread chip"));
@@ -2136,16 +2181,12 @@ assert.ok(appJs.includes("Mark todo done and Dismiss only update this local Agen
 assert.ok(appJs.includes('agentActionButton("open", "Open"') && appJs.includes('agentActionButton("reply", "Reply"'));
 assert.ok(appJs.includes('agentActionButton("reply-all", "Reply All"') && appJs.includes('agentActionButton("read", "Mark as read"'));
 assert.ok(appJs.includes('agentActionButton("done", "Mark todo done"') && appJs.includes('agentActionButton("dismiss", "Dismiss"'));
-assert.ok(appJs.includes("host:openComposeWindow") && appJs.includes("function openComposeInWindow("));
-assert.ok(appJs.includes("host:takeComposeSeed") && appJs.includes("host:closeComposeWindow"));
-assert.ok(preload.includes("host:openComposeWindow") && preload.includes("compose:requestClose"));
-assert.ok(html.includes("surface.js") && css.includes('html[data-surface="compose"]') && css.includes("button.agent-action"));
-assert.ok(main.includes("compose-window") && ipcSrc.includes("host:openComposeWindow"));
-const composeWindow = require("../host/compose-window");
-assert.deepStrictEqual(composeWindow.publicSeed(null), {});
-assert.strictEqual(composeWindow.publicSeed({ title: "Reply", kind: "reply", sourceMessageId: "m1" }).title, "Reply");
-assert.strictEqual(composeWindow.composeWindowKey({ kind: "all", sourceMessageId: "m1" }), "all\0m1");
-assert.strictEqual(composeWindow.composeWindowKey({ title: "New message" }), "");
+assert.ok(functionSource(appJs, "replyToAgentItem").includes("presentCompose"));
+assert.ok(functionSource(appJs, "presentCompose").includes("openComposeWindow"));
+assert.ok(preload.includes('"compose:open"') && preload.includes("compose:requestClose"));
+assert.ok(html.includes("compose-role.js") && css.includes('html[data-window="compose"]') && css.includes("button.agent-action"));
+assert.ok(main.includes("createComposeHost") && !ipcSrc.includes("host:openComposeWindow"));
+assert.ok(!appJs.includes("host:openComposeWindow") && !html.includes("surface.js"));
 assert.ok(html.includes('id="agent-composer"') && html.includes('id="agent-send"') && html.includes('id="agent-input"'));
 assert.ok(html.includes('id="agent-memory"') && html.includes('id="rail-brain"') && html.includes('id="agent-home"') && html.includes('id="side-mail"'));
 assert.ok(!html.includes('id="side-agent"') && !html.includes('id="side-brain"') && !html.includes("side-switch"));

@@ -5676,7 +5676,7 @@ function paintSuggestions(email) {
     button.className = "ghost";
     button.textContent = text;
     button.addEventListener("click", () => {
-      openCompose(withSuggestion(composeSeed(email, "reply", self), text))
+      presentCompose(withSuggestion(composeSeed(email, "reply", self), text))
         .catch((error) => showStatus(error.message, true));
     });
     list.appendChild(button);
@@ -6520,7 +6520,7 @@ async function replyFromList(email, kind) {
   if (!opened) throw new Error("That message is no longer in the mailbox.");
   const account = state.accounts.find((item) => item.id === opened.accountId) || selectedAccount();
   const self = (account && (account.preferredFromAddress || account.email)) || "";
-  await openCompose(composeSeed(opened, kind, self));
+  await presentCompose(composeSeed(opened, kind, self));
 }
 
 async function finishRemoval(email, label, data) {
@@ -10290,38 +10290,138 @@ function changeComposeFrom() {
   paintComposeNote();
 }
 
-function composeSurface() {
-  return document.documentElement.dataset.surface === "compose";
-}
-
-async function openComposeInWindow(seed) {
-  if (composeSurface()) {
-    await openCompose(seed);
-    return;
-  }
-  await call("host:openComposeWindow", { seed: seed || {} });
-}
-
-async function presentHostCompose() {
-  const data = await call("host:takeComposeSeed");
-  const seed = data && data.seed && typeof data.seed === "object" ? data.seed : {};
-  await openCompose(seed);
-}
-
-let composeSurfaceClosing = false;
-async function closeComposeSurface() {
-  if (!composeSurface() || composeSurfaceClosing) return;
-  if ($("compose") && $("compose").open) {
-    const allowed = await requestComposeClose();
-    if (!allowed) return;
-    return;
-  }
-  composeSurfaceClosing = true;
+function isComposeWindow() {
   try {
-    await call("host:closeComposeWindow");
+    const root = document.documentElement;
+    if (root && root.dataset && root.dataset.window === "compose") return true;
+    const search = window.location && window.location.search;
+    if (typeof search === "string" && new URLSearchParams(search).get("role") === "compose") {
+      if (root && root.dataset) root.dataset.window = "compose";
+      return true;
+    }
+  } catch { /* vm checks have no location */ }
+  return false;
+}
+
+let composeWindowClosing = false;
+let composeCloseQueued = false;
+
+function newMailSeed() {
+  const account = selectedAccount();
+  return { title: "New message", kind: "new", accountId: (account && account.id) || state.accountId || "" };
+}
+
+function cloneComposeSeed(seed) {
+  try {
+    return JSON.parse(JSON.stringify(seed || {}));
+  } catch {
+    throw new Error("That message could not be opened in a compose window.");
+  }
+}
+
+async function presentCompose(seed) {
+  if (api && typeof api.openComposeWindow === "function") {
+    await api.openComposeWindow(cloneComposeSeed(seed));
+    return;
+  }
+  await openCompose(seed || {});
+}
+
+function publishComposeTitle(text) {
+  if (!isComposeWindow()) return;
+  const title = String(text || "New message").trim() || "New message";
+  document.title = title + " — Morrow Mail";
+  if (api && typeof api.setComposeTitle === "function") api.setComposeTitle(title).catch(() => {});
+}
+
+function dismissComposeSurface() {
+  if (isComposeWindow()) {
+    requestComposeWindowClose().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+    return;
+  }
+  requestComposeClose();
+}
+
+async function requestComposeWindowClose() {
+  if (!isComposeWindow()) return requestComposeClose();
+  if (composeWindowClosing) return;
+  if (state.composeInitializing) {
+    composeCloseQueued = true;
+    return;
+  }
+  if (state.composePending && !sendTimer) {
+    setComposeStatus("Finish the current action before closing.", true);
+    showStatus("Finish the current action before closing.", true);
+    return;
+  }
+  composeWindowClosing = true;
+  try {
+    if (sendTimer) {
+      hideUndoSend();
+      setComposeStatus("Send canceled. Your draft is ready to edit.");
+    }
+    const closed = await requestComposeClose();
+    if (!closed) {
+      if (!$("compose").open) {
+        openDialog("compose");
+        scheduleComposeLayout();
+      }
+      return;
+    }
+    if (api && typeof api.allowComposeClose === "function") api.allowComposeClose();
+  } finally {
+    composeWindowClosing = false;
+  }
+}
+
+function flushComposeWindowClose() {
+  if (!composeCloseQueued || !isComposeWindow()) return;
+  composeCloseQueued = false;
+  requestComposeWindowClose().catch(() => {});
+}
+
+function finishComposeOpen(fields) {
+  if (fields && fields.status && !state.composeIdentityError) setComposeStatus(fields.status);
+  flushComposeWindowClose();
+}
+
+async function loadComposeAccounts() {
+  const data = await call("mail:listAccounts");
+  state.accounts = Array.isArray(data) ? data : [];
+  if (!state.accountId && state.accounts[0]) state.accountId = state.accounts[0].id;
+}
+
+async function bootComposeWindow() {
+  try { document.documentElement.dataset.window = "compose"; } catch { /* the page is still the compose surface */ }
+  if (!api) {
+    showStatus("Mail preload is unavailable.", true);
+    return;
+  }
+  api.on("compose:requestClose", () => {
+    requestComposeWindowClose().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+  });
+  api.on("aiDraftWrite:event", onDraftEvent);
+  api.on("mail:accountsUpdated", (payload) => {
+    const accounts = payload && Array.isArray(payload.accounts) ? payload.accounts : null;
+    if (accounts) state.accounts = accounts;
+  });
+  wire();
+  let seed = {};
+  try {
+    if (typeof api.pullComposeSeed === "function") seed = (await api.pullComposeSeed()) || {};
   } catch (error) {
-    composeSurfaceClosing = false;
-    throw error;
+    showStatus(error instanceof Error ? error.message : String(error), true);
+  }
+  publishComposeTitle((seed && seed.title) || "New message");
+  await loadLook();
+  await loadShellPrefs();
+  try { await loadComposeAccounts(); }
+  catch (error) { showStatus(error instanceof Error ? error.message : String(error), true); }
+  if (seed && seed.accountId) state.accountId = seed.accountId;
+  try { await openCompose(seed || {}); }
+  catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+    flushComposeWindowClose();
   }
 }
 
@@ -10363,6 +10463,7 @@ async function openCompose(seed) {
   } : null;
   setComposeStatus("");
   $("compose-title").textContent = fields.title || "New message";
+  publishComposeTitle(fields.title || "New message");
   $("compose-to").value = fields.to || "";
   $("compose-cc").value = fields.cc || "";
   $("compose-bcc").value = fields.bcc || "";
@@ -10370,8 +10471,8 @@ async function openCompose(seed) {
   $("compose-body").value = fields.body || "";
   paintComposeEditor(fields.body || "", fields.htmlBody || "");
   $("ai-prompt").value = "";
-  $("schedule-preset").value = "1h";
-  $("schedule-at").value = "";
+  $("schedule-preset").value = fields.schedulePreset || "1h";
+  $("schedule-at").value = typeof fields.scheduleAt === "string" ? fields.scheduleAt : "";
   const fileInput = $("compose-file");
   if (fileInput) fileInput.value = "";
   resetComposeDrop();
@@ -10399,18 +10500,23 @@ async function openCompose(seed) {
   state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
   syncCompose();
   paintComposeNote();
-  if (!$("compose").open) return;
+  if (!$("compose").open) {
+    finishComposeOpen(fields);
+    return;
+  }
   scheduleComposeLayout();
   setAiMode(defaultAiMode(fields));
   $("compose-schedule-tools").open = false;
   showComposeSuggestions(fields).catch(() => {});
   if (opensAiWrite(fields, state.prefs)) {
     openComposeAi();
+    finishComposeOpen(fields);
     return;
   }
   closeComposeAi();
   if ($("compose-to").value.trim()) focusComposeBody();
   else $("compose-to").focus();
+  finishComposeOpen(fields);
 }
 
 function setComposeStatus(text, isError) {
@@ -10449,17 +10555,18 @@ async function requestComposeClose() {
   return true;
 }
 
-async function resumeDraft(email) {
+async function resumeDraft(email, extra) {
   const data = await call("mail:openEmail", { emailId: email.id });
   const draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
-  await openCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
+  await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
     fromAddress: draft.from,
     to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
     body: readable(draft),
     htmlBody: typeof draft.htmlBody === "string" ? draft.htmlBody : "",
     attachments: draft.attachments,
-    inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "" });
+    inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "",
+    ...(extra || {}) });
 }
 
 async function loadScheduled() {
@@ -10683,16 +10790,23 @@ async function editScheduledMail(row) {
   $("scheduled-status").textContent = "Removed from queue. A local draft is saved in Drafts.";
   await loadScheduled();
   await closeDialog("scheduled-dialog");
+  const handoff = {
+    schedulePreset: "custom",
+    scheduleAt: vacationLocalValue(draft.sendAt),
+    status: "Removed from queue; local draft saved. Review and choose a future time, then Schedule send.",
+  };
   try {
-    await resumeDraft({ id: draft.emailId, accountId: draft.accountId });
+    await resumeDraft({ id: draft.emailId, accountId: draft.accountId }, handoff);
   } catch (error) {
     openDialog("scheduled-dialog");
     throw new Error("Removed from queue and saved in local Drafts, but the editor could not open. Resume it from Drafts. " + (error.message || String(error)));
   }
-  $("schedule-preset").value = "custom";
-  $("schedule-at").value = vacationLocalValue(draft.sendAt);
-  syncScheduleFields();
-  setComposeStatus("Removed from queue; local draft saved. Review and choose a future time, then Schedule send.");
+  if (!(api && typeof api.openComposeWindow === "function")) {
+    $("schedule-preset").value = handoff.schedulePreset;
+    $("schedule-at").value = handoff.scheduleAt;
+    syncScheduleFields();
+    setComposeStatus(handoff.status);
+  }
 }
 
 async function composeOperation(work) {
@@ -10721,6 +10835,8 @@ async function scheduleMail(whenOverride) {
     await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
     state.composeQueued = true;
     $("compose-title").textContent = "Scheduled receipt";
+    // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
+    if (typeof publishComposeTitle === "function") publishComposeTitle("Scheduled receipt");
     state.composeBaseline = composeSnapshot();
     setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${state.composeMeta.fromAddress || account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
     await loadScheduled();
@@ -10891,6 +11007,10 @@ async function deliverMail(payload) {
     showStatus(message, true);
     return;
   } finally { state.composePending = false; syncCompose(); }
+  if (isComposeWindow()) {
+    if (api && typeof api.allowComposeClose === "function") api.allowComposeClose();
+    return;
+  }
   await loadList();
 }
 
@@ -11047,7 +11167,7 @@ function shortcutCatalog(platform) {
     { group: "Mail", keys: chord("F") + " or /", action: "Focus mail search" },
     { group: "Compose", keys: chord("Enter"), action: "Send" },
     { group: "Compose", keys: chord("S"), action: "Save draft" },
-    { group: "Window", keys: "Esc", action: "Close compose or dismiss an overlay. Also clears a message selection when that is already the Esc action." },
+    { group: "Window", keys: "Esc", action: "Close the compose window or dismiss an overlay. Also clears a message selection when that is already the Esc action." },
     { group: "Window", keys: chord(","), action: "Settings" },
     { group: "List", keys: "↑ or ↓", action: "Move through the message list" },
     { group: "List", keys: "Enter", action: "Open the highlighted message" },
@@ -11183,7 +11303,7 @@ function openReaderCompose(kind) {
   if (!email) return;
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
   const self = (account && (account.preferredFromAddress || account.email)) || "";
-  return openCompose(composeSeed(email, kind, self));
+  return presentCompose(composeSeed(email, kind, self));
 }
 
 function focusMailSearch() {
@@ -15066,7 +15186,7 @@ async function reviewDraft(draft) {
   if (!account) throw new Error("The proposal's mailbox is no longer connected. Reconnect it before reviewing this reply.");
   const self = account.preferredFromAddress || account.email || "";
   const seed = composeSeed(email, "reply", self);
-  await openCompose(withSuggestion(seed, body));
+  await presentCompose(withSuggestion(seed, body));
 }
 
 function paintMailBody(pane, email, repaint) {
@@ -15135,7 +15255,7 @@ async function openReplyCompose(messageId) {
   const account = state.accounts.find((item) => item.id === email.accountId);
   if (!account) throw new Error("The mailbox is no longer connected.");
   const self = account.preferredFromAddress || account.email || "";
-  await openCompose(composeSeed(email, "reply", self));
+  await presentCompose(composeSeed(email, "reply", self));
 }
 
 async function showStoredRun(run) {
@@ -15490,7 +15610,7 @@ async function replyToAgentItem(item, kind) {
   const account = state.accounts.find((row) => row.id === email.accountId);
   if (!account) throw new Error("The mailbox is no longer connected.");
   const self = account.preferredFromAddress || account.email || "";
-  await openComposeInWindow(composeSeed(email, kind === "all" ? "all" : "reply", self));
+  await presentCompose(composeSeed(email, kind === "all" ? "all" : "reply", self));
 }
 
 async function markAgentMessageRead(item, card) {
@@ -16952,7 +17072,7 @@ function paintBotProbe(access) {
 
 async function openBotDraft(proposalId) {
   const seed = await call("bot:draftComposeSeed", { proposalId });
-  await openCompose({
+  await presentCompose({
     accountId: seed.accountId,
     to: seed.to,
     cc: seed.cc,
@@ -17268,7 +17388,7 @@ function wire() {
           dismissComposeAi().catch(() => {});
           return;
         }
-        requestComposeClose();
+        dismissComposeSurface();
         return;
       }
       const apiMotion = motionApi();
@@ -17719,7 +17839,7 @@ function wire() {
   $("oauth-microsoft").addEventListener("click", () => connectOAuth("microsoft"));
   $("remove").addEventListener("click", () => guard(removeAccount));
   $("compose-open").addEventListener("click", () => {
-    openCompose().catch((error) => showStatus(error.message, true));
+    presentCompose(newMailSeed()).catch((error) => showStatus(error.message, true));
   });
   $("compose-show-cc")?.addEventListener("click", () => {
     state.composeShowCc = true;
@@ -17738,15 +17858,9 @@ function wire() {
   $("compose").addEventListener("close", () => {
     stopDraftWrite();
     closeComposeAi();
-    if (composeSurface() && !composeSurfaceClosing) {
-      composeSurfaceClosing = true;
-      call("host:closeComposeWindow").catch(() => {
-        composeSurfaceClosing = false;
-      });
-    }
   });
   $("compose-close").addEventListener("click", () => {
-    requestComposeClose();
+    dismissComposeSurface();
   });
   const aiOpen = $("compose-ai-open");
   if (aiOpen && typeof aiOpen.addEventListener === "function") {
@@ -17826,6 +17940,10 @@ function watchNetwork() {
 }
 
 async function boot() {
+  if (isComposeWindow()) {
+    await bootComposeWindow();
+    return;
+  }
   if (!api) {
     showStatus("Mail preload is unavailable.", true);
     return;
@@ -17858,11 +17976,6 @@ async function boot() {
   api.on("emailBrain:refreshState", onBrainRefreshState);
   api.on("emailBrain:rebuildState", onBrainRebuildState);
   api.on("emailBrain:scheduleFired", onScheduleFired);
-  if (composeSurface()) {
-    api.on("compose:requestClose", () => {
-      closeComposeSurface().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
-    });
-  }
   try {
     const version = await api.invoke("app:getVersion");
     appVersion = typeof version === "string" ? version : "";
@@ -17883,15 +17996,6 @@ async function boot() {
   await loadOauthStatus();
   await loadShellPrefs();
   await loadAccounts();
-  if (composeSurface()) {
-    try {
-      await presentHostCompose();
-    } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      setComposeStatus(text, true);
-      showStatus(text, true);
-    }
-  }
   if (typeof api.reportUpdateReady === "function") api.reportUpdateReady();
 }
 

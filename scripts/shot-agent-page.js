@@ -162,7 +162,6 @@ contextBridge.exposeInMainWorld("morrow", {
     if (channel === "morrow:configGetSidebarCollapsedFolders") return Promise.resolve({});
     if (channel === "host:updateGetState" || channel === "host:updateCheck") return Promise.resolve({ enabled: false });
     if (channel === "host:aiGetConfig") return Promise.resolve({ hasKey: true });
-    if (channel === "host:openComposeWindow") return Promise.resolve({ success: true, data: { opened: true } });
     if (channel.indexOf("configGet") >= 0 || channel.indexOf("config:get") === 0 || channel.indexOf("configSet") >= 0 || channel.indexOf("config:set") === 0) {
       return Promise.resolve(false);
     }
@@ -206,6 +205,10 @@ contextBridge.exposeInMainWorld("morrow", {
   },
   on() { return function () {}; },
   reportUpdateReady() {},
+  openComposeWindow(seed) {
+    log.push({ channel: "compose:open", payload: seed || null });
+    return Promise.resolve({ success: true, data: { opened: true } });
+  },
 });
 contextBridge.exposeInMainWorld("morrowShot", {
   log() { return log.slice(); },
@@ -330,14 +333,14 @@ app.whenReady().then(async () => {
   })()`, true);
   if (unread) throw new Error("first card stayed unread");
   await win.webContents.executeJavaScript(`document.querySelector('[data-action="reply"]').click()`, true);
-  await waitFor(win, `window.morrowShot.log().some((row) => row.channel === "host:openComposeWindow" && row.payload && row.payload.seed && row.payload.seed.kind === "reply")`, "reply window");
+  await waitFor(win, `window.morrowShot.log().some((row) => row.channel === "compose:open" && row.payload && row.payload.kind === "reply")`, "reply window");
   await win.webContents.executeJavaScript(`document.querySelector('[data-action="reply-all"]').click()`, true);
-  await waitFor(win, `window.morrowShot.log().some((row) => row.channel === "host:openComposeWindow" && row.payload && row.payload.seed && row.payload.seed.kind === "all")`, "reply all window");
+  await waitFor(win, `window.morrowShot.log().some((row) => row.channel === "compose:open" && row.payload && row.payload.kind === "all")`, "reply all window");
   const shot = await win.webContents.capturePage();
   fs.writeFileSync(path.join(outDir, "agent-todos-after-read.png"), shot.toPNG());
   const summary = await win.webContents.executeJavaScript(`(() => {
-    const calls = window.morrowShot.log().filter((row) => row.channel === "host:openComposeWindow" || row.channel === "mail:markRead");
-    return calls.map((row) => ({ channel: row.channel, kind: row.payload && row.payload.seed && row.payload.seed.kind, isRead: row.payload && row.payload.isRead, title: row.payload && row.payload.seed && row.payload.seed.title }));
+    const calls = window.morrowShot.log().filter((row) => row.channel === "compose:open" || row.channel === "mail:markRead");
+    return calls.map((row) => ({ channel: row.channel, kind: row.payload && row.payload.kind, isRead: row.payload && row.payload.isRead, title: row.payload && row.payload.title }));
   })()`, true);
   fs.writeFileSync(path.join(outDir, "agent-todo-actions.json"), JSON.stringify({ labels, icons, pageHeight, summary }, null, 2));
   console.log(JSON.stringify(summary));

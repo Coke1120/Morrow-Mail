@@ -165,9 +165,9 @@ const INVOKE = [
   "bot:probeServe",
   "bot:draftComposeSeed",
   "bot:dismissDraftProposal",
-  "host:openComposeWindow",
-  "host:takeComposeSeed",
-  "host:closeComposeWindow",
+  "compose:open",
+  "compose:pullSeed",
+  "compose:setTitle",
 ];
 
 const EVENTS = [
@@ -209,6 +209,19 @@ contextBridge.exposeInMainWorld("morrow", {
     if (typeof payload?.nonce === "string" && (choice === "quit" || choice === "stay" || choice === "view")) {
       ipcRenderer.send("app:quitScheduledChoice", { nonce: payload.nonce, choice });
     }
+  },
+  openComposeWindow(seed) {
+    return ipcRenderer.invoke("compose:open", seed);
+  },
+  pullComposeSeed() {
+    return ipcRenderer.invoke("compose:pullSeed");
+  },
+  allowComposeClose() {
+    ipcRenderer.send("compose:allowClose");
+  },
+  setComposeTitle(title) {
+    const text = typeof title === "string" ? title : "";
+    return ipcRenderer.invoke("compose:setTitle", text);
   },
   invoke(channel, payload) {
     if (!invokeSet.has(channel)) {

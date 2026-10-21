@@ -20,6 +20,7 @@ const FIRST_PARTY_PRELOAD = path.join(FIRST_PARTY_DIR, "preload.js");
 const FIRST_PARTY_HTML = path.join(FIRST_PARTY_DIR, "index.html");
 const updater = require("./updater");
 const windowState = require("./window-state");
+const composeWindows = require("./compose-window");
 const { gate: updateGate, requestRendererQuiescence } = require("./update-quiescence");
 const ZOOM_STEP = 0.5;
 
@@ -170,6 +171,7 @@ function attachIpc(preloadFile) {
   const directHost = new Set([...updater.CHANNELS, ...AI_CHANNELS]);
   for (const name of ["host:updatePrepared", "host:updatePrepareForInstall", "host:updateResume", "host:updateStartupReady"]) directHost.add(name);
   for (const name of ["app:confirmQuitScheduled", "app:dismissQuitScheduled", "app:quitScheduledChoice", "app:quitScheduledShown"]) directHost.add(name);
+  for (const name of composeWindows.CHANNELS) directHost.add(name);
   for (const channel of channels) {
     if (directHost.has(channel)) continue;
     ipcMain.handle(channel, (event, ...args) => updateGate.run(() => bus.handle(event, channel, ...args)));
@@ -741,16 +743,16 @@ app.whenReady().then(async () => {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       callback({ responseHeaders: details.responseHeaders });
     });
-    attachIpc(preloadFile);
     shellSession = { preloadFile, mode };
-    require("./compose-window").configure({
-      preloadFile,
+    composeWindows.createComposeHost({
+      getParent: () => shellWindow,
+      preloadFile: () => shellSession && shellSession.preloadFile,
+      mode: () => shellSession && shellSession.mode,
+      htmlFile: FIRST_PARTY_HTML,
       icon: APP_ICON,
-      load(win) {
-        if (mode === "asar") return win.loadURL("morrow://local/index.html?surface=compose");
-        return win.loadFile(FIRST_PARTY_HTML, { query: { surface: "compose" } });
-      },
-    });
+      backgroundColor: () => (shellSession && shellSession.mode === "asar" ? "#193c34" : "#e7f0e4"),
+    }).register();
+    attachIpc(preloadFile);
     const win = await openShellWindow();
     if (!win) throw new Error("Morrow Mail could not open its window.");
     if (process.platform === "darwin" && app.isPackaged) {

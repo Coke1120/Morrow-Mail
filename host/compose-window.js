@@ -1,157 +1,164 @@
-const path = require("path");
+// Compose BrowserWindows. Helpers stay free of Electron so plain Node checks can load them.
+const CHANNELS = ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"];
+const MAX_SEED_CHARS = 8000000;
 
-// Agent Reply and Reply All open here. Reader compose still uses the in-window
-// dialog until a shared compose-window branch lands; this module is that seam.
-let options = {
-  preloadFile: path.join(__dirname, "..", "renderer", "preload.js"),
-  icon: "",
-  load: null,
-};
-
-const seeds = new Map();
-const byKey = new Map();
-const closing = new Set();
-let quitting = false;
-let quitWatch = false;
-
-function configure(next) {
-  const incoming = next && typeof next === "object" ? next : {};
-  options = {
-    preloadFile: incoming.preloadFile || options.preloadFile,
-    icon: incoming.icon || options.icon,
-    load: typeof incoming.load === "function" ? incoming.load : options.load,
-  };
+function composeWindowTitle(seed) {
+  const raw = seed && typeof seed.title === "string" ? seed.title.trim() : "";
+  const title = (raw || "New message").slice(0, 180);
+  return title + " — Morrow Mail";
 }
 
-function publicSeed(seed) {
-  if (!seed || typeof seed !== "object" || Array.isArray(seed)) return {};
+function sanitizeComposeSeed(seed) {
+  if (seed == null) return {};
+  if (typeof seed !== "object" || Array.isArray(seed)) {
+    throw new Error("Compose could not be opened.");
+  }
+  let text;
   try {
-    return JSON.parse(JSON.stringify(seed));
+    text = JSON.stringify(seed);
   } catch {
-    return {};
+    throw new Error("That message could not be opened in a compose window.");
   }
-}
-
-function composeWindowKey(seed) {
-  const safe = publicSeed(seed);
-  const id = safe.sourceMessageId || safe.draftId || "";
-  if (!id) return "";
-  const kind = safe.kind ? String(safe.kind) : "new";
-  return kind + "\0" + String(id);
-}
-
-function watchQuit() {
-  if (quitWatch) return;
-  quitWatch = true;
-  const electron = require("electron");
-  const app = electron && electron.app;
-  if (!app || typeof app.on !== "function") return;
-  app.on("before-quit", () => {
-    quitting = true;
-  });
-}
-
-function browserWindow() {
-  const electron = require("electron");
-  if (!electron || typeof electron !== "object" || !electron.BrowserWindow) {
-    throw new Error("Compose windows open in the Morrow Mail app.");
+  if (typeof text !== "string") {
+    throw new Error("That message could not be opened in a compose window.");
   }
-  return electron.BrowserWindow;
+  if (text.length > MAX_SEED_CHARS) {
+    throw new Error("That message is too large to open in a compose window.");
+  }
+  return JSON.parse(text);
 }
 
-function openComposeWindow(seed) {
-  const safe = publicSeed(seed);
-  const key = composeWindowKey(safe);
-  const BrowserWindow = browserWindow();
-  watchQuit();
-  if (key && byKey.has(key)) {
-    const existing = byKey.get(key);
-    if (existing && !existing.isDestroyed()) {
-      if (typeof existing.isMinimized === "function" && existing.isMinimized()) existing.restore();
-      existing.focus();
-      return { success: true, data: { opened: true, focused: true } };
+function composeWindowBounds(parentBounds, index) {
+  const shift = (Math.max(0, Number(index) || 0) % 6) * 28;
+  const bounds = { width: 1040, height: 780, minWidth: 720, minHeight: 560 };
+  if (parentBounds && Number.isFinite(parentBounds.x) && Number.isFinite(parentBounds.y)) {
+    bounds.x = Math.round(parentBounds.x + 48 + shift);
+    bounds.y = Math.round(parentBounds.y + 48 + shift);
+  }
+  return bounds;
+}
+
+function createComposeHost(options) {
+  const { BrowserWindow, ipcMain, shell } = require("electron");
+  const opts = options || {};
+  const records = new Map();
+
+  function parentBounds() {
+    const parent = typeof opts.getParent === "function" ? opts.getParent() : null;
+    if (!parent || typeof parent.isDestroyed !== "function" || parent.isDestroyed()) return null;
+    try { return parent.getBounds(); } catch { return null; }
+  }
+
+  function backgroundColor() {
+    const value = opts.backgroundColor;
+    if (typeof value === "function") return value();
+    return value || "#e7f0e4";
+  }
+
+  function preloadFile() {
+    const value = opts.preloadFile;
+    return typeof value === "function" ? value() : value;
+  }
+
+  function mode() {
+    return typeof opts.mode === "function" ? opts.mode() : opts.mode;
+  }
+
+  function open(seed) {
+    const clean = sanitizeComposeSeed(seed);
+    let index = 0;
+    for (const record of records.values()) {
+      if (record.win && !record.win.isDestroyed()) index += 1;
     }
-    byKey.delete(key);
+    const bounds = composeWindowBounds(parentBounds(), index);
+    // No parent and no modal: the mail window stays usable, and a compose window
+    // does not hide when the shell hides.
+    const win = new BrowserWindow({
+      ...bounds,
+      title: composeWindowTitle(clean),
+      icon: opts.icon,
+      backgroundColor: backgroundColor(),
+      webPreferences: {
+        preload: preloadFile(),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+      },
+    });
+    const id = win.webContents.id;
+    const record = { win, seed: clean, allowClose: false, closeRequested: false };
+    records.set(id, record);
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      let parsed;
+      try { parsed = new URL(url); } catch { return { action: "deny" }; }
+      if (parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "mailto:") {
+        shell.openExternal(url).catch(() => {});
+      }
+      return { action: "deny" };
+    });
+    const fail = () => {
+      if (win.isDestroyed()) return;
+      record.allowClose = true;
+      win.close();
+    };
+    win.on("closed", () => { records.delete(id); });
+    win.on("close", (event) => {
+      const current = records.get(id);
+      if (!current || current.allowClose) return;
+      event.preventDefault();
+      current.closeRequested = true;
+      if (win.webContents.isLoading()) return;
+      if (!win.isVisible()) win.show();
+      win.focus();
+      try { win.webContents.send("compose:requestClose"); } catch { /* the page is already gone */ }
+    });
+    win.webContents.on("did-finish-load", () => {
+      if (win.isDestroyed()) return;
+      win.setTitle(composeWindowTitle(record.seed));
+      if (!record.closeRequested) return;
+      try { win.webContents.send("compose:requestClose"); } catch { /* listener arrives with the page */ }
+    });
+    win.webContents.on("did-fail-load", (_event, _code, _desc, _url, isMainFrame) => {
+      if (isMainFrame === false) return;
+      fail();
+    });
+    const loading = mode() === "asar"
+      ? win.loadURL("morrow://local/index.html?role=compose")
+      : win.loadFile(opts.htmlFile, { query: { role: "compose" } });
+    loading.catch(fail);
+    return { ok: true, id };
   }
-  const winOpts = {
-    width: 960,
-    height: 780,
-    minWidth: 720,
-    minHeight: 560,
-    title: (safe.title ? String(safe.title) : "New message") + " — Morrow Mail",
-    backgroundColor: "#ffffff",
-    autoHideMenuBar: true,
-    webPreferences: {
-      preload: options.preloadFile,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-  };
-  if (options.icon) winOpts.icon = options.icon;
-  try {
-    const focused = typeof BrowserWindow.getFocusedWindow === "function" ? BrowserWindow.getFocusedWindow() : null;
-    if (focused && !focused.isDestroyed()) {
-      const bounds = focused.getBounds();
-      winOpts.x = Math.round(bounds.x + 32);
-      winOpts.y = Math.round(bounds.y + 32);
-    }
-  } catch {
-    /* the system places the window */
+
+  function register() {
+    ipcMain.handle("compose:open", (_event, seed) => open(seed));
+    ipcMain.handle("compose:pullSeed", (event) => {
+      const record = records.get(event.sender.id);
+      if (!record) return null;
+      return JSON.parse(JSON.stringify(record.seed));
+    });
+    ipcMain.handle("compose:setTitle", (event, text) => {
+      const record = records.get(event.sender.id);
+      if (!record || record.win.isDestroyed()) return false;
+      record.win.setTitle(composeWindowTitle({ title: typeof text === "string" ? text : "" }));
+      return true;
+    });
+    ipcMain.on("compose:allowClose", (event) => {
+      const record = records.get(event.sender.id);
+      if (!record || record.win.isDestroyed()) return;
+      record.allowClose = true;
+      record.win.close();
+    });
+    return { open, records };
   }
-  const win = new BrowserWindow(winOpts);
-  const id = win.webContents.id;
-  seeds.set(id, safe);
-  if (key) byKey.set(key, win);
-  const forget = () => {
-    seeds.delete(id);
-    closing.delete(id);
-    if (key && byKey.get(key) === win) byKey.delete(key);
-  };
-  win.on("closed", forget);
-  win.on("close", (event) => {
-    if (quitting || closing.has(id)) return;
-    if (event && typeof event.preventDefault === "function") event.preventDefault();
-    try { win.webContents.send("compose:requestClose"); } catch { /* already closing */ }
-  });
-  const pending = options.load
-    ? options.load(win)
-    : win.loadFile(path.join(__dirname, "..", "renderer", "index.html"), { query: { surface: "compose" } });
-  Promise.resolve(pending).catch(() => {});
-  return { success: true, data: { opened: true, focused: false } };
-}
 
-function takeComposeSeed(event) {
-  const id = event && event.sender && event.sender.id;
-  return { success: true, data: { seed: seeds.has(id) ? seeds.get(id) : null } };
-}
-
-function closeComposeWindow(event) {
-  const BrowserWindow = browserWindow();
-  const contents = event && event.sender;
-  const win = contents && typeof BrowserWindow.fromWebContents === "function"
-    ? BrowserWindow.fromWebContents(contents)
-    : null;
-  if (!win || win.isDestroyed()) return { success: true, data: { closed: true } };
-  closing.add(win.webContents.id);
-  win.close();
-  return { success: true, data: { closed: true } };
-}
-
-function answer(channel, payload, event) {
-  try {
-    if (channel === "host:openComposeWindow") return openComposeWindow(payload && payload.seed);
-    if (channel === "host:takeComposeSeed") return takeComposeSeed(event);
-    if (channel === "host:closeComposeWindow") return closeComposeWindow(event);
-  } catch (error) {
-    return { success: false, error: { message: error instanceof Error ? error.message : String(error) } };
-  }
-  return undefined;
+  return { open, register, records };
 }
 
 module.exports = {
-  configure,
-  publicSeed,
-  composeWindowKey,
-  answer,
+  CHANNELS,
+  MAX_SEED_CHARS,
+  composeWindowTitle,
+  sanitizeComposeSeed,
+  composeWindowBounds,
+  createComposeHost,
 };
