@@ -802,6 +802,17 @@ assert.ok(settingsHtml.includes('id="ai-base"') && settingsHtml.includes('id="ai
 assert.ok(settingsHtml.includes('type="password"') && settingsHtml.includes('list="ai-model-list"'));
 assert.ok(settingsHtml.includes("Save AI") && settingsHtml.includes("Fetch models") && settingsHtml.includes("Test connection"));
 assert.ok(settingsHtml.includes("Test connection and Fetch models use the values in this form"));
+// #158: remote-image privacy, visible fold loading, and field-level errors.
+assert.match(settingsHtml, /id="pref-images"[^>]*aria-describedby="pref-images-help"/);
+const remoteImagesHelp = settingsHtml.slice(settingsHtml.indexOf('id="pref-images-help"')).split("</p>")[0];
+assert.match(remoteImagesHelp, /tracking|report when/i);
+assert.ok(css.includes(".fold-loading") && css.includes(".fold-loading-spin"));
+assert.ok(functionSource(appJs, "loadSettingsFold").includes("setSettingsFoldLoading"));
+const fieldErrorSource = functionSource(appJs, "setFieldError");
+assert.ok(fieldErrorSource.includes("aria-invalid") && fieldErrorSource.includes("aria-describedby"));
+for (const statusName of ["setAiStatus", "setOooStatus", "setBotStatus"]) {
+  assert.ok(functionSource(appJs, statusName).includes("setFieldError"), `${statusName} must attach field errors`);
+}
 for (const channel of ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels"]) {
   assert.ok(appJs.includes('"' + channel + '"'), channel);
   assert.ok(registered.has(channel), `preload does not register ${channel}`);

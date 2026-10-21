@@ -768,6 +768,27 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 
 .fold-panel[hidden] { display: none; }
 
+.fold-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fold-loading-spin {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent-ink);
+  border-radius: 50%;
+  animation: page-busy-spin 0.8s linear infinite;
+}
+
 #settings h3 {
   margin: 0 0 12px;
   font-size: 17px;
@@ -826,6 +847,10 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
   flex-direction: column;
   gap: 4px;
 }
+#settings-mail .checks .check-hint {
+  margin: 0 0 2px 24px;
+  font-size: 12px;
+}
 #settings-mail .settings-group {
   display: flex;
   flex-direction: column;
@@ -880,6 +905,8 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 .settings-full-width { grid-column: 1 / -1; }
 #settings .settings-field-grid p, #settings .settings-field-grid .row { margin: 0; }
 #settings .settings-field-grid .field p { margin: 6px 0 0; }
+#settings .field-error { margin: 4px 0 0; color: var(--danger); font-size: 12px; font-weight: 500; }
+#settings [aria-invalid="true"] { border-color: var(--danger); }
 .settings-intro { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
 #settings .settings-intro p { flex: 1 1 240px; margin: 0; }
 .settings-disclosure { margin-top: 12px; border-top: 1px solid var(--line); font-size: 13px; }
@@ -3146,6 +3173,7 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   button.is-syncing svg { animation: none; }
   .fold-toggle svg { transition: none; }
   .page-busy-spin { animation: none; }
+  .fold-loading-spin { animation: none; }
 }
 
 .compose-quote-body {
