@@ -1273,14 +1273,39 @@ function vacationProvider(account) {
 }
 
 function vacationLink(url) {
+  const text = typeof url === "string" ? url : "";
   const links = [
-    "https://mail.google.com/mail/u/0/#settings/general",
     "https://outlook.live.com/mail/0/options/mail/automaticReplies",
     "https://outlook.office.com/mail/options/mail/automaticReplies",
     "https://mail.yahoo.com/",
     "https://www.icloud.com/mail",
   ];
-  return links.includes(url) ? url : "";
+  if (links.includes(text)) return text;
+  // Gmail lets the signed-in browser pick the account named in authuser, so the
+  // link still works for several Google mailboxes on the same profile.
+  const google = /^https:\/\/mail\.google\.com\/mail\/u\/\?authuser=([^&#\s]+)#settings\/general$/.exec(text);
+  if (!google) return "";
+  let email = "";
+  try {
+    email = decodeURIComponent(google[1]);
+  } catch {
+    return "";
+  }
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? text : "";
+}
+
+function vacationScheduleError(input) {
+  const row = input && typeof input === "object" ? input : {};
+  const provider = row.provider === "microsoft" ? "microsoft" : row.provider === "google" ? "google" : "imap";
+  if (row.mode !== "scheduled") return "";
+  const startMs = Date.parse(row.start || "");
+  const endMs = Date.parse(row.end || "");
+  if (provider === "microsoft") {
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return "Outlook needs a start and an end.";
+  } else if (!Number.isFinite(startMs) && !Number.isFinite(endMs)) return "Enter a start or an end.";
+  if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs >= endMs) return "The end must be after the start.";
+  if (Number.isFinite(endMs) && endMs <= Date.now()) return "Choose an end time in the future.";
+  return "";
 }
 
 function vacationDraft(input) {
@@ -1305,13 +1330,10 @@ function vacationDraft(input) {
   let start = "";
   let end = "";
   if (mode === "scheduled") {
+    const scheduleError = vacationScheduleError({ provider, mode, start: row.start, end: row.end });
+    if (scheduleError) return { error: scheduleError };
     const startMs = Date.parse(row.start || "");
     const endMs = Date.parse(row.end || "");
-    if (provider === "microsoft") {
-      if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return { error: "Outlook needs a start and an end." };
-    } else if (!Number.isFinite(startMs) && !Number.isFinite(endMs)) return { error: "Enter a start or an end." };
-    if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs >= endMs) return { error: "The end must be after the start." };
-    if (Number.isFinite(endMs) && endMs <= Date.now()) return { error: "Choose an end time in the future." };
     start = Number.isFinite(startMs) ? new Date(startMs).toISOString() : "";
     end = Number.isFinite(endMs) ? new Date(endMs).toISOString() : "";
   }
@@ -1395,10 +1417,29 @@ function vacationConfirm(kind, owner, options) {
     + (mode !== "disabled" ? (row.subject ? "\nSubject: " + excerpt(row.subject) : "")
       + "\n" + (provider === "microsoft" ? "Internal reply: " : "Reply: ") + excerpt(row.message)
       + (provider === "microsoft" ? "\nExternal reply: " + excerpt(row.externalMessage) : "") : "");
+  if (kind === "enable") {
+    return {
+      title: "Enable automatic replies",
+      body: "Enable automatic replies for " + who + "?\n\n" + closed + "\n\n" + where,
+      confirm: "Enable",
+      cancel: "Cancel",
+      needsName: false,
+    };
+  }
+  if (kind === "draft") {
+    return {
+      title: "Save automatic reply settings",
+      body: "Save these settings for " + who + "?\n\nAutomatic replies stay off until you choose Enable, so nobody receives them yet.\n\n" + where,
+      confirm: "Save changes",
+      cancel: "Cancel",
+      needsName: false,
+    };
+  }
+  const enabling = mode !== "disabled";
   return {
-    title: mode === "disabled" ? "Save disabled settings" : "Save and enable",
-    body: (mode === "disabled" ? "Save disabled settings for " : "Enable automatic replies for ") + who + "?\n\n"
-      + (mode === "disabled" ? "These settings will not enable automatic replies." : closed) + "\n\n" + where,
+    title: enabling ? "Save changes" : "Save disabled settings",
+    body: (enabling ? "Save changes to the automatic replies for " : "Save disabled settings for ") + who + "?\n\n"
+      + (enabling ? closed : "These settings will not enable automatic replies.") + "\n\n" + where,
     confirm: "Save",
     cancel: "Cancel",
     needsName: false,
@@ -9793,6 +9834,62 @@ function vacationUtcValue(value) {
   return Number.isFinite(+date) ? date.toISOString() : "";
 }
 
+function vacationEnabled() {
+  const settings = vacationCache && vacationCache.settings;
+  return !!(settings && settings.mode && settings.mode !== "disabled");
+}
+
+function syncVacationActions() {
+  if (!vacationCache) return;
+  const view = vacationView(vacationCache);
+  const enabled = vacationEnabled();
+  const save = $("ooo-save");
+  const enable = $("ooo-enable");
+  const disable = $("ooo-disable");
+  const scheduleError = $("ooo-schedule-error") && !$("ooo-schedule-error").hidden;
+  save.classList.toggle("primary", enabled);
+  save.classList.toggle("ghost", !enabled);
+  save.disabled = !view.canSave || !!scheduleError;
+  if (enable) {
+    enable.hidden = enabled || !view.canSave;
+    enable.classList.toggle("primary", !enabled);
+    enable.disabled = !view.canSave || !!scheduleError;
+  }
+  if (disable) {
+    disable.hidden = !view.canDisable;
+    disable.disabled = !view.canDisable;
+  }
+  const help = $("ooo-action-help");
+  if (help) {
+    help.textContent = enabled
+      ? "Save changes updates the replies that are already on. Disable stops them and keeps your text."
+      : "Save changes stores these settings while replies stay off. Enable starts sending them to the audience below.";
+  }
+}
+
+function validateVacationSchedule() {
+  if (!vacationCache) return;
+  const scheduled = $("ooo-mode").value === "scheduled";
+  const error = scheduled ? vacationScheduleError({
+    provider: vacationCache.provider,
+    mode: "scheduled",
+    start: vacationUtcValue($("ooo-start").value),
+    end: vacationUtcValue($("ooo-end").value),
+  }) : "";
+  const box = $("ooo-schedule-error");
+  if (box) {
+    box.textContent = error;
+    box.hidden = !error;
+  }
+  const start = $("ooo-start");
+  const end = $("ooo-end");
+  for (const input of [start, end]) {
+    if (input) input.setAttribute("aria-invalid", error ? "true" : "false");
+  }
+  if (start && end) end.min = start.value || "";
+  syncVacationActions();
+}
+
 function syncVacationFields() {
   if (!vacationCache) return;
   const provider = vacationCache.provider;
@@ -9802,8 +9899,9 @@ function syncVacationFields() {
   $("ooo-audience-label").hidden = provider === "imap";
   const none = $("ooo-audience").querySelector('option[value="none"]');
   if (none) none.hidden = provider !== "microsoft";
-  $("ooo-external-label").hidden = provider !== "microsoft";
-  $("ooo-domain-label").hidden = provider !== "google";
+  const audience = $("ooo-audience").value;
+  $("ooo-external-label").hidden = provider !== "microsoft" || audience === "none";
+  $("ooo-domain-label").hidden = provider !== "google" || audience === "none";
   const caption = $("ooo-message-caption");
   if (caption) caption.textContent = provider === "microsoft" ? "Reply within your organization" : "Reply message";
   const scheduledOption = $("ooo-mode").querySelector('option[value="scheduled"]');
@@ -9830,6 +9928,9 @@ function paintVacation(data) {
   if (link) {
     link.hidden = !href;
     if (href) link.href = href;
+    link.textContent = vacationCache && vacationCache.provider === "google" ? "Open Gmail settings"
+      : vacationCache && vacationCache.provider === "microsoft" ? "Open Outlook settings"
+        : "Open provider settings";
   }
   const fields = $("ooo-fields");
   if (fields) fields.hidden = !view.showForm;
@@ -9838,7 +9939,9 @@ function paintVacation(data) {
   $("ooo-timezone").textContent = "Times use " + Intl.DateTimeFormat().resolvedOptions().timeZone + ".";
   if (!vacationCache || !vacationCache.settings || !view.showForm) return;
   const settings = vacationCache.settings;
-  $("ooo-mode").value = settings.mode || "disabled";
+  // "Disabled" is no longer a choice in the schedule list: the Enable button
+  // turns replies on and the Disable button turns them off.
+  $("ooo-mode").value = settings.mode === "scheduled" ? "scheduled" : "always";
   $("ooo-subject").value = settings.subject || "";
   $("ooo-message").value = settings.message || "";
   $("ooo-external").value = settings.externalMessage || "";
@@ -9847,9 +9950,7 @@ function paintVacation(data) {
   $("ooo-start").value = vacationLocalValue(settings.start);
   $("ooo-end").value = vacationLocalValue(settings.end);
   syncVacationFields();
-  $("ooo-save").textContent = $("ooo-mode").value === "disabled" ? "Save disabled settings…" : "Save and enable…";
-  $("ooo-save").disabled = !view.canSave;
-  $("ooo-disable").disabled = !view.canDisable;
+  validateVacationSchedule();
 }
 
 function vacationFormBody(kind) {
@@ -9859,7 +9960,9 @@ function vacationFormBody(kind) {
     action: kind === "disable" ? "disable" : "save",
     confirmed: true,
     revision: vacationCache.revision,
-    mode: kind === "disable" ? "disabled" : $("ooo-mode").value,
+    mode: kind === "disable" ? "disabled"
+      : kind === "enable" || vacationEnabled() ? $("ooo-mode").value
+        : "disabled",
     subject: $("ooo-subject").value,
     message: $("ooo-message").value,
     externalMessage: $("ooo-external").value,
@@ -9920,12 +10023,17 @@ async function saveVacation(kind) {
   if (!account || !isLive(account) || !vacationCache || vacationCache.accountId !== account.id) {
     throw new Error("Choose a connected mailbox.");
   }
+  const enabled = vacationEnabled();
   const body = vacationFormBody(kind);
   if (kind !== "disable") {
     const draft = vacationDraft({ ...body, provider: vacationCache.provider });
-    if (draft.error) throw new Error(draft.error);
+    if (draft.error) {
+      if (body.mode === "scheduled") validateVacationSchedule();
+      throw new Error(draft.error);
+    }
   }
-  const answer = await askConfirm(vacationConfirm(kind === "disable" ? "disable" : "save", account.email || account.id, {
+  const confirmKind = kind === "disable" ? "disable" : kind === "enable" ? "enable" : enabled ? "save" : "draft";
+  const answer = await askConfirm(vacationConfirm(confirmKind, account.email || account.id, {
     ...body,
     provider: vacationCache.provider,
   }));
@@ -9938,7 +10046,9 @@ async function saveVacation(kind) {
   const saved = await call("mail:vacationPut", body);
   paintVacation(saved);
   oooBaseline = oooSnapshot();
-  setOooStatus("Saved on the provider.", false);
+  setOooStatus(kind === "disable" ? "Automatic replies are off."
+    : confirmKind === "draft" ? "Settings saved. Automatic replies stay off until you enable them."
+      : "Automatic replies are saved and on.", false);
 }
 
 async function grantVacationAccess() {
@@ -14638,10 +14748,13 @@ function wire() {
   });
   $("ooo-mode").addEventListener("change", () => {
     syncVacationFields();
-    if (vacationCache) {
-      $("ooo-save").textContent = $("ooo-mode").value === "disabled" ? "Save disabled settings…" : "Save and enable…";
-    }
+    validateVacationSchedule();
   });
+  $("ooo-audience").addEventListener("change", () => syncVacationFields());
+  for (const id of ["ooo-start", "ooo-end"]) {
+    $(id).addEventListener("input", () => validateVacationSchedule());
+    $(id).addEventListener("change", () => validateVacationSchedule());
+  }
   $("ooo-refresh").addEventListener("click", () => {
     guardOoo(() => refreshVacation());
   });
@@ -14650,6 +14763,9 @@ function wire() {
   });
   $("ooo-save").addEventListener("click", () => {
     guardOoo(() => saveVacation("save"));
+  });
+  $("ooo-enable").addEventListener("click", () => {
+    guardOoo(() => saveVacation("enable"));
   });
   $("ooo-disable").addEventListener("click", () => {
     guardOoo(() => saveVacation("disable"));

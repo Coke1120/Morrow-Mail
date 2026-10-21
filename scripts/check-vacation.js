@@ -116,6 +116,15 @@ async function run() {
     useDate: true,
   })).end, snapped.end);
   assert.equal(sieve.parseVacation('keep; vacation "nope";\n'), null);
+  assert.equal(
+    vacation.vacationUrl("google", "desk@gmail.com"),
+    "https://mail.google.com/mail/u/?authuser=desk%40gmail.com#settings/general",
+    "Gmail settings open for the connected account, not the first browser slot",
+  );
+  assert.equal(vacation.vacationUrl("google", ""), "", "no account means no provider link");
+  assert.match(vacation.vacationUrl("microsoft", "me@hotmail.com"), /^https:\/\/outlook\.live\.com\//);
+  assert.match(vacation.vacationUrl("microsoft", "me@contoso.com"), /^https:\/\/outlook\.office\.com\//);
+  assert.equal(vacation.vacationUrl("microsoft", ""), "", "no account means no provider link");
   assert.equal(vacation.plainFromHtml("<b>Provider formatted</b>"), "Provider formatted");
   assert.equal(vacation.revisionOf("same"), vacation.revisionOf("same"));
   assert.notEqual(vacation.revisionOf("same"), vacation.revisionOf("other"));

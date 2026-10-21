@@ -1881,6 +1881,7 @@ const providerUi = loadFunctions(appJs, [
   "providerFilterReveal",
   "vacationProvider",
   "vacationLink",
+  "vacationScheduleError",
   "vacationDraft",
   "vacationView",
   "vacationConfirm",
@@ -3015,6 +3016,13 @@ assert.strictEqual(providerUi.vacationProvider({ profile: "outlook" }), "microso
 assert.strictEqual(providerUi.vacationProvider({ imapSmtpProfile: "custom" }), "imap");
 assert.strictEqual(providerUi.vacationLink("https://mail.yahoo.com/"), "https://mail.yahoo.com/");
 assert.strictEqual(providerUi.vacationLink("https://evil.example/settings"), "");
+const googleVacationLink = "https://mail.google.com/mail/u/?authuser=desk%40example.invalid#settings/general";
+assert.strictEqual(providerUi.vacationLink(googleVacationLink), googleVacationLink);
+assert.strictEqual(providerUi.vacationLink("https://mail.google.com/mail/u/?authuser=not-an-address#settings/general"), "");
+assert.strictEqual(providerUi.vacationLink("https://mail.google.com/mail/u/0/#settings/general"), "");
+assert.strictEqual(providerUi.vacationScheduleError({ provider: "google", mode: "scheduled", start: "2090-10-02T08:00:00.000Z", end: "2090-10-02T07:00:00.000Z" }), "The end must be after the start.");
+assert.strictEqual(providerUi.vacationScheduleError({ provider: "google", mode: "always", start: "", end: "" }), "");
+assert.strictEqual(providerUi.vacationScheduleError({ provider: "microsoft", mode: "scheduled", start: "2090-10-02T08:00:00.000Z", end: "" }), "Outlook needs a start and an end.");
 assert.strictEqual(providerUi.vacationDraft({ provider: "imap", mode: "always", audience: "contacts", message: "Hi", restrictToDomain: false }).error, "IMAP vacation replies go to every sender.");
 assert.strictEqual(providerUi.vacationDraft({ provider: "google", mode: "always", audience: "all", message: "  ", subject: "Away", restrictToDomain: false }).error, "Enter a reply message.");
 const vacationSaved = providerUi.vacationDraft({
@@ -3051,6 +3059,11 @@ const oooReview = providerUi.vacationConfirm("save", "ada@example.com", { provid
 assert.match(oooReview, /2090-03-10 00:00 UTC/);
 assert.match(oooReview, /2090-03-12 00:00 UTC \(exclusive\)/);
 assert.match(oooReview, /All senders.*[\s\S]*Away today/);
+assert.strictEqual(providerUi.vacationConfirm("enable", "ada@example.com", { provider: "google", mode: "always", audience: "all", message: "Away" }).title, "Enable automatic replies");
+assert.strictEqual(providerUi.vacationConfirm("save", "ada@example.com", { provider: "google", mode: "always", audience: "all", message: "Away" }).title, "Save changes");
+const oooDraftReview = providerUi.vacationConfirm("draft", "ada@example.com", { provider: "google", mode: "disabled", audience: "all", message: "Away" }).body;
+assert.match(oooDraftReview, /stay off until you choose Enable/);
+assert.doesNotMatch(oooDraftReview, /Your mail server will send these automatic replies/);
 assert.match(providerUi.vacationConfirm("disable", "ada@example.com", { provider: "google" }).body, /New automatic replies will stop/);
 assert.doesNotMatch(providerUi.vacationConfirm("disable", "ada@example.com", { provider: "google" }).body, /continue while Morrow/);
 

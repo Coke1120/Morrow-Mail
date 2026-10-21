@@ -624,12 +624,6 @@ async function listCalendar(params) {
 }
 
 const VACATION_LINKS = {
-  google: "https://mail.google.com/mail/u/0/#settings/general",
-  microsoft: "https://outlook.office.com/mail/options/mail/automaticReplies",
-  "imap.gmail.com": "https://mail.google.com/mail/u/0/#settings/general",
-  "imap.googlemail.com": "https://mail.google.com/mail/u/0/#settings/general",
-  "outlook.office365.com": "https://outlook.office.com/mail/options/mail/automaticReplies",
-  "imap-mail.outlook.com": "https://outlook.office.com/mail/options/mail/automaticReplies",
   "imap.mail.yahoo.com": "https://mail.yahoo.com/",
   "imap.mail.me.com": "https://www.icloud.com/mail",
 };
@@ -647,8 +641,14 @@ const vacationBusy = new Set();
 
 function vacationLink(account) {
   const provider = providerOf(account);
-  if (provider === "google" || provider === "microsoft") return VACATION_LINKS[provider];
-  return VACATION_LINKS[String(account.imap_host || "").toLowerCase()] || "";
+  const host = String((account && account.imap_host) || "").toLowerCase();
+  const named = provider === "google" || host === "imap.gmail.com" || host === "imap.googlemail.com"
+    ? "google"
+    : provider === "microsoft" || host === "outlook.office365.com" || host === "imap-mail.outlook.com"
+      ? "microsoft"
+      : "";
+  if (named) return vacationApi.vacationUrl(named, account.email || account.username);
+  return VACATION_LINKS[host] || "";
 }
 
 function vacationView(account, extra) {

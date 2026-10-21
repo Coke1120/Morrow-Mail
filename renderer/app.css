@@ -344,6 +344,19 @@ button.ghost {
   color: var(--ink);
 }
 
+button.danger {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+button.danger:hover,
+button.danger:focus-visible {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
 header button.primary {
   display: inline-flex;
   align-items: center;
@@ -924,6 +937,11 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 #settings-bot .settings-disclosure label input:not([type="checkbox"]) { margin-top: 4px; }
 #bot-status:empty, #ooo-status:empty { display: none; }
 #ooo-schedule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 16px; }
+#ooo-schedule-error { margin: 6px 0 0; color: var(--danger); }
+#ooo-schedule-error[hidden] { display: none; }
+#ooo-schedule input[aria-invalid="true"] { border-color: var(--danger); }
+#ooo-action-help { margin: 8px 0 0; }
+#ooo-fields .ooo-actions { flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
 #ooo-fields label.check { display: flex; }
 #ooo-fields label.check input { flex: 0 0 auto; }
 #ooo-fields > label, #ooo-schedule label { margin: 0; }

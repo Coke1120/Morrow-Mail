@@ -903,20 +903,20 @@
           <div class="row">
             <button type="button" class="ghost" id="ooo-refresh">Refresh status</button>
             <button type="button" class="ghost" id="ooo-grant" hidden>Allow Out of Office settings…</button>
-            <a id="ooo-provider-link" href="https://mail.google.com/mail/u/0/#settings/general" target="_blank" rel="noreferrer" hidden>Open provider settings</a>
+            <a id="ooo-provider-link" href="" target="_blank" rel="noreferrer" hidden>Open provider settings</a>
           </div>
           <div id="ooo-fields" hidden>
-            <label for="ooo-mode">Automatic replies
+            <label for="ooo-mode">Schedule
               <select id="ooo-mode">
-                <option value="disabled">Disabled</option>
                 <option value="always">Always enabled</option>
                 <option value="scheduled">Scheduled</option>
               </select>
             </label>
             <div id="ooo-schedule" hidden>
               <p id="ooo-timezone" class="hint settings-full-width"></p>
-              <label for="ooo-start">Start <input id="ooo-start" type="datetime-local" /></label>
-              <label for="ooo-end">End <input id="ooo-end" type="datetime-local" /></label>
+              <label for="ooo-start">Start <input id="ooo-start" type="datetime-local" aria-describedby="ooo-schedule-error" /></label>
+              <label for="ooo-end">End <input id="ooo-end" type="datetime-local" aria-describedby="ooo-schedule-error" /></label>
+              <p id="ooo-schedule-error" class="hint settings-full-width" role="alert" hidden></p>
             </div>
             <label for="ooo-subject" id="ooo-subject-label">Subject prefix <input id="ooo-subject" type="text" maxlength="200" autocomplete="off" /></label>
             <label for="ooo-message" id="ooo-message-label"><span id="ooo-message-caption">Reply message</span> <textarea id="ooo-message" rows="4" maxlength="10000"></textarea></label>
@@ -928,14 +928,16 @@
               </select>
             </label>
             <label for="ooo-external" id="ooo-external-label">External reply message <textarea id="ooo-external" rows="4" maxlength="10000"></textarea></label>
-            <label class="check" id="ooo-domain-label" for="ooo-domain"><input id="ooo-domain" type="checkbox" /> Only my Google Workspace domain</label>
+            <label class="check" id="ooo-domain-label" for="ooo-domain"><input id="ooo-domain" type="checkbox" /> Also limit replies to my Google Workspace domain</label>
             <details class="settings-disclosure" id="ooo-details"><summary>Provider details &amp; formatting</summary>
               <p id="ooo-help" class="hint"></p>
             </details>
-            <div class="row">
-              <button type="button" class="primary" id="ooo-save">Save and enable…</button>
-              <button type="button" class="ghost" id="ooo-disable">Disable automatic replies…</button>
+            <div class="row ooo-actions">
+              <button type="button" class="ghost" id="ooo-save" aria-describedby="ooo-action-help">Save changes…</button>
+              <button type="button" class="primary" id="ooo-enable" aria-describedby="ooo-action-help">Enable automatic replies…</button>
+              <button type="button" class="danger" id="ooo-disable" hidden>Disable automatic replies…</button>
             </div>
+            <p id="ooo-action-help" class="hint"></p>
           </div>
           <p id="ooo-status" role="status"></p>
           </div>

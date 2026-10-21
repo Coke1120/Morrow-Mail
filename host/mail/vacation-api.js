@@ -246,9 +246,32 @@ async function apply(provider, accessToken, body, fetchImpl) {
   return describe(provider, updated);
 }
 
+const CONSUMER_MAIL = /^(hotmail|outlook|live|msn)\./;
+
+// Provider settings page for the exact signed-in mailbox. Gmail resolves the
+// authuser address inside the browser profile, so several Google accounts can
+// share one Morrow install without landing on the wrong mailbox.
+function vacationUrl(provider, email) {
+  const address = String(email || "").trim();
+  if (provider === "google") {
+    return address.includes("@")
+      ? "https://mail.google.com/mail/u/?authuser=" + encodeURIComponent(address) + "#settings/general"
+      : "";
+  }
+  if (provider === "microsoft") {
+    if (!address.includes("@")) return "";
+    const domain = String(address.split("@")[1] || "").toLowerCase();
+    return CONSUMER_MAIL.test(domain)
+      ? "https://outlook.live.com/mail/0/options/mail/automaticReplies"
+      : "https://outlook.office.com/mail/options/mail/automaticReplies";
+  }
+  return "";
+}
+
 module.exports = {
   ROOTS,
   WRITE_FAILED,
+  vacationUrl,
   revisionOf,
   describe,
   buildPayload,
