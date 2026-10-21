@@ -628,6 +628,16 @@
           <button type="button" data-command="insertOrderedList" aria-label="Numbered list" aria-pressed="false" title="Numbered list">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="10" x2="21" y1="6" y2="6"></line><line x1="10" x2="21" y1="12" y2="12"></line><line x1="10" x2="21" y1="18" y2="18"></line><path d="M4 6h1v4"></path><path d="M4 10h2"></path><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"></path></svg>
           </button>
+          <label class="compose-color is-ink" title="Text color">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 20 8-16 8 16"></path><path d="M7.5 14h9"></path></svg>
+            <span class="compose-swatch" aria-hidden="true"></span>
+            <input type="color" data-command="foreColor" value="#102822" aria-label="Text color" />
+          </label>
+          <label class="compose-color is-highlight" title="Highlight">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 11-6 6v3h9l3-3"></path><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"></path></svg>
+            <span class="compose-swatch" aria-hidden="true"></span>
+            <input type="color" data-command="hiliteColor" value="#fff3a0" aria-label="Highlight" />
+          </label>
         </div>
         <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="compose-body-label" data-placeholder="Message" spellcheck="true"></div>
         <span id="compose-body-label" class="sr">Message</span>
@@ -695,9 +705,37 @@
         <form id="signature-form">
           <label for="signature-name">Name</label>
           <input id="signature-name" type="text" autocomplete="off" />
-          <label for="signature-body">Text</label>
-          <textarea id="signature-body"></textarea>
-          <label class="check" for="signature-html"><input id="signature-html" type="checkbox" /> HTML</label>
+          <label id="signature-body-label">Text</label>
+          <div id="signature-format" class="compose-format" role="toolbar" aria-label="Formatting" aria-controls="signature-editor">
+            <button type="button" data-command="bold" aria-label="Bold" aria-pressed="false" title="Bold">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"></path><path d="M6 12h9a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"></path></svg>
+            </button>
+            <button type="button" data-command="italic" aria-label="Italic" aria-pressed="false" title="Italic">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="19" y1="4" x2="10" y2="4"></line><line x1="14" y1="20" x2="5" y2="20"></line><line x1="15" y1="4" x2="9" y2="20"></line></svg>
+            </button>
+            <button type="button" data-command="underline" aria-label="Underline" aria-pressed="false" title="Underline">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3v7a6 6 0 0 0 6 6 6 6 0 0 0 6-6V3"></path><line x1="4" y1="21" x2="20" y2="21"></line></svg>
+            </button>
+            <button type="button" data-command="insertUnorderedList" aria-label="Bulleted list" aria-pressed="false" title="Bulleted list">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+            </button>
+            <button type="button" data-command="insertOrderedList" aria-label="Numbered list" aria-pressed="false" title="Numbered list">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="10" x2="21" y1="6" y2="6"></line><line x1="10" x2="21" y1="12" y2="12"></line><line x1="10" x2="21" y1="18" y2="18"></line><path d="M4 6h1v4"></path><path d="M4 10h2"></path><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"></path></svg>
+            </button>
+            <label class="compose-color is-ink" title="Text color">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 20 8-16 8 16"></path><path d="M7.5 14h9"></path></svg>
+              <span class="compose-swatch" aria-hidden="true"></span>
+              <input type="color" data-command="foreColor" value="#102822" aria-label="Text color" />
+            </label>
+            <label class="compose-color is-highlight" title="Highlight">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 11-6 6v3h9l3-3"></path><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"></path></svg>
+              <span class="compose-swatch" aria-hidden="true"></span>
+              <input type="color" data-command="hiliteColor" value="#fff3a0" aria-label="Highlight" />
+            </label>
+          </div>
+          <div id="signature-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="signature-body-label" data-placeholder="Signature" spellcheck="true"></div>
+          <textarea id="signature-body" aria-labelledby="signature-body-label" hidden></textarea>
+          <label class="check" for="signature-html"><input id="signature-html" type="checkbox" checked /> HTML</label>
           <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default for this account</label>
           <label for="signature-domains">Domains</label>
           <input id="signature-domains" type="text" autocomplete="off" spellcheck="false" placeholder="hkbscl.com, gmail.com" />

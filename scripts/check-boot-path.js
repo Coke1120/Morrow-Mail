@@ -608,7 +608,7 @@ assert.strictEqual(applySignature("Hello\n\n— Ada", "— Ada", "Thanks,\nAda")
 assert.strictEqual(applySignature("— Ada", "— Ada", ""), "");
 assert.strictEqual(applySignature("Hello\n\n— Ada\n\nps", "— Ada", "Thanks"), "Hello\n\n— Ada\n\nps\n\nThanks");
 const signatureSwap = loadFunctions(appJs, [
-  "signatureRows", "chosenSignatureId", "signaturePlain", "applySignature",
+  "toHtml", "signatureMarkup", "signatureRows", "chosenSignatureId", "signaturePlain", "applySignature",
   "signatureUntouched", "replaceSignature", "commitPickerSignature", "applyFromSignature",
 ]);
 const replaceSignature = signatureSwap.replaceSignature;
@@ -634,6 +634,19 @@ assert.strictEqual(fromDomain.applied, true);
 assert.strictEqual(fromDomain.pickerId, "s1");
 assert.strictEqual(fromDomain.body, "Hello\n\nThanks,\nAda");
 assert.strictEqual(fromDomain.previous, "Thanks,\nAda");
+assert.strictEqual(fromDomain.html, "<p>Thanks,<br>Ada</p>");
+const textPick = applyFromSignature({
+  follows: true, body: "", previous: "", pack: domainPack,
+  accountId: "gmail-ada", policyDomain: "hkbscl.com", rows: domainPack.signatures,
+});
+assert.strictEqual(textPick.applied, true);
+assert.strictEqual(textPick.pickerId, "s2");
+assert.strictEqual(textPick.html, "— Ada");
+const coloredRow = { id: "s3", name: "Color", html: '<p><font color="#c0392b"><span style="background-color:#fff3a0">Ada</span></font></p>' };
+assert.strictEqual(signatureSwap.signatureMarkup(coloredRow), coloredRow.html);
+assert.strictEqual(signatureSwap.signatureMarkup({ text: "Thanks,\nAda" }), "Thanks,<br>Ada");
+assert.strictEqual(signatureSwap.signatureMarkup({ html: "  <p>Hi</p>  ", text: "nope" }), "<p>Hi</p>");
+assert.strictEqual(signatureSwap.signatureMarkup(null), "");
 const draftBody = applyFromSignature({
   follows: false, body: "Draft", previous: "", pack: domainPack,
   accountId: "gmail-ada", policyDomain: "hkbscl.com", rows: domainPack.signatures,
@@ -694,7 +707,17 @@ for (const channel of ["mail:upsertSignature", "mail:deleteSignature"]) {
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
 assert.ok(html.includes('id="signatures"') && html.includes('id="signature-name"') && html.includes('id="signature-body"'));
-assert.ok(html.includes('id="signature-html"') && html.includes('id="signature-default"') && html.includes('id="signatures-open"'));
+assert.ok(html.includes('id="signature-html" type="checkbox" checked') && html.includes('id="signature-default"') && html.includes('id="signatures-open"'));
+assert.ok(html.includes('id="signature-editor"') && html.includes('id="signature-format"') && html.includes('class="compose-editor"'));
+assert.ok(html.includes('data-command="foreColor"') && html.includes('data-command="hiliteColor"'));
+assert.ok(html.split('aria-label="Text color"').length - 1 >= 2);
+assert.ok(html.split('aria-label="Highlight"').length - 1 >= 2);
+assert.ok(functionSource(appJs, "clearSignatureForm").includes('signature-html").checked = true'));
+assert.ok(functionSource(appJs, "wireComposeFormat").includes('$("signature-format")'));
+assert.ok(functionSource(appJs, "wireComposeFormat").includes('$("signature-editor")') && functionSource(appJs, "wireComposeFormat").includes('$("compose-editor")'));
+assert.ok(functionSource(appJs, "bindRichEditor").includes("sanitizeComposeHtml"));
+assert.ok(functionSource(appJs, "revealEditorStyles").includes("background-color"));
+assert.ok(css.includes(".compose-color") && css.includes("#signature-form .compose-editor") && css.includes("#signature-form textarea"));
 assert.ok(html.includes('id="signature-domains"') && html.includes('id="brain-compose-bcc"'));
 assert.ok(html.includes('id="signatures-from-compose"'));
 assert.ok(html.includes("Saved on this computer for the selected account"));
@@ -1851,6 +1874,8 @@ assert.ok(parity.includes("config:setTheme") && parity.includes("morrow:configSe
 assert.ok(!parity.includes("the list is read-only"));
 assert.ok(!parity.includes("full Brain category/skills UI"));
 assert.ok(parity.includes("mail:upsertSignature") && parity.includes("defaultSignaturePerAccount"));
+assert.ok(parity.includes("Opening the dialog checks HTML") && parity.includes("text color and highlight when compose inserts it"));
+assert.ok(independentDoc.includes("Opening Signatures checks HTML"));
 assert.ok(parity.includes("mail:cancelScheduled"));
 assert.ok(parity.includes("while the app is open"));
 assert.ok(parity.includes("mail.sqlite"));
@@ -3950,6 +3975,17 @@ async function checkSignaturesAndSchedule(engine, db) {
   }]);
   assert.strictEqual(htmlSignature.data.html, "<p>Thanks,<br>Ada</p>");
   assert.strictEqual(htmlSignature.data.text, undefined);
+  const coloredHtml = '<p><font color="#c0392b"><span style="background-color:#fff3a0">Ada</span></font></p>';
+  const colored = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    html: coloredHtml,
+    isDefault: true,
+  }]);
+  assert.strictEqual(colored.success, true);
+  assert.strictEqual(colored.data.html, coloredHtml);
+  assert.strictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatures[0].html, coloredHtml);
   const textAgain = engine.answer("mail:upsertSignature", [{
     accountId: "imap-test",
     id: createdId,
