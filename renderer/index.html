@@ -325,35 +325,7 @@
         <div id="brain-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
         <dl id="brain-meta" class="brain-meta" hidden></dl>
         <div id="brain-sections"></div>
-        <details id="brain-compose-settings">
-          <summary>Compose defaults and aliases</summary>
-          <form id="brain-compose-form">
-            <p class="hint">Default CC is chosen from your received alias for replies and forwards, or your From address for new mail. Review recipients before sending.</p>
-            <label for="brain-compose-domains">Default CC by domain — one domain per line</label>
-            <textarea id="brain-compose-domains" rows="4" placeholder="@hkbscl.com = colleague@hkbscl.com, team@example.com" spellcheck="false" disabled></textarea>
-            <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
-            <textarea id="brain-compose-bcc" rows="4" placeholder="@hkbscl.com = records@hkbscl.com, audit@example.com" spellcheck="false" disabled></textarea>
-            <label for="brain-compose-account">Mailbox for alias settings</label>
-            <select id="brain-compose-account" disabled></select>
-            <p id="brain-compose-identities" class="hint"></p>
-            <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
-            <textarea id="brain-compose-aliases" rows="3" placeholder="leo@hkbscl.com&#10;leo@gmail.com = hkbscl.com" spellcheck="false" disabled></textarea>
-            <p class="hint">Add only addresses belonging to this mailbox. Gmail must verify send-as aliases; Outlook needs send-as permission. Your SMTP provider may restrict the From address.</p>
-            <label for="brain-compose-from">Preferred From for new mail (optional)</label>
-            <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
-            <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
-            <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
-            <p class="hint">This fallback is only the CC list. BCC and signatures still use the From domain. Clearing or editing CC keeps that choice for the rest of the composition. Clearing or editing BCC does the same for BCC. The two fields lock separately. Resumed drafts keep their saved recipients.</p>
-            <div class="row">
-              <button type="submit" class="primary" disabled>Save compose defaults</button>
-              <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                Refresh From addresses
-              </button>
-            </div>
-            <p id="brain-compose-status" class="hint" role="status" aria-live="polite"></p>
-          </form>
-        </details>
+        <p class="hint" id="brain-compose-pointer">Compose defaults live in <button type="button" class="inline-link" id="brain-open-compose-settings">Settings → Compose</button>.</p>
         <section id="brain-activity" aria-label="Recent updates" hidden>
           <h3>Recent updates</h3>
           <div id="brain-activity-list"></div>
@@ -401,13 +373,13 @@
       </section>
       <section id="brain-skills" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-skills" hidden>
         <h3 id="brain-skills-title">Skills</h3>
-        <p class="hint">Skills run on demand, on a saved schedule, or stay paused. Scheduled runs need Morrow open; a missed run fires once on relaunch. Drafts need review and Send; filing proposals need confirmation.</p>
+        <p class="hint">Each skill is a card. Manage opens its schedule, run, and pause controls. Skills run on demand, on a saved schedule, or stay paused. Scheduled runs need Morrow open; a missed run fires once on relaunch. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="brain-skill-status" role="status"></p>
         <div id="brain-skill-result"></div>
         <h3>Home skills</h3>
-        <div id="brain-home-skills"><p class="hint">Loading skills…</p></div>
+        <div id="brain-home-skills" class="brain-skill-grid"><p class="hint">Loading skills…</p></div>
         <h3>Library skills</h3>
-        <div id="brain-library-skills"><p class="hint">Loading skills…</p></div>
+        <div id="brain-library-skills" class="brain-skill-grid"><p class="hint">Loading skills…</p></div>
       </section>
       <section id="brain-rules" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-rules" hidden>
         <h3 id="brain-rules-title">Inbox rules</h3>
@@ -784,6 +756,21 @@
       </div>
       </div>
     </dialog>
+    <dialog id="brain-skill-dialog" aria-labelledby="brain-skill-dialog-title">
+      <div class="dialog-body">
+        <div class="sheet-head">
+          <h2 id="brain-skill-dialog-title">Skill</h2>
+          <button type="button" class="ghost" id="brain-skill-dialog-close">Close</button>
+        </div>
+        <p id="brain-skill-dialog-detail"></p>
+        <p id="brain-skill-dialog-mode" class="hint"></p>
+        <div class="row" id="brain-skill-dialog-actions"></div>
+        <h3 id="brain-skill-dialog-schedule-title">Schedule</h3>
+        <div id="brain-skill-dialog-schedule"></div>
+        <p id="brain-skill-dialog-status" role="status"></p>
+        <div id="brain-skill-dialog-result"></div>
+      </div>
+    </dialog>
     <dialog id="settings" aria-labelledby="settings-title">
       <div class="dialog-body">
       <div class="sheet-head">
@@ -794,6 +781,7 @@
         <button type="button" id="settings-tab-prefs" data-fold="prefs" role="tab" aria-controls="settings-prefs" aria-selected="true" aria-current="true" tabindex="0">General</button>
         <button type="button" id="settings-tab-mail" data-fold="mail" role="tab" aria-controls="settings-mail" aria-selected="false" aria-current="false" tabindex="-1">Mail &amp; Sync</button>
         <button type="button" id="settings-tab-mailbox" data-fold="mailbox" role="tab" aria-controls="settings-mailbox" aria-selected="false" aria-current="false" tabindex="-1">Accounts</button>
+        <button type="button" id="settings-tab-compose" data-fold="compose" role="tab" aria-controls="settings-compose" aria-selected="false" aria-current="false" tabindex="-1">Compose</button>
         <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" aria-current="false" tabindex="-1">AI</button>
         <button type="button" id="settings-tab-ooo" data-fold="ooo" role="tab" aria-controls="settings-ooo" aria-selected="false" aria-current="false" tabindex="-1">Out of Office</button>
         <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
@@ -970,6 +958,37 @@
               <span>Remove account</span>
             </button>
           </details>
+          </div>
+        </section>
+        <section class="fold" id="settings-compose" data-fold="compose" role="tabpanel" aria-labelledby="settings-tab-compose" tabindex="0" hidden>
+          <div class="fold-panel" id="settings-compose-panel" hidden>
+            <h3 id="settings-compose-title">Compose defaults</h3>
+            <form id="brain-compose-form">
+              <p class="hint">Default CC is chosen from your received alias for replies and forwards, or your From address for new mail. Review recipients before sending.</p>
+              <label for="brain-compose-domains">Default CC by domain — one domain per line</label>
+              <textarea id="brain-compose-domains" rows="4" placeholder="@hkbscl.com = colleague@hkbscl.com, team@example.com" spellcheck="false" disabled></textarea>
+              <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
+              <textarea id="brain-compose-bcc" rows="4" placeholder="@hkbscl.com = records@hkbscl.com, audit@example.com" spellcheck="false" disabled></textarea>
+              <label for="brain-compose-account">Mailbox for alias settings</label>
+              <select id="brain-compose-account" disabled></select>
+              <p id="brain-compose-identities" class="hint"></p>
+              <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
+              <textarea id="brain-compose-aliases" rows="3" placeholder="leo@hkbscl.com&#10;leo@gmail.com = hkbscl.com" spellcheck="false" disabled></textarea>
+              <p class="hint">Add only addresses belonging to this mailbox. Gmail must verify send-as aliases; Outlook needs send-as permission. Your SMTP provider may restrict the From address.</p>
+              <label for="brain-compose-from">Preferred From for new mail (optional)</label>
+              <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
+              <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
+              <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
+              <p class="hint">This fallback is only the CC list. BCC and signatures still use the From domain. Clearing or editing CC keeps that choice for the rest of the composition. Clearing or editing BCC does the same for BCC. The two fields lock separately. Resumed drafts keep their saved recipients.</p>
+              <div class="row">
+                <button type="submit" class="primary" disabled>Save compose defaults</button>
+                <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                  Refresh From addresses
+                </button>
+              </div>
+              <p id="brain-compose-status" class="hint" role="status" aria-live="polite"></p>
+            </form>
           </div>
         </section>
         <section class="fold" id="settings-ooo" data-fold="ooo" role="tabpanel" aria-labelledby="settings-tab-ooo" tabindex="0" hidden>

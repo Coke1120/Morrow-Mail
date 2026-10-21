@@ -1857,6 +1857,18 @@ assert.ok(html.includes(">Brain<") && html.includes(">Add<") && html.includes("W
 assert.ok(html.includes('id="brain-category-list"') && html.includes('id="brain-category-name"') && html.includes('id="brain-category-description"'));
 assert.ok(html.includes('id="brain-category-collapse"') && html.includes('id="brain-category-save"') && html.includes('id="brain-category-ai"'));
 assert.ok(html.includes('id="brain-skills"') && html.includes('id="brain-home-skills"') && html.includes('id="brain-library-skills"') && html.includes('id="brain-skill-status"'));
+assert.ok(html.includes('id="brain-skill-dialog"') && html.includes('id="brain-skill-dialog-title"') && html.includes('id="settings-tab-compose"') && html.includes('id="settings-compose"'));
+assert.ok(html.includes("Compose defaults live in") && html.includes('id="brain-open-compose-settings"'));
+const brainProfileHtml = html.slice(html.indexOf('id="brain-profile"'), html.indexOf('id="brain-categories"'));
+assert.ok(!brainProfileHtml.includes('id="brain-compose-form"') && !brainProfileHtml.includes("<summary>Compose defaults and aliases</summary>"), "compose form leaves Brain profile");
+assert.ok(brainProfileHtml.includes('id="brain-open-compose-settings"'));
+const composePanelHtml = html.slice(html.indexOf('id="settings-compose"'), html.indexOf('id="settings-ooo"'));
+assert.ok(composePanelHtml.includes('id="brain-compose-form"') && composePanelHtml.includes('id="brain-compose-bcc"') && composePanelHtml.includes('id="brain-compose-from"') && composePanelHtml.includes('id="brain-compose-aliases"'));
+assert.ok(html.indexOf('id="settings-tab-mailbox"') < html.indexOf('id="settings-tab-compose"') && html.indexOf('id="settings-tab-compose"') < html.indexOf('id="settings-tab-ai"'));
+assert.ok(!functionSource(appJs, "paintBrainSkillList").includes("appendSkillSchedule"), "Brain skill cards do not inline the schedule editor");
+assert.ok(functionSource(appJs, "paintBrainSkillDialog").includes("appendSkillSchedule"));
+assert.ok(functionSource(appJs, "paintBrainSkillList").includes('textContent = "Manage"') && functionSource(appJs, "paintBrainSkillList").includes("brain-skill-chip"));
+assert.ok(appJs.includes('revealSettingsFold("compose")') && appJs.includes("Loading compose defaults"));
 assert.deepStrictEqual(brainUi.brainSkillLists().map((row) => row[1]), [
   "emailBrain:getSkills",
   "emailBrain:getLibrarySkills",
@@ -1885,6 +1897,7 @@ const agentUi = loadFunctions(appJs, [
   "historyLine",
   "proposalLine",
   "runModeLabel",
+  "skillStatusChip",
   "scheduleFormValue",
 ]);
 assert.deepStrictEqual(agentUi.skillBlocks(null), []);
@@ -1906,6 +1919,11 @@ assert.match(agentUi.runModeLabel({ schedule: "disabled", runMode: "on_demand" }
 assert.match(agentUi.runModeLabel({ schedule: "interval", everyMinutes: 30 }), /Every 30 min/);
 assert.match(agentUi.runModeLabel({ schedule: "paused", paused: true, kind: "cron", cron: "0 8 * * 1" }), /Paused/);
 assert.match(agentUi.runModeLabel({ schedule: "cron", cron: "0 8 * * 1-5" }), /0 8 \* \* 1-5/);
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "disabled", runMode: "on_demand" }, "run"), { label: "On demand", tone: "demand" });
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "paused", paused: true, kind: "interval", everyMinutes: 30 }, "run"), { label: "Paused", tone: "paused" });
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "interval", kind: "interval", everyMinutes: 30 }, "run"), { label: "Every 30 min", tone: "scheduled" });
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "cron", kind: "cron", cron: "0 8 * * 1-5" }, "run"), { label: "Cron", tone: "scheduled" });
+assert.deepStrictEqual(agentUi.skillStatusChip({ schedule: "disabled" }, "install"), { label: "Not installed", tone: "library" });
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "off" }).action, "delete");
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 15 }).everyMinutes, 15);
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 0 }).error.includes("10080"), true);
@@ -2064,6 +2082,9 @@ assert.ok(!parity.includes("Other host preferences, calendar"));
 assert.ok(!parity.includes("full skills library"));
 assert.ok(!parity.includes("AI Studio, calendar"));
 assert.ok(parity.includes("skills library"));
+assert.ok(parity.includes("Settings → Compose") && parity.includes("Manage opens a dialog"));
+assert.ok(independentDoc.includes("Settings → Compose") && independentDoc.includes("Manage opens a dialog"));
+assert.ok(brainDoc.includes("Settings → **Compose**") || brainDoc.includes("Settings → Compose"));
 assert.ok(parity.includes("config:setTheme") && parity.includes("morrow:configSetSnoozeEffective"));
 assert.ok(!parity.includes("the list is read-only"));
 assert.ok(!parity.includes("full Brain category/skills UI"));
