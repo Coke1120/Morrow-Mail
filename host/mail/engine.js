@@ -26,6 +26,7 @@ const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
 const composePolicy = require("../../shared/compose-policy");
 const { syncHorizonDays } = require("../settings");
+const { planBackgroundFolders } = require("./background-jobs");
 
 const PRIMARY_ORDER = ["all", "inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
 const STARRED_FOLDER_ID = virtuals.STARRED_ID;
@@ -375,6 +376,7 @@ function emitFolderSync(accountId, folderPath, okFlag) {
 }
 
 const activeFolder = new Map();
+const backgroundCursor = new Map();
 const syncGates = new Map();
 const syncScopes = new Map();
 let syncState = {
@@ -518,6 +520,12 @@ function pageDelayMs() {
   return PAGE_DELAY_MS;
 }
 
+function tickMs() {
+  const raw = process.env.MORROW_SYNC_TICK_MS;
+  if (raw != null && raw !== "" && Number.isFinite(Number(raw)) && Number(raw) >= 0) return Number(raw);
+  return TICK_MS;
+}
+
 function sleep(ms) {
   if (!ms) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -639,12 +647,15 @@ function resetWindow(accountId, folderPath, found) {
   if (folder && folder.well_known === "inbox") db.resetInboxRuleWatermarks(accountId);
 }
 
-async function bootstrapFolder(client, account, folderPath, started, days) {
+async function bootstrapFolder(client, account, folderPath, started, days, limits) {
   const start = windowStart(days, started);
   const criteria = start == null ? { all: true } : { since: new Date(start) };
   const size = batchSize(account);
+  const pageCap = limits && limits.oneBatch ? 1 : MAX_PAGES;
+  const deadline = limits && Number.isFinite(limits.deadline) ? limits.deadline : started + tickMs();
   let pages = 0;
-  while (pages < MAX_PAGES && Date.now() - started < TICK_MS) {
+  while (pages < pageCap) {
+    if (pages > 0 && Date.now() >= deadline) break;
     const found = await remote.searchUids(client, folderPath, criteria);
     const folder = db.folderByPath(account.id, folderPath);
     if (folder && folder.uid_validity && found.validity && folder.uid_validity !== found.validity) {
@@ -698,12 +709,15 @@ async function bootstrapFolder(client, account, folderPath, started, days) {
   return { paused: false, bootstrapped: false };
 }
 
-async function warmFolder(client, account, folder, started, days) {
+async function warmFolder(client, account, folder, started, days, limits) {
   let next = Number(folder.uid_cursor) || 0;
   const start = windowStart(days, started);
   const criteria = start == null ? {} : { since: new Date(start) };
-  for (let index = 0; index < REFRESH_PAGES.length; index += 1) {
-    if (Date.now() - started >= TICK_MS) break;
+  const pageCap = limits && limits.oneBatch ? 1 : REFRESH_PAGES.length;
+  const deadline = limits && Number.isFinite(limits.deadline) ? limits.deadline : started + tickMs();
+  let backlog = false;
+  for (let index = 0; index < pageCap; index += 1) {
+    if (index > 0 && Date.now() >= deadline) break;
     const found = await remote.searchUids(client, folder.path, { uid: `${next + 1}:*`, ...criteria });
     if (folder.uid_validity && found.validity && folder.uid_validity !== found.validity) {
       resetWindow(account.id, folder.path, found);
@@ -743,8 +757,13 @@ async function warmFolder(client, account, folder, started, days) {
       }
     }
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
+    if (fresh.length > REFRESH_PAGES[index]) backlog = true;
     if (fresh.length <= REFRESH_PAGES[index]) break;
   }
+  // A background turn stops after one batch when newer mail is still waiting,
+  // so the next folder can run inside this tick. A caught-up folder still
+  // reconciles so deletes and counts stay current.
+  if (backlog && limits && limits.oneBatch) return { paused: false, bootstrapped: true };
   const live = await remote.searchUids(client, folder.path, criteria);
   if (folder.uid_validity && live.validity && folder.uid_validity !== live.validity) {
     resetWindow(account.id, folder.path, live);
@@ -766,7 +785,7 @@ async function warmFolder(client, account, folder, started, days) {
   return { paused: false, bootstrapped: true };
 }
 
-async function syncFolderPolicy(client, account, folderPath) {
+async function syncFolderPolicy(client, account, folderPath, limits) {
   const days = syncHorizonDays();
   if (!gateOpen(account.id)) {
     emitSync("paused", { accountId: account.id, folderId: folderPath, message: "Paused for rate limit" });
@@ -781,11 +800,15 @@ async function syncFolderPolicy(client, account, folderPath) {
   }
   emitSync("syncing", { accountId: account.id, folderId: folderPath, phase });
   const started = Date.now();
+  const bounds = {
+    oneBatch: !!(limits && limits.oneBatch),
+    deadline: limits && Number.isFinite(limits.deadline) ? limits.deadline : started + tickMs(),
+  };
   try {
     const folder = db.folderByPath(account.id, folderPath);
     const result = folder && windowOpen(folder, days)
-      ? await warmFolder(client, account, folder, started, days)
-      : await bootstrapFolder(client, account, folderPath, started, days);
+      ? await warmFolder(client, account, folder, started, days, bounds)
+      : await bootstrapFolder(client, account, folderPath, started, days, bounds);
     if (!result.paused) clearStrikes(account.id);
     if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
@@ -816,16 +839,8 @@ async function syncFolderPathAdmitted(account, folderPath) {
   });
 }
 
-function jobFolders(folders, options, accountId) {
+function jobFolders(folders, options) {
   const inbox = folders.find((folder) => folder.well_known === "inbox");
-  if (options && options.background) {
-    const jobs = [];
-    if (inbox) jobs.push(inbox);
-    const activePath = activeFolder.get(accountId);
-    const extra = activePath && folders.find((folder) => folder.path === activePath);
-    if (extra && extra !== inbox) jobs.push(extra);
-    return jobs;
-  }
   const jobs = [];
   const inboxWanted = !options
     || options.folderKey === "inbox"
@@ -862,14 +877,36 @@ async function syncAccountAdmitted(account, options) {
       const listed = await remote.listFolderRecords(client);
       db.replaceFolders(account.id, listed.folders, listed.delimiter);
       const folders = db.foldersFor(account.id);
-      jobs = jobFolders(folders, options, account.id);
+      const background = !!(options && options.background);
+      let plan = null;
+      if (background) {
+        plan = planBackgroundFolders(folders, activeFolder.get(account.id), backgroundCursor.get(account.id) || 0);
+        jobs = plan.jobs;
+      } else {
+        jobs = jobFolders(folders, options);
+      }
+      const deadline = Date.now() + tickMs();
+      const visited = new Set();
+      let pausedPath = "";
       for (const folder of jobs) {
-        const result = await syncFolderPolicy(client, account, folder.path);
+        if (background && visited.size > 0 && Date.now() >= deadline) break;
+        const result = await syncFolderPolicy(
+          client,
+          account,
+          folder.path,
+          background ? { oneBatch: true, deadline } : null,
+        );
+        visited.add(folder.path);
         if (result && result.paused) {
           paused = true;
+          pausedPath = folder.path;
           break;
         }
         if (!result || !result.bootstrapped) allDone = false;
+      }
+      if (background && plan) {
+        if (visited.size < jobs.length) allDone = false;
+        backgroundCursor.set(account.id, pausedPath ? plan.cursorFor(pausedPath) : plan.nextCursor(visited));
       }
     });
     finishSync(jobs, paused, allDone, account.id);
@@ -1397,6 +1434,8 @@ async function removeAccount(params) {
   }
   idleSafetyAt.delete(id);
   idleReported.delete(id);
+  backgroundCursor.delete(id);
+  activeFolder.delete(id);
   syncRetryScheduler.clear(id);
   db.removeAccount(id);
   emitAccounts();
