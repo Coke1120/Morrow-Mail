@@ -9700,16 +9700,26 @@ function readWhole(value) {
   return Number(raw);
 }
 
+let scheduleStatusTimer = 0;
+function setScheduleStatus(text, isError) {
+  const node = $("pref-schedule-status");
+  settingsInlineStatus(node, text, isError);
+  if (scheduleStatusTimer) clearTimeout(scheduleStatusTimer);
+  scheduleStatusTimer = 0;
+  if (text && !isError) {
+    scheduleStatusTimer = setTimeout(() => {
+      scheduleStatusTimer = 0;
+      settingsInlineStatus($("pref-schedule-status"), "", false);
+    }, 1800);
+  }
+}
+
 async function saveScheduleDelay() {
-  const status = $("settings-status");
   const hours = readWhole($("pref-schedule-hours") && $("pref-schedule-hours").value);
   const minutes = readWhole($("pref-schedule-minutes") && $("pref-schedule-minutes").value);
   const total = joinScheduleDelay(hours, minutes);
   if (total == null) {
-    if (status) {
-      status.textContent = "Default schedule delay must be 0 to 168 hours, with minutes from 0 to 59, and at most 7 days.";
-      status.classList.add("error");
-    }
+    setScheduleStatus("Default schedule delay must be 0 to 168 hours, with minutes from 0 to 59, and at most 7 days.", true);
     paintScheduleDelay(state.prefs.scheduleDelay);
     return;
   }
@@ -9718,18 +9728,12 @@ async function saveScheduleDelay() {
     const saved = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
     state.prefs.scheduleDelay = saved;
     paintScheduleDelay(saved);
-    if (status) {
-      status.textContent = saved
-        ? "Default schedule delay saved. Send schedules " + formatScheduleDelay(saved) + " ahead."
-        : "Default schedule delay saved. Send delivers immediately.";
-      status.classList.remove("error");
-    }
+    setScheduleStatus(saved
+      ? "Saved. Send schedules " + formatScheduleDelay(saved) + " ahead."
+      : "Saved. Send delivers immediately.", false);
     if ($("compose") && $("compose").open) syncCompose();
   } catch (error) {
-    if (status) {
-      status.textContent = error instanceof Error ? error.message : String(error);
-      status.classList.add("error");
-    }
+    setScheduleStatus(error instanceof Error ? error.message : String(error), true);
     paintScheduleDelay(state.prefs.scheduleDelay);
   }
 }
@@ -9752,7 +9756,7 @@ function loadSettingsFold(name) {
     panel.inert = true;
     panel.setAttribute("aria-busy", "true");
     if (name === "prefs" || name === "mail") await loadSettings();
-    else if (name === "ai") { await loadSettings(); await loadAiSettings(); }
+    else if (name === "ai") { await loadSettings(); if (!aiDirty()) await loadAiSettings(); }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); }
     else if (name === "ooo" && !oooDirty()) await loadVacation();
     else if (name === "bot") await loadBotAccess();
@@ -9886,6 +9890,7 @@ async function loadVacation() {
   if (!settingsAccount() || settingsAccount().id !== account.id) return;
   paintVacation(data);
   oooBaseline = oooSnapshot();
+  paintOooDirty();
   setOooStatus("", false);
 }
 
@@ -9938,6 +9943,7 @@ async function saveVacation(kind) {
   const saved = await call("mail:vacationPut", body);
   paintVacation(saved);
   oooBaseline = oooSnapshot();
+  paintOooDirty();
   setOooStatus("Saved on the provider.", false);
 }
 
@@ -9967,6 +9973,26 @@ function aiKeyPlaceholder(cfg) {
   return "sk-…";
 }
 
+let aiBaseline = "";
+function aiFormState() {
+  return JSON.stringify([
+    String(($("ai-base") && $("ai-base").value) || "").trim(),
+    String(($("ai-model") && $("ai-model").value) || "").trim(),
+    String(($("ai-key") && $("ai-key").value) || "").length > 0,
+  ]);
+}
+function aiDirty() {
+  return !!aiBaseline && aiFormState() !== aiBaseline;
+}
+function paintAiDirty() {
+  const note = $("ai-dirty");
+  if (!note) return;
+  const dirty = aiDirty();
+  note.hidden = !dirty;
+  note.textContent = dirty ? "Unsaved changes. Save AI to apply them." : "";
+  if (dirty && $("ai-status") && $("ai-status").textContent === "Saved.") setAiStatus("", false);
+}
+
 async function loadAiSettings() {
   setAiStatus("", false);
   $("ai-key").value = "";
@@ -9977,6 +10003,8 @@ async function loadAiSettings() {
     $("ai-model").value = cfg && cfg.model ? cfg.model : "";
     $("ai-key").placeholder = aiKeyPlaceholder(cfg);
     updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
+    aiBaseline = aiFormState();
+    paintAiDirty();
   } catch (error) {
     setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -9995,6 +10023,8 @@ async function saveAiSettings() {
     $("ai-model").value = saved && saved.model ? saved.model : $("ai-model").value;
     $("ai-key").placeholder = aiKeyPlaceholder(saved);
     updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
+    aiBaseline = aiFormState();
+    paintAiDirty();
     setAiStatus("Saved.", false);
   } catch (error) {
     setAiStatus(error instanceof Error ? error.message : String(error), true);
@@ -10002,7 +10032,7 @@ async function saveAiSettings() {
 }
 
 async function fetchAiModels() {
-  setAiStatus("Fetching models…", false);
+  setAiStatus(aiDirty() ? "Fetching models with the unsaved values in this form…" : "Fetching models…", false);
   try {
     const result = await api.invoke("host:aiListModels", {
       baseUrl: $("ai-base").value,
@@ -10027,14 +10057,74 @@ async function fetchAiModels() {
 }
 
 async function testAiConnection() {
-  setAiStatus("Contacting the model…", false);
+  // Test what the form shows, including unsaved edits. A blank key still falls
+  // back to the saved key on the host, matching Save and Fetch models.
+  setAiStatus(aiDirty() ? "Testing the unsaved values in this form…" : "Contacting the model…", false);
   try {
-    const result = await api.invoke("host:aiTest");
+    const result = await api.invoke("host:aiTest", {
+      baseUrl: $("ai-base").value,
+      model: $("ai-model").value,
+      apiKey: $("ai-key").value,
+    });
     if (result && result.ok) setAiStatus("Connected. " + (result.preview || ""), false);
     else setAiStatus((result && result.message) || "Connection failed.", true);
   } catch (error) {
     setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
+}
+
+const prefSaveTimers = new Map();
+
+function settingsInlineStatus(node, text, isError) {
+  if (!node) return;
+  node.textContent = text || "";
+  node.hidden = !text;
+  if (node.classList) {
+    if (isError) node.classList.add("error");
+    else node.classList.remove("error");
+  }
+}
+
+// Auto-saved preferences report beside their own control, not only in the
+// dialog footer, so a failure is visible next to the value that did not save.
+function prefSaveStatusNode(id) {
+  if (typeof document === "undefined" || typeof document.getElementById !== "function") return null;
+  const statusId = "pref-save-status-" + id;
+  const existing = document.getElementById(statusId);
+  if (existing) return existing;
+  const control = document.getElementById(id);
+  if (!control || !control.parentNode) return null;
+  const anchor = (control.closest && (control.closest(".field") || control.closest(".check"))) || control;
+  if (!anchor || !anchor.parentNode) return null;
+  const node = document.createElement("p");
+  node.id = statusId;
+  node.className = "hint settings-inline-status";
+  node.setAttribute("role", "status");
+  node.hidden = true;
+  anchor.parentNode.insertBefore(node, anchor.nextSibling);
+  const describedBy = control.getAttribute ? control.getAttribute("aria-describedby") : "";
+  if (control.setAttribute) {
+    control.setAttribute("aria-describedby", (describedBy ? describedBy + " " : "") + statusId);
+  }
+  return node;
+}
+
+function setPrefSaveStatus(id, text, isError) {
+  const timer = prefSaveTimers.get(id);
+  if (timer) {
+    clearTimeout(timer);
+    prefSaveTimers.delete(id);
+  }
+  const node = prefSaveStatusNode(id);
+  if (!node) return;
+  settingsInlineStatus(node, text, isError);
+  if (!text || isError) return;
+  prefSaveTimers.set(id, setTimeout(() => {
+    prefSaveTimers.delete(id);
+    if (typeof document === "undefined" || typeof document.getElementById !== "function") return;
+    const live = document.getElementById("pref-save-status-" + id);
+    if (live) settingsInlineStatus(live, "", false);
+  }, 1800));
 }
 
 async function savePref(row) {
@@ -10048,11 +10138,16 @@ async function savePref(row) {
     if (takePref(getChannel, kind, $(id))) paintPrefs();
     if (id === "pref-sync-horizon") {
       status.textContent = "Sync history saved. It takes effect on the next sync; downloaded mail stays.";
+      setPrefSaveStatus(id, "Saved. It takes effect on the next sync.", false);
       await loadList();
+    } else {
+      setPrefSaveStatus(id, "Saved.", false);
     }
   } catch (error) {
-    status.textContent = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
+    status.textContent = message;
     status.classList.add("error");
+    setPrefSaveStatus(id, message, true);
     try {
       applyPref(kind, $(id), await api.invoke(getChannel));
     } catch { /* status already shows the failure */ }
@@ -10294,6 +10389,14 @@ function oooSnapshot() {
   }));
 }
 function oooDirty() { return !!oooBaseline && oooSnapshot() !== oooBaseline; }
+function paintOooDirty() {
+  const note = $("ooo-dirty");
+  if (!note) return;
+  const dirty = oooDirty();
+  note.hidden = !dirty;
+  note.textContent = dirty ? "Unsaved changes. Review and save to the provider." : "";
+  if (dirty && $("ooo-status") && $("ooo-status").textContent === "Saved on the provider.") setOooStatus("", false);
+}
 function paintSettingsMailbox() {
   const select = $("settings-account");
   if (!select) return;
@@ -10318,6 +10421,7 @@ async function changeSettingsMailbox(id) {
   ++settingsVacationGen;
   oooBaseline = "";
   paintVacation(null);
+  paintOooDirty();
   paintSettingsMailbox();
   for (const key of settingsFoldLoaded) if (key.startsWith("mailbox:") || key.startsWith("ooo:")) settingsFoldLoaded.delete(key);
   const fold = document.querySelector("#settings .fold.is-open");
@@ -14636,6 +14740,14 @@ function wire() {
   $("ai-test").addEventListener("click", () => {
     testAiConnection().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
   });
+  for (const id of ["ai-base", "ai-model", "ai-key"]) {
+    $(id).addEventListener("input", paintAiDirty);
+    $(id).addEventListener("change", paintAiDirty);
+  }
+  for (const id of ["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience", "ooo-domain"]) {
+    $(id).addEventListener("input", paintOooDirty);
+    $(id).addEventListener("change", paintOooDirty);
+  }
   $("ooo-mode").addEventListener("change", () => {
     syncVacationFields();
     if (vacationCache) {
