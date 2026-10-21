@@ -6,8 +6,9 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
-const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 
+async function run() {
+const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 function attrs(source) {
   const found = {};
   for (const match of source.matchAll(/([\w-]+)="([^"]*)"/g)) found[match[1]] = match[2];
@@ -184,3 +185,14 @@ assert.equal(grantsTab.getAttribute("aria-selected"), "true");
 assert.equal(nodes.get("bot-panel-grants").hidden, false);
 
 console.log("settings-tabs-ok (static roving tabindex, Settings + Bot arrow/Home/End, fold reopen)");
+
+}
+
+module.exports = { run };
+
+if (require.main === module) {
+  run().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
