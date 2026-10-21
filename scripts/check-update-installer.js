@@ -185,6 +185,62 @@ async function main() {
     assert.equal(launches, 0);
     assert.equal(await fs.readFile(path.join(target, 'unrelated'), 'utf8'), 'preserve');
     assert.equal(await fs.readFile(path.join(backup, 'version'), 'utf8'), 'old');
+    const deniedRename = Object.assign(new Error('denied'), { code: 'EACCES' });
+    const authParent = path.join(root, 'auth-replace');
+    await fs.mkdir(authParent);
+    const authTarget = path.join(authParent, 'Morrow Mail.app');
+    await fs.mkdir(authTarget);
+    await fs.writeFile(path.join(authTarget, 'version'), 'old');
+    const authDir = await createStaging(authTarget);
+    const authStaged = path.join(authDir, 'candidate.app');
+    const authBackup = path.join(authDir, 'previous.app');
+    await fs.mkdir(authStaged);
+    await fs.writeFile(path.join(authStaged, 'version'), 'new');
+    let authMoves = 0;
+    const authResult = await replaceAndLaunch({ target: authTarget, staged: authStaged, backup: authBackup }, {
+      rename: async () => { throw deniedRename; },
+      move: async (from, to) => { authMoves++; await fs.rename(from, to); },
+      launch: async () => {},
+      waitReady: async () => 'ready',
+      relaunchOld: async () => { throw new Error('must not relaunch after a privileged replace'); }
+    });
+    assert.equal(authResult.state, 'installed');
+    assert.equal(authMoves, 2, 'Bundle renames use the authorized move when the process is denied');
+    assert.equal(await fs.readFile(path.join(authTarget, 'version'), 'utf8'), 'new');
+    const plainParent = path.join(root, 'plain-replace');
+    await fs.mkdir(plainParent);
+    const plainTarget = path.join(plainParent, 'Morrow Mail.app');
+    await fs.mkdir(plainTarget);
+    await fs.writeFile(path.join(plainTarget, 'version'), 'old');
+    const plainDir = await createStaging(plainTarget);
+    const plainStaged = path.join(plainDir, 'candidate.app');
+    await fs.mkdir(plainStaged);
+    await fs.writeFile(path.join(plainStaged, 'version'), 'new');
+    let plainMoves = 0;
+    await replaceAndLaunch({ target: plainTarget, staged: plainStaged, backup: path.join(plainDir, 'previous.app') }, {
+      move: async () => { plainMoves++; throw new Error('must not elevate a writable replace'); },
+      launch: async () => {},
+      waitReady: async () => 'ready'
+    });
+    assert.equal(plainMoves, 0);
+    const cancelParent = path.join(root, 'auth-cancel');
+    await fs.mkdir(cancelParent);
+    const cancelTarget = path.join(cancelParent, 'Morrow Mail.app');
+    await fs.mkdir(cancelTarget);
+    await fs.writeFile(path.join(cancelTarget, 'version'), 'old');
+    const cancelDir = await createStaging(cancelTarget);
+    const cancelStaged = path.join(cancelDir, 'candidate.app');
+    await fs.mkdir(cancelStaged);
+    let relaunched = 0;
+    await assert.rejects(replaceAndLaunch({ target: cancelTarget, staged: cancelStaged, backup: path.join(cancelDir, 'previous.app') }, {
+      rename: async () => { throw deniedRename; },
+      move: async () => { throw Object.assign(new Error('Administrator authorization was cancelled.'), { code: 'UPDATE_ADMIN_CANCELLED' }); },
+      launch: async () => { throw new Error('must not launch'); },
+      waitReady: async () => 'ready',
+      relaunchOld: async () => { relaunched++; }
+    }), /cancelled/);
+    assert.equal(relaunched, 1, 'Cancelling authorization relaunches the original app');
+    assert.equal(await fs.readFile(path.join(cancelTarget, 'version'), 'utf8'), 'old');
     const asarBody = Buffer.from('morrow-fake-asar');
     const asarFlag = process.noAsar;
     await assert.rejects(fs.writeFile(path.join(root, 'direct.asar'), asarBody), /Invalid package/);

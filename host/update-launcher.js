@@ -1,5 +1,7 @@
 'use strict';
 const fs = require('node:fs/promises');
+const fsConstants = require('node:fs').constants;
+const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
@@ -22,6 +24,44 @@ async function privatePath(file, directory = false) {
 function manualLocation(message) {
   return Object.assign(new Error(message + ' Use Show downloaded update for manual installation; no system permissions will be changed.'), { code: 'UPDATE_MANUAL_LOCATION' });
 }
+function shQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+function appleQuote(value) {
+  return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+// shortcut: osascript administrator dialog, upgrade if a signed helper ships
+async function runAsAdmin(shellCommand, prompt) {
+  if (typeof shellCommand !== 'string' || shellCommand.length > 4000 || /[\0\r\n]/.test(shellCommand)) throw new Error('Invalid privileged command.');
+  const script = `do shell script ${appleQuote(shellCommand)} with prompt ${appleQuote(prompt)} with administrator privileges`;
+  try { return await execFile('/usr/bin/osascript', ['-e', script], { timeout: 180000, maxBuffer: 65536 }); }
+  catch (error) {
+    const detail = `${error && error.stderr || ''}\n${error && error.message || ''}`;
+    const cancelled = /-128|User canceled|user cancelled/i.test(detail);
+    throw Object.assign(new Error(cancelled ? 'Administrator authorization was cancelled.' : 'Administrator authorization could not replace the app.'), { code: cancelled ? 'UPDATE_ADMIN_CANCELLED' : 'UPDATE_ADMIN_FAILED' });
+  }
+}
+function adminStagingScript(parentPath, uid, gid) {
+  if (parentPath !== '/Applications') throw new Error('Refusing to authorize a non-Applications parent.');
+  if (!Number.isInteger(uid) || !Number.isInteger(gid) || uid < 0 || gid < 0) throw new Error('Invalid user identity.');
+  const template = path.join(parentPath, `${PREFIX}XXXXXXXX`);
+  return `staging=$(/usr/bin/mktemp -d ${shQuote(template)}) || exit 1; /usr/sbin/chown ${uid}:${gid} "$staging" && /bin/chmod 700 "$staging" && printf %s "$staging" || { /bin/rmdir "$staging"; exit 1; }`;
+}
+function allowedPrivilegedPath(file) {
+  if (typeof file !== 'string' || !file.startsWith('/Applications/') || path.resolve(file) !== file) return false;
+  const parts = file.slice('/Applications/'.length).split('/');
+  if (parts.some(part => !part || part === '.' || part === '..')) return false;
+  const [top, ...nested] = parts;
+  if (top.startsWith(PREFIX)) return nested.length > 0 && nested.length < 4;
+  return nested.length === 0 && top.endsWith('.app') && top !== '.app';
+}
+function privilegedMoveScript(from, to) {
+  if (!allowedPrivilegedPath(from) || !allowedPrivilegedPath(to)) throw new Error('Refusing privileged replacement outside the application install.');
+  return `if [ -e ${shQuote(to)} ]; then exit 1; fi; /bin/mv ${shQuote(from)} ${shQuote(to)}`;
+}
+async function privilegedRename(from, to) {
+  await runAsAdmin(privilegedMoveScript(from, to), 'Morrow Mail needs permission to replace the application in Applications.');
+}
 function trustedParent(parentPath, stat, { platform = process.platform, uid = process.getuid() } = {}) {
   if (stat.mode & 0o002) return false;
   // The system Applications directory is administered by root/admin already.
@@ -40,8 +80,62 @@ async function validateParent(target) {
     const result = await execFile('/bin/ls', ['-lde', parentPath], { timeout: 10000, maxBuffer: 65536 });
     if (/^\s*\d+:.*\ballow\b/m.test(result.stdout)) throw manualLocation('The installation folder has an additional access-control grant.');
   }
-  try { await fs.access(parentPath, require('node:fs').constants.W_OK | require('node:fs').constants.X_OK); }
-  catch { throw manualLocation('The installation folder is not writable by this app.'); }
+}
+// access() is not the install decision. A Finder-launched process often fails
+// W_OK on root:admin /Applications while an admin Terminal succeeds, and a
+// firmlink can make access() disagree with create. A private sibling is the proof.
+async function createSiblingStaging(parentPath) {
+  let accessFailed = false;
+  try { await fs.access(parentPath, fsConstants.W_OK | fsConstants.X_OK); }
+  catch { accessFailed = true; }
+  let staging;
+  try {
+    staging = await fs.mkdtemp(path.join(parentPath, PREFIX));
+    await fs.chmod(staging, 0o700);
+    return staging;
+  } catch (error) {
+    if (staging) await fs.rmdir(staging).catch(() => {});
+    if (parentPath === '/Applications' && ['EACCES', 'EPERM'].includes(error.code)) {
+      throw Object.assign(new Error('The installation folder is not writable by this app.'), { code: 'UPDATE_NEEDS_ADMIN' });
+    }
+    if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) {
+      throw manualLocation(accessFailed && error.code !== 'EROFS' ? 'The installation folder is not writable by this app.' : 'This app cannot create installation staging.');
+    }
+    throw error;
+  }
+}
+async function elevatedStaging(parentPath) {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : -1;
+  const gid = typeof process.getgid === 'function' ? process.getgid() : -1;
+  const result = await runAsAdmin(adminStagingScript(parentPath, uid, gid), 'Morrow Mail needs permission to install an update in Applications.');
+  const staging = String(result.stdout || '').trim();
+  if (path.dirname(staging) !== parentPath || !path.basename(staging).startsWith(PREFIX) || path.resolve(staging) !== staging) throw new Error('Privileged staging path was rejected.');
+  try { await privatePath(staging, true); }
+  catch (error) { await fs.rmdir(staging).catch(() => {}); throw error; }
+  return staging;
+}
+async function preflightInstall(archive, manifest, arch) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), PREFIX));
+  await fs.chmod(directory, 0o700);
+  let failure;
+  try {
+    const preflight = await extractZip(archive, path.join(directory, 'preflight'));
+    await preserveQuarantine(archive, preflight);
+    await verifyBundle(preflight, { version: manifest.version, arch });
+    await assessBundleTrust(preflight, { enforce: false });
+  } catch (error) { failure = error; throw error; }
+  finally { await removeTree(directory).catch(error => { if (!failure) throw error; }); }
+}
+async function openStaging(parentPath, ensureCandidate) {
+  try { return { staging: await createSiblingStaging(parentPath), preflighted: false }; }
+  catch (error) {
+    if (error.code !== 'UPDATE_NEEDS_ADMIN') throw error;
+    await ensureCandidate();
+    try { return { staging: await elevatedStaging(parentPath), preflighted: true }; }
+    catch (adminError) {
+      throw manualLocation(adminError.message || 'Administrator authorization could not replace the app.');
+    }
+  }
 }
 async function validateStaging(staging, target) {
   if (!path.isAbsolute(target) || !target.endsWith('.app') || path.resolve(target) !== target || path.dirname(staging) !== path.dirname(target) || !path.basename(staging).startsWith(PREFIX)) throw new Error('Invalid update staging location.');
@@ -84,10 +178,9 @@ async function start(options) {
   await validateParent(target);
   const identities = { parent: await directoryIdentity(path.dirname(target)), target: await directoryIdentity(target) };
   // A private same-volume sibling holds immutable input copies and the recovery backup.
-  let staging;
-  try { staging = await fs.mkdtemp(path.join(path.dirname(target), PREFIX)); }
-  catch (error) { if (['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw manualLocation('This app cannot create installation staging.'); throw error; }
-  await fs.chmod(staging, 0o700);
+  // Canonical /Applications that this process cannot write is authorized before any quit.
+  const opened = await openStaging(path.dirname(target), () => preflightInstall(archive, manifest, arch));
+  const staging = opened.staging;
   let helperMayRun = false;
   try {
     await validateStaging(staging, target);
@@ -105,14 +198,17 @@ async function start(options) {
     await requireQuarantine(archiveCopy);
     // Native policy approval is required while the current app is still running.
     // A rejected candidate must never cause shutdown or helper handoff.
-    const preflight = await extractZip(archiveCopy, path.join(staging, 'preflight'));
-    await preserveQuarantine(archiveCopy, preflight);
-    await verifyBundle(preflight, { version: manifest.version, arch });
-    await assessBundleTrust(preflight, { enforce: false });
-    // The helper re-extracts authenticated bytes after quit. This preview is no
-    // longer needed and must not accumulate beside the retained backup.
-    await assertDirectoryIdentity(staging, identities.staging);
-    await removeTree(path.join(staging, 'preflight'));
+    // Authorization already ran this preflight on the same bytes before the prompt.
+    if (!opened.preflighted) {
+      const preflight = await extractZip(archiveCopy, path.join(staging, 'preflight'));
+      await preserveQuarantine(archiveCopy, preflight);
+      await verifyBundle(preflight, { version: manifest.version, arch });
+      await assessBundleTrust(preflight, { enforce: false });
+      // The helper re-extracts authenticated bytes after quit. This preview is no
+      // longer needed and must not accumulate beside the retained backup.
+      await assertDirectoryIdentity(staging, identities.staging);
+      await removeTree(path.join(staging, 'preflight'));
+    }
     const nonce = crypto.randomBytes(32).toString('hex');
     await writeExclusive(path.join(staging, 'manifest.json'), manifestBytes);
     await writeExclusive(path.join(staging, 'public-key.pem'), publicKey);
@@ -201,4 +297,4 @@ async function recoveryStatus(target) {
   if (!latest || !['failed', 'recovery-required', 'installing'].includes(latest.state)) return null;
   return { state: latest.state, message: `An update transaction needs review (${latest.state}). Recovery files are retained at ${latest.staging}. Quit all app copies before restoring a verified backup; see Signed Updates recovery instructions.` };
 }
-module.exports = { cleanupUnstarted, trustedParent, validateParent, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, start, registerStartup, acknowledge, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay };
+module.exports = { cleanupUnstarted, trustedParent, validateParent, createSiblingStaging, openStaging, adminStagingScript, allowedPrivilegedPath, privilegedMoveScript, privilegedRename, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, start, registerStartup, acknowledge, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay };
