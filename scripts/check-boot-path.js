@@ -109,6 +109,16 @@ const main = fs.readFileSync(path.join(root, "host/main.js"), "utf8");
 assert.ok(main.includes('path.join(__dirname, "..", "renderer")'));
 assert.ok(main.includes("externalAsarPath"));
 assert.ok(main.includes("loadFile(FIRST_PARTY_HTML)"));
+assert.ok(main.includes('accelerator: "CommandOrControl+N"'));
+assert.ok(main.includes('accelerator: "CommandOrControl+,"'));
+assert.ok(main.includes('role: "reload"'));
+assert.ok(main.includes('accelerator: "CommandOrControl+0"'));
+assert.ok(main.includes('accelerator: "CommandOrControl+Plus"'));
+assert.ok(main.includes('accelerator: "CommandOrControl+="'));
+assert.ok(main.includes('accelerator: "CommandOrControl+-"'));
+assert.ok(!main.includes("CommandOrControl+R"));
+assert.ok(!main.includes("CommandOrControl+Shift+R"));
+assert.ok(!main.includes("CommandOrControl+Shift+F"));
 
 const pkg = require("../package.json");
 assert.ok(pkg.build.files.includes("renderer/**/*"));
@@ -1248,6 +1258,9 @@ assert.strictEqual(syncUi.redactDebugText("bearer ya29.secretvalue password: hun
 assert.strictEqual(syncUi.redactDebugText("api_key=sk-abcdefghij1234567890"), "api_key [redacted]");
 assert.ok(syncUi.redactDebugText("synced ada@example.com").includes("ada@example.com"));
 assert.ok(html.includes('id="sync-detail"') && html.includes('id="log-panel"') && html.includes('id="nav-collapse"') && html.includes('id="rail-log"'));
+assert.ok(html.includes('id="rail-shortcuts"') && html.includes('id="shortcuts-panel"'));
+assert.ok(html.indexOf('id="rail-shortcuts"') < html.indexOf('id="rail-log"'));
+assert.ok(html.indexOf('id="rail-log"') < html.indexOf('id="rail-about"'));
 assert.ok(html.includes('data-label="Calendar"') && html.includes('data-label="Settings"') && html.includes('data-label="Email Brain"'));
 assert.ok(html.indexOf('id="settings-open"') < html.indexOf('id="refresh"'));
 assert.ok(html.indexOf('id="rail-brain"') < html.indexOf('id="settings-open"'));
@@ -2024,7 +2037,7 @@ assert.ok(html.indexOf('id="rail-mail"') < html.indexOf('id="rail-calendar"'));
 assert.ok(html.indexOf('id="rail-calendar"') < html.indexOf('id="rail-brain"'));
 assert.ok(html.indexOf('id="shell"') < html.indexOf('id="agent-panel"'));
 assert.ok(html.indexOf('id="calendar-panel"') < html.indexOf('id="brain"'));
-assert.ok(appJs.includes('["shell", "calendar-panel", "agent-panel", "brain", "provider-panel"]') && appJs.includes("nativeAgent:home:todosCached"));
+assert.ok(appJs.includes('["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "shortcuts-panel"]') && appJs.includes("nativeAgent:home:todosCached"));
 assert.ok(appJs.includes("nativeAgent:home:refreshTaxonomy") && appJs.includes("nativeAgent:home:todoUpdate"));
 assert.ok(appJs.includes('source: "manual"') && appJs.includes('source: "open"'));
 assert.ok(appJs.includes("nativeAgent:chat") && appJs.includes("nativeAgent:memorySet") && appJs.includes("nativeAgent:chatHistory"));
@@ -2813,6 +2826,75 @@ assert.strictEqual(selection.selectionShortcut({ key: "a", ctrl: true }, false),
 assert.strictEqual(selection.selectionShortcut({ key: "a", ctrl: true, shift: true }, false), "");
 assert.strictEqual(selection.selectionShortcut({ key: "a", meta: true }, true), "");
 assert.strictEqual(selection.selectionShortcut({ key: "Escape" }, true), "");
+const shortcuts = loadFunctions(appJs, [
+  "shortcutPlatform",
+  "shortcutMod",
+  "shortcutChord",
+  "shortcutNote",
+  "shortcutCatalog",
+  "mailShortcut",
+]);
+assert.strictEqual(shortcuts.shortcutPlatform("MacIntel"), "mac");
+assert.strictEqual(shortcuts.shortcutPlatform("Linux x86_64"), "other");
+assert.strictEqual(shortcuts.shortcutPlatform("Win32"), "other");
+const macKeys = shortcuts.shortcutCatalog("MacIntel").map((row) => row.keys);
+const winKeys = shortcuts.shortcutCatalog("Win32").map((row) => row.keys);
+for (const key of ["⌘N", "R", "A", "F", "⌘Enter", "⌘S", "⌘F or /", "⌘,", "Delete or Backspace", "Esc"]) {
+  assert.ok(macKeys.includes(key), key);
+}
+for (const key of ["Ctrl+N", "Ctrl+Enter", "Ctrl+S", "Ctrl+F or /", "Ctrl+,", "Ctrl+0", "Ctrl++ or Ctrl+−"]) {
+  assert.ok(winKeys.includes(key), key);
+}
+assert.ok(!macKeys.some((key) => key === "⌘R" || key === "Ctrl+R" || key.includes("Shift")));
+assert.ok(!winKeys.some((key) => key === "Ctrl+R" || key === "⌘R"));
+assert.match(shortcuts.shortcutNote("MacIntel"), /⌘R stays View/);
+assert.match(shortcuts.shortcutNote("Win32"), /Ctrl\+R stays View/);
+assert.match(shortcuts.shortcutNote("Linux x86_64"), /Zoom stays on the View menu/);
+const openMail = { view: "mail", mailOpen: true, typing: false, dialog: false, menu: false, textSelected: false, topDialog: "" };
+assert.strictEqual(shortcuts.mailShortcut({ key: "Delete" }, openMail), "delete");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Backspace" }, openMail), "delete");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Backspace" }, { ...openMail, typing: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Delete" }, { ...openMail, dialog: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Backspace" }, { ...openMail, textSelected: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Delete", metaKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "r" }, openMail), "reply");
+assert.strictEqual(shortcuts.mailShortcut({ key: "R" }, openMail), "reply");
+assert.strictEqual(shortcuts.mailShortcut({ key: "a" }, openMail), "reply-all");
+assert.strictEqual(shortcuts.mailShortcut({ key: "f" }, openMail), "forward");
+assert.strictEqual(shortcuts.mailShortcut({ key: "r", metaKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "r", ctrlKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "R", ctrlKey: true, shiftKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "r", shiftKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "r" }, { ...openMail, typing: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "r" }, { ...openMail, mailOpen: false }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "f" }, { ...openMail, view: "shortcuts" }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "f", metaKey: true, shiftKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "n", metaKey: true }, { ...openMail, typing: true }), "new-mail");
+assert.strictEqual(shortcuts.mailShortcut({ key: "n", ctrlKey: true }, openMail), "new-mail");
+assert.strictEqual(shortcuts.mailShortcut({ key: "n", ctrlKey: true, shiftKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: ",", metaKey: true }, { typing: true }), "settings");
+assert.strictEqual(shortcuts.mailShortcut({ key: ",", ctrlKey: true }, {}), "settings");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Enter", metaKey: true }, { topDialog: "compose" }), "send");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Enter", ctrlKey: true }, { topDialog: "compose", typing: true }), "send");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Enter", metaKey: true }, { topDialog: "" }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Enter", metaKey: true }, { topDialog: "compose-preview" }), "send-confirm");
+assert.strictEqual(shortcuts.mailShortcut({ key: "s", metaKey: true }, { topDialog: "compose", typing: true }), "save-draft");
+assert.strictEqual(shortcuts.mailShortcut({ key: "s", ctrlKey: true }, { topDialog: "settings", typing: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "s", metaKey: true }, { typing: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "f", metaKey: true }, openMail), "search");
+assert.strictEqual(shortcuts.mailShortcut({ key: "f", ctrlKey: true }, { ...openMail, typing: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "f", ctrlKey: true }, { ...openMail, dialog: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "/" }, openMail), "search");
+assert.strictEqual(shortcuts.mailShortcut({ key: "/" }, { ...openMail, typing: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "/" }, { ...openMail, dialog: true }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "Escape" }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "=", metaKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "+", metaKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "-", ctrlKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "0", metaKey: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "r", repeat: true }, openMail), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "a", metaKey: true }, openMail), "");
+assert.ok(appJs.includes('readerButton("trash", "Delete"'));
 assert.strictEqual(selection.modifierBlocksDrag(null), false);
 assert.strictEqual(selection.modifierBlocksDrag({}), false);
 assert.strictEqual(selection.modifierBlocksDrag({ altKey: true }), false);

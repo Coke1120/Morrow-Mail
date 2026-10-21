@@ -180,6 +180,7 @@ const EVENTS = [
   "emailBrain:refreshState",
   "emailBrain:rebuildState",
   "emailBrain:scheduleFired",
+  "host:menuAction",
 ];
 
 const invokeSet = new Set(INVOKE);

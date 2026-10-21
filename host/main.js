@@ -230,13 +230,21 @@ function bumpZoom(delta) {
   applyZoom(win.webContents.getZoomLevel() + delta);
 }
 
+function sendShellAction(action) {
+  const win = shellForZoom();
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send("host:menuAction", { action: String(action || "") });
+}
+
 function installMenu() {
+  // Reload stays the View menu role. Zoom stays Plus, =, -, and 0.
   const template = [
     {
       label: "Morrow Mail",
       submenu: [
         { role: "about" },
         { type: "separator" },
+        { label: "Settings…", accelerator: "CommandOrControl+,", click: () => sendShellAction("settings") },
         { label: "AI Setup…", click: () => openAiSetup() },
         { type: "separator" },
         { role: "services" },
@@ -246,6 +254,12 @@ function installMenu() {
         { role: "unhide" },
         { type: "separator" },
         { role: "quit" },
+      ],
+    },
+    {
+      label: "Mail",
+      submenu: [
+        { label: "New Mail", accelerator: "CommandOrControl+N", click: () => sendShellAction("new-mail") },
       ],
     },
     { role: "editMenu" },

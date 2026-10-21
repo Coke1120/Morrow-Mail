@@ -4839,6 +4839,11 @@ function showLog() {
   refreshLog().catch(() => paintLog(debugLines));
 }
 
+function showShortcuts() {
+  showPrimary("shortcuts", "shortcuts-panel");
+  paintShortcuts();
+}
+
 function setNavCollapsed(collapsed) {
   const on = !!collapsed;
   document.documentElement.dataset.nav = on ? "collapsed" : "expanded";
@@ -5425,8 +5430,8 @@ function renderActions(pane, email) {
     showStatus("Still finishing the last change.", true);
   }, true);
   const archive = readerButton("archive", "Archive", () => archiveOpen(email));
-  const trash = readerButton("trash", "Trash", () => trashOpen(email));
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const trash = readerButton("trash", "Delete", () => trashOpen(email));
+  trash.setAttribute("aria-keyshortcuts", "Delete Backspace");
   const move = readerButton("move", "Move", () => openMessageMovePicker(email, "imap"));
   move.setAttribute("aria-label", "Move to folder");
   let snooze = null;
@@ -5445,9 +5450,10 @@ function renderActions(pane, email) {
       guard(() => (preset === "clear" ? unsnoozeOpen(email) : snoozeOpen(email, preset)));
     });
   }
-  const self = (account && (account.preferredFromAddress || account.email)) || "";
-  const reply = readerButton("reply", "Reply", () => openCompose(composeSeed(email, "reply", self)));
-  const replyAll = readerButton("reply-all", "Reply All", () => openCompose(composeSeed(email, "all", self)));
+  const reply = readerButton("reply", "Reply", () => openReaderCompose("reply"));
+  reply.setAttribute("aria-keyshortcuts", "R");
+  const replyAll = readerButton("reply-all", "Reply All", () => openReaderCompose("all"));
+  replyAll.setAttribute("aria-keyshortcuts", "A");
   const suggestPending = !!(state.suggestions && state.suggestions.emailId === email.id && state.suggestions.pending);
   const suggest = readerButton("suggest", "Suggest", () => {
     requestReplySuggestions(email);
@@ -5456,7 +5462,8 @@ function renderActions(pane, email) {
   suggest.setAttribute("aria-label", "Suggest a reply");
   suggest.setAttribute("aria-busy", suggestPending ? "true" : "false");
   suggest.disabled = suggestPending;
-  const forward = readerButton("forward", "Forward", () => openCompose(composeSeed(email, "forward", self)));
+  const forward = readerButton("forward", "Forward", () => openReaderCompose("forward"));
+  forward.setAttribute("aria-keyshortcuts", "F");
   const menus = document.createElement("div");
   menus.className = "reader-menus";
   menus.append(move, organizeButton(email));
@@ -10800,6 +10807,7 @@ async function removeAccount() {
 async function refresh() {
   const pages = { calendar: [loadCalendar, "Calendar refreshed."], agent: [loadAgent, "Agent refreshed."],
     brain: [loadBrain, "Profile reloaded."], log: [refreshLog, "Log refreshed."],
+    shortcuts: [paintShortcuts, "Shortcuts refreshed."],
     folders: [() => loadProviderFolders(accountGen), "Folders and labels refreshed."] };
   if (pages[state.view]) {
     const [load, receipt] = pages[state.view];
@@ -10869,6 +10877,227 @@ function moveCursor(delta) {
   for (const button of buttons) button.classList.toggle("cursor", button === next);
   next.focus();
   next.scrollIntoView({ block: "nearest" });
+}
+
+function shortcutPlatform(platform) {
+  return /mac|iphone|ipad/i.test(String(platform || "")) ? "mac" : "other";
+}
+
+function shortcutMod(platform) {
+  return shortcutPlatform(platform) === "mac" ? "⌘" : "Ctrl";
+}
+
+function shortcutChord(platform, key) {
+  const mod = shortcutMod(platform);
+  return shortcutPlatform(platform) === "mac" ? mod + key : mod + "+" + key;
+}
+
+function shortcutNote(platform) {
+  const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
+  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. " + reload + " Zoom stays on the View menu.";
+}
+
+function shortcutCatalog(platform) {
+  const chord = (key) => shortcutChord(platform, key);
+  return [
+    { group: "Reading", keys: "Delete or Backspace", action: "Move the open message to Trash" },
+    { group: "Reading", keys: "R", action: "Reply to the open message" },
+    { group: "Reading", keys: "A", action: "Reply all" },
+    { group: "Reading", keys: "F", action: "Forward the open message" },
+    { group: "Mail", keys: chord("N"), action: "New Mail" },
+    { group: "Mail", keys: chord("F") + " or /", action: "Focus mail search" },
+    { group: "Compose", keys: chord("Enter"), action: "Send" },
+    { group: "Compose", keys: chord("S"), action: "Save draft" },
+    { group: "Window", keys: "Esc", action: "Close compose or dismiss an overlay. Also clears a message selection when that is already the Esc action." },
+    { group: "Window", keys: chord(","), action: "Settings" },
+    { group: "List", keys: "↑ or ↓", action: "Move through the message list" },
+    { group: "List", keys: "Enter", action: "Open the highlighted message" },
+    { group: "List", keys: chord("A"), action: "Select the visible messages" },
+    { group: "View menu", keys: chord("0"), action: "Actual size" },
+    { group: "View menu", keys: chord("+") + " or " + chord("−"), action: "Zoom in or out" },
+  ];
+}
+
+function editableField(target) {
+  if (!target || typeof target.closest !== "function") return null;
+  const node = target.closest("input, textarea, select, [contenteditable]");
+  if (!node) return null;
+  if (node.isContentEditable) return node;
+  const tag = node.tagName;
+  if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") return null;
+  if (node.disabled || node.readOnly) return null;
+  const type = String(node.type || "").toLowerCase();
+  if (type === "button" || type === "checkbox" || type === "radio" || type === "range" || type === "file" || type === "submit" || type === "reset" || type === "color") return null;
+  return node;
+}
+
+function topOpenDialog() {
+  const active = document.activeElement;
+  if (active && typeof active.closest === "function") {
+    const owned = active.closest("dialog[open]");
+    if (owned) return owned;
+  }
+  const open = typeof document.querySelectorAll === "function" ? [...document.querySelectorAll("dialog[open]")] : [];
+  return open.length ? open[open.length - 1] : null;
+}
+
+function mailShortcutContext(event) {
+  const menu = $("organize-menu");
+  const top = topOpenDialog();
+  let textSelected = false;
+  if (typeof window.getSelection === "function") {
+    const selection = window.getSelection();
+    textSelected = !!(selection && selection.isCollapsed === false && String(selection));
+  }
+  return {
+    typing: !!editableField(event && event.target),
+    dialog: !!(top),
+    menu: !!(menu && menu.hidden === false),
+    topDialog: top && top.id ? top.id : "",
+    mailOpen: !!(state.email && state.email.id),
+    view: state.view,
+    textSelected: textSelected,
+  };
+}
+
+// Reply, Reply All, and Forward are plain R, A, and F. CommandOrControl+R stays View → Reload.
+function mailShortcut(event, context) {
+  if (!event || event.isComposing || event.repeat) return "";
+  const ctx = context || {};
+  const key = String(event.key || "");
+  const lower = key.toLowerCase();
+  const command = event.metaKey === true || event.ctrlKey === true;
+  const alt = event.altKey === true;
+  const shift = event.shiftKey === true;
+  const typing = ctx.typing === true;
+  const dialog = ctx.dialog === true;
+  const menu = ctx.menu === true;
+  const view = ctx.view == null ? "mail" : ctx.view;
+  const mailOpen = ctx.mailOpen === true && view === "mail";
+  const top = ctx.topDialog || "";
+  if (command && !alt && !shift && key === "Enter") {
+    if (top === "compose-preview") return "send-confirm";
+    if (top === "compose") return "send";
+    return "";
+  }
+  if (command && !alt && !shift && lower === "s") {
+    if (top === "compose") return "save-draft";
+    return "";
+  }
+  if (command && !alt && !shift && lower === "n") return "new-mail";
+  if (command && !alt && !shift && key === ",") return "settings";
+  if (command && !alt && !shift && lower === "f") {
+    if (typing || dialog || menu) return "";
+    return "search";
+  }
+  if (command || alt || shift) return "";
+  if (key === "/") {
+    if (typing || dialog || menu) return "";
+    return "search";
+  }
+  if (typing || dialog || menu) return "";
+  if ((key === "Delete" || key === "Backspace") && mailOpen && ctx.textSelected !== true) return "delete";
+  if (!mailOpen) return "";
+  if (lower === "r") return "reply";
+  if (lower === "a") return "reply-all";
+  if (lower === "f") return "forward";
+  return "";
+}
+
+function openReaderCompose(kind) {
+  const email = state.email;
+  if (!email) return;
+  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const self = (account && (account.preferredFromAddress || account.email)) || "";
+  return openCompose(composeSeed(email, kind, self));
+}
+
+function focusMailSearch() {
+  if (state.view !== "mail") showMail();
+  const input = $("search-query");
+  if (!input || typeof input.focus !== "function") return;
+  input.focus();
+  if (typeof input.select === "function") input.select();
+}
+
+let mailShortcutAction = "";
+let mailShortcutStamp = 0;
+
+function runMailShortcut(action) {
+  const now = Date.now();
+  if (action && action === mailShortcutAction && now - mailShortcutStamp < 50) return;
+  mailShortcutAction = action || "";
+  mailShortcutStamp = now;
+  if (action === "new-mail") {
+    const button = $("compose-open");
+    if (button) button.click();
+    return;
+  }
+  if (action === "settings") {
+    const button = $("settings-open");
+    if (button) button.click();
+    return;
+  }
+  if (action === "search") {
+    focusMailSearch();
+    return;
+  }
+  if (action === "delete") {
+    if (!state.email) return;
+    guard(() => trashOpen(state.email));
+    return;
+  }
+  if (action === "reply" || action === "reply-all" || action === "forward") {
+    const kind = action === "reply" ? "reply" : action === "reply-all" ? "all" : "forward";
+    guard(() => openReaderCompose(kind));
+    return;
+  }
+  const commandId = action === "send" ? "compose-send" : action === "save-draft" ? "compose-save" : action === "send-confirm" ? "compose-preview-confirm" : "";
+  if (!commandId) return;
+  const button = $(commandId);
+  if (!button || button.disabled) return;
+  button.click();
+}
+
+function onMailShortcut(event) {
+  const action = mailShortcut(event, mailShortcutContext(event));
+  if (!action) return;
+  event.preventDefault();
+  runMailShortcut(action);
+}
+
+function onMenuAction(payload) {
+  const action = payload && payload.action;
+  if (action === "new-mail" || action === "settings") runMailShortcut(action);
+}
+
+function paintShortcuts() {
+  const platform = typeof navigator !== "undefined" ? navigator.platform : "";
+  const note = $("shortcuts-note");
+  if (note) note.textContent = shortcutNote(platform);
+  const list = $("shortcuts-list");
+  if (!list) return;
+  list.replaceChildren();
+  let group = "";
+  for (const row of shortcutCatalog(platform)) {
+    if (row.group !== group) {
+      group = row.group;
+      const heading = document.createElement("li");
+      heading.className = "shortcut-group";
+      heading.textContent = group;
+      list.appendChild(heading);
+    }
+    const item = document.createElement("li");
+    item.className = "shortcut-row";
+    const keys = document.createElement("span");
+    keys.className = "shortcut-keys";
+    keys.textContent = row.keys;
+    const action = document.createElement("span");
+    action.className = "shortcut-action";
+    action.textContent = row.action;
+    item.append(keys, action);
+    list.appendChild(item);
+  }
 }
 
 function onShellKey(event) {
@@ -14784,9 +15013,10 @@ function markRail(view) {
     calendar: "rail-calendar",
     brain: "rail-brain",
     log: "rail-log",
+    shortcuts: "rail-shortcuts",
     folders: "rail-folders",
   }[view];
-  for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-log", "rail-folders"]) {
+  for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-shortcuts", "rail-log", "rail-folders"]) {
     const node = $(id);
     if (node) node.setAttribute("aria-current", id === current ? "page" : "false");
   }
@@ -14797,11 +15027,10 @@ function showPrimary(view, id) {
   const swap = state.view !== view;
   if (view !== "agent") stopAgentPoll();
   markRail(view);
-  for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel"]) {
+  for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "shortcuts-panel"]) {
     if (pane === id) continue;
     hidePane(pane);
   }
-  if (id !== "log-panel") hidePane("log-panel");
   if (swap) {
     const node = $(id);
     if (node.querySelector(":scope > .motion-block")) {
@@ -16251,6 +16480,7 @@ function wire() {
   });
   $("inbox-rules-account").addEventListener("change", () => changeInboxRulesAccount($("inbox-rules-account").value).catch((error) => showInboxRuleStatus(error.message, true)));
   document.addEventListener("keydown", onShellKey);
+  document.addEventListener("keydown", onMailShortcut);
   wireBot();
   document.addEventListener("keydown", onSelectionKey);
   wireStatusNotice();
@@ -16325,6 +16555,7 @@ function wire() {
     await selectFolder(account.id, foldersOf(account)[0]?.id || "INBOX");
     paintProviderPage();
   }));
+  $("rail-shortcuts").addEventListener("click", showShortcuts);
   $("rail-log").addEventListener("click", showLog);
   $("rail-about").addEventListener("click", openAbout);
   $("log-refresh").addEventListener("click", () => {
@@ -16763,7 +16994,7 @@ function wire() {
     dismissComposeAi().catch((error) => showStatus(error.message, true));
   });
   $("ai-prompt").addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
+    if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
     event.preventDefault();
     startDraftWrite().catch((error) => showStatus(error.message, true));
   });
@@ -16825,6 +17056,7 @@ async function boot() {
     state.prefs.layout = panes;
     applyLayoutPanes(panes);
   }).catch(() => {});
+  api.on("host:menuAction", onMenuAction);
   api.on("host:updatePrepareForInstall", prepareUpdateRestart);
   api.on("host:updateResume", resumeAfterUpdate);
   wire();
