@@ -922,6 +922,154 @@ function organizeMenu(email, imapFolders, providerPayload, provider) {
   return { move: move, add: [], remove: [], outlook: labels, note: "" };
 }
 
+function messageLabelKeys(email) {
+  if (!email || typeof email !== "object") return [];
+  if (Array.isArray(email.labelIds)) {
+    return email.labelIds.map((item) => String(item || "")).filter(Boolean);
+  }
+  const keys = [];
+  if (Array.isArray(email.folders)) {
+    for (const item of email.folders) keys.push(item);
+  }
+  if (email.folderId) keys.push(email.folderId);
+  return keys.map((item) => String(item || "")).filter(Boolean);
+}
+
+function appliedEditableLabels(email, labels) {
+  const rows = Array.isArray(labels) ? labels.filter((row) => row && row.id) : [];
+  const byId = new Map();
+  const byName = new Map();
+  for (const row of rows) {
+    byId.set(String(row.id), row);
+    const name = String(row.name || "").toLowerCase();
+    if (name && !byName.has(name)) byName.set(name, row);
+  }
+  const ids = [];
+  const seen = new Set();
+  for (const key of messageLabelKeys(email)) {
+    const named = byId.get(key) || byName.get(String(key).toLowerCase());
+    if (!named || seen.has(String(named.id))) continue;
+    seen.add(String(named.id));
+    ids.push(String(named.id));
+  }
+  return ids;
+}
+
+function labelCheckedState(messages, labels) {
+  const rows = Array.isArray(labels) ? labels.filter((row) => row && row.id) : [];
+  const list = (Array.isArray(messages) ? messages : []).filter((email) => email && email.id);
+  const counts = new Map();
+  for (const email of list) {
+    for (const id of appliedEditableLabels(email, rows)) {
+      counts.set(id, (counts.get(id) || 0) + 1);
+    }
+  }
+  const marks = new Map();
+  for (const row of rows) {
+    const id = String(row.id);
+    const n = counts.get(id) || 0;
+    let mark = "off";
+    if (list.length && n === list.length) mark = "on";
+    else if (n > 0) mark = "mixed";
+    marks.set(id, mark);
+  }
+  return marks;
+}
+
+function labelChangeForMessages(messages, labels, initial, next) {
+  const rows = Array.isArray(labels) ? labels.filter((row) => row && row.id) : [];
+  const before = initial instanceof Map ? initial : new Map();
+  const after = next instanceof Map ? next : new Map();
+  const plans = [];
+  for (const email of Array.isArray(messages) ? messages : []) {
+    if (!email || !email.id) continue;
+    const applied = new Set(appliedEditableLabels(email, rows));
+    const add = [];
+    const remove = [];
+    for (const row of rows) {
+      const id = String(row.id);
+      const from = before.has(id) ? before.get(id) : "off";
+      const to = after.has(id) ? after.get(id) : from;
+      if (to === from || to === "mixed") continue;
+      if (to === "on" && !applied.has(id)) add.push(id);
+      if (to === "off" && applied.has(id)) remove.push(id);
+    }
+    if (add.length || remove.length) plans.push({ email: email, addLabelIds: add, removeLabelIds: remove });
+  }
+  return plans;
+}
+
+function filterEditableLabels(labels, query) {
+  const rows = Array.isArray(labels) ? labels.filter((row) => row && row.id) : [];
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return rows.slice();
+  return rows.filter((row) => {
+    const label = String(row.label || "").toLowerCase();
+    const name = String(row.name || "").toLowerCase();
+    const id = String(row.id || "").toLowerCase();
+    return label.indexOf(q) >= 0 || name.indexOf(q) >= 0 || id.indexOf(q) >= 0;
+  });
+}
+
+function labelEditCalls(plans) {
+  const calls = [];
+  for (const plan of Array.isArray(plans) ? plans : []) {
+    if (!plan || !plan.email || !plan.email.id || !plan.email.accountId) continue;
+    const add = (Array.isArray(plan.addLabelIds) ? plan.addLabelIds : []).map((id) => String(id || "")).filter(Boolean);
+    const remove = (Array.isArray(plan.removeLabelIds) ? plan.removeLabelIds : []).map((id) => String(id || "")).filter(Boolean);
+    if (!add.length && !remove.length) continue;
+    calls.push({
+      channel: "mail:modifyMessageLabels",
+      params: {
+        accountId: plan.email.accountId,
+        emailId: String(plan.email.id),
+        addLabelIds: add,
+        removeLabelIds: remove,
+      },
+    });
+  }
+  return calls;
+}
+
+function labelApplyConfirm(plans, labels, scope) {
+  const add = [];
+  const remove = [];
+  const seenAdd = new Set();
+  const seenRemove = new Set();
+  const nameOf = (id) => {
+    const row = (Array.isArray(labels) ? labels : []).find((item) => item && String(item.id) === String(id));
+    return row ? String(row.name || row.label || row.id) : String(id);
+  };
+  for (const plan of Array.isArray(plans) ? plans : []) {
+    for (const id of plan.addLabelIds || []) {
+      const key = String(id);
+      if (seenAdd.has(key)) continue;
+      seenAdd.add(key);
+      add.push(nameOf(key));
+    }
+    for (const id of plan.removeLabelIds || []) {
+      const key = String(id);
+      if (seenRemove.has(key)) continue;
+      seenRemove.add(key);
+      remove.push(nameOf(key));
+    }
+  }
+  const n = Array.isArray(plans) ? plans.length : 0;
+  const noun = n === 1 ? "message" : "messages";
+  const parts = [];
+  if (add.length) parts.push("Add “" + add.join("”, “") + "”");
+  if (remove.length) parts.push("Remove “" + remove.join("”, “") + "”");
+  const action = parts.length ? parts.join(". ") : "Update labels";
+  return {
+    title: "Labels",
+    body: action + " on " + n + " " + noun + "." + (scope ? " " + scope : ""),
+    confirm: "Apply",
+    cancel: "Cancel",
+    needsName: false,
+    name: "",
+  };
+}
+
 function moveMenuItem(folder, provider) {
   const outlook = provider === "outlook";
   const editable = !!(folder && folder.editable);
@@ -4630,11 +4778,9 @@ function paintSelectionBar(shown) {
   const model = messages[0]
     ? organizeMenu(messages[0], foldersOf(account), listed, provider)
     : { add: [], remove: [], outlook: [] };
-  const add = $("selection-add-label");
-  const remove = $("selection-remove-label");
+  const labels = $("selection-labels");
   const outlook = $("selection-outlook");
-  if (add) add.hidden = !model.add.length;
-  if (remove) remove.hidden = !model.remove.length;
+  if (labels) labels.hidden = provider !== "gmail" || !model.add.length;
   if (outlook) outlook.hidden = !model.outlook.length;
   if (wasHidden) {
     const motion = motionApi();
@@ -4831,6 +4977,11 @@ const READER_ICON = {
   move: "M3 6h7l2 2h9v11H3V6z",
 };
 
+const LABEL_ICON = [
+  "M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z",
+  "M7 7h.01",
+];
+
 const STAR_PATH = "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z";
 
 function starIcon(filled, size) {
@@ -4946,7 +5097,11 @@ function renderActions(pane, email) {
     resume.addEventListener("click", () => guard(() => resumeDraft(email)));
     bar.appendChild(resume);
   }
-  bar.append(reply, replyAll, suggest, forward, star, archive, trash, menus);
+  const besideStar = document.createElement("div");
+  besideStar.className = "reader-star-group";
+  besideStar.append(star);
+  renderTranslate(besideStar, email);
+  bar.append(reply, replyAll, suggest, forward, besideStar, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
 }
@@ -5003,6 +5158,13 @@ function organizeButton(email) {
   return button;
 }
 
+function placeReaderMenu(bar, node, beforeAction) {
+  const menus = bar.querySelector(".reader-menus") || bar;
+  const before = beforeAction ? menus.querySelector('[data-action="' + beforeAction + '"]') : null;
+  if (before) menus.insertBefore(node, before);
+  else menus.append(node);
+}
+
 function appendLabelActions(bar, email) {
   const payload = state.providerFolders;
   if (!payload || payload.accountId !== email.accountId) return;
@@ -5010,9 +5172,11 @@ function appendLabelActions(bar, email) {
   if (view.mode !== "live") return;
   const labels = providerLabelTree(view.folders);
   if (payload.source === "gmail" || payload.provider === "google") {
-    const editable = labels.filter((folder) => folder.editable);
-    bar.append(labelSelect("Add Gmail label", "Add label", editable, (id) => changeLabels(email, [id], [])));
-    bar.append(labelSelect("Remove Gmail label", "Remove label", editable, (id) => changeLabels(email, [], [id])));
+    if (!labels.some((folder) => folder.editable)) return;
+    const button = readerButton("labels", "Labels", () => openLabelPicker([email], false), strokeIcon(LABEL_ICON));
+    button.title = "Edit Gmail labels";
+    button.setAttribute("aria-haspopup", "dialog");
+    placeReaderMenu(bar, button, "organize");
     return;
   }
   if (payload.source === "graph" || payload.provider === "microsoft") {
@@ -5023,22 +5187,8 @@ function appendLabelActions(bar, email) {
     outlookMove.setAttribute("aria-label", "Move in Outlook");
     outlookMove.textContent = "Move in Outlook";
     outlookMove.addEventListener("click", () => openMessageMovePicker(email, "outlook"));
-    bar.append(outlookMove);
+    placeReaderMenu(bar, outlookMove, "snooze");
   }
-}
-
-function labelSelect(aria, placeholder, folders, run) {
-  const select = document.createElement("select");
-  select.setAttribute("aria-label", aria);
-  select.append(option("", placeholder));
-  for (const folder of folders) select.append(option(folder.id, indentedName(folder)));
-  select.addEventListener("change", () => {
-    const id = select.value;
-    select.value = "";
-    if (!id) return;
-    guard(() => run(id));
-  });
-  return select;
 }
 
 function renderSuggestions(pane, email) {
@@ -5221,7 +5371,6 @@ function renderReader(focus) {
   }
   renderThread(pane, email);
   renderAttachments(pane, email);
-  renderTranslate(pane, email);
   renderRemoteGate(pane, email);
   renderBody(pane, email);
   const translated = document.createElement("div");
@@ -6007,13 +6156,20 @@ async function confirmDeleteFolder(folder, provider) {
 }
 
 async function changeLabels(email, addLabelIds, removeLabelIds) {
+  const add = Array.isArray(addLabelIds) ? addLabelIds : [];
+  const remove = Array.isArray(removeLabelIds) ? removeLabelIds : [];
   await call("mail:modifyMessageLabels", {
     accountId: email.accountId,
     emailId: email.id,
-    addLabelIds,
-    removeLabelIds,
+    addLabelIds: add,
+    removeLabelIds: remove,
   });
-  showStatus(addLabelIds.length ? "Label added in Gmail." : "Label removed in Gmail.");
+  const text = add.length && remove.length
+    ? "Labels updated in Gmail."
+    : add.length
+      ? "Label added in Gmail."
+      : "Label removed in Gmail.";
+  showStatus(text);
 }
 
 async function moveOutlook(email, destinationId) {
@@ -6049,27 +6205,6 @@ function closeOrganizeMenu() {
   menu.hidden = true;
   menu.dataset.open = "";
   menu.replaceChildren();
-}
-
-function appendMenuGroup(menu, title, items, run) {
-  if (!items || !items.length) return;
-  const heading = document.createElement("h3");
-  heading.textContent = title;
-  menu.appendChild(heading);
-  for (const item of items) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "menuitem";
-    button.setAttribute("role", "menuitem");
-    button.style.paddingLeft = (12 + (item.depth || 0) * 14) + "px";
-    button.textContent = item.label || item.name || item.id;
-    button.title = item.name || item.label || item.id;
-    button.addEventListener("click", () => {
-      closeOrganizeMenu();
-      guard(() => run(item));
-    });
-    menu.appendChild(button);
-  }
 }
 
 function placeMenu(menu, x, y) {
@@ -6377,6 +6512,178 @@ function paintMoveTree() {
   }
 }
 
+let labelSession = null;
+
+function openLabelPicker(messages, bulk) {
+  const requested = (Array.isArray(messages) ? messages : []).filter((email) => email && email.id);
+  if (!requested.length) return;
+  const accountId = requested[0].accountId;
+  const rows = requested.filter((email) => email.accountId === accountId);
+  const account = accountForMove(rows[0].accountId);
+  const provider = folderProvider(account);
+  const listed = account ? providerPayloadFor(account) : null;
+  const view = providerFolderState(listed);
+  if (provider === "outlook") {
+    showStatus("Outlook moves the message instead of editing Gmail labels.", true);
+    return;
+  }
+  if (provider !== "gmail") {
+    showStatus("Labels stay on IMAP for this account.", true);
+    return;
+  }
+  if (view.mode !== "live") {
+    showStatus((listed && listed.message) || providerCopy(view.reason, "gmail"), true);
+    return;
+  }
+  const labels = providerLabelTree(view.folders).filter((folder) => folder.editable);
+  if (!labels.length) {
+    showStatus("No Gmail labels to edit.", true);
+    return;
+  }
+  const initial = labelCheckedState(rows, labels);
+  labelSession = {
+    messages: rows.slice(),
+    labels: labels,
+    initial: initial,
+    next: new Map(initial),
+    query: "",
+    bulk: !!bulk,
+    animated: false,
+  };
+  const source = $("label-picker-source");
+  if (source) {
+    source.textContent = bulk
+      ? selectionScopeCopy(rows, selectedMessages())
+      : (rows[0].subject || "(no subject)");
+  }
+  const filter = $("label-picker-filter");
+  if (filter) filter.value = "";
+  const title = $("label-picker-title");
+  if (title) title.textContent = "Labels";
+  paintLabelPicker();
+  if (!$("label-picker").open) openDialog("label-picker");
+  setTimeout(() => {
+    const input = $("label-picker-filter");
+    if (input && $("label-picker").open) input.focus();
+  }, 0);
+}
+
+function paintLabelPicker() {
+  const session = labelSession;
+  const list = $("label-picker-list");
+  const empty = $("label-picker-empty");
+  if (!session || !list) return;
+  list.replaceChildren();
+  const shown = filterEditableLabels(session.labels, session.query);
+  if (empty) empty.hidden = shown.length > 0;
+  for (const folder of shown) {
+    const id = String(folder.id);
+    const mark = session.next.get(id) || "off";
+    const row = document.createElement("label");
+    row.className = "check label-row";
+    row.style.paddingLeft = (8 + (folder.depth || 0) * 16) + "px";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = id;
+    box.checked = mark === "on";
+    if (mark === "mixed") box.title = "On some selected messages";
+    box.addEventListener("change", () => {
+      if (!labelSession) return;
+      labelSession.next.set(id, box.checked ? "on" : "off");
+      box.indeterminate = false;
+      const note = row.querySelector(".label-mixed");
+      if (note) note.hidden = true;
+    });
+    const text = document.createElement("span");
+    text.textContent = folder.label || folder.name || folder.id;
+    if (folder.name && folder.label && folder.name !== folder.label) text.title = folder.name;
+    row.append(box, text);
+    if (mark === "mixed") {
+      const note = document.createElement("span");
+      note.className = "label-mixed";
+      note.textContent = "Some";
+      row.appendChild(note);
+    }
+    list.appendChild(row);
+    box.indeterminate = mark === "mixed";
+  }
+  if (!session.animated) {
+    session.animated = true;
+    const motion = motionApi();
+    if (motion) motion.rows(list.querySelectorAll(".label-row"));
+  }
+}
+
+function stampLabelIds(email, labels, addLabelIds, removeLabelIds) {
+  if (!email || !email.id) return;
+  const next = new Set(appliedEditableLabels(email, labels));
+  for (const id of addLabelIds || []) next.add(String(id));
+  for (const id of removeLabelIds || []) next.delete(String(id));
+  const ids = [...next];
+  const write = (row) => {
+    if (row && String(row.id) === String(email.id)) row.labelIds = ids.slice();
+  };
+  write(email);
+  for (const row of state.emails || []) write(row);
+  write(state.email);
+  for (const row of state.thread || []) write(row);
+}
+
+function closeLabelPicker() {
+  labelSession = null;
+  const dialog = $("label-picker");
+  if (!dialog || !dialog.open) return Promise.resolve();
+  return closeDialog("label-picker") || Promise.resolve();
+}
+
+function finishLabelPick() {
+  const session = labelSession;
+  if (!session) return;
+  const snapshot = {
+    plans: labelChangeForMessages(session.messages, session.labels, session.initial, session.next),
+    labels: session.labels,
+    bulk: !!session.bulk,
+    messages: session.messages.slice(),
+  };
+  guard(async () => {
+    await closeLabelPicker();
+    if (!snapshot.plans.length) {
+      showStatus("Labels are unchanged.");
+      return;
+    }
+    await applyLabelPlans(snapshot);
+  });
+}
+
+async function applyLabelPlans(snapshot) {
+  const plans = snapshot.plans || [];
+  if (!snapshot.bulk && plans.length === 1) {
+    const plan = plans[0];
+    await changeLabels(plan.email, plan.addLabelIds, plan.removeLabelIds);
+    stampLabelIds(plan.email, snapshot.labels, plan.addLabelIds, plan.removeLabelIds);
+    return;
+  }
+  const messages = plans.map((plan) => plan.email);
+  if (refusePaused(messages)) return;
+  let calls = labelEditCalls(plans);
+  const removes = plans.some((plan) => (plan.removeLabelIds || []).some((id) => labelRemovesFromView(state.folderId, id)));
+  const excluded = selectedMessages().length !== (snapshot.messages || []).length;
+  if (removes || excluded) {
+    const answer = await askConfirm(labelApplyConfirm(plans, snapshot.labels, selectionScopeCopy(messages, snapshot.messages)));
+    if (!answer || !answer.ok) return;
+    if (removes) calls = confirmedCalls("remove-label", answer, calls, { removesFromView: true });
+  }
+  if (!calls.length) return;
+  const outcome = await runBulk(calls);
+  const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => String(row.id)));
+  for (const plan of plans) {
+    if (!completed.has(String(plan.email.id))) continue;
+    stampLabelIds(plan.email, snapshot.labels, plan.addLabelIds, plan.removeLabelIds);
+  }
+  if (removes) await finishBulkRemoval("Labels", outcome, messages.map((row) => row.id));
+  else showStatus(receiptText("Labels", outcome), !!outcome.error);
+}
+
 function closeMovePicker() {
   moveSession = null;
   const dialog = $("move-picker");
@@ -6566,8 +6873,7 @@ function openOrganizeMenu(email, x, y) {
   menu.setAttribute("aria-label", "Move and labels");
   menu.replaceChildren();
   if (model.move.length) appendMenuAction(menu, "Move to folder…", () => openMessageMovePicker(email, "imap"));
-  appendMenuGroup(menu, "Add Gmail label", model.add, (item) => changeLabels(email, [item.id], []));
-  appendMenuGroup(menu, "Remove Gmail label", model.remove, (item) => changeLabels(email, [], [item.id]));
+  if (provider === "gmail" && model.add.length) appendMenuAction(menu, "Labels…", () => openLabelPicker([email], false));
   if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", () => openMessageMovePicker(email, "outlook"));
   if (model.note) {
     const note = document.createElement("p");
@@ -6763,26 +7069,6 @@ async function bulkStar(isStarred) {
   if (completed.size) await settleOpenView();
 }
 
-async function applySelectionLabels(label, mode) {
-  const messages = selectionMoveMessages();
-  if (!messages.length || !label || refusePaused(messages)) return;
-  const name = label.label || label.name || label.id;
-  const removes = mode === "remove" && labelRemovesFromView(state.folderId, label.id);
-  const action = mode === "remove" ? "remove-label" : "add-label";
-  const detail = { removesFromView: removes, label: name, scope: selectionScopeCopy(messages) };
-  const calls = bulkLabelCalls(messages, label.id, mode);
-  let answer = { ok: true };
-  if (bulkNeedsConfirm(action, detail) || selectedMessages().length !== messages.length) {
-    answer = await askConfirm(bulkConfirmCopy(action, messages.length, detail));
-    if (!answer || !answer.ok) return;
-  }
-  const gated = confirmedCalls(action, answer, calls, detail);
-  if (!gated.length) return;
-  const outcome = await runBulk(gated);
-  if (removes) await finishBulkRemoval("Remove label", outcome, messages.map((row) => row.id));
-  else showStatus(receiptText(mode === "add" ? "Add label" : "Remove label", outcome), !!outcome.error);
-}
-
 function dropTargetName(target) {
   if (!target) return "that folder";
   if (target.kind === "imap") {
@@ -6852,33 +7138,6 @@ function openSelectionMove(kind) {
   source.textContent = selectionScopeCopy(messages);
 }
 
-function openSelectionLabelMenu(mode, anchor) {
-  const messages = selectionMoveMessages();
-  const email = messages[0];
-  if (!email || !anchor) return;
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
-  const provider = folderProvider(account);
-  const listed = account ? providerPayloadFor(account) : null;
-  const model = organizeMenu(email, foldersOf(account), listed, provider);
-  const items = mode === "add" ? model.add : model.remove;
-  const menu = ensureOrganizeMenu();
-  menu.setAttribute("aria-label", mode === "add" ? "Add Gmail label" : "Remove Gmail label");
-  menu.replaceChildren();
-  const scope = document.createElement("p");
-  scope.className = "organize-note";
-  scope.textContent = selectionScopeCopy(messages);
-  menu.appendChild(scope);
-  appendMenuGroup(menu, mode === "add" ? "Add Gmail label" : "Remove Gmail label", items, (item) => applySelectionLabels(item, mode));
-  if (!items.length) {
-    const note = document.createElement("p");
-    note.className = "organize-note";
-    note.textContent = model.note || "No labels to show.";
-    menu.appendChild(note);
-  }
-  const rect = anchor.getBoundingClientRect();
-  placeMenu(menu, rect.left, rect.bottom + 4);
-}
-
 function openSelectionMenu(x, y) {
   const messages = selectedMessages();
   if (!messages.length) return;
@@ -6897,8 +7156,7 @@ function openSelectionMenu(x, y) {
   appendMenuAction(menu, "Archive", () => guard(bulkArchive));
   appendMenuAction(menu, "Trash", () => guard(bulkTrash));
   if (model.move.length) appendMenuAction(menu, "Move to folder…", () => openSelectionMove("imap"));
-  appendMenuGroup(menu, "Add Gmail label", model.add, (item) => applySelectionLabels(item, "add"));
-  appendMenuGroup(menu, "Remove Gmail label", model.remove, (item) => applySelectionLabels(item, "remove"));
+  if (provider === "gmail" && model.add.length) appendMenuAction(menu, "Labels…", () => openLabelPicker(messages, true));
   if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", () => openSelectionMove("outlook"));
   appendMenuAction(menu, "Clear selection", () => commitSelection(clearListSelection()));
   if (model.note && !model.add.length && !model.remove.length && !model.outlook.length) {
@@ -6921,9 +7179,8 @@ function selectionButton(id, label, paths, run) {
   const text = document.createElement("span");
   text.textContent = label;
   button.appendChild(text);
-  button.addEventListener("click", (event) => {
+  button.addEventListener("click", () => {
     if (run) guard(run);
-    else openSelectionLabelMenu(button.dataset.mode, event.currentTarget);
   });
   return button;
 }
@@ -6952,11 +7209,11 @@ function wireSelection() {
     selectionButton("selection-move", "Move…", [MOVE_FOLDER], () => openSelectionMove("imap")),
     selectionButton("selection-outlook", "Move in Outlook…", [MOVE_FOLDER], () => openSelectionMove("outlook")),
   );
-  const add = selectionButton("selection-add-label", "Add label", tag, null);
-  add.dataset.mode = "add";
-  const remove = selectionButton("selection-remove-label", "Remove label", tag, null);
-  remove.dataset.mode = "remove";
-  bar.append(add, remove, selectionButton("selection-clear", "Clear", clear, () => commitSelection(clearListSelection())));
+  const labels = selectionButton("selection-labels", "Labels", tag, () => openLabelPicker(selectionMoveMessages(), true));
+  labels.hidden = true;
+  labels.setAttribute("aria-haspopup", "dialog");
+  labels.title = "Edit Gmail labels";
+  bar.append(labels, selectionButton("selection-clear", "Clear", clear, () => commitSelection(clearListSelection())));
   const selectAll = $("select-visible");
   if (selectAll) {
     selectAll.addEventListener("change", () => {
@@ -14883,6 +15140,22 @@ function wire() {
   $("move-picker").addEventListener("keydown", onMovePickerKey);
   $("move-picker").addEventListener("close", () => {
     moveSession = null;
+  });
+  $("label-picker-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    finishLabelPick();
+  });
+  $("label-picker-cancel").addEventListener("click", () => closeLabelPicker());
+  $("label-picker-filter").addEventListener("input", () => {
+    if (!labelSession) return;
+    labelSession.query = $("label-picker-filter").value;
+    paintLabelPicker();
+  });
+  $("label-picker-filter").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") event.preventDefault();
+  });
+  $("label-picker").addEventListener("close", () => {
+    labelSession = null;
   });
   $("confirm-form").addEventListener("submit", (event) => {
     event.preventDefault();

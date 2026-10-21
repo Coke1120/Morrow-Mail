@@ -1151,6 +1151,26 @@
         </div>
       </form>
     </dialog>
+    <dialog id="label-picker" aria-labelledby="label-picker-title">
+      <form id="label-picker-form">
+        <h2 id="label-picker-title">Labels</h2>
+        <p id="label-picker-source"></p>
+        <label for="label-picker-filter">Filter</label>
+        <div class="move-filter">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <circle cx="11" cy="11" r="8" fill="none" stroke="currentColor" stroke-width="2"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></line>
+          </svg>
+          <input id="label-picker-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter labels" />
+        </div>
+        <div id="label-picker-list" role="group" aria-label="Gmail labels"></div>
+        <p id="label-picker-empty" class="hint" hidden>No labels match this filter.</p>
+        <div class="row">
+          <button type="submit" class="primary" id="label-picker-ok">Apply</button>
+          <button type="button" class="ghost" id="label-picker-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="bot-secret" aria-labelledby="bot-secret-title">
       <form>
         <h2 id="bot-secret-title">Copy your secret once</h2>
