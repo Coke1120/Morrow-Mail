@@ -156,12 +156,14 @@ app.whenReady().then(async () => {
   assert.equal(count('mail:vacationSet'), 0);
   await run(`setSettingsFold('mailbox',true,false)`);await waitFor(`settingsFoldLoaded.has('mailbox:box-0')`);
   assert.equal(await run(`$('settings-account').checkVisibility() && $('settings-reconnect').checkVisibility()`), true);
-  assert.equal(await run(`$('settings-capabilities').checkVisibility() || $('remove').checkVisibility()`), false);
+  assert.equal(await run(`$('settings-capabilities').checkVisibility()`), false, 'permissions detail starts folded');
+  assert.equal(await run(`$('settings-danger-title').checkVisibility() && $('remove').checkVisibility()`), true, 'remove account sits in an open danger zone');
+  assert.equal(await run(`$('settings-accounts').getAttribute('aria-label')`), 'Connected accounts');
   await shot('settings-accounts');
   await run(`$('account-permissions').querySelector('summary').focus()`);await key('RETURN');
   assert.equal(await run(`$('settings-calendar').checkVisibility()`), true);
   await run(`$('account-recovery').querySelector('summary').focus()`);await key('SPACE');
-  assert.equal(await run(`$('remove').checkVisibility()`), true);
+  assert.equal(await run(`$('account-recovery').open`), true);
   await run(`$('account-permissions').open=false;$('account-recovery').open=false;`);
 
   // Exercise the default grant payload, copy-once secret, and explicit enable.

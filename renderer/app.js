@@ -2896,7 +2896,7 @@ function connectButton() {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "primary empty-connect";
-  button.addEventListener("click", () => openDialog("connect"));
+  button.addEventListener("click", () => openConnectFor(null));
   const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   icon.setAttribute("viewBox", "0 0 24 24");
   icon.setAttribute("width", "15");
@@ -2928,7 +2928,14 @@ function syncRemove() {
   const live = isLive(settingsAccount());
   button.hidden = false;
   button.disabled = !live;
-  button.title = live ? "Remove this account. Mail stays on the server." : "Connect a mailbox before removing one.";
+  button.title = live ? "Remove this account. Mail stays on the server." : "";
+  const note = $("settings-remove-note");
+  const picked = !!settingsAccount();
+  if (note) {
+    if (live) note.textContent = "";
+    else if (picked) note.textContent = "This mailbox cannot be removed here.";
+    else note.textContent = state.accounts.length ? "Choose a mailbox above to remove it." : "Connect a mailbox before removing one.";
+  }
 }
 
 function folderRootDrop(kind, accountId) {
@@ -4032,10 +4039,15 @@ function renderSettingsAccounts() {
   if (list.dataset.stamp === stamp) return;
   list.dataset.stamp = stamp;
   list.replaceChildren();
+  const connect = $("connect-open");
+  if (connect) connect.hidden = state.accounts.length > 0;
   if (!state.accounts.length) {
     const empty = document.createElement("li");
     empty.className = "empty";
-    empty.textContent = "No mailbox connected.";
+    const copy = document.createElement("span");
+    copy.textContent = "No mailbox connected. Connect an account to read, send, and manage mail.";
+    const cta = connectButton();
+    empty.append(copy, cta);
     list.appendChild(empty);
     return;
   }
@@ -9094,7 +9106,13 @@ async function removeAccount() {
   const account = settingsAccount();
   if (!isLive(account)) return;
   const label = account.email || account.id;
-  if (!window.confirm(`Remove ${label} from Morrow Mail? Messages stay on the server.`)) return;
+  const answer = await askConfirm({
+    title: "Remove " + label + "?",
+    body: "This deletes mail downloaded to this computer, folders, local drafts, signatures, inbox rules, scheduled sends, snoozes, and the saved sign-in for " + label + ". Mail and folders on the mail server are not deleted, and the provider account stays active. Removing an account does not fix sign-in problems; use Reconnect instead.",
+    confirm: "Remove account",
+    cancel: "Keep account",
+  });
+  if (!answer?.ok) return;
   hideUndoSend();
   clearUndo();
   showStatus("Removing account…");
@@ -10302,8 +10320,9 @@ function paintSettingsMailbox() {
   fillAccountOptions(select, state.accounts, account?.id);
   $("settings-reconnect").disabled = !account;
   $("settings-reconnect").textContent = "Reconnect mailbox";
-  $("settings-reconnect").title = account ? "Reconnect " + account.email : "Connect a mailbox first";
-  $("settings-mailbox-note").textContent = account ? "Signatures, rules, and automatic replies use this mailbox." : "Connect an account in Accounts to get started.";
+  $("settings-reconnect").title = account ? "Reconnect " + account.email : "";
+  $("settings-reconnect-note").textContent = account ? "" : (state.accounts.length ? "Choose a mailbox above to reconnect it." : "Connect a mailbox first to enable reconnect.");
+  $("settings-mailbox-note").textContent = account ? "Signatures, rules, and automatic replies use this mailbox." : "Connect an account to manage signatures, rules, and automatic replies.";
   syncRemove();
 }
 async function changeSettingsMailbox(id) {

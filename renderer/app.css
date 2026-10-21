@@ -551,10 +551,33 @@ textarea:focus-visible {
 }
 
 .settings-accounts .empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
   margin: 0;
   color: var(--muted);
   font-size: 13px;
 }
+
+.settings-accounts .empty .empty-connect { margin: 0; }
+
+#settings-reconnect-note:empty,
+#settings-remove-note:empty { display: none; }
+
+#settings p#settings-reconnect-note,
+#settings p#settings-remove-note { margin: 6px 0 0; font-size: 12px; line-height: 1.4; color: var(--muted); }
+
+#settings .danger-zone {
+  margin-top: 16px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+#settings .danger-zone > h4 { margin: 0 0 6px; color: var(--danger); }
+#settings .danger-zone p { margin: 0 0 8px; }
+#settings .danger-zone button.danger { border-color: var(--danger); color: var(--danger); }
+#settings .danger-zone button.danger:disabled { border-color: var(--line); color: var(--muted); }
 
 .mailbox-actions { margin-top: 4px; }
 

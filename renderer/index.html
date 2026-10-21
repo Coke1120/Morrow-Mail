@@ -862,7 +862,7 @@
           </div>
           <div class="settings-group">
           <h4>Connected accounts</h4>
-          <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
+          <ul id="settings-accounts" class="settings-accounts" aria-label="Connected accounts"></ul>
           <div class="row">
             <button type="button" class="ghost icon-label" id="connect-open">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -871,19 +871,24 @@
               </svg>
               <span>Connect account</span>
             </button>
-            <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
+            <button type="button" class="ghost" id="settings-reconnect" aria-describedby="settings-reconnect-note">Reconnect mailbox</button>
           </div>
+          <p class="hint" id="settings-reconnect-note" role="status"></p>
           </div>
           <details class="settings-disclosure" id="account-permissions"><summary>Permissions &amp; calendar access</summary>
             <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
             <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
           </details>
-          <details class="settings-disclosure" id="account-recovery"><summary>Recovery &amp; account removal</summary>
+          <details class="settings-disclosure" id="account-recovery"><summary>Recovery &amp; sign-in help</summary>
             <p class="hint">To fix sign-in, reconnect the same address. Cached mail and local work stay in this profile.</p>
             <p class="hint">Missing data? Check the app and operating-system user you opened. Back up old app data before changing folders. Morrow has not migrated older profiles; reconnecting downloads server mail but cannot recover their unsynced drafts.</p>
             <p class="hint">For help, review a support preview in Debug log. Keep passwords, OAuth files, and databases private.</p>
-            <p class="hint">Removing an account is not a sign-in fix. Review what will be removed before confirming.</p>
-            <button type="button" class="ghost icon-label" id="remove" disabled>
+          </details>
+          <div class="settings-group danger-zone" id="settings-danger-zone" aria-labelledby="settings-danger-title">
+            <h4 id="settings-danger-title">Danger zone</h4>
+            <p class="hint" id="settings-danger-copy">Removing an account deletes mail downloaded to this computer, folders, local drafts, signatures, inbox rules, scheduled sends, snoozes, and the saved sign-in for that account. Mail and folders on the mail server are not deleted.</p>
+            <p class="hint" id="settings-danger-use">Removing an account is not a sign-in fix. To repair sign-in, use Reconnect and keep the same address.</p>
+            <button type="button" class="ghost icon-label danger" id="remove" aria-describedby="settings-remove-note" disabled>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <polyline points="3 6 5 6 21 6"></polyline>
                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -892,7 +897,8 @@
               </svg>
               <span>Remove account</span>
             </button>
-          </details>
+            <p class="hint" id="settings-remove-note" role="status"></p>
+          </div>
           </div>
         </section>
         <section class="fold" id="settings-ooo" data-fold="ooo" role="tabpanel" aria-labelledby="settings-tab-ooo" tabindex="0" hidden>
