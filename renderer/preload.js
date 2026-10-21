@@ -158,6 +158,8 @@ const INVOKE = [
   "bot:mintGrant",
   "bot:rotateGrant",
   "bot:revokeGrant",
+  "bot:deleteGrant",
+  "bot:probeServe",
   "bot:draftComposeSeed",
   "bot:dismissDraftProposal",
 ];

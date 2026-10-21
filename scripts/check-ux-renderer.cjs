@@ -131,6 +131,8 @@ app.whenReady().then(async()=>{
  assert.match(await run(`$('bot-grants').textContent`),/a@example.test.*account details.*cached mail headers/);
  assert.equal(await run(`getComputedStyle($('bot-accounts').querySelector('label')).display`),'flex');
  assert.match(await run(`$('bot-listen').textContent`),/Could not start.*not listening/);
+ assert.match(await run(`$('bot-listen').textContent`),/Quit the other program using port 47831, or restart Morrow/);
+ assert.equal(await run(`$('bot-listen-fix').hidden`), false);
  await run(`$('bot-enabled').checked=true;$('bot-enabled').dispatchEvent(new Event('change'))`);await waitFor(`$('bot-status').textContent.includes('Could not start')`);
  await shot('bot-listener-conflict');
  await run(`showBotSecret('SYNTHETIC UI PLACEHOLDER');setBotSecretStatus('Copied.');`);

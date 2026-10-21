@@ -185,6 +185,24 @@ function endpoints(serveHost) {
   };
 }
 
+function servePort(serveHost) {
+  const host = typeof serveHost === "string" ? serveHost.trim().toLowerCase() : "";
+  const match = /:([0-9]{1,5})$/.exec(host);
+  if (!match) return 8443;
+  const port = Number(match[1]);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return 8443;
+  return port;
+}
+
+function serveCommands(serveHost) {
+  const port = servePort(serveHost);
+  return {
+    port,
+    status: "tailscale serve status",
+    serve: `tailscale serve --bg --https=${port} --accept-app-caps=${SERVE_CAPABILITY} http://${HOST}:${PORT}`,
+  };
+}
+
 function markerJson() {
   return JSON.stringify({ [SERVE_CAPABILITY]: [{ readBridge: true }] });
 }
@@ -241,6 +259,8 @@ module.exports = {
   operation,
   capabilities,
   endpoints,
+  servePort,
+  serveCommands,
   markerJson,
   factsFrom,
   requestBytes,

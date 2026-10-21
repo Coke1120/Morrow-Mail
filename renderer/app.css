@@ -881,6 +881,33 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 .settings-disclosure > summary:hover { background: var(--hover); }
 .settings-disclosure > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; border-radius: 4px; }
 .settings-disclosure > :last-child:not(summary) { margin-bottom: 8px; }
+.bot-command {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--hover);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.bot-callout {
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--danger);
+}
+.bot-callout[hidden] { display: none; }
+.bot-conflict {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  padding: 12px;
+}
+.bot-conflict[hidden] { display: none; }
+#settings .bot-conflict h4 { margin: 0; color: var(--danger); }
+#settings .bot-conflict p { margin: 0; }
 .bot-setup-steps { margin: 18px 0 0; padding-left: 28px; }
 .bot-setup-steps > li { padding-left: 8px; }
 .bot-setup-steps > li::marker { color: var(--accent-ink); font-size: 16px; font-weight: 700; }
