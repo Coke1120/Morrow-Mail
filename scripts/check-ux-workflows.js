@@ -55,6 +55,11 @@ async function run() {
   assert.match(bulk.run(`botListenerStatus({enabled:true,listen:{listening:false,error:'port_in_use'}})`), /Could not start.*not listening/);
   assert.doesNotMatch(bulk.run(`botListenerStatus({enabled:true,listen:{listening:false,error:'port_in_use'}})`), /enabled|Listening on/);
   assert.equal(bulk.run(`botPermissionNames(['accounts.read','mail.headers.read','draft.proposals.create'])`), 'account details, cached mail headers, draft proposals');
+  const sendCopy = bulk.run(`botSendConfirmCopy(['me@alpha.test','me@beta.test'])`);
+  assert.match(sendCopy.body, /me@alpha\.test, me@beta\.test/);
+  assert.match(sendCopy.body, /does not wait for you to press Send/);
+  assert.equal(sendCopy.confirm, 'Allow sending');
+  assert.match(bulk.run(`botSendConfirmCopy([])`).body, /the mailboxes you select/);
   console.log('ux-workflows-ok');
 }
 module.exports = { run, renderer };
