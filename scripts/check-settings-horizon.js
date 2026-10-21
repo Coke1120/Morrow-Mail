@@ -18,14 +18,14 @@ async function run() {
   const secrets = require("../host/mail/secrets");
   const saved = { withClient: remote.withClient, searchUids: remote.searchUids, fetchMessages: remote.fetchMessages };
   try {
-    assert.equal(settings.syncHorizonDays(), 180);
-    assert.equal(settings.answer("morrow:configGetCompactMessageList", []), false);
+    assert.equal(settings.syncHorizonDays(), 0);
+    assert.equal(settings.answer("morrow:configGetCompactMessageList", []), true);
     assert.throws(() => settings.answer("morrow:configSetCompactMessageList", ["true"]), /on or off/);
     for (const bad of [null, "0", "365", -1, 1, 360, Infinity, NaN, {}, true]) {
       assert.throws(() => settings.answer("morrow:configSetSyncHorizonDays", [bad]), /Sync history/);
     }
     fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ syncHorizonDays: -1 }));
-    assert.equal(settings.syncHorizonDays(), 180, "invalid stored values use the default");
+    assert.equal(settings.syncHorizonDays(), 0, "invalid stored values use the default");
     await engine.init();
     db.insertAccount({ id: "horizon", email: "horizon@example.test", username: "horizon", profile: "custom",
       imapHost: "imap.example.test", imapPort: 993, imapTls: true, smtpHost: "smtp.example.test", smtpPort: 465,

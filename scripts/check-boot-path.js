@@ -961,7 +961,20 @@ assert.ok(prefKinds.has("select") && prefKinds.has("text") && prefKinds.has("boo
 const settingsHtml = html.slice(html.indexOf('id="settings"'), html.indexOf("</dialog>", html.indexOf('id="settings"')));
 assert.ok(settingsHtml.includes("<select") && settingsHtml.includes('type="checkbox"') && settingsHtml.includes('type="number"'));
 assert.ok(settingsHtml.includes('id="ai-base"') && settingsHtml.includes('id="ai-model"') && settingsHtml.includes('id="ai-key"'));
-assert.ok(settingsHtml.includes('type="password"') && settingsHtml.includes('list="ai-model-list"'));
+assert.ok(settingsHtml.includes('type="password"') && settingsHtml.includes('id="ai-model"') && settingsHtml.includes('id="ai-model-select"'));
+assert.ok(settingsHtml.includes('id="ai-model-chooser"') && !settingsHtml.includes("<datalist") && !settingsHtml.includes('list="ai-model-list"'));
+assert.match(settingsHtml, /id="pref-accent-help"/);
+assert.match(settingsHtml, /Theme sets the light or dark shell/);
+assert.ok(!html.includes("hkbscl"));
+assert.ok(html.includes("@example.com = colleague@example.com, team@example.org"));
+assert.ok(html.includes("ada@example.org = example.com"));
+assert.ok(html.includes("example.com, example.org"));
+assert.ok(!fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8").includes("hkbscl"));
+assert.ok(functionSource(appJs, "chooseFetchedModel").includes("paintAiDirty"));
+assert.ok(functionSource(appJs, "chooseFetchedModel").includes('new Event("input"'));
+assert.ok(functionSource(appJs, "fetchAiModels").includes("applyFetchedModels"));
+assert.ok(functionSource(appJs, "fetchAiModels").includes("host:aiListModels"));
+assert.ok(!appJs.includes("ai-model-list"));
 assert.ok(settingsHtml.includes("Save AI") && settingsHtml.includes("Fetch models") && settingsHtml.includes("Test connection"));
 assert.ok(settingsHtml.includes("Test connection and Fetch models use the values in this form"));
 // #158: remote-image privacy, visible fold loading, and field-level errors.
@@ -1019,9 +1032,11 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetAccent", []), "#193C34");
     fs.unlinkSync(file);
     assert.strictEqual(answer("morrow:configGetConversationViewEnabled", []), true);
-    assert.strictEqual(answer("morrow:configGetAutoLoadRemoteImages", []), false);
-    assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 5);
-    assert.strictEqual(answer("morrow:configGetSnoozeEffective", []), true);
+    assert.strictEqual(answer("morrow:configGetAutoLoadRemoteImages", []), true);
+    assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 30);
+    assert.strictEqual(answer("morrow:configGetSnoozeEffective", []), false);
+    assert.strictEqual(answer("morrow:configGetSyncHorizonDays", []), 0);
+    assert.strictEqual(answer("morrow:configGetCompactMessageList", []), true);
     assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), true);
     assert.strictEqual(answer("morrow:configGetShowFolderChips", []), true);
     assert.strictEqual(answer("morrow:configGetSidebarGmailFoldersExpanded", []), true);
@@ -1252,7 +1267,7 @@ assert.ok(parityDoc.includes("Push: on"));
 assert.ok(parityDoc.includes("Push: polling"));
 assert.ok(parityDoc.includes("about every 25 minutes"));
 assert.ok(!independentDoc.includes("last 30 days"));
-assert.ok(parityDoc.includes("180 days by default, 365 days, or All"));
+assert.ok(parityDoc.includes("All by default, or 365 days, or 180 days"));
 assert.ok(parityDoc.includes("Shortening the horizon keeps mail already stored."));
 assert.ok(!parityDoc.includes("30-day window"));
 assert.ok(!parityDoc.includes("Older than 30 days"));
@@ -4891,7 +4906,7 @@ async function checkTidy() {
     const inbox = db.folderByPath("imap-test", "INBOX");
     assert.strictEqual(inbox.window_done, 1);
     assert.strictEqual(inbox.uid_cursor, 150);
-    assert.strictEqual(inbox.sync_horizon_days, 180);
+    assert.strictEqual(inbox.sync_horizon_days, 0);
     first.length = 0;
     await engine.syncAccountById("imap-test", { onlyPath: "INBOX" });
     assert.deepStrictEqual(first, []);
@@ -4934,7 +4949,7 @@ async function checkTidy() {
     await engine.syncAccountById("imap-ol", { onlyPath: "INBOX" });
     assert.deepStrictEqual(outlookPages, [50, 10]);
     assert.strictEqual(db.folderByPath("imap-ol", "INBOX").window_done, 1);
-    assert.strictEqual(db.folderByPath("imap-ol", "INBOX").sync_horizon_days, 180);
+    assert.strictEqual(db.folderByPath("imap-ol", "INBOX").sync_horizon_days, 0);
 
     db.insertAccount({
       id: "imap-old",
@@ -4958,7 +4973,7 @@ async function checkTidy() {
     const kept = db.messageByUid("imap-old", "INBOX", 119, 9);
     assert.ok(kept);
     assert.strictEqual(db.countInFolder("imap-old", "INBOX"), 40);
-    assert.strictEqual(db.folderByPath("imap-old", "INBOX").sync_horizon_days, 180);
+    assert.strictEqual(db.folderByPath("imap-old", "INBOX").sync_horizon_days, 0);
     db.applyFolderSync("imap-old", "INBOX", {
       messages: [],
       keepOthers: true,
@@ -4990,7 +5005,7 @@ async function checkTidy() {
     assert.strictEqual(db.messageByUid("imap-old", "INBOX", 119, 9).id, kept.id);
     assert.ok(db.messageByUid("imap-old", "INBOX", 40, 9));
     assert.strictEqual(db.folderByPath("imap-old", "INBOX").window_done, 1);
-    assert.strictEqual(db.folderByPath("imap-old", "INBOX").sync_horizon_days, 180);
+    assert.strictEqual(db.folderByPath("imap-old", "INBOX").sync_horizon_days, 0);
     caught.length = 0;
     await engine.syncAccountById("imap-old", { onlyPath: "INBOX" });
     assert.deepStrictEqual(caught, []);
@@ -5091,7 +5106,7 @@ async function checkTidy() {
     };
     await engine.syncAccountById("imap-ol", { onlyPath: "INBOX" });
     assert.strictEqual(blocked, 0);
-    assert.strictEqual(engine.syncPolicy.syncDays, 180);
+    assert.strictEqual(engine.syncPolicy.syncDays, 0);
     assert.deepStrictEqual(engine.syncPolicy.refreshPages, [20, 30, 30]);
     assert.strictEqual(engine.syncPolicy.headerBatch, 100);
     assert.strictEqual(engine.syncPolicy.outlookBatch, 50);
@@ -7981,13 +7996,170 @@ async function checkInboxRules() {
   }
 }
 
+async function checkFetchedModelChooser() {
+  const { renderer } = require("./check-ux-workflows");
+  const elements = new Map();
+  const calls = [];
+  const queue = [];
+  function FakeEl(id) {
+    const listeners = {};
+    const attrs = {};
+    const classes = new Set();
+    const el = {
+      value: "",
+      hidden: false,
+      textContent: "",
+      className: "",
+      size: 0,
+      placeholder: "",
+      options: [],
+      children: [],
+      parentNode: null,
+      addEventListener(type, fn) {
+        (listeners[type] || (listeners[type] = [])).push(fn);
+      },
+      dispatchEvent(event) {
+        for (const fn of listeners[event.type] || []) fn(event);
+        return true;
+      },
+      getAttribute(name) {
+        return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null;
+      },
+      setAttribute(name, value) {
+        attrs[name] = String(value);
+      },
+      removeAttribute(name) {
+        delete attrs[name];
+      },
+      remove() {
+        if (el.parentNode && Array.isArray(el.parentNode.children)) {
+          el.parentNode.children = el.parentNode.children.filter((child) => child !== el);
+        }
+        el.parentNode = null;
+      },
+      closest() { return null; },
+      querySelector() { return null; },
+      contains() { return false; },
+      replaceChildren() {
+        el.options = [];
+        el.children = [];
+      },
+      appendChild(child) {
+        child.parentNode = el;
+        el.children.push(child);
+        el.options.push(child);
+        return child;
+      },
+      insertBefore(node, before) {
+        node.parentNode = el;
+        const index = before ? el.children.indexOf(before) : -1;
+        el.children.splice(index < 0 ? el.children.length : index, 0, node);
+        return node;
+      },
+    };
+    el.classList = {
+      toggle(name, force) {
+        const on = force === undefined ? !classes.has(name) : !!force;
+        if (on) classes.add(name);
+        else classes.delete(name);
+        el.className = [...classes].join(" ");
+        return on;
+      },
+      add(name) {
+        classes.add(name);
+        el.className = [...classes].join(" ");
+      },
+      remove(name) {
+        classes.delete(name);
+        el.className = [...classes].join(" ");
+      },
+      contains(name) {
+        return classes.has(name);
+      },
+    };
+    let currentId = id || "";
+    Object.defineProperty(el, "id", {
+      get() { return currentId; },
+      set(next) {
+        if (currentId && elements.get(currentId) === el) elements.delete(currentId);
+        currentId = String(next || "");
+        if (currentId) elements.set(currentId, el);
+      },
+    });
+    if (currentId) elements.set(currentId, el);
+    return el;
+  }
+  for (const id of ["ai-base", "ai-model", "ai-key", "ai-status", "ai-dirty", "ai-model-select"]) FakeEl(id);
+  const chooser = FakeEl("ai-model-chooser");
+  chooser.hidden = true;
+  const ui = renderer({
+    Event,
+    document: {
+      getElementById(id) { return elements.get(id) || null; },
+      createElement() { return FakeEl(""); },
+    },
+    window: {
+      morrow: {
+        invoke(channel, payload) {
+          calls.push({ channel, payload: payload ? { ...payload } : payload });
+          if (!queue.length) return Promise.reject(new Error("no queued AI result"));
+          return Promise.resolve(queue.shift());
+        },
+      },
+    },
+  });
+  ui.run(`
+    $("ai-base").value = "https://example.test/v1";
+    $("ai-model").value = "typed-model";
+    $("ai-key").value = "";
+    aiBaseline = aiFormState();
+    globalThis.modelInputs = 0;
+    $("ai-model").addEventListener("input", () => { globalThis.modelInputs += 1; });
+  `);
+  queue.push({ ok: true, models: [" alpha ", "beta", "alpha", "", 3] });
+  await ui.run("fetchAiModels()");
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].channel, "host:aiListModels");
+  assert.strictEqual(calls[0].payload.baseUrl, "https://example.test/v1");
+  assert.strictEqual(calls[0].payload.apiKey, "");
+  assert.strictEqual(ui.run('$("ai-model").value'), "typed-model");
+  assert.strictEqual(ui.run('$("ai-model-chooser").hidden'), false);
+  assert.deepStrictEqual(ui.run('$("ai-model-select").options.map((option) => option.value)'), ["", "alpha", "beta"]);
+  assert.strictEqual(ui.run('$("ai-model-select").options[0].textContent'), "Choose a model");
+  assert.strictEqual(ui.run('$("ai-model-select").size'), 3);
+  assert.strictEqual(ui.run('$("ai-model-select").value'), "");
+  assert.match(ui.run('$("ai-status").textContent'), /Fetched 2 models/);
+  ui.run('chooseFetchedModel()');
+  assert.strictEqual(ui.run('$("ai-model").value'), "typed-model");
+  assert.strictEqual(ui.run("modelInputs"), 0);
+  ui.run('$("ai-model-select").value = "beta"; chooseFetchedModel();');
+  assert.strictEqual(ui.run('$("ai-model").value'), "beta");
+  assert.strictEqual(ui.run("modelInputs"), 1);
+  assert.strictEqual(ui.run('$("ai-dirty").hidden'), false);
+  assert.match(ui.run('$("ai-dirty").textContent'), /Unsaved changes/);
+  ui.run('$("ai-model-select").value = "beta"; chooseFetchedModel();');
+  assert.strictEqual(ui.run("modelInputs"), 1);
+  queue.push({ ok: false, message: "Could not list models." });
+  await ui.run("fetchAiModels()");
+  assert.strictEqual(ui.run('$("ai-model-chooser").hidden'), false);
+  assert.strictEqual(ui.run('$("ai-status").textContent'), "Could not list models.");
+  assert.strictEqual(ui.run('$("ai-status").classList.contains("error")'), true);
+  assert.strictEqual(ui.run('$("ai-model").value'), "beta");
+  queue.push({ ok: true, models: [] });
+  await ui.run("fetchAiModels()");
+  assert.strictEqual(ui.run('$("ai-model-chooser").hidden'), true);
+  assert.match(ui.run('$("ai-status").textContent'), /No models returned/);
+  assert.strictEqual(ui.run('$("ai-status").classList.contains("error")'), false);
+  assert.strictEqual(ui.run('$("ai-model").value'), "beta");
+}
+
 checkGoogleOauthAlias();
 require("./check-bake-google-oauth").run();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 require("./check-bot-setup-ux").run();
 
-require("./check-bot-probe").run().then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-sync-retry").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
+checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-sync-retry").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
 }).then(() => require("./check-batch-b").run()).then(() => {
   console.log("ui-path-ok");

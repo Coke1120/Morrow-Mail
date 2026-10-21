@@ -264,8 +264,8 @@ app.whenReady().then(async () => {
   await run(`loadBotAccess()`);
   await run(`showBotSection('grants')`);
   assert.equal(await run(`$('bot-grants').querySelector('button').checkVisibility()`), true);
-  assert.match(await run(`$('bot-panel-grants').textContent`), /Revoke invalidates the secret/);
-  assert.match(await run(`$('bot-panel-grants').textContent`), /Delete removes the bot/);
+  assert.match(await run(`$('bot-panel-grants').textContent`), /Revoke stops its access and keeps the row/);
+  assert.match(await run(`$('bot-panel-grants').textContent`), /Delete removes the row after you confirm/);
   assert.equal(await run(`$('bot-grants').querySelector('[data-bot-action="delete"]').textContent.trim()`), 'Delete');
   await run(`$('bot-grants').querySelector('[data-bot-action="delete"]').click()`);
   await waitFor(`$('confirm').open`);
@@ -512,6 +512,16 @@ app.whenReady().then(async () => {
   await waitFor(`state.listOffset===1600 && !state.busy`);
   await run(`window.retainedRow=document.querySelector('.message-row');openSettings();setSettingsFold('mail',true,false)`);
   await waitFor(`settingsFoldLoaded.has('mail:')`);
+  assert.equal(await run(`$('pref-compact-list').checked`), true, 'compact message list defaults on');
+  await shot('settings-compact-sync');
+  await run(`$('pref-compact-list').click()`);
+  await waitFor(`state.prefs.compactList===false`);
+  assert.equal(require('../host/settings').answer('morrow:configGetCompactMessageList', []), false);
+  await run(`$('settings').close();retainedRow.querySelector('button.message').focus();`);
+  const comfortableHeight = await run(`document.querySelector('.message-row').getBoundingClientRect().height`);
+  assert.ok(comfortableHeight >= 60 && comfortableHeight < 64, `comfortable row stays near the 60px minimum, got ${comfortableHeight}`);
+  await run(`openSettings();setSettingsFold('mail',true,false)`);
+  await waitFor(`settingsFoldLoaded.has('mail:')`);
   assert.equal(await run(`$('pref-compact-list').checked`), false);
   await run(`$('pref-compact-list').click()`);
   await waitFor(`state.prefs.compactList===true`);
@@ -530,15 +540,6 @@ app.whenReady().then(async () => {
   assert.equal(compact.snippet, 'none');
   assert.equal(compact.oneLine, true, 'sender and subject share a single line');
   await shot('message-compact-page');
-  await run(`openSettings();setSettingsFold('mail',true,false)`);
-  await waitFor(`settingsFoldLoaded.has('mail:')`);
-  assert.equal(await run(`$('pref-compact-list').checked`), true);
-  await shot('settings-compact-sync');
-  await run(`$('pref-compact-list').click()`);
-  await waitFor(`state.prefs.compactList===false`);
-  await run(`$('settings').close();retainedRow.querySelector('button.message').focus();`);
-  const comfortableHeight = await run(`document.querySelector('.message-row').getBoundingClientRect().height`);
-  assert.ok(comfortableHeight >= 60 && comfortableHeight < 64, `comfortable row stays near the 60px minimum, got ${comfortableHeight}`);
   // Reduced motion and a short window retain one tab panel and reachable controls.
   win.webContents.debugger.attach('1.3');
   await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]});
