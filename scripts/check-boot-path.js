@@ -801,7 +801,7 @@ assert.ok(settingsHtml.includes("<select") && settingsHtml.includes('type="check
 assert.ok(settingsHtml.includes('id="ai-base"') && settingsHtml.includes('id="ai-model"') && settingsHtml.includes('id="ai-key"'));
 assert.ok(settingsHtml.includes('type="password"') && settingsHtml.includes('list="ai-model-list"'));
 assert.ok(settingsHtml.includes("Save AI") && settingsHtml.includes("Fetch models") && settingsHtml.includes("Test connection"));
-assert.ok(settingsHtml.includes("saved config"));
+assert.ok(settingsHtml.includes("Test connection and Fetch models use the values in this form"));
 for (const channel of ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels"]) {
   assert.ok(appJs.includes('"' + channel + '"'), channel);
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
