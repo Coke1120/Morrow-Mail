@@ -1,17 +1,26 @@
 # Agent notes
 
-## UI
+Project-level standing rules for humans and coding agents (Cloud Agent / Claude / Codex).
 
-The first-party shell in `renderer/` is still vanilla DOM. Use icons and motion anyway.
+## Branches
 
-- Prefer **react-icons-compatible SVGs** now: `viewBox="0 0 24 24"`, `currentColor`, and the same paths as `react-icons/fi` (Feather) or `react-icons/lu` (Lucide). Decorative icons are `aria-hidden="true"`. Keep the visible text or an `aria-label`.
-- When React lands in this shell, use **react-icons** and **motion.dev** (`motion/react`) heavily for icons, hover, and panel transitions.
-- Do not strip the existing Motion usage. `renderer/motion-ui.js` imports `motion`. `renderer/motion.bundle.js` exposes `window.morrowMotion`. `renderer/app.js` calls it for rows, panels, dialogs, and chrome press/hover. Keep `prefers-reduced-motion: reduce`.
+- **Working / PR base: `dev`** — open feature/fix PRs against `dev`.
+- **`main`** — production / default. Do **not** merge or push here unless Leo explicitly says merge to main/production.
+- **`production`** (if present) — treat like main for merge gates.
 
-## OAuth consent
+## Hard limits
 
-Google connects mail, calendar, organize, Out of Office, and rules in one full consent. Microsoft uses two dialogs maximum: Outlook IMAP/SMTP only, then one Graph bundle for all API features. Never mix Outlook and Graph on an authorize URL, code exchange, or refresh. Reuse saved grants, request missing permissions incrementally, and preserve existing tokens after partial consent. Bot bridge stays separate. See `docs/OAUTH.md`.
+- No auto-merge.
+- No force-push to `main` or `dev`.
+- No production deploy from agent initiative.
 
-## Out of Office
+## Decisions (ADR)
 
-Settings → Out of Office is a reviewed provider write. Gmail uses `gmail.settings.basic` and Microsoft uses `MailboxSettings.ReadWrite`, covered by the provider bundle or an existing legacy token. Do not replace the mailbox secret after partial consent. IMAP may install only the ManageSieve script `morrow-vacation` on port 4190 after STARTTLS. Do not send local automatic replies or replace another active script.
+- Record **important** architecture / process decisions under `docs/adr/` (one short Markdown file per decision, numbered or dated).
+- Prefer an ADR over chat-only memory when the choice will affect future PRs, agents, or deploys.
+- Lightweight product UX backlog can stay in GitHub Issues; ADRs are for durable “why we chose X”.
+
+## Source of truth
+
+- Cross-repo bot habits: Grok Bot skill `leo-coding-prefs` + Graph `projects.yaml`.
+- This file + `docs/adr/` win for **this repo's** rules and decisions.
