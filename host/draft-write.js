@@ -29,8 +29,18 @@ function fail(error) {
   };
 }
 
+function originalEmailText(email, limit) {
+  const from = email && email.from ? email.from : "";
+  const subject = email && email.subject ? email.subject : "";
+  const body = String((email && (email.text_body || email.textBody || email.snippet)) || "");
+  const text = `From: ${from}\nSubject: ${subject}\n${body}`.trim();
+  const cap = limit > 0 ? limit : 1500;
+  return text.length > cap ? text.slice(0, cap) : text;
+}
+
 function instructionFrom(body) {
   const raw = body && typeof body === "object" ? body : {};
+  const reply = raw.mode === "reply";
   const lines = [];
   if (raw.mode) lines.push(`Mode: ${raw.mode}`);
   if (raw.user_prompt) lines.push(`Instruction: ${raw.user_prompt}`);
@@ -44,14 +54,36 @@ function instructionFrom(body) {
   }
   const email = raw.email || raw.originalEmail || raw.original_email;
   if (email && typeof email === "object") {
-    lines.push(`Email: ${JSON.stringify({
-      subject: email.subject || "",
-      from: email.from || "",
-      snippet: email.snippet || email.text_body || "",
-    }).slice(0, 2000)}`);
+    if (reply) lines.push(`Original email:\n${originalEmailText(email, 8000)}`);
+    else {
+      lines.push(`Email: ${JSON.stringify({
+        subject: email.subject || "",
+        from: email.from || "",
+        snippet: email.snippet || email.text_body || "",
+      }).slice(0, 2000)}`);
+    }
   }
   const text = lines.length ? lines.join("\n") : JSON.stringify(raw);
-  return text.length > 8000 ? text.slice(0, 8000) : text;
+  const cap = reply ? 14000 : 8000;
+  return text.length > cap ? text.slice(0, cap) : text;
+}
+
+function systemPrompt(body) {
+  const raw = body && typeof body === "object" ? body : {};
+  const reply = raw.mode === "reply";
+  const rules = writingBrief();
+  return [
+    "You draft email. Reply with the message body only, in plain sentences.",
+    "No subject line, no markdown fences, no XML tags.",
+    reply
+      ? "Write a comprehensive reply to the original email. Address the points it raises. Do not quote the original message. Follow the instruction for tone and what to cover."
+      : "",
+    rules ? `Follow these writing rules:\n${rules}` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function draftRequest(body) {
+  return { system: systemPrompt(body), user: instructionFrom(body) };
 }
 
 async function startDraft(params) {
@@ -68,17 +100,10 @@ async function startDraft(params) {
 async function runDraft(reqId, body, signal) {
   let plain = "";
   try {
-    const rules = writingBrief();
+    const request = draftRequest(body);
     await stream([
-      {
-        role: "system",
-        content: [
-          "You draft email. Reply with the message body only, in plain sentences.",
-          "No subject line, no markdown fences, no XML tags.",
-          rules ? `Follow these writing rules:\n${rules}` : "",
-        ].filter(Boolean).join(" "),
-      },
-      { role: "user", content: instructionFrom(body) },
+      { role: "system", content: request.system },
+      { role: "user", content: request.user },
     ], (piece) => {
       plain += piece;
       emit({ reqId, type: "chunk", data: escapeHtml(piece).replace(/\n/g, "<br>") });
@@ -139,4 +164,4 @@ function answer(channel, args) {
   }
 }
 
-module.exports = { answer, escapeHtml };
+module.exports = { answer, escapeHtml, draftRequest };

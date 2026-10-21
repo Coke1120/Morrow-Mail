@@ -126,5 +126,10 @@
       catch (error) { get("brain-compose-account").value = accountId; status(error.message, true); }
     });
   }
-  window.morrowBrainCompose = { load, wire, parseDomainLines };
+  function sync() {
+    if (!ready || busy || !api) return;
+    try { syncAccounts(); }
+    catch (error) { status(error.message, true); }
+  }
+  window.morrowBrainCompose = { load, wire, parseDomainLines, sync };
 })();

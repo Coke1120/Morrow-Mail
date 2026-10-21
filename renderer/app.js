@@ -121,6 +121,7 @@ let brainCategoryDefaults = [];
 let brainCategoryIndex = -1;
 let brainCategoryGen = 0;
 let brainSkillBusy = false;
+let brainSkillDialogId = "";
 let brainFixBusy = false;
 let brainCategoryBusy = false;
 let brainSkillCache = {};
@@ -3309,10 +3310,40 @@ function suggestionEmail(email) {
   };
 }
 
+function replyThreadEmail(fields) {
+  if (!fields || typeof fields !== "object") return null;
+  const kind = fields.kind || "";
+  if (kind !== "reply" && kind !== "all") return null;
+  const email = fields.quoteEmail && typeof fields.quoteEmail === "object"
+    ? fields.quoteEmail
+    : (fields.email && typeof fields.email === "object" ? fields.email : null);
+  if (email) return email;
+  const text = typeof fields.quote === "string" ? fields.quote.trim()
+    : (typeof fields.text === "string" ? fields.text.trim() : "");
+  if (!text) return null;
+  return {
+    subject: String(fields.subject || "").replace(/^(?:re|fwd|fw):\s*/i, "").trim(),
+    from: "",
+    textBody: text,
+    snippet: text,
+  };
+}
+
+function defaultAiMode(fields) {
+  return replyThreadEmail(fields) ? "reply" : "rewrite";
+}
+
+function replyThreadPrompt(prompt) {
+  const instruction = String(prompt || "").trim();
+  if (instruction) return instruction;
+  return "Write a comprehensive reply to the original email. Address the points it raises in a complete draft the sender can send.";
+}
+
 function draftBlockReason(mode, prompt, existing, email) {
   const instruction = String(prompt || "").trim();
   const body = String(existing || "").trim();
   const source = !!(email && typeof email === "object");
+  if (mode === "reply") return source ? "" : "Reply from thread needs the original message.";
   if (mode === "custom" && !instruction && !source) return "Add a prompt.";
   if (mode !== "custom" && !body && !instruction && !source) return "Add some text, or a prompt.";
   return "";
@@ -3322,10 +3353,14 @@ function draftInstruction(mode, prompt, existing, subject, email) {
   const instruction = String(prompt || "").trim();
   const body = {
     mode: mode || "custom",
-    user_prompt: instruction,
+    user_prompt: mode === "reply" ? replyThreadPrompt(instruction) : instruction,
     existing_draft_content: String(existing || ""),
     subject: String(subject || ""),
   };
+  if (mode === "reply") {
+    if (email && typeof email === "object") body.email = suggestionEmail(email);
+    return body;
+  }
   if (email && typeof email === "object") {
     body.email = suggestionEmail(email);
     if (!instruction && !String(existing || "").trim()) body.user_prompt = "Write a reply.";
@@ -3348,15 +3383,19 @@ function suggestedReplyBody(current, signature, text) {
   return line;
 }
 
-// shortcut: continue appends model text; rewrite and custom replace the body. Upgrade if continue must keep a partial model reply beside the old draft.
+// shortcut: continue appends model text; rewrite, custom, and reply from thread replace the body. Reply from thread keeps a trailing signature.
 function draftBase(mode, existing) {
   return mode === "continue" ? String(existing || "") : "";
 }
 
 function shownDraft(view) {
   if (!view) return "";
-  if (!view.text) return typeof view.previous === "string" ? view.previous : view.base;
-  return view.base + view.text;
+  const body = !view.text
+    ? (typeof view.previous === "string" ? view.previous : view.base)
+    : view.base + view.text;
+  const tail = view.text && typeof view.signatureTail === "string" ? view.signatureTail : "";
+  if (!tail || body.endsWith(tail)) return body;
+  return body.replace(/\s+$/g, "") + "\n\n" + tail;
 }
 
 function htmlChunkToText(html) {
@@ -4590,6 +4629,7 @@ function renderSettingsAccounts() {
 
 function syncStatusLabel(sync) {
   if (!sync || !sync.state) return "";
+  if (sync.state === "error" && sync.retrying) return "Retrying…";
   if (sync.message) return redactDebugText(sync.message);
   if (sync.state === "syncing") return "Syncing…";
   if (sync.state === "paused") return "Paused for rate limit";
@@ -4638,7 +4678,7 @@ function syncDetail(sync) {
   const success = sync.lastSuccessAt && sync.accountId && sync.folderId ? new Date(sync.lastSuccessAt).toLocaleString() : "";
   const successLine = success ? `${where} · Last checked ${success}` : "";
   if (sync.state === "syncing") return [where, phase || "Downloading recent mail", successLine].filter(Boolean).join(" · ");
-  if (sync.state === "error") return [where, redactDebugText(sync.lastError || sync.message || "Sync failed")].filter(Boolean).join(" · ");
+  if (sync.state === "error") return [where, redactDebugText(sync.lastError || sync.message || "Sync failed"), sync.retrying ? "Retrying…" : ""].filter(Boolean).join(" · ");
   if (sync.state === "paused") return [sync.message || "Paused for rate limit", where, sync.retryAt ? "Retrying at " + new Date(sync.retryAt).toLocaleString() : "Waiting before retrying"].filter(Boolean).join(" · ");
   if (sync.state === "done") return successLine || [where, "Not synced yet"].filter(Boolean).join(" · ");
   return sync.message || "";
@@ -4647,7 +4687,7 @@ function syncDetail(sync) {
 function syncButtonLabel(sync) {
   if (!sync || !sync.state || sync.state === "done") return "Sync";
   if (sync.state === "syncing") return "Syncing";
-  if (sync.state === "error") return "Sync failed";
+  if (sync.state === "error") return sync.retrying ? "Retrying…" : "Sync failed";
   if (sync.state === "paused") return "Sync paused";
   return "Sync";
 }
@@ -4799,6 +4839,11 @@ async function copySupportLog() {
 function showLog() {
   showPrimary("log", "log-panel");
   refreshLog().catch(() => paintLog(debugLines));
+}
+
+function showShortcuts() {
+  showPrimary("shortcuts", "shortcuts-panel");
+  paintShortcuts();
 }
 
 function setNavCollapsed(collapsed) {
@@ -5387,8 +5432,8 @@ function renderActions(pane, email) {
     showStatus("Still finishing the last change.", true);
   }, true);
   const archive = readerButton("archive", "Archive", () => archiveOpen(email));
-  const trash = readerButton("trash", "Trash", () => trashOpen(email));
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const trash = readerButton("trash", "Delete", () => trashOpen(email));
+  trash.setAttribute("aria-keyshortcuts", "Delete Backspace");
   const move = readerButton("move", "Move", () => openMessageMovePicker(email, "imap"));
   move.setAttribute("aria-label", "Move to folder");
   let snooze = null;
@@ -5407,9 +5452,10 @@ function renderActions(pane, email) {
       guard(() => (preset === "clear" ? unsnoozeOpen(email) : snoozeOpen(email, preset)));
     });
   }
-  const self = (account && (account.preferredFromAddress || account.email)) || "";
-  const reply = readerButton("reply", "Reply", () => openCompose(composeSeed(email, "reply", self)));
-  const replyAll = readerButton("reply-all", "Reply All", () => openCompose(composeSeed(email, "all", self)));
+  const reply = readerButton("reply", "Reply", () => openReaderCompose("reply"));
+  reply.setAttribute("aria-keyshortcuts", "R");
+  const replyAll = readerButton("reply-all", "Reply All", () => openReaderCompose("all"));
+  replyAll.setAttribute("aria-keyshortcuts", "A");
   const suggestPending = !!(state.suggestions && state.suggestions.emailId === email.id && state.suggestions.pending);
   const suggest = readerButton("suggest", "Suggest", () => {
     requestReplySuggestions(email);
@@ -5418,7 +5464,8 @@ function renderActions(pane, email) {
   suggest.setAttribute("aria-label", "Suggest a reply");
   suggest.setAttribute("aria-busy", suggestPending ? "true" : "false");
   suggest.disabled = suggestPending;
-  const forward = readerButton("forward", "Forward", () => openCompose(composeSeed(email, "forward", self)));
+  const forward = readerButton("forward", "Forward", () => openReaderCompose("forward"));
+  forward.setAttribute("aria-keyshortcuts", "F");
   const menus = document.createElement("div");
   menus.className = "reader-menus";
   menus.append(move, organizeButton(email));
@@ -5981,7 +6028,7 @@ let attachmentPreviewToken = 0;
 let attachmentPreviewUrl = "";
 let attachmentPreviewEmailId = "";
 
-function readerIcon(kind) {
+function attachmentIcon(kind) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("width", "16");
@@ -6204,7 +6251,7 @@ function renderAttachments(pane, email) {
   const head = document.createElement("div");
   head.className = "attachment-card-head";
   const title = document.createElement("h3");
-  title.appendChild(readerIcon("paperclip"));
+  title.appendChild(attachmentIcon("paperclip"));
   const titleText = document.createElement("span");
   titleText.textContent = "Attachments";
   title.appendChild(titleText);
@@ -6219,7 +6266,7 @@ function renderAttachments(pane, email) {
     const zip = document.createElement("button");
     zip.type = "button";
     zip.className = "attachment-zip";
-    zip.appendChild(readerIcon("download"));
+    zip.appendChild(attachmentIcon("download"));
     const zipLabel = document.createElement("span");
     zipLabel.textContent = "Save as ZIP";
     zip.appendChild(zipLabel);
@@ -6721,6 +6768,7 @@ async function loadAccounts(preferredId) {
     loadCalendar({ preferCache: true }).catch(error => showStatus(error.message, true));
   }
   syncRemove();
+  if (window.morrowBrainCompose && typeof window.morrowBrainCompose.sync === "function") window.morrowBrainCompose.sync();
   await loadSnoozed();
   if (gen !== accountGen) return;
   await loadList();
@@ -8725,7 +8773,13 @@ function setComposeFormatLocked(locked) {
   const editing = !locked && !(state.draftWrite && state.draftWrite.pending);
   const bar = $("compose-format");
   if (bar && typeof bar.querySelectorAll === "function") {
-    for (const control of bar.querySelectorAll("button, input")) control.disabled = !editing;
+    for (const control of bar.querySelectorAll("button, input")) {
+      if (control.id === "compose-ai-open") {
+        control.disabled = !!locked;
+        continue;
+      }
+      control.disabled = !editing;
+    }
   }
   setComposeEditorEditable(editing);
 }
@@ -8914,6 +8968,7 @@ function bindRichEditor(bar, editor, onInput) {
     }
     bar.addEventListener("mousedown", (event) => {
       const button = event.target && event.target.closest && event.target.closest("button");
+      if (button && button.id === "compose-ai-open") return;
       if (button) event.preventDefault();
       saved = rememberEditorRange(editor);
     });
@@ -9032,6 +9087,7 @@ function syncCompose() {
   syncComposeRecipientRows();
   paintComposeAttachments();
   paintComposeNote();
+  paintComposeAi();
 }
 
 function paintComposeNote() {
@@ -9294,8 +9350,7 @@ function applySuggestedReply(text) {
   writeComposeBody(suggestedReplyBody(current, state.signatureText, text));
   const prompt = $("ai-prompt");
   if (prompt && !String(prompt.value || "").trim()) prompt.value = String(text || "").trim();
-  const tools = $("compose-ai-tools");
-  if (tools && state.prefs.aiReply !== false) tools.open = true;
+  if (state.prefs.aiReply !== false) openComposeAi();
   paintComposeNote();
 }
 
@@ -9639,6 +9694,193 @@ async function removeSignature(id) {
   await refreshComposeSignatures();
 }
 
+function readAiMode() {
+  const input = $("ai-mode");
+  const value = input && input.value;
+  if (value === "continue" || value === "custom" || value === "reply" || value === "rewrite") return value;
+  return "rewrite";
+}
+
+function currentReplyThreadEmail() {
+  const quote = state.composeQuote;
+  if (!quote) return null;
+  const subjectField = $("compose-subject");
+  return replyThreadEmail({
+    kind: quote.kind,
+    quoteEmail: quote.email,
+    quote: quote.text,
+    subject: subjectField && subjectField.value ? subjectField.value : "",
+  });
+}
+
+function composeAiLocked() {
+  return !!(state.composeQueued || state.composePending || state.composeInitializing);
+}
+
+function paintComposeAi() {
+  const pending = !!(state.draftWrite && state.draftWrite.pending);
+  const locked = composeAiLocked();
+  const available = !!currentReplyThreadEmail();
+  const mode = readAiMode();
+  const group = $("compose-ai-modes");
+  if (group && typeof group.querySelectorAll === "function") {
+    for (const button of group.querySelectorAll("[data-ai-mode]")) {
+      const reply = button.getAttribute("data-ai-mode") === "reply";
+      button.disabled = locked || pending || (reply && !available);
+      if (reply) {
+        if (typeof button.setAttribute === "function") button.setAttribute("aria-disabled", available ? "false" : "true");
+        button.title = available ? "Draft a full reply from the original message" : "No original message on this draft";
+      }
+    }
+  }
+  const note = $("compose-ai-note");
+  if (note) {
+    if (!available) {
+      note.hidden = false;
+      note.textContent = "Reply from thread needs the original message.";
+    } else if (mode === "reply") {
+      note.hidden = false;
+      note.textContent = "Uses the original message. An empty prompt writes a full reply.";
+    } else {
+      note.hidden = true;
+      note.textContent = "";
+    }
+  }
+  const prompt = $("ai-prompt");
+  if (prompt) prompt.disabled = locked || pending;
+  const go = $("ai-generate");
+  if (go) go.disabled = locked || pending || (mode === "reply" && !available);
+  const pop = $("compose-ai-popover");
+  if (pop && typeof pop.setAttribute === "function") pop.setAttribute("aria-busy", pending ? "true" : "false");
+  const cancel = $("ai-cancel");
+  if (cancel) {
+    cancel.hidden = false;
+    cancel.disabled = locked && !pending;
+  }
+}
+
+function setAiMode(mode) {
+  const next = mode === "continue" || mode === "custom" || mode === "reply" || mode === "rewrite" ? mode : "rewrite";
+  const input = $("ai-mode");
+  if (input) input.value = next;
+  const group = $("compose-ai-modes");
+  if (group && typeof group.querySelectorAll === "function") {
+    for (const button of group.querySelectorAll("[data-ai-mode]")) {
+      const on = button.getAttribute("data-ai-mode") === next;
+      if (typeof button.setAttribute === "function") button.setAttribute("aria-checked", on ? "true" : "false");
+      button.tabIndex = on ? 0 : -1;
+    }
+  }
+  const prompt = $("ai-prompt");
+  if (prompt) {
+    if (next === "reply") prompt.placeholder = "Optional: tone or points to cover";
+    else if (next === "continue") prompt.placeholder = "What should come next?";
+    else if (next === "custom") prompt.placeholder = "Type your prompt...";
+    else prompt.placeholder = "How should this read?";
+  }
+  paintComposeAi();
+}
+
+function composeAiOpen() {
+  const pop = $("compose-ai-popover");
+  return !!(pop && !pop.hidden);
+}
+
+function openComposeAi(options) {
+  const pop = $("compose-ai-popover");
+  const btn = $("compose-ai-open");
+  if (!pop) return;
+  pop.hidden = false;
+  if (pop.classList && typeof pop.classList.add === "function") pop.classList.add("open");
+  if (btn && typeof btn.setAttribute === "function") btn.setAttribute("aria-expanded", "true");
+  paintComposeAi();
+  if (options && options.focus === false) return;
+  const prompt = $("ai-prompt");
+  if (prompt && !prompt.disabled && typeof prompt.focus === "function") prompt.focus();
+}
+
+function closeComposeAi(options) {
+  const pop = $("compose-ai-popover");
+  const btn = $("compose-ai-open");
+  if (pop) {
+    pop.hidden = true;
+    if (pop.classList && typeof pop.classList.remove === "function") pop.classList.remove("open");
+  }
+  if (btn && typeof btn.setAttribute === "function") btn.setAttribute("aria-expanded", "false");
+  if (options && options.restore && btn && !btn.disabled && typeof btn.focus === "function") btn.focus();
+}
+
+function toggleComposeAi() {
+  if (composeAiOpen()) closeComposeAi({ restore: true });
+  else openComposeAi();
+}
+
+function composeAiFocusables() {
+  const pop = $("compose-ai-popover");
+  if (!pop || typeof pop.querySelectorAll !== "function") return [];
+  return [...pop.querySelectorAll("button, input, textarea")].filter((el) => {
+    if (!el || el.disabled || el.type === "hidden" || el.tabIndex < 0) return false;
+    return true;
+  });
+}
+
+function onComposeAiTab(event) {
+  if (!event || event.key !== "Tab" || !composeAiOpen()) return;
+  const pop = $("compose-ai-popover");
+  if (!pop || !event.target || typeof pop.contains !== "function" || !pop.contains(event.target)) return;
+  const items = composeAiFocusables();
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (event.shiftKey && event.target === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && event.target === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function onAiModeKeydown(event) {
+  if (!event) return;
+  const order = ["rewrite", "continue", "custom", "reply"];
+  const current = order.indexOf(readAiMode());
+  let next = current < 0 ? 0 : current;
+  let direction = 1;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") next += 1;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    next -= 1;
+    direction = -1;
+  } else if (event.key === "Home") next = 0;
+  else if (event.key === "End") {
+    next = order.length - 1;
+    direction = -1;
+  } else return;
+  event.preventDefault();
+  const group = $("compose-ai-modes");
+  for (let n = 0; n < order.length; n += 1) {
+    const mode = order[(next + (n * direction) + (order.length * 2)) % order.length];
+    const button = group && typeof group.querySelector === "function" ? group.querySelector(`[data-ai-mode="${mode}"]`) : null;
+    if (button && !button.disabled) {
+      setAiMode(mode);
+      if (typeof button.focus === "function") button.focus();
+      return;
+    }
+  }
+}
+
+function onComposeAiPointerDown(event) {
+  if (!composeAiOpen()) return;
+  const target = event && event.target;
+  if (target && typeof target.closest === "function" && (target.closest("#compose-ai-popover") || target.closest("#compose-ai-open"))) return;
+  closeComposeAi({ restore: false });
+}
+
+async function dismissComposeAi() {
+  if (state.draftWrite && state.draftWrite.pending) await cancelDraftWrite();
+  closeComposeAi({ restore: true });
+}
+
 function stopDraftWrite() {
   const current = state.draftWrite;
   if (!current || !current.pending) return;
@@ -9655,7 +9897,7 @@ function resetDraftWrite() {
     error.textContent = "";
   }
   const cancel = $("ai-cancel");
-  if (cancel) cancel.hidden = true;
+  if (cancel) cancel.hidden = false;
   const go = $("ai-generate");
   if (go) go.disabled = false;
   const body = $("compose-body");
@@ -9667,12 +9909,8 @@ function paintDraft() {
   if (state.composeQueued || state.composePending) return;
   const view = state.draftWrite;
   const pending = !!(view && view.pending);
-  const cancel = $("ai-cancel");
-  const go = $("ai-generate");
   const error = $("ai-write-error");
   const body = $("compose-body");
-  if (cancel) cancel.hidden = !pending;
-  if (go) go.disabled = pending;
   if (body) body.readOnly = pending;
   setComposeEditorEditable(!pending);
   if (error) {
@@ -9681,6 +9919,7 @@ function paintDraft() {
     error.textContent = message;
   }
   if (view && body) writeComposeBody(shownDraft(view));
+  paintComposeAi();
 }
 
 function onDraftEvent(event) {
@@ -9691,14 +9930,17 @@ function onDraftEvent(event) {
 
 async function startDraftWrite() {
   if (state.composeQueued || state.composePending || state.composeInitializing) return;
-  const mode = $("ai-mode").value || "custom";
+  const mode = readAiMode();
   const prompt = $("ai-prompt").value;
   const existing = $("compose-body").value;
-  const source = replySuggestionSource({
+  const thread = currentReplyThreadEmail();
+  const source = mode === "reply" ? thread : replySuggestionSource({
     quoteEmail: state.composeQuote && state.composeQuote.email,
     kind: state.composeQuote && state.composeQuote.kind,
   });
-  const reason = draftBlockReason(mode, prompt, existing, source);
+  const parts = mode === "reply" ? splitComposeSignature(existing, state.signatureText) : null;
+  const draftExisting = parts ? parts.message : existing;
+  const reason = draftBlockReason(mode, prompt, draftExisting, source);
   stopDraftWrite();
   if (reason) {
     state.draftWrite = { reqId: "", pending: false, error: reason, text: "", base: existing, previous: existing };
@@ -9711,14 +9953,15 @@ async function startDraftWrite() {
     pending: true,
     error: "",
     text: "",
-    base: draftBase(mode, existing),
+    base: draftBase(mode, draftExisting),
     previous: existing,
+    signatureTail: parts && parts.signature ? parts.signature : "",
   };
   paintDraft();
   try {
     await call("aiDraftWrite:start", {
       reqId,
-      body: draftInstruction(mode, prompt, existing, $("compose-subject").value, source),
+      body: draftInstruction(mode, prompt, draftExisting, $("compose-subject").value, source),
     });
   } catch (error) {
     if (!state.draftWrite || state.draftWrite.reqId !== reqId) return;
@@ -10060,6 +10303,7 @@ async function openCompose(seed) {
   state.composeShowCc = false;
   state.composeShowBcc = false;
   resetDraftWrite();
+  closeComposeAi();
   state.draftId = fields.draftId || null;
   state.composeQueued = false;
   state.signatureText = "";
@@ -10122,23 +10366,14 @@ async function openCompose(seed) {
   paintComposeNote();
   if (!$("compose").open) return;
   scheduleComposeLayout();
-  const write = document.querySelector(".ai-write");
-  const openWrite = opensAiWrite(fields, state.prefs);
-  if (write) write.classList.toggle("open", openWrite);
-  const tools = $("compose-ai-tools");
-  if (tools) tools.open = openWrite;
+  setAiMode(defaultAiMode(fields));
   $("compose-schedule-tools").open = false;
   showComposeSuggestions(fields).catch(() => {});
-  const replyAssist = fields.aiWrite === true || fields.kind === "reply" || fields.kind === "all";
-  if (openWrite && replyAssist) {
-    const body = $("compose-body");
-    if (body && typeof body.setSelectionRange === "function") {
-      body.setSelectionRange(0, 0);
-      body.scrollTop = 0;
-    }
-    $("ai-prompt").focus();
+  if (opensAiWrite(fields, state.prefs)) {
+    openComposeAi();
     return;
   }
+  closeComposeAi();
   if ($("compose-to").value.trim()) focusComposeBody();
   else $("compose-to").focus();
 }
@@ -10303,6 +10538,107 @@ async function showScheduled() {
   if (!scheduleUndo) $("scheduled-status").textContent = "";
   openDialog("scheduled-dialog");
   await loadScheduled();
+}
+
+let quitScheduledPrompt = null;
+let quitScheduledDismissed = "";
+
+function replyQuitScheduled(choice) {
+  const pending = quitScheduledPrompt;
+  if (!pending) return;
+  quitScheduledPrompt = null;
+  const dialog = $("quit-scheduled");
+  if (dialog) dialog.oncancel = null;
+  closeDialog("quit-scheduled");
+  const allowed = choice === "quit" || choice === "view" ? choice : "stay";
+  if (api && typeof api.replyQuitScheduled === "function") {
+    api.replyQuitScheduled({ nonce: pending.nonce, choice: allowed });
+  }
+}
+
+function presentQuitScheduled(payload) {
+  const dialog = $("quit-scheduled");
+  if (!dialog || !payload || typeof payload.nonce !== "string") return;
+  const count = Number(payload.count) || 0;
+  const noun = count === 1 ? "message" : "messages";
+  $("quit-scheduled-title").textContent = payload.title || (count === 1 ? "1 scheduled message is still pending" : `${count} scheduled messages are still pending`);
+  $("quit-scheduled-body").textContent = payload.body || `Scheduled ${noun} will not send while Morrow Mail is closed. A time that passes while the app is closed is sent the next time you open it.`;
+  const list = $("quit-scheduled-list");
+  list.replaceChildren();
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  for (const item of items) {
+    const li = document.createElement("li");
+    const subject = String((item && item.subject) || "").trim() || "(no subject)";
+    const time = String((item && (item.time || item.sendAt)) || "").trim() || "Unknown time";
+    const sending = item && item.status === "sending" ? " · Sending now" : "";
+    li.textContent = `${subject} · ${time}${sending}`;
+    list.appendChild(li);
+  }
+  list.hidden = items.length === 0;
+  const hidden = Number(payload.hidden) || 0;
+  const more = $("quit-scheduled-more");
+  if (more) {
+    more.hidden = hidden <= 0;
+    more.textContent = hidden === 1 ? "1 more scheduled message." : hidden > 1 ? `${hidden} more scheduled messages.` : "";
+  }
+  if (dialog.dataset) delete dialog.dataset.closing;
+  dialog.oncancel = null;
+  if (dialog.open && typeof dialog.close === "function") dialog.close();
+  quitScheduledPrompt = { nonce: payload.nonce };
+  const stay = () => replyQuitScheduled("stay");
+  const form = $("quit-scheduled-form");
+  if (form) {
+    form.onsubmit = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      stay();
+    };
+  }
+  const stayButton = $("quit-scheduled-stay");
+  if (stayButton) stayButton.onclick = stay;
+  const quitButton = $("quit-scheduled-quit");
+  if (quitButton) quitButton.onclick = () => replyQuitScheduled("quit");
+  const viewButton = $("quit-scheduled-view");
+  if (viewButton) {
+    viewButton.onclick = () => {
+      replyQuitScheduled("view");
+      showScheduled().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+    };
+  }
+  dialog.oncancel = (event) => {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    stay();
+  };
+  openDialog("quit-scheduled");
+  if (stayButton && typeof stayButton.focus === "function") stayButton.focus();
+}
+
+function acceptQuitScheduled(payload) {
+  if (!payload || typeof payload.nonce !== "string") return;
+  if (payload.nonce === quitScheduledDismissed) return;
+  if (quitScheduledPrompt) {
+    if (api && typeof api.replyQuitScheduledShown === "function") api.replyQuitScheduledShown({ nonce: payload.nonce });
+    if (api && typeof api.replyQuitScheduled === "function") api.replyQuitScheduled({ nonce: payload.nonce, choice: "stay" });
+    return;
+  }
+  try {
+    presentQuitScheduled(payload);
+  } catch {
+    return;
+  }
+  if (!quitScheduledPrompt || quitScheduledPrompt.nonce !== payload.nonce) return;
+  if (api && typeof api.replyQuitScheduledShown === "function") api.replyQuitScheduledShown({ nonce: payload.nonce });
+}
+
+function dismissQuitScheduled(payload) {
+  if (!payload || typeof payload.nonce !== "string") return;
+  quitScheduledDismissed = payload.nonce;
+  if (!quitScheduledPrompt || quitScheduledPrompt.nonce !== payload.nonce) return;
+  quitScheduledPrompt = null;
+  const dialog = $("quit-scheduled");
+  if (dialog) dialog.oncancel = null;
+  const form = $("quit-scheduled-form");
+  if (form) form.onsubmit = null;
+  closeDialog("quit-scheduled");
 }
 
 async function editScheduledMail(row) {
@@ -10575,6 +10911,7 @@ async function removeAccount() {
 async function refresh() {
   const pages = { calendar: [loadCalendar, "Calendar refreshed."], agent: [loadAgent, "Agent refreshed."],
     brain: [loadBrain, "Profile reloaded."], log: [refreshLog, "Log refreshed."],
+    shortcuts: [paintShortcuts, "Shortcuts refreshed."],
     folders: [() => loadProviderFolders(accountGen), "Folders and labels refreshed."] };
   if (pages[state.view]) {
     const [load, receipt] = pages[state.view];
@@ -10644,6 +10981,227 @@ function moveCursor(delta) {
   for (const button of buttons) button.classList.toggle("cursor", button === next);
   next.focus();
   next.scrollIntoView({ block: "nearest" });
+}
+
+function shortcutPlatform(platform) {
+  return /mac|iphone|ipad/i.test(String(platform || "")) ? "mac" : "other";
+}
+
+function shortcutMod(platform) {
+  return shortcutPlatform(platform) === "mac" ? "⌘" : "Ctrl";
+}
+
+function shortcutChord(platform, key) {
+  const mod = shortcutMod(platform);
+  return shortcutPlatform(platform) === "mac" ? mod + key : mod + "+" + key;
+}
+
+function shortcutNote(platform) {
+  const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
+  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. " + reload + " Zoom stays on the View menu.";
+}
+
+function shortcutCatalog(platform) {
+  const chord = (key) => shortcutChord(platform, key);
+  return [
+    { group: "Reading", keys: "Delete or Backspace", action: "Move the open message to Trash" },
+    { group: "Reading", keys: "R", action: "Reply to the open message" },
+    { group: "Reading", keys: "A", action: "Reply all" },
+    { group: "Reading", keys: "F", action: "Forward the open message" },
+    { group: "Mail", keys: chord("N"), action: "New Mail" },
+    { group: "Mail", keys: chord("F") + " or /", action: "Focus mail search" },
+    { group: "Compose", keys: chord("Enter"), action: "Send" },
+    { group: "Compose", keys: chord("S"), action: "Save draft" },
+    { group: "Window", keys: "Esc", action: "Close compose or dismiss an overlay. Also clears a message selection when that is already the Esc action." },
+    { group: "Window", keys: chord(","), action: "Settings" },
+    { group: "List", keys: "↑ or ↓", action: "Move through the message list" },
+    { group: "List", keys: "Enter", action: "Open the highlighted message" },
+    { group: "List", keys: chord("A"), action: "Select the visible messages" },
+    { group: "View menu", keys: chord("0"), action: "Actual size" },
+    { group: "View menu", keys: chord("+") + " or " + chord("−"), action: "Zoom in or out" },
+  ];
+}
+
+function editableField(target) {
+  if (!target || typeof target.closest !== "function") return null;
+  const node = target.closest("input, textarea, select, [contenteditable]");
+  if (!node) return null;
+  if (node.isContentEditable) return node;
+  const tag = node.tagName;
+  if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") return null;
+  if (node.disabled || node.readOnly) return null;
+  const type = String(node.type || "").toLowerCase();
+  if (type === "button" || type === "checkbox" || type === "radio" || type === "range" || type === "file" || type === "submit" || type === "reset" || type === "color") return null;
+  return node;
+}
+
+function topOpenDialog() {
+  const active = document.activeElement;
+  if (active && typeof active.closest === "function") {
+    const owned = active.closest("dialog[open]");
+    if (owned) return owned;
+  }
+  const open = typeof document.querySelectorAll === "function" ? [...document.querySelectorAll("dialog[open]")] : [];
+  return open.length ? open[open.length - 1] : null;
+}
+
+function mailShortcutContext(event) {
+  const menu = $("organize-menu");
+  const top = topOpenDialog();
+  let textSelected = false;
+  if (typeof window.getSelection === "function") {
+    const selection = window.getSelection();
+    textSelected = !!(selection && selection.isCollapsed === false && String(selection));
+  }
+  return {
+    typing: !!editableField(event && event.target),
+    dialog: !!(top),
+    menu: !!(menu && menu.hidden === false),
+    topDialog: top && top.id ? top.id : "",
+    mailOpen: !!(state.email && state.email.id),
+    view: state.view,
+    textSelected: textSelected,
+  };
+}
+
+// Reply, Reply All, and Forward are plain R, A, and F. CommandOrControl+R stays View → Reload.
+function mailShortcut(event, context) {
+  if (!event || event.isComposing || event.repeat) return "";
+  const ctx = context || {};
+  const key = String(event.key || "");
+  const lower = key.toLowerCase();
+  const command = event.metaKey === true || event.ctrlKey === true;
+  const alt = event.altKey === true;
+  const shift = event.shiftKey === true;
+  const typing = ctx.typing === true;
+  const dialog = ctx.dialog === true;
+  const menu = ctx.menu === true;
+  const view = ctx.view == null ? "mail" : ctx.view;
+  const mailOpen = ctx.mailOpen === true && view === "mail";
+  const top = ctx.topDialog || "";
+  if (command && !alt && !shift && key === "Enter") {
+    if (top === "compose-preview") return "send-confirm";
+    if (top === "compose") return "send";
+    return "";
+  }
+  if (command && !alt && !shift && lower === "s") {
+    if (top === "compose") return "save-draft";
+    return "";
+  }
+  if (command && !alt && !shift && lower === "n") return "new-mail";
+  if (command && !alt && !shift && key === ",") return "settings";
+  if (command && !alt && !shift && lower === "f") {
+    if (typing || dialog || menu) return "";
+    return "search";
+  }
+  if (command || alt || shift) return "";
+  if (key === "/") {
+    if (typing || dialog || menu) return "";
+    return "search";
+  }
+  if (typing || dialog || menu) return "";
+  if ((key === "Delete" || key === "Backspace") && mailOpen && ctx.textSelected !== true) return "delete";
+  if (!mailOpen) return "";
+  if (lower === "r") return "reply";
+  if (lower === "a") return "reply-all";
+  if (lower === "f") return "forward";
+  return "";
+}
+
+function openReaderCompose(kind) {
+  const email = state.email;
+  if (!email) return;
+  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const self = (account && (account.preferredFromAddress || account.email)) || "";
+  return openCompose(composeSeed(email, kind, self));
+}
+
+function focusMailSearch() {
+  if (state.view !== "mail") showMail();
+  const input = $("search-query");
+  if (!input || typeof input.focus !== "function") return;
+  input.focus();
+  if (typeof input.select === "function") input.select();
+}
+
+let mailShortcutAction = "";
+let mailShortcutStamp = 0;
+
+function runMailShortcut(action) {
+  const now = Date.now();
+  if (action && action === mailShortcutAction && now - mailShortcutStamp < 50) return;
+  mailShortcutAction = action || "";
+  mailShortcutStamp = now;
+  if (action === "new-mail") {
+    const button = $("compose-open");
+    if (button) button.click();
+    return;
+  }
+  if (action === "settings") {
+    const button = $("settings-open");
+    if (button) button.click();
+    return;
+  }
+  if (action === "search") {
+    focusMailSearch();
+    return;
+  }
+  if (action === "delete") {
+    if (!state.email) return;
+    guard(() => trashOpen(state.email));
+    return;
+  }
+  if (action === "reply" || action === "reply-all" || action === "forward") {
+    const kind = action === "reply" ? "reply" : action === "reply-all" ? "all" : "forward";
+    guard(() => openReaderCompose(kind));
+    return;
+  }
+  const commandId = action === "send" ? "compose-send" : action === "save-draft" ? "compose-save" : action === "send-confirm" ? "compose-preview-confirm" : "";
+  if (!commandId) return;
+  const button = $(commandId);
+  if (!button || button.disabled) return;
+  button.click();
+}
+
+function onMailShortcut(event) {
+  const action = mailShortcut(event, mailShortcutContext(event));
+  if (!action) return;
+  event.preventDefault();
+  runMailShortcut(action);
+}
+
+function onMenuAction(payload) {
+  const action = payload && payload.action;
+  if (action === "new-mail" || action === "settings") runMailShortcut(action);
+}
+
+function paintShortcuts() {
+  const platform = typeof navigator !== "undefined" ? navigator.platform : "";
+  const note = $("shortcuts-note");
+  if (note) note.textContent = shortcutNote(platform);
+  const list = $("shortcuts-list");
+  if (!list) return;
+  list.replaceChildren();
+  let group = "";
+  for (const row of shortcutCatalog(platform)) {
+    if (row.group !== group) {
+      group = row.group;
+      const heading = document.createElement("li");
+      heading.className = "shortcut-group";
+      heading.textContent = group;
+      list.appendChild(heading);
+    }
+    const item = document.createElement("li");
+    item.className = "shortcut-row";
+    const keys = document.createElement("span");
+    keys.className = "shortcut-keys";
+    keys.textContent = row.keys;
+    const action = document.createElement("span");
+    action.className = "shortcut-action";
+    action.textContent = row.action;
+    item.append(keys, action);
+    list.appendChild(item);
+  }
 }
 
 function onShellKey(event) {
@@ -11206,6 +11764,7 @@ const settingsFoldLoadingLabels = {
   mail: "Loading mail and sync settings…",
   mailbox: "Loading mailbox tools…",
   ai: "Loading AI settings…",
+  compose: "Loading compose defaults…",
   ooo: "Checking Out of Office status…",
   bot: "Loading Bot access…",
 };
@@ -11234,10 +11793,21 @@ function setSettingsFoldLoading(fold, label) {
 function settingsFoldKey(name) {
   return name + ":" + (["mailbox", "ooo"].includes(name) ? settingsAccount()?.id || "" : "");
 }
+function loadComposeSettings() {
+  if (!window.morrowBrainCompose) return Promise.resolve();
+  return window.morrowBrainCompose.load({
+    call,
+    accounts: () => state.accounts,
+    selectedId: () => state.accountId,
+  });
+}
 function loadSettingsFold(name) {
   if (!$("settings").open) return Promise.resolve();
   const key = settingsFoldKey(name);
-  if (settingsFoldLoaded.has(key)) return Promise.resolve();
+  if (settingsFoldLoaded.has(key)) {
+    if (name === "compose") return loadComposeSettings();
+    return Promise.resolve();
+  }
   if (settingsFoldPending.has(key)) return settingsFoldPending.get(key);
   const fold = document.querySelector('#settings .fold[data-fold="' + name + '"]');
   if (!fold) return Promise.resolve();
@@ -11250,6 +11820,7 @@ function loadSettingsFold(name) {
     if (name === "prefs" || name === "mail") await loadSettings();
     else if (name === "ai") { await loadSettings(); if (!aiDirty()) await loadAiSettings(); }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); }
+    else if (name === "compose") await loadComposeSettings();
     else if (name === "ooo" && !oooDirty()) await loadVacation();
     else if (name === "bot") await loadBotAccess();
     settingsFoldLoaded.add(key);
@@ -11844,6 +12415,40 @@ function openSettings() {
 
 const mailVacation = new Map();
 const mailVacationPending = new Set();
+let oooRetryAccount = null;
+function vacationChipSummary(entry) {
+  if (entry && entry.retrying) return "Out of Office: Retrying…";
+  if (entry && entry.error) return "Out of Office: unknown — refresh to retry";
+  return "";
+}
+function decideOooRefresh(input) {
+  const api = window.morrowSyncRetry;
+  if (api && api.decideVacationRefresh) return api.decideVacationRefresh(input);
+  if (input && input.pending) return "wait";
+  if (input && input.force) return "fetch";
+  const previous = input && input.previous;
+  const now = input && input.now || Date.now();
+  if (previous && !previous.retrying && previous.at && now - previous.at < 60000) return "cache";
+  return "fetch";
+}
+const oooRetry = (window.morrowSyncRetry
+  ? window.morrowSyncRetry.createRetryScheduler({
+    delays: window.morrowSyncRetry.OOO_RETRY_DELAYS_MS,
+    onRetry(accountId) {
+      if (!selectedAccount() || selectedAccount().id !== accountId) {
+        oooRetry.clear(accountId);
+        if (mailVacation.get(accountId) && mailVacation.get(accountId).retrying) mailVacation.delete(accountId);
+        return;
+      }
+      refreshMailVacation(false);
+    },
+  })
+  : {
+    noteFailure() { return { retry: false, exhausted: true }; },
+    noteSuccess() {},
+    clear() {},
+    status() { return null; },
+  });
 function vacationSummary(data, now = Date.now()) {
   if (!data) return "Out of Office: unknown";
   if (data.requiresReconnect) return "Out of Office: permission needed to check";
@@ -11878,30 +12483,53 @@ function paintMailVacation() {
   if (!account) return;
   const entry = mailVacation.get(account.id);
   const compact = !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
-  const summary = entry?.error ? "Out of Office: unknown — refresh to retry" : vacationSummary(entry?.data);
+  const summary = vacationChipSummary(entry) || vacationSummary(entry?.data);
   const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + new Date(entry.at).toLocaleString() : "");
   box.classList.toggle("is-off", !!compact);
   box.title = detail;
   $("mail-ooo-status").textContent = compact ? "Out of Office: off" : detail;
   $("mail-ooo-status").setAttribute("aria-label", detail);
+  $("mail-ooo-status").setAttribute("aria-busy", entry?.retrying ? "true" : "false");
   $("mail-ooo-manage").textContent = compact ? "Manage" : "Manage / disable";
   $("mail-ooo-refresh").hidden = !!compact;
 }
+function releaseVacationRetry(accountId) {
+  if (!accountId) return;
+  oooRetry.clear(accountId);
+  const entry = mailVacation.get(accountId);
+  if (entry && entry.retrying) mailVacation.delete(accountId);
+}
 async function refreshMailVacation(force = false) {
   const account = selectedAccount();
+  if (oooRetryAccount && (!account || oooRetryAccount !== account.id)) releaseVacationRetry(oooRetryAccount);
+  oooRetryAccount = account ? account.id : null;
   paintMailVacation();
   if (!account || mailVacationPending.has(account.id)) return;
-  const previous = mailVacation.get(account.id);
-  if (!force && previous && Date.now() - previous.at < 60000) return;
-  mailVacationPending.add(account.id);
+  const id = account.id;
+  if (force) oooRetry.clear(id);
+  const previous = mailVacation.get(id);
+  const decision = decideOooRefresh({
+    force: !!force,
+    pending: false,
+    status: oooRetry.status(id),
+    previous,
+    now: Date.now(),
+  });
+  if (decision !== "fetch") return;
+  mailVacationPending.add(id);
   try {
-    const data = await call("mail:vacationGet", { accountId: account.id });
-    if (!data || data.accountId !== account.id) throw new Error("Mailbox did not match");
+    const data = await call("mail:vacationGet", { accountId: id });
+    if (selectedAccount()?.id !== id) return;
+    if (!data || data.accountId !== id) throw new Error("Mailbox did not match");
+    oooRetry.noteSuccess(id);
     rememberVacation(data);
   } catch (error) {
-    mailVacation.set(account.id, { error: true, at: Date.now() });
+    if (selectedAccount()?.id !== id) return;
+    const plan = oooRetry.noteFailure(id, "", { stickyAuth: false });
+    if (plan.retry) mailVacation.set(id, { error: true, retrying: true, at: previous && previous.at });
+    else mailVacation.set(id, { error: true, at: Date.now() });
     paintMailVacation();
-  } finally { mailVacationPending.delete(account.id); }
+  } finally { mailVacationPending.delete(id); }
 }
 async function manageMailVacation() {
   const id = state.accountId;
@@ -12696,9 +13324,6 @@ function clearBrainEdit() {
 async function loadBrain() {
   brainSnapshot = await call("emailBrain:getCached");
   if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
-  if (brainIsOpen() && window.morrowBrainCompose) {
-    await window.morrowBrainCompose.load({ call, accounts: () => state.accounts, selectedId: () => state.accountId });
-  }
 }
 
 function showCategoryStatus(text, isError) {
@@ -13339,6 +13964,18 @@ function runModeLabel(row) {
   return text;
 }
 
+function skillStatusChip(row, mode) {
+  if (mode === "install") return { label: "Not installed", tone: "library" };
+  if (row && (row.schedule === "paused" || row.paused === true)) return { label: "Paused", tone: "paused" };
+  const minutes = Number(row && row.everyMinutes);
+  const scheduled = !!(row && row.schedule && row.schedule !== "disabled");
+  if (scheduled && (row.schedule === "interval" || row.kind === "interval") && Number.isInteger(minutes) && minutes > 0) {
+    return { label: "Every " + minutes + " min", tone: "scheduled" };
+  }
+  if (scheduled && (row.schedule === "cron" || row.kind === "cron") && row.cron) return { label: "Cron", tone: "scheduled" };
+  return { label: "On demand", tone: "demand" };
+}
+
 function scheduleFormValue(input) {
   const source = input && typeof input === "object" ? input : {};
   const kind = String(source.kind || "off").trim();
@@ -13405,7 +14042,7 @@ function skillPayload(row) {
 }
 
 function setSkillStatus(text, isError) {
-  for (const id of ["brain-skill-status", "agent-skill-status"]) {
+  for (const id of ["brain-skill-status", "agent-skill-status", "brain-skill-dialog-status"]) {
     const status = $(id);
     if (!status) continue;
     status.textContent = text || "";
@@ -13786,6 +14423,7 @@ async function saveSkillSchedule(row, input) {
     setSkillStatus("Saved the schedule for " + name + ".", false);
   }
   await Promise.all([loadBrainSkills(), loadStudio()]);
+  refreshBrainSkillDialog(true);
 }
 
 async function pauseSkillSchedule(row, paused) {
@@ -13795,6 +14433,7 @@ async function pauseSkillSchedule(row, paused) {
   const name = skillName(row) || skillId;
   setSkillStatus((paused ? "Paused " : "Resumed ") + name + ".", false);
   await Promise.all([loadBrainSkills(), loadStudio()]);
+  refreshBrainSkillDialog(true);
 }
 
 function scheduleEditorFocused() {
@@ -13885,6 +14524,15 @@ function paintSkillList(root, rows, empty, mode) {
   }
 }
 
+function skillActionButton(className, action, busy) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.dataset.skillAction = action;
+  if (busy) button.disabled = true;
+  return button;
+}
+
 function paintBrainSkillList(root, rows, empty, mode) {
   root.replaceChildren();
   if (!rows.length) {
@@ -13898,7 +14546,7 @@ function paintBrainSkillList(root, rows, empty, mode) {
     const skillId = skillIdOf(row);
     const card = document.createElement("article");
     card.className = "brain-skill-card";
-    const title = document.createElement("p");
+    const title = document.createElement("h3");
     title.className = "brain-skill";
     const name = row && typeof row === "object" ? String(row.name || row.title || "").trim() : "";
     title.textContent = name || skillLine(row) || "Skill";
@@ -13906,27 +14554,27 @@ function paintBrainSkillList(root, rows, empty, mode) {
     const description = row && typeof row === "object" ? String(row.description || "").trim() : "";
     if (description) {
       const detail = document.createElement("p");
-      detail.className = "hint";
+      detail.className = "hint brain-skill-detail";
       detail.textContent = description;
       card.appendChild(detail);
     }
-    const demand = runModeLabel(row);
-    if (demand) {
-      const modeLine = document.createElement("p");
-      modeLine.className = "hint";
-      modeLine.textContent = demand;
-      card.appendChild(modeLine);
-    }
+    const chipInfo = skillStatusChip(row, mode);
+    const chip = document.createElement("span");
+    chip.className = "brain-skill-chip" + (chipInfo.tone ? " is-" + chipInfo.tone : "");
+    chip.textContent = chipInfo.label;
+    card.appendChild(chip);
     if (!skillId) {
       root.appendChild(card);
       continue;
     }
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      openBrainSkillDialog(row, mode);
+    });
     const actions = document.createElement("div");
     actions.className = "row brain-skill-actions";
     if (mode === "install") {
-      const install = document.createElement("button");
-      install.type = "button";
-      install.className = "primary";
+      const install = skillActionButton("primary", "install", false);
       install.textContent = "Install";
       install.setAttribute("aria-label", "Install " + title.textContent);
       install.addEventListener("click", () => {
@@ -13934,29 +14582,125 @@ function paintBrainSkillList(root, rows, empty, mode) {
       });
       actions.appendChild(install);
     } else {
-      const run = document.createElement("button");
-      run.type = "button";
-      run.className = "primary";
+      const run = skillActionButton("primary", "run", brainSkillBusy);
       run.textContent = "Run";
-      run.disabled = brainSkillBusy;
       run.setAttribute("aria-label", "Run " + title.textContent);
       run.addEventListener("click", () => {
         runBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "ghost";
+      actions.appendChild(run);
+    }
+    const manage = skillActionButton("ghost", "manage", false);
+    manage.textContent = "Manage";
+    manage.setAttribute("aria-label", "Manage " + title.textContent);
+    manage.addEventListener("click", () => openBrainSkillDialog(row, mode));
+    actions.appendChild(manage);
+    card.appendChild(actions);
+    root.appendChild(card);
+  }
+}
+
+function findBrainSkill(skillId) {
+  const lists = brainSkillCache || {};
+  for (const [id] of brainSkillLists()) {
+    const row = skillRows(lists[id]).find((item) => skillIdOf(item) === skillId);
+    if (row) return { row, mode: id === "brain-library-skills" ? "install" : "run" };
+  }
+  return null;
+}
+
+function paintBrainSkillDialog(row, mode) {
+  const skillId = skillIdOf(row);
+  const name = (row && typeof row === "object" ? String(row.name || row.title || "").trim() : "") || skillLine(row) || "Skill";
+  const title = $("brain-skill-dialog-title");
+  if (title) title.textContent = name;
+  const detail = $("brain-skill-dialog-detail");
+  const description = row && typeof row === "object" ? String(row.description || "").trim() : "";
+  if (detail) {
+    detail.textContent = description;
+    detail.hidden = !description;
+  }
+  const modeLine = $("brain-skill-dialog-mode");
+  if (modeLine) modeLine.textContent = mode === "install" ? "This skill is in the library until you install it." : runModeLabel(row);
+  const scheduleTitle = $("brain-skill-dialog-schedule-title");
+  if (scheduleTitle) scheduleTitle.hidden = mode === "install";
+  const actions = $("brain-skill-dialog-actions");
+  if (actions) {
+    actions.replaceChildren();
+    if (mode === "install") {
+      const install = skillActionButton("primary", "install", false);
+      install.textContent = "Install";
+      install.setAttribute("aria-label", "Install " + name);
+      install.addEventListener("click", () => {
+        installBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+      });
+      actions.appendChild(install);
+    } else {
+      const run = skillActionButton("primary", "run", brainSkillBusy);
+      run.textContent = "Run";
+      run.setAttribute("aria-label", "Run " + name);
+      run.addEventListener("click", () => {
+        runBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+      });
+      const remove = skillActionButton("ghost", "remove", brainSkillBusy);
       remove.textContent = "Remove";
-      remove.disabled = brainSkillBusy;
-      remove.setAttribute("aria-label", "Remove " + title.textContent);
+      remove.setAttribute("aria-label", "Remove " + name);
       remove.addEventListener("click", () => {
         removeBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
       actions.append(run, remove);
     }
-    card.appendChild(actions);
-    if (mode !== "install") appendSkillSchedule(card, row);
-    root.appendChild(card);
+  }
+  const schedule = $("brain-skill-dialog-schedule");
+  if (schedule) {
+    schedule.replaceChildren();
+    if (mode !== "install" && skillId) appendSkillSchedule(schedule, row);
+  }
+}
+
+function openBrainSkillDialog(row, mode) {
+  const skillId = skillIdOf(row);
+  if (!skillId) return;
+  const switching = brainSkillDialogId !== skillId;
+  brainSkillDialogId = skillId;
+  paintBrainSkillDialog(row, mode);
+  if (switching) {
+    const result = $("brain-skill-dialog-result");
+    if (result) result.replaceChildren();
+    const status = $("brain-skill-dialog-status");
+    if (status) {
+      status.textContent = "";
+      status.classList.remove("error");
+    }
+  }
+  const dialog = $("brain-skill-dialog");
+  if (dialog && !dialog.open) openDialog("brain-skill-dialog");
+  const primary = dialog && dialog.querySelector("[data-skill-action='run'], [data-skill-action='install']");
+  if (primary) primary.focus();
+}
+
+function refreshBrainSkillDialog(force) {
+  const dialog = $("brain-skill-dialog");
+  if (!dialog || !dialog.open || !brainSkillDialogId) return;
+  const editing = scheduleEditorFocused();
+  if (!force && editing) return;
+  const lists = brainSkillCache || {};
+  const known = brainSkillLists().every(([id]) => Object.prototype.hasOwnProperty.call(lists, id));
+  const found = findBrainSkill(brainSkillDialogId);
+  if (!found) {
+    if (!known) return;
+    brainSkillDialogId = "";
+    closeDialog("brain-skill-dialog");
+    return;
+  }
+  const restore = dialog.contains(document.activeElement);
+  paintBrainSkillDialog(found.row, found.mode);
+  if (editing) {
+    const select = $("brain-skill-dialog-schedule") && $("brain-skill-dialog-schedule").querySelector("select");
+    if (select) select.focus();
+  } else if (restore) {
+    const primary = dialog.querySelector("[data-skill-action='run'], [data-skill-action='install']");
+    if (primary) primary.focus();
   }
 }
 
@@ -13972,6 +14716,7 @@ function paintBrainSkills(lists, errorText) {
     const mode = id === "brain-library-skills" ? "install" : "run";
     paintBrainSkillList($(id), skillRows(byId[id]), empty, mode);
   }
+  refreshBrainSkillDialog(false);
 }
 
 async function reviewDraft(draft) {
@@ -14088,6 +14833,9 @@ async function runBrainSkill(row) {
     const message = skillResultMessage(data);
     setSkillStatus(message.text, message.error);
     paintSkillBlocks($("brain-skill-result"), data);
+    if ($("brain-skill-dialog") && $("brain-skill-dialog").open && brainSkillDialogId === skillId) {
+      paintSkillBlocks($("brain-skill-dialog-result"), data);
+    }
     paintSkillBlocks($("agent-result"), data);
     if (data && Array.isArray(data.proposals)) paintProposals($("agent-proposals"), data.proposals);
     if ($("agent-panel") && !$("agent-panel").hidden) {
@@ -14108,6 +14856,7 @@ async function installBrainSkill(row) {
   await call("emailBrain:installSkill", { skillId });
   setSkillStatus("Installed " + (row.name || skillId) + ".", false);
   await Promise.all([loadBrainSkills(), loadStudio()]);
+  refreshBrainSkillDialog(true);
 }
 
 async function removeBrainSkill(row) {
@@ -14115,6 +14864,10 @@ async function removeBrainSkill(row) {
   if (!skillId) throw new Error("That skill has no id.");
   await call("emailBrain:removeSkill", { skillId });
   setSkillStatus("Removed " + (row.name || skillId) + ". It is in the library.", false);
+  if (brainSkillDialogId === skillId) {
+    brainSkillDialogId = "";
+    closeDialog("brain-skill-dialog");
+  }
   await Promise.all([loadBrainSkills(), loadStudio()]);
 }
 
@@ -14559,9 +15312,10 @@ function markRail(view) {
     calendar: "rail-calendar",
     brain: "rail-brain",
     log: "rail-log",
+    shortcuts: "rail-shortcuts",
     folders: "rail-folders",
   }[view];
-  for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-log", "rail-folders"]) {
+  for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-shortcuts", "rail-log", "rail-folders"]) {
     const node = $(id);
     if (node) node.setAttribute("aria-current", id === current ? "page" : "false");
   }
@@ -14572,11 +15326,10 @@ function showPrimary(view, id) {
   const swap = state.view !== view;
   if (view !== "agent") stopAgentPoll();
   markRail(view);
-  for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel"]) {
+  for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "shortcuts-panel"]) {
     if (pane === id) continue;
     hidePane(pane);
   }
-  if (id !== "log-panel") hidePane("log-panel");
   if (swap) {
     const node = $(id);
     if (node.querySelector(":scope > .motion-block")) {
@@ -16026,6 +16779,7 @@ function wire() {
   });
   $("inbox-rules-account").addEventListener("change", () => changeInboxRulesAccount($("inbox-rules-account").value).catch((error) => showInboxRuleStatus(error.message, true)));
   document.addEventListener("keydown", onShellKey);
+  document.addEventListener("keydown", onMailShortcut);
   wireBot();
   document.addEventListener("keydown", onSelectionKey);
   wireStatusNotice();
@@ -16037,6 +16791,12 @@ function wire() {
   wireAgentTabs();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "quit-scheduled") {
+        event.preventDefault();
+        if (quitScheduledPrompt) replyQuitScheduled("stay");
+        else closeDialog("quit-scheduled");
+        return;
+      }
       if (dialog.id === "compose-close-review") return;
       if (dialog.id === "connect") {
         event.preventDefault();
@@ -16045,6 +16805,10 @@ function wire() {
       }
       if (dialog.id === "compose") {
         event.preventDefault();
+        if (composeAiOpen()) {
+          dismissComposeAi().catch(() => {});
+          return;
+        }
         requestComposeClose();
         return;
       }
@@ -16096,6 +16860,7 @@ function wire() {
     await selectFolder(account.id, foldersOf(account)[0]?.id || "INBOX");
     paintProviderPage();
   }));
+  $("rail-shortcuts").addEventListener("click", showShortcuts);
   $("rail-log").addEventListener("click", showLog);
   $("rail-about").addEventListener("click", openAbout);
   $("log-refresh").addEventListener("click", () => {
@@ -16422,6 +17187,14 @@ function wire() {
     });
   });
   $("brain-close").addEventListener("click", closeBrain);
+  $("brain-open-compose-settings").addEventListener("click", () => {
+    openSettings();
+    revealSettingsFold("compose");
+  });
+  $("brain-skill-dialog-close").addEventListener("click", () => closeDialog("brain-skill-dialog"));
+  $("brain-skill-dialog").addEventListener("close", () => {
+    brainSkillDialogId = "";
+  });
   $("brain-category-cancel").addEventListener("click", () => {
     resetCategoryForm();
     paintCategories();
@@ -16502,18 +17275,39 @@ function wire() {
   $("signatures-from-compose").addEventListener("click", openSignatures);
   $("schedule-preset").addEventListener("change", syncScheduleFields);
   $("schedule-at").addEventListener("change", syncScheduleFields);
-  $("compose").addEventListener("close", () => stopDraftWrite());
+  $("compose").addEventListener("close", () => {
+    stopDraftWrite();
+    closeComposeAi();
+  });
   $("compose-close").addEventListener("click", () => {
     requestComposeClose();
   });
+  const aiOpen = $("compose-ai-open");
+  if (aiOpen && typeof aiOpen.addEventListener === "function") {
+    aiOpen.addEventListener("click", () => toggleComposeAi());
+  }
+  const aiModes = $("compose-ai-modes");
+  if (aiModes && typeof aiModes.addEventListener === "function") {
+    aiModes.addEventListener("click", (event) => {
+      const button = event.target && event.target.closest && event.target.closest("[data-ai-mode]");
+      if (!button || button.disabled) return;
+      setAiMode(button.getAttribute("data-ai-mode"));
+    });
+    aiModes.addEventListener("keydown", onAiModeKeydown);
+  }
+  const aiPopover = $("compose-ai-popover");
+  if (aiPopover && typeof aiPopover.addEventListener === "function") {
+    aiPopover.addEventListener("keydown", onComposeAiTab);
+  }
+  document.addEventListener("pointerdown", onComposeAiPointerDown);
   $("ai-generate").addEventListener("click", () => {
     startDraftWrite().catch((error) => showStatus(error.message, true));
   });
   $("ai-cancel").addEventListener("click", () => {
-    cancelDraftWrite().catch((error) => showStatus(error.message, true));
+    dismissComposeAi().catch((error) => showStatus(error.message, true));
   });
   $("ai-prompt").addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
+    if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
     event.preventDefault();
     startDraftWrite().catch((error) => showStatus(error.message, true));
   });
@@ -16575,8 +17369,11 @@ async function boot() {
     state.prefs.layout = panes;
     applyLayoutPanes(panes);
   }).catch(() => {});
+  api.on("host:menuAction", onMenuAction);
   api.on("host:updatePrepareForInstall", prepareUpdateRestart);
   api.on("host:updateResume", resumeAfterUpdate);
+  api.on("app:confirmQuitScheduled", acceptQuitScheduled);
+  api.on("app:dismissQuitScheduled", dismissQuitScheduled);
   wire();
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
