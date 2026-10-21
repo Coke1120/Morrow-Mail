@@ -9407,6 +9407,7 @@ function updateRestartBlocked() {
   if (inboxRuleBaseline && JSON.stringify(inboxRuleFieldsFromForm()) !== inboxRuleBaseline) return true;
   if ($("ai-key")?.value) return true;
   if (updateAiBaseline !== null && JSON.stringify([$("ai-base")?.value, $("ai-model")?.value]) !== updateAiBaseline) return true;
+  if ($("pref-ai-reply") && $("pref-ai-reply").checked !== state.prefs.aiReply) return true;
   if (JSON.stringify(brainCategories) !== updateCategoriesBaseline) return true;
   if ($("agent-memory") && $("agent-memory").value !== updateMemoryBaseline) return true;
   if ($("agent-input")?.value.trim()) return true;
@@ -9962,38 +9963,146 @@ function setAiStatus(text, isError) {
   status.classList.toggle("error", !!isError && !!text);
 }
 
+// The saved key hint and the show/hide state live here so leaving the fold can
+// drop a typed key without a reload.
+let aiHasSavedKey = false;
+let aiKeyVisible = false;
+
+const AI_FIELDS = {
+  base: ["ai-base", "ai-base-error"],
+  model: ["ai-model", "ai-model-error"],
+  key: ["ai-key", "ai-key-error"],
+};
+
+function setAiFieldError(field, message) {
+  const pair = AI_FIELDS[field];
+  const input = pair && $(pair[0]);
+  const error = pair && $(pair[1]);
+  if (!input || !error) return;
+  if (message) {
+    input.setAttribute("aria-invalid", "true");
+    error.textContent = message;
+    error.hidden = false;
+  } else {
+    input.removeAttribute("aria-invalid");
+    error.textContent = "";
+    error.hidden = true;
+  }
+}
+
+function clearAiFieldErrors() {
+  for (const field of Object.keys(AI_FIELDS)) setAiFieldError(field, "");
+}
+
+function syncAiKeyControls() {
+  const input = $("ai-key");
+  const toggle = $("ai-key-toggle");
+  const remove = $("ai-key-remove");
+  if (!input || !toggle || !remove) return;
+  input.type = aiKeyVisible ? "text" : "password";
+  toggle.setAttribute("aria-pressed", String(aiKeyVisible));
+  const label = aiKeyVisible ? "Hide API key" : "Show API key";
+  toggle.setAttribute("aria-label", label);
+  toggle.title = label;
+  $("ai-key-icon-show").hidden = aiKeyVisible;
+  $("ai-key-icon-hide").hidden = !aiKeyVisible;
+  remove.hidden = !aiHasSavedKey;
+  remove.disabled = !aiHasSavedKey;
+}
+
 function aiKeyPlaceholder(cfg) {
-  if (cfg && cfg.hasKey) return "Saved " + (cfg.keyHint || "••••") + ". Leave blank to keep it.";
+  aiHasSavedKey = !!(cfg && cfg.hasKey);
+  if (aiHasSavedKey) return "Saved " + ((cfg && cfg.keyHint) || "••••") + ". Leave blank to keep it.";
   return "sk-…";
+}
+
+// Drop a typed but unsaved key when the AI fold is left or the dialog closes.
+function clearAiSecretEdits() {
+  const input = $("ai-key");
+  if (!input) return;
+  input.value = "";
+  aiKeyVisible = false;
+  syncAiKeyControls();
+  clearAiFieldErrors();
+  setAiStatus("", false);
+}
+
+function aiBaseProblem(value) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) return "Enter the base URL, for example https://api.x.ai/v1.";
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "Enter a full base URL starting with http:// or https://.";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return "Base URL must start with http:// or https://.";
+  return "";
+}
+
+function aiModelProblem(value) {
+  return String(value == null ? "" : value).trim() ? "" : "Enter a model id, or fetch models and pick one.";
+}
+
+function aiKeyProblem() {
+  if (aiHasSavedKey || $("ai-key").value.trim()) return "";
+  return "Enter an API key. Save it with Save AI.";
+}
+
+// One validation path for Save, Test, and Fetch so field errors match the action.
+function validateAiForm({ needModel, needKey }) {
+  clearAiFieldErrors();
+  const problems = {
+    base: aiBaseProblem($("ai-base").value),
+    model: needModel ? aiModelProblem($("ai-model").value) : "",
+    key: needKey ? aiKeyProblem() : "",
+  };
+  for (const field of Object.keys(problems)) setAiFieldError(field, problems[field]);
+  const first = ["base", "model", "key"].find(field => problems[field]);
+  if (!first) return true;
+  setAiStatus(problems[first], true);
+  $(AI_FIELDS[first][0]).focus();
+  return false;
 }
 
 async function loadAiSettings() {
   setAiStatus("", false);
   $("ai-key").value = "";
+  aiKeyVisible = false;
+  aiHasSavedKey = false;
+  clearAiFieldErrors();
   $("ai-model-list").replaceChildren();
   try {
     const cfg = await api.invoke("host:aiGetConfig");
     $("ai-base").value = cfg && cfg.baseUrl ? cfg.baseUrl : "";
     $("ai-model").value = cfg && cfg.model ? cfg.model : "";
     $("ai-key").placeholder = aiKeyPlaceholder(cfg);
+    syncAiKeyControls();
     updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
   } catch (error) {
+    syncAiKeyControls();
     setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
 }
 
 async function saveAiSettings() {
+  if (!validateAiForm({ needModel: true, needKey: true })) return;
   setAiStatus("Saving…", false);
+  const aiReply = $("pref-ai-reply");
   try {
+    await api.invoke("morrow:configSetAiWriteAutoOpenOnReply", aiReply.checked === true);
+    state.prefs.aiReply = aiReply.checked === true;
     const saved = await api.invoke("host:aiSaveConfig", {
-      baseUrl: $("ai-base").value,
-      model: $("ai-model").value,
+      baseUrl: $("ai-base").value.trim(),
+      model: $("ai-model").value.trim(),
       apiKey: $("ai-key").value,
     });
     $("ai-key").value = "";
+    aiKeyVisible = false;
     $("ai-base").value = saved && saved.baseUrl ? saved.baseUrl : $("ai-base").value;
     $("ai-model").value = saved && saved.model ? saved.model : $("ai-model").value;
     $("ai-key").placeholder = aiKeyPlaceholder(saved);
+    syncAiKeyControls();
     updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
     setAiStatus("Saved.", false);
   } catch (error) {
@@ -10002,10 +10111,11 @@ async function saveAiSettings() {
 }
 
 async function fetchAiModels() {
+  if (!validateAiForm({ needModel: false, needKey: true })) return;
   setAiStatus("Fetching models…", false);
   try {
     const result = await api.invoke("host:aiListModels", {
-      baseUrl: $("ai-base").value,
+      baseUrl: $("ai-base").value.trim(),
       apiKey: $("ai-key").value,
     });
     if (!result || result.ok !== true) {
@@ -10027,11 +10137,39 @@ async function fetchAiModels() {
 }
 
 async function testAiConnection() {
+  if (!validateAiForm({ needModel: true, needKey: true })) return;
   setAiStatus("Contacting the model…", false);
   try {
-    const result = await api.invoke("host:aiTest");
-    if (result && result.ok) setAiStatus("Connected. " + (result.preview || ""), false);
+    const result = await api.invoke("host:aiTest", {
+      baseUrl: $("ai-base").value.trim(),
+      model: $("ai-model").value.trim(),
+      apiKey: $("ai-key").value,
+    });
+    if (result && result.ok) setAiStatus("Connected using the values above. " + (result.preview || ""), false);
     else setAiStatus((result && result.message) || "Connection failed.", true);
+  } catch (error) {
+    setAiStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+async function removeAiKey() {
+  const answer = await askConfirm({
+    title: "Remove saved API key?",
+    body: "AI writing, translation, and the agent stop until you add a key again. The base URL, model, and writing preference stay saved.",
+    confirm: "Remove key",
+    cancel: "Keep key",
+  });
+  if (!answer || !answer.ok) return;
+  setAiStatus("Removing saved key…", false);
+  try {
+    const saved = await api.invoke("host:aiSaveConfig", { removeKey: true });
+    $("ai-key").value = "";
+    aiKeyVisible = false;
+    $("ai-key").placeholder = aiKeyPlaceholder(saved);
+    syncAiKeyControls();
+    setAiStatus(saved && saved.hasKey
+      ? "Saved key removed. A key from the environment is still in use."
+      : "Saved API key removed.", false);
   } catch (error) {
     setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -10099,6 +10237,8 @@ function syncBotSectionPanels(open) {
 function setSettingsFold(name, open, animate) {
   // Tab state stays in the DOM for this renderer session, including reopen.
   if (![...settingsFolds()].some(fold => fold.dataset.fold === name)) return;
+  const leaving = [...settingsFolds()].find(fold => fold.classList.contains("is-open"));
+  if (leaving && leaving.dataset.fold === "ai" && name !== "ai") clearAiSecretEdits();
   for (const fold of settingsFolds()) {
     const next = fold.getAttribute("data-fold") === name;
     if (fold.classList.contains("is-open") === next) continue;
@@ -14627,7 +14767,8 @@ function wire() {
     confirmCopy = null;
     pending({ ok: false, name: "" });
   });
-  $("ai-save").addEventListener("click", () => {
+  $("ai-fields").addEventListener("submit", (event) => {
+    event.preventDefault();
     saveAiSettings().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
   });
   $("ai-fetch").addEventListener("click", () => {
@@ -14636,6 +14777,15 @@ function wire() {
   $("ai-test").addEventListener("click", () => {
     testAiConnection().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
   });
+  $("ai-key-toggle").addEventListener("click", () => {
+    aiKeyVisible = !aiKeyVisible;
+    syncAiKeyControls();
+    $("ai-key").focus();
+  });
+  $("ai-key-remove").addEventListener("click", () => {
+    removeAiKey().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
+  });
+  $("ai-key").addEventListener("input", () => setAiFieldError("key", ""));
   $("ooo-mode").addEventListener("change", () => {
     syncVacationFields();
     if (vacationCache) {
@@ -14656,6 +14806,7 @@ function wire() {
   });
   $("settings").addEventListener("close", () => {
     clearBotSecret();
+    clearAiSecretEdits();
     loadShellPrefs().then(() => {
       paintPrefs();
       if ($("compose") && $("compose").open) syncCompose();
@@ -14668,6 +14819,8 @@ function wire() {
   }
   for (const row of prefRows()) {
     $(row[0]).addEventListener("change", () => {
+      // The AI tab saves every field with Save AI, not on change.
+      if (row[0] === "pref-ai-reply") return;
       savePref(row);
     });
   }

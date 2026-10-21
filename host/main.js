@@ -5,7 +5,7 @@ const path = require("path");
 const { openAsar, readFile } = require("./asar");
 const { createIpc } = require("./ipc");
 const { publicConfig, saveConfig, completionsUrl, modelsUrl, DEFAULTS } = require("./ai-config");
-const { complete, extractJson, modelIds, listModels } = require("./openai-client");
+const { complete, extractJson, modelIds, listModels, resolveConfig } = require("./openai-client");
 
 const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels"];
 const { init: initMail, startBackgroundSync } = require("./mail/engine");
@@ -336,12 +336,12 @@ function trackWindow(win, savedZoom) {
 function registerHostAi() {
   ipcMain.handle("host:aiGetConfig", () => publicConfig());
   ipcMain.handle("host:aiSaveConfig", (_event, input) => updateGate.run(() => saveConfig(input)));
-  ipcMain.handle("host:aiTest", async () => {
+  ipcMain.handle("host:aiTest", async (_event, input) => {
     try {
       const text = await complete([
         { role: "system", content: "Reply with one short sentence and nothing else." },
         { role: "user", content: "Say hello in five words or fewer." },
-      ], { temperature: 0 });
+      ], { temperature: 0, config: resolveConfig(input) });
       const preview = String(text).replace(/\s+/g, " ").trim().slice(0, 160);
       return { ok: true, preview: preview || "The model returned an empty reply." };
     } catch (error) {

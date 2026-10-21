@@ -63,12 +63,15 @@ function publicConfig() {
 
 function saveConfig(input) {
   const current = readFileConfig();
+  const removeKey = !!(input && input.removeKey === true);
   const next = {
     baseUrl: (input && input.baseUrl ? String(input.baseUrl) : current.baseUrl || DEFAULTS.baseUrl).trim(),
     model: (input && input.model ? String(input.model) : current.model || DEFAULTS.model).trim(),
-    apiKey: input && typeof input.apiKey === "string" && input.apiKey.trim()
-      ? input.apiKey.trim()
-      : current.apiKey || "",
+    apiKey: removeKey
+      ? ""
+      : input && typeof input.apiKey === "string" && input.apiKey.trim()
+        ? input.apiKey.trim()
+        : current.apiKey || "",
   };
   if (!next.baseUrl) throw new Error("Base URL is required");
   if (!next.model) throw new Error("Model id is required");

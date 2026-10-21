@@ -809,37 +809,47 @@
         <section class="fold" id="settings-ai" data-fold="ai" role="tabpanel" aria-labelledby="settings-tab-ai" tabindex="0" hidden>
           <div class="fold-panel" id="settings-ai-panel" hidden>
           <h3 id="settings-ai-title">AI connection</h3>
-          <div id="ai-fields" class="settings-field-grid">
+          <form id="ai-fields" class="settings-field-grid" novalidate>
             <div class="field">
             <label for="ai-base">Base URL</label>
-            <input id="ai-base" type="text" spellcheck="false" autocomplete="off" />
+            <input id="ai-base" type="text" spellcheck="false" autocomplete="off" aria-describedby="ai-base-error" />
+            <p class="hint ai-field-error" id="ai-base-error" role="alert" hidden></p>
             </div>
             <div class="field">
             <label for="ai-model">Model</label>
-            <input id="ai-model" type="text" list="ai-model-list" spellcheck="false" autocomplete="off" />
+            <input id="ai-model" type="text" list="ai-model-list" spellcheck="false" autocomplete="off" aria-describedby="ai-model-error" />
             <datalist id="ai-model-list"></datalist>
+            <p class="hint ai-field-error" id="ai-model-error" role="alert" hidden></p>
             </div>
             <div class="field settings-full-width">
             <label for="ai-key">API key</label>
-            <input id="ai-key" type="password" spellcheck="false" autocomplete="off" aria-describedby="ai-key-help" />
+            <div class="ai-key-row">
+              <input id="ai-key" type="password" spellcheck="false" autocomplete="off" aria-describedby="ai-key-help ai-key-error" />
+              <button type="button" class="ghost" id="ai-key-toggle" aria-pressed="false" aria-label="Show API key" title="Show API key">
+                <svg id="ai-key-icon-show" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                <svg id="ai-key-icon-hide" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+              </button>
+              <button type="button" class="ghost" id="ai-key-remove" hidden disabled>Remove key</button>
+            </div>
             <p class="hint" id="ai-key-help">Leave blank to keep the saved key.</p>
+            <p class="hint ai-field-error" id="ai-key-error" role="alert" hidden></p>
+            </div>
+            <div class="settings-group settings-full-width">
+            <h4>Writing</h4>
+            <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
+            <p class="hint">Saved with Save AI.</p>
             </div>
             <div class="row settings-full-width">
-              <button type="button" class="primary" id="ai-save">Save AI</button>
+              <button type="submit" class="primary" id="ai-save">Save AI</button>
               <button type="button" class="ghost" id="ai-fetch">Fetch models</button>
               <button type="button" class="ghost" id="ai-test">Test connection</button>
             </div>
             <p id="ai-status" class="settings-full-width" role="status"></p>
-            <p class="hint settings-full-width">Test connection uses the saved config. Save AI first after making changes.</p>
-          </div>
+            <p class="hint settings-full-width">Save AI stores the base URL, model, key, and writing preference above. Test connection and Fetch models use the values above, saved or not.</p>
+          </form>
           <details class="settings-disclosure"><summary>Connection details</summary>
-            <p class="hint">The key is saved on this computer and shared with Morrow Mail → AI Setup. Fetch models uses the form above and the saved key when the key field is blank.</p>
+            <p class="hint">The key is saved on this computer and shared with Morrow Mail → AI Setup. Fetch models and Test connection use the saved key when the key field is blank.</p>
           </details>
-          <div class="settings-group">
-            <h4>Writing</h4>
-            <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
-            <p class="hint">This preference saves automatically.</p>
-          </div>
           </div>
         </section>
         <section class="fold" id="settings-mailbox" data-fold="mailbox" role="tabpanel" aria-labelledby="settings-tab-mailbox" tabindex="0" hidden>

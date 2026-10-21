@@ -801,7 +801,10 @@ assert.ok(settingsHtml.includes("<select") && settingsHtml.includes('type="check
 assert.ok(settingsHtml.includes('id="ai-base"') && settingsHtml.includes('id="ai-model"') && settingsHtml.includes('id="ai-key"'));
 assert.ok(settingsHtml.includes('type="password"') && settingsHtml.includes('list="ai-model-list"'));
 assert.ok(settingsHtml.includes("Save AI") && settingsHtml.includes("Fetch models") && settingsHtml.includes("Test connection"));
-assert.ok(settingsHtml.includes("saved config"));
+assert.ok(settingsHtml.includes('id="ai-key-remove"') && settingsHtml.includes('id="ai-key-toggle"'));
+assert.ok(settingsHtml.includes('id="ai-base-error"') && settingsHtml.includes('id="ai-model-error"') && settingsHtml.includes('id="ai-key-error"'));
+assert.ok(settingsHtml.includes("Test connection and Fetch models use the values above"));
+assert.ok(appJs.includes("clearAiSecretEdits") && appJs.includes("host:aiSaveConfig\", { removeKey: true }"));
 for (const channel of ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels"]) {
   assert.ok(appJs.includes('"' + channel + '"'), channel);
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -6474,7 +6477,7 @@ function checkGoogleOauthAlias() {
 async function checkAiModels() {
   const os = require("os");
   const { modelsUrl, publicConfig, saveConfig, configPath } = require("../host/ai-config");
-  const { modelIds, listModels } = require("../host/openai-client");
+  const { modelIds, listModels, resolveConfig, complete } = require("../host/openai-client");
   assert.strictEqual(modelsUrl("https://api.x.ai/v1/"), "https://api.x.ai/v1/models");
   assert.strictEqual(modelsUrl("https://api.x.ai/v1"), "https://api.x.ai/v1/models");
   assert.strictEqual(modelsUrl("https://example.com/v1/models"), "https://example.com/v1/models");
@@ -6522,6 +6525,24 @@ async function checkAiModels() {
     const kept = saveConfig({ baseUrl: "https://example.test/v1", model: "demo-model", apiKey: "  " });
     assert.strictEqual(JSON.parse(fs.readFileSync(configPath(), "utf8")).apiKey, "sk-file-key");
     assert.strictEqual(kept.keyHint, "••••-key");
+    const draftConfig = resolveConfig({ baseUrl: " https://draft.test/v1 ", model: "draft-model" });
+    assert.deepStrictEqual(draftConfig, {
+      baseUrl: "https://draft.test/v1",
+      model: "draft-model",
+      apiKey: "sk-file-key",
+    });
+    global.fetch = async (url, opts) => {
+      seen = { url, auth: opts.headers.authorization, body: opts.body };
+      return { ok: true, async json() { return { choices: [{ message: { content: "hello" } }] }; } };
+    };
+    const said = await complete(
+      [{ role: "user", content: "hi" }],
+      { temperature: 0, config: resolveConfig({ baseUrl: "https://draft.test/v1", model: "draft-model", apiKey: "sk-draft-key" }) },
+    );
+    assert.strictEqual(said, "hello");
+    assert.strictEqual(seen.url, "https://draft.test/v1/chat/completions");
+    assert.strictEqual(seen.auth, "Bearer sk-draft-key");
+    assert.match(seen.body, /draft-model/);
     global.fetch = async (url, opts) => {
       seen = { url, auth: opts.headers.authorization };
       return { ok: false, status: 401, async text() { return "bad key"; } };
@@ -6550,6 +6571,13 @@ async function checkAiModels() {
     assert.strictEqual(offline.ok, false);
     assert.match(offline.message, /offline/);
     assert.ok(!JSON.stringify(offline).includes("sk-draft"));
+    delete process.env.MORROW_AI_API_KEY;
+    const cleared = saveConfig({ removeKey: true });
+    assert.strictEqual(cleared.hasKey, false);
+    assert.strictEqual(cleared.baseUrl, "https://example.test/v1");
+    const clearedFile = JSON.parse(fs.readFileSync(configPath(), "utf8"));
+    assert.strictEqual(clearedFile.apiKey, "");
+    assert.strictEqual(clearedFile.baseUrl, "https://example.test/v1");
   } finally {
     global.fetch = originalFetch;
     for (const key of keys) {

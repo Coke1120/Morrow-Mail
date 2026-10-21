@@ -518,6 +518,32 @@ textarea:focus-visible {
 
 #ai-fields { margin: 0; }
 
+.ai-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-key-row #ai-key { flex: 1 1 auto; min-width: 0; }
+
+#ai-key-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+
+#ai-key-toggle svg { display: block; }
+
+#ai-key-remove { flex: none; height: 34px; }
+
+.ai-field-error { color: var(--danger); }
+
+#ai-fields input[aria-invalid="true"] { border-color: var(--danger); }
+
 .settings-accounts {
   list-style: none;
   margin: 0 0 12px;

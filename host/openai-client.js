@@ -1,13 +1,34 @@
 const { loadConfig, completionsUrl, modelsUrl } = require("./ai-config");
 
-function requireConfig() {
-  const cfg = loadConfig();
+function requireKey(cfg) {
   if (!cfg.apiKey) {
     const error = new Error("Add an API key in Morrow Mail → AI Setup.");
     error.code = "ai-unconfigured";
     throw error;
   }
   return cfg;
+}
+
+function requireConfig() {
+  return requireKey(loadConfig());
+}
+
+// Settings can test or fetch with the values on screen. Blank fields fall back
+// to the saved config, so a blank key field means "use the saved key".
+function resolveConfig(input) {
+  const saved = loadConfig();
+  const draft = input && typeof input === "object" ? input : {};
+  return {
+    baseUrl: typeof draft.baseUrl === "string" && draft.baseUrl.trim()
+      ? draft.baseUrl.trim()
+      : saved.baseUrl,
+    model: typeof draft.model === "string" && draft.model.trim()
+      ? draft.model.trim()
+      : saved.model,
+    apiKey: typeof draft.apiKey === "string" && draft.apiKey.trim()
+      ? draft.apiKey.trim()
+      : saved.apiKey,
+  };
 }
 
 async function readError(response) {
@@ -37,7 +58,7 @@ function deltaText(delta) {
 }
 
 async function complete(messages, options = {}) {
-  const cfg = requireConfig();
+  const cfg = options.config ? requireKey(options.config) : requireConfig();
   const response = await fetch(completionsUrl(cfg.baseUrl), {
     method: "POST",
     headers: {
@@ -140,14 +161,7 @@ function modelIds(payload) {
 }
 
 async function listModels(input) {
-  const saved = loadConfig();
-  const draft = input && typeof input === "object" ? input : {};
-  const baseUrl = typeof draft.baseUrl === "string" && draft.baseUrl.trim()
-    ? draft.baseUrl.trim()
-    : saved.baseUrl;
-  const apiKey = typeof draft.apiKey === "string" && draft.apiKey.trim()
-    ? draft.apiKey.trim()
-    : saved.apiKey;
+  const { baseUrl, apiKey } = resolveConfig(input);
   if (!apiKey) return { ok: false, message: "Add an API key in Morrow Mail → AI Setup." };
   if (!baseUrl) return { ok: false, message: "Base URL is required" };
   let response;
@@ -183,4 +197,4 @@ function extractJson(text) {
   return JSON.parse(raw.slice(start, end + 1));
 }
 
-module.exports = { complete, stream, extractJson, requireConfig, listModels, modelIds };
+module.exports = { complete, stream, extractJson, requireConfig, resolveConfig, listModels, modelIds };
