@@ -30,6 +30,7 @@ const state = {
   snoozed: new Map(),
   signatures: [],
   signatureText: "",
+  signatureHtml: "",
   translateLang: "English",
   translate: null,
   draftWrite: null,
@@ -2258,6 +2259,13 @@ function signaturePlain(row) {
     .trim();
 }
 
+function signatureMarkup(row) {
+  if (!row) return "";
+  if (typeof row.html === "string" && row.html.trim()) return row.html.trim();
+  const text = typeof row.text === "string" ? row.text.trim() : "";
+  return text ? toHtml(text) : "";
+}
+
 function signatureDraft(input) {
   const source = input || {};
   const payload = {
@@ -2327,9 +2335,10 @@ function applyFromSignature(input) {
   const rows = Array.isArray(source.rows) ? source.rows : signatureRows(source.pack);
   const match = id ? rows.find((row) => String(row.id) === String(id)) : null;
   const next = match ? signaturePlain(match) : "";
+  const markup = match ? signatureMarkup(match) : "";
   const replaced = replaceSignature(body, previous, next);
   if (!replaced.applied) return { body, previous, applied: false, pickerId: null };
-  return { body: replaced.body, previous: next, applied: true, pickerId: match ? String(match.id) : "" };
+  return { body: replaced.body, previous: next, applied: true, pickerId: match ? String(match.id) : "", html: markup };
 }
 
 function people(value) {
@@ -8267,7 +8276,7 @@ function paintComposeEditor(plain, html) {
   }
   const block = document.createElement("div");
   block.setAttribute("data-compose-signature", "1");
-  appendSafeMailHtml(block, toHtml(parts.signature), false);
+  appendSafeMailHtml(block, state.signatureHtml || toHtml(parts.signature), false);
   editor.appendChild(block);
 }
 
@@ -8278,12 +8287,13 @@ function writeComposeBody(next, html) {
   paintComposeEditor(value, html || "");
 }
 
-function updateComposeSignatureNode(text) {
+function updateComposeSignatureNode(text, html) {
   const editor = $("compose-editor");
   if (!composeEditorLive()) return;
   const next = String(text || "");
+  const markup = String(html || "");
   let node = editor.querySelector("[data-compose-signature]");
-  if (!next) {
+  if (!next && !markup.trim()) {
     if (node) node.remove();
     return;
   }
@@ -8297,17 +8307,18 @@ function updateComposeSignatureNode(text) {
     editor.appendChild(node);
   }
   node.replaceChildren();
-  appendSafeMailHtml(node, toHtml(next), false);
+  appendSafeMailHtml(node, markup.trim() ? markup : toHtml(next), false);
 }
 
-function commitComposeSignature(previous, next) {
+function commitComposeSignature(previous, next, html) {
   const body = $("compose-body");
   const current = body && typeof body.value === "string" ? body.value : "";
   const committed = commitPickerSignature(current, previous, next);
   if (body) body.value = committed.body;
   state.signatureText = committed.previous;
+  state.signatureHtml = next ? String(html || toHtml(next)) : "";
   if (composeEditorLive() && signatureUntouched(current, previous)) {
-    updateComposeSignatureNode(next);
+    updateComposeSignatureNode(next, state.signatureHtml);
     return;
   }
   paintComposeEditor(committed.body, "");
@@ -8341,18 +8352,85 @@ function setComposeFormatLocked(locked) {
   const editing = !locked && !(state.draftWrite && state.draftWrite.pending);
   const bar = $("compose-format");
   if (bar && typeof bar.querySelectorAll === "function") {
-    for (const button of bar.querySelectorAll("button")) button.disabled = !editing;
+    for (const control of bar.querySelectorAll("button, input")) control.disabled = !editing;
   }
   setComposeEditorEditable(editing);
 }
 
-function paintComposeFormatState() {
-  const bar = $("compose-format");
+// style-src 'self' ignores style attributes. Reapply color and highlight through CSSOM so they stay visible.
+function revealEditorStyles(root) {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  let nodes = [];
+  try { nodes = root.querySelectorAll("[style], font[color], [bgcolor]"); } catch { return; }
+  for (const el of nodes) {
+    if (!el || el === root) continue;
+    const css = typeof el.getAttribute === "function" ? el.getAttribute("style") : "";
+    if (css) mailApplyCss(el, css, false, false);
+    if (typeof el.getAttribute !== "function" || !el.style || typeof el.style.setProperty !== "function") continue;
+    if (String(el.tagName || "").toLowerCase() === "font") {
+      const color = mailColor(el.getAttribute("color"));
+      if (color) el.style.setProperty("color", color);
+    }
+    const bg = mailColor(el.getAttribute("bgcolor"));
+    if (bg) el.style.setProperty("background-color", bg);
+  }
+}
+
+function paintFormatState(bar) {
   if (!bar || typeof bar.querySelectorAll !== "function" || typeof document.queryCommandState !== "function") return;
   for (const button of bar.querySelectorAll("button[data-command]")) {
     let on = false;
     try { on = document.queryCommandState(button.getAttribute("data-command")) === true; } catch { on = false; }
     button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+function activeRichEditor(editor) {
+  const node = editor && editor.nodeType === 1 ? editor : $("compose-editor");
+  if (!node || node.nodeType !== 1 || node.contentEditable === "false") return null;
+  if (typeof node.appendChild !== "function" || typeof node.replaceChildren !== "function") return null;
+  return node;
+}
+
+function rememberEditorRange(editor) {
+  const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
+  if (!sel || !sel.rangeCount || !editor) return null;
+  const range = sel.getRangeAt(0);
+  const node = range.commonAncestorContainer;
+  if (node !== editor && !(editor.contains && editor.contains(node))) return null;
+  return typeof range.cloneRange === "function" ? range.cloneRange() : range;
+}
+
+function restoreEditorRange(editor, range) {
+  if (!range || typeof document.getSelection !== "function") return;
+  const sel = document.getSelection();
+  if (!sel) return;
+  sel.removeAllRanges();
+  sel.addRange(range);
+  if (editor && typeof editor.focus === "function") editor.focus();
+}
+
+function paintColorSwatch(input) {
+  const label = input && input.closest ? input.closest(".compose-color") : null;
+  if (!label || !label.style || typeof label.style.setProperty !== "function") return;
+  const color = mailColor(input.value);
+  if (color) label.style.setProperty("--swatch", color);
+}
+
+function wrapRichStyle(editor, prop, color) {
+  if (!editor || typeof document.getSelection !== "function") return;
+  const sel = document.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  const node = range.commonAncestorContainer;
+  if (node !== editor && !(editor.contains && editor.contains(node))) return;
+  const el = document.createElement("span");
+  if (el.style && typeof el.style.setProperty === "function") el.style.setProperty(prop, color);
+  try {
+    range.surroundContents(el);
+  } catch {
+    el.appendChild(range.extractContents());
+    range.insertNode(el);
   }
 }
 
@@ -8371,48 +8449,62 @@ function insertComposeFallback(command) {
   }
 }
 
-function applyComposeCommand(command) {
-  const editor = $("compose-editor");
-  if (!composeEditorLive() || editor.contentEditable === "false") return;
-  editor.focus();
+function applyComposeCommand(command, editor, value) {
+  const target = activeRichEditor(editor);
+  if (!target) return;
+  if (typeof target.focus === "function") target.focus();
+  const colored = command === "foreColor" || command === "hiliteColor" || command === "backColor";
+  const color = colored ? mailColor(value) : "";
+  if (colored && !color) return;
   let applied = false;
-  try { applied = document.execCommand(command, false, null) === true; } catch { applied = false; }
-  if (!applied) insertComposeFallback(command);
-  syncComposePlainFromEditor();
-  paintComposeFormatState();
+  try {
+    if (command === "foreColor") {
+      try { document.execCommand("styleWithCSS", false, false); } catch { /* font color stays visible without a style attribute */ }
+    } else if (colored) {
+      try { document.execCommand("styleWithCSS", false, true); } catch { /* highlight uses a background color */ }
+    }
+    try { applied = document.execCommand(command, false, colored ? color : null) === true; } catch { applied = false; }
+    if (!applied && command === "hiliteColor") {
+      try { applied = document.execCommand("backColor", false, color) === true; } catch { applied = false; }
+    }
+  } finally {
+    if (colored && command !== "foreColor") {
+      try { document.execCommand("styleWithCSS", false, false); } catch { /* bold and italic stay on tags */ }
+    }
+  }
+  if (!applied && !colored) insertComposeFallback(command);
+  if (!applied && command === "foreColor") wrapRichStyle(target, "color", color);
+  if (!applied && (command === "hiliteColor" || command === "backColor")) wrapRichStyle(target, "background-color", color);
+  if (colored) revealEditorStyles(target);
 }
 
-function insertComposeMarkup(markup) {
-  const editor = $("compose-editor");
-  if (!composeEditorLive()) return;
-  editor.focus();
-  let inserted = false;
-  try { inserted = document.execCommand("insertHTML", false, markup) === true; } catch { inserted = false; }
-  if (inserted) return;
+function insertComposeMarkup(markup, editor) {
+  const target = activeRichEditor(editor);
+  if (!target) return;
+  if (typeof target.focus === "function") target.focus();
   const holder = document.createElement("div");
   appendSafeMailHtml(holder, markup, false);
   const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
-  if (!sel || !sel.rangeCount) {
-    while (holder.firstChild) editor.appendChild(holder.firstChild);
-    return;
+  const anchor = sel && sel.rangeCount ? sel.anchorNode : null;
+  const inside = !!(anchor && (anchor === target || (target.contains && target.contains(anchor))));
+  if (!inside) {
+    while (holder.firstChild) target.appendChild(holder.firstChild);
+  } else {
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const fragment = document.createDocumentFragment();
+    while (holder.firstChild) fragment.appendChild(holder.firstChild);
+    const last = fragment.lastChild;
+    range.insertNode(fragment);
+    if (last) {
+      const after = document.createRange();
+      after.setStartAfter(last);
+      after.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(after);
+    }
   }
-  const range = sel.getRangeAt(0);
-  range.deleteContents();
-  const fragment = document.createDocumentFragment();
-  while (holder.firstChild) fragment.appendChild(holder.firstChild);
-  range.insertNode(fragment);
-}
-
-function onComposePaste(event) {
-  if (!event || !event.clipboardData) return;
-  const html = event.clipboardData.getData("text/html");
-  const text = event.clipboardData.getData("text/plain");
-  if (!html && !text) return;
-  event.preventDefault();
-  const markup = html ? sanitizeComposeHtml(html) : toHtml(text);
-  if (!markup) return;
-  insertComposeMarkup(markup);
-  syncComposePlainFromEditor();
+  revealEditorStyles(target);
 }
 
 function placeComposeCaret(editor) {
@@ -8440,29 +8532,62 @@ function focusComposeBody() {
   if (typeof body.scrollTop === "number") body.scrollTop = 0;
 }
 
-function wireComposeFormat() {
-  const bar = $("compose-format");
-  const editor = $("compose-editor");
-  if (bar) {
+function bindRichEditor(bar, editor, onInput) {
+  if (!bar && !editor) return;
+  let saved = null;
+  if (bar && typeof bar.addEventListener === "function") {
+    if (typeof bar.querySelectorAll === "function") {
+      for (const input of bar.querySelectorAll("input[data-command]")) paintColorSwatch(input);
+    }
     bar.addEventListener("mousedown", (event) => {
       const button = event.target && event.target.closest && event.target.closest("button");
       if (button) event.preventDefault();
+      saved = rememberEditorRange(editor);
     });
     bar.addEventListener("click", (event) => {
       const button = event.target && event.target.closest && event.target.closest("button[data-command]");
       if (!button || button.disabled) return;
-      applyComposeCommand(button.getAttribute("data-command"));
+      applyComposeCommand(button.getAttribute("data-command"), editor);
+      if (onInput) onInput();
+      paintFormatState(bar);
+    });
+    bar.addEventListener("input", (event) => {
+      const input = event.target && event.target.closest && event.target.closest("input[data-command]");
+      if (!input || input.disabled) return;
+      restoreEditorRange(editor, saved);
+      applyComposeCommand(input.getAttribute("data-command"), editor, input.value);
+      paintColorSwatch(input);
+      if (onInput) onInput();
     });
   }
   if (!editor || typeof editor.addEventListener !== "function") return;
-  editor.addEventListener("input", () => syncComposePlainFromEditor());
-  editor.addEventListener("paste", onComposePaste);
-  editor.addEventListener("keyup", paintComposeFormatState);
-  editor.addEventListener("mouseup", paintComposeFormatState);
+  editor.addEventListener("input", () => {
+    revealEditorStyles(editor);
+    if (onInput) onInput();
+  });
+  editor.addEventListener("paste", (event) => {
+    if (!event || !event.clipboardData) return;
+    const html = event.clipboardData.getData("text/html");
+    const text = event.clipboardData.getData("text/plain");
+    if (!html && !text) return;
+    event.preventDefault();
+    const markup = html ? sanitizeComposeHtml(html) : toHtml(text);
+    if (!markup) return;
+    insertComposeMarkup(markup, editor);
+    revealEditorStyles(editor);
+    if (onInput) onInput();
+  });
+  editor.addEventListener("keyup", () => paintFormatState(bar));
+  editor.addEventListener("mouseup", () => paintFormatState(bar));
   editor.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
     event.stopPropagation();
   });
+}
+
+function wireComposeFormat() {
+  bindRichEditor($("compose-format"), $("compose-editor"), syncComposePlainFromEditor);
+  bindRichEditor($("signature-format"), $("signature-editor"), syncSignatureSource);
 }
 
 function composePayload(account) {
@@ -8652,7 +8777,7 @@ async function fillSignatures(preserveBody) {
   const match = rows.find((row) => String(row.id) === id);
   select.value = match ? String(match.id) : "";
   const text = signaturePlain(match);
-  commitComposeSignature(state.signatureText, text);
+  commitComposeSignature(state.signatureText, text, match ? signatureMarkup(match) : "");
   if (identity) identity.signatureFollowsFrom = true;
 }
 
@@ -8660,7 +8785,7 @@ function onSignatureChange() {
   if (state.composeQueued || state.composePending) return;
   const row = state.signatures.find((item) => String(item.id) === $("signature").value);
   const text = signaturePlain(row);
-  commitComposeSignature(state.signatureText, text);
+  commitComposeSignature(state.signatureText, text, row ? signatureMarkup(row) : "");
   paintComposeNote();
 }
 
@@ -8670,15 +8795,69 @@ function showSignatureStatus(text, isError) {
   el.classList.toggle("error", !!isError && !!text);
 }
 
+function paintSignatureEditor(body, asHtml) {
+  const editor = $("signature-editor");
+  if (!editor || editor.nodeType !== 1 || typeof editor.replaceChildren !== "function") return;
+  editor.replaceChildren();
+  const value = String(body || "");
+  if (!value.trim()) return;
+  appendSafeMailHtml(editor, asHtml ? value : toHtml(value), false);
+  revealEditorStyles(editor);
+}
+
+function showSignatureEditor(body, asHtml) {
+  const htmlOn = !!($("signature-html") && $("signature-html").checked);
+  const area = $("signature-body");
+  const editor = $("signature-editor");
+  const bar = $("signature-format");
+  if (bar) bar.hidden = !htmlOn;
+  if (editor) editor.hidden = !htmlOn;
+  if (area) area.hidden = htmlOn;
+  if (!htmlOn) return;
+  paintSignatureEditor(body == null ? "" : body, asHtml === true);
+}
+
+function readSignatureEditorHtml() {
+  const editor = $("signature-editor");
+  if (!editor || editor.nodeType !== 1 || typeof editor.innerHTML !== "string") return "";
+  if (blankComposeHtml(editor.innerHTML)) return "";
+  try { return sanitizeComposeHtml(editor.innerHTML); } catch { return ""; }
+}
+
+function syncSignatureSource() {
+  const box = $("signature-html");
+  const area = $("signature-body");
+  const editor = $("signature-editor");
+  if (!box || !box.checked || !area || !editor) return;
+  area.value = readSignatureEditorHtml();
+}
+
+function onSignatureHtmlToggle() {
+  const box = $("signature-html");
+  const area = $("signature-body");
+  const editor = $("signature-editor");
+  if (!box) return;
+  if (box.checked) {
+    showSignatureEditor(area ? area.value : "", false);
+    return;
+  }
+  if (area) area.value = editor ? plainFromComposeHtml(editor.innerHTML || "") : area.value;
+  if (editor) editor.hidden = true;
+  const bar = $("signature-format");
+  if (bar) bar.hidden = true;
+  if (area) area.hidden = false;
+}
+
 function clearSignatureForm() {
   signatureEditId = "";
   $("signature-name").value = "";
   $("signature-body").value = "";
-  $("signature-html").checked = false;
+  $("signature-html").checked = true;
   $("signature-default").checked = false;
   $("signature-domains").value = "";
   $("signature-save").textContent = "Add";
   $("signature-cancel").hidden = true;
+  showSignatureEditor("", true);
 }
 
 function signatureDomainField(pack, accountId, signatureId) {
@@ -8739,6 +8918,7 @@ function startSignatureEdit(row, isDefault) {
   $("signature-domains").value = signatureDomainField(signatureEditorPack, signatureAccount()?.id, fields.id);
   $("signature-save").textContent = "Save";
   $("signature-cancel").hidden = false;
+  showSignatureEditor(fields.body, fields.html);
   $("signature-name").focus();
 }
 
@@ -8775,6 +8955,7 @@ async function refreshComposeSignatures() {
 
 async function submitSignature(event) {
   event.preventDefault();
+  if ($("signature-html") && $("signature-html").checked) syncSignatureSource();
   const draft = signatureDraft({
     id: signatureEditId,
     name: $("signature-name").value,
@@ -9211,9 +9392,10 @@ function changeComposeFrom() {
   if (signature.applied) {
     $("compose-body").value = signature.body;
     state.signatureText = signature.previous;
+    state.signatureHtml = signature.previous ? (signature.html || toHtml(signature.previous)) : "";
     const select = $("signature");
     if (!select.hidden) select.value = signature.pickerId || "";
-    if (composeEditorLive()) updateComposeSignatureNode(signature.previous);
+    if (composeEditorLive()) updateComposeSignatureNode(signature.previous, state.signatureHtml);
   }
   paintComposeIdentity();
   paintComposeNote();
@@ -9235,6 +9417,7 @@ async function openCompose(seed) {
   state.draftId = fields.draftId || null;
   state.composeQueued = false;
   state.signatureText = "";
+  state.signatureHtml = "";
   state.composeMeta = {
     accountId: fields.accountId || state.accountId,
     inReplyTo: fields.inReplyTo || "",
@@ -15561,6 +15744,7 @@ function wire() {
     signatureEditorAccountId = "";
   });
   $("signature-cancel").addEventListener("click", clearSignatureForm);
+  $("signature-html").addEventListener("change", onSignatureHtmlToggle);
   $("signature-form").addEventListener("submit", (event) => {
     submitSignature(event).catch((error) => {
       showSignatureStatus(error instanceof Error ? error.message : String(error), true);

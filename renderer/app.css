@@ -3722,26 +3722,82 @@ textarea { min-height: 140px; resize: vertical; }
   margin-top: 8px;
 }
 
-#compose .compose-format button {
+.compose-format button,
+.compose-format .compose-color {
   width: 32px;
   height: 32px;
+  margin: 0;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  border: 1px solid var(--line);
   border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 400;
 }
 
-#compose .compose-format button[aria-pressed="true"] {
+.compose-format button[aria-pressed="true"] {
   background: var(--selected);
   color: var(--accent-ink);
   border-color: transparent;
 }
 
-#compose .compose-format button:hover,
-#compose .compose-format button:focus-visible {
+.compose-format button:hover,
+.compose-format button:focus-visible,
+.compose-format .compose-color:hover,
+.compose-format .compose-color:focus-within {
   background: var(--hover);
   color: var(--ink);
+}
+
+.compose-format button:disabled,
+.compose-format .compose-color:has(input:disabled) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.compose-format .compose-color {
+  position: relative;
+}
+
+.compose-format .compose-color.is-ink { --swatch: #102822; }
+.compose-format .compose-color.is-highlight { --swatch: #fff3a0; }
+
+.compose-format .compose-color svg,
+.compose-format .compose-swatch { pointer-events: none; }
+
+.compose-format .compose-color svg { display: block; margin-bottom: 3px; }
+
+.compose-swatch {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  bottom: 5px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--swatch, currentColor);
+}
+
+.compose-format .compose-color input[type="color"] {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+#signature-form .compose-format { margin-top: 0; }
+
+#signature-form .compose-editor {
+  min-height: 88px;
+  margin-top: 8px;
 }
 
 .compose-editor {
