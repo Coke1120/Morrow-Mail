@@ -1605,6 +1605,7 @@ const attachUi = loadFunctions(appJs, [
   "attachmentCapCopy",
   "fileSize",
   "reviewComposeFiles",
+  "composeDragFiles",
   "outgoingBody",
   "previewDraft",
   "replySuggestionSource",
@@ -1633,6 +1634,14 @@ assert.deepStrictEqual(attachUi.reviewComposeFiles([], [{ name: "ok.txt", size: 
   { index: 0, filename: "ok.txt", size: 4 },
   { index: 1, filename: "ok.txt", size: 4 },
 ]);
+assert.strictEqual(attachUi.composeDragFiles(null), null);
+assert.strictEqual(attachUi.composeDragFiles({ types: ["text/plain"], files: [{ name: "note.txt" }] }), null);
+assert.deepStrictEqual(attachUi.composeDragFiles({ types: ["Files"], files: [] }), []);
+assert.deepStrictEqual(attachUi.composeDragFiles({ types: ["text/plain", "Files"], files: [{ name: "a.txt" }, { name: "b.txt" }] }).map((file) => file.name), ["a.txt", "b.txt"]);
+assert.ok(functionSource(appJs, "onComposeDrop").includes("addComposeFiles"));
+assert.ok(functionSource(appJs, "wireComposeFileDrop").includes('addEventListener("drop"'));
+assert.ok(css.includes("#compose-editor.drop-target"));
+assert.ok(parityDoc.includes("Dropping files on the message field") && independentDoc.includes("Dropping files on the message field"));
 const preview = attachUi.previewDraft({ to: "ada@example.com", subject: "Notes", body: "See file" }, "", null, [localFile]);
 assert.deepStrictEqual(preview.attachments, [{ filename: "notes.txt", size: 12 }]);
 assert.strictEqual(preview.kind, "send");

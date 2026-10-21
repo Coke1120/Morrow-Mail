@@ -3816,6 +3816,12 @@ textarea { min-height: 140px; resize: vertical; }
   outline-offset: 2px;
 }
 
+#compose-editor.drop-target {
+  background: rgba(185, 213, 173, 0.22);
+  outline: 2px solid #b9d5ad;
+  outline-offset: -2px;
+}
+
 .compose-editor:empty::before {
   content: attr(data-placeholder);
   color: var(--muted);

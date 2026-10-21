@@ -8898,6 +8898,74 @@ async function addComposeFiles(list) {
   paintComposeNote();
 }
 
+let composeDropDepth = 0;
+
+function composeDragFiles(transfer) {
+  if (!transfer || typeof transfer !== "object") return null;
+  const types = Array.from(transfer.types || []);
+  if (!types.includes("Files")) return null;
+  return Array.from(transfer.files || []);
+}
+
+function composeDropLocked() {
+  return !!(state.composePending || state.composeQueued || state.composeInitializing);
+}
+
+function setComposeDropHighlight(on) {
+  const editor = $("compose-editor");
+  if (!editor || !editor.classList) return;
+  editor.classList.toggle("drop-target", !!on);
+}
+
+function resetComposeDrop() {
+  composeDropDepth = 0;
+  setComposeDropHighlight(false);
+}
+
+function onComposeDragEnter(event) {
+  if (!event || !composeDragFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  if (composeDropLocked()) return;
+  composeDropDepth += 1;
+  setComposeDropHighlight(true);
+}
+
+function onComposeDragOver(event) {
+  if (!event || !composeDragFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  if (composeDropLocked()) {
+    setComposeDropHighlight(false);
+    return;
+  }
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  setComposeDropHighlight(true);
+}
+
+function onComposeDragLeave() {
+  if (!composeDropDepth) return;
+  composeDropDepth -= 1;
+  if (!composeDropDepth) setComposeDropHighlight(false);
+}
+
+function onComposeDrop(event) {
+  resetComposeDrop();
+  if (!event) return;
+  const files = composeDragFiles(event.dataTransfer);
+  if (!files) return;
+  event.preventDefault();
+  if (composeDropLocked() || !files.length) return;
+  addComposeFiles(files).catch((error) => setComposeAttachError(error instanceof Error ? error.message : String(error)));
+}
+
+function wireComposeFileDrop() {
+  const editor = $("compose-editor");
+  if (!editor || typeof editor.addEventListener !== "function") return;
+  editor.addEventListener("dragenter", onComposeDragEnter);
+  editor.addEventListener("dragover", onComposeDragOver);
+  editor.addEventListener("dragleave", onComposeDragLeave);
+  editor.addEventListener("drop", onComposeDrop);
+}
+
 function paintComposeSuggestions() {
   const box = $("compose-suggestions");
   const status = $("compose-suggest-status");
@@ -9761,6 +9829,7 @@ async function openCompose(seed) {
   $("schedule-at").value = "";
   const fileInput = $("compose-file");
   if (fileInput) fileInput.value = "";
+  resetComposeDrop();
   setComposeAttachError("");
   paintComposeAttachments();
   syncScheduleFields();
@@ -16197,6 +16266,7 @@ function wire() {
       addComposeFiles(picked).catch((error) => setComposeAttachError(error instanceof Error ? error.message : String(error)));
     });
   }
+  wireComposeFileDrop();
   $("compose-save").addEventListener("click", () => guard(saveDraft));
   $("compose-schedule").addEventListener("click", () => guard(requestSchedulePreview));
   $("compose-send-now").addEventListener("click", () => guard(requestSendNowPreview));
