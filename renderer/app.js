@@ -5981,7 +5981,7 @@ let attachmentPreviewToken = 0;
 let attachmentPreviewUrl = "";
 let attachmentPreviewEmailId = "";
 
-function readerIcon(kind) {
+function attachmentIcon(kind) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("width", "16");
@@ -6204,7 +6204,7 @@ function renderAttachments(pane, email) {
   const head = document.createElement("div");
   head.className = "attachment-card-head";
   const title = document.createElement("h3");
-  title.appendChild(readerIcon("paperclip"));
+  title.appendChild(attachmentIcon("paperclip"));
   const titleText = document.createElement("span");
   titleText.textContent = "Attachments";
   title.appendChild(titleText);
@@ -6219,7 +6219,7 @@ function renderAttachments(pane, email) {
     const zip = document.createElement("button");
     zip.type = "button";
     zip.className = "attachment-zip";
-    zip.appendChild(readerIcon("download"));
+    zip.appendChild(attachmentIcon("download"));
     const zipLabel = document.createElement("span");
     zipLabel.textContent = "Save as ZIP";
     zip.appendChild(zipLabel);
