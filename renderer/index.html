@@ -261,28 +261,36 @@
         </div>
       </form>
     </dialog>
-    <section id="agent-panel" class="primary-space" hidden aria-label="Agent">
+    <section id="agent-panel" class="primary-space" data-agent-pane="home" hidden aria-label="Agent">
       <div class="space-head motion-block">
         <div>
           <p class="space-kicker">Morrow Mail</p>
           <h2 id="agent-greeting">Agent</h2>
         </div>
         <div class="row space-actions">
-          <button type="button" class="ghost" id="agent-triage">Refresh todos</button>
-          <button type="button" class="ghost" id="agent-manage-skills">Manage Skills</button>
+          <button type="button" class="ghost icon-label" id="agent-triage">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M16 16h5v5"></path></svg>
+            Refresh todos
+          </button>
+          <button type="button" class="ghost icon-label" id="agent-manage-skills">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect></svg>
+            Manage Skills
+          </button>
         </div>
       </div>
-      <p class="hint motion-block">Agent helps you ask questions about downloaded mail and review suggested tasks, drafts, and filing actions.</p>
+      <p class="hint agent-lead motion-block">Agent helps you ask questions about downloaded mail and review suggested tasks, drafts, and filing actions.</p>
       <nav class="section-nav" id="agent-nav" role="tablist" aria-label="Agent sections">
         <button type="button" id="agent-tab-home" data-agent-tab="home" role="tab" aria-controls="agent-home" aria-selected="true" aria-current="true">Todos</button>
         <button type="button" id="agent-tab-conversation" data-agent-tab="conversation" role="tab" aria-controls="agent-conversation" aria-selected="false" tabindex="-1">Conversation</button>
         <button type="button" id="agent-tab-tools" data-agent-tab="tools" role="tab" aria-controls="agent-tools" aria-selected="false" tabindex="-1">Skills</button>
       </nav>
       <div id="agent-setup" class="setup-state motion-block" hidden><p id="agent-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="agent-setup-ai">Set up AI</button><button type="button" class="ghost" id="agent-setup-connect">Connect an account</button></div></div>
-      <p id="agent-status" role="status"></p>
-      <p id="agent-context" class="hint"></p>
-      <div id="agent-home" class="motion-block" role="tabpanel" aria-labelledby="agent-tab-home" aria-label="Suggested todos"></div>
+      <div class="agent-meta motion-block">
+        <p id="agent-status" role="status"></p>
+        <p id="agent-context" class="hint"></p>
+      </div>
       <div id="agent-skill-chips" aria-label="Home skill shortcuts"></div>
+      <div id="agent-home" class="motion-block" role="tabpanel" aria-labelledby="agent-tab-home" aria-label="Suggested todos"></div>
       <section id="agent-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden>
         <div id="agent-sections" class="agent-thread" role="log" aria-live="polite"></div>
       <form id="agent-composer" class="agent-composer">
