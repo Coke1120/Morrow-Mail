@@ -548,6 +548,19 @@
       </form>
     </dialog>
 
+    <dialog id="quit-scheduled" role="alertdialog" aria-modal="true" aria-labelledby="quit-scheduled-title" aria-describedby="quit-scheduled-body">
+      <form id="quit-scheduled-form">
+        <h2 id="quit-scheduled-title">Scheduled mail is still pending</h2>
+        <p id="quit-scheduled-body">Scheduled messages will not send while Morrow Mail is closed. A time that passes while the app is closed is sent the next time you open it.</p>
+        <ul id="quit-scheduled-list" aria-label="Pending scheduled messages"></ul>
+        <p id="quit-scheduled-more" class="hint" hidden></p>
+        <div class="row" role="group" aria-label="Quit choices">
+          <button type="button" class="primary" id="quit-scheduled-stay" autofocus>Stay open</button>
+          <button type="button" class="ghost" id="quit-scheduled-view">View scheduled</button>
+          <button type="button" class="ghost" id="quit-scheduled-quit">Quit anyway</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="compose-close-review" aria-labelledby="draft-close-title">
       <h2 id="draft-close-title">Discard unsaved changes?</h2>
       <p>Close discards edits since the last save. A saved draft stays as it was. Save draft, next to Send, keeps this message without closing.</p>
