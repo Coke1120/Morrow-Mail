@@ -47,12 +47,12 @@ const state = {
     theme: "light",
     accent: "#193C34",
     conversation: true,
-    images: false,
-    undoSend: 5,
-    snooze: true,
+    images: true,
+    undoSend: 30,
+    snooze: false,
     quoteWidth: 420,
-    syncHorizon: 180,
-    compactList: false,
+    syncHorizon: 0,
+    compactList: true,
     collapsedFolders: {},
     scheduleDelay: 0,
     layout: { folders: 260, list: 360, reading: 0 },
@@ -12224,10 +12224,68 @@ function paintAiDirty() {
   if (dirty && $("ai-status") && $("ai-status").textContent === "Saved.") setAiStatus("", false);
 }
 
+function clearAiModelChoices() {
+  const chooser = $("ai-model-chooser");
+  const select = $("ai-model-select");
+  if (select) {
+    select.replaceChildren();
+    select.value = "";
+  }
+  if (chooser) chooser.hidden = true;
+}
+
+function applyFetchedModels(ids) {
+  const chooser = $("ai-model-chooser");
+  const select = $("ai-model-select");
+  if (!chooser || !select) return 0;
+  select.replaceChildren();
+  const seen = new Set();
+  const models = [];
+  for (const raw of Array.isArray(ids) ? ids : []) {
+    const id = typeof raw === "string" ? raw.trim() : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    models.push(id);
+  }
+  if (!models.length) {
+    select.value = "";
+    chooser.hidden = true;
+    return 0;
+  }
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Choose a model";
+  select.appendChild(placeholder);
+  const current = String(($("ai-model") && $("ai-model").value) || "").trim();
+  for (const id of models) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = id;
+    select.appendChild(option);
+  }
+  select.size = Math.min(8, Math.max(models.length + 1, 3));
+  select.value = models.includes(current) ? current : "";
+  chooser.hidden = false;
+  return models.length;
+}
+
+function chooseFetchedModel() {
+  const select = $("ai-model-select");
+  const input = $("ai-model");
+  if (!select || !input) return;
+  const id = String(select.value || "").trim();
+  if (!id || input.value === id) return;
+  input.value = id;
+  if (typeof input.dispatchEvent === "function") {
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  paintAiDirty();
+}
+
 async function loadAiSettings() {
   setAiStatus("", false);
   $("ai-key").value = "";
-  $("ai-model-list").replaceChildren();
+  clearAiModelChoices();
   try {
     const cfg = await api.invoke("host:aiGetConfig");
     $("ai-base").value = cfg && cfg.baseUrl ? cfg.baseUrl : "";
@@ -12274,14 +12332,8 @@ async function fetchAiModels() {
       return;
     }
     const ids = Array.isArray(result.models) ? result.models : [];
-    const list = $("ai-model-list");
-    list.replaceChildren();
-    for (const id of ids) {
-      const option = document.createElement("option");
-      option.value = id;
-      list.appendChild(option);
-    }
-    setAiStatus(ids.length ? "Fetched " + ids.length + " models. Pick one or type an id." : "No models returned. Type a model id.", false);
+    const count = applyFetchedModels(ids);
+    setAiStatus(count ? "Fetched " + count + " models. Pick one or type an id." : "No models returned. Type a model id.", false);
   } catch (error) {
     setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -17298,6 +17350,7 @@ function wire() {
     $(id).addEventListener("input", paintAiDirty);
     $(id).addEventListener("change", paintAiDirty);
   }
+  $("ai-model-select").addEventListener("change", chooseFetchedModel);
   for (const id of ["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience", "ooo-domain"]) {
     $(id).addEventListener("input", paintOooDirty);
     $(id).addEventListener("change", paintOooDirty);

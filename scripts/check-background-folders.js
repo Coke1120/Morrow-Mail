@@ -185,7 +185,7 @@ async function checkEngine() {
     for (const folder of big) {
       const row = db.folderByPath("bg-all", folder);
       assert.equal(row.window_done, 1, folder);
-      assert.equal(row.sync_horizon_days, 180, folder);
+      assert.equal(row.sync_horizon_days, 0, folder);
       assert.equal(db.countInFolder("bg-all", folder), 250, folder);
     }
 

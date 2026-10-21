@@ -520,6 +520,9 @@ textarea:focus-visible {
 
 #ai-fields { margin: 0; }
 
+.ai-model-chooser { margin-top: 8px; }
+#ai-model-select { cursor: pointer; min-height: 7.5em; }
+
 .settings-accounts {
   list-style: none;
   margin: 0 0 12px;
@@ -1139,16 +1142,31 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
   box-shadow: inset 0 -2px 0 var(--accent-ink);
 }
 
-.brain-meta {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 12px;
+.brain-summary {
   margin: 8px 0 12px;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--hover);
 }
+
+.brain-summary #brain-status { margin: 0 0 8px; }
+
+.brain-summary #brain-progress { margin: 0 0 8px; }
+
+.brain-summary .hint { margin: 8px 0 0; }
+
+.brain-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.brain-meta[hidden] { display: none; }
 
 .brain-meta dt {
   margin: 0;

@@ -14,7 +14,8 @@ const message = (uid, extra = {}) => ({ id: `p-${uid}`, uid, threadId: `t-${uid}
   from: "sender@example.invalid", date: "2026-10-19T00:00:00Z", listSortTs: Date.now(),
   textBody: "Searchable durable body", bodyComplete: true, ...extra });
 const report = (messages = [], extra = {}) => ({ messages, validity: 1, exists: 3, unseen: 0,
-  uids: [1, 2, 3], uidCursor: 3, windowDone: true, horizonDays: 180, ...extra });
+  // A finished All window matches the fresh syncHorizonDays default, so a warm poll stays a no-op.
+  uids: [1, 2, 3], uidCursor: 3, windowDone: true, horizonDays: 0, ...extra });
 
 async function seed(file) {
   await db.open(file);
