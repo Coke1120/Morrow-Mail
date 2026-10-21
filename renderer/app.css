@@ -3006,6 +3006,20 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   padding: 8px 16px 0;
 }
 
+.reader-star-group {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.reader-actions .translate {
+  flex: none;
+  flex-wrap: nowrap;
+  margin: 0 2px;
+  padding: 0;
+}
+
 .translation { padding: 4px 20px 16px; }
 
 .translation p { margin: 0 0 6px; }
@@ -3324,6 +3338,53 @@ dialog h2 {
 #agent-peek { width: min(720px, calc(100vw - 24px)); }
 
 #move-picker { width: min(480px, calc(100vw - 24px)); }
+
+#label-picker {
+  inset: 0;
+  margin: auto;
+  width: min(440px, calc(100vw - 24px));
+  height: max-content;
+  max-height: calc(100vh - 32px);
+}
+
+#label-picker-source {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+#label-picker-list {
+  margin-top: 8px;
+  max-height: min(360px, 46vh);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 4px;
+  background: var(--paper);
+}
+
+#label-picker-list .label-row {
+  margin: 0;
+  min-height: 32px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  padding-right: 8px;
+  border-radius: 8px;
+  font-weight: 450;
+}
+
+#label-picker-list .label-row:hover,
+#label-picker-list .label-row:focus-within { background: var(--hover); }
+
+#label-picker-empty { margin: 8px 0 0; }
+
+.label-mixed {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
 
 #move-picker-source,
 #move-picker-preview {

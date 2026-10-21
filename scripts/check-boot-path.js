@@ -2185,6 +2185,68 @@ assert.deepStrictEqual(gmailMenu.add.map((folder) => [folder.id, folder.depth, f
   ["L2", 1, "Travel"],
 ]);
 assert.strictEqual(gmailMenu.remove.length, 2);
+const labelPicker = loadFunctions(appJs, [
+  "messageLabelKeys",
+  "appliedEditableLabels",
+  "labelCheckedState",
+  "labelChangeForMessages",
+  "filterEditableLabels",
+  "labelEditCalls",
+  "labelApplyConfirm",
+]);
+const editableLabels = [
+  { id: "L1", name: "Work", label: "Work", editable: true },
+  { id: "L2", name: "Work/Travel", label: "Travel", editable: true, depth: 1 },
+];
+assert.deepStrictEqual(labelPicker.messageLabelKeys({ folderId: "Work", folders: ["Work"] }), ["Work", "Work"]);
+assert.deepStrictEqual(labelPicker.appliedEditableLabels({ id: "m1", folderId: "Work", folders: ["Work"] }, editableLabels), ["L1"]);
+assert.deepStrictEqual(labelPicker.appliedEditableLabels({ id: "m1", labelIds: ["L2"], folderId: "Work" }, editableLabels), ["L2"]);
+assert.deepStrictEqual(labelPicker.appliedEditableLabels({ id: "m1", labelIds: [], folderId: "Work" }, editableLabels), []);
+assert.deepStrictEqual(labelPicker.appliedEditableLabels({ id: "m1", folderId: "work/travel" }, editableLabels), ["L2"]);
+assert.deepStrictEqual(labelPicker.appliedEditableLabels({ id: "m1", folderId: "Travel" }, editableLabels), []);
+const labelMessages = [
+  { id: "m1", accountId: "a", labelIds: ["L1"] },
+  { id: "m2", accountId: "a", labelIds: ["L1", "L2"] },
+];
+const labelMarks = labelPicker.labelCheckedState(labelMessages, editableLabels);
+assert.strictEqual(labelMarks.get("L1"), "on");
+assert.strictEqual(labelMarks.get("L2"), "mixed");
+assert.deepStrictEqual(labelPicker.labelChangeForMessages(labelMessages, editableLabels, labelMarks, new Map(labelMarks)), []);
+const labelNext = new Map(labelMarks);
+labelNext.set("L1", "off");
+labelNext.set("L2", "on");
+const labelPlans = labelPicker.labelChangeForMessages(labelMessages, editableLabels, labelMarks, labelNext);
+assert.deepStrictEqual(labelPlans.map((plan) => [plan.email.id, plan.addLabelIds, plan.removeLabelIds]), [
+  ["m1", ["L2"], ["L1"]],
+  ["m2", [], ["L1"]],
+]);
+assert.deepStrictEqual(labelPicker.filterEditableLabels(editableLabels, "  ").map((row) => row.id), ["L1", "L2"]);
+assert.deepStrictEqual(labelPicker.filterEditableLabels(editableLabels, "trav").map((row) => row.id), ["L2"]);
+assert.deepStrictEqual(labelPicker.filterEditableLabels(editableLabels, "nomatch"), []);
+assert.deepStrictEqual(labelPicker.labelEditCalls(labelPlans), [
+  {
+    channel: "mail:modifyMessageLabels",
+    params: { accountId: "a", emailId: "m1", addLabelIds: ["L2"], removeLabelIds: ["L1"] },
+  },
+  {
+    channel: "mail:modifyMessageLabels",
+    params: { accountId: "a", emailId: "m2", addLabelIds: [], removeLabelIds: ["L1"] },
+  },
+]);
+const labelCopy = labelPicker.labelApplyConfirm(labelPlans, editableLabels, "2 messages from Desk.");
+assert.strictEqual(labelCopy.title, "Labels");
+assert.strictEqual(labelCopy.confirm, "Apply");
+assert.match(labelCopy.body, /Add “Work\/Travel”/);
+assert.match(labelCopy.body, /Remove “Work”/);
+assert.match(labelCopy.body, /2 messages from Desk/);
+assert.ok(!appJs.includes("function labelSelect("));
+assert.ok(!appJs.includes("selection-add-label"));
+assert.ok(!appJs.includes("selection-remove-label"));
+assert.ok(appJs.includes('id="selection-labels"') || appJs.includes("selection-labels"));
+assert.ok(functionSource(appJs, "renderActions").includes("besideStar.append(star)"));
+assert.ok(functionSource(appJs, "renderActions").includes("renderTranslate(besideStar, email)"));
+assert.ok(!functionSource(appJs, "renderReader").includes("renderTranslate("));
+assert.ok(functionSource(appJs, "renderActions").includes('dataset.action = "snooze"'));
 assert.strictEqual(gmailMenu.outlook.length, 0);
 assert.strictEqual(gmailMenu.note, "");
 const outlookMenu = organizeUi.organizeMenu(dragMessage, [], {
@@ -2777,6 +2839,12 @@ assert.ok(appJs.includes("moveRequestAfterConfirm"));
 assert.ok(appJs.includes("Move…"));
 assert.ok(html.includes('id="move-picker"'));
 assert.ok(html.includes('id="move-picker-filter"'));
+assert.ok(html.includes('id="label-picker"'));
+assert.ok(html.includes('id="label-picker-filter"'));
+assert.ok(html.includes('placeholder="Filter labels"'));
+assert.ok(css.includes("#label-picker-list"));
+assert.ok(css.includes(".reader-actions .translate"));
+assert.ok(css.includes(".reader-star-group"));
 assert.ok(css.includes("#move-picker-tree"));
 assert.ok(css.includes(".move-node"));
 assert.ok(!appJs.includes('confirmsBefore("mail:modifyMessageLabels")'));
