@@ -1565,6 +1565,9 @@ const ai = loadFunctions(appJs, [
   "withSuggestion",
   "suggestionItems",
   "suggestionEmail",
+  "replyThreadEmail",
+  "defaultAiMode",
+  "replyThreadPrompt",
   "draftBlockReason",
   "draftInstruction",
   "draftBase",
@@ -1577,6 +1580,24 @@ assert.strictEqual(ai.draftBlockReason("rewrite", "", "  "), "Add some text, or 
 assert.strictEqual(ai.draftBlockReason("continue", "go on", ""), "");
 assert.strictEqual(ai.draftBlockReason("rewrite", "", "Hello"), "");
 assert.strictEqual(ai.draftBlockReason("custom", "", "", { subject: "Hi" }), "");
+assert.strictEqual(ai.draftBlockReason("reply", "", "", null), "Reply from thread needs the original message.");
+assert.strictEqual(ai.draftBlockReason("reply", "", "", { subject: "Hi" }), "");
+assert.strictEqual(ai.draftBase("reply", "Hello"), "");
+const replySource = { subject: "Notes", from: "Ada" };
+assert.strictEqual(ai.replyThreadEmail({ kind: "reply", quoteEmail: replySource }), replySource);
+assert.strictEqual(ai.replyThreadEmail({ kind: "forward", quoteEmail: replySource }), null);
+assert.strictEqual(ai.replyThreadEmail({ kind: "reply", quote: "  " }), null);
+assert.strictEqual(ai.replyThreadEmail({ kind: "all", quote: "See you", subject: "Re: Notes" }).subject, "Notes");
+assert.strictEqual(ai.defaultAiMode({ kind: "reply", quoteEmail: replySource }), "reply");
+assert.strictEqual(ai.defaultAiMode({ kind: "forward", quoteEmail: replySource }), "rewrite");
+assert.strictEqual(ai.defaultAiMode({}), "rewrite");
+assert.strictEqual(ai.replyThreadPrompt("  keep it warm  "), "keep it warm");
+assert.match(ai.replyThreadPrompt(""), /comprehensive reply/);
+assert.strictEqual(ai.draftInstruction("reply", "keep it warm", "Hello", "Re: Hi", { subject: "Hi", from: "Ada", textBody: "See you" }).user_prompt, "keep it warm");
+assert.match(ai.draftInstruction("reply", "", "Hello", "Re: Hi", { subject: "Hi", from: "Ada", textBody: "The brass gears mesh." }).user_prompt, /comprehensive reply/);
+assert.match(ai.draftInstruction("reply", "", "", "Re: Hi", { subject: "Hi", from: "Ada", textBody: "The brass gears mesh." }).email.text_body, /brass gears/);
+assert.strictEqual(ai.shownDraft({ pending: true, text: "Hello", base: "", previous: "Old\n\nSig", signatureTail: "Sig" }), "Hello\n\nSig");
+assert.strictEqual(ai.shownDraft({ pending: true, text: "", base: "", previous: "Old\n\nSig", signatureTail: "Sig" }), "Old\n\nSig");
 assert.strictEqual(ai.draftInstruction("custom", "", "", "Re: Hi", { subject: "Hi", from: "Ada", textBody: "See you" }).user_prompt, "Write a reply.");
 assert.deepStrictEqual(ai.draftInstruction("rewrite", " shorter ", "Hello", "Hi"), {
   mode: "rewrite",
@@ -1646,6 +1667,13 @@ for (const channel of [
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
 assert.ok(html.includes('id="ai-mode"') && html.includes('id="ai-prompt"') && html.includes('id="ai-generate"') && html.includes('id="ai-cancel"'));
+assert.ok(html.includes('id="compose-ai-open"') && html.includes('aria-label="Write with AI"') && html.includes('id="compose-ai-popover"'));
+assert.ok(html.includes("Reply from thread") && html.includes('id="compose-schedule-tools"'));
+assert.ok(!html.includes('id="compose-ai-tools"') && !html.includes("compose-tools-grid"));
+assert.ok(appJs.includes("function openComposeAi(") && appJs.includes("function replyThreadEmail("));
+assert.ok(appJs.includes("cancel.hidden = false"));
+assert.ok(!appJs.includes("compose-ai-tools"));
+assert.ok(css.includes(".compose-ai-popover") && css.includes("#compose-ai-open") && css.includes(".ai-write.open"));
 assert.ok(html.includes('id="compose-attach"') && html.includes('id="compose-file"') && html.includes("multiple") && html.includes('id="compose-attachments"'));
 assert.ok(html.includes('id="compose-suggestions"') && html.includes('id="compose-suggest-list"') && html.includes('id="compose-preview-files"'));
 assert.ok(html.includes("Attach files") && html.includes("Suggested replies"));
@@ -3608,6 +3636,24 @@ async function checkAiDraft() {
   ai.applyDraftEvent(hostError, errorEvent.payload);
   assert.strictEqual(hostError.pending, false);
   assert.match(hostError.error, /API key/);
+  const replyReq = draft.draftRequest(ai.draftInstruction("reply", "", "", "Re: Notes", {
+    subject: "Notes",
+    from: "Charles Babbage <charles.babbage@example.com>",
+    textBody: "The brass gears mesh once the mill is set.",
+  }));
+  assert.match(replyReq.system, /comprehensive reply/i);
+  assert.match(replyReq.user, /Original email:/);
+  assert.match(replyReq.user, /brass gears/);
+  assert.match(replyReq.user, /Charles Babbage/);
+  const rewriteReq = draft.draftRequest(ai.draftInstruction("rewrite", "shorter", "Hello", "Hi", {
+    subject: "Hi",
+    from: "Ada",
+    snippet: "short only",
+    textBody: "full body that should stay out of the short email path",
+  }));
+  assert.match(rewriteReq.user, /Email:/);
+  assert.doesNotMatch(rewriteReq.user, /Original email:/);
+  assert.match(rewriteReq.user, /short only/);
   const cancelled = await draft.answer("aiDraftWrite:cancel", [{ reqId: "boot-draft" }]);
   assert.strictEqual(cancelled.success, true);
   const noId = await draft.answer("aiDraftWrite:start", [{}]);
