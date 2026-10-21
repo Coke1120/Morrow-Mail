@@ -18,6 +18,8 @@ const state = {
   query: "",
   searchAccountId: "",
   draftId: null,
+  composeAttachments: [],
+  composeSuggestions: null,
   composeMeta: null,
   composeBaseline: "",
   composePending: false,
@@ -38,7 +40,7 @@ const state = {
   remoteAllowed: {},
   prefs: {
     chips: true,
-    aiReply: false,
+    aiReply: true,
     gmailOpen: true,
     outlookOpen: false,
     theme: "light",
@@ -89,6 +91,7 @@ let undoReceiptError = false;
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
+let composeSuggestGen = 0;
 let signatureGen = 0;
 let signatureEditId = "";
 let signatureEditorAccountId = "";
@@ -2124,7 +2127,88 @@ function rememberLayoutPanes() {
   }, 200);
 }
 
-function previewDraft(fields, quote, when) {
+function attachmentLimitCopy(provider) {
+  if (provider === "gmail") return "Gmail rejects messages larger than 25 MB.";
+  if (provider === "outlook") return "Outlook rejects messages larger than 25 MB.";
+  return "Gmail and Outlook reject messages larger than 25 MB.";
+}
+
+function attachmentCapCopy(filename, size, total, provider) {
+  const limit = attachmentLimitCopy(provider);
+  const cap = 25 * 1024 * 1024;
+  const name = String(filename || "That file");
+  if (size > cap) return `${name} is ${fileSize(size) || "over 25 MB"}. ${limit}`;
+  if (total > cap) return `These files are ${fileSize(total) || "over 25 MB"} together. ${limit}`;
+  return "";
+}
+
+function composeFileMeta(row) {
+  if (!row || typeof row !== "object") return null;
+  const storageUrl = typeof row.storageUrl === "string" && row.storageUrl.startsWith("local:") ? row.storageUrl : "";
+  if (!storageUrl) return null;
+  const filename = String(row.filename || row.name || "").trim() || "attachment";
+  const size = Number(row.size);
+  return {
+    id: row.id ? String(row.id) : storageUrl,
+    storageUrl,
+    filename,
+    mimeType: String(row.mimeType || row.contentType || "application/octet-stream"),
+    size: Number.isFinite(size) && size > 0 ? size : 0,
+  };
+}
+
+function composeAttachmentList(rows) {
+  const out = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    const meta = composeFileMeta(row);
+    if (!meta || seen.has(meta.storageUrl)) continue;
+    seen.add(meta.storageUrl);
+    out.push(meta);
+  }
+  return out;
+}
+
+function attachmentPayload(rows) {
+  return composeAttachmentList(rows).map((row) => ({
+    storageUrl: row.storageUrl,
+    filename: row.filename,
+    mimeType: row.mimeType,
+    size: row.size,
+    id: row.id,
+  }));
+}
+
+function attachmentKey(rows) {
+  return composeAttachmentList(rows).map((row) => row.storageUrl).join("\n");
+}
+
+function reviewComposeFiles(existing, incoming, provider) {
+  const rows = composeAttachmentList(existing);
+  let total = rows.reduce((sum, row) => sum + (Number(row.size) || 0), 0);
+  const errors = [];
+  const accepted = [];
+  const files = Array.isArray(incoming) ? incoming : [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const name = String((file && (file.filename || file.name)) || "").trim() || "attachment";
+    const size = Number(file && file.size);
+    if (!Number.isFinite(size) || size <= 0) {
+      errors.push(`${name} is empty.`);
+      continue;
+    }
+    const reason = attachmentCapCopy(name, size, total + size, provider);
+    if (reason) {
+      errors.push(reason);
+      continue;
+    }
+    total += size;
+    accepted.push({ index, filename: name, size });
+  }
+  return { accepted, errors, total };
+}
+
+function previewDraft(fields, quote, when, files) {
   const source = fields && typeof fields === "object" ? fields : {};
   const to = String(source.to || "").trim();
   const cc = String(source.cc || "").trim();
@@ -2139,6 +2223,7 @@ function previewDraft(fields, quote, when) {
     bcc,
     subject,
     body,
+    attachments: composeAttachmentList(files).map((row) => ({ filename: row.filename, size: row.size })),
     sendAt: schedule ? schedule.toISOString() : "",
   };
 }
@@ -3032,21 +3117,43 @@ function suggestionEmail(email) {
   };
 }
 
-function draftBlockReason(mode, prompt, existing) {
+function draftBlockReason(mode, prompt, existing, email) {
   const instruction = String(prompt || "").trim();
   const body = String(existing || "").trim();
-  if (mode === "custom" && !instruction) return "Add a prompt.";
-  if (mode !== "custom" && !body && !instruction) return "Add some text, or a prompt.";
+  const source = !!(email && typeof email === "object");
+  if (mode === "custom" && !instruction && !source) return "Add a prompt.";
+  if (mode !== "custom" && !body && !instruction && !source) return "Add some text, or a prompt.";
   return "";
 }
 
-function draftInstruction(mode, prompt, existing, subject) {
-  return {
+function draftInstruction(mode, prompt, existing, subject, email) {
+  const instruction = String(prompt || "").trim();
+  const body = {
     mode: mode || "custom",
-    user_prompt: String(prompt || "").trim(),
+    user_prompt: instruction,
     existing_draft_content: String(existing || ""),
     subject: String(subject || ""),
   };
+  if (email && typeof email === "object") {
+    body.email = suggestionEmail(email);
+    if (!instruction && !String(existing || "").trim()) body.user_prompt = "Write a reply.";
+  }
+  return body;
+}
+
+function replySuggestionSource(fields) {
+  const email = fields && fields.quoteEmail;
+  if (!email || typeof email !== "object") return null;
+  if (fields.kind === "reply" || fields.kind === "all" || fields.aiWrite === true) return email;
+  return null;
+}
+
+function suggestedReplyBody(current, signature, text) {
+  const line = String(text || "").trim();
+  if (!line) return String(current || "");
+  const parts = splitComposeSignature(current, signature);
+  if (parts.signature) return `${line}\n\n${parts.signature}`;
+  return line;
 }
 
 // shortcut: continue appends model text; rewrite and custom replace the body. Upgrade if continue must keep a partial model reply beside the old draft.
@@ -8612,6 +8719,8 @@ function composePayload(account) {
   if (bcc) payload.bcc = bcc;
   if (meta.inReplyTo) payload.inReplyTo = meta.inReplyTo;
   if (meta.threadId) payload.threadId = meta.threadId;
+  const files = attachmentPayload(state.composeAttachments);
+  if (files.length) payload.attachments = files;
   return payload;
 }
 
@@ -8649,9 +8758,13 @@ function syncCompose() {
     sendNow.disabled = !live || locked || !!state.composeIdentityError;
   }
   $("compose-close").disabled = state.composePending || state.composeInitializing;
-  for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
+  for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at", "compose-attach", "compose-file"]) {
+    const control = $(id);
+    if (control) control.disabled = locked;
+  }
   setComposeFormatLocked(locked);
   syncComposeRecipientRows();
+  paintComposeAttachments();
   paintComposeNote();
 }
 
@@ -8669,19 +8782,214 @@ function paintComposeNote() {
       && review.cc === $("compose-cc").value
       && review.bcc === $("compose-bcc").value
       && review.subject === $("compose-subject").value
-      && review.body === $("compose-body").value;
+      && review.body === $("compose-body").value
+      && (review.attachments || "") === attachmentKey(state.composeAttachments);
     text += same
       ? " Reviewing a draft proposal. Nothing is sent until you press Send."
       : " This compose no longer matches the reviewed draft. Nothing is sent until you press Send.";
   }
   if (state.composeQuote && state.composeQuote.kind === "forward" && attachmentNote(state.composeQuote.email)) {
-    text += " Attachments are not included in this forward. This composer cannot attach the original files.";
+    text += " Original files are not copied into this forward. Use Attach files to add them.";
   }
   const delayLabel = formatScheduleDelay(state.prefs.scheduleDelay);
   if (live && !review && delayLabel) {
     text += " Send schedules " + delayLabel + " ahead. Send now delivers immediately.";
   }
   $("compose-note").textContent = text;
+}
+
+function setComposeAttachError(text) {
+  const el = $("compose-attach-error");
+  if (!el) return;
+  const message = text || "";
+  el.hidden = !message;
+  el.textContent = message;
+}
+
+function paintComposeAttachments() {
+  const list = $("compose-attachments");
+  if (!list || typeof list.replaceChildren !== "function") return;
+  const rows = composeAttachmentList(state.composeAttachments);
+  list.replaceChildren();
+  list.hidden = !rows.length;
+  const locked = !!(state.composePending || state.composeQueued || state.composeInitializing);
+  for (const row of rows) {
+    const item = typeof document.createElement === "function" ? document.createElement("li") : null;
+    if (!item) continue;
+    item.className = "compose-file";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = row.filename;
+    const size = document.createElement("span");
+    size.className = "size";
+    const label = fileSize(row.size);
+    size.textContent = label;
+    if (!label) size.hidden = true;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost";
+    remove.textContent = "Remove";
+    remove.disabled = locked;
+    if (typeof remove.setAttribute === "function") remove.setAttribute("aria-label", `Remove ${row.filename}`);
+    if (typeof remove.addEventListener === "function") {
+      remove.addEventListener("click", () => removeComposeAttachment(row.storageUrl));
+    }
+    if (typeof item.append === "function") item.append(name, size, remove);
+    else if (typeof item.appendChild === "function") {
+      item.appendChild(name);
+      item.appendChild(size);
+      item.appendChild(remove);
+    }
+    if (typeof list.appendChild === "function") list.appendChild(item);
+  }
+}
+
+function removeComposeAttachment(storageUrl) {
+  if (state.composePending || state.composeQueued || state.composeInitializing) return;
+  state.composeAttachments = composeAttachmentList(state.composeAttachments).filter((row) => row.storageUrl !== storageUrl);
+  setComposeAttachError("");
+  paintComposeAttachments();
+  paintComposeNote();
+}
+
+async function addComposeFiles(list) {
+  const incoming = Array.from(list || []);
+  if (!incoming.length || state.composePending || state.composeQueued || state.composeInitializing) return;
+  const provider = folderProvider(composeAccount());
+  const review = reviewComposeFiles(state.composeAttachments, incoming.map((file) => ({
+    filename: file && file.name,
+    size: file && file.size,
+  })), provider);
+  const errors = review.errors.slice();
+  for (const row of review.accepted) {
+    const file = incoming[row.index];
+    const name = row.filename;
+    try {
+      const bytes = file && typeof file.arrayBuffer === "function" ? new Uint8Array(await file.arrayBuffer()) : null;
+      if (!bytes || !bytes.length) {
+        errors.push(`${name} is empty.`);
+        continue;
+      }
+      const saved = await call("mail:uploadAttachment", {
+        filename: name,
+        mimeType: (file && file.type) || "application/octet-stream",
+        fileBytes: bytes,
+      });
+      const meta = composeFileMeta(saved);
+      if (!meta) {
+        errors.push(`Could not read ${name}. Remove it and attach the file again.`);
+        continue;
+      }
+      const next = composeAttachmentList(state.composeAttachments.concat([meta]));
+      const sum = next.reduce((total, item) => total + (Number(item.size) || 0), 0);
+      const over = attachmentCapCopy(meta.filename, meta.size, sum, provider);
+      if (over) {
+        errors.push(over);
+        continue;
+      }
+      state.composeAttachments = next;
+      paintComposeAttachments();
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  setComposeAttachError(errors[0] || "");
+  paintComposeAttachments();
+  paintComposeNote();
+}
+
+function paintComposeSuggestions() {
+  const box = $("compose-suggestions");
+  const status = $("compose-suggest-status");
+  const list = $("compose-suggest-list");
+  if (!box || !list || typeof list.replaceChildren !== "function") return;
+  const view = state.composeSuggestions;
+  list.replaceChildren();
+  if (!view) {
+    box.hidden = true;
+    if (status) {
+      status.hidden = true;
+      status.textContent = "";
+    }
+    return;
+  }
+  box.hidden = false;
+  if (view.pending) {
+    if (status) {
+      status.hidden = false;
+      status.className = "hint";
+      status.textContent = "Suggesting replies…";
+    }
+    return;
+  }
+  if (view.error) {
+    if (status) {
+      status.hidden = false;
+      status.className = "hint error";
+      status.textContent = view.error;
+    }
+    return;
+  }
+  if (!view.items.length) {
+    if (status) {
+      status.hidden = false;
+      status.className = "hint";
+      status.textContent = "No reply suggestions.";
+    }
+    return;
+  }
+  if (status) {
+    status.hidden = true;
+    status.textContent = "";
+  }
+  for (const text of view.items) {
+    if (typeof document.createElement !== "function") continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.textContent = text;
+    if (typeof button.setAttribute === "function") button.setAttribute("aria-label", `Use suggested reply: ${text}`);
+    if (typeof button.addEventListener === "function") button.addEventListener("click", () => applySuggestedReply(text));
+    if (typeof list.appendChild === "function") list.appendChild(button);
+  }
+}
+
+function applySuggestedReply(text) {
+  const body = $("compose-body");
+  const current = body && typeof body.value === "string" ? body.value : "";
+  writeComposeBody(suggestedReplyBody(current, state.signatureText, text));
+  const prompt = $("ai-prompt");
+  if (prompt && !String(prompt.value || "").trim()) prompt.value = String(text || "").trim();
+  const tools = $("compose-ai-tools");
+  if (tools && state.prefs.aiReply !== false) tools.open = true;
+  paintComposeNote();
+}
+
+async function showComposeSuggestions(fields) {
+  const gen = composeSuggestGen += 1;
+  const email = replySuggestionSource(fields);
+  if (!email) {
+    if (gen !== composeSuggestGen) return;
+    state.composeSuggestions = null;
+    paintComposeSuggestions();
+    return;
+  }
+  state.composeSuggestions = { items: [], error: "", pending: true };
+  paintComposeSuggestions();
+  let next;
+  try {
+    const data = await call("aiDraftWrite:replySuggestions", { email: suggestionEmail(email) });
+    next = { items: suggestionItems(data), error: "", pending: false };
+  } catch (error) {
+    next = {
+      items: [],
+      error: error instanceof Error ? error.message : String(error),
+      pending: false,
+    };
+  }
+  if (gen !== composeSuggestGen) return;
+  state.composeSuggestions = next;
+  paintComposeSuggestions();
 }
 
 function syncScheduleFields() {
@@ -9052,7 +9360,11 @@ async function startDraftWrite() {
   const mode = $("ai-mode").value || "custom";
   const prompt = $("ai-prompt").value;
   const existing = $("compose-body").value;
-  const reason = draftBlockReason(mode, prompt, existing);
+  const source = replySuggestionSource({
+    quoteEmail: state.composeQuote && state.composeQuote.email,
+    kind: state.composeQuote && state.composeQuote.kind,
+  });
+  const reason = draftBlockReason(mode, prompt, existing, source);
   stopDraftWrite();
   if (reason) {
     state.draftWrite = { reqId: "", pending: false, error: reason, text: "", base: existing, previous: existing };
@@ -9072,7 +9384,7 @@ async function startDraftWrite() {
   try {
     await call("aiDraftWrite:start", {
       reqId,
-      body: draftInstruction(mode, prompt, existing, $("compose-subject").value),
+      body: draftInstruction(mode, prompt, existing, $("compose-subject").value, source),
     });
   } catch (error) {
     if (!state.draftWrite || state.draftWrite.reqId !== reqId) return;
@@ -9424,6 +9736,8 @@ async function openCompose(seed) {
     threadId: fields.threadId || "",
   };
   state.composeQuote = quoteStateFromSeed(fields);
+  state.composeAttachments = composeAttachmentList(fields.attachments);
+  state.composeSuggestions = null;
   state.botDraftReview = fields.botDraft ? {
     proposalId: fields.botDraft.proposalId || "",
     accountId: fields.accountId || state.accountId || "",
@@ -9432,6 +9746,7 @@ async function openCompose(seed) {
     bcc: fields.bcc || "",
     subject: fields.subject || "",
     body: fields.body || "",
+    attachments: attachmentKey(fields.attachments),
   } : null;
   setComposeStatus("");
   $("compose-title").textContent = fields.title || "New message";
@@ -9444,6 +9759,10 @@ async function openCompose(seed) {
   $("ai-prompt").value = "";
   $("schedule-preset").value = "1h";
   $("schedule-at").value = "";
+  const fileInput = $("compose-file");
+  if (fileInput) fileInput.value = "";
+  setComposeAttachError("");
+  paintComposeAttachments();
   syncScheduleFields();
   syncCompose();
   paintComposeChrome();
@@ -9471,9 +9790,12 @@ async function openCompose(seed) {
   const write = document.querySelector(".ai-write");
   const openWrite = opensAiWrite(fields, state.prefs);
   if (write) write.classList.toggle("open", openWrite);
-  $("compose-ai-tools").open = openWrite;
+  const tools = $("compose-ai-tools");
+  if (tools) tools.open = openWrite;
   $("compose-schedule-tools").open = false;
-  if (openWrite) {
+  showComposeSuggestions(fields).catch(() => {});
+  const replyAssist = fields.aiWrite === true || fields.kind === "reply" || fields.kind === "all";
+  if (openWrite && replyAssist) {
     const body = $("compose-body");
     if (body && typeof body.setSelectionRange === "function") {
       body.setSelectionRange(0, 0);
@@ -9498,7 +9820,8 @@ function composeSnapshot() {
     to: $("compose-to").value, cc: $("compose-cc").value, bcc: $("compose-bcc").value,
     subject: $("compose-subject").value, body: $("compose-body").value,
     html: composeEditorSnapshot(),
-    quote: state.composeQuote && state.composeQuote.text });
+    quote: state.composeQuote && state.composeQuote.text,
+    attachments: attachmentKey(state.composeAttachments) });
 }
 
 async function requestComposeClose() {
@@ -9530,6 +9853,7 @@ async function resumeDraft(email) {
     to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
     body: readable(draft),
     htmlBody: typeof draft.htmlBody === "string" ? draft.htmlBody : "",
+    attachments: draft.attachments,
     inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "" });
 }
 
@@ -9744,13 +10068,24 @@ function paintPreview(draft) {
   $("compose-preview-cc").textContent = draft.cc || "";
   $("compose-preview-bcc").textContent = draft.bcc || "";
   $("compose-preview-subject").textContent = draft.subject || "(no subject)";
+  const fileRow = $("compose-preview-files-row");
+  const fileText = $("compose-preview-files");
+  const files = Array.isArray(draft.attachments) ? draft.attachments : [];
+  if (fileRow && fileText) {
+    fileRow.hidden = !files.length;
+    fileText.textContent = files.map((file) => {
+      const size = fileSize(file.size);
+      const name = file.filename || "attachment";
+      return size ? `${name} (${size})` : name;
+    }).join(", ");
+  }
   $("compose-preview-body").textContent = draft.body ? draft.body : "(empty message)";
   $("compose-preview-confirm").textContent = schedule ? "Confirm schedule" : "Confirm send";
 }
 
 function openComposePreview(when) {
   if (!composeReady()) return false;
-  const draft = previewDraft(composeFields(), state.composeQuote && state.composeQuote.text, when);
+  const draft = previewDraft(composeFields(), state.composeQuote && state.composeQuote.text, when, state.composeAttachments);
   previewDraftState = draft;
   paintPreview(draft);
   openDialog("compose-preview");
@@ -15846,6 +16181,22 @@ function wire() {
     event.preventDefault();
     startDraftWrite().catch((error) => showStatus(error.message, true));
   });
+  const attach = $("compose-attach");
+  if (attach && typeof attach.addEventListener === "function") {
+    attach.addEventListener("click", () => {
+      const input = $("compose-file");
+      if (!input || input.disabled || typeof input.click !== "function") return;
+      input.click();
+    });
+  }
+  const fileInput = $("compose-file");
+  if (fileInput && typeof fileInput.addEventListener === "function") {
+    fileInput.addEventListener("change", () => {
+      const picked = Array.from(fileInput.files || []);
+      fileInput.value = "";
+      addComposeFiles(picked).catch((error) => setComposeAttachError(error instanceof Error ? error.message : String(error)));
+    });
+  }
   $("compose-save").addEventListener("click", () => guard(saveDraft));
   $("compose-schedule").addEventListener("click", () => guard(requestSchedulePreview));
   $("compose-send-now").addEventListener("click", () => guard(requestSendNowPreview));

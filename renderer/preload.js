@@ -91,6 +91,7 @@ const INVOKE = [
   "mail:downloadAttachment",
   "mail:downloadAttachmentsZip",
   "mail:fetchAttachmentBytes",
+  "mail:uploadAttachment",
   "mail:openAttachmentExternally",
   "mail:archive",
   "mail:archiveBatch",

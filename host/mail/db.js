@@ -764,6 +764,14 @@ function searchMessages(options) {
   );
 }
 
+function localOutgoingAttachments(json) {
+  let stored;
+  try { stored = JSON.parse(json || "[]"); } catch { return null; }
+  if (!Array.isArray(stored)) return null;
+  const local = stored.filter((item) => item && typeof item.storageUrl === "string" && item.storageUrl.startsWith("local:"));
+  return local.length ? local : null;
+}
+
 function applyFolderSync(accountId, folderPath, report) {
   const result = transaction(() => {
     const before = changeStamp();
@@ -826,14 +834,24 @@ function applyFolderSync(accountId, folderPath, report) {
           starredBit = existing.starred;
         }
       }
+      let attachmentRows = Array.isArray(message.attachments) ? message.attachments : [];
+      let attachmentBit = message.hasAttachments ? 1 : 0;
+      if (found) {
+        const prior = get("SELECT is_draft, attachments_json FROM messages WHERE id = ?", [found.id]);
+        const kept = prior && Number(prior.is_draft) === 1 ? localOutgoingAttachments(prior.attachments_json) : null;
+        if (kept) {
+          attachmentRows = kept;
+          attachmentBit = 1;
+        }
+      }
       const fields = [
         message.threadId || null, message.rfcMessageId || null, message.inReplyTo || null,
         message.subject || "", message.snippet || "",
         message.from || "", JSON.stringify(message.to || []), JSON.stringify(message.cc || []),
         JSON.stringify(message.bcc || []), message.date || null, Number(message.listSortTs) || 0,
         unreadBit, starredBit, message.isDraft ? 1 : 0,
-        message.hasAttachments ? 1 : 0, message.htmlBody || null, message.textBody || null,
-        JSON.stringify(message.attachments || []), message.bodyComplete ? 1 : 0,
+        attachmentBit, message.htmlBody || null, message.textBody || null,
+        JSON.stringify(attachmentRows), message.bodyComplete ? 1 : 0,
         JSON.stringify(message.recipientHeaders || {}),
       ];
       if (found) {

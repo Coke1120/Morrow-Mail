@@ -926,7 +926,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetAutoLoadRemoteImages", []), false);
     assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 5);
     assert.strictEqual(answer("morrow:configGetSnoozeEffective", []), true);
-    assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), false);
+    assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), true);
     assert.strictEqual(answer("morrow:configGetShowFolderChips", []), true);
     assert.strictEqual(answer("morrow:configGetSidebarGmailFoldersExpanded", []), true);
     assert.strictEqual(answer("morrow:configGetSidebarOutlookFoldersExpanded", []), false);
@@ -941,6 +941,8 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configSetAutoLoadRemoteImages", [true]), true);
     assert.strictEqual(answer("morrow:configSetUndoSendDelaySeconds", [0]), 0);
     assert.strictEqual(answer("morrow:configSetSnoozeEffective", [false]), false);
+    assert.strictEqual(answer("morrow:configSetAiWriteAutoOpenOnReply", [false]), false);
+    assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), false);
     assert.strictEqual(answer("morrow:configSetAiWriteAutoOpenOnReply", [true]), true);
     assert.strictEqual(answer("morrow:configSetShowFolderChips", [false]), false);
     assert.strictEqual(answer("morrow:configSetSidebarGmailFoldersExpanded", [false]), false);
@@ -1518,6 +1520,8 @@ assert.strictEqual(ai.draftBlockReason("custom", "  ", "Hello"), "Add a prompt."
 assert.strictEqual(ai.draftBlockReason("rewrite", "", "  "), "Add some text, or a prompt.");
 assert.strictEqual(ai.draftBlockReason("continue", "go on", ""), "");
 assert.strictEqual(ai.draftBlockReason("rewrite", "", "Hello"), "");
+assert.strictEqual(ai.draftBlockReason("custom", "", "", { subject: "Hi" }), "");
+assert.strictEqual(ai.draftInstruction("custom", "", "", "Re: Hi", { subject: "Hi", from: "Ada", textBody: "See you" }).user_prompt, "Write a reply.");
 assert.deepStrictEqual(ai.draftInstruction("rewrite", " shorter ", "Hello", "Hi"), {
   mode: "rewrite",
   user_prompt: "shorter",
@@ -1586,6 +1590,57 @@ for (const channel of [
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
 assert.ok(html.includes('id="ai-mode"') && html.includes('id="ai-prompt"') && html.includes('id="ai-generate"') && html.includes('id="ai-cancel"'));
+assert.ok(html.includes('id="compose-attach"') && html.includes('id="compose-file"') && html.includes("multiple") && html.includes('id="compose-attachments"'));
+assert.ok(html.includes('id="compose-suggestions"') && html.includes('id="compose-suggest-list"') && html.includes('id="compose-preview-files"'));
+assert.ok(html.includes("Attach files") && html.includes("Suggested replies"));
+assert.ok(appJs.includes("mail:uploadAttachment") && preload.includes("mail:uploadAttachment"));
+assert.ok(engineSrc.includes("resolveAttachments") && engineSrc.includes("Could not read"));
+assert.ok(settingsSrc.includes("aiWriteAutoOpenOnReply: true"));
+const attachUi = loadFunctions(appJs, [
+  "composeFileMeta",
+  "composeAttachmentList",
+  "attachmentPayload",
+  "attachmentKey",
+  "attachmentLimitCopy",
+  "attachmentCapCopy",
+  "fileSize",
+  "reviewComposeFiles",
+  "outgoingBody",
+  "previewDraft",
+  "replySuggestionSource",
+  "splitComposeSignature",
+  "suggestedReplyBody",
+]);
+const localFile = { id: "blob-1", storageUrl: "local:blob-1", filename: "notes.txt", mimeType: "text/plain", size: 12 };
+assert.deepStrictEqual(attachUi.composeAttachmentList([localFile, { filename: "remote.txt" }, localFile]), [localFile]);
+assert.deepStrictEqual(attachUi.attachmentPayload([localFile]), [{
+  storageUrl: "local:blob-1",
+  filename: "notes.txt",
+  mimeType: "text/plain",
+  size: 12,
+  id: "blob-1",
+}]);
+assert.strictEqual(attachUi.attachmentKey([localFile, { storageUrl: "imap:1" }]), "local:blob-1");
+const cap = 25 * 1024 * 1024;
+assert.strictEqual(attachUi.reviewComposeFiles([], [{ name: "empty.txt", size: 0 }], "gmail").errors[0], "empty.txt is empty.");
+assert.match(attachUi.reviewComposeFiles([], [{ name: "big.bin", size: cap + 1 }], "gmail").errors[0], /big\.bin is 25\.0 MB\. Gmail rejects messages larger than 25 MB\./);
+assert.match(attachUi.reviewComposeFiles(
+  [{ storageUrl: "local:a", filename: "a.txt", size: cap - 10 }],
+  [{ name: "b.txt", size: 20 }],
+  "outlook",
+).errors[0], /together\. Outlook rejects/);
+assert.deepStrictEqual(attachUi.reviewComposeFiles([], [{ name: "ok.txt", size: 4 }, { name: "ok.txt", size: 4 }], "").accepted, [
+  { index: 0, filename: "ok.txt", size: 4 },
+  { index: 1, filename: "ok.txt", size: 4 },
+]);
+const preview = attachUi.previewDraft({ to: "ada@example.com", subject: "Notes", body: "See file" }, "", null, [localFile]);
+assert.deepStrictEqual(preview.attachments, [{ filename: "notes.txt", size: 12 }]);
+assert.strictEqual(preview.kind, "send");
+assert.strictEqual(attachUi.replySuggestionSource({ kind: "forward", quoteEmail: { subject: "Hi" } }), null);
+assert.strictEqual(attachUi.replySuggestionSource({ kind: "reply", quoteEmail: { subject: "Hi" } }).subject, "Hi");
+assert.strictEqual(attachUi.suggestedReplyBody("Hello\n\nThanks, Ada", "Thanks, Ada", "I can review it."), "I can review it.\n\nThanks, Ada");
+assert.ok(parityDoc.includes("mail:uploadAttachment") && parityDoc.includes("That preference defaults to on."));
+assert.ok(independentDoc.includes("AI write on reply defaults to on"));
 assert.ok(html.includes(">Generate<") && html.includes(">Cancel<") && html.includes(">Rewrite<") && html.includes(">Continue<") && html.includes(">Custom<"));
 assert.ok(appJs.includes("Suggesting replies…") && appJs.includes('"Add a prompt."'));
 assert.ok(css.includes(".ai-write") && css.includes(".suggestions") && css.includes(".suggest-list"));
@@ -4320,7 +4375,7 @@ async function checkComposeMailbox() {
   }).map(([id, value]) => [id, { value }]));
   const calls = [];
   const call = async (channel, payload) => { calls.push({ channel, payload }); return {draftId:"saved"}; };
-  const syncNames = ["selectedAccount", "composeAccount", "isLive", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml", "joinComposeHtml", "blankComposeHtml", "readComposeEditorHtml"];
+  const syncNames = ["selectedAccount", "composeAccount", "isLive", "composeFileMeta", "composeAttachmentList", "attachmentPayload", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml", "joinComposeHtml", "blankComposeHtml", "readComposeEditorHtml"];
   const asyncNames = ["saveDraft", "scheduleMail", "sendMail"];
   const methods = new Function("state", "$", "call", "showStatus", "scheduleAt", "loadScheduled", "sendDelayMs", "hideUndoSend", "deliverMail", `
     const composeOperation = async work => { await work(); return true; };

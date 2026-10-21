@@ -10,7 +10,7 @@ const DEFAULTS = {
   remoteImages: false,
   undoSendDelaySeconds: 5,
   snooze: true,
-  aiWriteAutoOpenOnReply: false,
+  aiWriteAutoOpenOnReply: true,
   showFolderChips: true,
   sidebarGmailFoldersExpanded: true,
   sidebarOutlookFoldersExpanded: false,
