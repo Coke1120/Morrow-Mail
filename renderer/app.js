@@ -15555,47 +15555,7 @@ function paintCalendar(payload) {
   fillCalendarPick(view.calendars);
   paintCalendarList(view.calendars);
   paintMiniMonth(year, month);
-  if (calendarGridKey !== range.timeMin) {
-    calendarGridKey = range.timeMin;
-    calendarEventsKey = "";
-    const grid = document.createElement("div");
-    grid.className = "calendar-grid";
-    grid.setAttribute("role", "grid");
-    grid.setAttribute("aria-label", range.label);
-    for (const name of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
-      const head = document.createElement("div");
-      head.className = "calendar-dow";
-      head.textContent = name;
-      grid.appendChild(head);
-    }
-    for (const day of monthCells(year, month)) {
-      const cell = document.createElement("div");
-      cell.className = "calendar-day";
-      if (!day) cell.classList.add("pad");
-      else {
-        cell.dataset.day = String(day);
-        const num = document.createElement("span");
-        num.className = "calendar-num";
-        num.textContent = String(day);
-        const events = document.createElement("div");
-        events.className = "calendar-day-events";
-        cell.append(num, events);
-        const stamp = dayKey(year, month, day);
-        cell.addEventListener("click", () => {
-          state.calendarFocusDay = stamp;
-          paintCalendarFocus(year, month);
-        });
-        cell.addEventListener("dblclick", () => {
-          state.calendarFocusDay = stamp;
-          paintCalendarFocus(year, month);
-          const create = $("calendar-add");
-          if (create && !create.disabled) openCalendarEditor(null, stamp);
-        });
-      }
-      grid.appendChild(cell);
-    }
-    body.replaceChildren(grid);
-  }
+  ensureCalendarGrid(year, month);
   const eventsKey = JSON.stringify([account?.id, state.calendarId, view.events]);
   const changed = eventsKey !== calendarEventsKey;
   const color = calendarColor(state.calendarId);
@@ -15764,6 +15724,9 @@ function paintCalendarList(calendars) {
       if (state.calendarId === calendar.id) return;
       state.calendarId = calendar.id;
       state.calendarEventId = "";
+      for (const item of root.querySelectorAll(".calendar-source")) {
+        item.setAttribute("aria-pressed", item === button ? "true" : "false");
+      }
       loadCalendar().catch((error) => showStatus(error.message, true));
     });
     root.appendChild(button);
@@ -15881,6 +15844,112 @@ let calendarPaintedAccountId = "";
 function calendarCacheKey(account, range, calendarId) {
   return JSON.stringify([account?.id || "", range.timeMin, calendarId || ""]);
 }
+function calendarMonthVisible() {
+  const layout = $("calendar-layout");
+  const body = $("calendar-body");
+  return !!(layout && !layout.hidden && body && body.querySelector(".calendar-grid"));
+}
+function beginCalendarRequest(account) {
+  if (state.calendarAccountId !== account.id) {
+    state.calendarId = "";
+    state.calendarEventId = "";
+  }
+  state.calendarAccountId = account.id;
+  const cursor = state.calendarCursor || new Date();
+  state.calendarCursor = cursor;
+  const range = monthRange(cursor.getFullYear(), cursor.getMonth());
+  const requestedId = state.calendarId || "";
+  const key = calendarCacheKey(account, range, requestedId);
+  return { range, requestedId, key, cached: calendarCache.get(key) || null };
+}
+function calendarKeepsMonth(cached) {
+  if (cached && cached.payload && cached.payload.api === true) return true;
+  return !!(state.calendarPayload && state.calendarPayload.api === true && calendarMonthVisible());
+}
+function calendarBusyLabel(keepMonth) {
+  return keepMonth ? "Updating calendar…" : "Loading…";
+}
+function ensureCalendarGrid(year, month) {
+  const range = monthRange(year, month);
+  const body = $("calendar-body");
+  if (!body) return;
+  if (calendarGridKey === range.timeMin && body.querySelector(".calendar-grid")) return;
+  calendarGridKey = range.timeMin;
+  calendarEventsKey = "";
+  const grid = document.createElement("div");
+  grid.className = "calendar-grid";
+  grid.setAttribute("role", "grid");
+  grid.setAttribute("aria-label", range.label);
+  for (const name of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
+    const head = document.createElement("div");
+    head.className = "calendar-dow";
+    head.textContent = name;
+    grid.appendChild(head);
+  }
+  for (const day of monthCells(year, month)) {
+    const cell = document.createElement("div");
+    cell.className = "calendar-day";
+    if (!day) cell.classList.add("pad");
+    else {
+      cell.dataset.day = String(day);
+      const num = document.createElement("span");
+      num.className = "calendar-num";
+      num.textContent = String(day);
+      const events = document.createElement("div");
+      events.className = "calendar-day-events";
+      cell.append(num, events);
+      const stamp = dayKey(year, month, day);
+      cell.addEventListener("click", () => {
+        state.calendarFocusDay = stamp;
+        paintCalendarFocus(year, month);
+      });
+      cell.addEventListener("dblclick", () => {
+        state.calendarFocusDay = stamp;
+        paintCalendarFocus(year, month);
+        const create = $("calendar-add");
+        if (create && !create.disabled) openCalendarEditor(null, stamp);
+      });
+    }
+    grid.appendChild(cell);
+  }
+  body.replaceChildren(grid);
+}
+function paintCalendarShell() {
+  const cursor = state.calendarCursor || new Date();
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const range = monthRange(year, month);
+  const heading = $("calendar-heading");
+  if (heading) heading.textContent = range.label;
+  const statusEl = $("calendar-status");
+  if (statusEl) {
+    statusEl.textContent = "";
+    statusEl.classList.remove("error", "is-empty");
+  }
+  const layout = $("calendar-layout");
+  if (layout) layout.hidden = false;
+  const add = $("calendar-add");
+  if (add) {
+    add.disabled = true;
+    add.title = "Shown when this month has a calendar.";
+  }
+  paintMiniMonth(year, month);
+  ensureCalendarGrid(year, month);
+  paintCalendarFocus(year, month);
+}
+function prepareCalendarLoad(account, preferCache) {
+  const request = beginCalendarRequest(account);
+  const freshHit = !!(preferCache && request.cached && Date.now() - request.cached.at < 60000 && !calendarPending.has(request.key));
+  const keepMonth = calendarKeepsMonth(request.cached);
+  if (state.view !== "calendar") return Object.assign({}, request, { freshHit, keepMonth });
+  if (freshHit) {
+    setPageBusy("calendar-panel", false);
+    return Object.assign({}, request, { freshHit, keepMonth });
+  }
+  if (!keepMonth) paintCalendarShell();
+  setPageBusy("calendar-panel", true, calendarBusyLabel(keepMonth));
+  return Object.assign({}, request, { freshHit, keepMonth });
+}
 function rememberCalendar(key, payload) {
   calendarCache.delete(key);
   calendarCache.set(key, { payload, at: Date.now() });
@@ -15899,31 +15968,14 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
   const account = calendarAccount();
   if (!account) {
     calendarCache.clear();
+    setPageBusy("calendar-panel", false);
     applyCalendarPayload({ api: false, reason: "no_account", events: [], calendars: [] });
-    $("calendar-panel").removeAttribute("aria-busy");
     return;
   }
-  if (state.calendarAccountId !== account.id) {
-    state.calendarId = "";
-    state.calendarEventId = "";
-  }
-  state.calendarAccountId = account.id;
-  const cursor = state.calendarCursor || new Date();
-  state.calendarCursor = cursor;
-  const range = monthRange(cursor.getFullYear(), cursor.getMonth());
-  const requestedId = state.calendarId;
-  const key = calendarCacheKey(account, range, requestedId);
-  const cached = calendarCache.get(key);
-  if (cached) {
-    applyCalendarPayload(cached.payload);
-    if (preferCache && Date.now() - cached.at < 60000 && !calendarPending.has(key)) {
-      $("calendar-panel").removeAttribute("aria-busy");
-      return;
-    }
-  } else {
-    applyCalendarPayload({ api: false, reason: "loading", events: [], calendars: [] });
-  }
-  $("calendar-panel").setAttribute("aria-busy", "true");
+  const plan = prepareCalendarLoad(account, preferCache);
+  const { range, requestedId, key, cached } = plan;
+  if (cached) applyCalendarPayload(cached.payload);
+  if (plan.freshHit) return;
   // Status does not gate the event list. Coalesce this account-wide read too.
   if (!calendarStatusPending) calendarStatusPending = call("calendar:status").finally(() => { calendarStatusPending = null; });
   calendarStatusPending.then(status => {
@@ -15955,7 +16007,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
       $("calendar-status").classList.add("error");
     } else applyCalendarPayload({ api: false, reason: "error", message, events: [], calendars: [] });
   } finally {
-    if (gen === calendarGen) $("calendar-panel").removeAttribute("aria-busy");
+    if (gen === calendarGen) setPageBusy("calendar-panel", false);
   }
 }
 
@@ -15966,18 +16018,22 @@ function showMail() {
 let calendarOpenScheduled = false;
 function showCalendar() {
   if (!state.calendarCursor) state.calendarCursor = new Date();
-  if ((calendarAccount()?.id || "") !== calendarPaintedAccountId) {
-    $("calendar-layout").hidden = true;
+  const account = calendarAccount();
+  if ((account?.id || "") !== calendarPaintedAccountId) {
     closeDialog("calendar-event-dialog");
-    $("calendar-detail").hidden = true;
-    $("calendar-status").textContent = "Loading calendar…";
+    const detail = $("calendar-detail");
+    if (detail) detail.hidden = true;
   }
+  fillCalendarAccounts();
   showPrimary("calendar", "calendar-panel");
+  if (account) prepareCalendarLoad(account, true);
+  else setPageBusy("calendar-panel", false);
   if (calendarOpenScheduled) return;
   calendarOpenScheduled = true;
   afterPaint(() => {
     calendarOpenScheduled = false;
     if (state.view === "calendar") loadCalendar({ preferCache: true }).catch(error => showStatus(error.message, true));
+    else setPageBusy("calendar-panel", false);
   });
 }
 
