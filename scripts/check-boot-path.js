@@ -2908,7 +2908,7 @@ assert.ok(!winKeys.some((key) => key === "Ctrl+R" || key === "⌘R"));
 assert.match(shortcuts.shortcutNote("MacIntel"), /⌘R stays View/);
 assert.match(shortcuts.shortcutNote("Win32"), /Ctrl\+R stays View/);
 assert.match(shortcuts.shortcutNote("Linux x86_64"), /Zoom stays on the View menu/);
-assert.strictEqual(shortcuts.shortcutCatalog("Win32").length, 14);
+assert.strictEqual(shortcuts.shortcutCatalog("Win32").length, 15);
 const cli = loadFunctions(appJs, ["cliNote", "cliCatalog"]);
 assert.match(cli.cliNote(), /checkout of this repo/);
 assert.match(cli.cliNote(), /no morrow command/);

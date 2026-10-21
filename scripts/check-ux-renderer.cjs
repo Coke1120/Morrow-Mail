@@ -212,10 +212,17 @@ app.whenReady().then(async()=>{
  assert.match(await run(`$('cli-copy-status').textContent`), /Command copied\. Morrow did not run it\.|Could not copy\. Select the command and copy it\./);
  await run(`$('cli-title').scrollIntoView({block:'start'})`);
  await shot('shortcuts-cli');
+ await run(`([...document.querySelectorAll('#cli-list .shortcut-group')].find((node) => node.textContent === 'Bot bridge') || $('cli-title')).scrollIntoView({block:'start'})`);
+ await shot('shortcuts-cli-bot');
+ await run(`document.documentElement.dataset.theme = 'dark'; $('cli-title').scrollIntoView({block:'start'})`);
+ await shot('shortcuts-cli-dark');
+ await run(`document.documentElement.dataset.theme = 'light'`);
  win.setContentSize(720, 900);
  await sleep(200);
  await run(`$('shortcuts-panel').scrollTop = 0`);
  await shot('shortcuts-narrow');
+ await run(`$('cli-title').scrollIntoView({block:'start'})`);
+ await shot('shortcuts-cli-narrow');
  win.setContentSize(shortcutSize[0], shortcutSize[1]);
  await sleep(100);
  await run(`$('rail-log').click()`);await waitFor(`state.view==='log'`);
