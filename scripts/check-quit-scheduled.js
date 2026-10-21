@@ -171,6 +171,121 @@ async function checkController() {
   assert.equal(emptyClose.prevented, false);
 }
 
+async function checkMacClose() {
+  const pending = { id: "a", subject: "Board notes", sendAt: "2099-01-01T08:00:00.000Z", status: "pending" };
+  assert.equal(quitScheduled.hidesWindowOnClose("darwin"), true);
+  assert.equal(quitScheduled.hidesWindowOnClose("win32"), false);
+  assert.equal(quitScheduled.hidesWindowOnClose("linux"), false);
+
+  let listed = 0;
+  const hidden = quitScheduled.createQuitController({
+    platform: "darwin",
+    listRows: () => { listed += 1; throw new Error("scheduled store unavailable"); },
+    requestChoice: async () => { throw new Error("hide must not ask"); },
+    quitApp: () => { throw new Error("hide must not quit"); },
+    cleanup: async () => { throw new Error("hide must not clean up"); },
+  });
+  const hideEvent = event();
+  assert.equal(hidden.onClose(hideEvent), "hide");
+  assert.equal(hideEvent.prevented, true);
+  assert.equal(listed, 0, "hiding does not read the scheduled queue");
+  const pendingHide = quitScheduled.createQuitController({
+    platform: "darwin",
+    listRows: () => [pending],
+    requestChoice: async () => { throw new Error("hide must not ask"); },
+    quitApp: () => { throw new Error("hide must not quit"); },
+    cleanup: async () => { throw new Error("hide must not clean up"); },
+  });
+  const pendingEvent = event();
+  assert.equal(pendingHide.onClose(pendingEvent), "hide");
+  assert.equal(pendingEvent.prevented, true);
+
+  let resolveChoice = null;
+  let quitCalls = 0;
+  const during = quitScheduled.createQuitController({
+    platform: "darwin",
+    listRows: () => [pending],
+    requestChoice: () => new Promise((resolve) => { resolveChoice = resolve; }),
+    quitApp: () => { quitCalls += 1; },
+    cleanup: async () => { throw new Error("stay must not clean up"); },
+  });
+  assert.equal(during.onBeforeQuit(event()), "blocked");
+  const whileAsking = event();
+  assert.equal(during.onClose(whileAsking), "blocked");
+  assert.equal(whileAsking.prevented, true);
+  await settle();
+  assert.equal(typeof resolveChoice, "function");
+  resolveChoice("stay");
+  await flush();
+  const afterStay = event();
+  assert.equal(during.onClose(afterStay), "hide");
+  assert.equal(afterStay.prevented, true);
+  assert.equal(quitCalls, 0);
+
+  let darwinQuits = 0;
+  const darwinQuit = quitScheduled.createQuitController({
+    platform: "darwin",
+    listRows: () => [],
+    requestChoice: async () => { throw new Error("empty queue must not ask"); },
+    quitApp() {
+      darwinQuits += 1;
+      darwinQuit.onBeforeQuit({ preventDefault() {} });
+    },
+    cleanup: async () => {},
+  });
+  const darwinQuitEvent = event();
+  assert.equal(darwinQuit.onBeforeQuit(darwinQuitEvent), "cleanup");
+  assert.equal(darwinQuitEvent.prevented, true);
+  await flush();
+  assert.equal(darwinQuits, 1);
+  const duringDarwinQuit = event();
+  assert.equal(darwinQuit.onClose(duringDarwinQuit), "allow");
+  assert.equal(duringDarwinQuit.prevented, false);
+
+  let confirmedQuits = 0;
+  const confirmed = quitScheduled.createQuitController({
+    platform: "darwin",
+    listRows: () => [pending],
+    requestChoice: async () => "quit",
+    quitApp() {
+      confirmedQuits += 1;
+      confirmed.onBeforeQuit({ preventDefault() {} });
+    },
+    cleanup: async () => {},
+  });
+  assert.equal(confirmed.onBeforeQuit(event()), "blocked");
+  await flush();
+  assert.equal(confirmed.confirmed, true);
+  assert.equal(confirmedQuits >= 1, true);
+  const confirmedClose = event();
+  assert.equal(confirmed.onClose(confirmedClose), "allow");
+  assert.equal(confirmedClose.prevented, false);
+
+  let winAsked = 0;
+  const windows = quitScheduled.createQuitController({
+    platform: "win32",
+    listRows: () => [pending],
+    requestChoice: async () => { winAsked += 1; return "stay"; },
+    quitApp: () => { throw new Error("stay must not quit"); },
+    cleanup: async () => { throw new Error("stay must not clean up"); },
+  });
+  const winEvent = event();
+  assert.equal(windows.onClose(winEvent), "blocked");
+  assert.equal(winEvent.prevented, true);
+  await flush();
+  assert.equal(winAsked, 1);
+  const linux = quitScheduled.createQuitController({
+    platform: "linux",
+    listRows: () => [],
+    requestChoice: async () => { throw new Error("empty queue must not ask"); },
+    quitApp: () => {},
+    cleanup: async () => {},
+  });
+  const linuxEvent = event();
+  assert.equal(linux.onClose(linuxEvent), "allow");
+  assert.equal(linuxEvent.prevented, false);
+}
+
 function dialogNode(id) {
   return {
     id,
@@ -362,6 +477,18 @@ function checkWiring() {
   assert.match(preload, /app:quitScheduledShown/);
   assert.match(main, /quitController\.onClose\(event\)/);
   assert.match(main, /quitController\.onBeforeQuit\(event\)/);
+  assert.match(main, /platform: process\.platform/);
+  assert.match(main, /action === "hide"/);
+  assert.match(main, /hideShell\(win\)/);
+  assert.match(main, /revealShell\(shellWindow\)/);
+  assert.match(main, /app\.on\("activate", \(\) => \{/);
+  assert.match(main, /presentShell\(\)/);
+  assert.match(main, /app\.on\("window-all-closed"/);
+  assert.match(main, /if \(!quitScheduled\.hidesWindowOnClose\(process\.platform\)\) app\.quit\(\)/);
+  assert.match(main, /label: "File"/);
+  assert.match(main, /role: "close"/);
+  assert.match(main, /openShellWindow\(\)/);
+  assert.match(main, /leave-full-screen/);
   assert.match(main, /app:confirmQuitScheduled/);
   assert.match(main, /app:dismissQuitScheduled/);
   assert.match(appJs, /dialog\.id === "quit-scheduled"/);
@@ -371,6 +498,7 @@ function checkWiring() {
 
 async function run() {
   await checkController();
+  await checkMacClose();
   await checkRenderer();
   checkWiring();
   await checkEngine();
