@@ -4629,6 +4629,7 @@ function renderSettingsAccounts() {
 
 function syncStatusLabel(sync) {
   if (!sync || !sync.state) return "";
+  if (sync.state === "error" && sync.retrying) return "Retrying…";
   if (sync.message) return redactDebugText(sync.message);
   if (sync.state === "syncing") return "Syncing…";
   if (sync.state === "paused") return "Paused for rate limit";
@@ -4677,7 +4678,7 @@ function syncDetail(sync) {
   const success = sync.lastSuccessAt && sync.accountId && sync.folderId ? new Date(sync.lastSuccessAt).toLocaleString() : "";
   const successLine = success ? `${where} · Last checked ${success}` : "";
   if (sync.state === "syncing") return [where, phase || "Downloading recent mail", successLine].filter(Boolean).join(" · ");
-  if (sync.state === "error") return [where, redactDebugText(sync.lastError || sync.message || "Sync failed")].filter(Boolean).join(" · ");
+  if (sync.state === "error") return [where, redactDebugText(sync.lastError || sync.message || "Sync failed"), sync.retrying ? "Retrying…" : ""].filter(Boolean).join(" · ");
   if (sync.state === "paused") return [sync.message || "Paused for rate limit", where, sync.retryAt ? "Retrying at " + new Date(sync.retryAt).toLocaleString() : "Waiting before retrying"].filter(Boolean).join(" · ");
   if (sync.state === "done") return successLine || [where, "Not synced yet"].filter(Boolean).join(" · ");
   return sync.message || "";
@@ -4686,7 +4687,7 @@ function syncDetail(sync) {
 function syncButtonLabel(sync) {
   if (!sync || !sync.state || sync.state === "done") return "Sync";
   if (sync.state === "syncing") return "Syncing";
-  if (sync.state === "error") return "Sync failed";
+  if (sync.state === "error") return sync.retrying ? "Retrying…" : "Sync failed";
   if (sync.state === "paused") return "Sync paused";
   return "Sync";
 }
@@ -12414,6 +12415,40 @@ function openSettings() {
 
 const mailVacation = new Map();
 const mailVacationPending = new Set();
+let oooRetryAccount = null;
+function vacationChipSummary(entry) {
+  if (entry && entry.retrying) return "Out of Office: Retrying…";
+  if (entry && entry.error) return "Out of Office: unknown — refresh to retry";
+  return "";
+}
+function decideOooRefresh(input) {
+  const api = window.morrowSyncRetry;
+  if (api && api.decideVacationRefresh) return api.decideVacationRefresh(input);
+  if (input && input.pending) return "wait";
+  if (input && input.force) return "fetch";
+  const previous = input && input.previous;
+  const now = input && input.now || Date.now();
+  if (previous && !previous.retrying && previous.at && now - previous.at < 60000) return "cache";
+  return "fetch";
+}
+const oooRetry = (window.morrowSyncRetry
+  ? window.morrowSyncRetry.createRetryScheduler({
+    delays: window.morrowSyncRetry.OOO_RETRY_DELAYS_MS,
+    onRetry(accountId) {
+      if (!selectedAccount() || selectedAccount().id !== accountId) {
+        oooRetry.clear(accountId);
+        if (mailVacation.get(accountId) && mailVacation.get(accountId).retrying) mailVacation.delete(accountId);
+        return;
+      }
+      refreshMailVacation(false);
+    },
+  })
+  : {
+    noteFailure() { return { retry: false, exhausted: true }; },
+    noteSuccess() {},
+    clear() {},
+    status() { return null; },
+  });
 function vacationSummary(data, now = Date.now()) {
   if (!data) return "Out of Office: unknown";
   if (data.requiresReconnect) return "Out of Office: permission needed to check";
@@ -12448,30 +12483,53 @@ function paintMailVacation() {
   if (!account) return;
   const entry = mailVacation.get(account.id);
   const compact = !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
-  const summary = entry?.error ? "Out of Office: unknown — refresh to retry" : vacationSummary(entry?.data);
+  const summary = vacationChipSummary(entry) || vacationSummary(entry?.data);
   const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + new Date(entry.at).toLocaleString() : "");
   box.classList.toggle("is-off", !!compact);
   box.title = detail;
   $("mail-ooo-status").textContent = compact ? "Out of Office: off" : detail;
   $("mail-ooo-status").setAttribute("aria-label", detail);
+  $("mail-ooo-status").setAttribute("aria-busy", entry?.retrying ? "true" : "false");
   $("mail-ooo-manage").textContent = compact ? "Manage" : "Manage / disable";
   $("mail-ooo-refresh").hidden = !!compact;
 }
+function releaseVacationRetry(accountId) {
+  if (!accountId) return;
+  oooRetry.clear(accountId);
+  const entry = mailVacation.get(accountId);
+  if (entry && entry.retrying) mailVacation.delete(accountId);
+}
 async function refreshMailVacation(force = false) {
   const account = selectedAccount();
+  if (oooRetryAccount && (!account || oooRetryAccount !== account.id)) releaseVacationRetry(oooRetryAccount);
+  oooRetryAccount = account ? account.id : null;
   paintMailVacation();
   if (!account || mailVacationPending.has(account.id)) return;
-  const previous = mailVacation.get(account.id);
-  if (!force && previous && Date.now() - previous.at < 60000) return;
-  mailVacationPending.add(account.id);
+  const id = account.id;
+  if (force) oooRetry.clear(id);
+  const previous = mailVacation.get(id);
+  const decision = decideOooRefresh({
+    force: !!force,
+    pending: false,
+    status: oooRetry.status(id),
+    previous,
+    now: Date.now(),
+  });
+  if (decision !== "fetch") return;
+  mailVacationPending.add(id);
   try {
-    const data = await call("mail:vacationGet", { accountId: account.id });
-    if (!data || data.accountId !== account.id) throw new Error("Mailbox did not match");
+    const data = await call("mail:vacationGet", { accountId: id });
+    if (selectedAccount()?.id !== id) return;
+    if (!data || data.accountId !== id) throw new Error("Mailbox did not match");
+    oooRetry.noteSuccess(id);
     rememberVacation(data);
   } catch (error) {
-    mailVacation.set(account.id, { error: true, at: Date.now() });
+    if (selectedAccount()?.id !== id) return;
+    const plan = oooRetry.noteFailure(id, "", { stickyAuth: false });
+    if (plan.retry) mailVacation.set(id, { error: true, retrying: true, at: previous && previous.at });
+    else mailVacation.set(id, { error: true, at: Date.now() });
     paintMailVacation();
-  } finally { mailVacationPending.delete(account.id); }
+  } finally { mailVacationPending.delete(id); }
 }
 async function manageMailVacation() {
   const id = state.accountId;
