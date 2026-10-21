@@ -3554,7 +3554,7 @@ assert.ok(html.includes('id="calendar-today"') && html.includes('id="calendar-ag
 assert.ok(html.includes('id="agent-contact"') && html.includes('id="agent-context"'));
 assert.ok(appJs.includes("Grant Gmail labels") && appJs.includes("Grant Outlook folders"));
 assert.ok(css.includes("#calendar-panel") && css.includes(".calendar-grid") && css.includes(".provider-block"));
-const calendarLoad = functionSource(appJs, "loadCalendar");
+const calendarLoad = appJs.slice(appJs.indexOf("async function loadCalendar"), appJs.indexOf("\nfunction showMail"));
 const calendarShow = functionSource(appJs, "showCalendar");
 const calendarPrepare = functionSource(appJs, "prepareCalendarLoad");
 const calendarBusyLabel = functionSource(appJs, "calendarBusyLabel");

@@ -264,8 +264,8 @@ app.whenReady().then(async () => {
   await run(`loadBotAccess()`);
   await run(`showBotSection('grants')`);
   assert.equal(await run(`$('bot-grants').querySelector('button').checkVisibility()`), true);
-  assert.match(await run(`$('bot-panel-grants').textContent`), /Revoke invalidates the secret/);
-  assert.match(await run(`$('bot-panel-grants').textContent`), /Delete removes the bot/);
+  assert.match(await run(`$('bot-panel-grants').textContent`), /Revoke stops its access and keeps the row/);
+  assert.match(await run(`$('bot-panel-grants').textContent`), /Delete removes the row after you confirm/);
   assert.equal(await run(`$('bot-grants').querySelector('[data-bot-action="delete"]').textContent.trim()`), 'Delete');
   await run(`$('bot-grants').querySelector('[data-bot-action="delete"]').click()`);
   await waitFor(`$('confirm').open`);
