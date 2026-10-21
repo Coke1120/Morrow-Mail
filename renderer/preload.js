@@ -180,6 +180,9 @@ const EVENTS = [
   "emailBrain:refreshState",
   "emailBrain:rebuildState",
   "emailBrain:scheduleFired",
+  "host:menuAction",
+  "app:confirmQuitScheduled",
+  "app:dismissQuitScheduled",
 ];
 
 const invokeSet = new Set(INVOKE);
@@ -190,6 +193,17 @@ contextBridge.exposeInMainWorld("morrow", {
   replyUpdatePreparation(payload) {
     if (typeof payload?.nonce === "string" && typeof payload.ok === "boolean") {
       ipcRenderer.send("host:updatePrepared", { nonce: payload.nonce, ok: payload.ok });
+    }
+  },
+  replyQuitScheduledShown(payload) {
+    if (typeof payload?.nonce === "string") {
+      ipcRenderer.send("app:quitScheduledShown", { nonce: payload.nonce });
+    }
+  },
+  replyQuitScheduled(payload) {
+    const choice = payload && payload.choice;
+    if (typeof payload?.nonce === "string" && (choice === "quit" || choice === "stay" || choice === "view")) {
+      ipcRenderer.send("app:quitScheduledChoice", { nonce: payload.nonce, choice });
     }
   },
   invoke(channel, payload) {

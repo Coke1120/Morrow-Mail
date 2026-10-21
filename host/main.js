@@ -48,14 +48,17 @@ function applyDockIcon() {
 
 const singleInstance = app.requestSingleInstanceLock();
 let shellWindow = null;
+let shellSession = null;
+let shellOpening = null;
 if (!singleInstance) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (!shellWindow) return;
-    if (shellWindow.isMinimized()) shellWindow.restore();
-    shellWindow.show();
-    shellWindow.focus();
+    presentShell();
+  });
+  // Dock icon, and macOS relaunch of an already running app.
+  app.on("activate", () => {
+    presentShell();
   });
 }
 
@@ -166,6 +169,7 @@ function attachIpc(preloadFile) {
   // registerHostAi and updater.registerIpc already own these. A second ipcMain.handle throws.
   const directHost = new Set([...updater.CHANNELS, ...AI_CHANNELS]);
   for (const name of ["host:updatePrepared", "host:updatePrepareForInstall", "host:updateResume", "host:updateStartupReady"]) directHost.add(name);
+  for (const name of ["app:confirmQuitScheduled", "app:dismissQuitScheduled", "app:quitScheduledChoice", "app:quitScheduledShown"]) directHost.add(name);
   for (const channel of channels) {
     if (directHost.has(channel)) continue;
     ipcMain.handle(channel, (event, ...args) => updateGate.run(() => bus.handle(event, channel, ...args)));
@@ -230,13 +234,25 @@ function bumpZoom(delta) {
   applyZoom(win.webContents.getZoomLevel() + delta);
 }
 
+function sendShellAction(action) {
+  const win = shellForZoom();
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send("host:menuAction", { action: String(action || "") });
+}
+
 function installMenu() {
+  // Reload stays the View menu role. Zoom stays Plus, =, -, and 0.
+  // macOS File → Close Window uses the same close event as the red button.
+  const fileMenu = process.platform === "darwin"
+    ? [{ label: "File", submenu: [{ role: "close" }] }]
+    : [];
   const template = [
     {
       label: "Morrow Mail",
       submenu: [
         { role: "about" },
         { type: "separator" },
+        { label: "Settings…", accelerator: "CommandOrControl+,", click: () => sendShellAction("settings") },
         { label: "AI Setup…", click: () => openAiSetup() },
         { type: "separator" },
         { role: "services" },
@@ -246,6 +262,13 @@ function installMenu() {
         { role: "unhide" },
         { type: "separator" },
         { role: "quit" },
+      ],
+    },
+    ...fileMenu,
+    {
+      label: "Mail",
+      submenu: [
+        { label: "New Mail", accelerator: "CommandOrControl+N", click: () => sendShellAction("new-mail") },
       ],
     },
     { role: "editMenu" },
@@ -414,6 +437,58 @@ function runAiSelfTest() {
   return 0;
 }
 
+function revealShell(win) {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+}
+
+function hideShell(win) {
+  if (!win || win.isDestroyed()) return;
+  let hidden = false;
+  const hide = () => {
+    if (hidden || win.isDestroyed()) return;
+    hidden = true;
+    win.hide();
+  };
+  // A fullscreen window on macOS ignores hide until it has left fullscreen.
+  if (win.isFullScreen()) {
+    win.once("leave-full-screen", hide);
+    try { win.setFullScreen(false); } catch { hide(); }
+    return;
+  }
+  hide();
+}
+
+function openShellWindow() {
+  if (shellWindow && !shellWindow.isDestroyed()) {
+    revealShell(shellWindow);
+    return Promise.resolve(shellWindow);
+  }
+  if (!shellSession) return Promise.resolve(null);
+  if (shellOpening) return shellOpening;
+  const session = shellSession;
+  shellOpening = createWindow(session.preloadFile, session.mode)
+    .then((win) => {
+      shellWindow = win;
+      win.on("closed", () => {
+        if (shellWindow === win) shellWindow = null;
+      });
+      return win;
+    })
+    .finally(() => {
+      shellOpening = null;
+    });
+  return shellOpening;
+}
+
+function presentShell() {
+  openShellWindow().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+  });
+}
+
 async function createWindow(preloadFile, mode) {
   const external = mode === "asar";
   let displays = [];
@@ -463,7 +538,13 @@ async function createWindow(preloadFile, mode) {
     fs.appendFileSync(LOG, text + "\n");
     console.error(text);
   });
-  win.on("close", () => {
+  win.on("close", (event) => {
+    const action = quitController.onClose(event);
+    if (action === "hide") {
+      hideShell(win);
+      return;
+    }
+    if (action !== "allow") return;
     try { require("./mail/engine").answer("mail:cancelOAuth", []); } catch { /* mail is not open */ }
   });
   const updateLaunch = process.argv.some(arg => arg.startsWith("--morrow-update-receipt="));
@@ -487,17 +568,107 @@ async function createWindow(preloadFile, mode) {
   return win;
 }
 
-let idleStopped = false;
+// Scheduled mail leaves only while this process is alive. The first before-quit
+// is held for the dialog; cleanup then quits again, and that second quit exits.
+const quitScheduled = require("./quit-scheduled");
+
+function listScheduledRows() {
+  const result = require("./mail/engine").answer("mail:listScheduled", []);
+  if (result === undefined) return [];
+  if (!result || result.success !== true || !Array.isArray(result.data)) {
+    throw new Error("Scheduled mail could not be checked.");
+  }
+  return result.data;
+}
+
+function shellCanPrompt(win) {
+  return !!(win && !win.isDestroyed() && win.isVisible() && win.webContents && !win.webContents.isDestroyed() && !win.webContents.isLoading());
+}
+
+function fromShellFrame(win, event) {
+  return shellCanPrompt(win) && event && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame;
+}
+
+function rendererQuitChoice(win, prompt) {
+  if (!shellCanPrompt(win)) return Promise.resolve("unavailable");
+  const nonce = require("crypto").randomUUID();
+  const payload = { nonce, ...quitScheduled.promptPayload(prompt) };
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (choice) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      ipcMain.removeListener("app:quitScheduledChoice", onChoice);
+      ipcMain.removeListener("app:quitScheduledShown", onShown);
+      win.removeListener("closed", onClosed);
+      resolve(choice);
+    };
+    const onChoice = (event, body) => {
+      if (!fromShellFrame(win, event) || !body || body.nonce !== nonce) return;
+      finish(body.choice === "quit" || body.choice === "view" ? body.choice : "stay");
+    };
+    const onShown = (event, body) => {
+      if (!fromShellFrame(win, event) || !body || body.nonce !== nonce) return;
+      clearTimeout(timer);
+    };
+    const onClosed = () => finish("stay");
+    const timer = setTimeout(() => {
+      try {
+        if (!win.isDestroyed()) win.webContents.send("app:dismissQuitScheduled", { nonce });
+      } catch { /* the native dialog still offers the same choice */ }
+      finish("unavailable");
+    }, 2000);
+    ipcMain.on("app:quitScheduledChoice", onChoice);
+    ipcMain.on("app:quitScheduledShown", onShown);
+    win.once("closed", onClosed);
+    try {
+      win.webContents.send("app:confirmQuitScheduled", payload);
+    } catch {
+      finish("unavailable");
+    }
+  });
+}
+
+async function nativeQuitChoice(prompt) {
+  const { dialog } = require("electron");
+  const options = quitScheduled.nativeDialogOptions(prompt);
+  const parent = shellWindow && !shellWindow.isDestroyed() && shellWindow.isVisible() ? shellWindow : null;
+  const result = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+  return quitScheduled.nativeResponseChoice(result && result.response);
+}
+
+async function requestQuitChoice(prompt) {
+  // Cmd+Q from a hidden or minimized window still shows the in-app confirm.
+  revealShell(shellWindow);
+  let updateClosed = false;
+  try { updateClosed = require("./update-quiescence").gate.closed; } catch { updateClosed = false; }
+  if (!updateClosed) {
+    const rendered = await rendererQuitChoice(shellWindow, prompt);
+    if (rendered === "quit" || rendered === "stay" || rendered === "view") return rendered;
+  }
+  return nativeQuitChoice(prompt);
+}
+
+const quitController = quitScheduled.createQuitController({
+  listRows: listScheduledRows,
+  requestChoice: requestQuitChoice,
+  quitApp: () => app.quit(),
+  cleanup: async () => {
+    try { await require("./bot/server").stop(); } catch { /* the bridge is already stopped */ }
+    try { await require("./mail/engine").stopIdle(); } catch { /* mail is not open */ }
+  },
+  platform: process.platform,
+});
+
 app.on("before-quit", (event) => {
-  if (idleStopped) return;
-  event.preventDefault();
-  idleStopped = true;
-  Promise.resolve()
-    .then(() => require("./bot/server").stop())
-    .catch(() => {})
-    .then(() => require("./mail/engine").stopIdle())
-    .catch(() => {})
-    .finally(() => app.quit());
+  quitController.onBeforeQuit(event);
+});
+
+// Subscribing replaces Electron's default, which quits on every platform when
+// the last window closes. macOS stays running; Windows and Linux still quit.
+app.on("window-all-closed", () => {
+  if (!quitScheduled.hidesWindowOnClose(process.platform)) app.quit();
 });
 
 app.whenReady().then(async () => {
@@ -571,8 +742,9 @@ app.whenReady().then(async () => {
       callback({ responseHeaders: details.responseHeaders });
     });
     attachIpc(preloadFile);
-    const win = await createWindow(preloadFile, mode);
-    shellWindow = win;
+    shellSession = { preloadFile, mode };
+    const win = await openShellWindow();
+    if (!win) throw new Error("Morrow Mail could not open its window.");
     if (process.platform === "darwin" && app.isPackaged) {
       await require("./update-launcher").acknowledge({
         argv: process.argv, target: path.resolve(process.resourcesPath, "..", ".."), version: app.getVersion(),

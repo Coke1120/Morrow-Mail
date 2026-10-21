@@ -56,6 +56,20 @@
       </button>
       </div>
       <div class="rail-foot">
+      <button type="button" class="rail-btn nav-item" id="rail-shortcuts" aria-current="false" aria-label="Shortcuts" data-label="Shortcuts" title="Shortcuts">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
+          <path d="M6 8h.01"></path>
+          <path d="M10 8h.01"></path>
+          <path d="M14 8h.01"></path>
+          <path d="M18 8h.01"></path>
+          <path d="M8 12h.01"></path>
+          <path d="M12 12h.01"></path>
+          <path d="M16 12h.01"></path>
+          <path d="M7 16h10"></path>
+        </svg>
+        <span class="nav-label">Shortcuts</span>
+      </button>
       <button type="button" class="rail-btn nav-item" id="rail-log" aria-current="false" aria-label="Debug log" data-label="Debug log" title="Debug log">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -70,7 +84,7 @@
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg>
         <span class="nav-label">About &amp; updates</span>
       </button>
-      <button type="button" class="rail-btn nav-item" id="settings-open" aria-label="Settings" data-label="Settings" title="Settings">
+      <button type="button" class="rail-btn nav-item" id="settings-open" aria-label="Settings" data-label="Settings" title="Settings" aria-keyshortcuts="Control+, Meta+,">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3"></circle>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -83,7 +97,7 @@
     <header>
       <h1 class="sr">Morrow Mail</h1>
       <div class="leading">
-        <button type="button" class="primary" id="compose-open">
+        <button type="button" class="primary" id="compose-open" aria-keyshortcuts="Control+N Meta+N">
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
             <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25ZM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z" />
           </svg>
@@ -325,35 +339,7 @@
         <div id="brain-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
         <dl id="brain-meta" class="brain-meta" hidden></dl>
         <div id="brain-sections"></div>
-        <details id="brain-compose-settings">
-          <summary>Compose defaults and aliases</summary>
-          <form id="brain-compose-form">
-            <p class="hint">Default CC is chosen from your received alias for replies and forwards, or your From address for new mail. Review recipients before sending.</p>
-            <label for="brain-compose-domains">Default CC by domain — one domain per line</label>
-            <textarea id="brain-compose-domains" rows="4" placeholder="@hkbscl.com = colleague@hkbscl.com, team@example.com" spellcheck="false" disabled></textarea>
-            <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
-            <textarea id="brain-compose-bcc" rows="4" placeholder="@hkbscl.com = records@hkbscl.com, audit@example.com" spellcheck="false" disabled></textarea>
-            <label for="brain-compose-account">Mailbox for alias settings</label>
-            <select id="brain-compose-account" disabled></select>
-            <p id="brain-compose-identities" class="hint"></p>
-            <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
-            <textarea id="brain-compose-aliases" rows="3" placeholder="leo@hkbscl.com&#10;leo@gmail.com = hkbscl.com" spellcheck="false" disabled></textarea>
-            <p class="hint">Add only addresses belonging to this mailbox. Gmail must verify send-as aliases; Outlook needs send-as permission. Your SMTP provider may restrict the From address.</p>
-            <label for="brain-compose-from">Preferred From for new mail (optional)</label>
-            <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
-            <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
-            <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
-            <p class="hint">This fallback is only the CC list. BCC and signatures still use the From domain. Clearing or editing CC keeps that choice for the rest of the composition. Clearing or editing BCC does the same for BCC. The two fields lock separately. Resumed drafts keep their saved recipients.</p>
-            <div class="row">
-              <button type="submit" class="primary" disabled>Save compose defaults</button>
-              <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                Refresh From addresses
-              </button>
-            </div>
-            <p id="brain-compose-status" class="hint" role="status" aria-live="polite"></p>
-          </form>
-        </details>
+        <p class="hint" id="brain-compose-pointer">Compose defaults live in <button type="button" class="inline-link" id="brain-open-compose-settings">Settings → Compose</button>.</p>
         <section id="brain-activity" aria-label="Recent updates" hidden>
           <h3>Recent updates</h3>
           <div id="brain-activity-list"></div>
@@ -401,13 +387,13 @@
       </section>
       <section id="brain-skills" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-skills" hidden>
         <h3 id="brain-skills-title">Skills</h3>
-        <p class="hint">Skills run on demand, on a saved schedule, or stay paused. Scheduled runs need Morrow open; a missed run fires once on relaunch. Drafts need review and Send; filing proposals need confirmation.</p>
+        <p class="hint">Each skill is a card. Manage opens its schedule, run, and pause controls. Skills run on demand, on a saved schedule, or stay paused. Scheduled runs need Morrow open; a missed run fires once on relaunch. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="brain-skill-status" role="status"></p>
         <div id="brain-skill-result"></div>
         <h3>Home skills</h3>
-        <div id="brain-home-skills"><p class="hint">Loading skills…</p></div>
+        <div id="brain-home-skills" class="brain-skill-grid"><p class="hint">Loading skills…</p></div>
         <h3>Library skills</h3>
-        <div id="brain-library-skills"><p class="hint">Loading skills…</p></div>
+        <div id="brain-library-skills" class="brain-skill-grid"><p class="hint">Loading skills…</p></div>
       </section>
       <section id="brain-rules" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-rules" hidden>
         <h3 id="brain-rules-title">Inbox rules</h3>
@@ -461,6 +447,16 @@
           <button type="button" class="ghost" id="inbox-rule-grant" hidden>Grant inbox rules</button>
         </div>
       </section>
+    </section>
+    <section id="shortcuts-panel" class="primary-space" hidden aria-label="Shortcuts">
+      <div class="space-head">
+        <div>
+          <p class="space-kicker">Help</p>
+          <h2>Shortcuts</h2>
+        </div>
+      </div>
+      <p class="hint" id="shortcuts-note"></p>
+      <ul id="shortcuts-list" class="shortcut-list"></ul>
     </section>
     <section id="log-panel" class="primary-space" hidden aria-label="Debug log">
       <div class="space-head">
@@ -548,6 +544,19 @@
       </form>
     </dialog>
 
+    <dialog id="quit-scheduled" role="alertdialog" aria-modal="true" aria-labelledby="quit-scheduled-title" aria-describedby="quit-scheduled-body">
+      <form id="quit-scheduled-form">
+        <h2 id="quit-scheduled-title">Scheduled mail is still pending</h2>
+        <p id="quit-scheduled-body">Scheduled messages will not send while Morrow Mail is closed. A time that passes while the app is closed is sent the next time you open it.</p>
+        <ul id="quit-scheduled-list" aria-label="Pending scheduled messages"></ul>
+        <p id="quit-scheduled-more" class="hint" hidden></p>
+        <div class="row" role="group" aria-label="Quit choices">
+          <button type="button" class="primary" id="quit-scheduled-stay" autofocus>Stay open</button>
+          <button type="button" class="ghost" id="quit-scheduled-view">View scheduled</button>
+          <button type="button" class="ghost" id="quit-scheduled-quit">Quit anyway</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="compose-close-review" aria-labelledby="draft-close-title">
       <h2 id="draft-close-title">Discard unsaved changes?</h2>
       <p>Close discards edits since the last save. A saved draft stays as it was. Save draft, next to Send, keeps this message without closing.</p>
@@ -616,6 +625,7 @@
             <input id="compose-subject" type="text" />
           </div>
         </div>
+        <div class="compose-format-wrap">
         <div id="compose-format" class="compose-format" role="toolbar" aria-label="Formatting" aria-controls="compose-editor">
           <button type="button" data-command="bold" aria-label="Bold" aria-pressed="false" title="Bold">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"></path><path d="M6 12h9a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"></path></svg>
@@ -642,6 +652,27 @@
             <span class="compose-swatch" aria-hidden="true"></span>
             <input type="color" data-command="hiliteColor" value="#fff3a0" aria-label="Highlight" />
           </label>
+          <button type="button" id="compose-ai-open" aria-label="Write with AI" title="Write with AI" aria-haspopup="dialog" aria-expanded="false" aria-controls="compose-ai-popover">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path><path d="M20 3v4"></path><path d="M22 5h-4"></path><path d="M4 17v2"></path><path d="M5 18H3"></path></svg>
+          </button>
+        </div>
+        <div id="compose-ai-popover" class="ai-write compose-ai-popover" role="dialog" aria-modal="false" aria-label="Write with AI" hidden>
+          <input id="ai-mode" type="hidden" value="rewrite" />
+          <div id="compose-ai-modes" class="compose-ai-modes" role="radiogroup" aria-label="AI write mode">
+            <button type="button" role="radio" data-ai-mode="rewrite" aria-checked="true" tabindex="0">Rewrite</button>
+            <button type="button" role="radio" data-ai-mode="continue" aria-checked="false" tabindex="-1">Continue</button>
+            <button type="button" role="radio" data-ai-mode="custom" aria-checked="false" tabindex="-1">Custom</button>
+            <button type="button" id="ai-mode-reply" role="radio" data-ai-mode="reply" aria-checked="false" tabindex="-1" aria-disabled="false">Reply from thread</button>
+          </div>
+          <p id="compose-ai-note" class="hint compose-ai-note" role="status" hidden></p>
+          <label class="sr" for="ai-prompt">Prompt</label>
+          <input id="ai-prompt" type="text" placeholder="Type your prompt..." autocomplete="off" />
+          <p id="ai-write-error" class="error" role="status" hidden></p>
+          <div class="compose-ai-actions">
+            <button type="button" class="primary" id="ai-generate">Generate</button>
+            <button type="button" class="ghost" id="ai-cancel">Cancel</button>
+          </div>
+        </div>
         </div>
         <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="compose-body-label" data-placeholder="Message" spellcheck="true"></div>
         <span id="compose-body-label" class="sr">Message</span>
@@ -660,23 +691,7 @@
           <ul id="compose-attachments" class="compose-attachments" hidden></ul>
           <p id="compose-attach-error" class="error" role="status" hidden></p>
         </div>
-        <div class="compose-tools-grid">
-          <details id="compose-ai-tools"><summary>AI write</summary>
-          <div class="ai-write">
-            <label for="ai-mode">AI write</label>
-            <select id="ai-mode">
-              <option value="rewrite">Rewrite</option>
-              <option value="continue">Continue</option>
-              <option value="custom">Custom</option>
-            </select>
-            <label class="sr" for="ai-prompt">Prompt</label>
-            <input id="ai-prompt" type="text" placeholder="Prompt" />
-            <button type="button" class="ghost" id="ai-generate">Generate</button>
-            <button type="button" class="ghost" id="ai-cancel" hidden>Cancel</button>
-            <p id="ai-write-error" class="error" role="status" hidden></p>
-          </div>
-          </details>
-          <details id="compose-schedule-tools"><summary>Send later</summary>
+        <details id="compose-schedule-tools"><summary>Send later</summary>
           <label for="schedule-preset">When</label>
           <select id="schedule-preset">
             <option value="1h">In 1 hour</option>
@@ -689,7 +704,6 @@
           <p class="hint" id="schedule-note">Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.</p>
           <button type="button" class="primary" id="compose-schedule">Schedule send</button>
           </details>
-        </div>
         <div class="signature-head">
           <label for="signature">Signature</label>
           <select id="signature" hidden></select>
@@ -701,9 +715,9 @@
         </div>
         <p id="compose-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
-          <button type="submit" class="primary" id="compose-send">Send</button>
+          <button type="submit" class="primary" id="compose-send" aria-keyshortcuts="Control+Enter Meta+Enter">Send</button>
           <button type="button" class="ghost" id="compose-send-now" hidden>Send now</button>
-          <button type="button" class="ghost" id="compose-save">Save draft</button>
+          <button type="button" class="ghost" id="compose-save" aria-keyshortcuts="Control+S Meta+S">Save draft</button>
           <button type="button" class="ghost" id="compose-close">Close</button>
         </div>
       </form>
@@ -766,6 +780,21 @@
       </div>
       </div>
     </dialog>
+    <dialog id="brain-skill-dialog" aria-labelledby="brain-skill-dialog-title">
+      <div class="dialog-body">
+        <div class="sheet-head">
+          <h2 id="brain-skill-dialog-title">Skill</h2>
+          <button type="button" class="ghost" id="brain-skill-dialog-close">Close</button>
+        </div>
+        <p id="brain-skill-dialog-detail"></p>
+        <p id="brain-skill-dialog-mode" class="hint"></p>
+        <div class="row" id="brain-skill-dialog-actions"></div>
+        <h3 id="brain-skill-dialog-schedule-title">Schedule</h3>
+        <div id="brain-skill-dialog-schedule"></div>
+        <p id="brain-skill-dialog-status" role="status"></p>
+        <div id="brain-skill-dialog-result"></div>
+      </div>
+    </dialog>
     <dialog id="settings" aria-labelledby="settings-title">
       <div class="dialog-body">
       <div class="sheet-head">
@@ -776,6 +805,7 @@
         <button type="button" id="settings-tab-prefs" data-fold="prefs" role="tab" aria-controls="settings-prefs" aria-selected="true" aria-current="true" tabindex="0">General</button>
         <button type="button" id="settings-tab-mail" data-fold="mail" role="tab" aria-controls="settings-mail" aria-selected="false" aria-current="false" tabindex="-1">Mail &amp; Sync</button>
         <button type="button" id="settings-tab-mailbox" data-fold="mailbox" role="tab" aria-controls="settings-mailbox" aria-selected="false" aria-current="false" tabindex="-1">Accounts</button>
+        <button type="button" id="settings-tab-compose" data-fold="compose" role="tab" aria-controls="settings-compose" aria-selected="false" aria-current="false" tabindex="-1">Compose</button>
         <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" aria-current="false" tabindex="-1">AI</button>
         <button type="button" id="settings-tab-ooo" data-fold="ooo" role="tab" aria-controls="settings-ooo" aria-selected="false" aria-current="false" tabindex="-1">Out of Office</button>
         <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
@@ -897,7 +927,7 @@
           <div class="settings-group">
             <h4>Writing</h4>
             <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
-            <p class="hint">This preference saves automatically. Saved or error messages appear beside it.</p>
+            <p class="hint">This preference saves automatically. Reply and Reply All open the write popover when it is on.</p>
           </div>
           </div>
         </section>
@@ -952,6 +982,37 @@
               <span>Remove account</span>
             </button>
           </details>
+          </div>
+        </section>
+        <section class="fold" id="settings-compose" data-fold="compose" role="tabpanel" aria-labelledby="settings-tab-compose" tabindex="0" hidden>
+          <div class="fold-panel" id="settings-compose-panel" hidden>
+            <h3 id="settings-compose-title">Compose defaults</h3>
+            <form id="brain-compose-form">
+              <p class="hint">Default CC is chosen from your received alias for replies and forwards, or your From address for new mail. Review recipients before sending.</p>
+              <label for="brain-compose-domains">Default CC by domain — one domain per line</label>
+              <textarea id="brain-compose-domains" rows="4" placeholder="@hkbscl.com = colleague@hkbscl.com, team@example.com" spellcheck="false" disabled></textarea>
+              <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
+              <textarea id="brain-compose-bcc" rows="4" placeholder="@hkbscl.com = records@hkbscl.com, audit@example.com" spellcheck="false" disabled></textarea>
+              <label for="brain-compose-account">Mailbox for alias settings</label>
+              <select id="brain-compose-account" disabled></select>
+              <p id="brain-compose-identities" class="hint"></p>
+              <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
+              <textarea id="brain-compose-aliases" rows="3" placeholder="leo@hkbscl.com&#10;leo@gmail.com = hkbscl.com" spellcheck="false" disabled></textarea>
+              <p class="hint">Add only addresses belonging to this mailbox. Gmail must verify send-as aliases; Outlook needs send-as permission. Your SMTP provider may restrict the From address.</p>
+              <label for="brain-compose-from">Preferred From for new mail (optional)</label>
+              <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
+              <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
+              <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
+              <p class="hint">This fallback is only the CC list. BCC and signatures still use the From domain. Clearing or editing CC keeps that choice for the rest of the composition. Clearing or editing BCC does the same for BCC. The two fields lock separately. Resumed drafts keep their saved recipients.</p>
+              <div class="row">
+                <button type="submit" class="primary" disabled>Save compose defaults</button>
+                <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                  Refresh From addresses
+                </button>
+              </div>
+              <p id="brain-compose-status" class="hint" role="status" aria-live="polite"></p>
+            </form>
           </div>
         </section>
         <section class="fold" id="settings-ooo" data-fold="ooo" role="tabpanel" aria-labelledby="settings-tab-ooo" tabindex="0" hidden>
@@ -1307,6 +1368,7 @@
     <script src="../shared/compose-policy.js"></script>
     <script src="../shared/mailbox-roles.js"></script>
     <script src="../shared/folder-collapse.js"></script>
+    <script src="../shared/sync-retry.js"></script>
     <script src="./brain-compose.js"></script>
     <script src="./app.js"></script>
   </body>
