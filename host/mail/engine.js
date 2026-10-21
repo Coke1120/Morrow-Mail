@@ -8,6 +8,7 @@ const actions = require("./actions");
 const virtuals = require("./virtual-folders");
 const presets = require("./presets");
 const remote = require("./remote");
+const zipBytes = require("./zip-bytes");
 
 const secrets = process.env.MORROW_MAIL_SECRETS === "memory"
   ? require("./memory-secrets")
@@ -1568,6 +1569,40 @@ async function bytesFor(params) {
   return { filename: params.filename || wanted.filename || "attachment", data };
 }
 
+function selectableAttachments(attachments, ids) {
+  const files = (Array.isArray(attachments) ? attachments : []).filter((item) => item && item.id);
+  if (!Array.isArray(ids) || !ids.length) return files;
+  const wanted = new Set(ids.map((id) => String(id)));
+  return files.filter((item) => wanted.has(String(item.id)));
+}
+
+async function attachmentZip(params) {
+  const row = db.messageById(params && (params.messageId || params.emailId));
+  if (!row || !row.uid) return null;
+  const account = db.accountById(row.account_id);
+  if (!account) return null;
+  const files = selectableAttachments(db.jsonList(row.attachments_json), params && params.attachmentIds);
+  if (!files.length) return null;
+  const parts = await exclusive(account.id, async () => {
+    const password = await secretFor(account);
+    return remote.withClient(account, password, async (client) => {
+      const out = [];
+      for (const item of files) {
+        const data = await remote.readPart(client, row.folder_path, row.uid, item.id);
+        out.push({
+          name: item.filename || "attachment",
+          data: Buffer.isBuffer(data) ? data : Buffer.from(data || []),
+        });
+      }
+      return out;
+    });
+  });
+  return {
+    filename: zipBytes.zipDownloadName(textEncoding.repairMojibake(row.subject || "")),
+    data: zipBytes.zipFiles(parts),
+  };
+}
+
 function signatureText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -2479,6 +2514,21 @@ function answer(channel, args) {
           const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: file.filename });
           if (picked.canceled || !picked.filePath) return fail("cancelled", "cancelled");
           fs.writeFileSync(picked.filePath, file.data);
+          return ok({ path: picked.filePath });
+        } catch (error) {
+          return fail("attachment", remote.explain(error));
+        }
+      })();
+    case "mail:downloadAttachmentsZip":
+      return (async () => {
+        try {
+          const packed = await attachmentZip(params || {});
+          if (!packed) return fail("not-found", "That message has no attachments to save.");
+          const { dialog, BrowserWindow } = require("electron");
+          const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+          const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: packed.filename });
+          if (picked.canceled || !picked.filePath) return fail("cancelled", "cancelled");
+          fs.writeFileSync(picked.filePath, packed.data);
           return ok({ path: picked.filePath });
         } catch (error) {
           return fail("attachment", remote.explain(error));

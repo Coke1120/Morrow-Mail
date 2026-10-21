@@ -2810,10 +2810,60 @@ button.thread-item .when { color: var(--muted); font-size: 12px; }
 
 button.thread-item[aria-current="true"] { background: var(--selected); }
 
+.attachment-card {
+  margin: 8px 16px 12px;
+  padding: 10px 12px 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--hover) 78%, var(--paper));
+}
+
+.attachment-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.attachment-card-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.attachment-card-head h3 svg,
+button.attachment-zip svg { display: block; flex: none; }
+
+button.attachment-zip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+button.attachment-zip:hover { background: var(--selected); }
+
+.attachment-note {
+  margin: 6px 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .attachments {
   list-style: none;
-  margin: 0;
-  padding: 4px 20px 8px;
+  margin: 6px 0 0;
+  padding: 0;
 }
 
 .attachments li {
@@ -2821,7 +2871,50 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin: 4px 0;
+  margin: 0;
+  padding: 6px 2px;
+  border-top: 1px solid var(--line);
+}
+
+.attachment-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.attachment-name {
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  padding: 0;
+  height: auto;
+  text-align: left;
+}
+
+button.attachment-name:hover { text-decoration: underline; }
+
+.attachment-size {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.attachment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-left: auto;
 }
 
 .empty, .meta, .body { padding: 0 20px; }
@@ -3336,6 +3429,74 @@ dialog h2 {
   font: inherit;
 }
 #agent-peek { width: min(720px, calc(100vw - 24px)); }
+
+#attachment-preview {
+  inset: 0;
+  margin: auto;
+  width: min(960px, calc(100vw - 24px));
+  height: min(760px, calc(100vh - 32px));
+  max-height: calc(100vh - 32px);
+}
+
+#attachment-preview .dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  max-height: none;
+  overflow: hidden;
+}
+
+.attachment-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+}
+
+.attachment-preview-bar h2 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#attachment-preview-status { margin: 0; flex: none; }
+
+#attachment-preview-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--hover);
+}
+
+#attachment-preview-stage.is-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+
+#attachment-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: min(68vh, 640px);
+  object-fit: contain;
+}
+
+#attachment-preview-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
 
 #move-picker { width: min(480px, calc(100vw - 24px)); }
 
