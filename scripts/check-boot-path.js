@@ -2908,6 +2908,64 @@ assert.ok(!winKeys.some((key) => key === "Ctrl+R" || key === "⌘R"));
 assert.match(shortcuts.shortcutNote("MacIntel"), /⌘R stays View/);
 assert.match(shortcuts.shortcutNote("Win32"), /Ctrl\+R stays View/);
 assert.match(shortcuts.shortcutNote("Linux x86_64"), /Zoom stays on the View menu/);
+assert.strictEqual(shortcuts.shortcutCatalog("Win32").length, 14);
+const cli = loadFunctions(appJs, ["cliNote", "cliCatalog"]);
+assert.match(cli.cliNote(), /checkout of this repo/);
+assert.match(cli.cliNote(), /no morrow command/);
+assert.match(cli.cliNote(), /Copy does not run the command/);
+const cliRows = cli.cliCatalog();
+assert.deepStrictEqual([...new Set(cliRows.map((row) => row.group))], ["Run", "Check", "Package", "Verify", "Bot bridge", "Tailscale Serve"]);
+for (const row of cliRows) {
+  assert.equal(typeof row.command, "string");
+  assert.ok(row.command.length > 0, row.group);
+  assert.ok(row.action.length > 0, row.command);
+  assert.ok(!/(^|\s)--help(\s|$)/.test(row.command), row.command);
+  assert.ok(!/(^|\s)--token(\s|$)/.test(row.command), row.command);
+  assert.ok(!/^morrow(\s|$)/.test(row.command), row.command);
+}
+function squashCliDoc(text) {
+  return text.replace(/\\\r?\n/g, " ").replace(/\s+/g, " ").trim();
+}
+const cliDocs = squashCliDoc([
+  fs.readFileSync(path.join(root, "README.md"), "utf8"),
+  fs.readFileSync(path.join(root, "docs/INDEPENDENT_UI.md"), "utf8"),
+  fs.readFileSync(path.join(root, "docs/PACKAGING.md"), "utf8"),
+  fs.readFileSync(path.join(root, "docs/UPDATER_TEST.md"), "utf8"),
+  fs.readFileSync(path.join(root, "docs/BOT_BRIDGE.md"), "utf8"),
+  fs.readFileSync(path.join(root, "scripts/morrow-bot-call.js"), "utf8"),
+].join("\n"));
+for (const row of cliRows) {
+  const command = row.command;
+  if (cliDocs.includes(command)) continue;
+  const npmRun = /^npm run ([^\s]+)$/.exec(command);
+  if (npmRun) {
+    assert.ok(pkg.scripts[npmRun[1]], command);
+    continue;
+  }
+  const morrowAsar = command.startsWith("MORROW_ASAR=/absolute/path/to/app.asar npm start");
+  assert.ok(morrowAsar && cliDocs.includes("MORROW_ASAR=/absolute/path/to/app.asar") && cliDocs.includes("npm start"), command);
+}
+assert.strictEqual(pkg.scripts.pack, "electron-builder --dir");
+assert.strictEqual(pkg.scripts.dist, "electron-builder");
+assert.strictEqual(pkg.scripts["dist:mac"], "electron-builder --mac dir zip");
+assert.strictEqual(pkg.scripts["dist:win"], "electron-builder --win nsis portable --x64");
+assert.strictEqual(pkg.scripts["dist:unsigned"], "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir zip");
+assert.strictEqual(pkg.scripts["publish:github"], "electron-builder --publish always");
+assert.strictEqual(pkg.scripts["bot:call"], "node scripts/morrow-bot-call.js");
+assert.ok(cliRows.some((row) => row.command === "npm install" && row.group === "Run"));
+assert.ok(cliRows.some((row) => row.command === "npm start"));
+assert.ok(cliRows.some((row) => row.command === "npm run check"));
+assert.ok(cliRows.some((row) => row.command.includes("--operation bridge.describe")));
+assert.ok(cliRows.some((row) => row.command.includes("--operation mail.send") && row.command.includes("--request-id <uuid>")));
+assert.ok(cliRows.some((row) => row.command === "tailscale serve status --json"));
+assert.match(functionSource(appJs, "paintShortcuts"), /paintCli\(\)/);
+assert.ok(html.includes('id="cli-list"') && html.includes('id="cli-note"') && html.includes('id="cli-title"') && html.includes('id="cli-copy-status"'));
+assert.ok(html.indexOf('id="shortcuts-list"') < html.indexOf('id="cli-list"'));
+assert.ok(html.indexOf('id="cli-list"') < html.indexOf('id="log-panel"'));
+assert.ok(html.includes('aria-labelledby="shortcuts-title"') && html.includes('aria-labelledby="cli-title"'));
+assert.ok(css.includes(".cli-head") && css.includes(".cli-row") && css.includes(".cli-command"));
+assert.match(independentDoc, /CLI lists the checkout commands/);
+assert.match(parityDoc, /CLI section for the checkout/);
 const openMail = { view: "mail", mailOpen: true, typing: false, dialog: false, menu: false, textSelected: false, topDialog: "" };
 assert.strictEqual(shortcuts.mailShortcut({ key: "Delete" }, openMail), "delete");
 assert.strictEqual(shortcuts.mailShortcut({ key: "Backspace" }, openMail), "delete");
