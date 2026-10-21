@@ -47,12 +47,12 @@ const state = {
     theme: "light",
     accent: "#193C34",
     conversation: true,
-    images: false,
-    undoSend: 5,
-    snooze: true,
+    images: true,
+    undoSend: 30,
+    snooze: false,
     quoteWidth: 420,
-    syncHorizon: 180,
-    compactList: false,
+    syncHorizon: 0,
+    compactList: true,
     collapsedFolders: {},
     scheduleDelay: 0,
     layout: { folders: 260, list: 360, reading: 0 },
@@ -11177,6 +11177,41 @@ function shortcutCatalog(platform) {
   ];
 }
 
+// Checkout commands already printed in README.md, package.json scripts,
+// docs/INDEPENDENT_UI.md, docs/PACKAGING.md, docs/UPDATER_TEST.md, and docs/BOT_BRIDGE.md.
+function cliNote() {
+  return "Shell commands for a checkout of this repo. There is no morrow command. Copy does not run the command.";
+}
+
+function cliCatalog() {
+  return [
+    { group: "Run", command: "npm install", action: "Install dependencies for this checkout." },
+    { group: "Run", command: "npm start", action: "Boot Morrow Mail with the bundled renderer in renderer/. Leave MORROW_ASAR unset. npm start leaves the updater off." },
+    { group: "Run", command: "MORROW_ASAR=/absolute/path/to/app.asar npm start", action: "Optional. Load that external app.asar instead of renderer/. Leave the variable unset for the first-party shell." },
+    { group: "Check", command: "npm run check", action: "Offline host and renderer checks. This runs without a Google Desktop client JSON." },
+    { group: "Package", command: "npm ci", action: "Clean install from the lockfile before a local unsigned Windows build." },
+    { group: "Package", command: "npm run pack", action: "Runs electron-builder --dir. Output goes to dist/." },
+    { group: "Package", command: "npm run dist", action: "Runs electron-builder with no extra arguments." },
+    { group: "Package", command: "CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win", action: "Unsigned Windows x64 NSIS setup and portable exe, without uploading. Artifacts land in dist/." },
+    { group: "Package", command: "CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win -- --publish never", action: "Same Windows build, with publish forced off. The release workflow uses this form." },
+    { group: "Package", command: "npm run dist:mac", action: "Runs electron-builder --mac dir zip." },
+    { group: "Package", command: "CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac", action: "Local macOS dir and zip without uploading." },
+    { group: "Package", command: "CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac -- --arm64 --publish never", action: "Local ARM64 macOS dir and zip, without publishing. Run this on macOS." },
+    { group: "Package", command: "npm run dist:unsigned", action: "Runs CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir zip." },
+    { group: "Package", command: "npm run publish:github", action: "Runs electron-builder --publish always. This uploads a GitHub release for Coke1120/Morrow-Mail. The release workflow is Actions → release." },
+    { group: "Verify", command: "node scripts/check-windows-icon.js \"path/to/Morrow Mail.exe\"", action: "On Windows, check the installed executable icon and version strings. This does not clear the system icon cache." },
+    { group: "Verify", command: "codesign --verify --deep --strict --verbose=2 \"dist/mac-arm64/Morrow Mail.app\"", action: "After a local ARM64 pack, this has to succeed. Ad hoc signing is not Developer ID or notarization." },
+    { group: "Verify", command: "codesign -dv --verbose=4 \"dist/mac-arm64/Morrow Mail.app\"", action: "Print the signature. Expect Signature=adhoc and no Developer ID or TeamIdentifier." },
+    { group: "Bot bridge", command: "npm run bot:call", action: "Runs node scripts/morrow-bot-call.js. The script requires --token-file, --installation, and --operation. Pass the secret with --token-file, not --token." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation <installation-id-from-settings> --operation bridge.describe --params-file ./params.json", action: "Call the loopback bridge while Morrow is open and bot access is on. params.json for bridge.describe is an empty JSON object. Do not pass --token." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation <installation-id-from-settings> --operation bridge.describe --params-file ./params.json", action: "Same client against the saved HTTPS Serve address. The client rejects redirects and plain HTTP that is not 127.0.0.1." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation <installation-id-from-settings> --operation mail.send --request-id <uuid> --params-file ./send.json", action: "Sends only when that bot's access includes mail.send. --request-id must be a UUID. Retry that same id. The client does not retry on its own." },
+    { group: "Tailscale Serve", command: "tailscale serve --bg --https=8443 --accept-app-caps=com.coke1120.morrow-mail/bot-access http://127.0.0.1:47831", action: "Run this on the computer where Morrow is open. Morrow does not run it. Settings copies the same command. The port stays 8443 until you save another HTTPS port. Do not run tailscale funnel." },
+    { group: "Tailscale Serve", command: "tailscale serve status --json", action: "Show Serve status as JSON. Morrow does not run this." },
+    { group: "Tailscale Serve", command: "tailscale funnel status --json", action: "Confirm Funnel is not serving this port. Do not run tailscale funnel." },
+  ];
+}
+
 function editableField(target) {
   if (!target || typeof target.closest !== "function") return null;
   const node = target.closest("input, textarea, select, [contenteditable]");
@@ -11330,15 +11365,63 @@ function onMenuAction(payload) {
   if (action === "new-mail" || action === "settings") runMailShortcut(action);
 }
 
-function paintShortcuts() {
-  const platform = typeof navigator !== "undefined" ? navigator.platform : "";
-  const note = $("shortcuts-note");
-  if (note) note.textContent = shortcutNote(platform);
-  const list = $("shortcuts-list");
+function cliCopyIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "15");
+  svg.setAttribute("height", "15");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  rect.setAttribute("x", "9");
+  rect.setAttribute("y", "9");
+  rect.setAttribute("width", "13");
+  rect.setAttribute("height", "13");
+  rect.setAttribute("rx", "2");
+  rect.setAttribute("ry", "2");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1");
+  svg.append(rect, path);
+  return svg;
+}
+
+function copyCliCommand(command) {
+  const status = $("cli-copy-status");
+  const fail = () => {
+    if (status) status.textContent = "Could not copy. Select the command and copy it.";
+  };
+  if (!command || !navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+    fail();
+    return;
+  }
+  navigator.clipboard.writeText(command).then(() => {
+    if (status) status.textContent = "Command copied. Morrow did not run it.";
+  }).catch(fail);
+}
+
+function wireCliCopy() {
+  const list = $("cli-list");
+  if (!list || list.dataset.wired === "1") return;
+  list.dataset.wired = "1";
+  list.addEventListener("click", (event) => {
+    const button = event.target.closest && event.target.closest("[data-cli-copy]");
+    if (!button || !list.contains(button)) return;
+    copyCliCommand(button.getAttribute("data-cli-copy") || "");
+  });
+}
+
+function paintCli() {
+  const note = $("cli-note");
+  if (note) note.textContent = cliNote();
+  const list = $("cli-list");
   if (!list) return;
   list.replaceChildren();
   let group = "";
-  for (const row of shortcutCatalog(platform)) {
+  for (const row of cliCatalog()) {
     if (row.group !== group) {
       group = row.group;
       const heading = document.createElement("li");
@@ -11347,16 +11430,58 @@ function paintShortcuts() {
       list.appendChild(heading);
     }
     const item = document.createElement("li");
-    item.className = "shortcut-row";
-    const keys = document.createElement("span");
-    keys.className = "shortcut-keys";
-    keys.textContent = row.keys;
+    item.className = "shortcut-row cli-row";
+    const command = document.createElement("div");
+    command.className = "cli-command";
+    const code = document.createElement("code");
+    code.textContent = row.command;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost icon-label";
+    button.setAttribute("data-cli-copy", row.command);
+    button.setAttribute("aria-label", "Copy " + row.command);
+    const label = document.createElement("span");
+    label.textContent = "Copy";
+    button.append(cliCopyIcon(), label);
+    command.append(code, button);
     const action = document.createElement("span");
     action.className = "shortcut-action";
     action.textContent = row.action;
-    item.append(keys, action);
+    item.append(command, action);
     list.appendChild(item);
   }
+  wireCliCopy();
+}
+
+function paintShortcuts() {
+  const platform = typeof navigator !== "undefined" ? navigator.platform : "";
+  const note = $("shortcuts-note");
+  if (note) note.textContent = shortcutNote(platform);
+  const list = $("shortcuts-list");
+  if (list) {
+    list.replaceChildren();
+    let group = "";
+    for (const row of shortcutCatalog(platform)) {
+      if (row.group !== group) {
+        group = row.group;
+        const heading = document.createElement("li");
+        heading.className = "shortcut-group";
+        heading.textContent = group;
+        list.appendChild(heading);
+      }
+      const item = document.createElement("li");
+      item.className = "shortcut-row";
+      const keys = document.createElement("span");
+      keys.className = "shortcut-keys";
+      keys.textContent = row.keys;
+      const action = document.createElement("span");
+      action.className = "shortcut-action";
+      action.textContent = row.action;
+      item.append(keys, action);
+      list.appendChild(item);
+    }
+  }
+  paintCli();
 }
 
 function onShellKey(event) {
@@ -12254,10 +12379,68 @@ function paintAiDirty() {
   if (dirty && $("ai-status") && $("ai-status").textContent === "Saved.") setAiStatus("", false);
 }
 
+function clearAiModelChoices() {
+  const chooser = $("ai-model-chooser");
+  const select = $("ai-model-select");
+  if (select) {
+    select.replaceChildren();
+    select.value = "";
+  }
+  if (chooser) chooser.hidden = true;
+}
+
+function applyFetchedModels(ids) {
+  const chooser = $("ai-model-chooser");
+  const select = $("ai-model-select");
+  if (!chooser || !select) return 0;
+  select.replaceChildren();
+  const seen = new Set();
+  const models = [];
+  for (const raw of Array.isArray(ids) ? ids : []) {
+    const id = typeof raw === "string" ? raw.trim() : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    models.push(id);
+  }
+  if (!models.length) {
+    select.value = "";
+    chooser.hidden = true;
+    return 0;
+  }
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Choose a model";
+  select.appendChild(placeholder);
+  const current = String(($("ai-model") && $("ai-model").value) || "").trim();
+  for (const id of models) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = id;
+    select.appendChild(option);
+  }
+  select.size = Math.min(8, Math.max(models.length + 1, 3));
+  select.value = models.includes(current) ? current : "";
+  chooser.hidden = false;
+  return models.length;
+}
+
+function chooseFetchedModel() {
+  const select = $("ai-model-select");
+  const input = $("ai-model");
+  if (!select || !input) return;
+  const id = String(select.value || "").trim();
+  if (!id || input.value === id) return;
+  input.value = id;
+  if (typeof input.dispatchEvent === "function") {
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  paintAiDirty();
+}
+
 async function loadAiSettings() {
   setAiStatus("", false);
   $("ai-key").value = "";
-  $("ai-model-list").replaceChildren();
+  clearAiModelChoices();
   try {
     const cfg = await api.invoke("host:aiGetConfig");
     $("ai-base").value = cfg && cfg.baseUrl ? cfg.baseUrl : "";
@@ -12304,14 +12487,8 @@ async function fetchAiModels() {
       return;
     }
     const ids = Array.isArray(result.models) ? result.models : [];
-    const list = $("ai-model-list");
-    list.replaceChildren();
-    for (const id of ids) {
-      const option = document.createElement("option");
-      option.value = id;
-      list.appendChild(option);
-    }
-    setAiStatus(ids.length ? "Fetched " + ids.length + " models. Pick one or type an id." : "No models returned. Type a model id.", false);
+    const count = applyFetchedModels(ids);
+    setAiStatus(count ? "Fetched " + count + " models. Pick one or type an id." : "No models returned. Type a model id.", false);
   } catch (error) {
     setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -17328,6 +17505,7 @@ function wire() {
     $(id).addEventListener("input", paintAiDirty);
     $(id).addEventListener("change", paintAiDirty);
   }
+  $("ai-model-select").addEventListener("change", chooseFetchedModel);
   for (const id of ["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience", "ooo-domain"]) {
     $(id).addEventListener("input", paintOooDirty);
     $(id).addEventListener("change", paintOooDirty);

@@ -336,9 +336,16 @@
         <button type="button" class="brain-tab" role="tab" id="brain-tab-rules" aria-controls="brain-rules" aria-selected="false" tabindex="-1">Rules</button>
       </div>
       <section id="brain-profile" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-profile">
-        <p id="brain-status" role="status"></p>
-        <div id="brain-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
-        <dl id="brain-meta" class="brain-meta" hidden></dl>
+        <section class="brain-summary" aria-label="Profile summary">
+          <dl id="brain-meta" class="brain-meta" hidden></dl>
+          <p id="brain-status" role="status"></p>
+          <div id="brain-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
+          <div class="row brain-actions">
+            <button type="button" class="ghost" id="brain-refresh">Refresh</button>
+            <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
+          </div>
+          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay.</p>
+        </section>
         <div id="brain-sections"></div>
         <p class="hint" id="brain-compose-pointer">Compose defaults live in <button type="button" class="inline-link" id="brain-open-compose-settings">Settings → Compose</button>.</p>
         <section id="brain-activity" aria-label="Recent updates" hidden>
@@ -351,8 +358,6 @@
           <div class="row">
             <button type="submit" class="primary" id="brain-add">Add</button>
             <button type="button" class="ghost" id="brain-cancel" hidden>Cancel</button>
-            <button type="button" class="ghost" id="brain-refresh">Refresh</button>
-            <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
           </div>
         </form>
         <label for="brain-fix-note">Fix note <span class="optional">(optional)</span></label>
@@ -449,15 +454,24 @@
         </div>
       </section>
     </section>
-    <section id="shortcuts-panel" class="primary-space" hidden aria-label="Shortcuts">
+    <section id="shortcuts-panel" class="primary-space" hidden aria-label="Shortcuts and command line">
       <div class="space-head">
         <div>
           <p class="space-kicker">Help</p>
-          <h2>Shortcuts</h2>
+          <h2 id="shortcuts-title">Shortcuts</h2>
         </div>
       </div>
       <p class="hint" id="shortcuts-note"></p>
-      <ul id="shortcuts-list" class="shortcut-list"></ul>
+      <ul id="shortcuts-list" class="shortcut-list" aria-labelledby="shortcuts-title"></ul>
+      <div class="space-head cli-head">
+        <div>
+          <p class="space-kicker">Command line</p>
+          <h2 id="cli-title">CLI</h2>
+        </div>
+      </div>
+      <p class="hint" id="cli-note"></p>
+      <p id="cli-copy-status" class="hint" role="status"></p>
+      <ul id="cli-list" class="shortcut-list cli-list" aria-labelledby="cli-title"></ul>
     </section>
     <section id="log-panel" class="primary-space" hidden aria-label="Debug log">
       <div class="space-head">
@@ -771,7 +785,7 @@
           <label class="check" for="signature-html"><input id="signature-html" type="checkbox" checked /> HTML</label>
           <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default for this account</label>
           <label for="signature-domains">Domains</label>
-          <input id="signature-domains" type="text" autocomplete="off" spellcheck="false" placeholder="hkbscl.com, gmail.com" />
+          <input id="signature-domains" type="text" autocomplete="off" spellcheck="false" placeholder="example.com, example.org" />
           <p class="hint">Compose uses this signature when From is one of these domains, and otherwise uses the account default. Enter the exact domain. A leading @ is optional. Subdomains do not match.</p>
           <div class="row">
             <button type="submit" class="primary" id="signature-save">Add</button>
@@ -831,10 +845,11 @@
             <div class="field">
               <label for="pref-accent">Accent color</label>
               <div class="accent-control">
-                <input id="pref-accent-picker" type="color" value="#193c34" aria-label="Pick accent color" />
-                <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" placeholder="#193C34" />
+                <input id="pref-accent-picker" type="color" value="#193c34" aria-label="Pick accent color" aria-describedby="pref-accent-help" />
+                <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" placeholder="#193C34" aria-describedby="pref-accent-help" />
                 <button type="button" class="ghost" id="pref-accent-reset">Reset</button>
               </div>
+              <p class="hint" id="pref-accent-help">Colors highlights and buttons, such as the unread dot, avatars, and primary buttons. Theme sets the light or dark shell, including the rail and canvas.</p>
             </div>
             <div class="checks">
               <h4>Sidebar &amp; navigation</h4>
@@ -854,12 +869,12 @@
               <select id="pref-sync-horizon" aria-describedby="sync-horizon-help">
                 <option value="180">Last 180 days</option>
                 <option value="365">Last 365 days</option>
-                <option value="0">All (unlimited)</option>
+                <option value="0" selected>All (unlimited)</option>
               </select>
               <p class="hint" id="sync-horizon-help">For all accounts. Downloaded mail stays when you shorten history. All history across many folders takes more time and disk space.</p>
             </div>
             <div class="checks">
-              <label class="check" for="pref-compact-list"><input id="pref-compact-list" type="checkbox" /> Compact message list <span class="hint">· one line per message</span></label>
+              <label class="check" for="pref-compact-list"><input id="pref-compact-list" type="checkbox" checked /> Compact message list <span class="hint">· one line per message</span></label>
             </div>
             <details class="settings-disclosure"><summary>How history downloads</summary>
               <p class="hint">Every listed folder downloads in the background while Morrow Mail is open. You do not need to open a folder first. Folders take turns, so one large folder does not block the others. All history with many folders takes longer the first time and uses more disk. Browse downloaded mail with Previous and Next, 200 messages at a time.</p>
@@ -868,7 +883,7 @@
               <h4>Reading &amp; sending</h4>
               <div class="field settings-short-field">
                 <label for="pref-undo">Undo send (seconds)</label>
-                <input id="pref-undo" type="number" min="0" max="30" step="1" />
+                <input id="pref-undo" type="number" min="0" max="30" step="1" value="30" />
               </div>
               <div class="schedule-delay-field" id="pref-schedule-delay">
                 <span id="pref-schedule-delay-label">Default schedule delay</span>
@@ -887,7 +902,7 @@
               </div>
               <div class="checks">
                 <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
-                <label class="check" for="pref-images"><input id="pref-images" type="checkbox" aria-describedby="pref-images-help" /> Load remote images</label>
+                <label class="check" for="pref-images"><input id="pref-images" type="checkbox" checked aria-describedby="pref-images-help" /> Load remote images</label>
                 <p class="hint check-hint" id="pref-images-help">Remote images can include tracking pixels that report when and where you opened a message and may identify your device to the sender. Morrow keeps them blocked until you turn this on.</p>
                 <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
               </div>
@@ -905,8 +920,12 @@
             </div>
             <div class="field">
             <label for="ai-model">Model</label>
-            <input id="ai-model" type="text" list="ai-model-list" spellcheck="false" autocomplete="off" />
-            <datalist id="ai-model-list"></datalist>
+            <input id="ai-model" type="text" spellcheck="false" autocomplete="off" aria-describedby="ai-model-help" />
+            <div id="ai-model-chooser" class="ai-model-chooser" hidden>
+              <label for="ai-model-select">Fetched models</label>
+              <select id="ai-model-select" size="6" aria-describedby="ai-model-help"></select>
+            </div>
+            <p class="hint" id="ai-model-help">Type a model id, or fetch models and click one in the list.</p>
             </div>
             <div class="field settings-full-width">
             <label for="ai-key">API key</label>
@@ -991,14 +1010,14 @@
             <form id="brain-compose-form">
               <p class="hint">Default CC is chosen from your received alias for replies and forwards, or your From address for new mail. Review recipients before sending.</p>
               <label for="brain-compose-domains">Default CC by domain — one domain per line</label>
-              <textarea id="brain-compose-domains" rows="4" placeholder="@hkbscl.com = colleague@hkbscl.com, team@example.com" spellcheck="false" disabled></textarea>
+              <textarea id="brain-compose-domains" rows="4" placeholder="@example.com = colleague@example.com, team@example.org" spellcheck="false" disabled></textarea>
               <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
-              <textarea id="brain-compose-bcc" rows="4" placeholder="@hkbscl.com = records@hkbscl.com, audit@example.com" spellcheck="false" disabled></textarea>
+              <textarea id="brain-compose-bcc" rows="4" placeholder="@example.org = records@example.org, audit@example.com" spellcheck="false" disabled></textarea>
               <label for="brain-compose-account">Mailbox for alias settings</label>
               <select id="brain-compose-account" disabled></select>
               <p id="brain-compose-identities" class="hint"></p>
               <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
-              <textarea id="brain-compose-aliases" rows="3" placeholder="leo@hkbscl.com&#10;leo@gmail.com = hkbscl.com" spellcheck="false" disabled></textarea>
+              <textarea id="brain-compose-aliases" rows="3" placeholder="ada@example.com&#10;ada@example.org = example.com" spellcheck="false" disabled></textarea>
               <p class="hint">Add only addresses belonging to this mailbox. Gmail must verify send-as aliases; Outlook needs send-as permission. Your SMTP provider may restrict the From address.</p>
               <label for="brain-compose-from">Preferred From for new mail (optional)</label>
               <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
