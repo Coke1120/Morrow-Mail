@@ -330,7 +330,7 @@ async function run() {
   assert.ok(html.includes('id="settings-bot"'));
   assert.ok(html.includes("Do not enable Funnel"));
   assert.ok(html.includes('id="bot-sections"'));
-  assert.ok(html.includes("This bot can send mail as you."));
+  assert.ok(html.includes("Send mail from these mailboxes"));
   assert.ok(appSrc.includes("Nothing is sent until you press Send."));
   assert.ok(appSrc.includes("bot:mintGrant"));
   assert.ok(appSrc.includes("window.morrowMotion") || appSrc.includes("morrowMotion"));

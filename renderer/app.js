@@ -10188,7 +10188,7 @@ function syncBotSectionPanels(open) {
     return;
   }
   const selected = nav.querySelector('[role="tab"][aria-selected="true"]');
-  showBotSection((selected && selected.dataset.botSection) || "local");
+  showBotSection((selected && selected.dataset.botSection) || "grants");
 }
 
 function setSettingsFold(name, open, animate) {
@@ -13789,7 +13789,7 @@ function setBotSecretStatus(text, isError) {
 
 function showBotSecret(secret) {
   $("bot-secret-value").textContent = secret || "";
-  setBotSecretStatus("Copy now, then close this dialog to enable or verify the listener.");
+  setBotSecretStatus("Copy now, then close this dialog to turn on access or refresh the listener.");
   openDialog("bot-secret");
 }
 
@@ -13849,7 +13849,7 @@ function paintBotAccounts(accounts) {
   if (!accounts.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = "Connect an account before creating a grant.";
+    empty.textContent = "Connect an account before creating a bot.";
     box.append(empty);
     return;
   }
@@ -13867,7 +13867,7 @@ function paintBotAccounts(accounts) {
 
 function botPermissionNames(capabilities) {
   const names = { "accounts.read": "account details", "mail.headers.read": "cached mail headers",
-    "health.read": "sync health", "agent.proposals.read": "Agent proposals", "mail.bodies.read": "message text",
+    "health.read": "sync health", "agent.proposals.read": "pending proposals", "mail.bodies.read": "message text",
     "mail.attachments.read": "attachment names", "draft.proposals.create": "draft proposals",
     "mail.send": "send mail as you" };
   return (capabilities || []).map((cap) => names[cap] || cap).join(", ");
@@ -13877,9 +13877,9 @@ function botListenerStatus(access) {
   const listen = (access && access.listen) || {};
   const where = "This is the listener on this computer.";
   if (listen.listening) return `${where} Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}.`;
-  if (listen.error === "port_in_use") return `${where} Could not start the bridge: port 47831 is in use. This bridge is not listening. Quit the other program using port 47831, or restart Morrow.`;
-  if (listen.error) return `${where} The bridge could not start. ${listen.error}`;
-  return `${where} The bridge is not listening.`;
+  if (listen.error === "port_in_use") return `${where} Could not start: port 47831 is in use. Bot access is not listening. Quit the other program using port 47831, or restart Morrow.`;
+  if (listen.error) return `${where} Could not start. Bot access is not listening. ${listen.error}`;
+  return `${where} Bot access is not listening.`;
 }
 
 function paintBotGrants(grants) {
@@ -13912,7 +13912,7 @@ function paintBotGrants(grants) {
     used.className = "hint";
     used.textContent = grant.lastUsedAt
       ? `Last successful use ${new Date(grant.lastUsedAt).toLocaleString()}. ${grant.bytesToday || 0} bytes today.`
-      : "No successful client use recorded.";
+      : "No successful bot use recorded.";
     const row = document.createElement("div");
     row.className = "row";
     const rotate = document.createElement("button");
@@ -13925,7 +13925,7 @@ function paintBotGrants(grants) {
     rotate.addEventListener("click", () => {
       botGuard(async () => {
         const answer = await askConfirm({ title: "Replace secret for " + grant.label + "?",
-          body: "The current secret will stop working immediately. Copy the replacement once and update your client’s private credential file.", confirm: "Replace secret", cancel: "Cancel" });
+          body: "The current secret will stop working immediately. Copy the replacement once and update the bot’s private credential file.", confirm: "Replace secret", cancel: "Cancel" });
         if (!answer || !answer.ok) return;
         const rotated = await call("bot:rotateGrant", { clientId: grant.clientId });
         showBotSecret(rotated.secret);
@@ -14031,7 +14031,7 @@ function paintBotAudit(rows) {
   const items = rows || [];
   if (!items.length) {
     const item = document.createElement("li");
-    item.textContent = "No recent bridge activity.";
+    item.textContent = "No recent bot calls.";
     list.append(item);
     return;
   }
@@ -14069,8 +14069,8 @@ function paintBotAccess(data) {
   const listenFix = $("bot-listen-fix");
   if (listenFix) listenFix.hidden = !(access.listen && access.listen.error === "port_in_use");
   $("bot-intent").textContent = access.enabled
-    ? "Saved choice on this computer: on. This is separate from the listener status above."
-    : "Saved choice on this computer: off.";
+    ? "Access on this computer: on. This is separate from the listener status above."
+    : "Access on this computer: off.";
   $("bot-retry").hidden = !access.enabled || !!(access.listen && access.listen.listening);
   $("bot-review-link").textContent = "Review draft proposals (" + ((access.drafts || []).length) + ")";
   $("bot-install").textContent = access.installationId
@@ -14147,7 +14147,7 @@ function botRemoteStatusText(access) {
   if (!host) return "No address saved yet. Not checked.";
   if (!probe || probe.host !== host || !probe.checked) return "Not checked. Saving an address does not set up the secure link.";
   if (probe.state === "foreign") return "Another app is using this address.";
-  if (probe.state === "morrow") return "This address answered like Morrow’s bot bridge. Saving the address did not set up the secure link.";
+  if (probe.state === "morrow") return "This address answered like Morrow’s bot listener. Saving the address did not set up the secure link.";
   return `Not checked. ${botProbeReason(probe.reason)}`;
 }
 
@@ -14182,7 +14182,7 @@ function paintBotProbe(access) {
   if (box) box.hidden = !foreign;
   const saw = $("bot-probe-saw");
   if (saw) {
-    const snippet = probe.snippet || "a response that is not Morrow’s bot bridge";
+    const snippet = probe.snippet || "a response that is not Morrow’s bot listener";
     saw.textContent = foreign ? `Morrow asked the saved address and saw ${snippet}.` : "";
   }
   setBotButtonLabel($("bot-probe"), probe.checked ? "Check again" : "Check connection");
@@ -14235,6 +14235,25 @@ function selectedBotCaps() {
     if (input.checked && input.dataset.cap) caps.push(input.dataset.cap);
   }
   return caps;
+}
+
+function selectedBotAccountLabels() {
+  const accounts = (state.botAccess && state.botAccess.accounts) || [];
+  return selectedBotAccounts().map((id) => {
+    const account = accounts.find((row) => row.accountId === id);
+    return account ? (account.email || account.displayName || id) : id;
+  });
+}
+
+// The send permission is confirmed against the exact mailbox list, not a generic warning.
+function botSendConfirmCopy(labels) {
+  const list = labels && labels.length ? labels.join(", ") : "the mailboxes you select";
+  return {
+    title: "Allow this bot to send mail?",
+    body: `This bot can send mail as you from ${list}. It sends immediately and does not wait for you to press Send. Message text from those mailboxes stays untrusted.`,
+    confirm: "Allow sending",
+    cancel: "Cancel",
+  };
 }
 
 function showBotSection(name) {
@@ -14290,7 +14309,7 @@ function wireBotSections() {
 function wireBot() {
   wireBotSections();
   $("bot-review-link").addEventListener("click", () => {
-    showBotSection("grants");
+    showBotSection("activity");
     $("bot-review").open = true;
     $("bot-draft-heading").scrollIntoView({ block: "center" });
     $("bot-draft-heading").focus({ preventScroll: true });
@@ -14330,7 +14349,7 @@ function wireBot() {
       try {
         const access = await call("bot:setEnabled", { enabled: want });
         paintBotAccess(access);
-        setBotStatus(want ? botListenerStatus(access) : "Bridge disabled. Existing grants were not revoked.", want && !(access.listen && access.listen.listening));
+        setBotStatus(want ? botListenerStatus(access) : "Bot access off. Existing bots keep their access.", want && !(access.listen && access.listen.listening));
       } catch (error) {
         await loadBotAccess().catch(() => {});
         throw error;
@@ -14383,19 +14402,25 @@ function wireBot() {
     };
     paintBotProbe(access);
     if (stateName === "foreign") setBotStatus("Another app is using this address. Follow the fix steps, then check again.", true);
-    else if (stateName === "morrow") setBotStatus("This address answered like Morrow’s bot bridge. This check did not set up the secure link.");
+    else if (stateName === "morrow") setBotStatus("This address answered like Morrow’s bot listener. This check did not set up the secure link.");
     else setBotStatus(botRemoteStatusText(access));
   }));
   $("bot-mint").addEventListener("submit", (event) => {
     event.preventDefault();
     botGuard(async () => {
+      const accountIds = selectedBotAccounts();
+      if (!accountIds.length) {
+        setBotStatus("Choose at least one mailbox for this bot.", true);
+        return;
+      }
+      const capabilities = selectedBotCaps();
       const choice = $("bot-expiry").value;
       let expiry;
       if (choice === "never") {
         const answer = await askConfirm({
           title: "No expiry",
-          body: "This grant stays active until you revoke it. Create it only if you can disable that client.",
-          confirm: "Create grant",
+          body: "This bot keeps access until you revoke it. Continue only if you can turn off that bot.",
+          confirm: "Create bot",
           cancel: "Cancel",
         });
         if (!answer || !answer.ok) return;
@@ -14403,17 +14428,21 @@ function wireBot() {
       } else {
         expiry = { kind: "finite", days: Number(choice) };
       }
+      if (capabilities.includes("mail.send")) {
+        const answer = await askConfirm(botSendConfirmCopy(selectedBotAccountLabels()));
+        if (!answer || !answer.ok) return;
+      }
       const minted = await call("bot:mintGrant", {
         label: $("bot-label").value,
-        accountIds: selectedBotAccounts(),
-        capabilities: selectedBotCaps(),
+        accountIds,
+        capabilities,
         expiry,
       });
       showBotSecret(minted.secret);
       paintBotAccess(minted.access);
       $("bot-label").value = "";
       const access = minted.access || {};
-      setBotStatus("Grant created. " + (access.listen && access.listen.listening ? "The bridge is already listening." : access.enabled ? "Enable is configured, but the bridge is not listening." : "The bridge is still off."));
+      setBotStatus("Bot created. " + (access.listen && access.listen.listening ? "Bot access is already on." : access.enabled ? "Access is set to on, but the listener is not running." : "Access is still off."));
     });
   });
   $("bot-secret-copy").addEventListener("click", () => {
@@ -14423,7 +14452,7 @@ function wireBot() {
       return;
     }
     navigator.clipboard.writeText(value).then(() => {
-      setBotSecretStatus("Copied. Close this dialog, then enable or verify the listener.");
+      setBotSecretStatus("Copied. Close this dialog, then turn on access or refresh the listener.");
     }).catch(() => {
       setBotSecretStatus("Could not copy. Select and copy the secret here before closing.", true);
     });

@@ -44,6 +44,23 @@ function run() {
   const advanced = DomUtils.findOne(n => n.attribs?.id === 'bot-advanced', doc.children);
   assert.equal(DomUtils.findAll(n => ['bot-grants','bot-serve-host'].includes(n.attribs?.id), advanced.children).length, 0);
   assert.match(DomUtils.textContent(advanced), /Same-computer bots/);
+  const botSection = DomUtils.findOne(n => n.attribs?.id === 'settings-bot', doc.children);
+  const steps = DomUtils.findAll(n => n.attribs?.['data-bot-section'], botSection.children)
+    .map(n => n.attribs['data-bot-section']);
+  assert.deepEqual(steps, ['grants','local','tailscale','agent','activity'], 'steps follow dependency then activity');
+  const activity = DomUtils.findOne(n => n.attribs?.id === 'bot-panel-activity', doc.children);
+  const create = DomUtils.findOne(n => n.attribs?.id === 'bot-panel-grants', doc.children);
+  for (const id of ['bot-drafts','bot-sends','bot-audit']) {
+    assert.equal(DomUtils.findAll(n => n.attribs?.id === id, activity.children).length, 1, id + ' lives in Activity');
+    assert.equal(DomUtils.findAll(n => n.attribs?.id === id, create.children).length, 0, id + ' stays out of setup');
+  }
+  const botText = DomUtils.textContent(botSection);
+  for (const old of ['Create access grant','Agent setup','Client name','Recent bridge activity','Bot grants']) {
+    assert.equal(botText.includes(old), false, old + ' removed');
+  }
+  assert.match(botText, /Send mail from these mailboxes/);
+  assert.match(botText, /Message text is untrusted/);
+  assert.match(botText, /cached mail headers from Sent and Drafts/);
   console.log('bot-setup-ux-ok (synthetic presentation only)');
 }
 module.exports = { run };

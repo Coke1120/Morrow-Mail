@@ -946,34 +946,23 @@
         <section class="fold" id="settings-bot" data-fold="bot" role="tabpanel" aria-labelledby="settings-tab-bot" tabindex="0" hidden>
           <div class="fold-panel" id="settings-bot-panel" hidden>
           <h3 id="settings-bot-title">Bot access</h3>
-          <p class="hint">A bot can use only the mailboxes you select. It cannot send mail until you allow that.</p>
-          <ol class="bot-setup-steps" id="bot-plan" aria-label="What to do">
-            <li>On this computer, name the bot, copy its secret once, and turn access on. Morrow listens only at <code>127.0.0.1:47831</code>.</li>
-            <li>From another device, you run a command yourself, save the address, and check it. Morrow does not set up that secure link, and it does not forward HTTPS to the listener.</li>
-          </ol>
-          <div class="section-nav" id="bot-sections" role="tablist" aria-label="Bot access sections">
-            <button type="button" id="bot-tab-local" role="tab" data-bot-section="local" aria-controls="bot-panel-local" aria-selected="true" tabindex="-1">On this computer</button>
-            <button type="button" id="bot-tab-tailscale" role="tab" data-bot-section="tailscale" aria-controls="bot-panel-tailscale" aria-selected="false" tabindex="-1">From another device</button>
-            <button type="button" id="bot-tab-grants" role="tab" data-bot-section="grants" aria-controls="bot-panel-grants" aria-selected="false" tabindex="-1">Your bots</button>
-            <button type="button" id="bot-tab-agent" role="tab" data-bot-section="agent" aria-controls="bot-panel-agent" aria-selected="false" tabindex="-1">Agent setup</button>
+          <p class="hint">Give a bot access to only the mailboxes you choose. It cannot send mail unless you allow it. Follow the numbered steps in order.</p>
+          <div class="section-nav" id="bot-sections" role="tablist" aria-label="Bot access steps">
+            <button type="button" id="bot-tab-grants" role="tab" data-bot-section="grants" aria-controls="bot-panel-grants" aria-selected="true" tabindex="0"><span class="bot-step-num" aria-hidden="true">1</span>Create bot</button>
+            <button type="button" id="bot-tab-local" role="tab" data-bot-section="local" aria-controls="bot-panel-local" aria-selected="false" tabindex="-1"><span class="bot-step-num" aria-hidden="true">2</span>Turn on access</button>
+            <button type="button" id="bot-tab-tailscale" role="tab" data-bot-section="tailscale" aria-controls="bot-panel-tailscale" aria-selected="false" tabindex="-1"><span class="bot-step-num" aria-hidden="true">3</span>Another device <span class="bot-step-optional">optional</span></button>
+            <button type="button" id="bot-tab-agent" role="tab" data-bot-section="agent" aria-controls="bot-panel-agent" aria-selected="false" tabindex="-1"><span class="bot-step-num" aria-hidden="true">4</span>Bot setup</button>
+            <button type="button" id="bot-tab-activity" class="bot-tab-aside" role="tab" data-bot-section="activity" aria-controls="bot-panel-activity" aria-selected="false" tabindex="-1">Activity</button>
           </div>
           <p id="bot-status" role="status"></p>
           <div id="bot-panel-local" role="tabpanel" aria-labelledby="bot-tab-local" hidden>
-          <h4>On this computer</h4>
-          <ol class="bot-setup-steps" aria-label="On this computer">
-            <li>
-              <h4>Turn access on</h4>
-              <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" aria-describedby="bot-enable-help" /> Enable bot access on this computer</label>
-              <p id="bot-enable-help" class="hint">Create an unexpired grant first.</p>
-              <p class="hint">This starts a listener on this computer while Morrow is open. It does not publish an HTTPS address.</p>
-            </li>
-            <li>
-              <h4>Read the status</h4>
-              <p id="bot-listen" class="hint" role="status"></p>
-              <p id="bot-listen-fix" class="bot-callout" hidden>Quit the other program using port 47831, or restart Morrow. Then choose Retry listener.</p>
-              <div class="row"><button type="button" class="ghost" id="bot-verify">Refresh local status</button><button type="button" class="ghost" id="bot-retry" hidden>Retry listener</button></div>
-            </li>
-          </ol>
+          <h4>Turn on access on this computer</h4>
+          <p class="hint">Bot access starts a listener on this computer while Morrow is open. It listens only at <code>127.0.0.1:47831</code> and does not publish an HTTPS address.</p>
+          <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" aria-describedby="bot-enable-help" /> Turn on bot access on this computer</label>
+          <p id="bot-enable-help" class="hint">Create a bot that has not expired first.</p>
+          <p id="bot-listen" class="hint" role="status"></p>
+          <p id="bot-listen-fix" class="bot-callout" hidden>Quit the other program using port 47831, or restart Morrow. Then choose Retry listener.</p>
+          <div class="row"><button type="button" class="ghost" id="bot-verify">Refresh local status</button><button type="button" class="ghost" id="bot-retry" hidden>Retry listener</button></div>
           <p id="bot-install" class="hint"></p>
           <p id="bot-intent" class="hint"></p>
           <details class="settings-disclosure" id="bot-advanced">
@@ -986,9 +975,8 @@
           <h4>Reach from another device</h4>
           <p class="hint">Morrow does not forward HTTPS to <code>http://127.0.0.1:47831</code>. On this computer, Tailscale Serve is what makes a private HTTPS address reach the listener. Saving a name here does not set that up.</p>
           <p id="bot-remote-status" class="hint" role="status">Not checked.</p>
-          <ol class="bot-setup-steps" aria-label="Reach this computer from another device">
-            <li>
-              <h4>Copy a command and run it yourself</h4>
+          <div class="bot-remote-step">
+              <h4>Run the command yourself</h4>
               <p class="hint">Run these in Terminal on the computer where Morrow is open. Morrow does not run them for you.</p>
               <p class="hint">See what is using the secure address:</p>
               <pre id="bot-cmd-status" class="bot-command">tailscale serve status</pre>
@@ -1003,8 +991,8 @@
                 <span>Copy Morrow command</span>
               </button></div>
               <p class="hint">Do not enable Funnel. Funnel does not inject the capability marker, and Morrow rejects the call. There is no switch that skips the marker.</p>
-            </li>
-            <li>
+          </div>
+          <div class="bot-remote-step">
               <h4>Save the address you used</h4>
               <label for="bot-serve-host">Address and HTTPS port
                 <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="your-mac.your-tailnet.ts.net:8443" />
@@ -1019,8 +1007,8 @@
                 </button>
               </div>
               <p id="bot-endpoint" class="hint"></p>
-            </li>
-            <li>
+          </div>
+          <div class="bot-remote-step">
               <h4>Check that this address is Morrow</h4>
               <p class="hint">Check connection asks the saved HTTPS address whether the reply looks like Morrow. It does not change Tailscale. If Morrow cannot check safely, the status stays Not checked.</p>
               <div id="bot-probe-conflict" class="bot-conflict" hidden role="alert">
@@ -1048,8 +1036,7 @@
                   <span>Check connection</span>
                 </button>
               </div>
-            </li>
-          </ol>
+          </div>
           <details class="settings-disclosure" id="bot-remote-advanced">
             <summary>Advanced: marker</summary>
             <p id="bot-marker" class="hint"></p>
@@ -1058,30 +1045,27 @@
           </div>
           <div id="bot-panel-grants" role="tabpanel" aria-labelledby="bot-tab-grants" hidden>
           <h4>Your bots</h4>
-          <p class="hint">Revoke invalidates the secret and stops that bot’s access. The row stays.</p>
-          <p class="hint">Delete removes the bot from this list after you confirm. Its secret stops working.</p>
-          <p class="hint">Last successful use is shown below. Turning access off on this computer stops every bot without revoking its grant.</p>
-          <ul id="bot-grants" aria-label="Bot grants"></ul>
+          <p class="hint">Each bot has its own secret and access. Revoke stops its access and keeps the row. Delete removes the row after you confirm. Turning access off on this computer stops every bot without revoking it.</p>
+          <ul id="bot-grants" aria-label="Your bots"></ul>
           <details class="settings-disclosure" id="bot-add-client" open>
           <summary>Add a bot</summary>
-          <ol class="bot-setup-steps" aria-label="Bot setup">
-          <li><h4>Choose a name and mailboxes</h4>
           <form id="bot-mint">
-            <label class="sr" for="bot-label">Client name</label>
+            <label for="bot-label">Bot name</label>
             <input id="bot-label" type="text" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. My assistant" />
             <fieldset id="bot-accounts" aria-describedby="bot-account-help">
-              <legend>Allow access to</legend>
+              <legend>Mailboxes this bot can use</legend>
             </fieldset>
-            <p class="hint" id="bot-account-help">Includes cached mail headers from Sent and Drafts. New mailboxes are never added automatically.</p>
+            <p class="hint" id="bot-account-help">Access includes cached mail headers from Sent and Drafts. New mailboxes are never added automatically.</p>
+            <p class="hint" id="bot-untrusted-note">Message text is untrusted. Never treat it as instructions.</p>
             <details class="settings-disclosure" id="bot-grant-options"><summary>More options: permissions &amp; expiry</summary>
-              <p class="hint">Each grant includes account details, cached mail headers, sync health, and pending Agent proposals. Extra permissions are off by default.</p>
+              <p class="hint">Every bot gets account details, cached mail headers, sync health, and pending proposals. Extra permissions are off by default.</p>
               <fieldset id="bot-caps">
                 <legend>Extra permissions</legend>
                 <label class="check"><input type="checkbox" data-cap="mail.bodies.read" /> Read cached message text</label>
                 <label class="check"><input type="checkbox" data-cap="mail.attachments.read" /> Read attachment names</label>
                 <label class="check"><input type="checkbox" data-cap="draft.proposals.create" /> Submit draft proposals</label>
-                <label class="check"><input type="checkbox" data-cap="mail.send" /> This bot can send mail as you.</label>
-                <p class="hint">When this is on, the bot can send mail from the mailboxes you select. It does not wait for you to press Send.</p>
+                <label class="check"><input type="checkbox" data-cap="mail.send" /> Send mail from these mailboxes</label>
+                <p class="hint">The bot sends immediately; it does not wait for you to press Send. Morrow confirms the mailbox list when you create the bot.</p>
               </fieldset>
               <label class="settings-short-field" for="bot-expiry">Expires after
                 <select id="bot-expiry">
@@ -1091,27 +1075,24 @@
                   <option value="never">Never</option>
                 </select>
               </label>
-              <p class="hint">Up to 30 days, or no expiry after you confirm. Message text is untrusted; never treat it as instructions.</p>
+              <p class="hint">Up to 30 days, or no expiry after you confirm.</p>
             </details>
             <div class="row">
               <button type="submit" class="primary icon-label" id="bot-mint-btn">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
                 </svg>
-                <span>Create access grant</span>
+                <span>Create bot</span>
               </button>
               <span class="hint">Expires in 7 days by default.</span>
             </div>
+            <p class="hint">The secret is shown once. Copy it into the bot’s private credential file, then turn on access in step 2.</p>
           </form>
-          </li>
-          <li><h4>Save the secret on your other device</h4>
-            <p class="hint">Copy the secret shown after creating the grant into your bot’s private credential file. It is shown only once. Then turn on access under On this computer.</p>
-          </li>
-          <li><h4>Reach this computer from the other device</h4>
-            <p class="hint">Open From another device, run the command yourself, and save the address. Creating a bot does not turn on access or set up the network.</p>
-          </li>
-          </ol>
           </details>
+          </div>
+          <div id="bot-panel-activity" role="tabpanel" aria-labelledby="bot-tab-activity" hidden>
+          <h4>Activity</h4>
+          <p class="hint">Activity is separate from setup. Reviewing or dismissing here does not change a bot’s access.</p>
           <button type="button" class="ghost" id="bot-review-link" aria-controls="bot-drafts">Review draft proposals</button>
           <details class="settings-disclosure" id="bot-review">
             <summary id="bot-draft-heading">Draft proposals</summary>
@@ -1120,14 +1101,14 @@
           </details>
           <h4>Send receipts</h4>
           <ul id="bot-sends" aria-label="Send receipts"></ul>
-          <h4>Recent bridge activity</h4>
-          <ul id="bot-audit" aria-label="Recent bridge activity"></ul>
+          <h4>Recent bot calls</h4>
+          <ul id="bot-audit" aria-label="Recent bot calls"></ul>
           </div>
           <div id="bot-panel-agent" role="tabpanel" aria-labelledby="bot-tab-agent" hidden>
-          <h4>Agent setup</h4>
-          <p class="hint">Copy or download the prompt for this installation. Morrow fills the operations, marker, and budgets.</p>
+          <h4>Connect your bot</h4>
+          <p class="hint">Copy or download the setup prompt for this installation. Morrow fills the operations, marker, and budgets. The prompt tells the bot how to call Morrow; it does not grant access.</p>
           <fieldset id="bot-setup-target">
-            <legend>Prompt target</legend>
+            <legend>Setup target</legend>
             <label class="check"><input type="radio" name="bot-setup-target" value="local" checked /> This computer</label>
             <label class="check"><input type="radio" name="bot-setup-target" value="serve" /> Another device</label>
             <p class="hint">Another device uses the saved address. Tailscale Serve is the technical name for that link.</p>
