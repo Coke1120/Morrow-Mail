@@ -5311,6 +5311,7 @@ function renderReader(focus) {
     state.translate = null;
   }
   pane.replaceChildren();
+  syncAttachmentPreview(email);
   if (!email) {
     const wrap = document.createElement("div");
     wrap.className = "empty-read";
@@ -5581,43 +5582,339 @@ function renderThread(pane, email) {
   pane.appendChild(list);
 }
 
+function attachmentPreviewKind(file) {
+  if (!file || typeof file !== "object") return "";
+  const mime = String(file.mimeType || file.contentType || "").toLowerCase().split(";")[0].trim();
+  const name = String(file.filename || file.name || "").toLowerCase();
+  const generic = !mime || mime === "application/octet-stream";
+  if (mime === "application/pdf" || mime === "application/x-pdf") return "pdf";
+  if (mime.startsWith("image/") && mime !== "image/svg+xml" && !mime.includes("tiff") && !mime.includes("heic") && !mime.includes("heif")) return "image";
+  if (!generic) return "";
+  if (name.endsWith(".pdf")) return "pdf";
+  if (/\.(png|jpe?g|gif|webp|bmp|avif|apng|ico)$/.test(name)) return "image";
+  return "";
+}
+
+function attachmentBytes(data) {
+  if (!data) return new Uint8Array();
+  if (data instanceof Uint8Array) return new Uint8Array(data);
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (typeof data === "object" && data.type === "Buffer" && Array.isArray(data.data)) return Uint8Array.from(data.data);
+  return new Uint8Array();
+}
+
+function previewMime(file, kind) {
+  if (kind === "pdf") return "application/pdf";
+  const mime = String((file && (file.mimeType || file.contentType)) || "").toLowerCase().split(";")[0].trim();
+  if (mime.startsWith("image/") && mime !== "image/svg+xml") return mime === "image/jpg" ? "image/jpeg" : mime;
+  const name = String((file && (file.filename || file.name)) || "").toLowerCase();
+  if (name.endsWith(".png") || name.endsWith(".apng")) return "image/png";
+  if (name.endsWith(".gif")) return "image/gif";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".bmp")) return "image/bmp";
+  if (name.endsWith(".avif")) return "image/avif";
+  if (name.endsWith(".ico")) return "image/x-icon";
+  return "image/jpeg";
+}
+
+let attachmentPreviewToken = 0;
+let attachmentPreviewUrl = "";
+let attachmentPreviewEmailId = "";
+
+function readerIcon(kind) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const add = (tag, attrs) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+    svg.appendChild(node);
+  };
+  if (kind === "download") {
+    add("path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" });
+    add("polyline", { points: "7 10 12 15 17 10" });
+    add("line", { x1: "12", y1: "15", x2: "12", y2: "3" });
+  } else {
+    add("path", { d: "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" });
+  }
+  return svg;
+}
+
+function attachmentGhost(label, aria, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.textContent = label;
+  button.setAttribute("aria-label", aria);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function revokeAttachmentPreviewUrl() {
+  if (!attachmentPreviewUrl) return;
+  URL.revokeObjectURL(attachmentPreviewUrl);
+  attachmentPreviewUrl = "";
+}
+
+function resetPreviewFrame() {
+  const frame = $("attachment-preview-frame");
+  if (!frame || typeof frame.replaceWith !== "function" || typeof document.createElement !== "function") return;
+  const fresh = document.createElement("iframe");
+  fresh.id = "attachment-preview-frame";
+  fresh.hidden = true;
+  fresh.referrerPolicy = "no-referrer";
+  fresh.title = "PDF preview";
+  frame.replaceWith(fresh);
+}
+
+function clearAttachmentPreview() {
+  attachmentPreviewToken += 1;
+  attachmentPreviewEmailId = "";
+  const img = $("attachment-preview-image");
+  if (img) {
+    img.onload = null;
+    img.onerror = null;
+    if (typeof img.removeAttribute === "function") img.removeAttribute("src");
+    img.alt = "";
+    img.hidden = true;
+  }
+  resetPreviewFrame();
+  revokeAttachmentPreviewUrl();
+  const stage = $("attachment-preview-stage");
+  if (stage) {
+    stage.classList.remove("is-image");
+    stage.classList.remove("is-pdf");
+  }
+  const status = $("attachment-preview-status");
+  if (status) {
+    status.hidden = true;
+    status.textContent = "";
+  }
+}
+
+function closeAttachmentPreview() {
+  const dialog = $("attachment-preview");
+  if (!dialog || !dialog.open) return;
+  dialog.close();
+}
+
+function syncAttachmentPreview(email) {
+  const dialog = $("attachment-preview");
+  if (!dialog || !dialog.open) return;
+  const id = email && email.id;
+  if (id && id === attachmentPreviewEmailId) return;
+  closeAttachmentPreview();
+}
+
+function showAttachmentPreviewShell(file, kind) {
+  const dialog = $("attachment-preview");
+  const title = $("attachment-preview-title");
+  const status = $("attachment-preview-status");
+  const stage = $("attachment-preview-stage");
+  const img = $("attachment-preview-image");
+  const frame = $("attachment-preview-frame");
+  const label = (file && file.filename) || "Attachment";
+  if (title) title.textContent = label;
+  if (status) {
+    status.hidden = false;
+    status.textContent = "Loading preview…";
+  }
+  if (img) {
+    img.onload = null;
+    img.onerror = null;
+    img.removeAttribute("src");
+    img.hidden = true;
+  }
+  if (frame) {
+    frame.removeAttribute("src");
+    frame.hidden = true;
+  }
+  if (stage) {
+    stage.classList.toggle("is-image", kind === "image");
+    stage.classList.toggle("is-pdf", kind === "pdf");
+  }
+  if (dialog && !dialog.open) openDialog("attachment-preview");
+  const close = $("attachment-preview-close");
+  if (close) close.focus();
+}
+
+function rememberPreviewUrl(url) {
+  const previous = attachmentPreviewUrl;
+  attachmentPreviewUrl = url;
+  if (previous && previous !== url) URL.revokeObjectURL(previous);
+}
+
+async function previewAttachment(email, file) {
+  const kind = attachmentPreviewKind(file);
+  if (!kind || !file || !file.id) return;
+  const gen = ++attachmentPreviewToken;
+  attachmentPreviewEmailId = email && email.id ? email.id : "";
+  showAttachmentPreviewShell(file, kind);
+  const label = file.filename || "attachment";
+  let data;
+  try {
+    data = await call("mail:fetchAttachmentBytes", {
+      emailId: email.id,
+      messageId: email.id,
+      attachmentId: file.id,
+      filename: file.filename,
+    });
+  } catch (error) {
+    if (gen !== attachmentPreviewToken) return;
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "cancelled") return;
+    const status = $("attachment-preview-status");
+    if (status) {
+      status.hidden = false;
+      status.textContent = message;
+    }
+    throw error;
+  }
+  if (gen !== attachmentPreviewToken) return;
+  const bytes = attachmentBytes(data);
+  const status = $("attachment-preview-status");
+  if (!bytes.byteLength) {
+    if (status) {
+      status.hidden = false;
+      status.textContent = "This file is empty.";
+    }
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([bytes], { type: previewMime(file, kind) }));
+  rememberPreviewUrl(url);
+  if (gen !== attachmentPreviewToken) return;
+  if (kind === "image") {
+    const img = $("attachment-preview-image");
+    if (!img) return;
+    img.alt = label;
+    img.onload = () => {
+      if (gen !== attachmentPreviewToken) return;
+      img.hidden = false;
+      if (status) status.hidden = true;
+    };
+    img.onerror = () => {
+      if (gen !== attachmentPreviewToken) return;
+      img.hidden = true;
+      if (status) {
+        status.hidden = false;
+        status.textContent = "This image could not be previewed. Save or Open it instead.";
+      }
+    };
+    img.src = url;
+    return;
+  }
+  const frame = $("attachment-preview-frame");
+  if (!frame) return;
+  frame.title = "PDF preview of " + label;
+  frame.hidden = false;
+  frame.src = url;
+  if (status) status.hidden = true;
+}
+
+async function saveAttachmentsZip(email, files) {
+  const attachmentIds = (files || []).map((file) => file && file.id).filter(Boolean);
+  if (!attachmentIds.length) return;
+  try {
+    await call("mail:downloadAttachmentsZip", {
+      emailId: email.id,
+      messageId: email.id,
+      attachmentIds,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "cancelled") return;
+    throw error;
+  }
+  showStatus("Saved all attachments.");
+}
+
 function renderAttachments(pane, email) {
   const files = (email.attachments || []).filter((item) => item && (item.filename || item.id));
+  if (!files.length && !email.hasAttachments) return;
+  const card = document.createElement("section");
+  card.className = "attachment-card";
+  card.setAttribute("aria-label", "Attachments");
+  const head = document.createElement("div");
+  head.className = "attachment-card-head";
+  const title = document.createElement("h3");
+  title.appendChild(readerIcon("paperclip"));
+  const titleText = document.createElement("span");
+  titleText.textContent = "Attachments";
+  title.appendChild(titleText);
+  if (files.length) {
+    const count = document.createElement("span");
+    count.className = "count";
+    count.textContent = String(files.length);
+    title.appendChild(count);
+  }
+  head.appendChild(title);
+  if (files.some((file) => file.id)) {
+    const zip = document.createElement("button");
+    zip.type = "button";
+    zip.className = "attachment-zip";
+    zip.appendChild(readerIcon("download"));
+    const zipLabel = document.createElement("span");
+    zipLabel.textContent = "Save as ZIP";
+    zip.appendChild(zipLabel);
+    zip.setAttribute("aria-label", "Save all attachments as ZIP");
+    zip.addEventListener("click", () => guard(() => saveAttachmentsZip(email, files)));
+    head.appendChild(zip);
+  }
+  card.appendChild(head);
   if (!files.length) {
-    if (!email.hasAttachments) return;
     const note = document.createElement("p");
-    note.className = "meta";
+    note.className = "attachment-note";
     note.textContent = "This message has attachments.";
-    pane.appendChild(note);
+    card.appendChild(note);
+    pane.appendChild(card);
     return;
   }
   const list = document.createElement("ul");
   list.className = "attachments";
   for (const file of files) {
     const item = document.createElement("li");
-    const name = document.createElement("span");
+    const main = document.createElement("div");
+    main.className = "attachment-main";
     const size = fileSize(file.size);
     const label = file.filename || "attachment";
-    name.textContent = size ? `${label} (${size})` : label;
-    item.appendChild(name);
+    const kind = file.id ? attachmentPreviewKind(file) : "";
+    const name = document.createElement(kind ? "button" : "span");
+    name.className = "attachment-name";
+    name.textContent = label;
+    name.title = label;
+    if (kind) {
+      name.type = "button";
+      name.setAttribute("aria-label", "Preview " + label);
+      name.addEventListener("click", () => guard(() => previewAttachment(email, file)));
+    }
+    main.appendChild(name);
+    if (size) {
+      const sizeNode = document.createElement("span");
+      sizeNode.className = "attachment-size";
+      sizeNode.textContent = size;
+      main.appendChild(sizeNode);
+    }
+    item.appendChild(main);
     if (file.id) {
-      const save = document.createElement("button");
-      save.type = "button";
-      save.className = "ghost";
-      save.textContent = "Save";
-      save.setAttribute("aria-label", `Save ${label}`);
-      save.addEventListener("click", () => guard(() => useAttachment("mail:downloadAttachment", email, file)));
-      const open = document.createElement("button");
-      open.type = "button";
-      open.className = "ghost";
-      open.textContent = "Open";
-      open.setAttribute("aria-label", `Open ${label}`);
-      open.addEventListener("click", () => guard(() => useAttachment("mail:openAttachmentExternally", email, file)));
-      item.append(save, open);
+      const actions = document.createElement("div");
+      actions.className = "attachment-actions";
+      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + label, () => guard(() => previewAttachment(email, file))));
+      actions.appendChild(attachmentGhost("Save", "Save " + label, () => guard(() => useAttachment("mail:downloadAttachment", email, file))));
+      actions.appendChild(attachmentGhost("Open", "Open " + label, () => guard(() => useAttachment("mail:openAttachmentExternally", email, file))));
+      item.appendChild(actions);
     }
     list.appendChild(item);
   }
-  pane.appendChild(list);
+  card.appendChild(list);
+  pane.appendChild(card);
 }
 
 async function useAttachment(channel, email, file) {
@@ -15162,6 +15459,8 @@ function wire() {
     submitConfirm();
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
+  $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
+  $("attachment-preview").addEventListener("close", clearAttachmentPreview);
   $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
   $("agent-peek-mail").addEventListener("click", () => {
     openPeekInMail().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));

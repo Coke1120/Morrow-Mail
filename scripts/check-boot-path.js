@@ -15,6 +15,7 @@ const syntax = [
   "host/mail/actions.js",
   "host/mail/idle.js",
   "host/mail/remote.js",
+  "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
   "scripts/check-mail-calendar-consent.js",
@@ -483,9 +484,51 @@ assert.strictEqual(sendDelayMs(31), 5000);
 assert.strictEqual(sendDelayMs(-1), 5000);
 assert.strictEqual(sendDelayMs("5"), 5000);
 assert.strictEqual(sendDelayMs(null), 5000);
-assert.ok(html.includes("img-src 'self' data: https: http:"));
+assert.ok(html.includes("img-src 'self' data: blob: https: http:"));
+assert.ok(html.includes("frame-src blob: data:") && html.includes("object-src blob: data:"));
 assert.ok(html.includes("script-src 'self'") && html.includes("default-src 'none'"));
 assert.ok(!html.includes("img-src *"));
+assert.ok(html.includes('id="attachment-preview"') && html.includes('id="attachment-preview-frame"'));
+const attachmentPreviewKind = extractFunction(appJs, "attachmentPreviewKind");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "image/png", filename: "a.png" }), "image");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "image/jpeg", filename: "a.jpg" }), "image");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "application/pdf", filename: "a.pdf" }), "pdf");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "application/octet-stream", filename: "scan.PDF" }), "pdf");
+assert.strictEqual(attachmentPreviewKind({ filename: "photo.jpeg" }), "image");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "text/plain", filename: "notes.pdf" }), "");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "image/svg+xml", filename: "mark.svg" }), "");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "application/zip", filename: "files.zip" }), "");
+const attachmentBytes = extractFunction(appJs, "attachmentBytes");
+assert.deepStrictEqual(Array.from(attachmentBytes(null)), []);
+assert.deepStrictEqual(Array.from(attachmentBytes(Uint8Array.from([1, 2]))), [1, 2]);
+assert.deepStrictEqual(Array.from(attachmentBytes({ type: "Buffer", data: [9, 8] })), [9, 8]);
+const attachmentUi = functionSource(appJs, "renderAttachments");
+assert.ok(attachmentUi.includes("attachment-card"), "attachments stay in a card");
+assert.ok(attachmentUi.includes("Save as ZIP") && attachmentUi.includes("saveAttachmentsZip"));
+assert.ok(functionSource(appJs, "saveAttachmentsZip").includes("mail:downloadAttachmentsZip"));
+assert.ok(attachmentUi.includes("Preview") && attachmentUi.includes("mail:fetchAttachmentBytes") === false);
+assert.ok(functionSource(appJs, "previewAttachment").includes("mail:fetchAttachmentBytes"));
+assert.ok(attachmentUi.includes("mail:downloadAttachment") && attachmentUi.includes("mail:openAttachmentExternally"));
+const readerUi = functionSource(appJs, "renderReader");
+assert.ok(readerUi.indexOf("renderAttachments") < readerUi.indexOf("renderBody"), "attachments stay above the body");
+const zipBytes = require("../host/mail/zip-bytes");
+assert.strictEqual(zipBytes.zipDownloadName(""), "attachments.zip");
+assert.strictEqual(zipBytes.zipDownloadName("   "), "attachments.zip");
+assert.strictEqual(zipBytes.zipDownloadName(".."), "attachments.zip");
+assert.strictEqual(zipBytes.zipDownloadName("Q3 / report: final"), "Q3 report final.zip");
+assert.ok(zipBytes.zipDownloadName("a".repeat(200)).length <= 84);
+const packed = zipBytes.zipFiles([
+  { name: "../notes.txt", data: Buffer.from("hello") },
+  { name: "notes.txt", data: Buffer.from("second") },
+  { name: "résumé.png", data: Buffer.from([0, 255, 10, 13, 127]) },
+  { name: "", data: Buffer.from("") },
+]);
+const entries = zipBytes.unzipFiles(packed);
+assert.deepStrictEqual(entries.map((entry) => entry.name), ["notes.txt", "notes-2.txt", "résumé.png", "attachment"]);
+assert.strictEqual(entries[0].data.toString(), "hello");
+assert.strictEqual(entries[1].data.toString(), "second");
+assert.deepStrictEqual(Array.from(entries[2].data), [0, 255, 10, 13, 127]);
+assert.strictEqual(entries[3].data.length, 0);
 assert.ok(html.includes('id="undo-send"'));
 assert.ok(css.includes('[data-theme="dark"]') && css.includes("--current") && css.includes("--ghost"));
 assert.ok(appJs.includes("dataset.theme") && appJs.includes('setProperty("--accent"'));
@@ -1038,6 +1081,9 @@ assert.strictEqual(scheduledLine({ subject: "  ", to: "" }), "(no subject) · Un
 assert.strictEqual(scheduledLine({ subject: "Hi", to: ["ada@example.com", "grace@example.com"] }).includes("ada@example.com, grace@example.com"), true);
 
 const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
+assert.ok(engineSrc.includes('case "mail:downloadAttachment"'));
+assert.ok(engineSrc.includes('case "mail:downloadAttachmentsZip"') && engineSrc.includes("zipFiles"));
+assert.ok(engineSrc.includes('case "mail:fetchAttachmentBytes"'));
 assert.ok(!engineSrc.includes("INBOX_LIMIT") && !engineSrc.includes("OTHER_LIMIT"));
 assert.ok(engineSrc.includes("const REFRESH_PAGES = [20, 30, 30]"));
 assert.ok(engineSrc.includes('require("../settings")'));

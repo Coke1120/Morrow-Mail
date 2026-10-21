@@ -89,6 +89,8 @@ const INVOKE = [
   "mail:searchLocal",
   "mail:listThreadMessages",
   "mail:downloadAttachment",
+  "mail:downloadAttachmentsZip",
+  "mail:fetchAttachmentBytes",
   "mail:openAttachmentExternally",
   "mail:archive",
   "mail:archiveBatch",

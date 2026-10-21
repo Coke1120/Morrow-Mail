@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data: https: http:;" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data: blob: https: http:; frame-src blob: data:; object-src blob: data:;" />
     <title>Morrow Mail</title>
     <link rel="icon" href="./morrow-icon.svg" />
     <link rel="stylesheet" href="./app.css" />
@@ -1191,6 +1191,19 @@
           <p class="hint">Replace it under Bot access → Your bots. The old secret stops working immediately. Morrow stores only a verifier.</p>
         </details>
       </form>
+    </dialog>
+    <dialog id="attachment-preview" aria-labelledby="attachment-preview-title">
+      <div class="dialog-body">
+        <div class="attachment-preview-bar">
+          <h2 id="attachment-preview-title">Attachment</h2>
+          <button type="button" class="ghost" id="attachment-preview-close">Close</button>
+        </div>
+        <p id="attachment-preview-status" class="hint" role="status" hidden>Loading preview…</p>
+        <div id="attachment-preview-stage">
+          <img id="attachment-preview-image" alt="" hidden />
+          <iframe id="attachment-preview-frame" title="PDF preview" referrerpolicy="no-referrer" hidden></iframe>
+        </div>
+      </div>
     </dialog>
     <dialog id="agent-peek" aria-labelledby="agent-peek-title">
       <div class="dialog-body">
