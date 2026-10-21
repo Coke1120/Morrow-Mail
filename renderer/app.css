@@ -3816,6 +3816,12 @@ textarea { min-height: 140px; resize: vertical; }
   outline-offset: 2px;
 }
 
+#compose-editor.drop-target {
+  background: rgba(185, 213, 173, 0.22);
+  outline: 2px solid #b9d5ad;
+  outline-offset: -2px;
+}
+
 .compose-editor:empty::before {
   content: attr(data-placeholder);
   color: var(--muted);
@@ -4001,6 +4007,72 @@ textarea { min-height: 140px; resize: vertical; }
 
 #support-dialog { width: min(840px, calc(100vw - 32px)); }
 #support-preview { width: 100%; min-height: 280px; font-family: monospace; font-size: 12px; }
+
+.compose-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.compose-suggestions .hint { margin: 0; }
+
+.compose-suggestions .suggest-list { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 180px; }
+
+.compose-suggestions .suggest-list button {
+  height: auto;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  white-space: normal;
+  text-align: left;
+}
+
+.compose-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.compose-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.compose-attachments li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--hover);
+  font-size: 12px;
+}
+
+.compose-attachments .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.compose-attachments .size { color: var(--muted); }
+
+.compose-attachments button { height: 24px; padding: 0 8px; }
+
+#compose-attach-error { flex-basis: 100%; margin: 0; }
 
 .compose-tools-grid {
   display: grid;

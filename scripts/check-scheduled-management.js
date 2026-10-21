@@ -47,6 +47,72 @@ async function run() {
     db.insertScheduled({id:'unsupported',accountId:'queue',payloadJson:JSON.stringify({attachments:[{name:'file'}]}),sendAt:Date.now()+60000,createdAt:Date.now()});
     assert.equal(engine.answer('mail:editScheduled',[{id:'unsupported'}]).success,false);
     assert.ok(db.scheduledById('unsupported'), 'failed edit preserves queued payload');
+    const uploaded = engine.answer('mail:uploadAttachment', [{ filename: 'notes.txt', mimeType: 'text/plain', fileBytes: Buffer.from('hello attachment') }]);
+    assert.equal(uploaded.success, true);
+    assert.match(uploaded.data.storageUrl, /^local:/);
+    assert.equal(uploaded.data.filename, 'notes.txt');
+    assert.equal(uploaded.data.size, Buffer.byteLength('hello attachment'));
+    const emptyFile = engine.answer('mail:uploadAttachment', [{ filename: 'empty.txt', fileBytes: Buffer.from('') }]);
+    assert.equal(emptyFile.success, false);
+    assert.match(emptyFile.error.message, /empty/);
+    const tooBig = engine.answer('mail:uploadAttachment', [{ filename: 'big.bin', mimeType: 'application/octet-stream', fileBytes: Buffer.alloc(25 * 1024 * 1024 + 1, 1) }]);
+    assert.equal(tooBig.success, false);
+    assert.match(tooBig.error.message, /25 MB/);
+    const scheduledFile = engine.answer('mail:scheduleSend', [{
+      accountId: 'queue', to: 'recipient@example.invalid', subject: 'With file', body: '<p>See attached</p>',
+      attachments: [uploaded.data], sendAt: '2099-01-04T08:00:00Z',
+    }]);
+    assert.equal(scheduledFile.success, true);
+    const queuedPayload = JSON.parse(db.scheduledById(scheduledFile.data.id).payload_json);
+    assert.equal(queuedPayload.attachments[0].filename, 'notes.txt');
+    assert.equal(queuedPayload.attachments[0].storageUrl, uploaded.data.storageUrl);
+    assert.equal(queuedPayload.attachments[0].size, uploaded.data.size);
+    const editedFile = engine.answer('mail:editScheduled', [{ id: scheduledFile.data.id }]);
+    assert.equal(editedFile.success, true);
+    const resumedFile = db.messageById(editedFile.data.emailId);
+    assert.equal(resumedFile.has_attachments, 1);
+    const storedFiles = JSON.parse(resumedFile.attachments_json);
+    assert.equal(storedFiles[0].storageUrl, uploaded.data.storageUrl);
+    const openedFile = await engine.answer('mail:openEmail', [{ emailId: editedFile.data.emailId }]);
+    assert.equal(openedFile.data.email.attachments[0].filename, 'notes.txt');
+    assert.equal(openedFile.data.email.attachments[0].storageUrl, uploaded.data.storageUrl);
+    const draftedFile = await engine.answer('mail:upsertDraft', [{
+      accountId: 'queue', to: 'recipient@example.invalid', subject: 'Draft file', body: '<p>Notes</p>',
+      attachments: [uploaded.data],
+    }]);
+    assert.equal(draftedFile.success, true);
+    const draftedRow = db.messageById(draftedFile.data.emailId);
+    assert.match(draftedRow.attachments_json, /local:/);
+    assert.ok(draftedRow.rfc_message_id, 'draft keeps a message id for later sync');
+    assert.equal(draftedRow.folder_path, 'Drafts');
+    assert.ok(Number(draftedRow.uid) <= 0);
+    db.applyFolderSync('queue', 'Drafts', {
+      messages: [{
+        uid: 4, threadId: draftedFile.data.emailId, rfcMessageId: db.messageById(draftedFile.data.emailId).rfc_message_id,
+        subject: 'Draft file', from: 'queue@example.invalid', date: new Date().toISOString(),
+        listSortTs: Date.now(), isDraft: true, hasAttachments: false, attachments: [],
+        textBody: 'server copy', bodyComplete: true,
+      }],
+      validity: 9, keepOthers: true,
+    });
+    assert.match(db.messageById(draftedFile.data.emailId).attachments_json, /local:/, 'folder sync keeps local draft files');
+    const listedDrafts = engine.answer('mail:listFromCache', [{ accountId: 'queue', folderId: 'Drafts', limit: 50 }]);
+    const draftCopies = (listedDrafts.data.emails || []).filter((row) => row.subject === 'Draft file');
+    assert.equal(draftCopies.length, 1);
+    assert.equal(draftCopies[0].id, draftedFile.data.emailId);
+    assert.equal(draftCopies[0].hasAttachments, true);
+    const clearedFile = await engine.answer('mail:upsertDraft', [{
+      accountId: 'queue', emailId: draftedFile.data.emailId, to: 'recipient@example.invalid',
+      subject: 'Draft file', body: '<p>Notes</p>', attachments: [],
+    }]);
+    assert.equal(clearedFile.success, true);
+    assert.equal(JSON.parse(db.messageById(draftedFile.data.emailId).attachments_json).length, 0);
+    const missingFile = await engine.answer('mail:send', [{
+      accountId: 'queue', to: 'recipient@example.invalid', subject: 'gone', body: '<p>x</p>',
+      attachments: [{ storageUrl: 'local:missing-blob', filename: 'gone.txt', size: 4 }],
+    }]);
+    assert.equal(missingFile.success, false);
+    assert.match(missingFile.error.message, /Could not read gone\.txt/);
     secrets.setPassword('queue', 'fixture-only');
     let started, release;
     const active = new Promise(resolve => { started=resolve; });

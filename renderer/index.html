@@ -642,6 +642,20 @@
         <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="compose-body-label" data-placeholder="Message" spellcheck="true"></div>
         <span id="compose-body-label" class="sr">Message</span>
         <textarea id="compose-body" class="compose-body-source" tabindex="-1" aria-hidden="true"></textarea>
+        <div id="compose-suggestions" class="compose-suggestions" hidden>
+          <p id="compose-suggest-label" class="hint">Suggested replies</p>
+          <p id="compose-suggest-status" class="hint" role="status" hidden></p>
+          <div id="compose-suggest-list" class="suggest-list" role="list"></div>
+        </div>
+        <div class="compose-files">
+          <input id="compose-file" type="file" multiple hidden />
+          <button type="button" class="ghost icon-label" id="compose-attach">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+            <span>Attach files</span>
+          </button>
+          <ul id="compose-attachments" class="compose-attachments" hidden></ul>
+          <p id="compose-attach-error" class="error" role="status" hidden></p>
+        </div>
         <div class="compose-tools-grid">
           <details id="compose-ai-tools"><summary>AI write</summary>
           <div class="ai-write">
@@ -1262,6 +1276,7 @@
           <div class="preview-row" id="compose-preview-cc-row" hidden><dt>Cc</dt><dd id="compose-preview-cc"></dd></div>
           <div class="preview-row" id="compose-preview-bcc-row" hidden><dt>Bcc</dt><dd id="compose-preview-bcc"></dd></div>
           <div class="preview-row"><dt>Subject</dt><dd id="compose-preview-subject"></dd></div>
+          <div class="preview-row" id="compose-preview-files-row" hidden><dt>Files</dt><dd id="compose-preview-files"></dd></div>
         </dl>
         <pre id="compose-preview-body"></pre>
         <div class="row">
