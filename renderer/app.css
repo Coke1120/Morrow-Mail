@@ -520,6 +520,9 @@ textarea:focus-visible {
 
 #ai-fields { margin: 0; }
 
+.ai-model-chooser { margin-top: 8px; }
+#ai-model-select { cursor: pointer; min-height: 7.5em; }
+
 .settings-accounts {
   list-style: none;
   margin: 0 0 12px;
@@ -637,6 +640,47 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 .shortcut-keys { font-weight: 650; }
 
 .shortcut-action { min-width: 0; }
+
+.cli-head {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.cli-list { max-width: 960px; }
+
+#cli-copy-status:empty { display: none; }
+
+.cli-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.cli-command {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cli-command code {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--hover);
+  color: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.cli-command .ghost { flex: 0 0 auto; margin-top: 2px; }
+
+.cli-row .shortcut-action { color: var(--ink-mid); }
 
 #log-panel {
   display: flex;
@@ -1098,16 +1142,31 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
   box-shadow: inset 0 -2px 0 var(--accent-ink);
 }
 
-.brain-meta {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 12px;
+.brain-summary {
   margin: 8px 0 12px;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--hover);
 }
+
+.brain-summary #brain-status { margin: 0 0 8px; }
+
+.brain-summary #brain-progress { margin: 0 0 8px; }
+
+.brain-summary .hint { margin: 8px 0 0; }
+
+.brain-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.brain-meta[hidden] { display: none; }
 
 .brain-meta dt {
   margin: 0;
