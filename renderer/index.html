@@ -335,9 +335,16 @@
         <button type="button" class="brain-tab" role="tab" id="brain-tab-rules" aria-controls="brain-rules" aria-selected="false" tabindex="-1">Rules</button>
       </div>
       <section id="brain-profile" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-profile">
-        <p id="brain-status" role="status"></p>
-        <div id="brain-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
-        <dl id="brain-meta" class="brain-meta" hidden></dl>
+        <section class="brain-summary" aria-label="Profile summary">
+          <dl id="brain-meta" class="brain-meta" hidden></dl>
+          <p id="brain-status" role="status"></p>
+          <div id="brain-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
+          <div class="row brain-actions">
+            <button type="button" class="ghost" id="brain-refresh">Refresh</button>
+            <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
+          </div>
+          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay.</p>
+        </section>
         <div id="brain-sections"></div>
         <p class="hint" id="brain-compose-pointer">Compose defaults live in <button type="button" class="inline-link" id="brain-open-compose-settings">Settings → Compose</button>.</p>
         <section id="brain-activity" aria-label="Recent updates" hidden>
@@ -350,8 +357,6 @@
           <div class="row">
             <button type="submit" class="primary" id="brain-add">Add</button>
             <button type="button" class="ghost" id="brain-cancel" hidden>Cancel</button>
-            <button type="button" class="ghost" id="brain-refresh">Refresh</button>
-            <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
           </div>
         </form>
         <label for="brain-fix-note">Fix note <span class="optional">(optional)</span></label>
