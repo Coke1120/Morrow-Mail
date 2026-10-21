@@ -322,7 +322,7 @@ assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell doe
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.2.22");
+assert.strictEqual(pkg.version, "0.2.23");
 assert.strictEqual(pkg.build.productName, "Morrow Mail");
 assert.strictEqual(pkg.build.appId, "com.coke1120.morrow-mail");
 assert.notStrictEqual(pkg.build.appId, "org.morrowmail.desktop");
@@ -3556,6 +3556,18 @@ assert.ok(html.includes('id="calendar-today"') && html.includes('id="calendar-ag
 assert.ok(html.includes('id="agent-contact"') && html.includes('id="agent-context"'));
 assert.ok(appJs.includes("Grant Gmail labels") && appJs.includes("Grant Outlook folders"));
 assert.ok(css.includes("#calendar-panel") && css.includes(".calendar-grid") && css.includes(".provider-block"));
+const calendarLoad = appJs.slice(appJs.indexOf("async function loadCalendar"), appJs.indexOf("\nfunction showMail"));
+const calendarShow = functionSource(appJs, "showCalendar");
+const calendarPrepare = functionSource(appJs, "prepareCalendarLoad");
+const calendarBusyLabel = functionSource(appJs, "calendarBusyLabel");
+assert.ok(calendarLoad.includes('setPageBusy("calendar-panel"') && calendarPrepare.includes("paintCalendarShell"));
+assert.ok(calendarPrepare.includes('setPageBusy("calendar-panel"'));
+assert.ok(calendarBusyLabel.includes("Loading…") && calendarBusyLabel.includes("Updating calendar…"));
+assert.ok(!calendarLoad.includes('reason: "loading"') && !calendarLoad.includes("Loading calendar"));
+assert.ok(!calendarShow.includes("Loading calendar") && !calendarShow.includes("calendar-layout"));
+const busyRule = css.slice(css.indexOf(".page-busy {"), css.indexOf(".page-busy {") + 700);
+assert.ok(busyRule.includes("pointer-events: none") && busyRule.includes("position: absolute"));
+assert.ok(independentDoc.includes("Updating calendar…") && parity.includes("Updating calendar…"));
 assert.ok(!appJs.includes("Team sync") && !html.includes("Team sync"));
 assert.ok(!appJs.includes("Sample meeting") && !html.includes("Sample meeting"));
 const oauthDoc = fs.readFileSync(path.join(root, "docs/OAUTH.md"), "utf8");
@@ -3573,6 +3585,7 @@ for (const phrase of [
   "grantedScopes",
   "https://outlook.office.com/api/v2.0/me",
   "does not call Microsoft Graph",
+  "Updating calendar…",
 ]) {
   assert.ok(oauthDoc.includes(phrase), `OAUTH.md missing ${phrase}`);
 }

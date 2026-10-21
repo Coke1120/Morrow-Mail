@@ -6,7 +6,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { verifyManifest, validateArtifact } = require('./update-manifest');
 const { extractZip, verifyBundle, waitForExit, replaceAndLaunch, preserveQuarantine, requireQuarantine, assessBundleTrust } = require('./update-installer');
-const { childEnvironment, assertDirectoryIdentity, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay } = require('./update-launcher');
+const { childEnvironment, assertDirectoryIdentity, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay, privilegedRename } = require('./update-launcher');
 async function journal(staging, state, extra = {}) {
   const temp = path.join(staging, 'journal.next');
   await writeExclusive(temp, JSON.stringify({ state, at: new Date().toISOString(), ...extra }));
@@ -99,6 +99,7 @@ async function run(staging) {
   await assertDirectoryIdentity(target, config.identities?.target);
   replacementAttempted = true;
   const result = await replaceAndLaunch({ target, staged, backup }, {
+    move: privilegedRename,
     guard: checkLocation,
     launch: bundle => launchTrusted(bundle, () => new Promise((resolve, reject) => {
       const child = spawn('/usr/bin/open', ['-W', '-n', bundle, '--args', `--morrow-update-receipt=${path.join(staging, 'receipt.json')}`, `--morrow-update-nonce=${nonce}`], { stdio: 'ignore', env: appEnvironment });
