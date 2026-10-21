@@ -36,6 +36,9 @@ const syntax = [
   "host/mail/calendar-api.js",
   "host/mail/sidecar.js",
   "host/brain.js",
+  "host/brain-persona.js",
+  "scripts/check-brain-persona.js",
+  "scripts/check-brain-profile-layout.js",
   "host/agent.js",
   "host/bot/constants.js",
   "host/bot/json.js",
@@ -70,7 +73,7 @@ for (const file of syntax) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-for (const file of ["check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-release-preflight.js", "check-release-publication.js"]) {
+for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-release-preflight.js", "check-release-publication.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }
@@ -1900,6 +1903,21 @@ for (const channel of [
 }
 assert.ok(html.includes('id="brain"') && html.includes('id="brain-rule"') && html.includes('id="brain-add"') && html.includes('id="brain-refresh"') && html.includes('id="brain-rebuild"'));
 assert.ok(html.includes('id="brain-tab-profile"') && html.includes('id="brain-tab-categories"') && html.includes('id="brain-tab-skills"') && html.includes('id="brain-tab-rules"') && html.includes('id="brain-meta"'));
+assert.ok(html.includes('class="brain-summary"') && html.includes('id="brain-persona-hint"') && html.includes("Refresh distills the living profile."));
+assert.ok(css.includes(".brain-summary") && css.includes(".brain-meta[hidden]"));
+{
+  const profileStart = html.indexOf('id="brain-profile"');
+  const profileEnd = html.indexOf('id="brain-categories"');
+  const profileHtml = html.slice(profileStart, profileEnd);
+  assert.ok(profileHtml.indexOf('class="brain-summary"') < profileHtml.indexOf('id="brain-meta"'));
+  assert.ok(profileHtml.indexOf('id="brain-meta"') < profileHtml.indexOf('id="brain-status"'));
+  assert.ok(profileHtml.indexOf('id="brain-status"') < profileHtml.indexOf('id="brain-refresh"'));
+  assert.ok(profileHtml.indexOf('id="brain-refresh"') < profileHtml.indexOf('id="brain-rebuild"'));
+  assert.ok(profileHtml.indexOf('id="brain-rebuild"') < profileHtml.indexOf('id="brain-sections"'));
+  assert.ok(profileHtml.indexOf('id="brain-sections"') < profileHtml.indexOf('id="brain-rule-form"'));
+  assert.ok(!profileHtml.slice(profileHtml.indexOf('id="brain-rule-form"')).includes("brain-refresh"));
+  assert.ok(!profileHtml.slice(profileHtml.indexOf('id="brain-rule-form"')).includes("brain-rebuild"));
+}
 assert.ok(html.includes(">Profile<") && html.includes(">Categories<") && html.includes(">Skills<"));
 assert.ok(html.includes(">Brain<") && html.includes(">Add<") && html.includes("Writing rule"));
 assert.ok(html.includes('id="brain-category-list"') && html.includes('id="brain-category-name"') && html.includes('id="brain-category-description"'));
@@ -4071,6 +4089,8 @@ async function checkAiDraft() {
     assert.ok(brainUi.brainUserRules(rebuiltSections).some((row) => row.value === "Sticky rule."));
     assert.ok((afterRebuild.data.persona.recentActivity || []).some((row) => row.kind === "rebuild"));
     assert.ok(seenBodies.some((body) => body.includes("personaMode") && body.includes("rebuild") && body.includes("I'll send the notes today")));
+    assert.ok(seenBodies.some((body) => body.includes("personaMode") && body.includes("rebuild") && body.includes("Distill an Email Brain persona from scratch")));
+    assert.ok(!seenBodies.some((body) => body.includes("Keep prior facts unless")));
     const manual = brain.answer("emailBrain:refresh", [{ source: "manual" }]);
     assert.strictEqual(manual.data.accepted, true);
     assert.strictEqual(manual.data.mode, "refresh");
@@ -4080,6 +4100,8 @@ async function checkAiDraft() {
     assert.ok(brainUi.brainUserRules(brainUi.brainSections(afterRefresh.data)).some((row) => row.value === "Sticky rule."));
     assert.ok((afterRefresh.data.persona.recentActivity || []).some((row) => row.kind === "refresh"));
     assert.ok(seenBodies.some((body) => body.includes('"personaMode":"refresh"') || (body.includes("personaMode") && body.includes("refresh"))));
+    assert.ok(seenBodies.some((body) => body.includes("personaMode") && body.includes("refresh") && body.includes("Distill the living Email Brain profile")));
+    assert.ok(!seenBodies.some((body) => body.includes("Keep prior facts unless")));
     brain.answer("emailBrain:saveCategories", [{
       categories: [
         { id: "fyi", name: "FYI", description: "skim", collapseView: true },
