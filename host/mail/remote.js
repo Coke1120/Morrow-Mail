@@ -457,6 +457,11 @@ async function syncFolder(client, folderPath, options) {
 async function fetchSource(client, folderPath, uid) {
   const lock = await client.getMailboxLock(folderPath);
   try {
+    // Untagged FETCH rows for other messages, or a flags-only row, can arrive
+    // before the requested source. Taking the first row stores the wrong mail
+    // (ImapFlow fetchOne, issue #426).
+    const requested = Number(uid);
+    let matched = null;
     for await (const msg of client.fetch(String(uid), {
       uid: true,
       source: { maxLength: FULL_CAP },
@@ -465,9 +470,12 @@ async function fetchSource(client, folderPath, uid) {
       envelope: true,
       internalDate: true,
     }, { uid: true })) {
-      return readFetched(msg, Number((client.mailbox || {}).uidValidity) || 0, FULL_CAP);
+      if (!msg || !Number.isFinite(requested) || Number(msg.uid) !== requested) continue;
+      matched = matched ? Object.assign(matched, msg) : { ...msg };
     }
-    return null;
+    // A flags-only row for this UID is not the message source. Leave the stored body alone.
+    if (!matched || matched.source == null) return null;
+    return readFetched(matched, Number((client.mailbox || {}).uidValidity) || 0, FULL_CAP);
   } finally {
     lock.release();
   }

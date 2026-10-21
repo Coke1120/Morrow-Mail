@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data: https: http:;" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data: blob: https: http:; frame-src blob: data:; object-src blob: data:;" />
     <title>Morrow Mail</title>
     <link rel="icon" href="./morrow-icon.svg" />
     <link rel="stylesheet" href="./app.css" />
@@ -111,6 +111,10 @@
       </div>
     </header>
     <div id="notice">
+      <button type="button" id="status-chip" class="status-chip" hidden aria-expanded="false" aria-controls="status" aria-label="Show status">
+        <svg class="status-icon status-icon-ok" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>
+        <svg class="status-icon status-icon-alert" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v4"></path><path d="M12 16h.01"></path></svg>
+      </button>
       <p id="status" role="status"></p>
       <button type="button" class="ghost" id="undo" hidden>Undo</button>
       <button type="button" class="ghost" id="undo-send" hidden>Undo send</button>
@@ -628,10 +632,34 @@
           <button type="button" data-command="insertOrderedList" aria-label="Numbered list" aria-pressed="false" title="Numbered list">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="10" x2="21" y1="6" y2="6"></line><line x1="10" x2="21" y1="12" y2="12"></line><line x1="10" x2="21" y1="18" y2="18"></line><path d="M4 6h1v4"></path><path d="M4 10h2"></path><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"></path></svg>
           </button>
+          <label class="compose-color is-ink" title="Text color">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 20 8-16 8 16"></path><path d="M7.5 14h9"></path></svg>
+            <span class="compose-swatch" aria-hidden="true"></span>
+            <input type="color" data-command="foreColor" value="#102822" aria-label="Text color" />
+          </label>
+          <label class="compose-color is-highlight" title="Highlight">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 11-6 6v3h9l3-3"></path><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"></path></svg>
+            <span class="compose-swatch" aria-hidden="true"></span>
+            <input type="color" data-command="hiliteColor" value="#fff3a0" aria-label="Highlight" />
+          </label>
         </div>
         <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="compose-body-label" data-placeholder="Message" spellcheck="true"></div>
         <span id="compose-body-label" class="sr">Message</span>
         <textarea id="compose-body" class="compose-body-source" tabindex="-1" aria-hidden="true"></textarea>
+        <div id="compose-suggestions" class="compose-suggestions" hidden>
+          <p id="compose-suggest-label" class="hint">Suggested replies</p>
+          <p id="compose-suggest-status" class="hint" role="status" hidden></p>
+          <div id="compose-suggest-list" class="suggest-list" role="list"></div>
+        </div>
+        <div class="compose-files">
+          <input id="compose-file" type="file" multiple hidden />
+          <button type="button" class="ghost icon-label" id="compose-attach">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+            <span>Attach files</span>
+          </button>
+          <ul id="compose-attachments" class="compose-attachments" hidden></ul>
+          <p id="compose-attach-error" class="error" role="status" hidden></p>
+        </div>
         <div class="compose-tools-grid">
           <details id="compose-ai-tools"><summary>AI write</summary>
           <div class="ai-write">
@@ -695,9 +723,37 @@
         <form id="signature-form">
           <label for="signature-name">Name</label>
           <input id="signature-name" type="text" autocomplete="off" />
-          <label for="signature-body">Text</label>
-          <textarea id="signature-body"></textarea>
-          <label class="check" for="signature-html"><input id="signature-html" type="checkbox" /> HTML</label>
+          <label id="signature-body-label">Text</label>
+          <div id="signature-format" class="compose-format" role="toolbar" aria-label="Formatting" aria-controls="signature-editor">
+            <button type="button" data-command="bold" aria-label="Bold" aria-pressed="false" title="Bold">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"></path><path d="M6 12h9a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"></path></svg>
+            </button>
+            <button type="button" data-command="italic" aria-label="Italic" aria-pressed="false" title="Italic">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="19" y1="4" x2="10" y2="4"></line><line x1="14" y1="20" x2="5" y2="20"></line><line x1="15" y1="4" x2="9" y2="20"></line></svg>
+            </button>
+            <button type="button" data-command="underline" aria-label="Underline" aria-pressed="false" title="Underline">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3v7a6 6 0 0 0 6 6 6 6 0 0 0 6-6V3"></path><line x1="4" y1="21" x2="20" y2="21"></line></svg>
+            </button>
+            <button type="button" data-command="insertUnorderedList" aria-label="Bulleted list" aria-pressed="false" title="Bulleted list">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+            </button>
+            <button type="button" data-command="insertOrderedList" aria-label="Numbered list" aria-pressed="false" title="Numbered list">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="10" x2="21" y1="6" y2="6"></line><line x1="10" x2="21" y1="12" y2="12"></line><line x1="10" x2="21" y1="18" y2="18"></line><path d="M4 6h1v4"></path><path d="M4 10h2"></path><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"></path></svg>
+            </button>
+            <label class="compose-color is-ink" title="Text color">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 20 8-16 8 16"></path><path d="M7.5 14h9"></path></svg>
+              <span class="compose-swatch" aria-hidden="true"></span>
+              <input type="color" data-command="foreColor" value="#102822" aria-label="Text color" />
+            </label>
+            <label class="compose-color is-highlight" title="Highlight">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 11-6 6v3h9l3-3"></path><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"></path></svg>
+              <span class="compose-swatch" aria-hidden="true"></span>
+              <input type="color" data-command="hiliteColor" value="#fff3a0" aria-label="Highlight" />
+            </label>
+          </div>
+          <div id="signature-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="signature-body-label" data-placeholder="Signature" spellcheck="true"></div>
+          <textarea id="signature-body" aria-labelledby="signature-body-label" hidden></textarea>
+          <label class="check" for="signature-html"><input id="signature-html" type="checkbox" checked /> HTML</label>
           <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default for this account</label>
           <label for="signature-domains">Domains</label>
           <input id="signature-domains" type="text" autocomplete="off" spellcheck="false" placeholder="hkbscl.com, gmail.com" />
@@ -1192,6 +1248,19 @@
         </details>
       </form>
     </dialog>
+    <dialog id="attachment-preview" aria-labelledby="attachment-preview-title">
+      <div class="dialog-body">
+        <div class="attachment-preview-bar">
+          <h2 id="attachment-preview-title">Attachment</h2>
+          <button type="button" class="ghost" id="attachment-preview-close">Close</button>
+        </div>
+        <p id="attachment-preview-status" class="hint" role="status" hidden>Loading preview…</p>
+        <div id="attachment-preview-stage">
+          <img id="attachment-preview-image" alt="" hidden />
+          <iframe id="attachment-preview-frame" title="PDF preview" referrerpolicy="no-referrer" hidden></iframe>
+        </div>
+      </div>
+    </dialog>
     <dialog id="agent-peek" aria-labelledby="agent-peek-title">
       <div class="dialog-body">
         <h2 id="agent-peek-title">Message</h2>
@@ -1211,6 +1280,7 @@
           <div class="preview-row" id="compose-preview-cc-row" hidden><dt>Cc</dt><dd id="compose-preview-cc"></dd></div>
           <div class="preview-row" id="compose-preview-bcc-row" hidden><dt>Bcc</dt><dd id="compose-preview-bcc"></dd></div>
           <div class="preview-row"><dt>Subject</dt><dd id="compose-preview-subject"></dd></div>
+          <div class="preview-row" id="compose-preview-files-row" hidden><dt>Files</dt><dd id="compose-preview-files"></dd></div>
         </dl>
         <pre id="compose-preview-body"></pre>
         <div class="row">

@@ -14,6 +14,7 @@ const fixtureAccounts = [
   {
     id: "leo",
     email: "leo@hkbscl.com",
+    unreadCount: 3,
     platform: "imap",
     profile: "custom",
     delimiter: "/",
@@ -32,6 +33,7 @@ const fixtureAccounts = [
   {
     id: "gmail",
     email: "howailoklineage@gmail.com",
+    unreadCount: 2,
     platform: "imap",
     profile: "gmail",
     imapSmtpProfile: "gmail",
@@ -65,6 +67,15 @@ window.morrow = {
     }
     if (channel === "morrow:configGetSidebarCollapsedFolders") return window.collapsedStore;
     if (channel === "mail:listFromCache" || channel === "mail:listFromNetwork") {
+      if (payload && payload.folderKey === "inbox") {
+        const combined = [
+          { id: "leo-in", accountId: "leo", folderId: "INBOX", from: "Desk <desk@example.invalid>", subject: "Leo inbox note", snippet: "Synthetic inbox row.", date: "2026-10-19T09:00:00Z", unread: true },
+          { id: "gm-in", accountId: "gmail", folderId: "INBOX", from: "News <news@example.invalid>", subject: "Inbox only", snippet: "This row stays in Inbox.", date: "2026-10-19T08:00:00Z", unread: true },
+          { id: "leo-read", accountId: "leo", folderId: "INBOX", from: "Read <read@example.invalid>", subject: "Already read", snippet: "Read inbox mail.", date: "2026-10-18T08:00:00Z", unread: false },
+        ];
+        const emails = payload.filterUnread ? combined.filter((row) => row.unread) : combined;
+        return { data: { emails, total: emails.length, initialSyncDone: true, hasMore: false } };
+      }
       const key = (payload && payload.accountId ? payload.accountId : "") + ":" + (payload && payload.folderId ? payload.folderId : "");
       const emails = fixtureMessages[key] || [];
       return { data: { emails, total: emails.length, initialSyncDone: true, hasMore: false } };
@@ -244,6 +255,53 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const allIndex = await evaluate("window.folderShot().rows.findIndex((row) => row.account==='gmail' && row.name==='All Mail')");
   const inboxIndex = await evaluate("window.folderShot().rows.findIndex((row) => row.account==='gmail' && row.name==='Inbox')");
   assert.ok(allIndex >= 0 && allIndex < inboxIndex, "All Mail is above Inbox");
+  assert.equal(await evaluate("document.querySelector('button.all-inbox .name').textContent"), "All Account Mail");
+  assert.equal(await evaluate("document.querySelector('button.all-account-unread').textContent"), "Unread 5");
+  assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "false");
+  assert.equal(await evaluate("document.querySelector('button.all-inbox').getAttribute('aria-current')"), null);
+  assert.equal(await evaluate("[...document.querySelectorAll('button.folder .name')].some((node) => node.textContent === 'All Account Mail')"), false);
+  await clickSelector("button.all-inbox");
+  await waitFor("state.allInbox===true && window.folderShot().subjects.includes('Already read')", "All Account Mail list");
+  assert.equal(await evaluate("document.getElementById('list-title').textContent"), "All Account Mail");
+  assert.equal(await evaluate("document.querySelector('.all-account-mail').classList.contains('is-current')"), true);
+  assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "false");
+  assert.deepEqual(await names(), [
+    "leo:Inbox",
+    "leo:AriesCPA.com",
+    "leo:1 Internal",
+    "leo:AsiaBs",
+    "leo:1 Archive",
+    "gmail:All Mail",
+    "gmail:Inbox",
+    "gmail:Sent Mail",
+  ]);
+  const sideClip = async () => evaluate(`(() => {
+    const node = document.getElementById("side-mail");
+    const rect = node.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: Math.min(rect.height, 720), scale: 1 };
+  })()`);
+  await shot("all-account-mail", await sideClip());
+  await clickSelector("button.all-account-unread");
+  await waitFor("state.allInboxUnreadOnly===true && window.folderShot().subjects.includes('Leo inbox note') && !window.folderShot().subjects.includes('Already read')", "unread chip on");
+  assert.equal(await evaluate("document.getElementById('list-title').textContent"), "All Account Mail · Unread");
+  assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "true");
+  assert.equal(await evaluate("document.querySelector('button.all-inbox').getAttribute('aria-current')"), "true");
+  const unreadCall = await evaluate("window.fixtureCalls.filter((call) => call.channel === 'mail:listFromCache' && call.payload && call.payload.folderKey === 'inbox').pop()");
+  assert.equal(unreadCall.payload.filterUnread, true);
+  assert.equal(unreadCall.payload.folderKey, "inbox");
+  await shot("all-account-mail-unread", await sideClip());
+  await shot("all-account-mail-unread-list");
+  await clickSelector("button.all-account-unread");
+  await waitFor("state.allInbox===true && state.allInboxUnreadOnly===false && window.folderShot().subjects.includes('Already read')", "unread chip off");
+  assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "false");
+  assert.equal(await evaluate("document.getElementById('list-title').textContent"), "All Account Mail");
+  const openCall = await evaluate("window.fixtureCalls.filter((call) => call.channel === 'mail:listFromCache' && call.payload && call.payload.folderKey === 'inbox').pop()");
+  assert.equal(openCall.payload.filterUnread, undefined);
+  await clickSelector('button.folder[data-account-id="leo"][data-folder-id="INBOX"]');
+  await waitFor("state.allInbox===false && window.folderShot().folderId==='INBOX' && window.folderShot().subjects[0]==='Leo inbox note'", "back to account inbox");
+  assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "false");
+  assert.equal(await evaluate("document.querySelector('button.all-inbox').getAttribute('aria-current')"), null);
+  assert.equal(await evaluate("document.querySelector('.all-account-mail').classList.contains('is-current')"), false);
   await shot("folder-parent-expanded");
   await clickSelector('button.folder-twist[aria-label="Collapse AriesCPA.com"]');
   await waitFor("window.folderShot().twists[0] && window.folderShot().twists[0].expanded==='false'", "caret collapsed");
@@ -359,7 +417,14 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const inboxNames = await names();
   assert.ok(inboxNames.includes("leo:Inbox") && inboxNames.includes("gmail:Inbox"), JSON.stringify(inboxNames));
   assert.equal(inboxNames.includes("leo:AsiaBs"), false);
-  assert.equal(await evaluate("!!document.querySelector('button.all-inbox')"), true);
+  assert.equal(await evaluate("!!document.querySelector('button.all-inbox')"), false);
+  await evaluate(`(() => {
+    const input = document.getElementById("folder-filter");
+    input.value = "account";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  assert.equal(await evaluate("document.querySelector('button.all-inbox .name').textContent"), "All Account Mail");
+  assert.equal(await evaluate("!!document.querySelector('button.all-account-unread')"), true);
   await evaluate(`(() => {
     document.getElementById("folder-filter").value = "";
     document.getElementById("folder-filter").dispatchEvent(new Event("input", { bubbles: true }));

@@ -15,6 +15,7 @@ const syntax = [
   "host/mail/actions.js",
   "host/mail/idle.js",
   "host/mail/remote.js",
+  "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
   "scripts/check-mail-calendar-consent.js",
@@ -200,6 +201,53 @@ assert.deepStrictEqual(
   { channel: "mail:listFromNetwork", params: { accountId: "beta", folderId: "inbox", limit: 200, offset: 40 } },
 );
 assert.strictEqual(mailListRequest({ query: "rent", searchAccountId: "", allInbox: true }).channel, "mail:searchLocal");
+assert.deepStrictEqual(
+  mailListRequest({ allInbox: true, unreadOnly: true, fromNetwork: true, limit: 200, offset: 200 }),
+  { channel: "mail:listFromCache", params: { folderKey: "inbox", filterUnread: true, limit: 200, offset: 200 } },
+);
+assert.strictEqual(mailListRequest({ allInbox: true, unreadOnly: false, limit: 200, offset: 0 }).params.filterUnread, undefined);
+assert.strictEqual(mailListRequest({ allInbox: false, unreadOnly: true, accountId: "a", folderId: "INBOX", limit: 200, offset: 0 }).params.filterUnread, undefined);
+const allAccountMailLabel = extractFunction(appJs, "allAccountMailLabel");
+const allAccountMailTitle = extractFunction(appJs, "allAccountMailTitle");
+const allAccountMailMatches = extractFunction(appJs, "allAccountMailMatches");
+const allAccountUnreadChip = extractFunction(appJs, "allAccountUnreadChip");
+const allAccountMailChoice = extractFunction(appJs, "allAccountMailChoice");
+const allAccountMailEmptyCopy = extractFunction(appJs, "allAccountMailEmptyCopy");
+const allAccountMailSyncCopy = extractFunction(appJs, "allAccountMailSyncCopy");
+assert.strictEqual(allAccountMailLabel(), "All Account Mail");
+assert.strictEqual(allAccountMailTitle(false), "All Account Mail");
+assert.strictEqual(allAccountMailTitle(true), "All Account Mail · Unread");
+assert.strictEqual(allAccountMailMatches(""), true);
+assert.strictEqual(allAccountMailMatches("  Account "), true);
+assert.strictEqual(allAccountMailMatches("inbox"), false);
+assert.strictEqual(allAccountMailMatches("unread"), false);
+assert.deepStrictEqual(allAccountUnreadChip(204, false), {
+  text: "Unread 204",
+  pressed: false,
+  label: "Unread, 204. Show only unread messages in All Account Mail.",
+});
+assert.deepStrictEqual(allAccountUnreadChip(0, true), {
+  text: "Unread",
+  pressed: true,
+  label: "Unread. Showing unread messages in All Account Mail. Show every message.",
+});
+assert.strictEqual(allAccountUnreadChip(-3, false).text, "Unread");
+assert.strictEqual(allAccountUnreadChip(1.9, false).text, "Unread 1");
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: false, unreadOnly: false }, "mail"), { allInbox: true, unreadOnly: false });
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: true }, "mail"), { allInbox: true, unreadOnly: false });
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: false, unreadOnly: false }, "unread"), { allInbox: true, unreadOnly: true });
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: false }, "unread"), { allInbox: true, unreadOnly: true });
+assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: true }, "unread"), { allInbox: true, unreadOnly: false });
+assert.deepStrictEqual(allAccountMailChoice(null, "unread"), { allInbox: true, unreadOnly: true });
+assert.strictEqual(allAccountMailEmptyCopy(false), "No downloaded messages in All Account Mail. Open an account's Inbox and use Sync to download recent mail.");
+assert.strictEqual(allAccountMailEmptyCopy(true), "No unread messages in All Account Mail.");
+assert.match(allAccountMailSyncCopy(), /All Account Mail shows mail already downloaded/);
+assert.ok(!appJs.includes("All Inbox"), "sidebar still says All Inbox");
+const allAccountRow = functionSource(appJs, "allAccountMailRow");
+assert.ok(allAccountRow.includes("all-account-unread") && allAccountRow.includes('data-testid", "all-account-unread"'), "All Account Mail is missing the unread chip");
+assert.ok(allAccountRow.includes('"unread"') && functionSource(appJs, "selectAllInbox").includes("allInboxUnreadOnly"), "unread chip does not toggle the unified filter");
+assert.ok(functionSource(appJs, "selectFolder").includes("allInboxUnreadOnly = false"), "leaving All Account Mail keeps the unread filter");
+assert.ok(functionSource(appJs, "loadList").includes("unreadOnly: state.allInbox && state.allInboxUnreadOnly"), "All Account Mail unread filter is not sent to the cache");
 assert.deepStrictEqual(mailListRequest({ query: "rent", searchAccountId: "a" }).params, { query: "rent", limit: 100, accountId: "a" });
 assert.strictEqual(preferredAccountId({ activeAccountId: "oauth-1", accountId: "other" }), "oauth-1");
 assert.strictEqual(preferredAccountId({ accountId: "other" }), "");
@@ -345,6 +393,7 @@ assert.ok(rowActionSrc.includes('setAttribute("aria-label", label)') && rowActio
 assert.ok(appJs.includes('className = "row-actions"') && appJs.includes("Mark unread"), "message rows have no hover actions");
 assert.ok(css.includes(".row-action svg"), "row actions are not icon buttons");
 assert.ok(html.includes('id="folder-filter"') && html.includes("Filter folders and labels"), "mailbox list has no folder filter");
+assert.ok(css.includes(".all-account-mail") && css.includes("button.all-account-unread") && css.includes("button.all-account-unread[aria-pressed=\"true\"]"), "All Account Mail unread chip styling missing");
 assert.ok(css.includes(".folder-filter") && css.includes(".folder-indent"), "folder filter or indent layout missing");
 assert.match(css, /#folders \{\s*flex: 1 1 auto;\s*min-width: 0;\s*overflow-x: hidden;\s*overflow-y: auto;/, "folder list still scrolls horizontally");
 const messageRowSrc = functionSource(appJs, "messageRow");
@@ -483,9 +532,51 @@ assert.strictEqual(sendDelayMs(31), 5000);
 assert.strictEqual(sendDelayMs(-1), 5000);
 assert.strictEqual(sendDelayMs("5"), 5000);
 assert.strictEqual(sendDelayMs(null), 5000);
-assert.ok(html.includes("img-src 'self' data: https: http:"));
+assert.ok(html.includes("img-src 'self' data: blob: https: http:"));
+assert.ok(html.includes("frame-src blob: data:") && html.includes("object-src blob: data:"));
 assert.ok(html.includes("script-src 'self'") && html.includes("default-src 'none'"));
 assert.ok(!html.includes("img-src *"));
+assert.ok(html.includes('id="attachment-preview"') && html.includes('id="attachment-preview-frame"'));
+const attachmentPreviewKind = extractFunction(appJs, "attachmentPreviewKind");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "image/png", filename: "a.png" }), "image");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "image/jpeg", filename: "a.jpg" }), "image");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "application/pdf", filename: "a.pdf" }), "pdf");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "application/octet-stream", filename: "scan.PDF" }), "pdf");
+assert.strictEqual(attachmentPreviewKind({ filename: "photo.jpeg" }), "image");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "text/plain", filename: "notes.pdf" }), "");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "image/svg+xml", filename: "mark.svg" }), "");
+assert.strictEqual(attachmentPreviewKind({ mimeType: "application/zip", filename: "files.zip" }), "");
+const attachmentBytes = extractFunction(appJs, "attachmentBytes");
+assert.deepStrictEqual(Array.from(attachmentBytes(null)), []);
+assert.deepStrictEqual(Array.from(attachmentBytes(Uint8Array.from([1, 2]))), [1, 2]);
+assert.deepStrictEqual(Array.from(attachmentBytes({ type: "Buffer", data: [9, 8] })), [9, 8]);
+const attachmentUi = functionSource(appJs, "renderAttachments");
+assert.ok(attachmentUi.includes("attachment-card"), "attachments stay in a card");
+assert.ok(attachmentUi.includes("Save as ZIP") && attachmentUi.includes("saveAttachmentsZip"));
+assert.ok(functionSource(appJs, "saveAttachmentsZip").includes("mail:downloadAttachmentsZip"));
+assert.ok(attachmentUi.includes("Preview") && attachmentUi.includes("mail:fetchAttachmentBytes") === false);
+assert.ok(functionSource(appJs, "previewAttachment").includes("mail:fetchAttachmentBytes"));
+assert.ok(attachmentUi.includes("mail:downloadAttachment") && attachmentUi.includes("mail:openAttachmentExternally"));
+const readerUi = functionSource(appJs, "renderReader");
+assert.ok(readerUi.indexOf("renderAttachments") < readerUi.indexOf("renderBody"), "attachments stay above the body");
+const zipBytes = require("../host/mail/zip-bytes");
+assert.strictEqual(zipBytes.zipDownloadName(""), "attachments.zip");
+assert.strictEqual(zipBytes.zipDownloadName("   "), "attachments.zip");
+assert.strictEqual(zipBytes.zipDownloadName(".."), "attachments.zip");
+assert.strictEqual(zipBytes.zipDownloadName("Q3 / report: final"), "Q3 report final.zip");
+assert.ok(zipBytes.zipDownloadName("a".repeat(200)).length <= 84);
+const packed = zipBytes.zipFiles([
+  { name: "../notes.txt", data: Buffer.from("hello") },
+  { name: "notes.txt", data: Buffer.from("second") },
+  { name: "résumé.png", data: Buffer.from([0, 255, 10, 13, 127]) },
+  { name: "", data: Buffer.from("") },
+]);
+const entries = zipBytes.unzipFiles(packed);
+assert.deepStrictEqual(entries.map((entry) => entry.name), ["notes.txt", "notes-2.txt", "résumé.png", "attachment"]);
+assert.strictEqual(entries[0].data.toString(), "hello");
+assert.strictEqual(entries[1].data.toString(), "second");
+assert.deepStrictEqual(Array.from(entries[2].data), [0, 255, 10, 13, 127]);
+assert.strictEqual(entries[3].data.length, 0);
 assert.ok(html.includes('id="undo-send"'));
 assert.ok(css.includes('[data-theme="dark"]') && css.includes("--current") && css.includes("--ghost"));
 assert.ok(appJs.includes("dataset.theme") && appJs.includes('setProperty("--accent"'));
@@ -533,6 +624,9 @@ for (const channel of [
 }
 assert.ok(appJs.includes('"Unstar"') && appJs.includes('"Archive"') && appJs.includes('"Trash"') && appJs.includes('"Unsnooze"'));
 assert.ok(html.includes('id="undo"') && html.includes('class="split"'), "shell is missing undo or resize handles");
+assert.ok(html.includes('id="status-chip"') && html.includes('aria-controls="status"'), "status chip is missing");
+assert.ok(css.includes("#notice.collapsed") && css.includes("#status-chip"), "status chip styles are missing");
+assert.ok(appJs.includes("STATUS_SUCCESS_DWELL_MS") && appJs.includes("STATUS_ERROR_DWELL_MS") && appJs.includes("function wireStatusNotice("), "status collapse lifecycle is missing");
 assert.ok(css.includes("--folders") && css.includes("--list") && css.includes(".split") && css.includes(".folder-icon") && css.includes(".reader-actions"));
 
 const bodyNodes = extractFunction(appJs, "bodyNodes");
@@ -608,7 +702,7 @@ assert.strictEqual(applySignature("Hello\n\n— Ada", "— Ada", "Thanks,\nAda")
 assert.strictEqual(applySignature("— Ada", "— Ada", ""), "");
 assert.strictEqual(applySignature("Hello\n\n— Ada\n\nps", "— Ada", "Thanks"), "Hello\n\n— Ada\n\nps\n\nThanks");
 const signatureSwap = loadFunctions(appJs, [
-  "signatureRows", "chosenSignatureId", "signaturePlain", "applySignature",
+  "toHtml", "signatureMarkup", "signatureRows", "chosenSignatureId", "signaturePlain", "applySignature",
   "signatureUntouched", "replaceSignature", "commitPickerSignature", "applyFromSignature",
 ]);
 const replaceSignature = signatureSwap.replaceSignature;
@@ -634,6 +728,19 @@ assert.strictEqual(fromDomain.applied, true);
 assert.strictEqual(fromDomain.pickerId, "s1");
 assert.strictEqual(fromDomain.body, "Hello\n\nThanks,\nAda");
 assert.strictEqual(fromDomain.previous, "Thanks,\nAda");
+assert.strictEqual(fromDomain.html, "<p>Thanks,<br>Ada</p>");
+const textPick = applyFromSignature({
+  follows: true, body: "", previous: "", pack: domainPack,
+  accountId: "gmail-ada", policyDomain: "hkbscl.com", rows: domainPack.signatures,
+});
+assert.strictEqual(textPick.applied, true);
+assert.strictEqual(textPick.pickerId, "s2");
+assert.strictEqual(textPick.html, "— Ada");
+const coloredRow = { id: "s3", name: "Color", html: '<p><font color="#c0392b"><span style="background-color:#fff3a0">Ada</span></font></p>' };
+assert.strictEqual(signatureSwap.signatureMarkup(coloredRow), coloredRow.html);
+assert.strictEqual(signatureSwap.signatureMarkup({ text: "Thanks,\nAda" }), "Thanks,<br>Ada");
+assert.strictEqual(signatureSwap.signatureMarkup({ html: "  <p>Hi</p>  ", text: "nope" }), "<p>Hi</p>");
+assert.strictEqual(signatureSwap.signatureMarkup(null), "");
 const draftBody = applyFromSignature({
   follows: false, body: "Draft", previous: "", pack: domainPack,
   accountId: "gmail-ada", policyDomain: "hkbscl.com", rows: domainPack.signatures,
@@ -694,7 +801,17 @@ for (const channel of ["mail:upsertSignature", "mail:deleteSignature"]) {
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
 assert.ok(html.includes('id="signatures"') && html.includes('id="signature-name"') && html.includes('id="signature-body"'));
-assert.ok(html.includes('id="signature-html"') && html.includes('id="signature-default"') && html.includes('id="signatures-open"'));
+assert.ok(html.includes('id="signature-html" type="checkbox" checked') && html.includes('id="signature-default"') && html.includes('id="signatures-open"'));
+assert.ok(html.includes('id="signature-editor"') && html.includes('id="signature-format"') && html.includes('class="compose-editor"'));
+assert.ok(html.includes('data-command="foreColor"') && html.includes('data-command="hiliteColor"'));
+assert.ok(html.split('aria-label="Text color"').length - 1 >= 2);
+assert.ok(html.split('aria-label="Highlight"').length - 1 >= 2);
+assert.ok(functionSource(appJs, "clearSignatureForm").includes('signature-html").checked = true'));
+assert.ok(functionSource(appJs, "wireComposeFormat").includes('$("signature-format")'));
+assert.ok(functionSource(appJs, "wireComposeFormat").includes('$("signature-editor")') && functionSource(appJs, "wireComposeFormat").includes('$("compose-editor")'));
+assert.ok(functionSource(appJs, "bindRichEditor").includes("sanitizeComposeHtml"));
+assert.ok(functionSource(appJs, "revealEditorStyles").includes("background-color"));
+assert.ok(css.includes(".compose-color") && css.includes("#signature-form .compose-editor") && css.includes("#signature-form textarea"));
 assert.ok(html.includes('id="signature-domains"') && html.includes('id="brain-compose-bcc"'));
 assert.ok(html.includes('id="signatures-from-compose"'));
 assert.ok(html.includes("Saved on this computer for the selected account"));
@@ -860,7 +977,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetAutoLoadRemoteImages", []), false);
     assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 5);
     assert.strictEqual(answer("morrow:configGetSnoozeEffective", []), true);
-    assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), false);
+    assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), true);
     assert.strictEqual(answer("morrow:configGetShowFolderChips", []), true);
     assert.strictEqual(answer("morrow:configGetSidebarGmailFoldersExpanded", []), true);
     assert.strictEqual(answer("morrow:configGetSidebarOutlookFoldersExpanded", []), false);
@@ -875,6 +992,8 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configSetAutoLoadRemoteImages", [true]), true);
     assert.strictEqual(answer("morrow:configSetUndoSendDelaySeconds", [0]), 0);
     assert.strictEqual(answer("morrow:configSetSnoozeEffective", [false]), false);
+    assert.strictEqual(answer("morrow:configSetAiWriteAutoOpenOnReply", [false]), false);
+    assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), false);
     assert.strictEqual(answer("morrow:configSetAiWriteAutoOpenOnReply", [true]), true);
     assert.strictEqual(answer("morrow:configSetShowFolderChips", [false]), false);
     assert.strictEqual(answer("morrow:configSetSidebarGmailFoldersExpanded", [false]), false);
@@ -1038,6 +1157,9 @@ assert.strictEqual(scheduledLine({ subject: "  ", to: "" }), "(no subject) · Un
 assert.strictEqual(scheduledLine({ subject: "Hi", to: ["ada@example.com", "grace@example.com"] }).includes("ada@example.com, grace@example.com"), true);
 
 const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
+assert.ok(engineSrc.includes('case "mail:downloadAttachment"'));
+assert.ok(engineSrc.includes('case "mail:downloadAttachmentsZip"') && engineSrc.includes("zipFiles"));
+assert.ok(engineSrc.includes('case "mail:fetchAttachmentBytes"'));
 assert.ok(!engineSrc.includes("INBOX_LIMIT") && !engineSrc.includes("OTHER_LIMIT"));
 assert.ok(engineSrc.includes("const REFRESH_PAGES = [20, 30, 30]"));
 assert.ok(engineSrc.includes('require("../settings")'));
@@ -1072,6 +1194,11 @@ assert.ok(!functionSource(appJs, "filteredEmails").includes("mail:search"));
 assert.ok(!functionSource(appJs, "filteredEmails").includes("textBody"));
 const independentDoc = fs.readFileSync(path.join(root, "docs/INDEPENDENT_UI.md"), "utf8");
 const parityDoc = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
+assert.ok(independentDoc.includes("All Account Mail"));
+assert.ok(parityDoc.includes("All Account Mail"));
+assert.ok(independentDoc.includes("Unread chip"));
+assert.ok(parityDoc.includes("filters this view to unread Inbox messages"));
+assert.ok(!independentDoc.includes("All Inbox") && !parityDoc.includes("All Inbox"));
 assert.ok(independentDoc.includes("All removes the date bound"));
 assert.ok(independentDoc.includes("already downloaded"));
 assert.ok(independentDoc.includes("last 180 days"));
@@ -1449,6 +1576,8 @@ assert.strictEqual(ai.draftBlockReason("custom", "  ", "Hello"), "Add a prompt."
 assert.strictEqual(ai.draftBlockReason("rewrite", "", "  "), "Add some text, or a prompt.");
 assert.strictEqual(ai.draftBlockReason("continue", "go on", ""), "");
 assert.strictEqual(ai.draftBlockReason("rewrite", "", "Hello"), "");
+assert.strictEqual(ai.draftBlockReason("custom", "", "", { subject: "Hi" }), "");
+assert.strictEqual(ai.draftInstruction("custom", "", "", "Re: Hi", { subject: "Hi", from: "Ada", textBody: "See you" }).user_prompt, "Write a reply.");
 assert.deepStrictEqual(ai.draftInstruction("rewrite", " shorter ", "Hello", "Hi"), {
   mode: "rewrite",
   user_prompt: "shorter",
@@ -1517,6 +1646,66 @@ for (const channel of [
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
 assert.ok(html.includes('id="ai-mode"') && html.includes('id="ai-prompt"') && html.includes('id="ai-generate"') && html.includes('id="ai-cancel"'));
+assert.ok(html.includes('id="compose-attach"') && html.includes('id="compose-file"') && html.includes("multiple") && html.includes('id="compose-attachments"'));
+assert.ok(html.includes('id="compose-suggestions"') && html.includes('id="compose-suggest-list"') && html.includes('id="compose-preview-files"'));
+assert.ok(html.includes("Attach files") && html.includes("Suggested replies"));
+assert.ok(appJs.includes("mail:uploadAttachment") && preload.includes("mail:uploadAttachment"));
+assert.ok(engineSrc.includes("resolveAttachments") && engineSrc.includes("Could not read"));
+assert.ok(settingsSrc.includes("aiWriteAutoOpenOnReply: true"));
+const attachUi = loadFunctions(appJs, [
+  "composeFileMeta",
+  "composeAttachmentList",
+  "attachmentPayload",
+  "attachmentKey",
+  "attachmentLimitCopy",
+  "attachmentCapCopy",
+  "fileSize",
+  "reviewComposeFiles",
+  "composeDragFiles",
+  "outgoingBody",
+  "previewDraft",
+  "replySuggestionSource",
+  "splitComposeSignature",
+  "suggestedReplyBody",
+]);
+const localFile = { id: "blob-1", storageUrl: "local:blob-1", filename: "notes.txt", mimeType: "text/plain", size: 12 };
+assert.deepStrictEqual(attachUi.composeAttachmentList([localFile, { filename: "remote.txt" }, localFile]), [localFile]);
+assert.deepStrictEqual(attachUi.attachmentPayload([localFile]), [{
+  storageUrl: "local:blob-1",
+  filename: "notes.txt",
+  mimeType: "text/plain",
+  size: 12,
+  id: "blob-1",
+}]);
+assert.strictEqual(attachUi.attachmentKey([localFile, { storageUrl: "imap:1" }]), "local:blob-1");
+const cap = 25 * 1024 * 1024;
+assert.strictEqual(attachUi.reviewComposeFiles([], [{ name: "empty.txt", size: 0 }], "gmail").errors[0], "empty.txt is empty.");
+assert.match(attachUi.reviewComposeFiles([], [{ name: "big.bin", size: cap + 1 }], "gmail").errors[0], /big\.bin is 25\.0 MB\. Gmail rejects messages larger than 25 MB\./);
+assert.match(attachUi.reviewComposeFiles(
+  [{ storageUrl: "local:a", filename: "a.txt", size: cap - 10 }],
+  [{ name: "b.txt", size: 20 }],
+  "outlook",
+).errors[0], /together\. Outlook rejects/);
+assert.deepStrictEqual(attachUi.reviewComposeFiles([], [{ name: "ok.txt", size: 4 }, { name: "ok.txt", size: 4 }], "").accepted, [
+  { index: 0, filename: "ok.txt", size: 4 },
+  { index: 1, filename: "ok.txt", size: 4 },
+]);
+assert.strictEqual(attachUi.composeDragFiles(null), null);
+assert.strictEqual(attachUi.composeDragFiles({ types: ["text/plain"], files: [{ name: "note.txt" }] }), null);
+assert.deepStrictEqual(attachUi.composeDragFiles({ types: ["Files"], files: [] }), []);
+assert.deepStrictEqual(attachUi.composeDragFiles({ types: ["text/plain", "Files"], files: [{ name: "a.txt" }, { name: "b.txt" }] }).map((file) => file.name), ["a.txt", "b.txt"]);
+assert.ok(functionSource(appJs, "onComposeDrop").includes("addComposeFiles"));
+assert.ok(functionSource(appJs, "wireComposeFileDrop").includes('addEventListener("drop"'));
+assert.ok(css.includes("#compose-editor.drop-target"));
+assert.ok(parityDoc.includes("Dropping files on the message field") && independentDoc.includes("Dropping files on the message field"));
+const preview = attachUi.previewDraft({ to: "ada@example.com", subject: "Notes", body: "See file" }, "", null, [localFile]);
+assert.deepStrictEqual(preview.attachments, [{ filename: "notes.txt", size: 12 }]);
+assert.strictEqual(preview.kind, "send");
+assert.strictEqual(attachUi.replySuggestionSource({ kind: "forward", quoteEmail: { subject: "Hi" } }), null);
+assert.strictEqual(attachUi.replySuggestionSource({ kind: "reply", quoteEmail: { subject: "Hi" } }).subject, "Hi");
+assert.strictEqual(attachUi.suggestedReplyBody("Hello\n\nThanks, Ada", "Thanks, Ada", "I can review it."), "I can review it.\n\nThanks, Ada");
+assert.ok(parityDoc.includes("mail:uploadAttachment") && parityDoc.includes("That preference defaults to on."));
+assert.ok(independentDoc.includes("AI write on reply defaults to on"));
 assert.ok(html.includes(">Generate<") && html.includes(">Cancel<") && html.includes(">Rewrite<") && html.includes(">Continue<") && html.includes(">Custom<"));
 assert.ok(appJs.includes("Suggesting replies…") && appJs.includes('"Add a prompt."'));
 assert.ok(css.includes(".ai-write") && css.includes(".suggestions") && css.includes(".suggest-list"));
@@ -1851,6 +2040,8 @@ assert.ok(parity.includes("config:setTheme") && parity.includes("morrow:configSe
 assert.ok(!parity.includes("the list is read-only"));
 assert.ok(!parity.includes("full Brain category/skills UI"));
 assert.ok(parity.includes("mail:upsertSignature") && parity.includes("defaultSignaturePerAccount"));
+assert.ok(parity.includes("Opening the dialog checks HTML") && parity.includes("text color and highlight when compose inserts it"));
+assert.ok(independentDoc.includes("Opening Signatures checks HTML"));
 assert.ok(parity.includes("mail:cancelScheduled"));
 assert.ok(parity.includes("while the app is open"));
 assert.ok(parity.includes("mail.sqlite"));
@@ -3950,6 +4141,17 @@ async function checkSignaturesAndSchedule(engine, db) {
   }]);
   assert.strictEqual(htmlSignature.data.html, "<p>Thanks,<br>Ada</p>");
   assert.strictEqual(htmlSignature.data.text, undefined);
+  const coloredHtml = '<p><font color="#c0392b"><span style="background-color:#fff3a0">Ada</span></font></p>';
+  const colored = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    html: coloredHtml,
+    isDefault: true,
+  }]);
+  assert.strictEqual(colored.success, true);
+  assert.strictEqual(colored.data.html, coloredHtml);
+  assert.strictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatures[0].html, coloredHtml);
   const textAgain = engine.answer("mail:upsertSignature", [{
     accountId: "imap-test",
     id: createdId,
@@ -4238,7 +4440,7 @@ async function checkComposeMailbox() {
   }).map(([id, value]) => [id, { value }]));
   const calls = [];
   const call = async (channel, payload) => { calls.push({ channel, payload }); return {draftId:"saved"}; };
-  const syncNames = ["selectedAccount", "composeAccount", "isLive", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml", "joinComposeHtml", "blankComposeHtml", "readComposeEditorHtml"];
+  const syncNames = ["selectedAccount", "composeAccount", "isLive", "composeFileMeta", "composeAttachmentList", "attachmentPayload", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml", "joinComposeHtml", "blankComposeHtml", "readComposeEditorHtml"];
   const asyncNames = ["saveDraft", "scheduleMail", "sendMail"];
   const methods = new Function("state", "$", "call", "showStatus", "scheduleAt", "loadScheduled", "sendDelayMs", "hideUndoSend", "deliverMail", `
     const composeOperation = async work => { await work(); return true; };

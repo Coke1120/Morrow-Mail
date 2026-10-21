@@ -4,6 +4,7 @@ const state = {
   accounts: [],
   accountId: null,
   allInbox: false,
+  allInboxUnreadOnly: false,
   settingsAccountId: null,
   reconnectAccountId: null,
   folderId: null,
@@ -18,6 +19,8 @@ const state = {
   query: "",
   searchAccountId: "",
   draftId: null,
+  composeAttachments: [],
+  composeSuggestions: null,
   composeMeta: null,
   composeBaseline: "",
   composePending: false,
@@ -30,6 +33,7 @@ const state = {
   snoozed: new Map(),
   signatures: [],
   signatureText: "",
+  signatureHtml: "",
   translateLang: "English",
   translate: null,
   draftWrite: null,
@@ -37,7 +41,7 @@ const state = {
   remoteAllowed: {},
   prefs: {
     chips: true,
-    aiReply: false,
+    aiReply: true,
     gmailOpen: true,
     outlookOpen: false,
     theme: "light",
@@ -79,6 +83,7 @@ let listGen = 0;
 const LIST_PAGE_SIZE = 200;
 let openGen = 0;
 let pendingOpenId = "";
+let pendingOpenBody = false;
 let peekGen = 0;
 let peekEmail = null;
 let reloadTimer = null;
@@ -88,6 +93,7 @@ let undoReceiptError = false;
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
+let composeSuggestGen = 0;
 let signatureGen = 0;
 let signatureEditId = "";
 let signatureEditorAccountId = "";
@@ -146,11 +152,154 @@ function $(id) {
   return document.getElementById(id);
 }
 
+const STATUS_SUCCESS_DWELL_MS = 4000;
+const STATUS_ERROR_DWELL_MS = 12000;
+let statusCollapseTimer = 0;
+let statusGeneration = 0;
+let statusExpanded = false;
+let statusIsError = false;
+let statusHoldOpen = false;
+
+function armStatusTimer(fn, ms) {
+  const handle = setTimeout(fn, ms);
+  if (handle && typeof handle.unref === "function") handle.unref();
+  return handle;
+}
+
+function clearStatusTimer() {
+  statusGeneration += 1;
+  if (!statusCollapseTimer) return;
+  clearTimeout(statusCollapseTimer);
+  statusCollapseTimer = 0;
+}
+
+function paintStatusChrome(expanded) {
+  const status = $("status");
+  const notice = $("notice");
+  const chip = $("status-chip");
+  const hasText = !!(status && status.textContent);
+  const open = !!expanded && hasText;
+  statusExpanded = open;
+  if (notice && notice.classList) {
+    notice.classList.toggle("collapsed", hasText && !open);
+    notice.classList.toggle("error", hasText && statusIsError);
+  }
+  if (!chip) return;
+  chip.hidden = !hasText;
+  if (chip.classList) chip.classList.toggle("error", hasText && statusIsError);
+  if (typeof chip.setAttribute === "function") {
+    chip.setAttribute("aria-expanded", open ? "true" : "false");
+    chip.setAttribute("aria-label", open ? "Collapse status" : (hasText ? status.textContent : "Show status"));
+  }
+  chip.title = hasText && !open ? status.textContent : "";
+}
+
+function scheduleStatusCollapse() {
+  clearStatusTimer();
+  if (statusHoldOpen || !statusExpanded) return;
+  const generation = statusGeneration;
+  const wait = statusIsError ? STATUS_ERROR_DWELL_MS : STATUS_SUCCESS_DWELL_MS;
+  statusCollapseTimer = armStatusTimer(() => {
+    if (generation !== statusGeneration || statusHoldOpen) return;
+    statusCollapseTimer = 0;
+    const status = $("status");
+    if (!status || !status.textContent) return;
+    paintStatusChrome(false);
+  }, wait);
+}
+
+function collapseStatus() {
+  statusHoldOpen = false;
+  clearStatusTimer();
+  const status = $("status");
+  if (!status || !status.textContent) {
+    paintStatusChrome(true);
+    return;
+  }
+  paintStatusChrome(false);
+}
+
+function expandStatus(pin) {
+  const status = $("status");
+  if (!status || !status.textContent) {
+    statusHoldOpen = false;
+    paintStatusChrome(true);
+    return;
+  }
+  statusHoldOpen = !!pin;
+  clearStatusTimer();
+  paintStatusChrome(true);
+  if (!statusHoldOpen) scheduleStatusCollapse();
+}
+
 function showStatus(text, isError) {
   const el = $("status");
+  if (!el) return;
   const kept = undoOpIds && undoReceipt;
   el.textContent = kept && text !== undoReceipt ? undoReceipt + (text ? "\n" + text : "") : (text || "");
-  el.classList.toggle("error", !!(isError || (kept && undoReceiptError)) && !!el.textContent);
+  statusIsError = !!(isError || (kept && undoReceiptError)) && !!el.textContent;
+  if (el.classList) el.classList.toggle("error", statusIsError);
+  statusHoldOpen = false;
+  if (!el.textContent) {
+    clearStatusTimer();
+    paintStatusChrome(true);
+    return;
+  }
+  paintStatusChrome(true);
+  scheduleStatusCollapse();
+}
+
+function statusToggleTarget(event) {
+  const target = event && event.target;
+  if (!target || typeof target.closest !== "function") return null;
+  return target.closest("button");
+}
+
+function statusControl(event) {
+  const button = statusToggleTarget(event);
+  if (button && button.id !== "status-chip") return false;
+  const status = $("status");
+  if (!status || !status.textContent) return false;
+  if (statusExpanded && !button && typeof window.getSelection === "function") {
+    const selection = window.getSelection();
+    if (selection && String(selection)) return false;
+  }
+  if (statusExpanded) collapseStatus();
+  else expandStatus(true);
+  return true;
+}
+
+function statusDismissPointer(event) {
+  if (!statusExpanded) return false;
+  if (event && event.button !== undefined && event.button !== 0) return false;
+  const status = $("status");
+  if (!status || !status.textContent) return false;
+  const notice = $("notice");
+  if (notice && typeof notice.contains === "function" && event && notice.contains(event.target)) return false;
+  collapseStatus();
+  return true;
+}
+
+function statusDismissKey(event) {
+  if (!event || event.key !== "Escape" || !statusExpanded) return false;
+  if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return false;
+  const target = event.target;
+  if (target && typeof target.closest === "function" && target.closest("input, textarea, select, [contenteditable='true']")) return false;
+  if (typeof document.querySelector === "function" && document.querySelector("dialog[open]")) return false;
+  const menu = typeof document.getElementById === "function" ? document.getElementById("organize-menu") : null;
+  if (menu && !menu.hidden) return false;
+  if (typeof event.preventDefault === "function") event.preventDefault();
+  collapseStatus();
+  return true;
+}
+
+function wireStatusNotice() {
+  const notice = $("notice");
+  if (!notice || (notice.dataset && notice.dataset.statusWired)) return;
+  if (notice.dataset) notice.dataset.statusWired = "1";
+  if (typeof notice.addEventListener === "function") notice.addEventListener("click", statusControl);
+  document.addEventListener("mousedown", statusDismissPointer);
+  document.addEventListener("keydown", statusDismissKey);
 }
 
 function selectedAccount() {
@@ -238,6 +387,51 @@ function allInboxUnread(accounts) {
   }, 0);
 }
 
+function allAccountMailLabel() {
+  return "All Account Mail";
+}
+
+function allAccountMailTitle(unreadOnly) {
+  return unreadOnly ? "All Account Mail · Unread" : "All Account Mail";
+}
+
+function allAccountMailSyncCopy() {
+  return "All Account Mail shows mail already downloaded. Open an Inbox to sync that account.";
+}
+
+function allAccountMailEmptyCopy(unreadOnly) {
+  if (unreadOnly) return "No unread messages in All Account Mail.";
+  return "No downloaded messages in All Account Mail. Open an account's Inbox and use Sync to download recent mail.";
+}
+
+function allAccountMailMatches(query) {
+  const q = String(query || "").trim().toLowerCase();
+  return !q || "all account mail".includes(q);
+}
+
+function allAccountUnreadChip(count, pressed) {
+  const n = Number(count);
+  const unread = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  const on = pressed === true;
+  const action = on
+    ? "Showing unread messages in All Account Mail. Show every message."
+    : "Show only unread messages in All Account Mail.";
+  return {
+    text: unread ? "Unread " + unread : "Unread",
+    pressed: on,
+    label: (unread ? "Unread, " + unread + ". " : "Unread. ") + action,
+  };
+}
+
+function allAccountMailChoice(current, control) {
+  const view = current && typeof current === "object" ? current : {};
+  if (control === "unread") {
+    if (view.allInbox === true && view.unreadOnly === true) return { allInbox: true, unreadOnly: false };
+    return { allInbox: true, unreadOnly: true };
+  }
+  return { allInbox: true, unreadOnly: false };
+}
+
 function mailListRequest(view) {
   const source = view || {};
   const limit = source.limit || 200;
@@ -248,7 +442,9 @@ function mailListRequest(view) {
     return { channel: "mail:searchLocal", params };
   }
   if (source.allInbox) {
-    return { channel: "mail:listFromCache", params: { folderKey: "inbox", limit, offset } };
+    const params = { folderKey: "inbox", limit, offset };
+    if (source.unreadOnly) params.filterUnread = true;
+    return { channel: "mail:listFromCache", params };
   }
   return {
     channel: source.fromNetwork ? "mail:listFromNetwork" : "mail:listFromCache",
@@ -2123,7 +2319,88 @@ function rememberLayoutPanes() {
   }, 200);
 }
 
-function previewDraft(fields, quote, when) {
+function attachmentLimitCopy(provider) {
+  if (provider === "gmail") return "Gmail rejects messages larger than 25 MB.";
+  if (provider === "outlook") return "Outlook rejects messages larger than 25 MB.";
+  return "Gmail and Outlook reject messages larger than 25 MB.";
+}
+
+function attachmentCapCopy(filename, size, total, provider) {
+  const limit = attachmentLimitCopy(provider);
+  const cap = 25 * 1024 * 1024;
+  const name = String(filename || "That file");
+  if (size > cap) return `${name} is ${fileSize(size) || "over 25 MB"}. ${limit}`;
+  if (total > cap) return `These files are ${fileSize(total) || "over 25 MB"} together. ${limit}`;
+  return "";
+}
+
+function composeFileMeta(row) {
+  if (!row || typeof row !== "object") return null;
+  const storageUrl = typeof row.storageUrl === "string" && row.storageUrl.startsWith("local:") ? row.storageUrl : "";
+  if (!storageUrl) return null;
+  const filename = String(row.filename || row.name || "").trim() || "attachment";
+  const size = Number(row.size);
+  return {
+    id: row.id ? String(row.id) : storageUrl,
+    storageUrl,
+    filename,
+    mimeType: String(row.mimeType || row.contentType || "application/octet-stream"),
+    size: Number.isFinite(size) && size > 0 ? size : 0,
+  };
+}
+
+function composeAttachmentList(rows) {
+  const out = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    const meta = composeFileMeta(row);
+    if (!meta || seen.has(meta.storageUrl)) continue;
+    seen.add(meta.storageUrl);
+    out.push(meta);
+  }
+  return out;
+}
+
+function attachmentPayload(rows) {
+  return composeAttachmentList(rows).map((row) => ({
+    storageUrl: row.storageUrl,
+    filename: row.filename,
+    mimeType: row.mimeType,
+    size: row.size,
+    id: row.id,
+  }));
+}
+
+function attachmentKey(rows) {
+  return composeAttachmentList(rows).map((row) => row.storageUrl).join("\n");
+}
+
+function reviewComposeFiles(existing, incoming, provider) {
+  const rows = composeAttachmentList(existing);
+  let total = rows.reduce((sum, row) => sum + (Number(row.size) || 0), 0);
+  const errors = [];
+  const accepted = [];
+  const files = Array.isArray(incoming) ? incoming : [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const name = String((file && (file.filename || file.name)) || "").trim() || "attachment";
+    const size = Number(file && file.size);
+    if (!Number.isFinite(size) || size <= 0) {
+      errors.push(`${name} is empty.`);
+      continue;
+    }
+    const reason = attachmentCapCopy(name, size, total + size, provider);
+    if (reason) {
+      errors.push(reason);
+      continue;
+    }
+    total += size;
+    accepted.push({ index, filename: name, size });
+  }
+  return { accepted, errors, total };
+}
+
+function previewDraft(fields, quote, when, files) {
   const source = fields && typeof fields === "object" ? fields : {};
   const to = String(source.to || "").trim();
   const cc = String(source.cc || "").trim();
@@ -2138,6 +2415,7 @@ function previewDraft(fields, quote, when) {
     bcc,
     subject,
     body,
+    attachments: composeAttachmentList(files).map((row) => ({ filename: row.filename, size: row.size })),
     sendAt: schedule ? schedule.toISOString() : "",
   };
 }
@@ -2258,6 +2536,13 @@ function signaturePlain(row) {
     .trim();
 }
 
+function signatureMarkup(row) {
+  if (!row) return "";
+  if (typeof row.html === "string" && row.html.trim()) return row.html.trim();
+  const text = typeof row.text === "string" ? row.text.trim() : "";
+  return text ? toHtml(text) : "";
+}
+
 function signatureDraft(input) {
   const source = input || {};
   const payload = {
@@ -2327,9 +2612,10 @@ function applyFromSignature(input) {
   const rows = Array.isArray(source.rows) ? source.rows : signatureRows(source.pack);
   const match = id ? rows.find((row) => String(row.id) === String(id)) : null;
   const next = match ? signaturePlain(match) : "";
+  const markup = match ? signatureMarkup(match) : "";
   const replaced = replaceSignature(body, previous, next);
   if (!replaced.applied) return { body, previous, applied: false, pickerId: null };
-  return { body: replaced.body, previous: next, applied: true, pickerId: match ? String(match.id) : "" };
+  return { body: replaced.body, previous: next, applied: true, pickerId: match ? String(match.id) : "", html: markup };
 }
 
 function people(value) {
@@ -3023,21 +3309,43 @@ function suggestionEmail(email) {
   };
 }
 
-function draftBlockReason(mode, prompt, existing) {
+function draftBlockReason(mode, prompt, existing, email) {
   const instruction = String(prompt || "").trim();
   const body = String(existing || "").trim();
-  if (mode === "custom" && !instruction) return "Add a prompt.";
-  if (mode !== "custom" && !body && !instruction) return "Add some text, or a prompt.";
+  const source = !!(email && typeof email === "object");
+  if (mode === "custom" && !instruction && !source) return "Add a prompt.";
+  if (mode !== "custom" && !body && !instruction && !source) return "Add some text, or a prompt.";
   return "";
 }
 
-function draftInstruction(mode, prompt, existing, subject) {
-  return {
+function draftInstruction(mode, prompt, existing, subject, email) {
+  const instruction = String(prompt || "").trim();
+  const body = {
     mode: mode || "custom",
-    user_prompt: String(prompt || "").trim(),
+    user_prompt: instruction,
     existing_draft_content: String(existing || ""),
     subject: String(subject || ""),
   };
+  if (email && typeof email === "object") {
+    body.email = suggestionEmail(email);
+    if (!instruction && !String(existing || "").trim()) body.user_prompt = "Write a reply.";
+  }
+  return body;
+}
+
+function replySuggestionSource(fields) {
+  const email = fields && fields.quoteEmail;
+  if (!email || typeof email !== "object") return null;
+  if (fields.kind === "reply" || fields.kind === "all" || fields.aiWrite === true) return email;
+  return null;
+}
+
+function suggestedReplyBody(current, signature, text) {
+  const line = String(text || "").trim();
+  if (!line) return String(current || "");
+  const parts = splitComposeSignature(current, signature);
+  if (parts.signature) return `${line}\n\n${parts.signature}`;
+  return line;
 }
 
 // shortcut: continue appends model text; rewrite and custom replace the body. Upgrade if continue must keep a partial model reply beside the old draft.
@@ -3169,27 +3477,55 @@ function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
   return nest;
 }
 
-function allInboxButton() {
+function applyAllAccountMailChrome(root) {
+  if (!root) return;
+  const current = !!state.allInbox;
+  root.classList.toggle("is-current", current);
+  const all = root.querySelector("button.all-inbox");
+  if (all) {
+    if (current) all.setAttribute("aria-current", "true");
+    else all.removeAttribute("aria-current");
+    all.setAttribute("aria-label", allAccountMailLabel());
+  }
+  const chip = root.querySelector("button.all-account-unread");
+  if (!chip) return;
+  const model = allAccountUnreadChip(allInboxUnread(state.accounts), current && !!state.allInboxUnreadOnly);
+  chip.textContent = model.text;
+  chip.title = model.label;
+  chip.setAttribute("aria-label", model.label);
+  chip.setAttribute("aria-pressed", model.pressed ? "true" : "false");
+}
+
+function allAccountMailRow() {
+  const row = document.createElement("div");
+  row.className = "all-account-mail";
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", allAccountMailLabel());
   const button = document.createElement("button");
   button.type = "button";
   button.className = "account all-inbox";
+  button.setAttribute("data-testid", "all-account-mail");
   const name = document.createElement("span");
   name.className = "name";
-  name.textContent = "All Inbox";
+  name.textContent = allAccountMailLabel();
   button.appendChild(name);
-  const unread = allInboxUnread(state.accounts);
-  if (unread) {
-    const count = document.createElement("span");
-    count.className = "count";
-    count.textContent = String(unread);
-    button.appendChild(count);
-  }
-  button.setAttribute("aria-label", unread ? `All Inbox, ${unread} unread` : "All Inbox");
-  if (state.allInbox) button.setAttribute("aria-current", "true");
   button.addEventListener("click", () => {
-    selectAllInbox().catch((error) => showStatus(error.message, true));
+    const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "mail");
+    selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
-  return button;
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "count all-account-unread";
+  chip.setAttribute("data-testid", "all-account-unread");
+  chip.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "unread");
+    selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
+  });
+  row.append(button, chip);
+  applyAllAccountMailChrome(row);
+  return row;
 }
 
 function folderFilterQuery() {
@@ -3302,11 +3638,7 @@ function renderAccounts() {
     folderQuery,
   ]);
   if (key === folderRenderKey) {
-    const all = nav.querySelector("button.all-inbox");
-    if (all) {
-      if (state.allInbox) all.setAttribute("aria-current", "true");
-      else all.removeAttribute("aria-current");
-    }
+    applyAllAccountMailChrome(nav.querySelector(".all-account-mail"));
     for (const button of nav.querySelectorAll("button.folder")) {
       const current = !state.allInbox && button.dataset.accountId === state.accountId && button.dataset.folderId === state.folderId;
       if (current) button.setAttribute("aria-current", "true");
@@ -3323,9 +3655,9 @@ function renderAccounts() {
     nav.append(empty, connectButton());
     return;
   }
-  const showAllInbox = !folderQuery || "all inbox".includes(folderQuery);
-  let shownFolder = showAllInbox;
-  if (showAllInbox) nav.appendChild(allInboxButton());
+  const showAllAccountMail = allAccountMailMatches(folderQuery);
+  let shownFolder = showAllAccountMail;
+  if (showAllAccountMail) nav.appendChild(allAccountMailRow());
   for (const account of state.accounts) {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
@@ -4365,7 +4697,7 @@ function paintSyncControl() {
   const word = mail ? syncButtonLabel(sync) : "Refresh";
   const text = !mail ? "Refresh this page" : !state.accounts.length ? "No account connected"
     : (state.allInbox && !(sync && ["syncing", "error", "paused"].includes(sync.state)))
-      ? "All Inbox shows mail already downloaded. Open an Inbox to sync that account."
+      ? allAccountMailSyncCopy()
       : (syncDetail(sync) || "Not synced yet");
   if (label) label.textContent = word;
   if (button) {
@@ -4673,7 +5005,9 @@ function messageRow(email) {
 
 function shownEmails() {
   const input = $("list-filter");
-  const folder = state.allInbox ? null : selectedFolderNode();
+  const folder = state.allInbox
+    ? (state.allInboxUnreadOnly ? { view: { unread: true } } : null)
+    : selectedFolderNode();
   return visibleList(state.emails, input ? input.value : "", folder);
 }
 
@@ -4857,7 +5191,7 @@ function renderList() {
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = $("list-title");
   if (title) {
-    title.textContent = state.query ? `Search: ${state.query}` : (state.allInbox ? "All Inbox" : (chipLabel(folder) || "Messages"));
+    title.textContent = state.query ? `Search: ${state.query}` : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly) : (chipLabel(folder) || "Messages"));
   }
   renderChips(state.allInbox ? null : account);
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && state.prefs.chips && chipFolders(account).some(item => item.id === state.folderId));
@@ -4877,8 +5211,8 @@ function renderList() {
       empty.textContent = "Connect a mailbox to download messages here.";
     } else if (state.query && !state.emails.length) {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
-    } else if (state.allInbox && !state.emails.length && !listQuery) {
-      empty.textContent = "No downloaded messages in All Inbox. Open an account's Inbox and use Sync to download recent mail.";
+    } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || !state.emails.length)) {
+      empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly);
     } else if (!listQuery && folder && folder.emptyCopy) {
       empty.textContent = folder.emptyCopy;
     } else if (!state.emails.length) {
@@ -4931,7 +5265,7 @@ function renderList() {
       previous = row;
     }
   }
-  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset].join("\0");
+  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.allInboxUnreadOnly ? "unread" : ""].join("\0");
   if (motionKey !== listMotionKey) {
     listMotionKey = motionKey;
     const motion = motionApi();
@@ -5303,6 +5637,10 @@ function paintSuggestions(email) {
 }
 
 function renderReader(focus) {
+  if (pendingOpenBody && pendingOpenId) {
+    paintReaderPending(listedMessage(pendingOpenId));
+    return;
+  }
   const pane = $("reader");
   pane.removeAttribute("aria-busy");
   const email = state.email;
@@ -5311,6 +5649,7 @@ function renderReader(focus) {
     state.translate = null;
   }
   pane.replaceChildren();
+  syncAttachmentPreview(email);
   if (!email) {
     const wrap = document.createElement("div");
     wrap.className = "empty-read";
@@ -5339,6 +5678,27 @@ function renderReader(focus) {
       wrap.append(mark, title, hint);
     }
     pane.appendChild(wrap);
+    return;
+  }
+  if (email.bodyError) {
+    const heading = document.createElement("h2");
+    heading.textContent = email.subject || "(no subject)";
+    const from = document.createElement("p");
+    from.className = "meta";
+    from.textContent = email.from || "";
+    const when = document.createElement("p");
+    when.className = "meta";
+    const failedAt = email.date ? new Date(email.date) : null;
+    when.textContent = failedAt && !Number.isNaN(failedAt.getTime()) ? failedAt.toLocaleString() : "";
+    const error = document.createElement("p");
+    error.className = "hint error";
+    error.setAttribute("role", "status");
+    error.textContent = email.bodyError;
+    pane.append(heading, from, when, error);
+    if (focus) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
     return;
   }
   renderActions(pane, email);
@@ -5581,43 +5941,339 @@ function renderThread(pane, email) {
   pane.appendChild(list);
 }
 
+function attachmentPreviewKind(file) {
+  if (!file || typeof file !== "object") return "";
+  const mime = String(file.mimeType || file.contentType || "").toLowerCase().split(";")[0].trim();
+  const name = String(file.filename || file.name || "").toLowerCase();
+  const generic = !mime || mime === "application/octet-stream";
+  if (mime === "application/pdf" || mime === "application/x-pdf") return "pdf";
+  if (mime.startsWith("image/") && mime !== "image/svg+xml" && !mime.includes("tiff") && !mime.includes("heic") && !mime.includes("heif")) return "image";
+  if (!generic) return "";
+  if (name.endsWith(".pdf")) return "pdf";
+  if (/\.(png|jpe?g|gif|webp|bmp|avif|apng|ico)$/.test(name)) return "image";
+  return "";
+}
+
+function attachmentBytes(data) {
+  if (!data) return new Uint8Array();
+  if (data instanceof Uint8Array) return new Uint8Array(data);
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (typeof data === "object" && data.type === "Buffer" && Array.isArray(data.data)) return Uint8Array.from(data.data);
+  return new Uint8Array();
+}
+
+function previewMime(file, kind) {
+  if (kind === "pdf") return "application/pdf";
+  const mime = String((file && (file.mimeType || file.contentType)) || "").toLowerCase().split(";")[0].trim();
+  if (mime.startsWith("image/") && mime !== "image/svg+xml") return mime === "image/jpg" ? "image/jpeg" : mime;
+  const name = String((file && (file.filename || file.name)) || "").toLowerCase();
+  if (name.endsWith(".png") || name.endsWith(".apng")) return "image/png";
+  if (name.endsWith(".gif")) return "image/gif";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".bmp")) return "image/bmp";
+  if (name.endsWith(".avif")) return "image/avif";
+  if (name.endsWith(".ico")) return "image/x-icon";
+  return "image/jpeg";
+}
+
+let attachmentPreviewToken = 0;
+let attachmentPreviewUrl = "";
+let attachmentPreviewEmailId = "";
+
+function readerIcon(kind) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const add = (tag, attrs) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+    svg.appendChild(node);
+  };
+  if (kind === "download") {
+    add("path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" });
+    add("polyline", { points: "7 10 12 15 17 10" });
+    add("line", { x1: "12", y1: "15", x2: "12", y2: "3" });
+  } else {
+    add("path", { d: "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" });
+  }
+  return svg;
+}
+
+function attachmentGhost(label, aria, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.textContent = label;
+  button.setAttribute("aria-label", aria);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function revokeAttachmentPreviewUrl() {
+  if (!attachmentPreviewUrl) return;
+  URL.revokeObjectURL(attachmentPreviewUrl);
+  attachmentPreviewUrl = "";
+}
+
+function resetPreviewFrame() {
+  const frame = $("attachment-preview-frame");
+  if (!frame || typeof frame.replaceWith !== "function" || typeof document.createElement !== "function") return;
+  const fresh = document.createElement("iframe");
+  fresh.id = "attachment-preview-frame";
+  fresh.hidden = true;
+  fresh.referrerPolicy = "no-referrer";
+  fresh.title = "PDF preview";
+  frame.replaceWith(fresh);
+}
+
+function clearAttachmentPreview() {
+  attachmentPreviewToken += 1;
+  attachmentPreviewEmailId = "";
+  const img = $("attachment-preview-image");
+  if (img) {
+    img.onload = null;
+    img.onerror = null;
+    if (typeof img.removeAttribute === "function") img.removeAttribute("src");
+    img.alt = "";
+    img.hidden = true;
+  }
+  resetPreviewFrame();
+  revokeAttachmentPreviewUrl();
+  const stage = $("attachment-preview-stage");
+  if (stage) {
+    stage.classList.remove("is-image");
+    stage.classList.remove("is-pdf");
+  }
+  const status = $("attachment-preview-status");
+  if (status) {
+    status.hidden = true;
+    status.textContent = "";
+  }
+}
+
+function closeAttachmentPreview() {
+  const dialog = $("attachment-preview");
+  if (!dialog || !dialog.open) return;
+  dialog.close();
+}
+
+function syncAttachmentPreview(email) {
+  const dialog = $("attachment-preview");
+  if (!dialog || !dialog.open) return;
+  const id = email && email.id;
+  if (id && id === attachmentPreviewEmailId) return;
+  closeAttachmentPreview();
+}
+
+function showAttachmentPreviewShell(file, kind) {
+  const dialog = $("attachment-preview");
+  const title = $("attachment-preview-title");
+  const status = $("attachment-preview-status");
+  const stage = $("attachment-preview-stage");
+  const img = $("attachment-preview-image");
+  const frame = $("attachment-preview-frame");
+  const label = (file && file.filename) || "Attachment";
+  if (title) title.textContent = label;
+  if (status) {
+    status.hidden = false;
+    status.textContent = "Loading preview…";
+  }
+  if (img) {
+    img.onload = null;
+    img.onerror = null;
+    img.removeAttribute("src");
+    img.hidden = true;
+  }
+  if (frame) {
+    frame.removeAttribute("src");
+    frame.hidden = true;
+  }
+  if (stage) {
+    stage.classList.toggle("is-image", kind === "image");
+    stage.classList.toggle("is-pdf", kind === "pdf");
+  }
+  if (dialog && !dialog.open) openDialog("attachment-preview");
+  const close = $("attachment-preview-close");
+  if (close) close.focus();
+}
+
+function rememberPreviewUrl(url) {
+  const previous = attachmentPreviewUrl;
+  attachmentPreviewUrl = url;
+  if (previous && previous !== url) URL.revokeObjectURL(previous);
+}
+
+async function previewAttachment(email, file) {
+  const kind = attachmentPreviewKind(file);
+  if (!kind || !file || !file.id) return;
+  const gen = ++attachmentPreviewToken;
+  attachmentPreviewEmailId = email && email.id ? email.id : "";
+  showAttachmentPreviewShell(file, kind);
+  const label = file.filename || "attachment";
+  let data;
+  try {
+    data = await call("mail:fetchAttachmentBytes", {
+      emailId: email.id,
+      messageId: email.id,
+      attachmentId: file.id,
+      filename: file.filename,
+    });
+  } catch (error) {
+    if (gen !== attachmentPreviewToken) return;
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "cancelled") return;
+    const status = $("attachment-preview-status");
+    if (status) {
+      status.hidden = false;
+      status.textContent = message;
+    }
+    throw error;
+  }
+  if (gen !== attachmentPreviewToken) return;
+  const bytes = attachmentBytes(data);
+  const status = $("attachment-preview-status");
+  if (!bytes.byteLength) {
+    if (status) {
+      status.hidden = false;
+      status.textContent = "This file is empty.";
+    }
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([bytes], { type: previewMime(file, kind) }));
+  rememberPreviewUrl(url);
+  if (gen !== attachmentPreviewToken) return;
+  if (kind === "image") {
+    const img = $("attachment-preview-image");
+    if (!img) return;
+    img.alt = label;
+    img.onload = () => {
+      if (gen !== attachmentPreviewToken) return;
+      img.hidden = false;
+      if (status) status.hidden = true;
+    };
+    img.onerror = () => {
+      if (gen !== attachmentPreviewToken) return;
+      img.hidden = true;
+      if (status) {
+        status.hidden = false;
+        status.textContent = "This image could not be previewed. Save or Open it instead.";
+      }
+    };
+    img.src = url;
+    return;
+  }
+  const frame = $("attachment-preview-frame");
+  if (!frame) return;
+  frame.title = "PDF preview of " + label;
+  frame.hidden = false;
+  frame.src = url;
+  if (status) status.hidden = true;
+}
+
+async function saveAttachmentsZip(email, files) {
+  const attachmentIds = (files || []).map((file) => file && file.id).filter(Boolean);
+  if (!attachmentIds.length) return;
+  try {
+    await call("mail:downloadAttachmentsZip", {
+      emailId: email.id,
+      messageId: email.id,
+      attachmentIds,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "cancelled") return;
+    throw error;
+  }
+  showStatus("Saved all attachments.");
+}
+
 function renderAttachments(pane, email) {
   const files = (email.attachments || []).filter((item) => item && (item.filename || item.id));
+  if (!files.length && !email.hasAttachments) return;
+  const card = document.createElement("section");
+  card.className = "attachment-card";
+  card.setAttribute("aria-label", "Attachments");
+  const head = document.createElement("div");
+  head.className = "attachment-card-head";
+  const title = document.createElement("h3");
+  title.appendChild(readerIcon("paperclip"));
+  const titleText = document.createElement("span");
+  titleText.textContent = "Attachments";
+  title.appendChild(titleText);
+  if (files.length) {
+    const count = document.createElement("span");
+    count.className = "count";
+    count.textContent = String(files.length);
+    title.appendChild(count);
+  }
+  head.appendChild(title);
+  if (files.some((file) => file.id)) {
+    const zip = document.createElement("button");
+    zip.type = "button";
+    zip.className = "attachment-zip";
+    zip.appendChild(readerIcon("download"));
+    const zipLabel = document.createElement("span");
+    zipLabel.textContent = "Save as ZIP";
+    zip.appendChild(zipLabel);
+    zip.setAttribute("aria-label", "Save all attachments as ZIP");
+    zip.addEventListener("click", () => guard(() => saveAttachmentsZip(email, files)));
+    head.appendChild(zip);
+  }
+  card.appendChild(head);
   if (!files.length) {
-    if (!email.hasAttachments) return;
     const note = document.createElement("p");
-    note.className = "meta";
+    note.className = "attachment-note";
     note.textContent = "This message has attachments.";
-    pane.appendChild(note);
+    card.appendChild(note);
+    pane.appendChild(card);
     return;
   }
   const list = document.createElement("ul");
   list.className = "attachments";
   for (const file of files) {
     const item = document.createElement("li");
-    const name = document.createElement("span");
+    const main = document.createElement("div");
+    main.className = "attachment-main";
     const size = fileSize(file.size);
     const label = file.filename || "attachment";
-    name.textContent = size ? `${label} (${size})` : label;
-    item.appendChild(name);
+    const kind = file.id ? attachmentPreviewKind(file) : "";
+    const name = document.createElement(kind ? "button" : "span");
+    name.className = "attachment-name";
+    name.textContent = label;
+    name.title = label;
+    if (kind) {
+      name.type = "button";
+      name.setAttribute("aria-label", "Preview " + label);
+      name.addEventListener("click", () => guard(() => previewAttachment(email, file)));
+    }
+    main.appendChild(name);
+    if (size) {
+      const sizeNode = document.createElement("span");
+      sizeNode.className = "attachment-size";
+      sizeNode.textContent = size;
+      main.appendChild(sizeNode);
+    }
+    item.appendChild(main);
     if (file.id) {
-      const save = document.createElement("button");
-      save.type = "button";
-      save.className = "ghost";
-      save.textContent = "Save";
-      save.setAttribute("aria-label", `Save ${label}`);
-      save.addEventListener("click", () => guard(() => useAttachment("mail:downloadAttachment", email, file)));
-      const open = document.createElement("button");
-      open.type = "button";
-      open.className = "ghost";
-      open.textContent = "Open";
-      open.setAttribute("aria-label", `Open ${label}`);
-      open.addEventListener("click", () => guard(() => useAttachment("mail:openAttachmentExternally", email, file)));
-      item.append(save, open);
+      const actions = document.createElement("div");
+      actions.className = "attachment-actions";
+      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + label, () => guard(() => previewAttachment(email, file))));
+      actions.appendChild(attachmentGhost("Save", "Save " + label, () => guard(() => useAttachment("mail:downloadAttachment", email, file))));
+      actions.appendChild(attachmentGhost("Open", "Open " + label, () => guard(() => useAttachment("mail:openAttachmentExternally", email, file))));
+      item.appendChild(actions);
     }
     list.appendChild(item);
   }
-  pane.appendChild(list);
+  card.appendChild(list);
+  pane.appendChild(card);
 }
 
 async function useAttachment(channel, email, file) {
@@ -5937,9 +6593,15 @@ async function loadSnoozed() {
 }
 
 function rememberSelection(preferredId) {
-  if (!state.accounts.length) state.allInbox = false;
+  if (!state.accounts.length) {
+    state.allInbox = false;
+    state.allInboxUnreadOnly = false;
+  }
   if (preferredId && state.accounts.some((account) => account.id === preferredId)) {
-    if (state.accountId !== preferredId) state.allInbox = false;
+    if (state.accountId !== preferredId) {
+      state.allInbox = false;
+      state.allInboxUnreadOnly = false;
+    }
     state.accountId = preferredId;
   }
   if (!state.accounts.some((account) => account.id === state.accountId)) {
@@ -5988,7 +6650,7 @@ async function changeListPage(direction) {
 
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
-  const scope = JSON.stringify([state.allInbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
+  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.accountId, state.folderId, state.query, state.searchAccountId]);
   if (state.listScope !== scope) {
     state.listScope = scope;
     state.listOffset = 0;
@@ -6013,6 +6675,7 @@ async function loadList(fromNetwork, requestedOffset) {
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
     const request = mailListRequest({
       allInbox: state.allInbox,
+      unreadOnly: state.allInbox && state.allInboxUnreadOnly,
       fromNetwork: !state.allInbox && fromNetwork && isLive(account),
       accountId: account && account.id,
       folderId: state.folderId,
@@ -6026,6 +6689,7 @@ async function loadList(fromNetwork, requestedOffset) {
       offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
       const again = mailListRequest({
         allInbox: state.allInbox,
+        unreadOnly: state.allInbox && state.allInboxUnreadOnly,
         accountId: account && account.id,
         folderId: state.folderId,
         limit: LIST_PAGE_SIZE,
@@ -7603,23 +8267,31 @@ function wireOrganize() {
   }, true);
 }
 
-async function selectAllInbox() {
+async function selectAllInbox(unreadOnly) {
   if (!state.accounts.length) return;
-  invalidateReaderOpen();
+  const nextUnread = unreadOnly === true;
+  const staying = state.allInbox && !state.query;
+  if (!staying) {
+    invalidateReaderOpen();
+    state.email = null;
+    state.thread = [];
+    state.selectedIds = [];
+    state.selectionAnchor = "";
+    state.query = "";
+    $("search-query").value = "";
+    const listFilter = $("list-filter");
+    if (listFilter) listFilter.value = "";
+  } else if (state.allInboxUnreadOnly !== nextUnread) {
+    state.selectedIds = [];
+    state.selectionAnchor = "";
+  }
   state.allInbox = true;
+  state.allInboxUnreadOnly = nextUnread;
   state.listScope = "";
-  state.query = "";
-  $("search-query").value = "";
-  const listFilter = $("list-filter");
-  if (listFilter) listFilter.value = "";
-  state.email = null;
-  state.thread = [];
-  state.selectedIds = [];
-  state.selectionAnchor = "";
   renderAccounts();
   if (state.view === "folders") paintProviderPage();
   syncRemove();
-  renderReader(false);
+  if (!staying) renderReader(false);
   if (!undoOpIds && !sendTimer) showStatus("");
   await loadList();
 }
@@ -7628,6 +8300,7 @@ async function selectFolder(accountId, folderId) {
   invalidateReaderOpen();
   const previous = state.accountId;
   state.allInbox = false;
+  state.allInboxUnreadOnly = false;
   state.listScope = "";
   state.accountId = accountId;
   state.folderId = folderId;
@@ -7667,6 +8340,23 @@ function readerCurrentId() {
 function invalidateReaderOpen() {
   openGen += 1;
   pendingOpenId = "";
+  pendingOpenBody = false;
+}
+
+function abandonOpen(emailId, message) {
+  pendingOpenId = "";
+  pendingOpenBody = false;
+  const known = listedMessage(emailId) || {};
+  state.email = {
+    ...known,
+    id: String(emailId),
+    htmlBody: null,
+    textBody: null,
+    bodyError: message,
+  };
+  state.thread = [];
+  renderReader(false);
+  renderList();
 }
 
 function listedMessage(emailId) {
@@ -7707,9 +8397,8 @@ async function openMessage(emailId, focus) {
   const showing = state.email && String(state.email.id) === String(emailId)
     && (state.email.htmlBody || state.email.textBody);
   const waitForBody = !!(known && known.bodyComplete === false && !showing);
-  const previousEmail = state.email;
-  const previousThread = state.thread;
   pendingOpenId = emailId;
+  pendingOpenBody = waitForBody;
   if (waitForBody) paintReaderPending(known);
   renderList();
   let data;
@@ -7717,26 +8406,15 @@ async function openMessage(emailId, focus) {
     data = await call("mail:openEmail", { emailId });
   } catch (error) {
     if (gen !== openGen) return;
-    pendingOpenId = "";
-    if (waitForBody) {
-      state.email = previousEmail;
-      state.thread = previousThread;
-      renderReader(false);
-    }
-    renderList();
+    abandonOpen(emailId, error instanceof Error ? error.message : String(error));
     throw error;
   }
   if (gen !== openGen) return;
   const email = data && data.email;
-  if (!email) {
-    pendingOpenId = "";
-    if (waitForBody) {
-      state.email = previousEmail;
-      state.thread = previousThread;
-      renderReader(false);
-    }
-    renderList();
-    throw new Error("That message is no longer in the mailbox.");
+  if (!email || String(email.id) !== String(emailId)) {
+    const message = email ? "That message could not be loaded." : "That message is no longer in the mailbox.";
+    abandonOpen(emailId, message);
+    throw new Error(message);
   }
   let listed = null;
   const fromOpen = data && data.threadMessages;
@@ -7753,6 +8431,7 @@ async function openMessage(emailId, focus) {
     if (gen !== openGen) return;
   }
   pendingOpenId = "";
+  pendingOpenBody = false;
   state.email = email;
   state.thread = state.prefs.conversation === false ? [] : threadMembers(fromOpen, listed);
   renderReader(focus !== false);
@@ -7970,7 +8649,7 @@ function paintComposeEditor(plain, html) {
   }
   const block = document.createElement("div");
   block.setAttribute("data-compose-signature", "1");
-  appendSafeMailHtml(block, toHtml(parts.signature), false);
+  appendSafeMailHtml(block, state.signatureHtml || toHtml(parts.signature), false);
   editor.appendChild(block);
 }
 
@@ -7981,12 +8660,13 @@ function writeComposeBody(next, html) {
   paintComposeEditor(value, html || "");
 }
 
-function updateComposeSignatureNode(text) {
+function updateComposeSignatureNode(text, html) {
   const editor = $("compose-editor");
   if (!composeEditorLive()) return;
   const next = String(text || "");
+  const markup = String(html || "");
   let node = editor.querySelector("[data-compose-signature]");
-  if (!next) {
+  if (!next && !markup.trim()) {
     if (node) node.remove();
     return;
   }
@@ -8000,17 +8680,18 @@ function updateComposeSignatureNode(text) {
     editor.appendChild(node);
   }
   node.replaceChildren();
-  appendSafeMailHtml(node, toHtml(next), false);
+  appendSafeMailHtml(node, markup.trim() ? markup : toHtml(next), false);
 }
 
-function commitComposeSignature(previous, next) {
+function commitComposeSignature(previous, next, html) {
   const body = $("compose-body");
   const current = body && typeof body.value === "string" ? body.value : "";
   const committed = commitPickerSignature(current, previous, next);
   if (body) body.value = committed.body;
   state.signatureText = committed.previous;
+  state.signatureHtml = next ? String(html || toHtml(next)) : "";
   if (composeEditorLive() && signatureUntouched(current, previous)) {
-    updateComposeSignatureNode(next);
+    updateComposeSignatureNode(next, state.signatureHtml);
     return;
   }
   paintComposeEditor(committed.body, "");
@@ -8044,18 +8725,85 @@ function setComposeFormatLocked(locked) {
   const editing = !locked && !(state.draftWrite && state.draftWrite.pending);
   const bar = $("compose-format");
   if (bar && typeof bar.querySelectorAll === "function") {
-    for (const button of bar.querySelectorAll("button")) button.disabled = !editing;
+    for (const control of bar.querySelectorAll("button, input")) control.disabled = !editing;
   }
   setComposeEditorEditable(editing);
 }
 
-function paintComposeFormatState() {
-  const bar = $("compose-format");
+// style-src 'self' ignores style attributes. Reapply color and highlight through CSSOM so they stay visible.
+function revealEditorStyles(root) {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  let nodes = [];
+  try { nodes = root.querySelectorAll("[style], font[color], [bgcolor]"); } catch { return; }
+  for (const el of nodes) {
+    if (!el || el === root) continue;
+    const css = typeof el.getAttribute === "function" ? el.getAttribute("style") : "";
+    if (css) mailApplyCss(el, css, false, false);
+    if (typeof el.getAttribute !== "function" || !el.style || typeof el.style.setProperty !== "function") continue;
+    if (String(el.tagName || "").toLowerCase() === "font") {
+      const color = mailColor(el.getAttribute("color"));
+      if (color) el.style.setProperty("color", color);
+    }
+    const bg = mailColor(el.getAttribute("bgcolor"));
+    if (bg) el.style.setProperty("background-color", bg);
+  }
+}
+
+function paintFormatState(bar) {
   if (!bar || typeof bar.querySelectorAll !== "function" || typeof document.queryCommandState !== "function") return;
   for (const button of bar.querySelectorAll("button[data-command]")) {
     let on = false;
     try { on = document.queryCommandState(button.getAttribute("data-command")) === true; } catch { on = false; }
     button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+function activeRichEditor(editor) {
+  const node = editor && editor.nodeType === 1 ? editor : $("compose-editor");
+  if (!node || node.nodeType !== 1 || node.contentEditable === "false") return null;
+  if (typeof node.appendChild !== "function" || typeof node.replaceChildren !== "function") return null;
+  return node;
+}
+
+function rememberEditorRange(editor) {
+  const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
+  if (!sel || !sel.rangeCount || !editor) return null;
+  const range = sel.getRangeAt(0);
+  const node = range.commonAncestorContainer;
+  if (node !== editor && !(editor.contains && editor.contains(node))) return null;
+  return typeof range.cloneRange === "function" ? range.cloneRange() : range;
+}
+
+function restoreEditorRange(editor, range) {
+  if (!range || typeof document.getSelection !== "function") return;
+  const sel = document.getSelection();
+  if (!sel) return;
+  sel.removeAllRanges();
+  sel.addRange(range);
+  if (editor && typeof editor.focus === "function") editor.focus();
+}
+
+function paintColorSwatch(input) {
+  const label = input && input.closest ? input.closest(".compose-color") : null;
+  if (!label || !label.style || typeof label.style.setProperty !== "function") return;
+  const color = mailColor(input.value);
+  if (color) label.style.setProperty("--swatch", color);
+}
+
+function wrapRichStyle(editor, prop, color) {
+  if (!editor || typeof document.getSelection !== "function") return;
+  const sel = document.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  const node = range.commonAncestorContainer;
+  if (node !== editor && !(editor.contains && editor.contains(node))) return;
+  const el = document.createElement("span");
+  if (el.style && typeof el.style.setProperty === "function") el.style.setProperty(prop, color);
+  try {
+    range.surroundContents(el);
+  } catch {
+    el.appendChild(range.extractContents());
+    range.insertNode(el);
   }
 }
 
@@ -8074,48 +8822,62 @@ function insertComposeFallback(command) {
   }
 }
 
-function applyComposeCommand(command) {
-  const editor = $("compose-editor");
-  if (!composeEditorLive() || editor.contentEditable === "false") return;
-  editor.focus();
+function applyComposeCommand(command, editor, value) {
+  const target = activeRichEditor(editor);
+  if (!target) return;
+  if (typeof target.focus === "function") target.focus();
+  const colored = command === "foreColor" || command === "hiliteColor" || command === "backColor";
+  const color = colored ? mailColor(value) : "";
+  if (colored && !color) return;
   let applied = false;
-  try { applied = document.execCommand(command, false, null) === true; } catch { applied = false; }
-  if (!applied) insertComposeFallback(command);
-  syncComposePlainFromEditor();
-  paintComposeFormatState();
+  try {
+    if (command === "foreColor") {
+      try { document.execCommand("styleWithCSS", false, false); } catch { /* font color stays visible without a style attribute */ }
+    } else if (colored) {
+      try { document.execCommand("styleWithCSS", false, true); } catch { /* highlight uses a background color */ }
+    }
+    try { applied = document.execCommand(command, false, colored ? color : null) === true; } catch { applied = false; }
+    if (!applied && command === "hiliteColor") {
+      try { applied = document.execCommand("backColor", false, color) === true; } catch { applied = false; }
+    }
+  } finally {
+    if (colored && command !== "foreColor") {
+      try { document.execCommand("styleWithCSS", false, false); } catch { /* bold and italic stay on tags */ }
+    }
+  }
+  if (!applied && !colored) insertComposeFallback(command);
+  if (!applied && command === "foreColor") wrapRichStyle(target, "color", color);
+  if (!applied && (command === "hiliteColor" || command === "backColor")) wrapRichStyle(target, "background-color", color);
+  if (colored) revealEditorStyles(target);
 }
 
-function insertComposeMarkup(markup) {
-  const editor = $("compose-editor");
-  if (!composeEditorLive()) return;
-  editor.focus();
-  let inserted = false;
-  try { inserted = document.execCommand("insertHTML", false, markup) === true; } catch { inserted = false; }
-  if (inserted) return;
+function insertComposeMarkup(markup, editor) {
+  const target = activeRichEditor(editor);
+  if (!target) return;
+  if (typeof target.focus === "function") target.focus();
   const holder = document.createElement("div");
   appendSafeMailHtml(holder, markup, false);
   const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
-  if (!sel || !sel.rangeCount) {
-    while (holder.firstChild) editor.appendChild(holder.firstChild);
-    return;
+  const anchor = sel && sel.rangeCount ? sel.anchorNode : null;
+  const inside = !!(anchor && (anchor === target || (target.contains && target.contains(anchor))));
+  if (!inside) {
+    while (holder.firstChild) target.appendChild(holder.firstChild);
+  } else {
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const fragment = document.createDocumentFragment();
+    while (holder.firstChild) fragment.appendChild(holder.firstChild);
+    const last = fragment.lastChild;
+    range.insertNode(fragment);
+    if (last) {
+      const after = document.createRange();
+      after.setStartAfter(last);
+      after.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(after);
+    }
   }
-  const range = sel.getRangeAt(0);
-  range.deleteContents();
-  const fragment = document.createDocumentFragment();
-  while (holder.firstChild) fragment.appendChild(holder.firstChild);
-  range.insertNode(fragment);
-}
-
-function onComposePaste(event) {
-  if (!event || !event.clipboardData) return;
-  const html = event.clipboardData.getData("text/html");
-  const text = event.clipboardData.getData("text/plain");
-  if (!html && !text) return;
-  event.preventDefault();
-  const markup = html ? sanitizeComposeHtml(html) : toHtml(text);
-  if (!markup) return;
-  insertComposeMarkup(markup);
-  syncComposePlainFromEditor();
+  revealEditorStyles(target);
 }
 
 function placeComposeCaret(editor) {
@@ -8143,29 +8905,62 @@ function focusComposeBody() {
   if (typeof body.scrollTop === "number") body.scrollTop = 0;
 }
 
-function wireComposeFormat() {
-  const bar = $("compose-format");
-  const editor = $("compose-editor");
-  if (bar) {
+function bindRichEditor(bar, editor, onInput) {
+  if (!bar && !editor) return;
+  let saved = null;
+  if (bar && typeof bar.addEventListener === "function") {
+    if (typeof bar.querySelectorAll === "function") {
+      for (const input of bar.querySelectorAll("input[data-command]")) paintColorSwatch(input);
+    }
     bar.addEventListener("mousedown", (event) => {
       const button = event.target && event.target.closest && event.target.closest("button");
       if (button) event.preventDefault();
+      saved = rememberEditorRange(editor);
     });
     bar.addEventListener("click", (event) => {
       const button = event.target && event.target.closest && event.target.closest("button[data-command]");
       if (!button || button.disabled) return;
-      applyComposeCommand(button.getAttribute("data-command"));
+      applyComposeCommand(button.getAttribute("data-command"), editor);
+      if (onInput) onInput();
+      paintFormatState(bar);
+    });
+    bar.addEventListener("input", (event) => {
+      const input = event.target && event.target.closest && event.target.closest("input[data-command]");
+      if (!input || input.disabled) return;
+      restoreEditorRange(editor, saved);
+      applyComposeCommand(input.getAttribute("data-command"), editor, input.value);
+      paintColorSwatch(input);
+      if (onInput) onInput();
     });
   }
   if (!editor || typeof editor.addEventListener !== "function") return;
-  editor.addEventListener("input", () => syncComposePlainFromEditor());
-  editor.addEventListener("paste", onComposePaste);
-  editor.addEventListener("keyup", paintComposeFormatState);
-  editor.addEventListener("mouseup", paintComposeFormatState);
+  editor.addEventListener("input", () => {
+    revealEditorStyles(editor);
+    if (onInput) onInput();
+  });
+  editor.addEventListener("paste", (event) => {
+    if (!event || !event.clipboardData) return;
+    const html = event.clipboardData.getData("text/html");
+    const text = event.clipboardData.getData("text/plain");
+    if (!html && !text) return;
+    event.preventDefault();
+    const markup = html ? sanitizeComposeHtml(html) : toHtml(text);
+    if (!markup) return;
+    insertComposeMarkup(markup, editor);
+    revealEditorStyles(editor);
+    if (onInput) onInput();
+  });
+  editor.addEventListener("keyup", () => paintFormatState(bar));
+  editor.addEventListener("mouseup", () => paintFormatState(bar));
   editor.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
     event.stopPropagation();
   });
+}
+
+function wireComposeFormat() {
+  bindRichEditor($("compose-format"), $("compose-editor"), syncComposePlainFromEditor);
+  bindRichEditor($("signature-format"), $("signature-editor"), syncSignatureSource);
 }
 
 function composePayload(account) {
@@ -8190,6 +8985,8 @@ function composePayload(account) {
   if (bcc) payload.bcc = bcc;
   if (meta.inReplyTo) payload.inReplyTo = meta.inReplyTo;
   if (meta.threadId) payload.threadId = meta.threadId;
+  const files = attachmentPayload(state.composeAttachments);
+  if (files.length) payload.attachments = files;
   return payload;
 }
 
@@ -8227,9 +9024,13 @@ function syncCompose() {
     sendNow.disabled = !live || locked || !!state.composeIdentityError;
   }
   $("compose-close").disabled = state.composePending || state.composeInitializing;
-  for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
+  for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at", "compose-attach", "compose-file"]) {
+    const control = $(id);
+    if (control) control.disabled = locked;
+  }
   setComposeFormatLocked(locked);
   syncComposeRecipientRows();
+  paintComposeAttachments();
   paintComposeNote();
 }
 
@@ -8247,19 +9048,282 @@ function paintComposeNote() {
       && review.cc === $("compose-cc").value
       && review.bcc === $("compose-bcc").value
       && review.subject === $("compose-subject").value
-      && review.body === $("compose-body").value;
+      && review.body === $("compose-body").value
+      && (review.attachments || "") === attachmentKey(state.composeAttachments);
     text += same
       ? " Reviewing a draft proposal. Nothing is sent until you press Send."
       : " This compose no longer matches the reviewed draft. Nothing is sent until you press Send.";
   }
   if (state.composeQuote && state.composeQuote.kind === "forward" && attachmentNote(state.composeQuote.email)) {
-    text += " Attachments are not included in this forward. This composer cannot attach the original files.";
+    text += " Original files are not copied into this forward. Use Attach files to add them.";
   }
   const delayLabel = formatScheduleDelay(state.prefs.scheduleDelay);
   if (live && !review && delayLabel) {
     text += " Send schedules " + delayLabel + " ahead. Send now delivers immediately.";
   }
   $("compose-note").textContent = text;
+}
+
+function setComposeAttachError(text) {
+  const el = $("compose-attach-error");
+  if (!el) return;
+  const message = text || "";
+  el.hidden = !message;
+  el.textContent = message;
+}
+
+function paintComposeAttachments() {
+  const list = $("compose-attachments");
+  if (!list || typeof list.replaceChildren !== "function") return;
+  const rows = composeAttachmentList(state.composeAttachments);
+  list.replaceChildren();
+  list.hidden = !rows.length;
+  const locked = !!(state.composePending || state.composeQueued || state.composeInitializing);
+  for (const row of rows) {
+    const item = typeof document.createElement === "function" ? document.createElement("li") : null;
+    if (!item) continue;
+    item.className = "compose-file";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = row.filename;
+    const size = document.createElement("span");
+    size.className = "size";
+    const label = fileSize(row.size);
+    size.textContent = label;
+    if (!label) size.hidden = true;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost";
+    remove.textContent = "Remove";
+    remove.disabled = locked;
+    if (typeof remove.setAttribute === "function") remove.setAttribute("aria-label", `Remove ${row.filename}`);
+    if (typeof remove.addEventListener === "function") {
+      remove.addEventListener("click", () => removeComposeAttachment(row.storageUrl));
+    }
+    if (typeof item.append === "function") item.append(name, size, remove);
+    else if (typeof item.appendChild === "function") {
+      item.appendChild(name);
+      item.appendChild(size);
+      item.appendChild(remove);
+    }
+    if (typeof list.appendChild === "function") list.appendChild(item);
+  }
+}
+
+function removeComposeAttachment(storageUrl) {
+  if (state.composePending || state.composeQueued || state.composeInitializing) return;
+  state.composeAttachments = composeAttachmentList(state.composeAttachments).filter((row) => row.storageUrl !== storageUrl);
+  setComposeAttachError("");
+  paintComposeAttachments();
+  paintComposeNote();
+}
+
+async function addComposeFiles(list) {
+  const incoming = Array.from(list || []);
+  if (!incoming.length || state.composePending || state.composeQueued || state.composeInitializing) return;
+  const provider = folderProvider(composeAccount());
+  const review = reviewComposeFiles(state.composeAttachments, incoming.map((file) => ({
+    filename: file && file.name,
+    size: file && file.size,
+  })), provider);
+  const errors = review.errors.slice();
+  for (const row of review.accepted) {
+    const file = incoming[row.index];
+    const name = row.filename;
+    try {
+      const bytes = file && typeof file.arrayBuffer === "function" ? new Uint8Array(await file.arrayBuffer()) : null;
+      if (!bytes || !bytes.length) {
+        errors.push(`${name} is empty.`);
+        continue;
+      }
+      const saved = await call("mail:uploadAttachment", {
+        filename: name,
+        mimeType: (file && file.type) || "application/octet-stream",
+        fileBytes: bytes,
+      });
+      const meta = composeFileMeta(saved);
+      if (!meta) {
+        errors.push(`Could not read ${name}. Remove it and attach the file again.`);
+        continue;
+      }
+      const next = composeAttachmentList(state.composeAttachments.concat([meta]));
+      const sum = next.reduce((total, item) => total + (Number(item.size) || 0), 0);
+      const over = attachmentCapCopy(meta.filename, meta.size, sum, provider);
+      if (over) {
+        errors.push(over);
+        continue;
+      }
+      state.composeAttachments = next;
+      paintComposeAttachments();
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  setComposeAttachError(errors[0] || "");
+  paintComposeAttachments();
+  paintComposeNote();
+}
+
+let composeDropDepth = 0;
+
+function composeDragFiles(transfer) {
+  if (!transfer || typeof transfer !== "object") return null;
+  const types = Array.from(transfer.types || []);
+  if (!types.includes("Files")) return null;
+  return Array.from(transfer.files || []);
+}
+
+function composeDropLocked() {
+  return !!(state.composePending || state.composeQueued || state.composeInitializing);
+}
+
+function setComposeDropHighlight(on) {
+  const editor = $("compose-editor");
+  if (!editor || !editor.classList) return;
+  editor.classList.toggle("drop-target", !!on);
+}
+
+function resetComposeDrop() {
+  composeDropDepth = 0;
+  setComposeDropHighlight(false);
+}
+
+function onComposeDragEnter(event) {
+  if (!event || !composeDragFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  if (composeDropLocked()) return;
+  composeDropDepth += 1;
+  setComposeDropHighlight(true);
+}
+
+function onComposeDragOver(event) {
+  if (!event || !composeDragFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  if (composeDropLocked()) {
+    setComposeDropHighlight(false);
+    return;
+  }
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  setComposeDropHighlight(true);
+}
+
+function onComposeDragLeave() {
+  if (!composeDropDepth) return;
+  composeDropDepth -= 1;
+  if (!composeDropDepth) setComposeDropHighlight(false);
+}
+
+function onComposeDrop(event) {
+  resetComposeDrop();
+  if (!event) return;
+  const files = composeDragFiles(event.dataTransfer);
+  if (!files) return;
+  event.preventDefault();
+  if (composeDropLocked() || !files.length) return;
+  addComposeFiles(files).catch((error) => setComposeAttachError(error instanceof Error ? error.message : String(error)));
+}
+
+function wireComposeFileDrop() {
+  const editor = $("compose-editor");
+  if (!editor || typeof editor.addEventListener !== "function") return;
+  editor.addEventListener("dragenter", onComposeDragEnter);
+  editor.addEventListener("dragover", onComposeDragOver);
+  editor.addEventListener("dragleave", onComposeDragLeave);
+  editor.addEventListener("drop", onComposeDrop);
+}
+
+function paintComposeSuggestions() {
+  const box = $("compose-suggestions");
+  const status = $("compose-suggest-status");
+  const list = $("compose-suggest-list");
+  if (!box || !list || typeof list.replaceChildren !== "function") return;
+  const view = state.composeSuggestions;
+  list.replaceChildren();
+  if (!view) {
+    box.hidden = true;
+    if (status) {
+      status.hidden = true;
+      status.textContent = "";
+    }
+    return;
+  }
+  box.hidden = false;
+  if (view.pending) {
+    if (status) {
+      status.hidden = false;
+      status.className = "hint";
+      status.textContent = "Suggesting replies…";
+    }
+    return;
+  }
+  if (view.error) {
+    if (status) {
+      status.hidden = false;
+      status.className = "hint error";
+      status.textContent = view.error;
+    }
+    return;
+  }
+  if (!view.items.length) {
+    if (status) {
+      status.hidden = false;
+      status.className = "hint";
+      status.textContent = "No reply suggestions.";
+    }
+    return;
+  }
+  if (status) {
+    status.hidden = true;
+    status.textContent = "";
+  }
+  for (const text of view.items) {
+    if (typeof document.createElement !== "function") continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.textContent = text;
+    if (typeof button.setAttribute === "function") button.setAttribute("aria-label", `Use suggested reply: ${text}`);
+    if (typeof button.addEventListener === "function") button.addEventListener("click", () => applySuggestedReply(text));
+    if (typeof list.appendChild === "function") list.appendChild(button);
+  }
+}
+
+function applySuggestedReply(text) {
+  const body = $("compose-body");
+  const current = body && typeof body.value === "string" ? body.value : "";
+  writeComposeBody(suggestedReplyBody(current, state.signatureText, text));
+  const prompt = $("ai-prompt");
+  if (prompt && !String(prompt.value || "").trim()) prompt.value = String(text || "").trim();
+  const tools = $("compose-ai-tools");
+  if (tools && state.prefs.aiReply !== false) tools.open = true;
+  paintComposeNote();
+}
+
+async function showComposeSuggestions(fields) {
+  const gen = composeSuggestGen += 1;
+  const email = replySuggestionSource(fields);
+  if (!email) {
+    if (gen !== composeSuggestGen) return;
+    state.composeSuggestions = null;
+    paintComposeSuggestions();
+    return;
+  }
+  state.composeSuggestions = { items: [], error: "", pending: true };
+  paintComposeSuggestions();
+  let next;
+  try {
+    const data = await call("aiDraftWrite:replySuggestions", { email: suggestionEmail(email) });
+    next = { items: suggestionItems(data), error: "", pending: false };
+  } catch (error) {
+    next = {
+      items: [],
+      error: error instanceof Error ? error.message : String(error),
+      pending: false,
+    };
+  }
+  if (gen !== composeSuggestGen) return;
+  state.composeSuggestions = next;
+  paintComposeSuggestions();
 }
 
 function syncScheduleFields() {
@@ -8355,7 +9419,7 @@ async function fillSignatures(preserveBody) {
   const match = rows.find((row) => String(row.id) === id);
   select.value = match ? String(match.id) : "";
   const text = signaturePlain(match);
-  commitComposeSignature(state.signatureText, text);
+  commitComposeSignature(state.signatureText, text, match ? signatureMarkup(match) : "");
   if (identity) identity.signatureFollowsFrom = true;
 }
 
@@ -8363,7 +9427,7 @@ function onSignatureChange() {
   if (state.composeQueued || state.composePending) return;
   const row = state.signatures.find((item) => String(item.id) === $("signature").value);
   const text = signaturePlain(row);
-  commitComposeSignature(state.signatureText, text);
+  commitComposeSignature(state.signatureText, text, row ? signatureMarkup(row) : "");
   paintComposeNote();
 }
 
@@ -8373,15 +9437,69 @@ function showSignatureStatus(text, isError) {
   el.classList.toggle("error", !!isError && !!text);
 }
 
+function paintSignatureEditor(body, asHtml) {
+  const editor = $("signature-editor");
+  if (!editor || editor.nodeType !== 1 || typeof editor.replaceChildren !== "function") return;
+  editor.replaceChildren();
+  const value = String(body || "");
+  if (!value.trim()) return;
+  appendSafeMailHtml(editor, asHtml ? value : toHtml(value), false);
+  revealEditorStyles(editor);
+}
+
+function showSignatureEditor(body, asHtml) {
+  const htmlOn = !!($("signature-html") && $("signature-html").checked);
+  const area = $("signature-body");
+  const editor = $("signature-editor");
+  const bar = $("signature-format");
+  if (bar) bar.hidden = !htmlOn;
+  if (editor) editor.hidden = !htmlOn;
+  if (area) area.hidden = htmlOn;
+  if (!htmlOn) return;
+  paintSignatureEditor(body == null ? "" : body, asHtml === true);
+}
+
+function readSignatureEditorHtml() {
+  const editor = $("signature-editor");
+  if (!editor || editor.nodeType !== 1 || typeof editor.innerHTML !== "string") return "";
+  if (blankComposeHtml(editor.innerHTML)) return "";
+  try { return sanitizeComposeHtml(editor.innerHTML); } catch { return ""; }
+}
+
+function syncSignatureSource() {
+  const box = $("signature-html");
+  const area = $("signature-body");
+  const editor = $("signature-editor");
+  if (!box || !box.checked || !area || !editor) return;
+  area.value = readSignatureEditorHtml();
+}
+
+function onSignatureHtmlToggle() {
+  const box = $("signature-html");
+  const area = $("signature-body");
+  const editor = $("signature-editor");
+  if (!box) return;
+  if (box.checked) {
+    showSignatureEditor(area ? area.value : "", false);
+    return;
+  }
+  if (area) area.value = editor ? plainFromComposeHtml(editor.innerHTML || "") : area.value;
+  if (editor) editor.hidden = true;
+  const bar = $("signature-format");
+  if (bar) bar.hidden = true;
+  if (area) area.hidden = false;
+}
+
 function clearSignatureForm() {
   signatureEditId = "";
   $("signature-name").value = "";
   $("signature-body").value = "";
-  $("signature-html").checked = false;
+  $("signature-html").checked = true;
   $("signature-default").checked = false;
   $("signature-domains").value = "";
   $("signature-save").textContent = "Add";
   $("signature-cancel").hidden = true;
+  showSignatureEditor("", true);
 }
 
 function signatureDomainField(pack, accountId, signatureId) {
@@ -8442,6 +9560,7 @@ function startSignatureEdit(row, isDefault) {
   $("signature-domains").value = signatureDomainField(signatureEditorPack, signatureAccount()?.id, fields.id);
   $("signature-save").textContent = "Save";
   $("signature-cancel").hidden = false;
+  showSignatureEditor(fields.body, fields.html);
   $("signature-name").focus();
 }
 
@@ -8478,6 +9597,7 @@ async function refreshComposeSignatures() {
 
 async function submitSignature(event) {
   event.preventDefault();
+  if ($("signature-html") && $("signature-html").checked) syncSignatureSource();
   const draft = signatureDraft({
     id: signatureEditId,
     name: $("signature-name").value,
@@ -8574,7 +9694,11 @@ async function startDraftWrite() {
   const mode = $("ai-mode").value || "custom";
   const prompt = $("ai-prompt").value;
   const existing = $("compose-body").value;
-  const reason = draftBlockReason(mode, prompt, existing);
+  const source = replySuggestionSource({
+    quoteEmail: state.composeQuote && state.composeQuote.email,
+    kind: state.composeQuote && state.composeQuote.kind,
+  });
+  const reason = draftBlockReason(mode, prompt, existing, source);
   stopDraftWrite();
   if (reason) {
     state.draftWrite = { reqId: "", pending: false, error: reason, text: "", base: existing, previous: existing };
@@ -8594,7 +9718,7 @@ async function startDraftWrite() {
   try {
     await call("aiDraftWrite:start", {
       reqId,
-      body: draftInstruction(mode, prompt, existing, $("compose-subject").value),
+      body: draftInstruction(mode, prompt, existing, $("compose-subject").value, source),
     });
   } catch (error) {
     if (!state.draftWrite || state.draftWrite.reqId !== reqId) return;
@@ -8914,9 +10038,10 @@ function changeComposeFrom() {
   if (signature.applied) {
     $("compose-body").value = signature.body;
     state.signatureText = signature.previous;
+    state.signatureHtml = signature.previous ? (signature.html || toHtml(signature.previous)) : "";
     const select = $("signature");
     if (!select.hidden) select.value = signature.pickerId || "";
-    if (composeEditorLive()) updateComposeSignatureNode(signature.previous);
+    if (composeEditorLive()) updateComposeSignatureNode(signature.previous, state.signatureHtml);
   }
   paintComposeIdentity();
   paintComposeNote();
@@ -8938,12 +10063,15 @@ async function openCompose(seed) {
   state.draftId = fields.draftId || null;
   state.composeQueued = false;
   state.signatureText = "";
+  state.signatureHtml = "";
   state.composeMeta = {
     accountId: fields.accountId || state.accountId,
     inReplyTo: fields.inReplyTo || "",
     threadId: fields.threadId || "",
   };
   state.composeQuote = quoteStateFromSeed(fields);
+  state.composeAttachments = composeAttachmentList(fields.attachments);
+  state.composeSuggestions = null;
   state.botDraftReview = fields.botDraft ? {
     proposalId: fields.botDraft.proposalId || "",
     accountId: fields.accountId || state.accountId || "",
@@ -8952,6 +10080,7 @@ async function openCompose(seed) {
     bcc: fields.bcc || "",
     subject: fields.subject || "",
     body: fields.body || "",
+    attachments: attachmentKey(fields.attachments),
   } : null;
   setComposeStatus("");
   $("compose-title").textContent = fields.title || "New message";
@@ -8964,6 +10093,11 @@ async function openCompose(seed) {
   $("ai-prompt").value = "";
   $("schedule-preset").value = "1h";
   $("schedule-at").value = "";
+  const fileInput = $("compose-file");
+  if (fileInput) fileInput.value = "";
+  resetComposeDrop();
+  setComposeAttachError("");
+  paintComposeAttachments();
   syncScheduleFields();
   syncCompose();
   paintComposeChrome();
@@ -8991,9 +10125,12 @@ async function openCompose(seed) {
   const write = document.querySelector(".ai-write");
   const openWrite = opensAiWrite(fields, state.prefs);
   if (write) write.classList.toggle("open", openWrite);
-  $("compose-ai-tools").open = openWrite;
+  const tools = $("compose-ai-tools");
+  if (tools) tools.open = openWrite;
   $("compose-schedule-tools").open = false;
-  if (openWrite) {
+  showComposeSuggestions(fields).catch(() => {});
+  const replyAssist = fields.aiWrite === true || fields.kind === "reply" || fields.kind === "all";
+  if (openWrite && replyAssist) {
     const body = $("compose-body");
     if (body && typeof body.setSelectionRange === "function") {
       body.setSelectionRange(0, 0);
@@ -9018,7 +10155,8 @@ function composeSnapshot() {
     to: $("compose-to").value, cc: $("compose-cc").value, bcc: $("compose-bcc").value,
     subject: $("compose-subject").value, body: $("compose-body").value,
     html: composeEditorSnapshot(),
-    quote: state.composeQuote && state.composeQuote.text });
+    quote: state.composeQuote && state.composeQuote.text,
+    attachments: attachmentKey(state.composeAttachments) });
 }
 
 async function requestComposeClose() {
@@ -9050,6 +10188,7 @@ async function resumeDraft(email) {
     to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
     body: readable(draft),
     htmlBody: typeof draft.htmlBody === "string" ? draft.htmlBody : "",
+    attachments: draft.attachments,
     inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "" });
 }
 
@@ -9264,13 +10403,24 @@ function paintPreview(draft) {
   $("compose-preview-cc").textContent = draft.cc || "";
   $("compose-preview-bcc").textContent = draft.bcc || "";
   $("compose-preview-subject").textContent = draft.subject || "(no subject)";
+  const fileRow = $("compose-preview-files-row");
+  const fileText = $("compose-preview-files");
+  const files = Array.isArray(draft.attachments) ? draft.attachments : [];
+  if (fileRow && fileText) {
+    fileRow.hidden = !files.length;
+    fileText.textContent = files.map((file) => {
+      const size = fileSize(file.size);
+      const name = file.filename || "attachment";
+      return size ? `${name} (${size})` : name;
+    }).join(", ");
+  }
   $("compose-preview-body").textContent = draft.body ? draft.body : "(empty message)";
   $("compose-preview-confirm").textContent = schedule ? "Confirm schedule" : "Confirm send";
 }
 
 function openComposePreview(when) {
   if (!composeReady()) return false;
-  const draft = previewDraft(composeFields(), state.composeQuote && state.composeQuote.text, when);
+  const draft = previewDraft(composeFields(), state.composeQuote && state.composeQuote.text, when, state.composeAttachments);
   previewDraftState = draft;
   paintPreview(draft);
   openDialog("compose-preview");
@@ -9434,7 +10584,7 @@ async function refresh() {
   }
   if (state.allInbox) {
     await loadList();
-    showStatus("All Inbox shows mail already downloaded. Open an Inbox to sync that account.");
+    showStatus(allAccountMailSyncCopy());
     return;
   }
   const account = selectedAccount();
@@ -14878,6 +16028,7 @@ function wire() {
   document.addEventListener("keydown", onShellKey);
   wireBot();
   document.addEventListener("keydown", onSelectionKey);
+  wireStatusNotice();
   wireOrganize();
   wireSelection();
   const motion = motionApi();
@@ -15162,6 +16313,8 @@ function wire() {
     submitConfirm();
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
+  $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
+  $("attachment-preview").addEventListener("close", clearAttachmentPreview);
   $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
   $("agent-peek-mail").addEventListener("click", () => {
     openPeekInMail().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
@@ -15262,6 +16415,7 @@ function wire() {
     signatureEditorAccountId = "";
   });
   $("signature-cancel").addEventListener("click", clearSignatureForm);
+  $("signature-html").addEventListener("change", onSignatureHtmlToggle);
   $("signature-form").addEventListener("submit", (event) => {
     submitSignature(event).catch((error) => {
       showSignatureStatus(error instanceof Error ? error.message : String(error), true);
@@ -15363,6 +16517,23 @@ function wire() {
     event.preventDefault();
     startDraftWrite().catch((error) => showStatus(error.message, true));
   });
+  const attach = $("compose-attach");
+  if (attach && typeof attach.addEventListener === "function") {
+    attach.addEventListener("click", () => {
+      const input = $("compose-file");
+      if (!input || input.disabled || typeof input.click !== "function") return;
+      input.click();
+    });
+  }
+  const fileInput = $("compose-file");
+  if (fileInput && typeof fileInput.addEventListener === "function") {
+    fileInput.addEventListener("change", () => {
+      const picked = Array.from(fileInput.files || []);
+      fileInput.value = "";
+      addComposeFiles(picked).catch((error) => setComposeAttachError(error instanceof Error ? error.message : String(error)));
+    });
+  }
+  wireComposeFileDrop();
   $("compose-save").addEventListener("click", () => guard(saveDraft));
   $("compose-schedule").addEventListener("click", () => guard(requestSchedulePreview));
   $("compose-send-now").addEventListener("click", () => guard(requestSendNowPreview));

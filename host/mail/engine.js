@@ -8,6 +8,7 @@ const actions = require("./actions");
 const virtuals = require("./virtual-folders");
 const presets = require("./presets");
 const remote = require("./remote");
+const zipBytes = require("./zip-bytes");
 
 const secrets = process.env.MORROW_MAIL_SECRETS === "memory"
   ? require("./memory-secrets")
@@ -173,7 +174,7 @@ function emitAccounts(extra) {
 }
 
 function publicAttachment(item) {
-  return {
+  const out = {
     id: item.id,
     filename: item.filename,
     mimeType: item.mimeType,
@@ -181,6 +182,8 @@ function publicAttachment(item) {
     contentId: item.contentId || null,
     isInlineFromApi: item.isInlineFromApi === true,
   };
+  if (typeof item.storageUrl === "string" && item.storageUrl.startsWith("local:")) out.storageUrl = item.storageUrl;
+  return out;
 }
 
 function listRow(row) {
@@ -1318,32 +1321,127 @@ function rfcMessageId(email) {
   return `<${crypto.randomBytes(12).toString("hex")}@${domain}>`;
 }
 
-function attachmentFiles(list) {
-  const files = [];
-  for (const item of list || []) {
-    if (!item || typeof item !== "object") continue;
-    let content = null;
-    const storage = typeof item.storageUrl === "string" ? item.storageUrl : "";
-    if (storage.startsWith("local:")) {
-      const blob = db.readBlob(storage.slice("local:".length));
-      if (blob && blob.data) content = Buffer.from(blob.data);
-    } else if (item.content) {
-      content = Buffer.isBuffer(item.content) ? item.content : Buffer.from(String(item.content), "base64");
-    } else if (item.fileBytes) {
-      content = Buffer.from(item.fileBytes);
-    } else if (typeof item.path === "string" && fs.existsSync(item.path)) {
-      content = fs.readFileSync(item.path);
+const ATTACHMENT_CAP = 25 * 1024 * 1024;
+
+function formatAttachmentSize(size) {
+  const n = Number(size) || 0;
+  if (n > ATTACHMENT_CAP) return "over 25 MB";
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  const mb = n / 1048576;
+  return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
+}
+
+function attachmentLimitCopy(account) {
+  const profile = String((account && (account.profile || account.imapSmtpProfile)) || "").toLowerCase();
+  if (profile === "gmail") return "Gmail rejects messages larger than 25 MB.";
+  if (profile === "outlook") return "Outlook rejects messages larger than 25 MB.";
+  return "Gmail and Outlook reject messages larger than 25 MB.";
+}
+
+function attachmentName(item) {
+  const name = item && (item.filename || item.name);
+  const text = name && String(name).trim();
+  return text || "attachment";
+}
+
+function readAttachmentBytes(item) {
+  if (!item || typeof item !== "object") return { error: "missing" };
+  const storage = typeof item.storageUrl === "string" ? item.storageUrl : "";
+  if (storage.startsWith("local:")) {
+    const blob = db.readBlob(storage.slice("local:".length));
+    if (!blob || !blob.data || !blob.data.length) return { error: "missing" };
+    return {
+      content: Buffer.from(blob.data),
+      storageUrl: storage,
+      id: storage.slice("local:".length),
+    };
+  }
+  if (item.content) {
+    const content = Buffer.isBuffer(item.content) ? item.content : Buffer.from(String(item.content), "base64");
+    return content.length ? { content } : { error: "missing" };
+  }
+  if (item.fileBytes) {
+    const content = Buffer.from(item.fileBytes);
+    return content.length ? { content } : { error: "missing" };
+  }
+  if (typeof item.path === "string" && item.path) {
+    if (!fs.existsSync(item.path)) return { error: "missing" };
+    const size = fs.statSync(item.path).size;
+    if (!size) return { error: "missing" };
+    if (size > ATTACHMENT_CAP) return { error: "too-large", size };
+    return { content: fs.readFileSync(item.path) };
+  }
+  return { error: "missing" };
+}
+
+function resolveAttachments(list, account) {
+  const items = Array.isArray(list) ? list.filter((item) => item && typeof item === "object") : [];
+  if (!items.length) return { files: [], meta: [], error: null };
+  const loaded = [];
+  let total = 0;
+  for (const item of items) {
+    const name = attachmentName(item);
+    const read = readAttachmentBytes(item);
+    if (read.error === "too-large") {
+      return {
+        files: [],
+        meta: [],
+        error: { code: "too-large", message: `${name} is ${formatAttachmentSize(read.size)}. ${attachmentLimitCopy(account)}` },
+      };
     }
-    if (!content) continue;
+    if (read.error || !read.content || !read.content.length) {
+      return {
+        files: [],
+        meta: [],
+        error: { code: "attachment", message: `Could not read ${name}. Remove it and attach the file again.` },
+      };
+    }
+    if (read.content.length > ATTACHMENT_CAP) {
+      return {
+        files: [],
+        meta: [],
+        error: { code: "too-large", message: `${name} is ${formatAttachmentSize(read.content.length)}. ${attachmentLimitCopy(account)}` },
+      };
+    }
+    total += read.content.length;
+    if (total > ATTACHMENT_CAP) {
+      return {
+        files: [],
+        meta: [],
+        error: { code: "too-large", message: `These files are ${formatAttachmentSize(total)} together. ${attachmentLimitCopy(account)}` },
+      };
+    }
+    loaded.push({ item, name, read });
+  }
+  const files = [];
+  const meta = [];
+  for (const row of loaded) {
+    const mime = row.item.mimeType || row.item.contentType || "application/octet-stream";
+    let storageUrl = row.read.storageUrl || "";
+    let id = row.read.id || (row.item.id ? String(row.item.id) : "");
+    if (!storageUrl) {
+      id = crypto.randomBytes(9).toString("hex");
+      db.saveBlob(id, row.name, mime, row.read.content);
+      storageUrl = `local:${id}`;
+    }
     files.push({
-      filename: item.filename || item.name || "attachment",
-      content,
-      contentType: item.mimeType || item.contentType || "application/octet-stream",
-      cid: item.contentId || undefined,
-      contentDisposition: item.contentId ? "inline" : "attachment",
+      filename: row.name,
+      content: row.read.content,
+      contentType: mime,
+      cid: row.item.contentId || undefined,
+      contentDisposition: row.item.contentId ? "inline" : "attachment",
+    });
+    meta.push({
+      id: id || storageUrl,
+      filename: row.name,
+      mimeType: mime,
+      size: row.read.content.length,
+      storageUrl,
+      contentId: row.item.contentId || null,
     });
   }
-  return files;
+  return { files, meta, error: null };
 }
 
 function mimeOptions(account, params, files) {
@@ -1373,7 +1471,8 @@ async function ensureBody(row) {
     if (!row || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
     const password = await secretFor(account);
     const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid));
-    if (!fetched) return row;
+    // A FETCH row for another UID must not be written onto this message.
+    if (!fetched || Number(fetched.uid) !== Number(row.uid)) return row;
     db.updateMessage(row.id, {
       html_body: fetched.htmlBody,
       text_body: fetched.textBody,
@@ -1544,13 +1643,15 @@ async function searchRemote(params) {
 
 function saveUpload(params) {
   const bytes = params && params.fileBytes ? Buffer.from(params.fileBytes) : null;
-  if (!bytes || !bytes.length) return fail("invalid", "The attachment was empty.");
-  if (bytes.length > 25 * 1024 * 1024) return fail("too-large", "Attachments must be 25 MB or smaller.");
+  if (!bytes || !bytes.length) return fail("invalid", "That file is empty.");
+  if (bytes.length > ATTACHMENT_CAP) {
+    return fail("too-large", `That file is ${formatAttachmentSize(bytes.length)}. ${attachmentLimitCopy(null)}`);
+  }
   const id = crypto.randomBytes(9).toString("hex");
   const filename = params.filename && String(params.filename).trim() ? String(params.filename).trim() : "attachment";
   const mime = params.mimeType && String(params.mimeType).trim() ? String(params.mimeType).trim() : "application/octet-stream";
   db.saveBlob(id, filename, mime, bytes);
-  return ok({ storageUrl: `local:${id}`, pageUrl: null, fileWrapperUrl: `local:${id}` });
+  return ok({ storageUrl: `local:${id}`, pageUrl: null, fileWrapperUrl: `local:${id}`, filename, mimeType: mime, size: bytes.length });
 }
 
 async function bytesFor(params) {
@@ -1559,6 +1660,13 @@ async function bytesFor(params) {
   const attachments = db.jsonList(row.attachments_json);
   const wanted = attachments.find((item) => item.id === params.attachmentId) || attachments[0];
   if (!wanted) return null;
+  const storage = typeof wanted.storageUrl === "string" ? wanted.storageUrl : "";
+  if (storage.startsWith("local:")) {
+    const blob = db.readBlob(storage.slice("local:".length));
+    if (blob && blob.data) {
+      return { filename: params.filename || wanted.filename || blob.filename || "attachment", data: Buffer.from(blob.data) };
+    }
+  }
   if (!row.uid) return null;
   const account = db.accountById(row.account_id);
   const data = await exclusive(account.id, async () => {
@@ -1566,6 +1674,40 @@ async function bytesFor(params) {
     return remote.withClient(account, password, (client) => remote.readPart(client, row.folder_path, row.uid, wanted.id));
   });
   return { filename: params.filename || wanted.filename || "attachment", data };
+}
+
+function selectableAttachments(attachments, ids) {
+  const files = (Array.isArray(attachments) ? attachments : []).filter((item) => item && item.id);
+  if (!Array.isArray(ids) || !ids.length) return files;
+  const wanted = new Set(ids.map((id) => String(id)));
+  return files.filter((item) => wanted.has(String(item.id)));
+}
+
+async function attachmentZip(params) {
+  const row = db.messageById(params && (params.messageId || params.emailId));
+  if (!row || !row.uid) return null;
+  const account = db.accountById(row.account_id);
+  if (!account) return null;
+  const files = selectableAttachments(db.jsonList(row.attachments_json), params && params.attachmentIds);
+  if (!files.length) return null;
+  const parts = await exclusive(account.id, async () => {
+    const password = await secretFor(account);
+    return remote.withClient(account, password, async (client) => {
+      const out = [];
+      for (const item of files) {
+        const data = await remote.readPart(client, row.folder_path, row.uid, item.id);
+        out.push({
+          name: item.filename || "attachment",
+          data: Buffer.isBuffer(data) ? data : Buffer.from(data || []),
+        });
+      }
+      return out;
+    });
+  });
+  return {
+    filename: zipBytes.zipDownloadName(textEncoding.repairMojibake(row.subject || "")),
+    data: zipBytes.zipFiles(parts),
+  };
 }
 
 function signatureText(value) {
@@ -1655,17 +1797,6 @@ function hasRecipient(to, cc, bcc) {
   return !!(displayAddress(to) || displayAddress(cc) || displayAddress(bcc));
 }
 
-function storedAttachments(list) {
-  if (!Array.isArray(list)) return undefined;
-  return list.map((item) => {
-    if (!item || typeof item !== "object") return null;
-    const copy = { ...item };
-    delete copy.fileBytes;
-    delete copy.content;
-    return copy;
-  }).filter(Boolean);
-}
-
 const scheduledDelivering = new Set();
 
 function publicScheduled(row) {
@@ -1719,8 +1850,9 @@ function scheduleSend(params) {
   if (input.inReplyTo) payload.inReplyTo = input.inReplyTo;
   if (input.threadId) payload.threadId = input.threadId;
   if (Array.isArray(input.references)) payload.references = input.references;
-  const attachments = storedAttachments(input.attachments);
-  if (attachments && attachments.length) payload.attachments = attachments;
+  const resolved = resolveAttachments(input.attachments, account);
+  if (resolved.error) return fail(resolved.error.code, resolved.error.message);
+  if (resolved.meta.length) payload.attachments = resolved.meta;
   const saved = db.insertScheduled({
     id: `sched-${crypto.randomBytes(8).toString("hex")}`,
     accountId: account.id,
@@ -1797,7 +1929,8 @@ function editScheduled(params) {
   if (!drafts) return fail("not-found", "This mailbox has no Drafts folder. The queued message is unchanged.");
   let payload;
   try { payload = JSON.parse(row.payload_json); } catch { return fail("invalid", "The queued content cannot be read. It has not been changed."); }
-  if (payload.attachments && payload.attachments.length) return fail("unsupported", "This composer cannot edit queued attachments. The queued message is unchanged.");
+  const resolved = resolveAttachments(payload.attachments, account);
+  if (resolved.error) return fail(resolved.error.code, resolved.error.message);
   const presented = textEncoding.presentMessage({
     subject: payload.subject || "",
     htmlBody: payload.body || "",
@@ -1812,6 +1945,8 @@ function editScheduled(params) {
     rfcMessageId: rfcMessageId(account.email), subject: presented.subject,
     from: payload.fromAddress || account.email, to: addrList(payload.to), cc: addrList(payload.cc), bcc: addrList(payload.bcc),
     date: now.toISOString(), listSortTs: now.getTime(), isDraft: true,
+    hasAttachments: resolved.meta.length > 0,
+    attachments: resolved.meta,
     htmlBody: html, textBody: text,
     snippet: plainFromHtml(html).slice(0, 180), bodyComplete: true,
   });
@@ -1871,6 +2006,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       listSortTs: when.getTime(),
       isDraft: false,
       hasAttachments: files.length > 0,
+      attachments: (extra && extra.meta) || [],
       htmlBody: options.html,
       textBody: options.text,
       bodyComplete: true,
@@ -1936,7 +2072,9 @@ async function deliver(params) {
   catch (error) { return fail("invalid_from", error.message); }
   account = db.accountById(account.id);
   if (!account) return fail("not-found", "That mailbox is no longer connected.");
-  const files = attachmentFiles(params && params.attachments);
+  const resolved = resolveAttachments(params && params.attachments, account);
+  if (resolved.error) return fail(resolved.error.code, resolved.error.message);
+  const files = resolved.files;
   const options = mimeOptions(account, params || {}, files);
   if (!options.to.length && !options.cc.length && !options.bcc.length) {
     return fail("invalid", "Add a recipient.");
@@ -1948,6 +2086,7 @@ async function deliver(params) {
     threadId: (params && params.threadId) || null,
     inReplyTo: (params && params.inReplyTo) || null,
     files,
+    meta: resolved.meta,
   });
   if (submitted.kind !== "accepted") {
     const message = submitted.kind === "rejected" && submitted.refusal
@@ -2352,7 +2491,9 @@ function answer(channel, args) {
         const emailId = (params && params.emailId) || db.newMessageId();
         const existing = db.messageById(emailId);
         if (existing && (existing.account_id !== account.id || !existing.is_draft)) return fail("invalid", "That draft does not belong to this mailbox.");
-        const files = attachmentFiles(params && params.attachments);
+        const resolved = resolveAttachments(params && params.attachments, account);
+        if (resolved.error) return fail(resolved.error.code, resolved.error.message);
+        const files = resolved.files;
         const presented = textEncoding.presentMessage({
           subject: params.subject || "",
           htmlBody: typeof params.body === "string" ? params.body : "",
@@ -2378,7 +2519,8 @@ function answer(channel, args) {
           listSortTs: when.getTime(),
           unread: false,
           isDraft: true,
-          hasAttachments: files.length > 0,
+          hasAttachments: resolved.meta.length > 0,
+          attachments: resolved.meta,
           htmlBody: html,
           textBody: presented.textBody || plainFromHtml(html),
           bodyComplete: true,
@@ -2399,6 +2541,7 @@ function answer(channel, args) {
             list_sort_ts: record.listSortTs,
             is_draft: 1,
             has_attachments: record.hasAttachments ? 1 : 0,
+            attachments_json: JSON.stringify(resolved.meta),
             html_body: html,
             text_body: record.textBody,
             body_complete: 1,
@@ -2479,6 +2622,21 @@ function answer(channel, args) {
           const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: file.filename });
           if (picked.canceled || !picked.filePath) return fail("cancelled", "cancelled");
           fs.writeFileSync(picked.filePath, file.data);
+          return ok({ path: picked.filePath });
+        } catch (error) {
+          return fail("attachment", remote.explain(error));
+        }
+      })();
+    case "mail:downloadAttachmentsZip":
+      return (async () => {
+        try {
+          const packed = await attachmentZip(params || {});
+          if (!packed) return fail("not-found", "That message has no attachments to save.");
+          const { dialog, BrowserWindow } = require("electron");
+          const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+          const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: packed.filename });
+          if (picked.canceled || !picked.filePath) return fail("cancelled", "cancelled");
+          fs.writeFileSync(picked.filePath, packed.data);
           return ok({ path: picked.filePath });
         } catch (error) {
           return fail("attachment", remote.explain(error));
