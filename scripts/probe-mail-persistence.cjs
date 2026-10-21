@@ -70,7 +70,7 @@ async function shape(name) {
   secrets.setPassword("fixture", "synthetic-test-secret");
   db.replaceFolders("fixture", folders, "/");
   const seed = (bodySize) => db.applyFolderSync("fixture", "INBOX", { messages: rows(bodySize), validity: 1,
-    exists: 500, unseen: 0, windowDone: true, horizonDays: 180, uidCursor: 500 });
+    exists: 500, unseen: 0, windowDone: true, horizonDays: 0, uidCursor: 500 });
   seed(0);
   const shapes = [await shape("500 header-only messages")];
   seed(32768);

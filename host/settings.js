@@ -7,9 +7,9 @@ const DEFAULTS = {
   theme: "light",
   accent: "#193C34",
   conversationView: true,
-  remoteImages: false,
-  undoSendDelaySeconds: 5,
-  snooze: true,
+  remoteImages: true,
+  undoSendDelaySeconds: 30,
+  snooze: false,
   aiWriteAutoOpenOnReply: true,
   showFolderChips: true,
   sidebarGmailFoldersExpanded: true,
@@ -17,8 +17,8 @@ const DEFAULTS = {
   sidebarCollapsedFolders: {},
   composeQuoteWidth: 420,
   brainCompose: { ccByDomain: {}, bccByDomain: {}, accounts: {} },
-  syncHorizonDays: 180, // 0 means all available history.
-  compactMessageList: false,
+  syncHorizonDays: 0, // 0 means all available history. Fresh installs use All.
+  compactMessageList: true,
   defaultScheduleDelayMinutes: 0, // 0 sends immediately. Otherwise Send schedules this far ahead.
   layoutPanes: { folders: 260, list: 360, reading: 0 },
 };
