@@ -132,7 +132,7 @@ app.whenReady().then(async () => {
     $('list-filter').value='';renderList();
     const last=document.querySelector('[data-email-id="message-499"] button.message');last.focus();
     const reachedLast=document.activeElement===last&&last.getBoundingClientRect().bottom<=$('messages').getBoundingClientRect().bottom+2;
-    openDialog('settings');setSettingsFold('ai',true,true);setSettingsFold('ooo',true,true);setSettingsFold('prefs',true,true);
+    openDialog('settings');setSettingsFold('ai',true,true);setSettingsFold('mailbox',true,true);setSettingsFold('prefs',true,true);
     await new Promise(r=>setTimeout(r,220));
     const folds=[...document.querySelectorAll('#settings .fold')].every(f=>f.querySelector('.fold-panel').hidden!==f.classList.contains('is-open'));
     $('settings').close();

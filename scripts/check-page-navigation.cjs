@@ -126,11 +126,14 @@ app.whenReady().then(async () => {
   assert.equal(count('host:aiGetConfig'), 1);
   routes.delete('host:aiGetConfig');
   await shot('settings-ai');
-  await run(`setSettingsFold('ooo',true,false)`);
-  await waitFor(`settingsFoldLoaded.has('ooo:box-0')`);
+  await run(`setSettingsFold('mailbox',true,false)`);
+  await waitFor(`settingsFoldLoaded.has('mailbox:box-0')`);
+  await waitCalls('mail:vacationGet', 1);
+  assert.equal(await run(`$('settings-ooo').open`), false, 'Out of Office starts folded inside Mailbox tools');
+  assert.equal(await run(`document.querySelector('#settings-nav [data-fold="ooo"]')===null`), true, 'no top-level Out of Office tab');
   assert.equal(count('mail:vacationGet'), 1);
   assert.equal(count('bot:getAccess'), 0);
-  await run(`$('settings-tab-ooo').focus();$('settings-tab-ooo').dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}));`);
+  await run(`$('settings-tab-mailbox').focus();$('settings-tab-mailbox').dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}));`);
   await waitFor(`settingsFoldLoaded.has('bot:')`);
   assert.equal(await run(`document.activeElement.id`), 'settings-tab-bot');
   await run(`$('settings-tab-bot').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));`);
@@ -139,7 +142,7 @@ app.whenReady().then(async () => {
   await key('TAB');
   assert.equal(await run(`document.activeElement.id`), 'settings-prefs', 'Tab enters the active panel');
   await shot('settings-general');
-  await run(`setSettingsFold('ooo',true,false)`);
+  await run(`setSettingsFold('mailbox',true,false);$('settings-ooo').open=true;`);
   await shot('settings-lazy');
 
   // Disclosures hide explanation, never consent or the reviewed provider write.
@@ -554,11 +557,13 @@ app.whenReady().then(async () => {
   // Every Settings panel still fits horizontally in a short, narrow dark window.
   win.setSize(560,600);
   await run(`document.documentElement.dataset.theme='dark'`);
-  for (const name of ['prefs','mail','ai','mailbox','ooo','bot']) {
+  for (const name of ['prefs','mail','ai','mailbox','bot']) {
     await run(`setSettingsFold('${name}',true,true)`);
     await waitFor(`settingsFoldLoaded.has(settingsFoldKey('${name}')) && !document.querySelector('#settings .fold.is-open .fold-panel').inert`);
+    // Out of Office is a disclosure inside Accounts; measure it expanded.
+    if (name === 'mailbox') await run(`$('settings-ooo').open=true`);
     assert.equal(await run(`$('settings').querySelector('.dialog-body').scrollWidth<=$('settings').querySelector('.dialog-body').clientWidth+1`), true, name+' must not scroll horizontally');
-    assert.equal(await run(`document.querySelector('.settings-account-context').hidden`), !['mailbox','ooo'].includes(name));
+    assert.equal(await run(`document.querySelector('.settings-account-context').hidden`), name !== 'mailbox');
     await shot('settings-short-dark-'+name);
   }
   await run(`$('bot-review-link').click()`);

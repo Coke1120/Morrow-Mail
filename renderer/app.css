@@ -720,6 +720,7 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 .section-nav button:focus-visible { background: var(--hover); }
 
 .section-nav button[aria-current="true"],
+#settings-nav button[aria-selected="true"],
 #bot-sections button[aria-selected="true"] {
   border-color: transparent;
   background: var(--brand);

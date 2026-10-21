@@ -146,7 +146,7 @@
           <div id="search-scope" hidden>
             <label class="sr" for="search-account">Search account</label>
             <select id="search-account" aria-label="Search account"></select>
-            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Sync history is set in Settings → Mail &amp; Sync (180 days, 365 days, or All); older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched.</p></details>
+            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Sync history is set in Settings → Mail → Sync &amp; storage (180 days, 365 days, or All); older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched.</p></details>
           </div>
           <button type="button" class="ghost" id="filter-chip" hidden></button>
           <div id="selection-bar" class="selection-bar" hidden>
@@ -166,7 +166,7 @@
             <div class="row">
               <button type="button" class="ghost icon-label" id="list-prev" aria-label="Previous message page"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg><span class="sr">Previous</span></button>
               <button type="button" class="ghost icon-label" id="list-next" aria-label="Next message page"><span class="sr">Next</span><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg></button>
-              <button type="button" class="ghost" id="list-sync-more" title="Continue downloading older messages within your Mail &amp; Sync history window" hidden>Load older messages</button>
+              <button type="button" class="ghost" id="list-sync-more" title="Continue downloading older messages within your Settings → Mail sync history" hidden>Load older messages</button>
             </div>
           </div>
       </div>
@@ -717,12 +717,11 @@
         <button type="button" class="ghost" id="settings-close">Close</button>
       </div>
       <nav class="section-nav" id="settings-nav" role="tablist" aria-label="Settings sections">
-        <button type="button" id="settings-tab-prefs" data-fold="prefs" role="tab" aria-controls="settings-prefs" aria-selected="true" aria-current="true" tabindex="0">General</button>
-        <button type="button" id="settings-tab-mail" data-fold="mail" role="tab" aria-controls="settings-mail" aria-selected="false" aria-current="false" tabindex="-1">Mail &amp; Sync</button>
-        <button type="button" id="settings-tab-mailbox" data-fold="mailbox" role="tab" aria-controls="settings-mailbox" aria-selected="false" aria-current="false" tabindex="-1">Accounts</button>
-        <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" aria-current="false" tabindex="-1">AI</button>
-        <button type="button" id="settings-tab-ooo" data-fold="ooo" role="tab" aria-controls="settings-ooo" aria-selected="false" aria-current="false" tabindex="-1">Out of Office</button>
-        <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
+        <button type="button" id="settings-tab-prefs" data-fold="prefs" role="tab" aria-controls="settings-prefs" aria-selected="true" tabindex="0">Appearance</button>
+        <button type="button" id="settings-tab-mail" data-fold="mail" role="tab" aria-controls="settings-mail" aria-selected="false" tabindex="-1">Mail</button>
+        <button type="button" id="settings-tab-mailbox" data-fold="mailbox" role="tab" aria-controls="settings-mailbox" aria-selected="false" tabindex="-1">Accounts</button>
+        <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" tabindex="-1">AI</button>
+        <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" tabindex="-1">Bot access</button>
       </nav>
       <section class="settings-account-context" aria-label="Settings mailbox" hidden>
           <label for="settings-account">Mailbox</label>
@@ -761,24 +760,15 @@
         </section>
         <section class="fold" id="settings-mail" data-fold="mail" role="tabpanel" aria-labelledby="settings-tab-mail" tabindex="0" hidden>
           <div class="fold-panel" id="settings-mail-panel" hidden>
-            <h3>Message list &amp; sync</h3>
-            <div class="field">
-              <label for="pref-sync-horizon">Sync history</label>
-              <select id="pref-sync-horizon" aria-describedby="sync-horizon-help">
-                <option value="180">Last 180 days</option>
-                <option value="365">Last 365 days</option>
-                <option value="0">All (unlimited)</option>
-              </select>
-              <p class="hint" id="sync-horizon-help">For all accounts. Downloaded mail stays when you shorten history. All takes more time and disk space.</p>
-            </div>
-            <div class="checks">
-              <label class="check" for="pref-compact-list"><input id="pref-compact-list" type="checkbox" /> Compact message list <span class="hint">· one line per message</span></label>
-            </div>
-            <details class="settings-disclosure"><summary>How history downloads</summary>
-              <p class="hint">Inbox and the open folder catch up on their next sync. Open other folders to download their history. Browse downloaded mail with Previous and Next, 200 messages at a time.</p>
-            </details>
+            <h3>Mail</h3>
             <div class="settings-group">
               <h4>Reading &amp; sending</h4>
+              <div class="checks">
+                <label class="check" for="pref-compact-list"><input id="pref-compact-list" type="checkbox" /> Compact message list <span class="hint">· one line per message</span></label>
+                <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
+                <label class="check" for="pref-images"><input id="pref-images" type="checkbox" /> Load remote images</label>
+                <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
+              </div>
               <div class="field settings-short-field">
                 <label for="pref-undo">Undo send (seconds)</label>
                 <input id="pref-undo" type="number" min="0" max="30" step="1" />
@@ -797,11 +787,21 @@
                 </div>
                 <p class="hint" id="pref-schedule-delay-help">0 sends immediately. Any other delay makes Send schedule that far ahead. Send now is still available in compose. The longest delay is 7 days.</p>
               </div>
-              <div class="checks">
-                <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
-                <label class="check" for="pref-images"><input id="pref-images" type="checkbox" /> Load remote images</label>
-                <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
+            </div>
+            <div class="settings-group">
+              <h4>Sync &amp; storage</h4>
+              <div class="field">
+                <label for="pref-sync-horizon">Sync history</label>
+                <select id="pref-sync-horizon" aria-describedby="sync-horizon-help">
+                  <option value="180">Last 180 days</option>
+                  <option value="365">Last 365 days</option>
+                  <option value="0">All (unlimited)</option>
+                </select>
+                <p class="hint" id="sync-horizon-help">For all accounts. Downloaded mail stays when you shorten history. All takes more time and disk space.</p>
               </div>
+              <details class="settings-disclosure"><summary>How history downloads</summary>
+                <p class="hint">Inbox and the open folder catch up on their next sync. Open other folders to download their history. Browse downloaded mail with Previous and Next, 200 messages at a time.</p>
+              </details>
             </div>
             <p class="hint settings-save-note">Changes save automatically.</p>
           </div>
@@ -844,8 +844,10 @@
         </section>
         <section class="fold" id="settings-mailbox" data-fold="mailbox" role="tabpanel" aria-labelledby="settings-tab-mailbox" tabindex="0" hidden>
           <div class="fold-panel" id="settings-mailbox-panel" hidden>
-          <h3 id="settings-mailbox-title">Mailbox tools</h3>
-          <div class="row mailbox-actions" role="group" aria-labelledby="settings-mailbox-title">
+          <h3 id="settings-mailbox-title">Accounts</h3>
+          <div class="settings-group" id="settings-mailbox-tools" aria-labelledby="settings-mailbox-tools-title">
+          <h4 id="settings-mailbox-tools-title">Mailbox tools</h4>
+          <div class="row mailbox-actions" role="group" aria-labelledby="settings-mailbox-tools-title">
             <button type="button" class="ghost icon-label" id="inbox-rules-open">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
@@ -860,44 +862,8 @@
               <span>Signatures</span>
             </button>
           </div>
-          <div class="settings-group">
-          <h4>Connected accounts</h4>
-          <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
-          <div class="row">
-            <button type="button" class="ghost icon-label" id="connect-open">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
-                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
-              </svg>
-              <span>Connect account</span>
-            </button>
-            <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
-          </div>
-          </div>
-          <details class="settings-disclosure" id="account-permissions"><summary>Permissions &amp; calendar access</summary>
-            <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
-            <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
-          </details>
-          <details class="settings-disclosure" id="account-recovery"><summary>Recovery &amp; account removal</summary>
-            <p class="hint">To fix sign-in, reconnect the same address. Cached mail and local work stay in this profile.</p>
-            <p class="hint">Missing data? Check the app and operating-system user you opened. Back up old app data before changing folders. Morrow has not migrated older profiles; reconnecting downloads server mail but cannot recover their unsynced drafts.</p>
-            <p class="hint">For help, review a support preview in Debug log. Keep passwords, OAuth files, and databases private.</p>
-            <p class="hint">Removing an account is not a sign-in fix. Review what will be removed before confirming.</p>
-            <button type="button" class="ghost icon-label" id="remove" disabled>
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <polyline points="3 6 5 6 21 6"></polyline>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                <line x1="10" y1="11" x2="10" y2="17"></line>
-                <line x1="14" y1="11" x2="14" y2="17"></line>
-              </svg>
-              <span>Remove account</span>
-            </button>
-          </details>
-          </div>
-        </section>
-        <section class="fold" id="settings-ooo" data-fold="ooo" role="tabpanel" aria-labelledby="settings-tab-ooo" tabindex="0" hidden>
-          <div class="fold-panel" id="settings-ooo-panel" hidden>
-          <h3 id="settings-ooo-title">Out of Office</h3>
+          <details class="settings-disclosure settings-ooo-tool" id="settings-ooo">
+            <summary>Out of Office</summary>
           <p class="hint">Replies run on your mail server, even while Morrow is closed. You’ll review changes before saving.</p>
           <p id="ooo-note" class="hint"></p>
           <div class="row">
@@ -938,6 +904,41 @@
             </div>
           </div>
           <p id="ooo-status" role="status"></p>
+          </details>
+          </div>
+          <div class="settings-group">
+          <h4>Connected accounts</h4>
+          <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
+          <div class="row">
+            <button type="button" class="ghost icon-label" id="connect-open">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+              </svg>
+              <span>Connect account</span>
+            </button>
+            <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
+          </div>
+          </div>
+          <details class="settings-disclosure" id="account-permissions"><summary>Permissions &amp; calendar access</summary>
+            <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
+            <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
+          </details>
+          <details class="settings-disclosure" id="account-recovery"><summary>Recovery &amp; account removal</summary>
+            <p class="hint">To fix sign-in, reconnect the same address. Cached mail and local work stay in this profile.</p>
+            <p class="hint">Missing data? Check the app and operating-system user you opened. Back up old app data before changing folders. Morrow has not migrated older profiles; reconnecting downloads server mail but cannot recover their unsynced drafts.</p>
+            <p class="hint">For help, review a support preview in Debug log. Keep passwords, OAuth files, and databases private.</p>
+            <p class="hint">Removing an account is not a sign-in fix. Review what will be removed before confirming.</p>
+            <button type="button" class="ghost icon-label" id="remove" disabled>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                <line x1="10" y1="11" x2="10" y2="17"></line>
+                <line x1="14" y1="11" x2="14" y2="17"></line>
+              </svg>
+              <span>Remove account</span>
+            </button>
+          </details>
           </div>
         </section>
         <section class="fold" id="settings-bot" data-fold="bot" role="tabpanel" aria-labelledby="settings-tab-bot" tabindex="0" hidden>

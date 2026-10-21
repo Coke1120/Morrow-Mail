@@ -9737,7 +9737,7 @@ async function saveScheduleDelay() {
 const settingsFoldPending = new Map();
 const settingsFoldLoaded = new Set();
 function settingsFoldKey(name) {
-  return name + ":" + (["mailbox", "ooo"].includes(name) ? settingsAccount()?.id || "" : "");
+  return name + ":" + (name === "mailbox" ? settingsAccount()?.id || "" : "");
 }
 function loadSettingsFold(name) {
   if (!$("settings").open) return Promise.resolve();
@@ -9753,15 +9753,19 @@ function loadSettingsFold(name) {
     panel.setAttribute("aria-busy", "true");
     if (name === "prefs" || name === "mail") await loadSettings();
     else if (name === "ai") { await loadSettings(); await loadAiSettings(); }
-    else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); }
-    else if (name === "ooo" && !oooDirty()) await loadVacation();
+    else if (name === "mailbox") {
+      renderSettingsAccounts();
+      await loadSettingsCapabilities();
+      // Out of Office is a mailbox tool inside Accounts, so it loads with the fold.
+      // It does not hold the panel inert: account management stays usable while the provider answers.
+      if (!oooDirty()) loadVacation().catch(error => setOooStatus(error instanceof Error ? error.message : String(error), true));
+    }
     else if (name === "bot") await loadBotAccess();
     settingsFoldLoaded.add(key);
   }).catch(error => {
     if (key !== settingsFoldKey(name)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (name === "ooo") setOooStatus(message, true);
-    else if (name === "bot") setBotStatus(message, true);
+    if (name === "bot") setBotStatus(message, true);
     else { $("settings-status").textContent = message; $("settings-status").classList.add("error"); }
   }).finally(() => {
     settingsFoldPending.delete(key);
@@ -10108,11 +10112,10 @@ function setSettingsFold(name, open, animate) {
   if (!nav) return;
   for (const button of nav.querySelectorAll("[data-fold]")) {
     const selected = button.getAttribute("data-fold") === name;
-    button.setAttribute("aria-current", String(selected));
     button.setAttribute("aria-selected", String(selected));
     button.tabIndex = selected ? 0 : -1;
   }
-  document.querySelector("#settings .settings-account-context").hidden = !["mailbox", "ooo"].includes(name);
+  document.querySelector("#settings .settings-account-context").hidden = name !== "mailbox";
   $("settings").querySelector(".dialog-body").scrollTop = 0;
   loadSettingsFold(name);
 }
@@ -10278,8 +10281,13 @@ async function manageMailVacation() {
   if (!id) return;
   openSettings();
   if (settingsAccount()?.id !== id && !(await changeSettingsMailbox(id))) return;
-  revealSettingsFold("ooo");
-  $("ooo-refresh").focus();
+  revealSettingsFold("mailbox");
+  const tool = $("settings-ooo");
+  if (tool) {
+    tool.open = true;
+    tool.scrollIntoView({ block: "nearest" });
+  }
+  $("ooo-refresh").focus({ preventScroll: true });
 }
 
 let settingsVacationGen = 0;
@@ -10303,7 +10311,7 @@ function paintSettingsMailbox() {
   $("settings-reconnect").disabled = !account;
   $("settings-reconnect").textContent = "Reconnect mailbox";
   $("settings-reconnect").title = account ? "Reconnect " + account.email : "Connect a mailbox first";
-  $("settings-mailbox-note").textContent = account ? "Signatures, rules, and automatic replies use this mailbox." : "Connect an account in Accounts to get started.";
+  $("settings-mailbox-note").textContent = account ? "Rules, signatures, and automatic replies use this mailbox." : "Connect an account to get started.";
   syncRemove();
 }
 async function changeSettingsMailbox(id) {
@@ -10319,7 +10327,7 @@ async function changeSettingsMailbox(id) {
   oooBaseline = "";
   paintVacation(null);
   paintSettingsMailbox();
-  for (const key of settingsFoldLoaded) if (key.startsWith("mailbox:") || key.startsWith("ooo:")) settingsFoldLoaded.delete(key);
+  for (const key of settingsFoldLoaded) if (key.startsWith("mailbox:")) settingsFoldLoaded.delete(key);
   const fold = document.querySelector("#settings .fold.is-open");
   if (fold) await loadSettingsFold(fold.dataset.fold);
   return true;
@@ -10336,7 +10344,7 @@ async function loadSettingsCapabilities() {
     const grants = status?.accounts?.find(row => row.id === account.id);
     const local = account.authKind !== "oauth2";
     const permission = key => grants ? (grants[key] ? "Permission granted" : "Additional consent needed") : "Unknown — refresh permissions";
-    node.textContent = ["Mail: " + (account.needsReauth ? "Reconnect needed" : "Configured; connection health is shown in Sync"), "Signatures: saved on this computer", "Labels/folders: " + (local ? "IMAP folders" : permission("organize")), "Rules: " + (local ? "Local; runs on new downloads while open" : permission("rules")), "Calendar: " + (local ? "Requires Google or Microsoft browser sign-in" : permission("calendar")), "Out of Office: " + (local ? "Check support in the Out of Office tab" : permission("vacation"))].join("\n");
+    node.textContent = ["Mail: " + (account.needsReauth ? "Reconnect needed" : "Configured; connection health is shown in Sync"), "Signatures: saved on this computer", "Labels/folders: " + (local ? "IMAP folders" : permission("organize")), "Rules: " + (local ? "Local; runs on new downloads while open" : permission("rules")), "Calendar: " + (local ? "Requires Google or Microsoft browser sign-in" : permission("calendar")), "Out of Office: " + (local ? "Check support under Mailbox tools" : permission("vacation"))].join("\n");
   } catch (error) { if (gen === settingsCapabilityGen) node.textContent = "Permissions unknown. Refresh permissions to retry. " + error.message; }
 }
 function openConnectFor(account) {
