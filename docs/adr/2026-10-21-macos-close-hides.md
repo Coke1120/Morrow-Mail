@@ -13,3 +13,5 @@ On Windows and Linux, closing the main window still goes through that quit confi
 ## Why hide
 
 Hiding keeps the shell in memory. A Dock click shows that same window, and close never reads the scheduled queue. The quit confirm stays on Cmd+Q and on Windows and Linux window close.
+
+A compose window is not the main window. Its close button closes that window. A dirty draft asks before discarding, and that confirm does not save the draft. Hiding applies only to the main window.
