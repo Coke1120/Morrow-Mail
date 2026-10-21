@@ -41,6 +41,8 @@ const syntax = [
   "scripts/check-brain-persona.js",
   "scripts/check-brain-profile-layout.js",
   "host/agent.js",
+  "host/compose-window.js",
+  "renderer/surface.js",
   "host/bot/constants.js",
   "host/bot/json.js",
   "host/bot/store.js",
@@ -2021,6 +2023,9 @@ const requestUi = loadFunctions(appJs, [
   "isLive",
   "agentContact",
   "agentContextCopy",
+  "agentMessageContext",
+  "agentReadIntent",
+  "agentTodoActionNames",
   "agentFollowUps",
   "agentWhen",
   "skillName",
@@ -2044,6 +2049,19 @@ assert.deepStrictEqual(requestUi.skillRequest({ id: "brief-this-person" }, {
 assert.ok(!requestUi.skillRequest({ id: "morning-brief" }, { contact: "ada@example.com" }).contactEmail);
 assert.match(requestUi.agentContextCopy(null), /No message is open/);
 assert.match(requestUi.agentContextCopy({ id: "m1", from: "Ada", subject: "Hi" }), /Ada — Hi/);
+assert.strictEqual(requestUi.agentMessageContext(null), null);
+assert.strictEqual(requestUi.agentMessageContext({ summary: "No mail" }), null);
+assert.deepStrictEqual(requestUi.agentMessageContext({ messageId: " m1 ", accountId: "acct" }), {
+  messageId: "m1",
+  accountId: "acct",
+});
+assert.strictEqual(requestUi.agentReadIntent({ summary: "No mail" }), "skip");
+assert.strictEqual(requestUi.agentReadIntent({ messageId: "m1", unread: false }), "already");
+assert.strictEqual(requestUi.agentReadIntent({ messageId: "m1", unread: true }), "mark");
+assert.deepStrictEqual(requestUi.agentTodoActionNames({ summary: "Note" }), []);
+assert.deepStrictEqual(requestUi.agentTodoActionNames({ messageId: "m1" }), [
+  "Open", "Reply", "Reply All", "Mark as read", "Mark todo done", "Dismiss",
+]);
 assert.strictEqual(requestUi.agentFollowUps({ messageId: "m1", followUps: [] }).length, 1);
 assert.strictEqual(requestUi.agentFollowUps({
   messageId: "m1",
@@ -2115,6 +2133,19 @@ assert.ok(!functionSource(appJs, "peekMessage").includes("showMail"));
 assert.ok(functionSource(appJs, "openPeekInMail").includes("showMail"));
 assert.ok(!appJs.includes("Done and Dismiss only update this local Agent list. They do not archive, delete, or reply."));
 assert.ok(appJs.includes("Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply."));
+assert.ok(appJs.includes('agentActionButton("open", "Open"') && appJs.includes('agentActionButton("reply", "Reply"'));
+assert.ok(appJs.includes('agentActionButton("reply-all", "Reply All"') && appJs.includes('agentActionButton("read", "Mark as read"'));
+assert.ok(appJs.includes('agentActionButton("done", "Mark todo done"') && appJs.includes('agentActionButton("dismiss", "Dismiss"'));
+assert.ok(appJs.includes("host:openComposeWindow") && appJs.includes("function openComposeInWindow("));
+assert.ok(appJs.includes("host:takeComposeSeed") && appJs.includes("host:closeComposeWindow"));
+assert.ok(preload.includes("host:openComposeWindow") && preload.includes("compose:requestClose"));
+assert.ok(html.includes("surface.js") && css.includes('html[data-surface="compose"]') && css.includes("button.agent-action"));
+assert.ok(main.includes("compose-window") && ipcSrc.includes("host:openComposeWindow"));
+const composeWindow = require("../host/compose-window");
+assert.deepStrictEqual(composeWindow.publicSeed(null), {});
+assert.strictEqual(composeWindow.publicSeed({ title: "Reply", kind: "reply", sourceMessageId: "m1" }).title, "Reply");
+assert.strictEqual(composeWindow.composeWindowKey({ kind: "all", sourceMessageId: "m1" }), "all\0m1");
+assert.strictEqual(composeWindow.composeWindowKey({ title: "New message" }), "");
 assert.ok(html.includes('id="agent-composer"') && html.includes('id="agent-send"') && html.includes('id="agent-input"'));
 assert.ok(html.includes('id="agent-memory"') && html.includes('id="rail-brain"') && html.includes('id="agent-home"') && html.includes('id="side-mail"'));
 assert.ok(!html.includes('id="side-agent"') && !html.includes('id="side-brain"') && !html.includes("side-switch"));

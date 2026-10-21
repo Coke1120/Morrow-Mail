@@ -165,6 +165,9 @@ const INVOKE = [
   "bot:probeServe",
   "bot:draftComposeSeed",
   "bot:dismissDraftProposal",
+  "host:openComposeWindow",
+  "host:takeComposeSeed",
+  "host:closeComposeWindow",
 ];
 
 const EVENTS = [
@@ -183,6 +186,7 @@ const EVENTS = [
   "host:menuAction",
   "app:confirmQuitScheduled",
   "app:dismissQuitScheduled",
+  "compose:requestClose",
 ];
 
 const invokeSet = new Set(INVOKE);

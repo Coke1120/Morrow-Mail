@@ -194,6 +194,9 @@ function createIpc(logPath) {
   return {
     handle(event, channel, ...args) {
       note("invoke", channel);
+      if (channel === "host:openComposeWindow" || channel === "host:takeComposeSeed" || channel === "host:closeComposeWindow") {
+        return require("./compose-window").answer(channel, args && args[0], event);
+      }
       if (typeof channel === "string" && channel.startsWith("bot:")) {
         return require("./bot/manage").answer(channel, args && args[0], event);
       }

@@ -743,6 +743,14 @@ app.whenReady().then(async () => {
     });
     attachIpc(preloadFile);
     shellSession = { preloadFile, mode };
+    require("./compose-window").configure({
+      preloadFile,
+      icon: APP_ICON,
+      load(win) {
+        if (mode === "asar") return win.loadURL("morrow://local/index.html?surface=compose");
+        return win.loadFile(FIRST_PARTY_HTML, { query: { surface: "compose" } });
+      },
+    });
     const win = await openShellWindow();
     if (!win) throw new Error("Morrow Mail could not open its window.");
     if (process.platform === "darwin" && app.isPackaged) {
