@@ -331,6 +331,20 @@ app.whenReady().then(async () => {
   await run(`state.calendarAccountId='box-0';state.calendarCursor=new Date(2026,9,1);showCalendar();`);
   assert.equal(await run(`$('calendar-panel').hidden`), false);
   await waitCalls('calendar:list', 1);
+  assert.equal(await run(`$('calendar-layout').hidden`), false, 'cold load keeps the month shell');
+  assert.equal(await run(`!!$('calendar-body').querySelector('.calendar-grid')`), true);
+  assert.match(await run(`$('calendar-heading').textContent`), /October 2026/);
+  assert.equal(await run(`$('calendar-heading').checkVisibility() && $('calendar-account').checkVisibility() && $('calendar-today').checkVisibility()`), true, 'calendar chrome stays visible while loading');
+  assert.equal(await run(`$('calendar-panel').querySelector('.page-busy-label').textContent`), 'Loading…');
+  assert.doesNotMatch(await run(`$('calendar-status').textContent`), /Loading calendar/);
+  assert.equal(await run(`$('calendar-panel').querySelector(':scope > .page-busy') !== null && getComputedStyle($('calendar-panel').querySelector('.page-busy')).pointerEvents === 'none'`), true);
+  assert.equal(await run(`(() => {
+    const rail = $('rail-mail');
+    const box = rail.getBoundingClientRect();
+    const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+    return !rail.disabled && !rail.closest('[inert]') && (hit === rail || rail.contains(hit));
+  })()`), true, 'sidebar stays clickable during calendar load');
+  await shot('calendar-loading');
   await run(`void loadCalendar();void loadCalendar();`);
   assert.equal(count('calendar:list'), 1);
   assert.equal(count('calendar:status'), 1);
@@ -343,6 +357,7 @@ app.whenReady().then(async () => {
   await run(`showMail();showCalendar();`);
   await waitFor(`!calendarOpenScheduled`);
   assert.equal(count('calendar:list'), 1, 'fresh month cache avoids reopening IPC');
+  assert.equal(await run(`$('calendar-panel').querySelector('.page-busy')`), null, 'fresh cache does not flash a loading overlay');
   assert.equal(await run(`grid===$('calendar-body').firstElementChild && eventButton.isConnected && calendarOption===$('calendar-account').firstElementChild`), true);
   await run(`void loadCalendar()`);
   await waitCalls('calendar:list', 2);
@@ -355,6 +370,10 @@ app.whenReady().then(async () => {
   assert.equal(await run(`grid.isConnected && eventButton.isConnected`), true);
   await run(`shiftMonth(1);shiftMonth(1);`);
   await waitCalls('calendar:list', 4);
+  assert.match(await run(`$('calendar-agenda').textContent`), /Fixture event/, 'month switch keeps the last events');
+  assert.equal(await run(`$('calendar-panel').querySelector('.page-busy-label').textContent`), 'Updating calendar…');
+  assert.doesNotMatch(await run(`$('calendar-status').textContent`), /Loading calendar/);
+  assert.equal(await run(`!$('calendar-layout').hidden`), true);
   resolveMonth(2, 'Stale month');
   await sleep(30);
   assert.equal(await run(`state.calendarPayload?.events?.some(e=>e.title==='Stale month')`), false);
@@ -366,9 +385,13 @@ app.whenReady().then(async () => {
   calendarRequests[4].reject(new Error('Offline fixture'));
   await waitFor(`$('calendar-status').textContent.includes('Showing the saved month')`);
   assert.match(await run(`$('calendar-agenda').textContent`), /Current month/);
+  assert.equal(await run(`$('calendar-panel').querySelector('.page-busy')`), null, 'a failed refresh removes the overlay');
   await shot('calendar-cached');
   await run(`shiftMonth(1);$('calendar-account').value='box-1';$('calendar-account').dispatchEvent(new Event('change'));`);
   await waitCalls('calendar:list', 7);
+  assert.match(await run(`$('calendar-agenda').textContent`), /Current month/, 'account switch keeps the last month');
+  assert.equal(await run(`$('calendar-panel').querySelector('.page-busy-label').textContent`), 'Updating calendar…');
+  assert.doesNotMatch(await run(`$('calendar-status').textContent`), /Loading calendar/);
   resolveMonth(5, 'Old account');resolveMonth(6, 'New account');
   await waitFor(`$('calendar-agenda').textContent.includes('New account')`);
   assert.doesNotMatch(await run(`$('calendar-agenda').textContent`), /Old account/);
