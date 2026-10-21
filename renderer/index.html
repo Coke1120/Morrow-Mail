@@ -453,15 +453,24 @@
         </div>
       </section>
     </section>
-    <section id="shortcuts-panel" class="primary-space" hidden aria-label="Shortcuts">
+    <section id="shortcuts-panel" class="primary-space" hidden aria-label="Shortcuts and command line">
       <div class="space-head">
         <div>
           <p class="space-kicker">Help</p>
-          <h2>Shortcuts</h2>
+          <h2 id="shortcuts-title">Shortcuts</h2>
         </div>
       </div>
       <p class="hint" id="shortcuts-note"></p>
-      <ul id="shortcuts-list" class="shortcut-list"></ul>
+      <ul id="shortcuts-list" class="shortcut-list" aria-labelledby="shortcuts-title"></ul>
+      <div class="space-head cli-head">
+        <div>
+          <p class="space-kicker">Command line</p>
+          <h2 id="cli-title">CLI</h2>
+        </div>
+      </div>
+      <p class="hint" id="cli-note"></p>
+      <p id="cli-copy-status" class="hint" role="status"></p>
+      <ul id="cli-list" class="shortcut-list cli-list" aria-labelledby="cli-title"></ul>
     </section>
     <section id="log-panel" class="primary-space" hidden aria-label="Debug log">
       <div class="space-head">
