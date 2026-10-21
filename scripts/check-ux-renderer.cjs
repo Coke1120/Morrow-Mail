@@ -156,7 +156,7 @@ app.whenReady().then(async()=>{
  assert.equal(await run(`$('compose-body').value`),'Scheduled body preserved');
  assert.equal(await run(`state.draftId`),'saved-draft');
  assert.equal((await run('uxFixture.counts()'))['mail:scheduleSend'],1,'editing never reschedules automatically');
- assert.equal(await run(`$('compose-ai-tools').open`),false);assert.equal(await run(`$('compose-schedule-tools').open`),false);
+ assert.equal(await run(`$('compose-ai-tools')`),null);assert.equal(await run(`$('compose-ai-popover').hidden`),true);assert.equal(await run(`$('compose-schedule-tools').open`),false);
  await shot('scheduled-draft-handoff');await run(`$('compose').close();state.accountId='a';openSettings();revealSettingsFold('ooo')`);
  await waitFor(`vacationCache && vacationCache.accountId==='a'`);
  await run(`$('ooo-message').value='Unsaved Alpha vacation';$('settings-account').value='b';$('settings-account').dispatchEvent(new Event('change'))`);

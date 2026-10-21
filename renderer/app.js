@@ -3309,10 +3309,40 @@ function suggestionEmail(email) {
   };
 }
 
+function replyThreadEmail(fields) {
+  if (!fields || typeof fields !== "object") return null;
+  const kind = fields.kind || "";
+  if (kind !== "reply" && kind !== "all") return null;
+  const email = fields.quoteEmail && typeof fields.quoteEmail === "object"
+    ? fields.quoteEmail
+    : (fields.email && typeof fields.email === "object" ? fields.email : null);
+  if (email) return email;
+  const text = typeof fields.quote === "string" ? fields.quote.trim()
+    : (typeof fields.text === "string" ? fields.text.trim() : "");
+  if (!text) return null;
+  return {
+    subject: String(fields.subject || "").replace(/^(?:re|fwd|fw):\s*/i, "").trim(),
+    from: "",
+    textBody: text,
+    snippet: text,
+  };
+}
+
+function defaultAiMode(fields) {
+  return replyThreadEmail(fields) ? "reply" : "rewrite";
+}
+
+function replyThreadPrompt(prompt) {
+  const instruction = String(prompt || "").trim();
+  if (instruction) return instruction;
+  return "Write a comprehensive reply to the original email. Address the points it raises in a complete draft the sender can send.";
+}
+
 function draftBlockReason(mode, prompt, existing, email) {
   const instruction = String(prompt || "").trim();
   const body = String(existing || "").trim();
   const source = !!(email && typeof email === "object");
+  if (mode === "reply") return source ? "" : "Reply from thread needs the original message.";
   if (mode === "custom" && !instruction && !source) return "Add a prompt.";
   if (mode !== "custom" && !body && !instruction && !source) return "Add some text, or a prompt.";
   return "";
@@ -3322,10 +3352,14 @@ function draftInstruction(mode, prompt, existing, subject, email) {
   const instruction = String(prompt || "").trim();
   const body = {
     mode: mode || "custom",
-    user_prompt: instruction,
+    user_prompt: mode === "reply" ? replyThreadPrompt(instruction) : instruction,
     existing_draft_content: String(existing || ""),
     subject: String(subject || ""),
   };
+  if (mode === "reply") {
+    if (email && typeof email === "object") body.email = suggestionEmail(email);
+    return body;
+  }
   if (email && typeof email === "object") {
     body.email = suggestionEmail(email);
     if (!instruction && !String(existing || "").trim()) body.user_prompt = "Write a reply.";
@@ -3348,15 +3382,19 @@ function suggestedReplyBody(current, signature, text) {
   return line;
 }
 
-// shortcut: continue appends model text; rewrite and custom replace the body. Upgrade if continue must keep a partial model reply beside the old draft.
+// shortcut: continue appends model text; rewrite, custom, and reply from thread replace the body. Reply from thread keeps a trailing signature.
 function draftBase(mode, existing) {
   return mode === "continue" ? String(existing || "") : "";
 }
 
 function shownDraft(view) {
   if (!view) return "";
-  if (!view.text) return typeof view.previous === "string" ? view.previous : view.base;
-  return view.base + view.text;
+  const body = !view.text
+    ? (typeof view.previous === "string" ? view.previous : view.base)
+    : view.base + view.text;
+  const tail = view.text && typeof view.signatureTail === "string" ? view.signatureTail : "";
+  if (!tail || body.endsWith(tail)) return body;
+  return body.replace(/\s+$/g, "") + "\n\n" + tail;
 }
 
 function htmlChunkToText(html) {
@@ -8725,7 +8763,13 @@ function setComposeFormatLocked(locked) {
   const editing = !locked && !(state.draftWrite && state.draftWrite.pending);
   const bar = $("compose-format");
   if (bar && typeof bar.querySelectorAll === "function") {
-    for (const control of bar.querySelectorAll("button, input")) control.disabled = !editing;
+    for (const control of bar.querySelectorAll("button, input")) {
+      if (control.id === "compose-ai-open") {
+        control.disabled = !!locked;
+        continue;
+      }
+      control.disabled = !editing;
+    }
   }
   setComposeEditorEditable(editing);
 }
@@ -8914,6 +8958,7 @@ function bindRichEditor(bar, editor, onInput) {
     }
     bar.addEventListener("mousedown", (event) => {
       const button = event.target && event.target.closest && event.target.closest("button");
+      if (button && button.id === "compose-ai-open") return;
       if (button) event.preventDefault();
       saved = rememberEditorRange(editor);
     });
@@ -9032,6 +9077,7 @@ function syncCompose() {
   syncComposeRecipientRows();
   paintComposeAttachments();
   paintComposeNote();
+  paintComposeAi();
 }
 
 function paintComposeNote() {
@@ -9294,8 +9340,7 @@ function applySuggestedReply(text) {
   writeComposeBody(suggestedReplyBody(current, state.signatureText, text));
   const prompt = $("ai-prompt");
   if (prompt && !String(prompt.value || "").trim()) prompt.value = String(text || "").trim();
-  const tools = $("compose-ai-tools");
-  if (tools && state.prefs.aiReply !== false) tools.open = true;
+  if (state.prefs.aiReply !== false) openComposeAi();
   paintComposeNote();
 }
 
@@ -9639,6 +9684,193 @@ async function removeSignature(id) {
   await refreshComposeSignatures();
 }
 
+function readAiMode() {
+  const input = $("ai-mode");
+  const value = input && input.value;
+  if (value === "continue" || value === "custom" || value === "reply" || value === "rewrite") return value;
+  return "rewrite";
+}
+
+function currentReplyThreadEmail() {
+  const quote = state.composeQuote;
+  if (!quote) return null;
+  const subjectField = $("compose-subject");
+  return replyThreadEmail({
+    kind: quote.kind,
+    quoteEmail: quote.email,
+    quote: quote.text,
+    subject: subjectField && subjectField.value ? subjectField.value : "",
+  });
+}
+
+function composeAiLocked() {
+  return !!(state.composeQueued || state.composePending || state.composeInitializing);
+}
+
+function paintComposeAi() {
+  const pending = !!(state.draftWrite && state.draftWrite.pending);
+  const locked = composeAiLocked();
+  const available = !!currentReplyThreadEmail();
+  const mode = readAiMode();
+  const group = $("compose-ai-modes");
+  if (group && typeof group.querySelectorAll === "function") {
+    for (const button of group.querySelectorAll("[data-ai-mode]")) {
+      const reply = button.getAttribute("data-ai-mode") === "reply";
+      button.disabled = locked || pending || (reply && !available);
+      if (reply) {
+        if (typeof button.setAttribute === "function") button.setAttribute("aria-disabled", available ? "false" : "true");
+        button.title = available ? "Draft a full reply from the original message" : "No original message on this draft";
+      }
+    }
+  }
+  const note = $("compose-ai-note");
+  if (note) {
+    if (!available) {
+      note.hidden = false;
+      note.textContent = "Reply from thread needs the original message.";
+    } else if (mode === "reply") {
+      note.hidden = false;
+      note.textContent = "Uses the original message. An empty prompt writes a full reply.";
+    } else {
+      note.hidden = true;
+      note.textContent = "";
+    }
+  }
+  const prompt = $("ai-prompt");
+  if (prompt) prompt.disabled = locked || pending;
+  const go = $("ai-generate");
+  if (go) go.disabled = locked || pending || (mode === "reply" && !available);
+  const pop = $("compose-ai-popover");
+  if (pop && typeof pop.setAttribute === "function") pop.setAttribute("aria-busy", pending ? "true" : "false");
+  const cancel = $("ai-cancel");
+  if (cancel) {
+    cancel.hidden = false;
+    cancel.disabled = locked && !pending;
+  }
+}
+
+function setAiMode(mode) {
+  const next = mode === "continue" || mode === "custom" || mode === "reply" || mode === "rewrite" ? mode : "rewrite";
+  const input = $("ai-mode");
+  if (input) input.value = next;
+  const group = $("compose-ai-modes");
+  if (group && typeof group.querySelectorAll === "function") {
+    for (const button of group.querySelectorAll("[data-ai-mode]")) {
+      const on = button.getAttribute("data-ai-mode") === next;
+      if (typeof button.setAttribute === "function") button.setAttribute("aria-checked", on ? "true" : "false");
+      button.tabIndex = on ? 0 : -1;
+    }
+  }
+  const prompt = $("ai-prompt");
+  if (prompt) {
+    if (next === "reply") prompt.placeholder = "Optional: tone or points to cover";
+    else if (next === "continue") prompt.placeholder = "What should come next?";
+    else if (next === "custom") prompt.placeholder = "Type your prompt...";
+    else prompt.placeholder = "How should this read?";
+  }
+  paintComposeAi();
+}
+
+function composeAiOpen() {
+  const pop = $("compose-ai-popover");
+  return !!(pop && !pop.hidden);
+}
+
+function openComposeAi(options) {
+  const pop = $("compose-ai-popover");
+  const btn = $("compose-ai-open");
+  if (!pop) return;
+  pop.hidden = false;
+  if (pop.classList && typeof pop.classList.add === "function") pop.classList.add("open");
+  if (btn && typeof btn.setAttribute === "function") btn.setAttribute("aria-expanded", "true");
+  paintComposeAi();
+  if (options && options.focus === false) return;
+  const prompt = $("ai-prompt");
+  if (prompt && !prompt.disabled && typeof prompt.focus === "function") prompt.focus();
+}
+
+function closeComposeAi(options) {
+  const pop = $("compose-ai-popover");
+  const btn = $("compose-ai-open");
+  if (pop) {
+    pop.hidden = true;
+    if (pop.classList && typeof pop.classList.remove === "function") pop.classList.remove("open");
+  }
+  if (btn && typeof btn.setAttribute === "function") btn.setAttribute("aria-expanded", "false");
+  if (options && options.restore && btn && !btn.disabled && typeof btn.focus === "function") btn.focus();
+}
+
+function toggleComposeAi() {
+  if (composeAiOpen()) closeComposeAi({ restore: true });
+  else openComposeAi();
+}
+
+function composeAiFocusables() {
+  const pop = $("compose-ai-popover");
+  if (!pop || typeof pop.querySelectorAll !== "function") return [];
+  return [...pop.querySelectorAll("button, input, textarea")].filter((el) => {
+    if (!el || el.disabled || el.type === "hidden" || el.tabIndex < 0) return false;
+    return true;
+  });
+}
+
+function onComposeAiTab(event) {
+  if (!event || event.key !== "Tab" || !composeAiOpen()) return;
+  const pop = $("compose-ai-popover");
+  if (!pop || !event.target || typeof pop.contains !== "function" || !pop.contains(event.target)) return;
+  const items = composeAiFocusables();
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (event.shiftKey && event.target === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && event.target === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function onAiModeKeydown(event) {
+  if (!event) return;
+  const order = ["rewrite", "continue", "custom", "reply"];
+  const current = order.indexOf(readAiMode());
+  let next = current < 0 ? 0 : current;
+  let direction = 1;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") next += 1;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    next -= 1;
+    direction = -1;
+  } else if (event.key === "Home") next = 0;
+  else if (event.key === "End") {
+    next = order.length - 1;
+    direction = -1;
+  } else return;
+  event.preventDefault();
+  const group = $("compose-ai-modes");
+  for (let n = 0; n < order.length; n += 1) {
+    const mode = order[(next + (n * direction) + (order.length * 2)) % order.length];
+    const button = group && typeof group.querySelector === "function" ? group.querySelector(`[data-ai-mode="${mode}"]`) : null;
+    if (button && !button.disabled) {
+      setAiMode(mode);
+      if (typeof button.focus === "function") button.focus();
+      return;
+    }
+  }
+}
+
+function onComposeAiPointerDown(event) {
+  if (!composeAiOpen()) return;
+  const target = event && event.target;
+  if (target && typeof target.closest === "function" && (target.closest("#compose-ai-popover") || target.closest("#compose-ai-open"))) return;
+  closeComposeAi({ restore: false });
+}
+
+async function dismissComposeAi() {
+  if (state.draftWrite && state.draftWrite.pending) await cancelDraftWrite();
+  closeComposeAi({ restore: true });
+}
+
 function stopDraftWrite() {
   const current = state.draftWrite;
   if (!current || !current.pending) return;
@@ -9655,7 +9887,7 @@ function resetDraftWrite() {
     error.textContent = "";
   }
   const cancel = $("ai-cancel");
-  if (cancel) cancel.hidden = true;
+  if (cancel) cancel.hidden = false;
   const go = $("ai-generate");
   if (go) go.disabled = false;
   const body = $("compose-body");
@@ -9667,12 +9899,8 @@ function paintDraft() {
   if (state.composeQueued || state.composePending) return;
   const view = state.draftWrite;
   const pending = !!(view && view.pending);
-  const cancel = $("ai-cancel");
-  const go = $("ai-generate");
   const error = $("ai-write-error");
   const body = $("compose-body");
-  if (cancel) cancel.hidden = !pending;
-  if (go) go.disabled = pending;
   if (body) body.readOnly = pending;
   setComposeEditorEditable(!pending);
   if (error) {
@@ -9681,6 +9909,7 @@ function paintDraft() {
     error.textContent = message;
   }
   if (view && body) writeComposeBody(shownDraft(view));
+  paintComposeAi();
 }
 
 function onDraftEvent(event) {
@@ -9691,14 +9920,17 @@ function onDraftEvent(event) {
 
 async function startDraftWrite() {
   if (state.composeQueued || state.composePending || state.composeInitializing) return;
-  const mode = $("ai-mode").value || "custom";
+  const mode = readAiMode();
   const prompt = $("ai-prompt").value;
   const existing = $("compose-body").value;
-  const source = replySuggestionSource({
+  const thread = currentReplyThreadEmail();
+  const source = mode === "reply" ? thread : replySuggestionSource({
     quoteEmail: state.composeQuote && state.composeQuote.email,
     kind: state.composeQuote && state.composeQuote.kind,
   });
-  const reason = draftBlockReason(mode, prompt, existing, source);
+  const parts = mode === "reply" ? splitComposeSignature(existing, state.signatureText) : null;
+  const draftExisting = parts ? parts.message : existing;
+  const reason = draftBlockReason(mode, prompt, draftExisting, source);
   stopDraftWrite();
   if (reason) {
     state.draftWrite = { reqId: "", pending: false, error: reason, text: "", base: existing, previous: existing };
@@ -9711,14 +9943,15 @@ async function startDraftWrite() {
     pending: true,
     error: "",
     text: "",
-    base: draftBase(mode, existing),
+    base: draftBase(mode, draftExisting),
     previous: existing,
+    signatureTail: parts && parts.signature ? parts.signature : "",
   };
   paintDraft();
   try {
     await call("aiDraftWrite:start", {
       reqId,
-      body: draftInstruction(mode, prompt, existing, $("compose-subject").value, source),
+      body: draftInstruction(mode, prompt, draftExisting, $("compose-subject").value, source),
     });
   } catch (error) {
     if (!state.draftWrite || state.draftWrite.reqId !== reqId) return;
@@ -10060,6 +10293,7 @@ async function openCompose(seed) {
   state.composeShowCc = false;
   state.composeShowBcc = false;
   resetDraftWrite();
+  closeComposeAi();
   state.draftId = fields.draftId || null;
   state.composeQueued = false;
   state.signatureText = "";
@@ -10122,23 +10356,14 @@ async function openCompose(seed) {
   paintComposeNote();
   if (!$("compose").open) return;
   scheduleComposeLayout();
-  const write = document.querySelector(".ai-write");
-  const openWrite = opensAiWrite(fields, state.prefs);
-  if (write) write.classList.toggle("open", openWrite);
-  const tools = $("compose-ai-tools");
-  if (tools) tools.open = openWrite;
+  setAiMode(defaultAiMode(fields));
   $("compose-schedule-tools").open = false;
   showComposeSuggestions(fields).catch(() => {});
-  const replyAssist = fields.aiWrite === true || fields.kind === "reply" || fields.kind === "all";
-  if (openWrite && replyAssist) {
-    const body = $("compose-body");
-    if (body && typeof body.setSelectionRange === "function") {
-      body.setSelectionRange(0, 0);
-      body.scrollTop = 0;
-    }
-    $("ai-prompt").focus();
+  if (opensAiWrite(fields, state.prefs)) {
+    openComposeAi();
     return;
   }
+  closeComposeAi();
   if ($("compose-to").value.trim()) focusComposeBody();
   else $("compose-to").focus();
 }
@@ -16045,6 +16270,10 @@ function wire() {
       }
       if (dialog.id === "compose") {
         event.preventDefault();
+        if (composeAiOpen()) {
+          dismissComposeAi().catch(() => {});
+          return;
+        }
         requestComposeClose();
         return;
       }
@@ -16502,15 +16731,36 @@ function wire() {
   $("signatures-from-compose").addEventListener("click", openSignatures);
   $("schedule-preset").addEventListener("change", syncScheduleFields);
   $("schedule-at").addEventListener("change", syncScheduleFields);
-  $("compose").addEventListener("close", () => stopDraftWrite());
+  $("compose").addEventListener("close", () => {
+    stopDraftWrite();
+    closeComposeAi();
+  });
   $("compose-close").addEventListener("click", () => {
     requestComposeClose();
   });
+  const aiOpen = $("compose-ai-open");
+  if (aiOpen && typeof aiOpen.addEventListener === "function") {
+    aiOpen.addEventListener("click", () => toggleComposeAi());
+  }
+  const aiModes = $("compose-ai-modes");
+  if (aiModes && typeof aiModes.addEventListener === "function") {
+    aiModes.addEventListener("click", (event) => {
+      const button = event.target && event.target.closest && event.target.closest("[data-ai-mode]");
+      if (!button || button.disabled) return;
+      setAiMode(button.getAttribute("data-ai-mode"));
+    });
+    aiModes.addEventListener("keydown", onAiModeKeydown);
+  }
+  const aiPopover = $("compose-ai-popover");
+  if (aiPopover && typeof aiPopover.addEventListener === "function") {
+    aiPopover.addEventListener("keydown", onComposeAiTab);
+  }
+  document.addEventListener("pointerdown", onComposeAiPointerDown);
   $("ai-generate").addEventListener("click", () => {
     startDraftWrite().catch((error) => showStatus(error.message, true));
   });
   $("ai-cancel").addEventListener("click", () => {
-    cancelDraftWrite().catch((error) => showStatus(error.message, true));
+    dismissComposeAi().catch((error) => showStatus(error.message, true));
   });
   $("ai-prompt").addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
