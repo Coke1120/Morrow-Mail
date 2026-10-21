@@ -37,7 +37,7 @@ function deltaText(delta) {
 }
 
 async function complete(messages, options = {}) {
-  const cfg = requireConfig();
+  const cfg = options.config || requireConfig();
   const response = await fetch(completionsUrl(cfg.baseUrl), {
     method: "POST",
     headers: {

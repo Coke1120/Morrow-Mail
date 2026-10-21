@@ -786,6 +786,12 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 #settings .row { margin-top: 10px; align-items: center; }
 #settings .row .hint { font-size: 12px; }
 #settings .settings-save-note { margin: 16px 0 0; font-size: 12px; }
+/* Auto-save writes report beside their control; explicit-save forms show dirty state. */
+#settings .settings-inline-status { margin: 2px 0 0; font-size: 12px; }
+#settings .settings-inline-status.error { color: var(--danger); }
+#settings .settings-dirty { margin: 6px 0 0; font-size: 12px; font-weight: 600; color: var(--accent-ink); }
+#prefs .settings-inline-status,
+#prefs .settings-dirty { grid-column: 1 / -1; margin: 0; }
 #settings .settings-group { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
 #settings .settings-group > h4 { margin-top: 0; }
 #settings .settings-group > .row:first-child { margin-top: 0; }
