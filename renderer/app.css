@@ -1206,7 +1206,17 @@ button.brain-skill {
 
 #notice:not(:has(#status:not(:empty), #undo:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) { display: none; }
 
-#notice #status { color: #fff; }
+#notice #status {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: #fff;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: min(30vh, 9em);
+  overflow: auto;
+  cursor: pointer;
+}
 
 #notice #status.error { color: #fecdd3; }
 
@@ -1217,6 +1227,96 @@ button.brain-skill {
 }
 
 #status:empty { display: none; }
+
+#status-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+#status-chip[hidden] { display: none; }
+
+#status-chip svg { display: block; }
+
+#status-chip .status-icon-alert { display: none; }
+
+#notice.error #status-chip .status-icon-ok { display: none; }
+
+#notice.error #status-chip .status-icon-alert { display: block; }
+
+#notice.error:not(.collapsed) #status-chip { color: #fecdd3; }
+
+#status-chip:hover { background: rgba(255, 255, 255, 0.14); }
+
+#status-chip:focus-visible {
+  outline: 2px solid #b9d5ad;
+  outline-offset: 2px;
+}
+
+#notice.collapsed {
+  left: auto;
+  right: 16px;
+  bottom: 16px;
+  transform: none;
+  flex-wrap: nowrap;
+  gap: 6px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 6px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px rgba(185, 213, 173, 0.95), var(--shadow-pop);
+  animation: status-chip-in 160ms ease;
+}
+
+#notice.collapsed.error {
+  background: #9f1239;
+  color: #fff;
+  box-shadow: 0 0 0 3px rgba(254, 205, 211, 0.9), var(--shadow-pop);
+}
+
+#notice.collapsed:not(:has(#undo:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  justify-content: center;
+}
+
+#notice.collapsed:not(:has(#undo:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) #status-chip {
+  width: 44px;
+  height: 44px;
+}
+
+#notice.collapsed #status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+  cursor: auto;
+}
+
+@keyframes status-chip-in {
+  from { opacity: 0.55; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #notice.collapsed { animation: none; }
+}
 
 #undo, #undo-send, #undo-schedule { padding: 2px 8px; }
 

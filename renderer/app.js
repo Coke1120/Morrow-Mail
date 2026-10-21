@@ -147,11 +147,154 @@ function $(id) {
   return document.getElementById(id);
 }
 
+const STATUS_SUCCESS_DWELL_MS = 4000;
+const STATUS_ERROR_DWELL_MS = 12000;
+let statusCollapseTimer = 0;
+let statusGeneration = 0;
+let statusExpanded = false;
+let statusIsError = false;
+let statusHoldOpen = false;
+
+function armStatusTimer(fn, ms) {
+  const handle = setTimeout(fn, ms);
+  if (handle && typeof handle.unref === "function") handle.unref();
+  return handle;
+}
+
+function clearStatusTimer() {
+  statusGeneration += 1;
+  if (!statusCollapseTimer) return;
+  clearTimeout(statusCollapseTimer);
+  statusCollapseTimer = 0;
+}
+
+function paintStatusChrome(expanded) {
+  const status = $("status");
+  const notice = $("notice");
+  const chip = $("status-chip");
+  const hasText = !!(status && status.textContent);
+  const open = !!expanded && hasText;
+  statusExpanded = open;
+  if (notice && notice.classList) {
+    notice.classList.toggle("collapsed", hasText && !open);
+    notice.classList.toggle("error", hasText && statusIsError);
+  }
+  if (!chip) return;
+  chip.hidden = !hasText;
+  if (chip.classList) chip.classList.toggle("error", hasText && statusIsError);
+  if (typeof chip.setAttribute === "function") {
+    chip.setAttribute("aria-expanded", open ? "true" : "false");
+    chip.setAttribute("aria-label", open ? "Collapse status" : (hasText ? status.textContent : "Show status"));
+  }
+  chip.title = hasText && !open ? status.textContent : "";
+}
+
+function scheduleStatusCollapse() {
+  clearStatusTimer();
+  if (statusHoldOpen || !statusExpanded) return;
+  const generation = statusGeneration;
+  const wait = statusIsError ? STATUS_ERROR_DWELL_MS : STATUS_SUCCESS_DWELL_MS;
+  statusCollapseTimer = armStatusTimer(() => {
+    if (generation !== statusGeneration || statusHoldOpen) return;
+    statusCollapseTimer = 0;
+    const status = $("status");
+    if (!status || !status.textContent) return;
+    paintStatusChrome(false);
+  }, wait);
+}
+
+function collapseStatus() {
+  statusHoldOpen = false;
+  clearStatusTimer();
+  const status = $("status");
+  if (!status || !status.textContent) {
+    paintStatusChrome(true);
+    return;
+  }
+  paintStatusChrome(false);
+}
+
+function expandStatus(pin) {
+  const status = $("status");
+  if (!status || !status.textContent) {
+    statusHoldOpen = false;
+    paintStatusChrome(true);
+    return;
+  }
+  statusHoldOpen = !!pin;
+  clearStatusTimer();
+  paintStatusChrome(true);
+  if (!statusHoldOpen) scheduleStatusCollapse();
+}
+
 function showStatus(text, isError) {
   const el = $("status");
+  if (!el) return;
   const kept = undoOpIds && undoReceipt;
   el.textContent = kept && text !== undoReceipt ? undoReceipt + (text ? "\n" + text : "") : (text || "");
-  el.classList.toggle("error", !!(isError || (kept && undoReceiptError)) && !!el.textContent);
+  statusIsError = !!(isError || (kept && undoReceiptError)) && !!el.textContent;
+  if (el.classList) el.classList.toggle("error", statusIsError);
+  statusHoldOpen = false;
+  if (!el.textContent) {
+    clearStatusTimer();
+    paintStatusChrome(true);
+    return;
+  }
+  paintStatusChrome(true);
+  scheduleStatusCollapse();
+}
+
+function statusToggleTarget(event) {
+  const target = event && event.target;
+  if (!target || typeof target.closest !== "function") return null;
+  return target.closest("button");
+}
+
+function statusControl(event) {
+  const button = statusToggleTarget(event);
+  if (button && button.id !== "status-chip") return false;
+  const status = $("status");
+  if (!status || !status.textContent) return false;
+  if (statusExpanded && !button && typeof window.getSelection === "function") {
+    const selection = window.getSelection();
+    if (selection && String(selection)) return false;
+  }
+  if (statusExpanded) collapseStatus();
+  else expandStatus(true);
+  return true;
+}
+
+function statusDismissPointer(event) {
+  if (!statusExpanded) return false;
+  if (event && event.button !== undefined && event.button !== 0) return false;
+  const status = $("status");
+  if (!status || !status.textContent) return false;
+  const notice = $("notice");
+  if (notice && typeof notice.contains === "function" && event && notice.contains(event.target)) return false;
+  collapseStatus();
+  return true;
+}
+
+function statusDismissKey(event) {
+  if (!event || event.key !== "Escape" || !statusExpanded) return false;
+  if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return false;
+  const target = event.target;
+  if (target && typeof target.closest === "function" && target.closest("input, textarea, select, [contenteditable='true']")) return false;
+  if (typeof document.querySelector === "function" && document.querySelector("dialog[open]")) return false;
+  const menu = typeof document.getElementById === "function" ? document.getElementById("organize-menu") : null;
+  if (menu && !menu.hidden) return false;
+  if (typeof event.preventDefault === "function") event.preventDefault();
+  collapseStatus();
+  return true;
+}
+
+function wireStatusNotice() {
+  const notice = $("notice");
+  if (!notice || (notice.dataset && notice.dataset.statusWired)) return;
+  if (notice.dataset) notice.dataset.statusWired = "1";
+  if (typeof notice.addEventListener === "function") notice.addEventListener("click", statusControl);
+  document.addEventListener("mousedown", statusDismissPointer);
+  document.addEventListener("keydown", statusDismissKey);
 }
 
 function selectedAccount() {
@@ -15358,6 +15501,7 @@ function wire() {
   document.addEventListener("keydown", onShellKey);
   wireBot();
   document.addEventListener("keydown", onSelectionKey);
+  wireStatusNotice();
   wireOrganize();
   wireSelection();
   const motion = motionApi();

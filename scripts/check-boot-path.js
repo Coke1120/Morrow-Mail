@@ -576,6 +576,9 @@ for (const channel of [
 }
 assert.ok(appJs.includes('"Unstar"') && appJs.includes('"Archive"') && appJs.includes('"Trash"') && appJs.includes('"Unsnooze"'));
 assert.ok(html.includes('id="undo"') && html.includes('class="split"'), "shell is missing undo or resize handles");
+assert.ok(html.includes('id="status-chip"') && html.includes('aria-controls="status"'), "status chip is missing");
+assert.ok(css.includes("#notice.collapsed") && css.includes("#status-chip"), "status chip styles are missing");
+assert.ok(appJs.includes("STATUS_SUCCESS_DWELL_MS") && appJs.includes("STATUS_ERROR_DWELL_MS") && appJs.includes("function wireStatusNotice("), "status collapse lifecycle is missing");
 assert.ok(css.includes("--folders") && css.includes("--list") && css.includes(".split") && css.includes(".folder-icon") && css.includes(".reader-actions"));
 
 const bodyNodes = extractFunction(appJs, "bodyNodes");
