@@ -504,7 +504,8 @@ assert.deepStrictEqual(Array.from(attachmentBytes(Uint8Array.from([1, 2]))), [1,
 assert.deepStrictEqual(Array.from(attachmentBytes({ type: "Buffer", data: [9, 8] })), [9, 8]);
 const attachmentUi = functionSource(appJs, "renderAttachments");
 assert.ok(attachmentUi.includes("attachment-card"), "attachments stay in a card");
-assert.ok(attachmentUi.includes("Save as ZIP") && attachmentUi.includes("mail:downloadAttachmentsZip"));
+assert.ok(attachmentUi.includes("Save as ZIP") && attachmentUi.includes("saveAttachmentsZip"));
+assert.ok(functionSource(appJs, "saveAttachmentsZip").includes("mail:downloadAttachmentsZip"));
 assert.ok(attachmentUi.includes("Preview") && attachmentUi.includes("mail:fetchAttachmentBytes") === false);
 assert.ok(functionSource(appJs, "previewAttachment").includes("mail:fetchAttachmentBytes"));
 assert.ok(attachmentUi.includes("mail:downloadAttachment") && attachmentUi.includes("mail:openAttachmentExternally"));
