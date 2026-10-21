@@ -557,6 +557,39 @@ assert.ok(functionSource(appJs, "saveAttachmentsZip").includes("mail:downloadAtt
 assert.ok(attachmentUi.includes("Preview") && attachmentUi.includes("mail:fetchAttachmentBytes") === false);
 assert.ok(functionSource(appJs, "previewAttachment").includes("mail:fetchAttachmentBytes"));
 assert.ok(attachmentUi.includes("mail:downloadAttachment") && attachmentUi.includes("mail:openAttachmentExternally"));
+assert.strictEqual((appJs.match(/function readerIcon\(/g) || []).length, 1, "toolbar readerIcon stays the only readerIcon");
+assert.ok(appJs.includes("function attachmentIcon("), "attachment glyphs use attachmentIcon");
+assert.ok(functionSource(appJs, "readerIcon").includes("READER_ICON[name]"));
+assert.ok(attachmentUi.includes('attachmentIcon("paperclip")') && attachmentUi.includes('attachmentIcon("download")'));
+assert.equal(attachmentUi.includes("readerIcon("), false);
+{
+  const mapStart = appJs.indexOf("const READER_ICON = {");
+  const readerIconMap = appJs.slice(mapStart, appJs.indexOf("\n};", mapStart) + 3);
+  const iconDom = {
+    createElementNS(_ns, tag) {
+      return {
+        tag,
+        attrs: {},
+        children: [],
+        setAttribute(key, value) { this.attrs[key] = String(value); },
+        appendChild(child) { this.children.push(child); return child; },
+      };
+    },
+  };
+  const drawn = new Function("document", `${readerIconMap}\n${functionSource(appJs, "readerIcon")}\n${functionSource(appJs, "attachmentIcon")}\nreturn { READER_ICON, readerIcon, attachmentIcon };`)(iconDom);
+  for (const name of ["reply", "reply-all", "forward", "archive", "trash", "move", "organize"]) {
+    const node = drawn.readerIcon(name);
+    assert.ok(node && node.children[0], name);
+    assert.strictEqual(node.children[0].attrs.d, drawn.READER_ICON[name], name);
+  }
+  assert.strictEqual(drawn.readerIcon("paperclip"), null);
+  assert.strictEqual(drawn.readerIcon("download"), null);
+  const paperclip = drawn.attachmentIcon("paperclip");
+  const download = drawn.attachmentIcon("download");
+  assert.strictEqual(paperclip.children[0].attrs.d, "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48");
+  assert.strictEqual(download.children[0].attrs.d, "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4");
+  assert.strictEqual(download.children[1].attrs.points, "7 10 12 15 17 10");
+}
 const readerUi = functionSource(appJs, "renderReader");
 assert.ok(readerUi.indexOf("renderAttachments") < readerUi.indexOf("renderBody"), "attachments stay above the body");
 const zipBytes = require("../host/mail/zip-bytes");
