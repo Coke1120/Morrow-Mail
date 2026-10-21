@@ -213,25 +213,41 @@ async function waitForExit(pids, { timeout = 60000, alive = pid => { try { proce
   const deadline = now() + timeout;
   while (pids.some(alive)) { if (now() >= deadline) fail('Application did not exit; update was not installed.'); await sleep(100); }
 }
-async function replaceAndLaunch({ target, staged, backup }, { launch, waitReady, relaunchOld, guard = async () => {} }) {
+async function replaceAndLaunch({ target, staged, backup }, { launch, waitReady, relaunchOld, guard = async () => {}, rename = fsp.rename, move } = {}) {
   if (await fsp.realpath(target) !== target || await fsp.realpath(staged) !== staged || path.dirname(backup) !== path.dirname(staged) || path.dirname(path.dirname(staged)) !== path.dirname(target)) fail('Invalid installation paths.');
   try { await fsp.lstat(backup); fail('Previous backup already exists.'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   const identity = async file => { const s = await fsp.lstat(file); if (!s.isDirectory() || s.isSymbolicLink()) fail('Update path changed.'); return `${s.dev}:${s.ino}`; };
   const original = await identity(target), candidate = await identity(staged);
   const unchanged = async (file, expected) => { if (await identity(file) !== expected) fail('Update path identity changed.'); };
   const absent = async file => { try { await fsp.lstat(file); } catch (e) { if (e.code === 'ENOENT') return; throw e; } fail('Update destination appeared; recovery files retained.'); };
+  // A process that can stage but not rename the bundle (admin group or App
+  // Management) authorizes the same rename. Cancel leaves the original in place.
+  const relocate = async (from, to) => {
+    try { await rename(from, to); }
+    catch (error) {
+      if (move && ['EACCES', 'EPERM'].includes(error.code)) return move(from, to);
+      throw error;
+    }
+  };
   await guard();
   await unchanged(target, original);
   await unchanged(staged, candidate);
   await absent(backup);
-  await fsp.rename(target, backup);
+  let renamedAway = false;
+  try {
+    await relocate(target, backup);
+    renamedAway = true;
+  } catch (error) {
+    if (relaunchOld) await relaunchOld(target);
+    throw error;
+  }
   let installed = false, launched = false;
   try {
     await guard();
     await unchanged(backup, original);
     await unchanged(staged, candidate);
     await absent(target);
-    await fsp.rename(staged, target); installed = true;
+    await relocate(staged, target); installed = true;
     await launch(target); launched = true;
     const outcome = await waitReady();
     if (outcome === 'ready') return { state: 'installed', backup };
@@ -243,9 +259,9 @@ async function replaceAndLaunch({ target, staged, backup }, { launch, waitReady,
     if (launched) return { state: 'recovery-required', backup, message: 'Readiness check failed; backup retained.' };
     await guard();
     await unchanged(backup, original);
-    if (installed) { await unchanged(target, candidate); await absent(staged); await fsp.rename(target, staged); }
+    if (installed) { await unchanged(target, candidate); await absent(staged); await relocate(target, staged); }
     await absent(target);
-    await fsp.rename(backup, target);
+    await relocate(backup, target);
     if (relaunchOld) await relaunchOld(target);
     throw error;
   }

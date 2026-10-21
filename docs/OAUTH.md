@@ -86,6 +86,7 @@ Work and school consent depends on tenant policy and the requested permissions; 
 - No `gmail.modify` / `Mail.ReadWrite`: the sidebar says so and offers the provider bundle consent. IMAP folders stay. No stand-in label list. A consent that does not return that marker keeps the Grant button and says which permission Microsoft or Google left out. It does not say the mail API is connected.
 - No mailbox: the calendar page says to connect a Google or Microsoft account. It does not draw events.
 - No calendar grant: the calendar page offers Enable mailbox features for the Google full bundle or Microsoft Graph bundle. It does not draw a month of events. After a grant, the month grid and agenda show only events returned by Google Calendar or Graph for that range, including time and location. An empty month says there are no events.
+- Loading: the calendar page keeps its toolbar and month chrome and shows a light overlay and spinner (Loading… on a cold open, Updating calendar… when a month is already showing). That wait does not replace the page with a status line. The missing-mailbox and missing-grant states above still use status text and do not draw events.
 - No `gmail.settings.basic` / `MailboxSettings.ReadWrite`: Inbox rules says so and offers the provider bundle consent. It does not invent filters. IMAP accounts that are not Google or Microsoft OAuth keep rules on this computer and run them when new Inbox mail is downloaded. Rules do not forward mail.
 
 ## Wire-up

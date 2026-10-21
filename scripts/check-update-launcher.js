@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { cleanupUnstarted, trustedParent, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, acknowledge, registerStartup, validateStaging, writeExclusive, start } = require('../host/update-launcher');
+const { cleanupUnstarted, trustedParent, validateParent, createSiblingStaging, openStaging, adminStagingScript, allowedPrivilegedPath, privilegedMoveScript, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, acknowledge, registerStartup, validateStaging, writeExclusive, start } = require('../host/update-launcher');
 const { launchTrusted, waitReady } = require('../host/update-helper');
 (async () => {
   let launches = 0;
@@ -20,7 +20,25 @@ const { launchTrusted, waitReady } = require('../host/update-helper');
     return;
   }
   const platform = { platform: 'darwin', uid: 501 };
-  assert.equal(trustedParent('/Applications', { uid: 0, gid: 80, mode: 0o40775 }, platform), true);
+  assert.equal(trustedParent('/Applications', { uid: 0, gid: 80, mode: 0o40775 }, platform), true, 'root:admin 0775 /Applications stays eligible for an admin uid');
+  const stagingScript = adminStagingScript('/Applications', 501, 20);
+  assert.match(stagingScript, /\/usr\/bin\/mktemp -d '\/Applications\/\.morrow-update-XXXXXXXX'/);
+  assert.match(stagingScript, /\/usr\/sbin\/chown 501:20 "\$staging"/);
+  assert.match(stagingScript, /\/bin\/chmod 700 "\$staging"/);
+  assert.doesNotMatch(stagingScript, /xattr|spctl|chmod [0-7]* '\/Applications'|\/Applications' &&/);
+  assert.throws(() => adminStagingScript('/Users/leo/Applications', 501, 20), /non-Applications/);
+  assert.equal(allowedPrivilegedPath('/Applications/Morrow Mail.app'), true);
+  assert.equal(allowedPrivilegedPath('/Applications/.morrow-update-abc/previous.app'), true);
+  assert.equal(allowedPrivilegedPath('/Applications/.morrow-update-abc/candidate.app'), true);
+  assert.equal(allowedPrivilegedPath('/tmp/Morrow Mail.app'), false);
+  assert.equal(allowedPrivilegedPath('/Applications/Safari.app/Contents'), false);
+  assert.equal(allowedPrivilegedPath('/Applications/../etc/passwd'), false);
+  const moveScript = privilegedMoveScript("/Applications/O'Brien Mail.app", '/Applications/.morrow-update-abc/previous.app');
+  assert.ok(moveScript.startsWith('if [ -e '), 'authorized replace must refuse an existing destination');
+  assert.ok(moveScript.includes("'/Applications/O'\\''Brien Mail.app'"));
+  assert.ok(moveScript.includes('/bin/mv '));
+  assert.doesNotMatch(moveScript, /xattr|spctl/);
+  assert.throws(() => privilegedMoveScript('/etc/passwd', '/Applications/Morrow Mail.app'), /outside the application install/);
   for (const [folder, stat] of [
     ['/Applications', { uid: 0, gid: 20, mode: 0o40775 }],
     ['/Applications', { uid: 0, gid: 80, mode: 0o40777 }],
@@ -120,6 +138,98 @@ const { launchTrusted, waitReady } = require('../host/update-helper');
     assert.doesNotMatch(launcherSource, /fs\.rm\(/);
     const helperSource = await fs.readFile(require.resolve('../host/update-helper'), 'utf8');
     assert.match(helperSource, /extractZip\(path\.join\(staging, 'artifact\.zip'\), path\.join\(staging, 'extracted'\)\)/);
+    assert.match(helperSource, /move: privilegedRename/);
+    assert.doesNotMatch(launcherSource, /xattr -d|xattr -c|spctl --master-disable/);
+    const writable = path.join(root, 'writable-parent');
+    await fs.mkdir(writable, { mode: 0o755 });
+    await fs.chmod(writable, 0o755);
+    await validateParent(path.join(writable, 'Morrow Mail.app'));
+    const created = await createSiblingStaging(writable);
+    assert.equal((await fs.stat(created)).mode & 0o077, 0);
+    await fs.rm(created, { recursive: true });
+    const shared = path.join(root, 'shared-parent');
+    await fs.mkdir(shared);
+    await fs.chmod(shared, 0o777);
+    await assert.rejects(validateParent(path.join(shared, 'Morrow Mail.app')), /untrusted writers/);
+    const groupWrite = path.join(root, 'group-parent');
+    await fs.mkdir(groupWrite);
+    await fs.chmod(groupWrite, 0o775);
+    await assert.rejects(validateParent(path.join(groupWrite, 'Morrow Mail.app')), /untrusted writers/);
+    const realParent = path.join(root, 'real-parent');
+    await fs.mkdir(realParent);
+    const linkParent = path.join(root, 'link-parent');
+    await fs.symlink(realParent, linkParent);
+    await assert.rejects(validateParent(path.join(linkParent, 'Morrow Mail.app')), /Symlinked installation parent/);
+    const locked = path.join(root, 'locked-parent');
+    await fs.mkdir(locked);
+    await fs.chmod(locked, 0o555);
+    try {
+      await assert.rejects(createSiblingStaging(locked), error => error.code === 'UPDATE_MANUAL_LOCATION' && /not writable by this app/.test(error.message) && /Show downloaded update/.test(error.message) && /no system permissions will be changed/.test(error.message));
+    } finally { await fs.chmod(locked, 0o700); }
+    async function loadLauncher({ access, mkdtemp, exec } = {}) {
+      const vm = require('node:vm');
+      const localRequire = require('node:module').createRequire(require.resolve('../host/update-launcher'));
+      const realFs = localRequire('node:fs/promises');
+      const fsProxy = new Proxy(realFs, { get(target, prop, receiver) {
+        if (prop === 'access' && access) return access;
+        if (prop === 'mkdtemp' && mkdtemp) return mkdtemp;
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      const context = { module: { exports: {} }, __dirname: path.dirname(require.resolve('../host/update-launcher')), setTimeout,
+        process: { platform: 'darwin', pid: process.pid, execPath: process.execPath, getuid: () => process.getuid(), getgid: () => process.getgid(), env: process.env },
+        require(name) {
+          if (name === 'node:fs/promises') return fsProxy;
+          if (name === 'node:util') return { promisify: () => async (cmd, args) => exec ? exec(cmd, args) : { stdout: '' } };
+          if (name === 'node:child_process') return { spawn() { throw new Error('spawn'); }, execFile() {} };
+          return localRequire(name);
+        } };
+      vm.runInNewContext(await fs.readFile(require.resolve('../host/update-launcher'), 'utf8'), context);
+      return context.module.exports;
+    }
+    const denyAccess = async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+    const probeParent = path.join(root, 'probe-parent');
+    await fs.mkdir(probeParent, { mode: 0o755 });
+    await fs.chmod(probeParent, 0o755);
+    let probed = 0;
+    const falseNegative = await loadLauncher({ access: denyAccess });
+    const probedOpen = await falseNegative.openStaging(probeParent, async () => { probed++; throw new Error('must not authorize a directory this process can create'); });
+    assert.equal(probed, 0);
+    assert.equal(probedOpen.preflighted, false);
+    assert.equal((await fs.stat(probedOpen.staging)).mode & 0o077, 0);
+    await fs.rm(probedOpen.staging, { recursive: true });
+    const readOnly = await loadLauncher({ access: denyAccess, mkdtemp: async () => { throw Object.assign(new Error('ro'), { code: 'EROFS' }); } });
+    await assert.rejects(readOnly.openStaging('/Applications', async () => { throw new Error('must not authorize a read-only parent'); }), error => error.code === 'UPDATE_MANUAL_LOCATION' && /cannot create installation staging/.test(error.message));
+    let ensured = 0, scripts = [];
+    const cancelled = await loadLauncher({
+      access: denyAccess,
+      mkdtemp: async prefix => { if (String(prefix).startsWith('/Applications/')) throw Object.assign(new Error('denied'), { code: 'EACCES' }); throw new Error('unexpected mkdtemp ' + prefix); },
+      exec: async cmd => { scripts.push(cmd); if (cmd === '/usr/bin/osascript') throw Object.assign(new Error('User canceled. (-128)'), { stderr: 'User canceled. (-128)' }); return { stdout: '' }; }
+    });
+    await assert.rejects(cancelled.openStaging('/Applications', async () => { ensured++; }), error => error.code === 'UPDATE_MANUAL_LOCATION' && /Administrator authorization was cancelled/.test(error.message) && /Show downloaded update/.test(error.message));
+    assert.equal(ensured, 1);
+    assert.ok(scripts.includes('/usr/bin/osascript'));
+    const rejectedPath = await loadLauncher({
+      access: denyAccess,
+      mkdtemp: async prefix => { if (String(prefix).startsWith('/Applications/')) throw Object.assign(new Error('denied'), { code: 'EACCES' }); throw new Error('unexpected'); },
+      exec: async cmd => cmd === '/usr/bin/osascript' ? { stdout: '/tmp/not-applications\n' } : { stdout: '' }
+    });
+    await assert.rejects(rejectedPath.openStaging('/Applications', async () => {}), error => error.code === 'UPDATE_MANUAL_LOCATION' && /Privileged staging path was rejected/.test(error.message) && /Show downloaded update/.test(error.message));
+    let blockedScripts = [];
+    const blocked = await loadLauncher({
+      access: denyAccess,
+      mkdtemp: async prefix => { if (String(prefix).startsWith('/Applications/')) throw Object.assign(new Error('denied'), { code: 'EACCES' }); throw new Error('unexpected'); },
+      exec: async cmd => { blockedScripts.push(cmd); return { stdout: '' }; }
+    });
+    const trust = Object.assign(new Error('policy'), { code: 'UPDATE_MANUAL_TRUST' });
+    await assert.rejects(blocked.openStaging('/Applications', async () => { throw trust; }), error => error === trust);
+    assert.deepEqual(blockedScripts, [], 'A rejected candidate must not ask for administrator authorization');
+    const aclParent = path.join(root, 'acl-parent');
+    await fs.mkdir(aclParent, { mode: 0o755 });
+    const allowAcl = await loadLauncher({ exec: async () => ({ stdout: 'drwxr-xr-x  2 user staff 64 Oct 21 00:00 parent\n 0: user:leo allow list,add_file,delete\n' }) });
+    await assert.rejects(allowAcl.validateParent(path.join(aclParent, 'Morrow Mail.app')), error => error.code === 'UPDATE_MANUAL_LOCATION' && /additional access-control grant/.test(error.message));
+    const denyAcl = await loadLauncher({ exec: async () => ({ stdout: 'drwxr-xr-x  2 user staff 64 Oct 21 00:00 parent\n 0: group:everyone deny delete\n' }) });
+    await denyAcl.validateParent(path.join(aclParent, 'Morrow Mail.app'));
     const vm = require('node:vm'), localRequire = require('node:module').createRequire(require.resolve('../host/update-launcher'));
     const denied = Object.assign(Error('fixture Gatekeeper denial'), { code: 'UPDATE_MANUAL_TRUST' });
     let attempts = 0;
