@@ -64,6 +64,7 @@ const syntax = [
   "scripts/check-bot-bridge.js",
   "renderer/preload.js",
   "renderer/app.js",
+  "renderer/features-catalog.js",
   "renderer/motion-ui.js",
   "scripts/check-vacation.js",
   "scripts/check-sync-retry.js",
@@ -1360,7 +1361,8 @@ assert.strictEqual(syncUi.redactDebugText("bearer ya29.secretvalue password: hun
 assert.strictEqual(syncUi.redactDebugText("api_key=sk-abcdefghij1234567890"), "api_key [redacted]");
 assert.ok(syncUi.redactDebugText("synced ada@example.com").includes("ada@example.com"));
 assert.ok(html.includes('id="sync-detail"') && html.includes('id="log-panel"') && html.includes('id="nav-collapse"') && html.includes('id="rail-log"'));
-assert.ok(html.includes('id="rail-shortcuts"') && html.includes('id="shortcuts-panel"'));
+assert.ok(html.includes('id="rail-shortcuts"') && html.includes('id="features-panel"'));
+assert.ok(!html.includes('id="shortcuts-panel"'));
 assert.ok(html.indexOf('id="rail-shortcuts"') < html.indexOf('id="rail-log"'));
 assert.ok(html.indexOf('id="rail-log"') < html.indexOf('id="rail-about"'));
 assert.ok(html.includes('data-label="Calendar"') && html.includes('data-label="Settings"') && html.includes('data-label="Email Brain"'));
@@ -2197,7 +2199,8 @@ assert.ok(html.indexOf('id="rail-mail"') < html.indexOf('id="rail-calendar"'));
 assert.ok(html.indexOf('id="rail-calendar"') < html.indexOf('id="rail-brain"'));
 assert.ok(html.indexOf('id="shell"') < html.indexOf('id="agent-panel"'));
 assert.ok(html.indexOf('id="calendar-panel"') < html.indexOf('id="brain"'));
-assert.ok(appJs.includes('["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "shortcuts-panel"]') && appJs.includes("nativeAgent:home:todosCached"));
+assert.ok(appJs.includes('["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "features-panel"]') && appJs.includes("nativeAgent:home:todosCached"));
+assert.ok(!appJs.includes('["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "shortcuts-panel"]'));
 assert.ok(appJs.includes("nativeAgent:home:refreshTaxonomy") && appJs.includes("nativeAgent:home:todoUpdate"));
 assert.ok(appJs.includes('source: "manual"') && appJs.includes('source: "open"'));
 assert.ok(appJs.includes("nativeAgent:chat") && appJs.includes("nativeAgent:memorySet") && appJs.includes("nativeAgent:chatHistory"));
@@ -3063,14 +3066,88 @@ assert.ok(cliRows.some((row) => row.command === "npm run check"));
 assert.ok(cliRows.some((row) => row.command.includes("--operation bridge.describe")));
 assert.ok(cliRows.some((row) => row.command.includes("--operation mail.send") && row.command.includes("--request-id <uuid>")));
 assert.ok(cliRows.some((row) => row.command === "tailscale serve status --json"));
-assert.match(functionSource(appJs, "paintShortcuts"), /paintCli\(\)/);
+assert.doesNotMatch(functionSource(appJs, "paintShortcuts"), /paintCli\(\)/);
+const showFeaturesSource = functionSource(appJs, "showFeatures");
+assert.match(showFeaturesSource, /paintFeatureCatalog\(\)/);
+assert.match(showFeaturesSource, /paintShortcuts\(\)/);
+assert.match(showFeaturesSource, /paintCli\(\)/);
+assert.match(showFeaturesSource, /showFeaturesTab\("catalog"\)/);
+const showPrimarySource = functionSource(appJs, "showPrimary");
+assert.match(showPrimarySource, /view === "shortcuts"/);
+assert.match(showPrimarySource, /id === "shortcuts-panel"/);
+assert.match(showPrimarySource, /"features-panel"/);
+assert.match(functionSource(appJs, "onShellKey"), /state\.view === "features"/);
 assert.ok(html.includes('id="cli-list"') && html.includes('id="cli-note"') && html.includes('id="cli-title"') && html.includes('id="cli-copy-status"'));
 assert.ok(html.indexOf('id="shortcuts-list"') < html.indexOf('id="cli-list"'));
 assert.ok(html.indexOf('id="cli-list"') < html.indexOf('id="log-panel"'));
 assert.ok(html.includes('aria-labelledby="shortcuts-title"') && html.includes('aria-labelledby="cli-title"'));
 assert.ok(css.includes(".cli-head") && css.includes(".cli-row") && css.includes(".cli-command"));
-assert.match(independentDoc, /CLI lists the checkout commands/);
-assert.match(parityDoc, /CLI section for the checkout/);
+assert.ok(css.includes(".features-tabs") && css.includes(".feature-card"));
+assert.match(independentDoc, /The CLI tab lists the checkout commands/);
+assert.match(parityDoc, /CLI tab for the checkout/);
+const railFeatures = html.slice(html.indexOf('id="rail-shortcuts"'), html.indexOf('id="rail-log"'));
+assert.ok(railFeatures.includes('aria-label="Features"') && railFeatures.includes('data-label="Features"') && railFeatures.includes('title="Features"'));
+assert.ok(railFeatures.includes(">Features</span>") && railFeatures.includes('viewBox="0 0 24 24"') && railFeatures.includes("M7 16h10"));
+assert.ok(html.includes('id="features-tabs"') && html.includes('id="features-tab-catalog"') && html.includes('id="features-tab-shortcuts"') && html.includes('id="features-tab-cli"'));
+assert.ok(html.includes('id="features-title"') && html.includes('id="features-catalog"') && html.includes('id="features-empty"') && html.includes("No features listed"));
+assert.ok(html.indexOf('src="./features-catalog.js"') < html.indexOf('src="./app.js"'));
+const featureCatalog = require("../renderer/features-catalog.js");
+const featureSeed = [
+  ["email-brain", "Email Brain", "Agent", "Profile, categories, skills, and inbox rules built from your mail. Skills can draft a reply or propose a move. You still press Send."],
+  ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. Reply opens a compose window. Done and Dismiss stay on this computer."],
+  ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send."],
+  ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
+  ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
+  ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
+  ["inbox-rules", "Inbox rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
+  ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded Inbox mail from every account."],
+  ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose drafts. It stays off until you turn it on. Opening a proposal does not send it."],
+  ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page."],
+  ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release. Restart and install applies a downloaded update once every compose window is closed."],
+];
+assert.deepStrictEqual(featureCatalog.items.map((row) => [row.id, row.title, row.category, row.blurb]), featureSeed);
+const featureUi = loadFunctions(appJs, ["normalizeFeatureCatalog", "groupFeatureCatalog"]);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog(null), []);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog(4), []);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog({ items: [] }), []);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog([
+  null,
+  1,
+  [],
+  { id: "Bad Id", title: "Nope", blurb: "x" },
+  { id: "ok-row", title: "  Kept  ", blurb: 12, category: "  Mail  " },
+  { id: "ok-row", title: "Second", blurb: "nope" },
+  { id: "blank", title: "   ", blurb: "x" },
+  { id: "plain", title: "Plain" },
+]), [
+  { id: "ok-row", title: "Kept", blurb: "", category: "Mail" },
+  { id: "plain", title: "Plain", blurb: "", category: "" },
+]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog([
+  { id: "b", title: "B", blurb: "", category: "Beta" },
+  { id: "a", title: "A", blurb: "", category: "Alpha" },
+  { id: "b2", title: "B2", blurb: "", category: "Beta" },
+]).map((group) => [group.heading, group.items.map((row) => row.id)]), [["Beta", ["b", "b2"]], ["Alpha", ["a"]]]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog([
+  { id: "m", title: "M", blurb: "", category: "Mail" },
+  { id: "x", title: "X", blurb: "", category: "" },
+]).map((group) => [group.heading, group.items.map((row) => row.id)]), [["Mail", ["m"]], ["Other", ["x"]]]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog([
+  { id: "o", title: "O", blurb: "", category: "Other" },
+  { id: "m", title: "M", blurb: "", category: "Mail" },
+  { id: "u", title: "U", blurb: "", category: "" },
+]).map((group) => [group.heading, group.items.map((row) => row.id)]), [["Mail", ["m"]], ["Other", ["o", "u"]]]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog([
+  { id: "a", title: "A", blurb: "", category: "" },
+  { id: "b", title: "B", blurb: "", category: "" },
+]), [{ heading: "", items: [
+  { id: "a", title: "A", blurb: "", category: "" },
+  { id: "b", title: "B", blurb: "", category: "" },
+] }]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog(null), []);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog([null, { title: "missing" }, { id: "ok", title: "Ok", extra: true }]), [
+  { id: "ok", title: "Ok", blurb: "", category: "" },
+]);
 const openMail = { view: "mail", mailOpen: true, typing: false, dialog: false, menu: false, textSelected: false, topDialog: "" };
 assert.strictEqual(shortcuts.mailShortcut({ key: "Delete" }, openMail), "delete");
 assert.strictEqual(shortcuts.mailShortcut({ key: "Backspace" }, openMail), "delete");
@@ -3088,7 +3165,7 @@ assert.strictEqual(shortcuts.mailShortcut({ key: "R", ctrlKey: true, shiftKey: t
 assert.strictEqual(shortcuts.mailShortcut({ key: "r", shiftKey: true }, openMail), "");
 assert.strictEqual(shortcuts.mailShortcut({ key: "r" }, { ...openMail, typing: true }), "");
 assert.strictEqual(shortcuts.mailShortcut({ key: "r" }, { ...openMail, mailOpen: false }), "");
-assert.strictEqual(shortcuts.mailShortcut({ key: "f" }, { ...openMail, view: "shortcuts" }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "f" }, { ...openMail, view: "features" }), "");
 assert.strictEqual(shortcuts.mailShortcut({ key: "f", metaKey: true, shiftKey: true }, openMail), "");
 assert.strictEqual(shortcuts.mailShortcut({ key: "n", metaKey: true }, { ...openMail, typing: true }), "new-mail");
 assert.strictEqual(shortcuts.mailShortcut({ key: "n", ctrlKey: true }, openMail), "new-mail");

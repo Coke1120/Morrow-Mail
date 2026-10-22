@@ -57,7 +57,7 @@
       </button>
       </div>
       <div class="rail-foot">
-      <button type="button" class="rail-btn nav-item" id="rail-shortcuts" aria-current="false" aria-label="Shortcuts" data-label="Shortcuts" title="Shortcuts">
+      <button type="button" class="rail-btn nav-item" id="rail-shortcuts" aria-current="false" aria-label="Features" data-label="Features" title="Features">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
           <path d="M6 8h.01"></path>
@@ -69,7 +69,7 @@
           <path d="M16 12h.01"></path>
           <path d="M7 16h10"></path>
         </svg>
-        <span class="nav-label">Shortcuts</span>
+        <span class="nav-label">Features</span>
       </button>
       <button type="button" class="rail-btn nav-item" id="rail-log" aria-current="false" aria-label="Debug log" data-label="Debug log" title="Debug log">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -462,24 +462,42 @@
         </div>
       </section>
     </section>
-    <section id="shortcuts-panel" class="primary-space" hidden aria-label="Shortcuts and command line">
+    <section id="features-panel" class="primary-space" hidden aria-label="Features">
       <div class="space-head">
         <div>
           <p class="space-kicker">Help</p>
-          <h2 id="shortcuts-title">Shortcuts</h2>
+          <h2 id="features-title">Features</h2>
         </div>
       </div>
-      <p class="hint" id="shortcuts-note"></p>
-      <ul id="shortcuts-list" class="shortcut-list" aria-labelledby="shortcuts-title"></ul>
-      <div class="space-head cli-head">
-        <div>
-          <p class="space-kicker">Command line</p>
-          <h2 id="cli-title">CLI</h2>
-        </div>
+      <div class="features-tabs" id="features-tabs" role="tablist" aria-label="Features sections">
+        <button type="button" id="features-tab-catalog" data-features-tab="catalog" role="tab" aria-controls="features-pane-catalog" aria-selected="true" aria-current="true" tabindex="0">Features</button>
+        <button type="button" id="features-tab-shortcuts" data-features-tab="shortcuts" role="tab" aria-controls="features-pane-shortcuts" aria-selected="false" aria-current="false" tabindex="-1">Shortcuts</button>
+        <button type="button" id="features-tab-cli" data-features-tab="cli" role="tab" aria-controls="features-pane-cli" aria-selected="false" aria-current="false" tabindex="-1">CLI</button>
       </div>
-      <p class="hint" id="cli-note"></p>
-      <p id="cli-copy-status" class="hint" role="status"></p>
-      <ul id="cli-list" class="shortcut-list cli-list" aria-labelledby="cli-title"></ul>
+      <div id="features-pane-catalog" role="tabpanel" aria-labelledby="features-tab-catalog" tabindex="0">
+        <div id="features-catalog"></div>
+        <p id="features-empty" class="hint">No features listed</p>
+      </div>
+      <div id="features-pane-shortcuts" role="tabpanel" aria-labelledby="features-tab-shortcuts" tabindex="0" hidden>
+        <div class="space-head">
+          <div>
+            <h2 id="shortcuts-title">Shortcuts</h2>
+          </div>
+        </div>
+        <p class="hint" id="shortcuts-note"></p>
+        <ul id="shortcuts-list" class="shortcut-list" aria-labelledby="shortcuts-title"></ul>
+      </div>
+      <div id="features-pane-cli" role="tabpanel" aria-labelledby="features-tab-cli" tabindex="0" hidden>
+        <div class="space-head">
+          <div>
+            <p class="space-kicker">Command line</p>
+            <h2 id="cli-title">CLI</h2>
+          </div>
+        </div>
+        <p class="hint" id="cli-note"></p>
+        <p id="cli-copy-status" class="hint" role="status"></p>
+        <ul id="cli-list" class="shortcut-list cli-list" aria-labelledby="cli-title"></ul>
+      </div>
     </section>
     <section id="log-panel" class="primary-space" hidden aria-label="Debug log">
       <div class="space-head">
@@ -1398,6 +1416,7 @@
     <script src="../shared/folder-collapse.js"></script>
     <script src="../shared/sync-retry.js"></script>
     <script src="./brain-compose.js"></script>
+    <script src="./features-catalog.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

@@ -4841,9 +4841,16 @@ function showLog() {
   refreshLog().catch(() => paintLog(debugLines));
 }
 
-function showShortcuts() {
-  showPrimary("shortcuts", "shortcuts-panel");
+function showFeatures() {
+  showPrimary("features", "features-panel");
+  paintFeatureCatalog();
   paintShortcuts();
+  paintCli();
+  showFeaturesTab("catalog");
+}
+
+function showShortcuts() {
+  showFeatures();
 }
 
 function setNavCollapsed(collapsed) {
@@ -11453,6 +11460,162 @@ function paintCli() {
   wireCliCopy();
 }
 
+function normalizeFeatureCatalog(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const items = [];
+  for (const row of value) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const id = typeof row.id === "string" ? row.id : "";
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) continue;
+    if (typeof row.title !== "string" || !row.title.trim()) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const category = typeof row.category === "string" && row.category.trim() ? row.category.trim() : "";
+    items.push({
+      id: id,
+      title: row.title.trim(),
+      blurb: typeof row.blurb === "string" ? row.blurb.trim() : "",
+      category: category,
+    });
+  }
+  return items;
+}
+
+function groupFeatureCatalog(items) {
+  if (!Array.isArray(items)) return [];
+  const groups = [];
+  const index = new Map();
+  const loose = [];
+  for (const row of items) {
+    if (!row || typeof row !== "object") continue;
+    const category = typeof row.category === "string" ? row.category : "";
+    if (!category) {
+      loose.push(row);
+      continue;
+    }
+    let group = index.get(category);
+    if (!group) {
+      group = { heading: category, items: [] };
+      index.set(category, group);
+      groups.push(group);
+    }
+    group.items.push(row);
+  }
+  if (!loose.length) return groups;
+  if (!groups.length) return [{ heading: "", items: loose }];
+  let other = index.get("Other");
+  if (!other) {
+    other = { heading: "Other", items: [] };
+    groups.push(other);
+  } else if (groups[groups.length - 1] !== other) {
+    groups.splice(groups.indexOf(other), 1);
+    groups.push(other);
+  }
+  other.items.push(...loose);
+  return groups;
+}
+
+function paintFeatureCatalog() {
+  const root = $("features-catalog");
+  const empty = $("features-empty");
+  let items = [];
+  try {
+    const catalog = window.morrowFeaturesCatalog;
+    items = normalizeFeatureCatalog(catalog && catalog.items);
+  } catch (error) {
+    items = [];
+  }
+  if (root) {
+    root.replaceChildren();
+    for (const group of groupFeatureCatalog(items)) {
+      const list = document.createElement("ul");
+      list.className = "feature-cards";
+      for (const row of group.items) {
+        const card = document.createElement("li");
+        card.className = "feature-card";
+        const title = document.createElement("h4");
+        title.className = "feature-card-title";
+        title.textContent = row.title || "";
+        const blurb = document.createElement("p");
+        blurb.className = "feature-card-blurb";
+        blurb.textContent = row.blurb || "";
+        card.append(title, blurb);
+        list.appendChild(card);
+      }
+      if (group.heading) {
+        const section = document.createElement("section");
+        section.className = "feature-group";
+        const heading = document.createElement("h3");
+        heading.textContent = group.heading;
+        section.append(heading, list);
+        root.appendChild(section);
+      } else root.appendChild(list);
+    }
+  }
+  if (empty) empty.hidden = items.length > 0;
+}
+
+let featuresTab = "catalog";
+
+function showFeaturesTab(name) {
+  if (name !== "catalog" && name !== "shortcuts" && name !== "cli") return;
+  featuresTab = name;
+  const nav = $("features-tabs");
+  if (!nav) return;
+  for (const tab of nav.querySelectorAll('[role="tab"]')) {
+    const active = tab.dataset.featuresTab === name;
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.setAttribute("aria-current", active ? "true" : "false");
+    tab.tabIndex = active ? 0 : -1;
+    const panel = $(tab.getAttribute("aria-controls"));
+    if (!panel) continue;
+    const wasHidden = panel.hidden;
+    panel.hidden = !active;
+    if (!active || !wasHidden) continue;
+    const motion = motionApi();
+    const reduced = !!(motion && typeof motion.reduced === "function" && motion.reduced());
+    if (motion && typeof motion.fadePane === "function" && !reduced) motion.fadePane(panel, "y");
+  }
+}
+
+function wireFeaturesTabs() {
+  const nav = $("features-tabs");
+  if (!nav || nav.dataset.wired === "1") return;
+  nav.dataset.wired = "1";
+  nav.addEventListener("click", (event) => {
+    const tab = event.target.closest && event.target.closest('[role="tab"]');
+    if (!tab || !nav.contains(tab)) return;
+    showFeaturesTab(tab.dataset.featuresTab);
+    tab.focus({ preventScroll: true });
+  });
+  nav.addEventListener("keydown", (event) => {
+    const tabs = [...nav.querySelectorAll('[role="tab"]')];
+    const current = tabs.indexOf(document.activeElement);
+    if (current < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    showFeaturesTab(tabs[next].dataset.featuresTab);
+    tabs[next].focus({ preventScroll: true });
+  });
+}
+
+function applyFeaturesHash() {
+  if (isComposeWindow()) return;
+  let hash = "";
+  try {
+    hash = String(location.hash || "");
+  } catch (error) {
+    return;
+  }
+  if (hash !== "#features" && hash !== "#shortcuts") return;
+  showFeatures();
+  if (hash !== "#shortcuts") return;
+  history.replaceState(null, "", location.pathname + location.search + "#features");
+}
+
 function paintShortcuts() {
   const platform = typeof navigator !== "undefined" ? navigator.platform : "";
   const note = $("shortcuts-note");
@@ -11481,10 +11644,10 @@ function paintShortcuts() {
       list.appendChild(item);
     }
   }
-  paintCli();
 }
 
 function onShellKey(event) {
+  if (state.view === "features") return;
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
   if (shellBlocked(event.target)) return;
@@ -15835,7 +15998,7 @@ function markRail(view) {
     calendar: "rail-calendar",
     brain: "rail-brain",
     log: "rail-log",
-    shortcuts: "rail-shortcuts",
+    features: "rail-shortcuts",
     folders: "rail-folders",
   }[view];
   for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-shortcuts", "rail-log", "rail-folders"]) {
@@ -15845,11 +16008,16 @@ function markRail(view) {
 }
 
 function showPrimary(view, id) {
+  const legacyFeatures = view === "shortcuts" || id === "shortcuts-panel";
+  if (legacyFeatures) {
+    view = "features";
+    id = "features-panel";
+  }
   if (view === "agent" || view === "brain") refreshAiSetupState();
   const swap = state.view !== view;
   if (view !== "agent") stopAgentPoll();
   markRail(view);
-  for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "shortcuts-panel"]) {
+  for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "features-panel"]) {
     if (pane === id) continue;
     hidePane(pane);
   }
@@ -15862,6 +16030,12 @@ function showPrimary(view, id) {
   } else {
     const node = $(id);
     if (node) node.hidden = false;
+  }
+  if (legacyFeatures) {
+    paintFeatureCatalog();
+    paintShortcuts();
+    paintCli();
+    showFeaturesTab("catalog");
   }
 }
 
@@ -17439,7 +17613,9 @@ function wire() {
     await selectFolder(account.id, foldersOf(account)[0]?.id || "INBOX");
     paintProviderPage();
   }));
-  $("rail-shortcuts").addEventListener("click", showShortcuts);
+  $("rail-shortcuts").addEventListener("click", showFeatures);
+  window.addEventListener("hashchange", applyFeaturesHash);
+  wireFeaturesTabs();
   $("rail-log").addEventListener("click", showLog);
   $("rail-about").addEventListener("click", openAbout);
   $("log-refresh").addEventListener("click", () => {
@@ -17996,6 +18172,7 @@ async function boot() {
   await loadOauthStatus();
   await loadShellPrefs();
   await loadAccounts();
+  applyFeaturesHash();
   if (typeof api.reportUpdateReady === "function") api.reportUpdateReady();
 }
 
