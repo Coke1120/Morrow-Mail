@@ -5867,6 +5867,7 @@ function renderReader(focus) {
       hint.textContent = "Select a conversation to read.";
       wrap.append(mark, title, hint);
     }
+    if (isReaderWindow()) pane.appendChild(readerCloseBar());
     pane.appendChild(wrap);
     return;
   }
@@ -5884,19 +5885,17 @@ function renderReader(focus) {
     error.className = "hint error";
     error.setAttribute("role", "status");
     error.textContent = email.bodyError;
+    if (isReaderWindow()) pane.appendChild(readerCloseBar());
     pane.append(heading, from, when, error);
-    if (isReaderWindow()) pane.appendChild(renderReaderWindowBar(false));
     if (focus) {
       heading.tabIndex = -1;
       heading.focus();
     }
     return;
   }
-  if (isReaderWindow()) pane.appendChild(renderReaderWindowBar(true));
-  else {
-    renderActions(pane, email);
-    renderSuggestions(pane, email);
-  }
+  renderActions(pane, email);
+  renderSuggestions(pane, email);
+  appendReaderClose(pane);
   const heading = document.createElement("h2");
   heading.textContent = email.subject || "(no subject)";
   const from = document.createElement("p");
@@ -5909,7 +5908,7 @@ function renderReader(focus) {
   pane.append(heading, from, when);
   const until = snoozedUntilOf(email);
   const untilDate = until ? new Date(until) : null;
-  if (!isReaderWindow() && state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
+  if (state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
     const snooze = document.createElement("p");
     snooze.className = "meta";
     snooze.textContent = `Snoozed until ${untilDate.toLocaleString()}`;
@@ -5927,14 +5926,12 @@ function renderReader(focus) {
   renderAttachments(pane, email);
   renderRemoteGate(pane, email);
   renderBody(pane, email);
-  if (!isReaderWindow()) {
-    const translated = document.createElement("div");
-    translated.className = "translation";
-    translated.setAttribute("role", "status");
-    translated.hidden = true;
-    pane.appendChild(translated);
-    paintTranslation();
-  }
+  const translated = document.createElement("div");
+  translated.className = "translation";
+  translated.setAttribute("role", "status");
+  translated.hidden = true;
+  pane.appendChild(translated);
+  paintTranslation();
   if (focus) {
     heading.tabIndex = -1;
     heading.focus();
@@ -8429,7 +8426,6 @@ function onReaderContext(event) {
   if (!state.email) return;
   const target = readerContextTarget(event);
   if (target && target.closest && target.closest(".sender-address")) return;
-  if (isReaderWindow()) return;
   if (target && target.closest && target.closest("input, textarea, select, a")) return;
   event.preventDefault();
   openOrganizeMenu(state.email, event.clientX, event.clientY);
@@ -8841,6 +8837,7 @@ function listedMessage(emailId) {
 function paintReaderPending(email) {
   const pane = $("reader");
   pane.replaceChildren();
+  if (isReaderWindow()) pane.appendChild(readerCloseBar());
   pane.setAttribute("aria-busy", "true");
   const heading = document.createElement("h2");
   heading.textContent = (email && email.subject) || "(no subject)";
@@ -10863,28 +10860,47 @@ async function bootComposeWindow() {
   }
 }
 
-function renderReaderWindowBar(withReply) {
-  const bar = document.createElement("div");
-  bar.className = "reader-window-bar";
-  if (withReply) {
-    const reply = document.createElement("button");
-    reply.type = "button";
-    reply.className = "ghost";
-    reply.textContent = "Reply";
-    reply.addEventListener("click", () => {
-      Promise.resolve(openReaderCompose("reply")).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
-    });
-    bar.appendChild(reply);
-  }
+const READER_CLOSE_ICON = ["M18 6 6 18", "M6 6l12 12"];
+
+function readerCloseButton() {
   const close = document.createElement("button");
   close.type = "button";
-  close.className = "ghost";
-  close.textContent = "Close";
+  close.className = "ghost icon-btn";
+  close.dataset.action = "close-reader";
+  close.setAttribute("aria-label", "Close");
+  close.title = "Close";
+  close.appendChild(strokeIcon(READER_CLOSE_ICON, 16));
+  const text = document.createElement("span");
+  text.textContent = "Close";
+  close.appendChild(text);
   close.addEventListener("click", () => {
     if (typeof window.close === "function") window.close();
   });
-  bar.appendChild(close);
+  return close;
+}
+
+function readerCloseBar() {
+  const bar = document.createElement("div");
+  bar.className = "reader-actions";
+  bar.appendChild(readerCloseButton());
   return bar;
+}
+
+function appendReaderClose(pane) {
+  if (!isReaderWindow() || !pane || typeof pane.querySelector !== "function") return;
+  if (pane.querySelector('[data-action="close-reader"]')) return;
+  const bar = pane.querySelector(".reader-actions");
+  const menus = bar && typeof bar.querySelector === "function" ? bar.querySelector(".reader-menus") : null;
+  const button = readerCloseButton();
+  if (menus) {
+    menus.appendChild(button);
+    return;
+  }
+  if (bar) {
+    bar.appendChild(button);
+    return;
+  }
+  pane.appendChild(readerCloseBar());
 }
 
 function publishReaderTitle(subject) {
@@ -10902,7 +10918,7 @@ function showReaderOpenError(message) {
   const error = document.createElement("p");
   error.className = "hint error";
   error.textContent = message || "That message could not be opened.";
-  pane.append(heading, error, renderReaderWindowBar(false));
+  pane.append(readerCloseBar(), heading, error);
 }
 
 async function bootReaderWindow() {
@@ -10912,6 +10928,7 @@ async function bootReaderWindow() {
     return;
   }
   wire();
+  if (typeof api.on === "function") api.on("mail:translate:event", onTranslateEvent);
   await loadLook();
   await loadShellPrefs();
   try {
@@ -10955,6 +10972,10 @@ async function bootReaderWindow() {
   state.accountId = email.accountId || accountId || state.accountId;
   publishReaderTitle(email.subject || "");
   renderReader(false);
+  const openedId = email.id;
+  loadSnoozed().then(() => loadProviderFolders(accountGen)).then(() => {
+    if (state.email && state.email.id === openedId) renderReader(false);
+  }).catch(() => {});
   if (!email.unread) return;
   try {
     await call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead: true });
@@ -11891,10 +11912,14 @@ function runMailShortcut(action) {
   button.click();
 }
 
+function readerWindowShortcut(action) {
+  return action === "reply" || action === "reply-all" || action === "forward" || action === "delete";
+}
+
 function onMailShortcut(event) {
-  if (isReaderWindow()) return;
   const action = mailShortcut(event, mailShortcutContext(event));
   if (!action) return;
+  if (isReaderWindow() && !readerWindowShortcut(action)) return;
   event.preventDefault();
   runMailShortcut(action);
 }

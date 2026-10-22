@@ -5239,7 +5239,6 @@ button.sender-address {
   cursor: pointer;
 }
 #sender-history-more[hidden] { display: none; }
-.reader-window-bar { display: flex; gap: 8px; margin: 0 0 12px; }
 
 html[data-window="reader"] .rail,
 html[data-window="reader"] .workspace > header,
@@ -5248,9 +5247,21 @@ html[data-window="reader"] .side,
 html[data-window="reader"] .split,
 html[data-window="reader"] .primary-space { display: none !important; }
 
+html[data-window="reader"] body,
+html[data-window="reader"] .app,
+html[data-window="reader"] .workspace,
+html[data-window="reader"] .stage,
+html[data-window="reader"] .stage-main {
+  background: var(--paper);
+  min-height: 0;
+}
+
 html[data-window="reader"] .shell {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
+  height: 100%;
+  min-height: 0;
   padding: 0;
 }
 
@@ -5260,4 +5271,6 @@ html[data-window="reader"] #reader {
   min-height: 0;
   height: 100%;
   overflow: auto;
+  border-radius: 0;
+  box-shadow: none;
 }
