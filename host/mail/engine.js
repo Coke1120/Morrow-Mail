@@ -304,6 +304,7 @@ function queryFrom(params) {
     accountId: query.accountId || null,
     folderId: query.folderId || null,
     folderKey: query.folderKey || null,
+    mailboxes: Array.isArray(query.mailboxes) ? query.mailboxes : null,
     category: query.category || "all",
     filterUnread: query.filterUnread === true,
     filterFlagged: query.filterFlagged === true,
@@ -330,17 +331,30 @@ function windowOpen(folder, days = syncHorizonDays()) {
   return Number.isFinite(horizon) && (horizon === 0 || (days !== 0 && horizon >= days));
 }
 
+function foldersInScope(query) {
+  const source = query || {};
+  const explicit = Array.isArray(source.mailboxes) ? source.mailboxes : [];
+  let boxes = null;
+  if (source.folderKey === "primary") boxes = explicit.length ? explicit : db.primaryMailboxes();
+  else if (!source.folderKey && !source.folderId && explicit.length) boxes = explicit;
+  if (boxes) {
+    return boxes
+      .map((entry) => db.folderByPath(entry.accountId || entry.account_id, entry.path))
+      .filter(Boolean);
+  }
+  if (source.folderKey) {
+    return db.pathsForKey(source.accountId, source.folderKey).map((entry) => db.folderByPath(entry.account_id, entry.path));
+  }
+  if (source.accountId && source.folderId) return [db.folderByPath(source.accountId, source.folderId)];
+  return [];
+}
+
 function serverHasMore(query, days) {
-  const folders = query.folderKey
-    ? db.pathsForKey(query.accountId, query.folderKey).map((entry) => db.folderByPath(entry.account_id, entry.path))
-    : (query.accountId && query.folderId ? [db.folderByPath(query.accountId, query.folderId)] : []);
-  return folders.some((folder) => folder && !windowOpen(folder, days));
+  return foldersInScope(query).some((folder) => folder && !windowOpen(folder, days));
 }
 
 function synced(query, days) {
-  const folders = query.folderKey
-    ? db.pathsForKey(query.accountId, query.folderKey).map((entry) => db.folderByPath(entry.account_id, entry.path))
-    : (query.accountId && query.folderId ? [db.folderByPath(query.accountId, query.folderId)] : []);
+  const folders = foldersInScope(query);
   if (!folders.length) return true;
   return folders.every((folder) => windowOpen(folder, days));
 }

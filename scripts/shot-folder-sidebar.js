@@ -67,13 +67,18 @@ window.morrow = {
     }
     if (channel === "morrow:configGetSidebarCollapsedFolders") return window.collapsedStore;
     if (channel === "mail:listFromCache" || channel === "mail:listFromNetwork") {
-      if (payload && payload.folderKey === "inbox") {
+      const boxes = payload && Array.isArray(payload.mailboxes) ? payload.mailboxes : null;
+      if (payload && (payload.folderKey === "primary" || (boxes && boxes.length))) {
         const combined = [
           { id: "leo-in", accountId: "leo", folderId: "INBOX", from: "Desk <desk@example.invalid>", subject: "Leo inbox note", snippet: "Synthetic inbox row.", date: "2026-10-19T09:00:00Z", unread: true },
-          { id: "gm-in", accountId: "gmail", folderId: "INBOX", from: "News <news@example.invalid>", subject: "Inbox only", snippet: "This row stays in Inbox.", date: "2026-10-19T08:00:00Z", unread: true },
+          { id: "gm-all", accountId: "gmail", folderId: "[Gmail]/All Mail", from: "Client <client@example.invalid>", subject: "Archived client note", snippet: "All Mail keeps archived mail.", date: "2026-10-17T08:00:00Z", unread: false },
           { id: "leo-read", accountId: "leo", folderId: "INBOX", from: "Read <read@example.invalid>", subject: "Already read", snippet: "Read inbox mail.", date: "2026-10-18T08:00:00Z", unread: false },
         ];
-        const emails = payload.filterUnread ? combined.filter((row) => row.unread) : combined;
+        const allowed = new Set((boxes || []).map((box) => box.accountId + "\0" + box.path));
+        const scoped = boxes && boxes.length
+          ? combined.filter((row) => allowed.has(row.accountId + "\0" + row.folderId))
+          : combined;
+        const emails = payload.filterUnread ? scoped.filter((row) => row.unread) : scoped;
         return { data: { emails, total: emails.length, initialSyncDone: true, hasMore: false } };
       }
       const key = (payload && payload.accountId ? payload.accountId : "") + ":" + (payload && payload.folderId ? payload.folderId : "");
@@ -256,12 +261,12 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const inboxIndex = await evaluate("window.folderShot().rows.findIndex((row) => row.account==='gmail' && row.name==='Inbox')");
   assert.ok(allIndex >= 0 && allIndex < inboxIndex, "All Mail is above Inbox");
   assert.equal(await evaluate("document.querySelector('button.all-inbox .name').textContent"), "All Account Mail");
-  assert.equal(await evaluate("document.querySelector('button.all-account-unread').textContent"), "Unread 5");
+  assert.equal(await evaluate("document.querySelector('button.all-account-unread').textContent"), "Unread 3");
   assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "false");
   assert.equal(await evaluate("document.querySelector('button.all-inbox').getAttribute('aria-current')"), null);
   assert.equal(await evaluate("[...document.querySelectorAll('button.folder .name')].some((node) => node.textContent === 'All Account Mail')"), false);
   await clickSelector("button.all-inbox");
-  await waitFor("state.allInbox===true && window.folderShot().subjects.includes('Already read')", "All Account Mail list");
+  await waitFor("state.allInbox===true && window.folderShot().subjects.includes('Already read') && window.folderShot().subjects.includes('Archived client note') && !window.folderShot().subjects.includes('Inbox only')", "All Account Mail list");
   assert.equal(await evaluate("document.getElementById('list-title').textContent"), "All Account Mail");
   assert.equal(await evaluate("document.querySelector('.all-account-mail').classList.contains('is-current')"), true);
   assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "false");
@@ -286,17 +291,19 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(await evaluate("document.getElementById('list-title').textContent"), "All Account Mail · Unread");
   assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "true");
   assert.equal(await evaluate("document.querySelector('button.all-inbox').getAttribute('aria-current')"), "true");
-  const unreadCall = await evaluate("window.fixtureCalls.filter((call) => call.channel === 'mail:listFromCache' && call.payload && call.payload.folderKey === 'inbox').pop()");
+  const unreadCall = await evaluate("window.fixtureCalls.filter((call) => call.channel === 'mail:listFromCache' && call.payload && call.payload.folderKey === 'primary').pop()");
   assert.equal(unreadCall.payload.filterUnread, true);
-  assert.equal(unreadCall.payload.folderKey, "inbox");
+  assert.equal(unreadCall.payload.folderKey, "primary");
+  assert.deepEqual(unreadCall.payload.mailboxes.map((box) => box.accountId + ":" + box.path), ["leo:INBOX", "gmail:[Gmail]/All Mail"]);
   await shot("all-account-mail-unread", await sideClip());
   await shot("all-account-mail-unread-list");
   await clickSelector("button.all-account-unread");
   await waitFor("state.allInbox===true && state.allInboxUnreadOnly===false && window.folderShot().subjects.includes('Already read')", "unread chip off");
   assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "false");
   assert.equal(await evaluate("document.getElementById('list-title').textContent"), "All Account Mail");
-  const openCall = await evaluate("window.fixtureCalls.filter((call) => call.channel === 'mail:listFromCache' && call.payload && call.payload.folderKey === 'inbox').pop()");
+  const openCall = await evaluate("window.fixtureCalls.filter((call) => call.channel === 'mail:listFromCache' && call.payload && call.payload.folderKey === 'primary').pop()");
   assert.equal(openCall.payload.filterUnread, undefined);
+  assert.match(await evaluate("document.getElementById('refresh').title"), /Gmail All Mail/);
   await clickSelector('button.folder[data-account-id="leo"][data-folder-id="INBOX"]');
   await waitFor("state.allInbox===false && window.folderShot().folderId==='INBOX' && window.folderShot().subjects[0]==='Leo inbox note'", "back to account inbox");
   assert.equal(await evaluate("document.querySelector('button.all-account-unread').getAttribute('aria-pressed')"), "false");

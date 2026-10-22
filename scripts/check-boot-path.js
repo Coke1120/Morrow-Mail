@@ -16,6 +16,7 @@ const syntax = [
   "host/mail/actions.js",
   "host/mail/idle.js",
   "shared/sync-retry.js",
+  "shared/primary-mailboxes.js",
   "host/mail/remote.js",
   "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
@@ -211,14 +212,50 @@ assert.strictEqual(accountLabel({ label: "  ", name: "Provider", email: "howailo
 assert.strictEqual(accountLabel({ label: "", name: "", email: "howailoklineage@gmail.com" }), "howailoklineage@gmail.com");
 assert.strictEqual(accountLabel({ label: "howailoklineage@gmail.com", name: "Gmail", email: "howailoklineage@gmail.com" }), "howailoklineage@gmail.com");
 assert.strictEqual(accountLabel({ label: "Desk", email: "howailoklineage@gmail.com" }), "Desk · howailoklineage@gmail.com");
-const allInboxUnread = extractFunction(appJs, "allInboxUnread");
+global.morrowMailboxRoles = require("../shared/mailbox-roles");
+global.morrowPrimaryMailboxes = require("../shared/primary-mailboxes");
+const mailListUi = loadFunctions(appJs, ["foldersOf", "allInboxUnread", "mailListRequest"]);
+const allInboxUnread = mailListUi.allInboxUnread;
+const mailListRequest = mailListUi.mailListRequest;
 assert.strictEqual(allInboxUnread([{ unreadCount: 2 }, { unreadCount: 3 }]), 5);
 assert.strictEqual(allInboxUnread([{ unreadCount: 0 }, { unreadCount: -1 }, {}]), 0);
 assert.strictEqual(allInboxUnread(null), 0);
-const mailListRequest = extractFunction(appJs, "mailListRequest");
+assert.strictEqual(allInboxUnread([
+  {
+    unreadCount: 9,
+    platform: "imap",
+    imapSmtpProfile: "gmail",
+    folders: { primary: [
+      { id: "[Gmail]/All Mail", wellKnownName: "all", unreadCount: 4 },
+      { id: "INBOX", wellKnownName: "inbox", unreadCount: 9 },
+    ] },
+  },
+  {
+    unreadCount: 2,
+    platform: "imap",
+    profile: "outlook",
+    folders: { primary: [
+      { id: "INBOX", wellKnownName: "inbox", unreadCount: 2 },
+      { id: "Everything", wellKnownName: "all", unreadCount: 8 },
+    ] },
+  },
+  {
+    unreadCount: 7,
+    profile: "gmail",
+    folders: { primary: [{ id: "INBOX", wellKnownName: "inbox", unreadCount: 7 }] },
+  },
+]), 13);
+assert.strictEqual(allInboxUnread([{
+  unreadCount: 9,
+  profile: "gmail",
+  folders: { primary: [
+    { id: "[Gmail]/All Mail", wellKnownName: "all", unreadCount: 0 },
+    { id: "INBOX", wellKnownName: "inbox", unreadCount: 9 },
+  ] },
+}]), 0);
 assert.deepStrictEqual(
   mailListRequest({ allInbox: true, fromNetwork: true, accountId: "a", folderId: "INBOX", limit: 200, offset: 0 }),
-  { channel: "mail:listFromCache", params: { folderKey: "inbox", limit: 200, offset: 0 } },
+  { channel: "mail:listFromCache", params: { folderKey: "primary", limit: 200, offset: 0 } },
 );
 assert.deepStrictEqual(
   mailListRequest({ accountId: "beta", folderId: "inbox", fromNetwork: true, limit: 200, offset: 40 }),
@@ -227,7 +264,89 @@ assert.deepStrictEqual(
 assert.strictEqual(mailListRequest({ query: "rent", searchAccountId: "", allInbox: true }).channel, "mail:searchLocal");
 assert.deepStrictEqual(
   mailListRequest({ allInbox: true, unreadOnly: true, fromNetwork: true, limit: 200, offset: 200 }),
-  { channel: "mail:listFromCache", params: { folderKey: "inbox", filterUnread: true, limit: 200, offset: 200 } },
+  { channel: "mail:listFromCache", params: { folderKey: "primary", filterUnread: true, limit: 200, offset: 200 } },
+);
+const mixedPrimaryAccounts = [
+  {
+    id: "g",
+    platform: "imap",
+    imapSmtpProfile: "gmail",
+    folders: { primary: [
+      { id: "INBOX", wellKnownName: "inbox" },
+      { id: "[Gmail]/All Mail", wellKnownName: "all" },
+    ] },
+  },
+  {
+    id: "o",
+    platform: "imap",
+    profile: "outlook",
+    folders: { primary: [
+      { id: "INBOX", wellKnownName: "inbox" },
+      { id: "Everything", wellKnownName: "all" },
+    ] },
+  },
+  {
+    id: "g-missing",
+    platform: "gmail",
+    folders: { primary: [
+      { id: "INBOX", wellKnownName: "inbox" },
+      { id: "[Gmail]/Sent Mail", wellKnownName: "sentitems" },
+    ] },
+  },
+  {
+    id: "g-path",
+    profile: "gmail",
+    folders: { primary: [
+      { id: "[Gmail]/All Mail", name: "[Gmail]/All Mail" },
+      { id: "INBOX", wellKnownName: "inbox" },
+    ] },
+  },
+];
+const mixedPrimaryRequest = mailListRequest({
+  allInbox: true,
+  accounts: mixedPrimaryAccounts,
+  fromNetwork: true,
+  limit: 200,
+  offset: 0,
+});
+assert.strictEqual(mixedPrimaryRequest.channel, "mail:listFromCache");
+assert.strictEqual(mixedPrimaryRequest.params.folderKey, "primary");
+assert.notStrictEqual(mixedPrimaryRequest.params.folderKey, "inbox");
+assert.deepStrictEqual(mixedPrimaryRequest.params.mailboxes, [
+  { accountId: "g", path: "[Gmail]/All Mail", role: "all" },
+  { accountId: "o", path: "INBOX", role: "inbox" },
+  { accountId: "g-missing", path: "INBOX", role: "inbox" },
+  { accountId: "g-path", path: "[Gmail]/All Mail", role: "all" },
+]);
+assert.ok(!mixedPrimaryRequest.params.mailboxes.every((row) => row.role === "inbox"), "mixed All Account Mail request is still inbox-only");
+assert.deepStrictEqual(
+  global.morrowPrimaryMailboxes.primaryMailboxes(mixedPrimaryAccounts, (account) => [
+    ...((account.folders && account.folders.primary) || []),
+    ...((account.folders && account.folders.more) || []),
+  ]),
+  mixedPrimaryRequest.params.mailboxes,
+);
+assert.deepStrictEqual(
+  global.morrowPrimaryMailboxes.primaryMailboxes([{
+    id: "google-mail",
+    imapSmtpProfile: "gmail",
+    folders: { primary: [
+      { id: "[Google Mail]/All Mail" },
+      { id: "INBOX", wellKnownName: "inbox" },
+    ] },
+  }], (account) => account.folders.primary),
+  [{ accountId: "google-mail", path: "[Google Mail]/All Mail", role: "all" }],
+);
+assert.deepStrictEqual(
+  global.morrowPrimaryMailboxes.primaryMailboxes([{
+    id: "both",
+    profile: "gmail",
+    folders: { primary: [
+      { id: "[Gmail]/All Mail", name: "All Mail" },
+      { id: "Everything", wellKnownName: "all" },
+    ] },
+  }], (account) => account.folders.primary)[0].path,
+  "Everything",
 );
 assert.strictEqual(mailListRequest({ allInbox: true, unreadOnly: false, limit: 200, offset: 0 }).params.filterUnread, undefined);
 assert.strictEqual(mailListRequest({ allInbox: false, unreadOnly: true, accountId: "a", folderId: "INBOX", limit: 200, offset: 0 }).params.filterUnread, undefined);
@@ -263,9 +382,12 @@ assert.deepStrictEqual(allAccountMailChoice({ allInbox: false, unreadOnly: false
 assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: false }, "unread"), { allInbox: true, unreadOnly: true });
 assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: true }, "unread"), { allInbox: true, unreadOnly: false });
 assert.deepStrictEqual(allAccountMailChoice(null, "unread"), { allInbox: true, unreadOnly: true });
-assert.strictEqual(allAccountMailEmptyCopy(false), "No downloaded messages in All Account Mail. Open an account's Inbox and use Sync to download recent mail.");
+assert.strictEqual(allAccountMailEmptyCopy(false), "No downloaded messages in All Account Mail. Open Gmail All Mail, or Inbox for another account, and use Sync to download recent mail.");
 assert.strictEqual(allAccountMailEmptyCopy(true), "No unread messages in All Account Mail.");
-assert.match(allAccountMailSyncCopy(), /All Account Mail shows mail already downloaded/);
+assert.strictEqual(allAccountMailSyncCopy(), "All Account Mail shows mail already downloaded. Open Gmail All Mail, or Inbox for another account, to sync that account.");
+assert.ok(functionSource(appJs, "mailListRequest").includes('folderKey: "primary"'));
+assert.ok(!functionSource(appJs, "mailListRequest").includes('folderKey: "inbox"'));
+assert.ok(functionSource(appJs, "loadList").includes("accounts: state.accounts"), "All Account Mail list does not pass connected accounts");
 assert.ok(!appJs.includes("All Inbox"), "sidebar still says All Inbox");
 const allAccountRow = functionSource(appJs, "allAccountMailRow");
 assert.ok(allAccountRow.includes("all-account-unread") && allAccountRow.includes('data-testid", "all-account-unread"'), "All Account Mail is missing the unread chip");
@@ -1559,7 +1681,10 @@ assert.ok(fs.readFileSync(path.join(root, "docs/adr/2026-10-21-macos-close-hides
 assert.ok(independentDoc.includes("All Account Mail"));
 assert.ok(parityDoc.includes("All Account Mail"));
 assert.ok(independentDoc.includes("Unread chip"));
-assert.ok(parityDoc.includes("filters this view to unread Inbox messages"));
+assert.ok(parityDoc.includes("filters this view to unread messages in those primary folders"));
+assert.ok(independentDoc.includes("Gmail uses All Mail"));
+assert.ok(parityDoc.includes("Gmail uses All Mail"));
+assert.ok(!parityDoc.includes("filters this view to unread Inbox messages"));
 assert.ok(!independentDoc.includes("All Inbox") && !parityDoc.includes("All Inbox"));
 assert.ok(independentDoc.includes("All removes the date bound"));
 assert.ok(independentDoc.includes("already downloaded"));
@@ -2963,6 +3088,9 @@ assert.ok(appJs.includes("folder-twist"));
 assert.ok(appJs.includes("morrow:configGetSidebarCollapsedFolders"));
 assert.ok(css.includes("button.folder-twist"));
 assert.ok(html.includes("shared/mailbox-roles.js"));
+assert.ok(html.includes("shared/primary-mailboxes.js"));
+assert.ok(html.indexOf('src="../shared/mailbox-roles.js"') < html.indexOf('src="../shared/primary-mailboxes.js"'));
+assert.ok(html.indexOf('src="../shared/primary-mailboxes.js"') < html.indexOf('src="./app.js"'));
 assert.ok(html.includes("shared/folder-collapse.js"));
 assert.ok(independentDoc.includes("Right-click"));
 assert.ok(independentDoc.includes("Drag a message row"));
@@ -3381,7 +3509,7 @@ const featureSeed = [
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
   ["inbox-rules", "Inbox rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
-  ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded Inbox mail from every account."],
+  ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose drafts. It stays off until you turn it on. Opening a proposal does not send it."],
   ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page."],
   ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release. Restart and install applies a downloaded update once every compose window is closed."],
@@ -5600,9 +5728,170 @@ async function checkTidy() {
       engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderId: "INBOX", limit: 20 }]).data.emails.map((row) => row.subject),
       ["Inbox only"],
     );
+    function primaryPair(id) {
+      return db.primaryMailboxes().find((row) => row.accountId === id) || null;
+    }
+    function stampMessage(row) {
+      db.insertMessage(Object.assign({
+        uid: 1,
+        uidValidity: 9,
+        from: "Client <client@example.com>",
+        date: "2026-10-22T00:00:00.000Z",
+        listSortTs: 9000000000000,
+        unread: false,
+        bodyComplete: true,
+        snippet: "primary",
+      }, row));
+    }
+    db.updateMessage("m-all-archived", { list_sort_ts: 9000000000001 });
+    db.updateMessage("m-all-inbox", { list_sort_ts: 9000000000002 });
+    db.updateMessage("m-all-trash", { list_sort_ts: 9000000000003 });
+    stampMessage({
+      id: "m-all-unread",
+      accountId: "gmail-all",
+      folderPath: "[Gmail]/All Mail",
+      uid: 4,
+      threadId: "thr-all-unread",
+      subject: "Unread in All Mail",
+      listSortTs: 9000000000004,
+      unread: true,
+    });
+    insertMailbox("outlook-primary", "outlook-primary@example.com", "outlook");
+    db.replaceFolders("outlook-primary", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Sent", name: "Sent", wellKnown: "sentitems" },
+    ], "/");
+    stampMessage({
+      id: "m-outlook-in",
+      accountId: "outlook-primary",
+      folderPath: "INBOX",
+      threadId: "thr-outlook-in",
+      subject: "Outlook inbox",
+      listSortTs: 9000000000005,
+      unread: true,
+    });
+    stampMessage({
+      id: "m-outlook-sent",
+      accountId: "outlook-primary",
+      folderPath: "Sent",
+      uid: 2,
+      threadId: "thr-outlook-sent",
+      subject: "Outlook sent",
+      listSortTs: 9000000000006,
+    });
+    insertMailbox("gmail-fallback", "fallback@example.com", "gmail");
+    db.replaceFolders("gmail-fallback", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "[Gmail]/Sent Mail", name: "Sent Mail", wellKnown: "sentitems" },
+    ], "/");
+    stampMessage({
+      id: "m-fallback-in",
+      accountId: "gmail-fallback",
+      folderPath: "INBOX",
+      threadId: "thr-fallback",
+      subject: "Fallback inbox",
+      listSortTs: 9000000000007,
+      unread: true,
+    });
+    insertMailbox("gmail-well", "well@example.com", "gmail");
+    db.replaceFolders("gmail-well", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Everything", name: "Everything", wellKnown: "all" },
+    ], "/");
+    stampMessage({
+      id: "m-well-in",
+      accountId: "gmail-well",
+      folderPath: "INBOX",
+      threadId: "thr-well-in",
+      subject: "Well inbox",
+      listSortTs: 9000000000008,
+    });
+    stampMessage({
+      id: "m-well-all",
+      accountId: "gmail-well",
+      folderPath: "Everything",
+      uid: 2,
+      threadId: "thr-well-all",
+      subject: "Well all",
+      listSortTs: 9000000000009,
+      unread: true,
+    });
+    stampMessage({
+      id: "m-special-all",
+      accountId: "special-all",
+      folderPath: "Everything",
+      threadId: "thr-special-all",
+      subject: "Special all",
+      listSortTs: 9000000000010,
+    });
+    stampMessage({
+      id: "m-special-in",
+      accountId: "special-all",
+      folderPath: "INBOX",
+      uid: 2,
+      threadId: "thr-special-in",
+      subject: "Special inbox",
+      listSortTs: 9000000000011,
+    });
+    assert.equal(db.folderByPath("gmail-all", "[Gmail]/All Mail").well_known, null);
+    assert.deepStrictEqual(db.pathsForKey("gmail-all", "all"), []);
+    assert.deepStrictEqual(db.pathsForKey("special-all", "all").map((row) => row.path), ["Everything"]);
+    assert.deepStrictEqual([primaryPair("gmail-all").path, primaryPair("gmail-all").role], ["[Gmail]/All Mail", "all"]);
+    assert.deepStrictEqual([primaryPair("outlook-primary").path, primaryPair("outlook-primary").role], ["INBOX", "inbox"]);
+    assert.deepStrictEqual([primaryPair("gmail-fallback").path, primaryPair("gmail-fallback").role], ["INBOX", "inbox"]);
+    assert.deepStrictEqual([primaryPair("special-all").path, primaryPair("special-all").role], ["INBOX", "inbox"]);
+    assert.deepStrictEqual([primaryPair("plain-all").path, primaryPair("plain-all").role], ["INBOX", "inbox"]);
+    assert.deepStrictEqual([primaryPair("gmail-well").path, primaryPair("gmail-well").role], ["Everything", "all"]);
+    const primaryIds = ["gmail-all", "outlook-primary", "gmail-fallback", "gmail-well", "special-all", "plain-all"];
+    function subjectsFor(emails, accountId) {
+      return emails.filter((row) => row.accountId === accountId).map((row) => row.subject).sort();
+    }
+    const primaryList = engine.answer("mail:listFromCache", [{ folderKey: "primary", limit: 40 }]).data.emails;
+    assert.deepStrictEqual(subjectsFor(primaryList, "gmail-all"), ["Archived client note", "Unread in All Mail"]);
+    assert.deepStrictEqual(subjectsFor(primaryList, "outlook-primary"), ["Outlook inbox"]);
+    assert.deepStrictEqual(subjectsFor(primaryList, "gmail-fallback"), ["Fallback inbox"]);
+    assert.deepStrictEqual(subjectsFor(primaryList, "gmail-well"), ["Well all"]);
+    assert.deepStrictEqual(subjectsFor(primaryList, "special-all"), ["Special inbox"]);
+    const pairs = db.primaryMailboxes()
+      .filter((row) => primaryIds.includes(row.accountId))
+      .map((row) => ({ accountId: row.accountId, path: row.path, role: row.role }));
+    const boxed = engine.answer("mail:listFromCache", [{ mailboxes: pairs, limit: 40 }]).data.emails;
+    assert.deepStrictEqual(
+      boxed.map((row) => row.id).sort(),
+      primaryList.filter((row) => primaryIds.includes(row.accountId)).map((row) => row.id).sort(),
+    );
+    assert.deepStrictEqual(
+      subjectsFor(engine.answer("mail:listFromCache", [{ folderKey: "primary", filterUnread: true, limit: 40 }]).data.emails, "gmail-all"),
+      ["Unread in All Mail"],
+    );
+    assert.deepStrictEqual(
+      engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderId: "[Gmail]/All Mail", limit: 20 }]).data.emails.map((row) => row.subject).sort(),
+      ["Archived client note", "Unread in All Mail"],
+    );
+    assert.deepStrictEqual(
+      engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderKey: "inbox", limit: 20 }]).data.emails.map((row) => row.subject),
+      ["Inbox only"],
+    );
+    const until = new Date(Date.now() + 3600000).toISOString();
+    db.setSnooze("gmail-all", "thr-all", until);
+    const snoozedPrimary = engine.answer("mail:listFromCache", [{ folderKey: "primary", limit: 40 }]).data.emails;
+    assert.equal(snoozedPrimary.some((row) => row.accountId === "gmail-all" && row.threadId === "thr-all"), false);
+    assert.equal(snoozedPrimary.some((row) => row.subject === "Unread in All Mail"), true);
+    assert.equal(
+      engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderId: "[Gmail]/All Mail", limit: 20 }]).data.emails.some((row) => row.threadId === "thr-all"),
+      true,
+    );
+    db.clearSnooze("gmail-all", "thr-all");
+    db.setSnooze("gmail-fallback", "thr-fallback", until);
+    assert.equal(engine.answer("mail:listFromCache", [{ folderKey: "primary", limit: 40 }]).data.emails.some((row) => row.id === "m-fallback-in"), false);
+    db.clearSnooze("gmail-fallback", "thr-fallback");
+    assert.equal(engine.answer("mail:listFromCache", [{ folderKey: "primary", limit: 40 }]).data.emails.some((row) => row.id === "m-fallback-in"), true);
     db.removeAccount("gmail-all");
     db.removeAccount("plain-all");
     db.removeAccount("special-all");
+    db.removeAccount("outlook-primary");
+    db.removeAccount("gmail-fallback");
+    db.removeAccount("gmail-well");
     savedRemote = {
       withClient: remote.withClient,
       searchUids: remote.searchUids,

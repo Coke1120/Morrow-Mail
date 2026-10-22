@@ -237,7 +237,7 @@ v1 ships this array, in this order. Titles and blurbs are copied exactly. Every 
     "id": "multi-account",
     "title": "Multiple mailboxes",
     "category": "Accounts",
-    "blurb": "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded Inbox mail from every account."
+    "blurb": "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account."
   },
   {
     "id": "bot-bridge",

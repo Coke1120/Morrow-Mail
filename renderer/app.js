@@ -384,7 +384,10 @@ function accountLabel(account) {
 }
 
 function allInboxUnread(accounts) {
-  return (Array.isArray(accounts) ? accounts : []).reduce((sum, account) => {
+  const list = Array.isArray(accounts) ? accounts : [];
+  const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
+  if (helper && typeof helper.sumUnread === "function") return helper.sumUnread(list, foldersOf);
+  return list.reduce((sum, account) => {
     const count = Number(account && account.unreadCount);
     return sum + (Number.isFinite(count) && count > 0 ? count : 0);
   }, 0);
@@ -399,12 +402,12 @@ function allAccountMailTitle(unreadOnly) {
 }
 
 function allAccountMailSyncCopy() {
-  return "All Account Mail shows mail already downloaded. Open an Inbox to sync that account.";
+  return "All Account Mail shows mail already downloaded. Open Gmail All Mail, or Inbox for another account, to sync that account.";
 }
 
 function allAccountMailEmptyCopy(unreadOnly) {
   if (unreadOnly) return "No unread messages in All Account Mail.";
-  return "No downloaded messages in All Account Mail. Open an account's Inbox and use Sync to download recent mail.";
+  return "No downloaded messages in All Account Mail. Open Gmail All Mail, or Inbox for another account, and use Sync to download recent mail.";
 }
 
 function allAccountMailMatches(query) {
@@ -445,7 +448,12 @@ function mailListRequest(view) {
     return { channel: "mail:searchLocal", params };
   }
   if (source.allInbox) {
-    const params = { folderKey: "inbox", limit, offset };
+    const params = { folderKey: "primary", limit, offset };
+    const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
+    if (helper && typeof helper.primaryMailboxes === "function") {
+      const mailboxes = helper.primaryMailboxes(source.accounts, foldersOf);
+      if (mailboxes.length) params.mailboxes = mailboxes;
+    }
     if (source.unreadOnly) params.filterUnread = true;
     return { channel: "mail:listFromCache", params };
   }
@@ -7143,6 +7151,7 @@ async function loadList(fromNetwork, requestedOffset) {
       fromNetwork: !state.allInbox && fromNetwork && isLive(account),
       accountId: account && account.id,
       folderId: state.folderId,
+      accounts: state.accounts,
       limit: LIST_PAGE_SIZE,
       offset,
     });
@@ -7156,6 +7165,7 @@ async function loadList(fromNetwork, requestedOffset) {
         unreadOnly: state.allInbox && state.allInboxUnreadOnly,
         accountId: account && account.id,
         folderId: state.folderId,
+        accounts: state.accounts,
         limit: LIST_PAGE_SIZE,
         offset,
       });
