@@ -4,6 +4,7 @@
 // The approved trust root is committed source, never an environment override.
 const { createManifest } = require('./create-update-manifest');
 const { preflight } = require('./release-preflight');
+const { macZipName } = require('../host/update-manifest');
 const path = require('node:path');
 
 async function signRelease({ artifact, outputDir, privateKey, publicKey, version, ref, sha }) {
@@ -14,7 +15,7 @@ if (require.main === module) {
   const privateKey = Buffer.from(process.env.MORROW_UPDATE_SIGNING_KEY || '', 'utf8');
   delete process.env.MORROW_UPDATE_SIGNING_KEY;
   const version = require('../package.json').version;
-  const artifact = path.join('dist', `Morrow Mail-${version}-arm64-mac.zip`);
+  const artifact = path.join('dist', macZipName('arm64'));
   signRelease({ artifact, outputDir: path.join('dist', 'signed-update-manifest'), privateKey,
     publicKey: require('../host/update-trust').publicKey, version,
     ref: process.env.GITHUB_REF, sha: process.env.GITHUB_SHA

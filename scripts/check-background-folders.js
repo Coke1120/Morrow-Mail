@@ -133,6 +133,8 @@ async function checkEngine() {
     listFolderRecords: remote.listFolderRecords,
     searchUids: remote.searchUids,
     fetchMessages: remote.fetchMessages,
+    fetchSource: remote.fetchSource,
+    changeFlags: remote.changeFlags,
   };
   const listed = [
     { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
@@ -302,10 +304,11 @@ async function checkEngine() {
     rateSearches.length = 0;
     await engine.syncAccountById("bg-rate", { background: true });
     assert.deepEqual(rateSearches, ["Notes", "Sent", "INBOX", "INBOX"]);
+    await checkOpenPriority(engine, db, remote, secrets);
     console.log("background-folders-ok");
   } finally {
     Object.assign(remote, saved);
-    for (const id of ["bg-all", "bg-active", "bg-budget", "bg-manual", "bg-ol", "bg-rate"]) {
+    for (const id of ["bg-all", "bg-active", "bg-budget", "bg-manual", "bg-ol", "bg-rate", "bg-yield", "bg-resume", "bg-queue", "bg-manual-open", "bg-throw"]) {
       try { secrets.deletePassword(id); } catch { /* already gone */ }
       engine.syncGates.delete(id);
     }
@@ -316,6 +319,335 @@ async function checkEngine() {
     }
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function sourceBody(uid, html) {
+  return {
+    uid,
+    htmlBody: html,
+    textBody: "Opened",
+    snippet: "Opened",
+    subject: "Need body",
+    attachments: [],
+    hasAttachments: false,
+    bodyComplete: true,
+    recipientHeaders: {},
+  };
+}
+
+function insertIncomplete(db, id, accountId, folderPath, uid) {
+  db.insertMessage({
+    id,
+    accountId,
+    folderPath,
+    uid,
+    uidValidity: 1,
+    threadId: id,
+    subject: "Need body",
+    snippet: "snippet",
+    from: "Ada <ada@example.com>",
+    date: new Date().toISOString(),
+    listSortTs: Date.now(),
+    unread: true,
+    bodyComplete: false,
+  });
+}
+
+async function checkOpenPriority(engine, db, remote, secrets) {
+  const opens = { active: 0, max: 0 };
+  remote.withClient = async (_account, _secret, work) => {
+    opens.active += 1;
+    opens.max = Math.max(opens.max, opens.active);
+    try {
+      return await work({});
+    } finally {
+      opens.active -= 1;
+    }
+  };
+  const three = [
+    { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+    { path: "Notes", name: "Notes", wellKnown: null },
+    { path: "Sent", name: "Sent", wellKnown: "sentitems" },
+  ];
+  remote.listFolderRecords = async () => ({ folders: three, delimiter: "/" });
+
+  process.env.MORROW_SYNC_TICK_MS = "0";
+  const yieldEvents = [];
+  let releaseYield = () => {};
+  let markYieldStarted = () => {};
+  const yieldStarted = new Promise((resolve) => { markYieldStarted = resolve; });
+  const yieldGate = new Promise((resolve) => { releaseYield = resolve; });
+  remote.searchUids = async (_client, folder) => {
+    yieldEvents.push(`search:${folder}`);
+    if (folder === "Sent") return { uids: [7], validity: 1, exists: 1, unseen: 0 };
+    return { uids: [1], validity: 1, exists: 1, unseen: 0 };
+  };
+  remote.fetchMessages = async (_client, folder, page) => {
+    yieldEvents.push(`fetch:${folder}`);
+    if (folder === "INBOX" && !yieldEvents.includes("source")) {
+      markYieldStarted();
+      await yieldGate;
+    }
+    return { validity: 1, messages: page.map(header) };
+  };
+  remote.fetchSource = async (_client, _folder, uid) => {
+    yieldEvents.push("source");
+    return sourceBody(uid, "<p>Opened</p>");
+  };
+  db.insertAccount(accountRow("bg-yield", "yield@example.test", "custom"));
+  secrets.setPassword("bg-yield", "pw");
+  insertIncomplete(db, "bg-yield-body", "bg-yield", "Sent", 7);
+  let yieldSync = Promise.resolve();
+  let yieldOpen = Promise.resolve();
+  try {
+    yieldSync = engine.syncAccountById("bg-yield", { background: true });
+    await yieldStarted;
+    yieldOpen = engine.answer("mail:openEmail", [{ emailId: "bg-yield-body" }]);
+    releaseYield();
+    const opened = await yieldOpen;
+    await yieldSync;
+    assert.equal(opened.success, true);
+    assert.equal(opened.data.email.htmlBody, "<p>Opened</p>");
+    assert.deepEqual(yieldEvents, ["search:INBOX", "fetch:INBOX", "source"], "an open runs after the in-flight folder and before the next one");
+    assert.equal(db.messageById("bg-yield-body").body_complete, 1);
+    assert.equal(db.folderByPath("bg-yield", "INBOX").uid_cursor, 1);
+    assert.equal(db.folderByPath("bg-yield", "INBOX").window_done, 1);
+    assert.equal(db.folderByPath("bg-yield", "Notes").uid_cursor, 0);
+    assert.equal(db.folderByPath("bg-yield", "Notes").window_done, 0);
+    yieldEvents.length = 0;
+    await engine.syncAccountById("bg-yield", { background: true });
+    assert.deepEqual(yieldEvents, ["search:Notes", "fetch:Notes"], "the next poll resumes at the folder that yielded");
+    yieldEvents.length = 0;
+    await engine.syncAccountById("bg-yield", { background: true });
+    assert.deepEqual(yieldEvents, ["search:Sent"], "a later poll still reaches the remaining folder");
+    assert.equal(db.messageById("bg-yield-body").html_body, "<p>Opened</p>");
+    assert.equal(db.messageById("bg-yield-body").uid, 7);
+    assert.equal(db.countInFolder("bg-yield", "Sent"), 1);
+    assert.equal(db.folderByPath("bg-yield", "Sent").window_done, 1);
+    assert.equal(db.folderByPath("bg-yield", "Sent").uid_cursor, 7);
+  } finally {
+    releaseYield();
+    delete process.env.MORROW_SYNC_TICK_MS;
+    await Promise.allSettled([yieldSync, yieldOpen]);
+  }
+
+  process.env.MORROW_SYNC_TICK_MS = "60000";
+  const resumeEvents = [];
+  let releaseResume = () => {};
+  let markResumeStarted = () => {};
+  const resumeStarted = new Promise((resolve) => { markResumeStarted = resolve; });
+  const resumeGate = new Promise((resolve) => { releaseResume = resolve; });
+  remote.searchUids = async (_client, folder) => {
+    resumeEvents.push(`search:${folder}`);
+    if (folder === "Sent") return { uids: [7], validity: 1, exists: 1, unseen: 0 };
+    return { uids: [1], validity: 1, exists: 1, unseen: 0 };
+  };
+  remote.fetchMessages = async (_client, folder, page) => {
+    resumeEvents.push(`fetch:${folder}`);
+    if (folder === "INBOX") {
+      markResumeStarted();
+      await resumeGate;
+    }
+    return { validity: 1, messages: page.map(header) };
+  };
+  remote.fetchSource = async (_client, _folder, uid) => {
+    resumeEvents.push("source");
+    return sourceBody(uid, "<p>Resumed</p>");
+  };
+  db.insertAccount(accountRow("bg-resume", "resume@example.test", "custom"));
+  secrets.setPassword("bg-resume", "pw");
+  insertIncomplete(db, "bg-resume-body", "bg-resume", "Sent", 7);
+  let resumeSync = Promise.resolve();
+  let resumeOpen = Promise.resolve();
+  try {
+    resumeSync = engine.syncAccountById("bg-resume", { background: true });
+    await resumeStarted;
+    resumeOpen = engine.answer("mail:openEmail", [{ emailId: "bg-resume-body" }]);
+    releaseResume();
+    const opened = await resumeOpen;
+    await resumeSync;
+    assert.equal(opened.success, true);
+    assert.equal(opened.data.email.htmlBody, "<p>Resumed</p>");
+    assert.deepEqual(resumeEvents, [
+      "search:INBOX",
+      "fetch:INBOX",
+      "source",
+      "search:Notes",
+      "fetch:Notes",
+      "search:Sent",
+    ], "the same tick continues the pass after the body fetch");
+    assert.equal(db.messageById("bg-resume-body").html_body, "<p>Resumed</p>");
+    assert.equal(db.folderByPath("bg-resume", "Sent").uid_cursor, 7);
+    assert.equal(db.countInFolder("bg-resume", "INBOX"), 1);
+  } finally {
+    releaseResume();
+    delete process.env.MORROW_SYNC_TICK_MS;
+    await Promise.allSettled([resumeSync, resumeOpen]);
+  }
+
+  const queueEvents = [];
+  let releaseRead = () => {};
+  let markReadStarted = () => {};
+  const readStarted = new Promise((resolve) => { markReadStarted = resolve; });
+  const readGate = new Promise((resolve) => { releaseRead = resolve; });
+  remote.listFolderRecords = async () => ({
+    folders: [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Notes", name: "Notes", wellKnown: null },
+    ],
+    delimiter: "/",
+  });
+  remote.searchUids = async (_client, folder) => {
+    queueEvents.push(`search:${folder}`);
+    if (folder === "Notes") return { uids: [7], validity: 1, exists: 1, unseen: 0 };
+    return { uids: [1], validity: 1, exists: 1, unseen: 0 };
+  };
+  remote.fetchMessages = async (_client, folder, page) => {
+    queueEvents.push(`fetch:${folder}`);
+    return { validity: 1, messages: page.map(header) };
+  };
+  remote.fetchSource = async (_client, _folder, uid) => {
+    queueEvents.push("source");
+    return sourceBody(uid, "<p>Queued</p>");
+  };
+  remote.changeFlags = async () => {
+    markReadStarted();
+    await readGate;
+  };
+  db.insertAccount(accountRow("bg-queue", "queue@example.test", "custom"));
+  secrets.setPassword("bg-queue", "pw");
+  db.insertMessage({
+    id: "bg-queue-flag",
+    accountId: "bg-queue",
+    folderPath: "INBOX",
+    uid: 1,
+    uidValidity: 1,
+    subject: "Flag",
+    from: "Ada <ada@example.com>",
+    date: new Date().toISOString(),
+    listSortTs: Date.now(),
+    unread: true,
+    bodyComplete: true,
+    htmlBody: "<p>Flag</p>",
+    textBody: "Flag",
+  });
+  insertIncomplete(db, "bg-queue-body", "bg-queue", "Notes", 7);
+  let queueSync = Promise.resolve();
+  let queueOpen = Promise.resolve();
+  let reading = Promise.resolve();
+  try {
+    reading = engine.answer("mail:markRead", [{ emailId: "bg-queue-flag", isRead: true }]);
+    await readStarted;
+    queueSync = engine.syncAccountById("bg-queue", { background: true });
+    for (let i = 0; i < 30 && engine.mailQueueForTest("bg-queue").background !== 1; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(engine.mailQueueForTest("bg-queue"), { user: 0, background: 1, active: true });
+    queueOpen = engine.answer("mail:openEmail", [{ emailId: "bg-queue-body" }]);
+    assert.deepEqual(engine.mailQueueForTest("bg-queue"), { user: 1, background: 1, active: true });
+    releaseRead();
+    const opened = await queueOpen;
+    const during = queueEvents.slice();
+    await queueSync;
+    assert.equal(opened.success, true);
+    assert.equal(opened.data.email.htmlBody, "<p>Queued</p>");
+    assert.deepEqual(during, ["source"], "a queued open runs before a background walk that is already queued");
+    assert.deepEqual(queueEvents, ["source", "search:INBOX", "search:Notes"]);
+  } finally {
+    releaseRead();
+    await Promise.allSettled([reading, queueSync, queueOpen]);
+  }
+
+  const manualEvents = [];
+  let releaseManual = () => {};
+  let markManualStarted = () => {};
+  const manualStarted = new Promise((resolve) => { markManualStarted = resolve; });
+  const manualGate = new Promise((resolve) => { releaseManual = resolve; });
+  remote.listFolderRecords = async () => ({
+    folders: [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }],
+    delimiter: "/",
+  });
+  remote.searchUids = async () => ({
+    uids: Array.from({ length: 150 }, (_item, index) => index + 1),
+    validity: 9,
+    exists: 150,
+    unseen: 0,
+  });
+  remote.fetchMessages = async (_client, _folder, page) => {
+    manualEvents.push(`page:${page.length}`);
+    if (page.length === 100) {
+      markManualStarted();
+      await manualGate;
+    }
+    return { validity: 9, messages: page.map(header) };
+  };
+  remote.fetchSource = async (_client, _folder, uid) => {
+    manualEvents.push("source");
+    return sourceBody(uid, "<p>After sync</p>");
+  };
+  db.insertAccount(accountRow("bg-manual-open", "manual-open@example.test", "custom"));
+  secrets.setPassword("bg-manual-open", "pw");
+  insertIncomplete(db, "bg-manual-body", "bg-manual-open", "Sent", 9);
+  let manualSync = Promise.resolve();
+  let manualOpen = Promise.resolve();
+  try {
+    manualSync = engine.answer("mail:listFromNetwork", [{ accountId: "bg-manual-open", folderId: "INBOX" }]);
+    await manualStarted;
+    manualOpen = engine.answer("mail:openEmail", [{ emailId: "bg-manual-body" }]);
+    releaseManual();
+    const opened = await manualOpen;
+    await manualSync;
+    assert.equal(opened.success, true);
+    assert.equal(opened.data.email.htmlBody, "<p>After sync</p>");
+    assert.deepEqual(manualEvents, ["page:100", "page:50", "source"], "manual Sync still finishes the open folder before a body fetch");
+  } finally {
+    releaseManual();
+    await Promise.allSettled([manualSync, manualOpen]);
+  }
+
+  const throwEvents = [];
+  let releaseThrow = () => {};
+  let markThrowStarted = () => {};
+  const throwStarted = new Promise((resolve) => { markThrowStarted = resolve; });
+  const throwGate = new Promise((resolve) => { releaseThrow = resolve; });
+  remote.listFolderRecords = async () => ({ folders: three, delimiter: "/" });
+  remote.searchUids = async (_client, folder) => {
+    throwEvents.push(`search:${folder}`);
+    if (folder === "Sent") return { uids: [7], validity: 1, exists: 1, unseen: 0 };
+    return { uids: [1], validity: 1, exists: 1, unseen: 0 };
+  };
+  remote.fetchMessages = async () => {
+    markThrowStarted();
+    await throwGate;
+    throw new Error("folder failed");
+  };
+  remote.fetchSource = async (_client, _folder, uid) => {
+    throwEvents.push("source");
+    return sourceBody(uid, "<p>After failure</p>");
+  };
+  db.insertAccount(accountRow("bg-throw", "throw@example.test", "custom"));
+  secrets.setPassword("bg-throw", "pw");
+  insertIncomplete(db, "bg-throw-body", "bg-throw", "Sent", 7);
+  let throwSync = Promise.resolve();
+  let throwOpen = Promise.resolve();
+  try {
+    throwSync = engine.syncAccountById("bg-throw", { background: true });
+    await throwStarted;
+    throwOpen = engine.answer("mail:openEmail", [{ emailId: "bg-throw-body" }]);
+    releaseThrow();
+    const failure = assert.rejects(throwSync);
+    const opened = await throwOpen;
+    await failure;
+    assert.equal(opened.success, true);
+    assert.equal(opened.data.email.htmlBody, "<p>After failure</p>");
+    assert.deepEqual(throwEvents, ["search:INBOX", "source"]);
+    assert.equal(db.messageById("bg-throw-body").uid, 7);
+  } finally {
+    releaseThrow();
+    await Promise.allSettled([throwSync, throwOpen]);
+  }
+
+  assert.equal(opens.max, 1, "a body fetch waits for the in-flight mailbox connection to close");
 }
 
 async function run() {

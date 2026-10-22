@@ -4,7 +4,23 @@ Morrow Mail runs these on the mailbox cache and your OpenAI-compatible key (`Mor
 
 ## Skills
 
-Home starts with the catalog installed. Library skills are the ones you removed. Install and remove persist in `agent.json` under the AI config directory.
+Home starts with the catalog installed. Library skills are the ones you removed. Install and remove persist in `agent.json` under the AI config directory (the same Electron userData directory as `ai.json` and `brain.json`).
+
+Custom skills are ones you write. **New skill** on Brain → Skills, and on Agent → Skills, asks for a name, a short description, and an instruction. Optional switches add calendar context, focus on one person, or filing proposals. Save calls `emailBrain:saveCustomSkill` and puts the skill on Home. The same dialog edits it. Delete calls `emailBrain:deleteCustomSkill` and removes that definition, its schedule, and its home row. A deleted custom skill does not return to the library. Removing a catalog skill still only uninstalls it (`emailBrain:removeSkill`) and puts it back in the library.
+
+Custom skill ids are `user:` plus a UUID. Catalog ids do not use that prefix. A catalog update does not overwrite a `user:` skill's id or instruction. Definitions live in `custom-skills.json` next to `agent.json`, only under userData. They are not stored in the app install, `resources/`, or `app.asar`. Reading a damaged file leaves it in place. Morrow does not replace it with an empty list, and it does not drop `user:` ids it does not recognize when it rewrites `agent.json`.
+
+Packaged paths:
+
+- Windows (NSIS and portable): `%APPDATA%\Morrow Mail\custom-skills.json`
+- macOS: `~/Library/Application Support/Morrow Mail/custom-skills.json`
+- Linux: `~/.config/Morrow Mail/custom-skills.json`
+
+`app.setName("Morrow Mail")` selects that folder. NSIS does not set `deleteAppDataOnUninstall`. The macOS in-app update replaces the application bundle and leaves userData in place. Replacing a portable exe leaves the same userData directory in place. The first launch after an update reads the existing file.
+
+Limits are 40 custom skills, a name of 80 characters, a description of 240, and a required instruction of up to 4000 characters. An empty instruction is rejected.
+
+A custom skill runs with `emailBrain:runSkill`, the same path as a catalog skill. No API key or no mailbox returns `accepted: false`. Nothing is sent. With the switches off, the run sees recent inbox mail only. The calendar switch adds upcoming events when a calendar grant exists, and otherwise the run says it used mail only. The person switch needs an open message or a contact email, including on a schedule. The filing switch proposes folder or label moves and waits for Confirm, the same as Organize Inbox. With that switch off, move proposals are dropped. Schedule, pause, resume, and run match catalog skills.
 
 | Skill | What it uses |
 | --- | --- |
@@ -68,4 +84,4 @@ Email Brain has a Rules tab, and Settings has an Inbox rules button that opens i
 
 ## Channels
 
-`emailBrain:getCached`, `emailBrain:refresh`, `emailBrain:rebuild`, `emailBrain:addWritingRule`, `emailBrain:setWritingRule`, `emailBrain:deleteWritingRule`, `emailBrain:fixItem`, `emailBrain:forgetItem`, `emailBrain:getCategories`, `emailBrain:saveCategories`, `emailBrain:addCategoryViaPrompt`, `emailBrain:fixCategory`, `emailBrain:getSkills`, `emailBrain:getLibrarySkills`, `emailBrain:installSkill`, `emailBrain:removeSkill`, `emailBrain:runSkill`, `emailBrain:setSkillSchedule`, `emailBrain:deleteSkillSchedule`, `emailBrain:confirmProposal`, `emailBrain:dismissProposal`, `nativeAgent:getTriage`, `nativeAgent:triage`, `nativeAgent:history`, `nativeAgent:home:skills`, `nativeAgent:home:librarySkills`, `nativeAgent:home:todosCached`, `nativeAgent:home:refreshTaxonomy`, `nativeAgent:home:todoUpdate`, `nativeAgent:chat`, `nativeAgent:chatHistory`, `nativeAgent:chatShow`, `nativeAgent:memoryGet`, `nativeAgent:memorySet`. The Brain pane also listens for `emailBrain:updated`, `emailBrain:refreshState`, `emailBrain:rebuildState`, and `emailBrain:scheduleFired`.
+`emailBrain:getCached`, `emailBrain:refresh`, `emailBrain:rebuild`, `emailBrain:addWritingRule`, `emailBrain:setWritingRule`, `emailBrain:deleteWritingRule`, `emailBrain:fixItem`, `emailBrain:forgetItem`, `emailBrain:getCategories`, `emailBrain:saveCategories`, `emailBrain:addCategoryViaPrompt`, `emailBrain:fixCategory`, `emailBrain:getSkills`, `emailBrain:getLibrarySkills`, `emailBrain:installSkill`, `emailBrain:removeSkill`, `emailBrain:saveCustomSkill`, `emailBrain:deleteCustomSkill`, `emailBrain:runSkill`, `emailBrain:setSkillSchedule`, `emailBrain:deleteSkillSchedule`, `emailBrain:confirmProposal`, `emailBrain:dismissProposal`, `nativeAgent:getTriage`, `nativeAgent:triage`, `nativeAgent:history`, `nativeAgent:home:skills`, `nativeAgent:home:librarySkills`, `nativeAgent:home:todosCached`, `nativeAgent:home:refreshTaxonomy`, `nativeAgent:home:todoUpdate`, `nativeAgent:chat`, `nativeAgent:chatHistory`, `nativeAgent:chatShow`, `nativeAgent:memoryGet`, `nativeAgent:memorySet`. The Brain pane also listens for `emailBrain:updated`, `emailBrain:refreshState`, `emailBrain:rebuildState`, and `emailBrain:scheduleFired`.

@@ -1,6 +1,6 @@
 {
   "name": "morrow-mail",
-  "version": "0.2.27",
+  "version": "0.2.28",
   "description": "Morrow Mail. Open-source Electron mail client for Windows and macOS. Connect your own accounts, read and send mail, and install from GitHub Releases.",
   "main": "host/main.js",
   "private": true,
@@ -10,8 +10,9 @@
     "start": "electron .",
     "check": "node scripts/check-boot-path.js",
     "bot:call": "node scripts/morrow-bot-call.js",
-    "postinstall": "node scripts/bundle-motion.js",
+    "postinstall": "node scripts/bundle-motion.js && node scripts/bundle-pdf.js",
     "motion:bundle": "node scripts/bundle-motion.js",
+    "pdf:bundle": "node scripts/bundle-pdf.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac dir zip",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "electron": "^33.4.11",
+    "pdfjs-dist": "4.10.38",
     "electron-builder": "^25.1.8",
     "esbuild": "^0.28.2",
     "pe-library": "^1.0.1",
@@ -37,7 +39,7 @@
   "build": {
     "appId": "com.coke1120.morrow-mail",
     "productName": "Morrow Mail",
-    "copyright": "Copyright \u00a9 2026 Leo Ho",
+    "copyright": "Copyright © 2026 Leo Ho",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -96,6 +98,7 @@
       "notarize": false,
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
+      "artifactName": "Morrow-Mail-${arch}-mac.${ext}",
       "extendInfo": {
         "CFBundleDisplayName": "Morrow Mail",
         "CFBundleName": "Morrow Mail"
@@ -124,7 +127,11 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico"
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "Morrow-Mail-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "Morrow-Mail.${ext}"
     },
     "linux": {
       "icon": "build/icon.png",

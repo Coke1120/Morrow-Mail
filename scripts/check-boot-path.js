@@ -16,6 +16,8 @@ const syntax = [
   "host/mail/actions.js",
   "host/mail/idle.js",
   "shared/sync-retry.js",
+  "shared/primary-mailboxes.js",
+  "shared/display-format.js",
   "host/mail/remote.js",
   "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
@@ -42,6 +44,8 @@ const syntax = [
   "scripts/check-brain-profile-layout.js",
   "host/agent.js",
   "host/compose-window.js",
+  "host/reader-window.js",
+  "host/reader-window-state.js",
   "host/bot/constants.js",
   "host/bot/json.js",
   "host/bot/store.js",
@@ -64,6 +68,8 @@ const syntax = [
   "scripts/check-bot-bridge.js",
   "renderer/preload.js",
   "renderer/app.js",
+  "renderer/pdf-preview.js",
+  "scripts/bundle-pdf.js",
   "renderer/features-catalog.js",
   "renderer/motion-ui.js",
   "scripts/check-vacation.js",
@@ -137,6 +143,9 @@ assert.strictEqual(pkg.build.afterPack, "./scripts/windows-icon.js");
 assert.ok(pkg.build.extraResources.some((item) => item.from === "build/icon.png" && item.to === "icon.png"));
 assert.strictEqual(pkg.build.nsis.installerIcon, "build/icon.ico");
 assert.strictEqual(pkg.build.nsis.uninstallerIcon, "build/icon.ico");
+assert.strictEqual(pkg.build.nsis.artifactName, "Morrow-Mail-Setup.${ext}");
+assert.strictEqual(pkg.build.portable.artifactName, "Morrow-Mail.${ext}");
+assert.strictEqual(pkg.build.mac.artifactName, "Morrow-Mail-${arch}-mac.${ext}");
 const windowsIcon = fs.readFileSync(path.join(root, "scripts/windows-icon.js"), "utf8");
 assert.ok(windowsIcon.includes('path.join(__dirname, "..", "build", "icon.ico")'));
 assert.ok(windowsIcon.includes("ProductName") && windowsIcon.includes("ignoreCert: true"));
@@ -206,14 +215,50 @@ assert.strictEqual(accountLabel({ label: "  ", name: "Provider", email: "howailo
 assert.strictEqual(accountLabel({ label: "", name: "", email: "howailoklineage@gmail.com" }), "howailoklineage@gmail.com");
 assert.strictEqual(accountLabel({ label: "howailoklineage@gmail.com", name: "Gmail", email: "howailoklineage@gmail.com" }), "howailoklineage@gmail.com");
 assert.strictEqual(accountLabel({ label: "Desk", email: "howailoklineage@gmail.com" }), "Desk · howailoklineage@gmail.com");
-const allInboxUnread = extractFunction(appJs, "allInboxUnread");
+global.morrowMailboxRoles = require("../shared/mailbox-roles");
+global.morrowPrimaryMailboxes = require("../shared/primary-mailboxes");
+const mailListUi = loadFunctions(appJs, ["foldersOf", "allInboxUnread", "mailListRequest"]);
+const allInboxUnread = mailListUi.allInboxUnread;
+const mailListRequest = mailListUi.mailListRequest;
 assert.strictEqual(allInboxUnread([{ unreadCount: 2 }, { unreadCount: 3 }]), 5);
 assert.strictEqual(allInboxUnread([{ unreadCount: 0 }, { unreadCount: -1 }, {}]), 0);
 assert.strictEqual(allInboxUnread(null), 0);
-const mailListRequest = extractFunction(appJs, "mailListRequest");
+assert.strictEqual(allInboxUnread([
+  {
+    unreadCount: 9,
+    platform: "imap",
+    imapSmtpProfile: "gmail",
+    folders: { primary: [
+      { id: "[Gmail]/All Mail", wellKnownName: "all", unreadCount: 4 },
+      { id: "INBOX", wellKnownName: "inbox", unreadCount: 9 },
+    ] },
+  },
+  {
+    unreadCount: 2,
+    platform: "imap",
+    profile: "outlook",
+    folders: { primary: [
+      { id: "INBOX", wellKnownName: "inbox", unreadCount: 2 },
+      { id: "Everything", wellKnownName: "all", unreadCount: 8 },
+    ] },
+  },
+  {
+    unreadCount: 7,
+    profile: "gmail",
+    folders: { primary: [{ id: "INBOX", wellKnownName: "inbox", unreadCount: 7 }] },
+  },
+]), 13);
+assert.strictEqual(allInboxUnread([{
+  unreadCount: 9,
+  profile: "gmail",
+  folders: { primary: [
+    { id: "[Gmail]/All Mail", wellKnownName: "all", unreadCount: 0 },
+    { id: "INBOX", wellKnownName: "inbox", unreadCount: 9 },
+  ] },
+}]), 0);
 assert.deepStrictEqual(
   mailListRequest({ allInbox: true, fromNetwork: true, accountId: "a", folderId: "INBOX", limit: 200, offset: 0 }),
-  { channel: "mail:listFromCache", params: { folderKey: "inbox", limit: 200, offset: 0 } },
+  { channel: "mail:listFromCache", params: { folderKey: "primary", limit: 200, offset: 0 } },
 );
 assert.deepStrictEqual(
   mailListRequest({ accountId: "beta", folderId: "inbox", fromNetwork: true, limit: 200, offset: 40 }),
@@ -222,7 +267,89 @@ assert.deepStrictEqual(
 assert.strictEqual(mailListRequest({ query: "rent", searchAccountId: "", allInbox: true }).channel, "mail:searchLocal");
 assert.deepStrictEqual(
   mailListRequest({ allInbox: true, unreadOnly: true, fromNetwork: true, limit: 200, offset: 200 }),
-  { channel: "mail:listFromCache", params: { folderKey: "inbox", filterUnread: true, limit: 200, offset: 200 } },
+  { channel: "mail:listFromCache", params: { folderKey: "primary", filterUnread: true, limit: 200, offset: 200 } },
+);
+const mixedPrimaryAccounts = [
+  {
+    id: "g",
+    platform: "imap",
+    imapSmtpProfile: "gmail",
+    folders: { primary: [
+      { id: "INBOX", wellKnownName: "inbox" },
+      { id: "[Gmail]/All Mail", wellKnownName: "all" },
+    ] },
+  },
+  {
+    id: "o",
+    platform: "imap",
+    profile: "outlook",
+    folders: { primary: [
+      { id: "INBOX", wellKnownName: "inbox" },
+      { id: "Everything", wellKnownName: "all" },
+    ] },
+  },
+  {
+    id: "g-missing",
+    platform: "gmail",
+    folders: { primary: [
+      { id: "INBOX", wellKnownName: "inbox" },
+      { id: "[Gmail]/Sent Mail", wellKnownName: "sentitems" },
+    ] },
+  },
+  {
+    id: "g-path",
+    profile: "gmail",
+    folders: { primary: [
+      { id: "[Gmail]/All Mail", name: "[Gmail]/All Mail" },
+      { id: "INBOX", wellKnownName: "inbox" },
+    ] },
+  },
+];
+const mixedPrimaryRequest = mailListRequest({
+  allInbox: true,
+  accounts: mixedPrimaryAccounts,
+  fromNetwork: true,
+  limit: 200,
+  offset: 0,
+});
+assert.strictEqual(mixedPrimaryRequest.channel, "mail:listFromCache");
+assert.strictEqual(mixedPrimaryRequest.params.folderKey, "primary");
+assert.notStrictEqual(mixedPrimaryRequest.params.folderKey, "inbox");
+assert.deepStrictEqual(mixedPrimaryRequest.params.mailboxes, [
+  { accountId: "g", path: "[Gmail]/All Mail", role: "all" },
+  { accountId: "o", path: "INBOX", role: "inbox" },
+  { accountId: "g-missing", path: "INBOX", role: "inbox" },
+  { accountId: "g-path", path: "[Gmail]/All Mail", role: "all" },
+]);
+assert.ok(!mixedPrimaryRequest.params.mailboxes.every((row) => row.role === "inbox"), "mixed All Account Mail request is still inbox-only");
+assert.deepStrictEqual(
+  global.morrowPrimaryMailboxes.primaryMailboxes(mixedPrimaryAccounts, (account) => [
+    ...((account.folders && account.folders.primary) || []),
+    ...((account.folders && account.folders.more) || []),
+  ]),
+  mixedPrimaryRequest.params.mailboxes,
+);
+assert.deepStrictEqual(
+  global.morrowPrimaryMailboxes.primaryMailboxes([{
+    id: "google-mail",
+    imapSmtpProfile: "gmail",
+    folders: { primary: [
+      { id: "[Google Mail]/All Mail" },
+      { id: "INBOX", wellKnownName: "inbox" },
+    ] },
+  }], (account) => account.folders.primary),
+  [{ accountId: "google-mail", path: "[Google Mail]/All Mail", role: "all" }],
+);
+assert.deepStrictEqual(
+  global.morrowPrimaryMailboxes.primaryMailboxes([{
+    id: "both",
+    profile: "gmail",
+    folders: { primary: [
+      { id: "[Gmail]/All Mail", name: "All Mail" },
+      { id: "Everything", wellKnownName: "all" },
+    ] },
+  }], (account) => account.folders.primary)[0].path,
+  "Everything",
 );
 assert.strictEqual(mailListRequest({ allInbox: true, unreadOnly: false, limit: 200, offset: 0 }).params.filterUnread, undefined);
 assert.strictEqual(mailListRequest({ allInbox: false, unreadOnly: true, accountId: "a", folderId: "INBOX", limit: 200, offset: 0 }).params.filterUnread, undefined);
@@ -258,9 +385,12 @@ assert.deepStrictEqual(allAccountMailChoice({ allInbox: false, unreadOnly: false
 assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: false }, "unread"), { allInbox: true, unreadOnly: true });
 assert.deepStrictEqual(allAccountMailChoice({ allInbox: true, unreadOnly: true }, "unread"), { allInbox: true, unreadOnly: false });
 assert.deepStrictEqual(allAccountMailChoice(null, "unread"), { allInbox: true, unreadOnly: true });
-assert.strictEqual(allAccountMailEmptyCopy(false), "No downloaded messages in All Account Mail. Open an account's Inbox and use Sync to download recent mail.");
+assert.strictEqual(allAccountMailEmptyCopy(false), "No downloaded messages in All Account Mail. Open Gmail All Mail, or Inbox for another account, and use Sync to download recent mail.");
 assert.strictEqual(allAccountMailEmptyCopy(true), "No unread messages in All Account Mail.");
-assert.match(allAccountMailSyncCopy(), /All Account Mail shows mail already downloaded/);
+assert.strictEqual(allAccountMailSyncCopy(), "All Account Mail shows mail already downloaded. Open Gmail All Mail, or Inbox for another account, to sync that account.");
+assert.ok(functionSource(appJs, "mailListRequest").includes('folderKey: "primary"'));
+assert.ok(!functionSource(appJs, "mailListRequest").includes('folderKey: "inbox"'));
+assert.ok(functionSource(appJs, "loadList").includes("accounts: state.accounts"), "All Account Mail list does not pass connected accounts");
 assert.ok(!appJs.includes("All Inbox"), "sidebar still says All Inbox");
 const allAccountRow = functionSource(appJs, "allAccountMailRow");
 assert.ok(allAccountRow.includes("all-account-unread") && allAccountRow.includes('data-testid", "all-account-unread"'), "All Account Mail is missing the unread chip");
@@ -327,7 +457,7 @@ assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell doe
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.2.27");
+assert.strictEqual(pkg.version, "0.2.28");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -479,8 +609,95 @@ const readerPlaced = readerHost.readerWindowBounds({ x: 0, y: 0 }, 1);
 assert.strictEqual(readerPlaced.x, 48 + 28);
 assert.strictEqual(readerPlaced.y, 48 + 28);
 assert.strictEqual(readerPlaced.width, 960);
+assert.strictEqual(readerPlaced.height, 760);
 assert.strictEqual(readerPlaced.minHeight, 480);
+assert.strictEqual(readerPlaced.originShift, 28);
 assert.strictEqual(readerHost.readerWindowBounds(null, 1).x, undefined);
+const readerDisplay = { workArea: { x: 0, y: 0, width: 1440, height: 900 } };
+const readerSaved = { x: 120, y: 80, width: 1000, height: 700 };
+const readerFirst = readerHost.readerWindowBounds({ x: 10, y: 20 }, 0, readerSaved, [readerDisplay]);
+assert.strictEqual(readerFirst.x, 120);
+assert.strictEqual(readerFirst.y, 80);
+assert.strictEqual(readerFirst.width, 1000);
+assert.strictEqual(readerFirst.height, 700);
+assert.strictEqual(readerFirst.originShift, 0);
+const readerNudged = readerHost.readerWindowBounds({ x: 10, y: 20 }, 1, readerSaved, [readerDisplay]);
+assert.strictEqual(readerNudged.x, 148);
+assert.strictEqual(readerNudged.y, 108);
+assert.strictEqual(readerNudged.width, 1000);
+assert.strictEqual(readerNudged.originShift, 28);
+const readerWrapped = readerHost.readerWindowBounds({ x: 0, y: 0 }, 6, readerSaved, [readerDisplay]);
+assert.strictEqual(readerWrapped.x, 120);
+assert.strictEqual(readerWrapped.originShift, 0);
+const readerBrowser = readerHost.readerBrowserBounds(readerNudged);
+assert.strictEqual(readerBrowser.x, 148);
+assert.strictEqual(readerBrowser.originShift, undefined);
+assert.strictEqual(readerBrowser.minWidth, 640);
+assert.deepStrictEqual(
+  readerHost.canonicalReaderBounds({ x: 148, y: 108, width: 1000, height: 700 }, 28),
+  { x: 120, y: 80, width: 1000, height: 700 },
+);
+assert.strictEqual(readerHost.canonicalReaderBounds({ x: 1 }, 0), null);
+const readerFresh = readerHost.readerWindowBounds({ x: 10, y: 20 }, 0, { x: null, y: null, width: null, height: null }, [readerDisplay]);
+assert.strictEqual(readerFresh.x, 58);
+assert.strictEqual(readerFresh.y, 68);
+assert.strictEqual(readerFresh.width, 960);
+assert.strictEqual(readerFresh.height, 760);
+const readerOff = readerHost.readerWindowBounds({ x: 10, y: 20 }, 0, { x: -4000, y: -4000, width: 800, height: 600 }, [readerDisplay]);
+assert.strictEqual(readerOff.x, 58);
+assert.strictEqual(readerOff.y, 68);
+assert.strictEqual(readerOff.width, 800);
+assert.strictEqual(readerOff.height, 600);
+const readerTiny = readerHost.readerWindowBounds({ x: 0, y: 0 }, 0, { x: 40, y: 50, width: 10, height: 10 }, [readerDisplay]);
+assert.strictEqual(readerTiny.width, 960);
+assert.strictEqual(readerTiny.height, 760);
+assert.strictEqual(readerTiny.x, 40);
+assert.strictEqual(readerTiny.y, 50);
+const readerHeadless = readerHost.readerWindowBounds({ x: 5, y: 6 }, 1, readerSaved, []);
+assert.strictEqual(readerHeadless.x, 5 + 48 + 28);
+assert.strictEqual(readerHeadless.y, 6 + 48 + 28);
+assert.strictEqual(readerHeadless.width, 1000);
+const readerState = require("../host/reader-window-state");
+{
+  const os = require("os");
+  const prevData = process.env.MORROW_USER_DATA;
+  const readerDir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-reader-window-"));
+  process.env.MORROW_USER_DATA = readerDir;
+  try {
+    assert.deepStrictEqual(readerState.read(), { x: null, y: null, width: null, height: null });
+    const sized = readerState.update({ width: 1000, height: 700 });
+    assert.strictEqual(sized.x, null);
+    assert.strictEqual(sized.width, 1000);
+    const moved = readerState.update({ x: 30, y: 40 });
+    assert.strictEqual(moved.x, 30);
+    assert.strictEqual(moved.y, 40);
+    assert.strictEqual(moved.width, 1000);
+    assert.strictEqual(moved.height, 700);
+    assert.deepStrictEqual(readerState.read(), moved);
+    assert.strictEqual(readerState.update({ width: 10, height: 10 }).width, null);
+    assert.strictEqual(readerState.read().x, 30);
+    fs.writeFileSync(path.join(readerDir, "reader-window-state.json"), "{");
+    assert.deepStrictEqual(readerState.read(), { x: null, y: null, width: null, height: null });
+    readerState.update({ x: 80, y: 90, width: 1100, height: 720 });
+    assert.ok(fs.existsSync(path.join(readerDir, "reader-window-state.json")));
+    assert.ok(!fs.existsSync(path.join(readerDir, "window-state.json")));
+    const placedFromFile = readerHost.readerWindowBounds({ x: 0, y: 0 }, 1, readerState.read(), [readerDisplay]);
+    assert.strictEqual(placedFromFile.x, 108);
+    assert.strictEqual(placedFromFile.y, 118);
+    assert.strictEqual(placedFromFile.width, 1100);
+    assert.strictEqual(placedFromFile.height, 720);
+  } finally {
+    if (prevData === undefined) delete process.env.MORROW_USER_DATA;
+    else process.env.MORROW_USER_DATA = prevData;
+    fs.rmSync(readerDir, { recursive: true, force: true });
+  }
+}
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes('win.on("resize"'));
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes('win.on("move"'));
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes('win.on("close"'));
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes("canonicalReaderBounds"));
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window-state.js"), "utf8").includes("reader-window-state.json"));
+assert.ok(!fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes("window-state.json"));
 const senderEngineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
 assert.ok(senderEngineSrc.includes('case "mail:searchSender"'));
 assert.ok(!functionSource(senderEngineSrc, "searchRemote").includes("searchSender"));
@@ -494,7 +711,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.2.27");
+assert.strictEqual(pkg.version, "0.2.28");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -505,6 +722,35 @@ assert.ok(html.includes("sender-history.js"));
 assert.ok(css.includes('html[data-window="reader"]'));
 assert.ok(fs.readFileSync(path.join(root, "renderer/compose-role.js"), "utf8").includes('dataset.window = "reader"'));
 assert.ok(functionSource(appJs, "onReaderContext").includes("sender-address"));
+assert.ok(!functionSource(appJs, "onReaderContext").includes("isReaderWindow"));
+const readerRender = functionSource(appJs, "renderReader");
+assert.ok(readerRender.includes("renderActions(pane, email)"));
+assert.ok(readerRender.includes("renderSuggestions(pane, email)"));
+assert.ok(readerRender.includes("appendReaderClose(pane)"));
+assert.ok(readerRender.includes("if (!isReaderWindow()) renderThread(pane, email)"));
+assert.ok(!readerRender.includes("renderReaderWindowBar"));
+assert.ok(!appJs.includes("reader-window-bar"));
+assert.ok(functionSource(appJs, "readerCloseButton").includes("window.close()"));
+assert.ok(!functionSource(appJs, "readerCloseButton").includes("confirm"));
+assert.ok(!functionSource(appJs, "readerCloseButton").includes("discard"));
+const readerShortcuts = loadFunctions(appJs, ["readerWindowShortcut"]);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("reply"), true);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("reply-all"), true);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("forward"), true);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("delete"), true);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("search"), false);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("new-mail"), false);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("settings"), false);
+const readerShortcutSrc = functionSource(appJs, "onMailShortcut");
+assert.ok(!/if\s*\(\s*isReaderWindow\(\)\s*\)\s*return\s*;/.test(readerShortcutSrc));
+assert.ok(readerShortcutSrc.includes("readerWindowShortcut(action)"));
+assert.ok(functionSource(appJs, "bootReaderWindow").includes('api.on("mail:translate:event"'));
+assert.ok(functionSource(appJs, "bootReaderWindow").includes("loadSnoozed"));
+assert.ok(functionSource(appJs, "bootReaderWindow").includes("loadProviderFolders"));
+const readerCss = css.slice(css.indexOf('html[data-window="reader"] #reader'));
+assert.ok(readerCss.startsWith('html[data-window="reader"] #reader'));
+assert.ok(readerCss.slice(0, 280).includes("border-radius: 0"));
+assert.ok(readerCss.slice(0, 280).includes("box-shadow: none"));
 const senderRemoteSrc = fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8");
 assert.ok(senderRemoteSrc.includes("async function findFrom"));
 assert.ok(!functionSource(senderRemoteSrc, "findText").includes("beforeUid"));
@@ -623,6 +869,74 @@ assert.deepStrictEqual(threadMembers([], [{ id: "a" }, { id: "b" }]).map((row) =
 assert.deepStrictEqual(threadMembers([{ id: "" }], null), []);
 assert.deepStrictEqual(threadMembers(null, null), []);
 
+const threadStrip = loadFunctions(appJs, [
+  "threadCalendarTime",
+  "threadRelativeTime",
+  "threadSnippetLine",
+  "threadEarlierLabel",
+  "threadEarlierAnnouncement",
+  "threadListLabel",
+  "threadStripPlan",
+]);
+const threadNow = new Date("2026-10-22T12:00:00Z");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T11:59:40Z", threadNow), "just now");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T11:59:00Z", threadNow), "1 minute ago");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T11:30:00Z", threadNow), "30 minutes ago");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T10:00:00Z", threadNow), "2 hours ago");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T11:00:00Z", threadNow), "1 hour ago");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-21T12:00:00Z", threadNow), "yesterday");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-18T12:00:00Z", threadNow), "4 days ago");
+assert.strictEqual(threadStrip.threadRelativeTime("", threadNow), "");
+assert.ok(threadStrip.threadRelativeTime("2026-09-01T12:00:00Z", threadNow));
+assert.ok(!threadStrip.threadRelativeTime("2026-09-01T12:00:00Z", threadNow).includes("ago"));
+assert.ok(!String(threadStrip.threadRelativeTime("2026-10-23T12:00:00Z", threadNow)).includes("ago"));
+assert.strictEqual(threadStrip.threadSnippetLine({ snippet: "  hello\nthere  ", subject: "RE: Secret" }), "hello there");
+assert.strictEqual(threadStrip.threadSnippetLine({ snippet: "", subject: "RE: Secret" }), "");
+assert.strictEqual(threadStrip.threadSnippetLine(null), "");
+assert.strictEqual(threadStrip.threadEarlierLabel(18), "Earlier in this conversation (18)");
+assert.strictEqual(threadStrip.threadEarlierLabel(1), "Earlier in this conversation (1)");
+assert.strictEqual(threadStrip.threadEarlierAnnouncement(6, false), "6 earlier messages collapsed");
+assert.strictEqual(threadStrip.threadEarlierAnnouncement(1, true), "Showing 1 earlier message");
+assert.strictEqual(threadStrip.threadListLabel(20, 18, false), "20 messages in this conversation, 18 earlier messages collapsed");
+assert.strictEqual(threadStrip.threadListLabel(20, 18, true), "20 messages in this conversation");
+function threadStripRow(id, date) {
+  return { id, date, subject: "RE: Same subject", snippet: "Snippet " + id };
+}
+const threadStripRows = ["a", "b", "c", "d", "e"].map((id, index) => threadStripRow(id, "2026-10-1" + index));
+assert.deepStrictEqual(threadStrip.threadStripPlan(threadStripRows, "e", false).visibleIds, ["d", "e"]);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "e", false).count, 3);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "e", false).showControl, true);
+assert.deepStrictEqual(threadStrip.threadStripPlan(threadStripRows, "b", false).visibleIds, ["b", "d", "e"]);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "b", false).count, 2);
+assert.deepStrictEqual(threadStrip.threadStripPlan(threadStripRows, "b", true).visibleIds, ["a", "b", "c", "d", "e"]);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "b", true).count, 2);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "b", true).expanded, true);
+const threadStripPair = threadStrip.threadStripPlan([threadStripRow("a", "1"), threadStripRow("b", "2")], "b", false);
+assert.strictEqual(threadStripPair.showControl, false);
+assert.deepStrictEqual(threadStripPair.visibleIds, ["a", "b"]);
+const threadStripOldest = threadStrip.threadStripPlan([
+  threadStripRow("a", "1"),
+  threadStripRow("b", "2"),
+  threadStripRow("c", "3"),
+], "a", false);
+assert.strictEqual(threadStripOldest.showControl, false);
+assert.deepStrictEqual(threadStripOldest.visibleIds, ["a", "b", "c"]);
+assert.deepStrictEqual(threadStrip.threadStripPlan([
+  threadStripRow("b", "2"),
+  threadStripRow("a", "1"),
+  threadStripRow("c", "3"),
+], "c", false).visibleIds, ["b", "c"]);
+const threadRowSource = functionSource(appJs, "threadMessageButton");
+assert.ok(!threadRowSource.includes("subject"), "conversation rows repeat the subject");
+assert.ok(threadRowSource.includes("openMessage(member.id)"));
+assert.ok(threadRowSource.includes("threadSnippetLine"));
+assert.ok(threadRowSource.includes("threadRelativeTime"));
+assert.ok(functionSource(appJs, "buildThreadStrip").includes('aria-expanded'));
+assert.ok(functionSource(appJs, "buildThreadStrip").includes("thread-earlier"));
+assert.ok(functionSource(appJs, "toggleThreadEarlier").includes("paintThreadStrip(true)"));
+assert.ok(css.includes("button.thread-earlier"));
+assert.ok(css.includes(".thread-snippet"));
+
 const paneWidth = extractFunction(appJs, "paneWidth");
 assert.strictEqual(paneWidth(200, -80, 140, 400), 140);
 assert.strictEqual(paneWidth(200, 300, 140, 400), 400);
@@ -735,8 +1049,41 @@ assert.strictEqual(sendDelayMs(null), 5000);
 assert.ok(html.includes("img-src 'self' data: blob: https: http:"));
 assert.ok(html.includes("frame-src blob: data:") && html.includes("object-src blob: data:"));
 assert.ok(html.includes("script-src 'self'") && html.includes("default-src 'none'"));
+assert.ok(html.includes("style-src 'self'"));
+assert.ok(html.includes("connect-src 'self'"), "PDF preview cannot load local font and CMap files");
+assert.ok(!html.includes("unsafe-eval") && !html.includes("unsafe-inline") && !html.includes("unsafe-hashes"));
 assert.ok(!html.includes("img-src *"));
-assert.ok(html.includes('id="attachment-preview"') && html.includes('id="attachment-preview-frame"'));
+assert.ok(html.includes('id="attachment-preview"') && html.includes('id="attachment-preview-pages"'));
+assert.ok(!html.includes("attachment-preview-frame"), "PDF preview still embeds the Chromium viewer");
+assert.ok(css.includes(".attachment-preview-page") && css.includes("#attachment-preview-stage.is-pdf"));
+assert.ok(css.includes("#attachment-preview-stage.is-pdf::-webkit-scrollbar { width: 12px;"));
+const pdfPreviewSrc = fs.readFileSync(path.join(root, "renderer/pdf-preview.js"), "utf8");
+const pdfPreviewBitmap = extractFunction(pdfPreviewSrc, "pdfPreviewBitmap");
+const a4Width = 595 * 96 / 72;
+const a4Height = 842 * 96 / 72;
+const fitted = pdfPreviewBitmap(a4Width, a4Height, 880, 1);
+assert.strictEqual(fitted.bitmapWidth, 880);
+assert.ok(Math.abs(fitted.bitmapHeight / fitted.bitmapWidth - 842 / 595) < 0.02);
+const sharp = pdfPreviewBitmap(a4Width, a4Height, 880, 3);
+assert.strictEqual(sharp.bitmapWidth, 1760);
+assert.ok(sharp.bitmapHeight > fitted.bitmapHeight);
+const capped = pdfPreviewBitmap(100, 100, 10000, 2);
+assert.ok(capped.bitmapWidth <= 4096 && capped.bitmapHeight <= 4096);
+assert.strictEqual(pdfPreviewBitmap(0, 0, 0, Number.NaN).bitmapWidth, 1);
+assert.ok(pdfPreviewSrc.includes("disableFontFace: true") && pdfPreviewSrc.includes("isEvalSupported: false"));
+assert.ok(pdfPreviewSrc.includes("vendor/pdfjs/cmaps/") && pdfPreviewSrc.includes("vendor/pdfjs/standard_fonts/"));
+assert.ok(pdfPreviewSrc.includes("pdfjsWorker"));
+assert.ok(fs.existsSync(path.join(root, "renderer/pdf-preview.bundle.js")), "PDF preview bundle was not built");
+assert.ok(fs.readFileSync(path.join(root, "renderer/pdf-preview.bundle.js"), "utf8").includes("morrowPdf"));
+assert.ok(fs.existsSync(path.join(root, "renderer/vendor/pdfjs/cmaps/Adobe-CNS1-UCS2.bcmap")));
+assert.ok(fs.existsSync(path.join(root, "renderer/vendor/pdfjs/standard_fonts/LiberationSans-Regular.ttf")));
+const pdfPreviewError = extractFunction(appJs, "pdfPreviewError");
+assert.strictEqual(pdfPreviewError({ name: "PasswordException" }), "This PDF is password-protected. Save or Open it instead.");
+assert.strictEqual(pdfPreviewError(new Error("nope")), "This PDF could not be previewed. Save or Open it instead.");
+assert.strictEqual(pdfPreviewError({ name: "AbortError" }), "");
+assert.ok(functionSource(appJs, "loadPdfPreview").includes("./pdf-preview.bundle.js"));
+assert.ok(functionSource(appJs, "clearAttachmentPreview").includes("attachmentPreviewAbort"));
+assert.ok(!appJs.includes("attachment-preview-frame"));
 const attachmentPreviewKind = extractFunction(appJs, "attachmentPreviewKind");
 assert.strictEqual(attachmentPreviewKind({ mimeType: "image/png", filename: "a.png" }), "image");
 assert.strictEqual(attachmentPreviewKind({ mimeType: "image/jpeg", filename: "a.jpg" }), "image");
@@ -1133,7 +1480,7 @@ assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
 const settingsSrc = fs.readFileSync(path.join(root, "host/settings.js"), "utf8");
 const prefs = prefRows();
-assert.strictEqual(prefs.length, 12);
+assert.strictEqual(prefs.length, 14);
 const prefKinds = new Set();
 for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(html.includes('id="' + id + '"'), `settings control missing ${id}`);
@@ -1153,6 +1500,19 @@ assert.ok(settingsHtml.includes('type="password"') && settingsHtml.includes('id=
 assert.ok(settingsHtml.includes('id="ai-model-chooser"') && !settingsHtml.includes("<datalist") && !settingsHtml.includes('list="ai-model-list"'));
 assert.match(settingsHtml, /id="pref-accent-help"/);
 assert.match(settingsHtml, /Theme sets the light or dark shell/);
+assert.ok(html.includes('src="../shared/display-format.js"'), "renderer does not load the display format helper");
+assert.ok(settingsHtml.includes('id="pref-time-format"') && settingsHtml.includes('id="pref-date-format"'));
+assert.ok(settingsHtml.includes(">System<") && settingsHtml.includes(">12-hour<") && settingsHtml.includes(">24-hour<"));
+assert.ok(settingsHtml.includes("22/10/2026") && settingsHtml.includes("22 October 2026"));
+assert.ok(settingsHtml.includes("10/22/2026") && settingsHtml.includes("2026-10-22") && settingsHtml.includes("22 Oct 2026"));
+assert.ok(settingsHtml.indexOf('id="pref-accent"') < settingsHtml.indexOf('id="pref-time-format"'));
+assert.ok(settingsHtml.indexOf('id="pref-time-format"') < settingsHtml.indexOf('id="pref-date-format"'));
+assert.ok(functionSource(appJs, "listWhen").includes("displayStamp"));
+assert.ok(functionSource(appJs, "threadCalendarTime").includes('displayStamp(date, "list"'));
+assert.ok(functionSource(appJs, "threadAbsoluteTime").includes("shownWhen"));
+assert.ok(functionSource(appJs, "clockLabel").includes("displayStamp"));
+assert.ok(functionSource(appJs, "takePref").includes("morrow:configGetTimeFormat"));
+assert.ok(functionSource(appJs, "paintPrefs").includes("repaintClockSurfaces"));
 assert.ok(!html.includes("hkbscl"));
 assert.ok(html.includes("@example.com = colleague@example.com, team@example.org"));
 assert.ok(html.includes("ada@example.org = example.com"));
@@ -1198,6 +1558,7 @@ for (const channel of [
   assert.ok(!ipcSrc.includes('"' + channel + '"'), channel + " still stubbed in ipc");
 }
 checkSettingsRoundTrip();
+checkDisplayFormats();
 
 function checkSettingsRoundTrip() {
   const os = require("os");
@@ -1232,6 +1593,8 @@ function checkSettingsRoundTrip() {
     assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), {});
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
     assert.strictEqual(answer("morrow:configGetDefaultScheduleDelayMinutes", []), 0);
+    assert.strictEqual(answer("morrow:configGetTimeFormat", []), "system");
+    assert.strictEqual(answer("morrow:configGetDateFormat", []), "system");
     assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 260, list: 360, reading: 0 });
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
@@ -1252,6 +1615,8 @@ function checkSettingsRoundTrip() {
     }]), { leo: ["AriesCPA.com"] });
     assert.strictEqual(answer("morrow:configSetComposeQuoteWidth", [560]), 560);
     assert.strictEqual(answer("morrow:configSetDefaultScheduleDelayMinutes", [90]), 90);
+    assert.strictEqual(answer("morrow:configSetTimeFormat", [" 24h "]), "24h");
+    assert.strictEqual(answer("morrow:configSetDateFormat", ["  d mmm yyyy  "]), "d mmm yyyy");
     assert.deepStrictEqual(answer("morrow:configSetLayoutPanes", [{ folders: 300, list: 480, reading: 640 }]), { folders: 300, list: 480, reading: 640 });
     assert.strictEqual(answer("config:getTheme", []), "dark");
     assert.strictEqual(answer("morrow:configGetAccent", []), "#112233");
@@ -1282,6 +1647,8 @@ function checkSettingsRoundTrip() {
         outlookFolders: answer("morrow:configGetSidebarOutlookFoldersExpanded", []),
         collapsed: answer("morrow:configGetSidebarCollapsedFolders", []),
         quoteWidth: answer("morrow:configGetComposeQuoteWidth", []),
+        timeFormat: answer("morrow:configGetTimeFormat", []),
+        dateFormat: answer("morrow:configGetDateFormat", []),
       }));
     `], { encoding: "utf8" });
     assert.strictEqual(reloaded.status, 0, reloaded.stderr);
@@ -1298,6 +1665,8 @@ function checkSettingsRoundTrip() {
       outlookFolders: true,
       collapsed: { leo: ["AriesCPA.com"] },
       quoteWidth: 560,
+      timeFormat: "24h",
+      dateFormat: "d mmm yyyy",
     });
     assert.throws(() => answer("config:setTheme", ["neon"]), /light or dark/);
     assert.strictEqual(answer("config:getTheme", []), "dark");
@@ -1319,8 +1688,21 @@ function checkSettingsRoundTrip() {
     assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 300, list: 480, reading: 640 });
     assert.throws(() => answer("morrow:configSetSidebarCollapsedFolders", ["nope"]), /folder ids/);
     assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), { leo: ["AriesCPA.com"] });
+    assert.throws(() => answer("morrow:configSetTimeFormat", ["12H"]), /Time format/);
+    assert.strictEqual(answer("morrow:configGetTimeFormat", []), "24h");
+    assert.throws(() => answer("morrow:configSetDateFormat", ["dd-mm-yyyy"]), /Date format/);
+    assert.throws(() => answer("morrow:configSetDateFormat", ["DD/MM/YYYY"]), /Date format/);
+    assert.strictEqual(answer("morrow:configGetDateFormat", []), "d mmm yyyy");
+    const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+    stored.timeFormat = "12H";
+    stored.dateFormat = "yyyy-mm-dd";
+    fs.writeFileSync(file, JSON.stringify(stored));
+    assert.strictEqual(answer("morrow:configGetTimeFormat", []), "system");
+    assert.strictEqual(answer("morrow:configGetDateFormat", []), "yyyy-mm-dd");
     fs.writeFileSync(file, "{");
     assert.strictEqual(answer("config:getTheme", []), "light");
+    assert.strictEqual(answer("morrow:configGetTimeFormat", []), "system");
+    assert.strictEqual(answer("morrow:configGetDateFormat", []), "system");
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
     assert.strictEqual(answer("morrow:configGetDefaultScheduleDelayMinutes", []), 0);
     assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 260, list: 360, reading: 0 });
@@ -1333,6 +1715,82 @@ function checkSettingsRoundTrip() {
       else process.env[key] = value;
     }
   }
+}
+
+function checkDisplayFormats() {
+  const display = require("../shared/display-format");
+  const afternoon = new Date(2026, 9, 22, 15, 4, 7);
+  const morning = new Date(2026, 9, 5, 9, 5, 0);
+  const en = { locale: "en-US" };
+  const gb = { locale: "en-GB" };
+  const prefs = (timeFormat, dateFormat) => ({ timeFormat, dateFormat });
+  assert.strictEqual(display.castTimeFormat("12H", false), null);
+  assert.strictEqual(display.castTimeFormat("12H", true), "system");
+  assert.strictEqual(display.castTimeFormat(" 24h ", false), "24h");
+  assert.strictEqual(display.castTimeFormat(12, true), "system");
+  assert.strictEqual(display.castDateFormat("dd-mm-yyyy", false), null);
+  assert.strictEqual(display.castDateFormat("DD/MM/YYYY", false), null);
+  assert.strictEqual(display.castDateFormat("  d mmm yyyy  ", false), "d mmm yyyy");
+  assert.strictEqual(display.castDateFormat(null, true), "system");
+  assert.deepStrictEqual(display.TIME_FORMATS, ["system", "12h", "24h"]);
+  assert.deepStrictEqual(display.DATE_FORMATS, ["system", "dd/mm/yyyy", "dd/mmmm/yyyy", "mm/dd/yyyy", "yyyy-mm-dd", "d mmm yyyy"]);
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "dd/mm/yyyy"), en), "22/10/2026");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "dd/mmmm/yyyy"), en), "22 October 2026");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "mm/dd/yyyy"), en), "10/22/2026");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "yyyy-mm-dd"), en), "2026-10-22");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "d mmm yyyy"), en), "22 Oct 2026");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "dd/mm/yyyy"), en), "05/10/2026");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "dd/mmmm/yyyy"), en), "05 October 2026");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "mm/dd/yyyy"), en), "10/05/2026");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "yyyy-mm-dd"), en), "2026-10-05");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "d mmm yyyy"), en), "5 Oct 2026");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "system"), en), afternoon.toLocaleDateString("en-US"));
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "system"), gb), afternoon.toLocaleDateString("en-GB"));
+  assert.strictEqual(display.formatTime(afternoon, prefs("12h", "system"), en), "3:04 PM");
+  assert.strictEqual(display.formatTime(morning, prefs("12h", "system"), en), "9:05 AM");
+  assert.strictEqual(display.formatTime(afternoon, prefs("24h", "system"), en), "15:04");
+  assert.strictEqual(display.formatTime(morning, prefs("24h", "system"), en), "09:05");
+  assert.strictEqual(display.formatTime(afternoon, prefs("12h", "system"), gb), "3:04 pm");
+  assert.strictEqual(display.formatTime(morning, prefs("12h", "system"), gb), "9:05 am");
+  assert.strictEqual(display.formatTime(afternoon, prefs("24h", "system"), gb), "15:04");
+  assert.strictEqual(
+    display.formatTime(afternoon, prefs("system", "system"), gb),
+    afternoon.toLocaleTimeString("en-GB", { hour: "numeric", minute: "2-digit" }),
+  );
+  assert.strictEqual(
+    display.formatTime(afternoon, prefs("system", "system"), en),
+    afternoon.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+  );
+  assert.strictEqual(display.formatDateTime(afternoon, prefs("24h", "yyyy-mm-dd"), en), "2026-10-22, 15:04");
+  assert.strictEqual(display.formatDateTime(afternoon, prefs("12h", "d mmm yyyy"), en), "22 Oct 2026, 3:04 PM");
+  assert.strictEqual(
+    display.formatDateTime(afternoon, prefs("system", "system"), en),
+    afternoon.toLocaleString("en-US"),
+  );
+  assert.ok(!display.formatDateTime(afternoon, prefs("24h", "yyyy-mm-dd"), en).includes(":07"));
+  const sameDay = new Date(2026, 9, 22, 8, 0, 0);
+  assert.strictEqual(display.formatListWhen(afternoon, sameDay, prefs("12h", "yyyy-mm-dd"), en), "3:04 PM");
+  assert.strictEqual(display.formatListWhen(morning, afternoon, prefs("system", "dd/mm/yyyy"), en), "05/10/2026");
+  assert.strictEqual(
+    display.formatListWhen(new Date(2026, 0, 2, 15, 4), afternoon, prefs("system", "system"), en),
+    new Date(2026, 0, 2, 15, 4).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+  );
+  assert.strictEqual(
+    display.formatListWhen(new Date(2025, 0, 2, 15, 4), afternoon, prefs("system", "system"), en),
+    new Date(2025, 0, 2, 15, 4).toLocaleDateString("en-US"),
+  );
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "system"), en), "October 2026");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "dd/mmmm/yyyy"), en), "October 2026");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "d mmm yyyy"), en), "Oct 2026");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "yyyy-mm-dd"), en), "2026-10");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "dd/mm/yyyy"), en), "10/2026");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "mm/dd/yyyy"), en), "10/2026");
+  const weekdays = display.weekdayLabels(en);
+  assert.strictEqual(weekdays.length, 7);
+  assert.strictEqual(weekdays[0], "Sun");
+  assert.deepStrictEqual(display.weekdayLabels({ locale: "en-US", narrow: true })[0], "S");
+  assert.strictEqual(display.formatTime(new Date("nope"), prefs("12h", "system"), en), "");
+  assert.strictEqual(display.formatDate(null, prefs("system", "yyyy-mm-dd"), en), "");
 }
 
 for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateInstall"]) {
@@ -1453,7 +1911,10 @@ assert.ok(fs.readFileSync(path.join(root, "docs/adr/2026-10-21-macos-close-hides
 assert.ok(independentDoc.includes("All Account Mail"));
 assert.ok(parityDoc.includes("All Account Mail"));
 assert.ok(independentDoc.includes("Unread chip"));
-assert.ok(parityDoc.includes("filters this view to unread Inbox messages"));
+assert.ok(parityDoc.includes("filters this view to unread messages in those primary folders"));
+assert.ok(independentDoc.includes("Gmail uses All Mail"));
+assert.ok(parityDoc.includes("Gmail uses All Mail"));
+assert.ok(!parityDoc.includes("filters this view to unread Inbox messages"));
 assert.ok(!independentDoc.includes("All Inbox") && !parityDoc.includes("All Inbox"));
 assert.ok(independentDoc.includes("All removes the date bound"));
 assert.ok(independentDoc.includes("already downloaded"));
@@ -2133,6 +2594,10 @@ assert.ok(html.includes('id="brain-category-list"') && html.includes('id="brain-
 assert.ok(html.includes('id="brain-category-collapse"') && html.includes('id="brain-category-save"') && html.includes('id="brain-category-ai"'));
 assert.ok(html.includes('id="brain-skills"') && html.includes('id="brain-home-skills"') && html.includes('id="brain-library-skills"') && html.includes('id="brain-skill-status"'));
 assert.ok(html.includes('id="brain-skill-dialog"') && html.includes('id="brain-skill-dialog-title"') && html.includes('id="settings-tab-compose"') && html.includes('id="settings-compose"'));
+assert.ok(html.includes('id="brain-skill-new"') && html.includes('id="agent-skill-new"') && html.includes('id="custom-skill-form"'));
+assert.ok(html.includes('id="custom-skill-name"') && html.includes('id="custom-skill-instruction"') && html.includes('id="custom-skill-save"'));
+assert.ok(appJs.includes("emailBrain:saveCustomSkill") && appJs.includes("emailBrain:deleteCustomSkill"));
+assert.ok(functionSource(appJs, "paintBrainSkillDialog").includes("setCustomSkillEditor"));
 assert.ok(html.includes("Compose defaults live in") && html.includes('id="brain-open-compose-settings"'));
 const brainProfileHtml = html.slice(html.indexOf('id="brain-profile"'), html.indexOf('id="brain-categories"'));
 assert.ok(!brainProfileHtml.includes('id="brain-compose-form"') && !brainProfileHtml.includes("<summary>Compose defaults and aliases</summary>"), "compose form leaves Brain profile");
@@ -2204,6 +2669,29 @@ assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 1
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 0 }).error.includes("10080"), true);
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "cron", cron: "  0   8 * * 1-5  " }).cron, "0 8 * * 1-5");
 assert.ok(agentUi.scheduleFormValue({ kind: "cron", cron: "   " }).error);
+const draftUi = loadFunctions(appJs, ["customSkillDraft"]);
+assert.strictEqual(draftUi.customSkillDraft({ name: "  ", instruction: "Hi" }).error, "A skill needs a name.");
+assert.strictEqual(draftUi.customSkillDraft({ name: "Desk", instruction: "  " }).error, "A skill needs an instruction.");
+assert.strictEqual(draftUi.customSkillDraft({ name: "n".repeat(81), instruction: "Hi" }).error.includes("80"), true);
+assert.strictEqual(draftUi.customSkillDraft({ name: "Desk", description: "d".repeat(241), instruction: "Hi" }).error.includes("240"), true);
+assert.strictEqual(draftUi.customSkillDraft({ name: "Desk", instruction: "i".repeat(4001) }).error.includes("4000"), true);
+const draftedSkill = draftUi.customSkillDraft({
+  skillId: " user:abc ",
+  name: " Desk ",
+  description: " Overnight ",
+  instruction: " Summarize.\n",
+  calendar: true,
+  person: false,
+  moves: true,
+});
+assert.strictEqual(draftedSkill.name, "Desk");
+assert.strictEqual(draftedSkill.description, "Overnight");
+assert.strictEqual(draftedSkill.instruction, "Summarize.");
+assert.strictEqual(draftedSkill.calendar, true);
+assert.strictEqual(draftedSkill.person, false);
+assert.strictEqual(draftedSkill.moves, true);
+assert.strictEqual(draftedSkill.skillId, "user:abc");
+assert.ok(!draftUi.customSkillDraft({ name: "Desk", instruction: "Hi" }).skillId);
 assert.ok(appJs.includes("emailBrain:setSkillSchedule") && appJs.includes("emailBrain:deleteSkillSchedule"));
 assert.ok(appJs.includes("emailBrain:scheduleFired") && appJs.includes('textContent = paused ? "Resume" : "Pause"'));
 assert.ok(appJs.includes('textContent = "Save schedule"'));
@@ -2237,6 +2725,8 @@ assert.deepStrictEqual(requestUi.skillRequest({ id: "brief-this-person" }, {
   contactEmail: "ada@example.com",
 });
 assert.ok(!requestUi.skillRequest({ id: "morning-brief" }, { contact: "ada@example.com" }).contactEmail);
+assert.strictEqual(requestUi.skillRequest({ id: "user:1", person: true }, { contact: "ada@example.com" }).contactEmail, "ada@example.com");
+assert.ok(!requestUi.skillRequest({ id: "user:1" }, { contact: "ada@example.com" }).contactEmail);
 assert.match(requestUi.agentContextCopy(null), /No message is open/);
 assert.match(requestUi.agentContextCopy({ id: "m1", from: "Ada", subject: "Hi" }), /Ada — Hi/);
 assert.strictEqual(requestUi.agentMessageContext(null), null);
@@ -2362,6 +2852,9 @@ assert.ok(parity.includes("calendar") && parity.includes("nativeAgent:triage") &
 assert.ok(!parity.includes("full agent skill runner"));
 const brainDoc = fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8");
 assert.ok(brainDoc.includes("Morning Brief") && brainDoc.includes("Meeting Prep") && brainDoc.includes("Organize Inbox"));
+assert.ok(brainDoc.includes("custom-skills.json") && brainDoc.includes("emailBrain:saveCustomSkill") && brainDoc.includes("emailBrain:deleteCustomSkill"));
+assert.ok(parity.includes("emailBrain:saveCustomSkill") && parity.includes("custom-skills.json"));
+assert.ok(independentDoc.includes("emailBrain:saveCustomSkill") && independentDoc.includes("custom-skills.json"));
 assert.ok(brainDoc.includes("on_demand") && /never send|Nothing is sent/i.test(brainDoc));
 assert.ok(brainDoc.includes("Brief This Person") && brainDoc.includes("Plan My Week") && brainDoc.includes("Newsletter Digest"));
 assert.ok(brainDoc.includes("Catch Me Up"));
@@ -2825,6 +3318,9 @@ assert.ok(appJs.includes("folder-twist"));
 assert.ok(appJs.includes("morrow:configGetSidebarCollapsedFolders"));
 assert.ok(css.includes("button.folder-twist"));
 assert.ok(html.includes("shared/mailbox-roles.js"));
+assert.ok(html.includes("shared/primary-mailboxes.js"));
+assert.ok(html.indexOf('src="../shared/mailbox-roles.js"') < html.indexOf('src="../shared/primary-mailboxes.js"'));
+assert.ok(html.indexOf('src="../shared/primary-mailboxes.js"') < html.indexOf('src="./app.js"'));
 assert.ok(html.includes("shared/folder-collapse.js"));
 assert.ok(independentDoc.includes("Right-click"));
 assert.ok(independentDoc.includes("Drag a message row"));
@@ -3243,7 +3739,7 @@ const featureSeed = [
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
   ["inbox-rules", "Inbox rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
-  ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded Inbox mail from every account."],
+  ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose drafts. It stays off until you turn it on. Opening a proposal does not send it."],
   ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page."],
   ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release. Restart and install applies a downloaded update once every compose window is closed."],
@@ -4241,6 +4737,164 @@ async function checkAiDraft() {
   assert.ok(installedSkill.data.skills.some((row) => row.id === "newsletter-digest"));
   assert.deepStrictEqual(installedSkill.data.library, []);
   assert.strictEqual(brain.answer("emailBrain:installSkill", [{ skillId: "skill-tone" }]).success, false);
+  {
+    const agentFile = path.join(process.env.MORROW_AI_CONFIG_DIR, "agent.json");
+    const customFile = agent.customSkillsPath();
+    const agentBefore = fs.existsSync(agentFile) ? fs.readFileSync(agentFile, "utf8") : null;
+    const catalogBackup = agent.CATALOG.map((row) => Object.assign({}, row));
+    assert.strictEqual(path.dirname(customFile), process.env.MORROW_AI_CONFIG_DIR);
+    assert.strictEqual(path.basename(customFile), "custom-skills.json");
+    assert.ok(!customFile.startsWith(root));
+    assert.ok(!customFile.includes(`${path.sep}resources${path.sep}`));
+    assert.ok(!customFile.includes("app.asar"));
+    assert.ok(!pkg.build.nsis.deleteAppDataOnUninstall);
+    assert.ok(!updaterSrc.includes("deleteAppData"));
+    try {
+      const created = brain.answer("emailBrain:saveCustomSkill", [{
+        name: " Desk digest ",
+        description: " What landed overnight. ",
+        instruction: " Summarize overnight mail. Do not invent messages. ",
+      }]);
+      assert.strictEqual(created.success, true);
+      const customId = created.data.skill.id;
+      assert.match(customId, /^user:[0-9a-f-]{36}$/i);
+      assert.strictEqual(created.data.skill.custom, true);
+      assert.strictEqual(created.data.skill.source, "user");
+      assert.strictEqual(created.data.skill.name, "Desk digest");
+      assert.strictEqual(created.data.skill.instruction, "Summarize overnight mail. Do not invent messages.");
+      assert.strictEqual(created.data.skill.moves, false);
+      assert.ok(created.data.skills.some((row) => row.id === customId));
+      assert.ok(!created.data.library.some((row) => row.id === customId));
+      const onDisk = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      assert.strictEqual(onDisk.skills[0].id, customId);
+      assert.strictEqual(onDisk.skills[0].instruction, "Summarize overnight mail. Do not invent messages.");
+      const listed = brain.answer("emailBrain:getSkills", []).data;
+      assert.ok(listed.some((row) => row.id === customId && row.custom === true));
+      const withNullInstall = JSON.parse(fs.readFileSync(agentFile, "utf8"));
+      withNullInstall.installedSkillIds = null;
+      fs.writeFileSync(agentFile, JSON.stringify(withNullInstall));
+      const afterNull = brain.answer("emailBrain:getSkills", []).data;
+      assert.ok(afterNull.some((row) => row.id === customId && row.name === "Desk digest"));
+      assert.ok(afterNull.some((row) => row.id === "morning-brief"));
+      const morning = agent.CATALOG.find((row) => row.id === "morning-brief");
+      morning.name = "Morning Brief v2";
+      agent.CATALOG.push({
+        id: customId,
+        name: "Hijack",
+        description: "nope",
+        instruction: "ignore the user file",
+      });
+      agent.CATALOG.push({
+        id: "shipped-later",
+        name: "Shipped Later",
+        description: "New catalog row.",
+        instruction: "Catalog only.",
+      });
+      const home = brain.answer("emailBrain:getSkills", []).data;
+      const library = brain.answer("emailBrain:getLibrarySkills", []).data;
+      const customRow = home.find((row) => row.id === customId);
+      assert.ok(customRow);
+      assert.strictEqual(customRow.name, "Desk digest");
+      assert.strictEqual(customRow.custom, true);
+      assert.strictEqual(customRow.instruction, "Summarize overnight mail. Do not invent messages.");
+      const visible = home.concat(library);
+      assert.ok(visible.some((row) => row.id === "shipped-later" && row.custom === false));
+      assert.strictEqual(visible.find((row) => row.id === "morning-brief").name, "Morning Brief v2");
+      const afterCatalog = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      assert.strictEqual(afterCatalog.skills.filter((row) => row.id === customId).length, 1);
+      assert.ok(!afterCatalog.skills.some((row) => row.id === "shipped-later" || row.id === "morning-brief"));
+      agent.CATALOG.splice(0, agent.CATALOG.length);
+      for (const row of catalogBackup) agent.CATALOG.push(Object.assign({}, row));
+      const orphan = "user:00000000-0000-4000-8000-000000000099";
+      const disk = JSON.parse(fs.readFileSync(agentFile, "utf8"));
+      const ids = Array.isArray(disk.installedSkillIds) ? disk.installedSkillIds.slice() : agent.CATALOG.map((row) => row.id);
+      ids.push(orphan);
+      ids.push("retired-catalog-skill");
+      disk.installedSkillIds = ids;
+      fs.writeFileSync(agentFile, JSON.stringify(disk));
+      const installedAgain = brain.answer("emailBrain:installSkill", [{ skillId: "morning-brief" }]);
+      assert.strictEqual(installedAgain.success, true);
+      const keptIds = JSON.parse(fs.readFileSync(agentFile, "utf8")).installedSkillIds;
+      assert.ok(keptIds.includes(orphan));
+      assert.ok(keptIds.includes(customId));
+      assert.ok(!keptIds.includes("retired-catalog-skill"));
+      const customBeforeSchedule = fs.readFileSync(customFile, "utf8");
+      const scheduled = brain.answer("emailBrain:setSkillSchedule", [{ skillId: customId, kind: "interval", everyMinutes: 45 }]);
+      assert.strictEqual(scheduled.success, true);
+      assert.strictEqual(fs.readFileSync(customFile, "utf8"), customBeforeSchedule);
+      assert.ok(JSON.parse(fs.readFileSync(agentFile, "utf8")).schedules.some((row) => row.skillId === customId && row.everyMinutes === 45));
+      const brokenId = "user:11111111-1111-4111-8111-111111111111";
+      const withBroken = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      withBroken.keeper = "stay";
+      withBroken.skills.push({ id: brokenId, name: "Broken", instruction: "  ", note: "keep-me" });
+      fs.writeFileSync(customFile, JSON.stringify(withBroken));
+      const edited = brain.answer("emailBrain:saveCustomSkill", [{
+        skillId: customId,
+        name: "Desk digest",
+        description: "Overnight only.",
+        instruction: "Summarize overnight mail in three lines.",
+        moves: true,
+      }]);
+      assert.strictEqual(edited.success, true);
+      assert.strictEqual(edited.data.skill.moves, true);
+      assert.strictEqual(edited.data.skill.description, "Overnight only.");
+      const preserved = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      assert.strictEqual(preserved.keeper, "stay");
+      assert.strictEqual(preserved.skills.find((row) => row.id === brokenId).note, "keep-me");
+      assert.ok(!brain.answer("emailBrain:getSkills", []).data.some((row) => row.id === brokenId));
+      assert.strictEqual(brain.answer("emailBrain:saveCustomSkill", [{ name: "X", instruction: "   " }]).success, false);
+      assert.strictEqual(brain.answer("emailBrain:saveCustomSkill", [{ name: " ", instruction: "Hello there." }]).success, false);
+      assert.strictEqual(brain.answer("emailBrain:saveCustomSkill", [{ skillId: "morning-brief", name: "X", instruction: "Hello there." }]).success, false);
+      assert.strictEqual(brain.answer("emailBrain:deleteCustomSkill", [{ skillId: "morning-brief" }]).success, false);
+      const blockedRun = await brain.answer("emailBrain:runSkill", [{ skillId: customId }]);
+      assert.strictEqual(blockedRun.success, true);
+      assert.strictEqual(blockedRun.data.accepted, false);
+      assert.match(blockedRun.data.error, /API key/);
+      const deleted = brain.answer("emailBrain:deleteCustomSkill", [{ skillId: customId }]);
+      assert.strictEqual(deleted.success, true);
+      assert.strictEqual(deleted.data.deleted, true);
+      const afterDelete = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      assert.ok(!afterDelete.skills.some((row) => row.id === customId));
+      assert.strictEqual(afterDelete.skills.find((row) => row.id === brokenId).note, "keep-me");
+      assert.ok(!brain.answer("emailBrain:getSkills", []).data.some((row) => row.id === customId));
+      assert.ok(!brain.answer("emailBrain:getLibrarySkills", []).data.some((row) => row.id === customId));
+      assert.ok(!(JSON.parse(fs.readFileSync(agentFile, "utf8")).schedules || []).some((row) => row.skillId === customId));
+      assert.strictEqual(brain.answer("emailBrain:deleteCustomSkill", [{ skillId: brokenId }]).success, true);
+      const second = brain.answer("emailBrain:saveCustomSkill", [{
+        name: "Second",
+        description: "Other",
+        instruction: "List unread mail.",
+      }]);
+      assert.strictEqual(second.success, true);
+      assert.strictEqual(brain.answer("emailBrain:removeSkill", [{ skillId: second.data.skill.id }]).success, true);
+      assert.ok(!JSON.parse(fs.readFileSync(customFile, "utf8")).skills.some((row) => row.id === second.data.skill.id));
+      const fillers = [];
+      for (let index = 0; index < 40; index += 1) {
+        fillers.push({
+          id: `user:00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
+          name: "Filled",
+          description: "",
+          instruction: "Keep.",
+        });
+      }
+      fs.writeFileSync(customFile, JSON.stringify({ skills: fillers }));
+      const capped = brain.answer("emailBrain:saveCustomSkill", [{ name: "One more", instruction: "No room." }]);
+      assert.strictEqual(capped.success, false);
+      assert.match(capped.error.message, /40/);
+      assert.strictEqual(JSON.parse(fs.readFileSync(customFile, "utf8")).skills.length, 40);
+      fs.writeFileSync(customFile, "{");
+      const refused = brain.answer("emailBrain:saveCustomSkill", [{ name: "Nope", instruction: "Do a thing." }]);
+      assert.strictEqual(refused.success, false);
+      assert.match(refused.error.message, /left in place/);
+      assert.strictEqual(fs.readFileSync(customFile, "utf8"), "{");
+    } finally {
+      agent.CATALOG.splice(0, agent.CATALOG.length);
+      for (const row of catalogBackup) agent.CATALOG.push(Object.assign({}, row));
+      if (agentBefore == null) fs.rmSync(agentFile, { force: true });
+      else fs.writeFileSync(agentFile, agentBefore);
+      fs.rmSync(customFile, { force: true });
+    }
+  }
   const missingKey = await brain.answer("emailBrain:runSkill", [{ skillId: "morning-brief" }]);
   assert.strictEqual(missingKey.success, true);
   assert.strictEqual(missingKey.data.accepted, false);
@@ -4275,6 +4929,12 @@ async function checkAiDraft() {
   );
   assert.strictEqual(dropped.moves.length, 1);
   assert.strictEqual(dropped.moves[0].messageId, "m-live");
+  const customDropped = agent.normalizeSkillResult(
+    { moves: false, name: "Desk digest" },
+    { title: "Desk", summary: "Quiet.", moves: [{ messageId: "m-live", labelName: "FYI", reason: "Bulk" }] },
+    { messages: [{ id: "m-live" }] },
+  );
+  assert.strictEqual(customDropped.moves.length, 0);
   process.env.MORROW_AI_API_KEY = "sk-test";
   const originalFetch = global.fetch;
   global.fetch = async () => { throw new Error("rebuild must not call the model without a mailbox"); };
@@ -4358,7 +5018,7 @@ async function checkAiDraft() {
         summary: "Ada asked for the notes.",
         sections: [{ title: "Needs You", items: ["Reply to Ada"] }],
         drafts: [{ messageId: "m-live", to: "ada@example.com", subject: "Re: Need the notes", body: "I will look." }],
-        moves: body.includes("Organize Inbox")
+        moves: body.includes("Organize Inbox") || body.includes('\\"movesAllowed\\":true')
           ? [{ messageId: "m-live", labelName: "FYI", reason: "Bulk" }, { messageId: "made-up", labelName: "FYI", reason: "nope" }]
           : [],
         followUps: [{ messageId: "m-live", kind: "open", label: "Open" }],
@@ -4394,6 +5054,53 @@ async function checkAiDraft() {
     assert.strictEqual(confirmed.data.accepted, false);
     assert.match(confirmed.data.error, /not in the local mailbox/);
     assert.ok(confirmed.data.proposals.some((row) => row.id === organized.data.proposals[0].id));
+    {
+      let customRunId = "";
+      let personId = "";
+      try {
+        const customMade = brain.answer("emailBrain:saveCustomSkill", [{
+          name: "File the noise",
+          description: "Propose filing.",
+          instruction: "Propose a folder for bulk mail.",
+          moves: true,
+          calendar: true,
+        }]);
+        assert.strictEqual(customMade.success, true);
+        customRunId = customMade.data.skill.id;
+        const customRun = await brain.answer("emailBrain:runSkill", [{ skillId: customRunId }]);
+        assert.strictEqual(customRun.data.accepted, true);
+        assert.ok(seenBodies.some((body) => body.includes("Propose a folder for bulk mail.") && body.includes('\\"movesAllowed\\":true')));
+        assert.strictEqual(customRun.data.proposals.length, 1);
+        assert.strictEqual(customRun.data.proposals[0].status, "pending");
+        assert.match(customRun.data.note, /mail only/);
+        const quiet = brain.answer("emailBrain:saveCustomSkill", [{
+          skillId: customRunId,
+          name: "File the noise",
+          description: "Propose filing.",
+          instruction: "Propose a folder for bulk mail.",
+        }]);
+        assert.strictEqual(quiet.success, true);
+        assert.strictEqual(quiet.data.skill.moves, false);
+        const quietRun = await brain.answer("emailBrain:runSkill", [{ skillId: customRunId }]);
+        assert.strictEqual(quietRun.data.accepted, true);
+        assert.strictEqual((quietRun.data.proposals || []).length, 0);
+        assert.ok(seenBodies.some((body) => body.includes('\\"movesAllowed\\":false')));
+        const personSkill = brain.answer("emailBrain:saveCustomSkill", [{
+          name: "One sender",
+          description: "Mail from one person.",
+          instruction: "Brief that person from the messages.",
+          person: true,
+        }]);
+        assert.strictEqual(personSkill.success, true);
+        personId = personSkill.data.skill.id;
+        const personBlocked = await brain.answer("emailBrain:runSkill", [{ skillId: personId }]);
+        assert.strictEqual(personBlocked.data.accepted, false);
+        assert.match(personBlocked.data.error, /contact email|Select a message/);
+      } finally {
+        if (customRunId) brain.answer("emailBrain:deleteCustomSkill", [{ skillId: customRunId }]);
+        if (personId) brain.answer("emailBrain:deleteCustomSkill", [{ skillId: personId }]);
+      }
+    }
     const triaged = await agent.answer("nativeAgent:triage", []);
     assert.strictEqual(triaged.data.reason, "ready");
     const needsYou = triaged.data.sections.find((section) => section.id === "needs-you");
@@ -5251,9 +5958,170 @@ async function checkTidy() {
       engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderId: "INBOX", limit: 20 }]).data.emails.map((row) => row.subject),
       ["Inbox only"],
     );
+    function primaryPair(id) {
+      return db.primaryMailboxes().find((row) => row.accountId === id) || null;
+    }
+    function stampMessage(row) {
+      db.insertMessage(Object.assign({
+        uid: 1,
+        uidValidity: 9,
+        from: "Client <client@example.com>",
+        date: "2026-10-22T00:00:00.000Z",
+        listSortTs: 9000000000000,
+        unread: false,
+        bodyComplete: true,
+        snippet: "primary",
+      }, row));
+    }
+    db.updateMessage("m-all-archived", { list_sort_ts: 9000000000001 });
+    db.updateMessage("m-all-inbox", { list_sort_ts: 9000000000002 });
+    db.updateMessage("m-all-trash", { list_sort_ts: 9000000000003 });
+    stampMessage({
+      id: "m-all-unread",
+      accountId: "gmail-all",
+      folderPath: "[Gmail]/All Mail",
+      uid: 4,
+      threadId: "thr-all-unread",
+      subject: "Unread in All Mail",
+      listSortTs: 9000000000004,
+      unread: true,
+    });
+    insertMailbox("outlook-primary", "outlook-primary@example.com", "outlook");
+    db.replaceFolders("outlook-primary", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Sent", name: "Sent", wellKnown: "sentitems" },
+    ], "/");
+    stampMessage({
+      id: "m-outlook-in",
+      accountId: "outlook-primary",
+      folderPath: "INBOX",
+      threadId: "thr-outlook-in",
+      subject: "Outlook inbox",
+      listSortTs: 9000000000005,
+      unread: true,
+    });
+    stampMessage({
+      id: "m-outlook-sent",
+      accountId: "outlook-primary",
+      folderPath: "Sent",
+      uid: 2,
+      threadId: "thr-outlook-sent",
+      subject: "Outlook sent",
+      listSortTs: 9000000000006,
+    });
+    insertMailbox("gmail-fallback", "fallback@example.com", "gmail");
+    db.replaceFolders("gmail-fallback", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "[Gmail]/Sent Mail", name: "Sent Mail", wellKnown: "sentitems" },
+    ], "/");
+    stampMessage({
+      id: "m-fallback-in",
+      accountId: "gmail-fallback",
+      folderPath: "INBOX",
+      threadId: "thr-fallback",
+      subject: "Fallback inbox",
+      listSortTs: 9000000000007,
+      unread: true,
+    });
+    insertMailbox("gmail-well", "well@example.com", "gmail");
+    db.replaceFolders("gmail-well", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Everything", name: "Everything", wellKnown: "all" },
+    ], "/");
+    stampMessage({
+      id: "m-well-in",
+      accountId: "gmail-well",
+      folderPath: "INBOX",
+      threadId: "thr-well-in",
+      subject: "Well inbox",
+      listSortTs: 9000000000008,
+    });
+    stampMessage({
+      id: "m-well-all",
+      accountId: "gmail-well",
+      folderPath: "Everything",
+      uid: 2,
+      threadId: "thr-well-all",
+      subject: "Well all",
+      listSortTs: 9000000000009,
+      unread: true,
+    });
+    stampMessage({
+      id: "m-special-all",
+      accountId: "special-all",
+      folderPath: "Everything",
+      threadId: "thr-special-all",
+      subject: "Special all",
+      listSortTs: 9000000000010,
+    });
+    stampMessage({
+      id: "m-special-in",
+      accountId: "special-all",
+      folderPath: "INBOX",
+      uid: 2,
+      threadId: "thr-special-in",
+      subject: "Special inbox",
+      listSortTs: 9000000000011,
+    });
+    assert.equal(db.folderByPath("gmail-all", "[Gmail]/All Mail").well_known, null);
+    assert.deepStrictEqual(db.pathsForKey("gmail-all", "all"), []);
+    assert.deepStrictEqual(db.pathsForKey("special-all", "all").map((row) => row.path), ["Everything"]);
+    assert.deepStrictEqual([primaryPair("gmail-all").path, primaryPair("gmail-all").role], ["[Gmail]/All Mail", "all"]);
+    assert.deepStrictEqual([primaryPair("outlook-primary").path, primaryPair("outlook-primary").role], ["INBOX", "inbox"]);
+    assert.deepStrictEqual([primaryPair("gmail-fallback").path, primaryPair("gmail-fallback").role], ["INBOX", "inbox"]);
+    assert.deepStrictEqual([primaryPair("special-all").path, primaryPair("special-all").role], ["INBOX", "inbox"]);
+    assert.deepStrictEqual([primaryPair("plain-all").path, primaryPair("plain-all").role], ["INBOX", "inbox"]);
+    assert.deepStrictEqual([primaryPair("gmail-well").path, primaryPair("gmail-well").role], ["Everything", "all"]);
+    const primaryIds = ["gmail-all", "outlook-primary", "gmail-fallback", "gmail-well", "special-all", "plain-all"];
+    function subjectsFor(emails, accountId) {
+      return emails.filter((row) => row.accountId === accountId).map((row) => row.subject).sort();
+    }
+    const primaryList = engine.answer("mail:listFromCache", [{ folderKey: "primary", limit: 40 }]).data.emails;
+    assert.deepStrictEqual(subjectsFor(primaryList, "gmail-all"), ["Archived client note", "Unread in All Mail"]);
+    assert.deepStrictEqual(subjectsFor(primaryList, "outlook-primary"), ["Outlook inbox"]);
+    assert.deepStrictEqual(subjectsFor(primaryList, "gmail-fallback"), ["Fallback inbox"]);
+    assert.deepStrictEqual(subjectsFor(primaryList, "gmail-well"), ["Well all"]);
+    assert.deepStrictEqual(subjectsFor(primaryList, "special-all"), ["Special inbox"]);
+    const pairs = db.primaryMailboxes()
+      .filter((row) => primaryIds.includes(row.accountId))
+      .map((row) => ({ accountId: row.accountId, path: row.path, role: row.role }));
+    const boxed = engine.answer("mail:listFromCache", [{ mailboxes: pairs, limit: 40 }]).data.emails;
+    assert.deepStrictEqual(
+      boxed.map((row) => row.id).sort(),
+      primaryList.filter((row) => primaryIds.includes(row.accountId)).map((row) => row.id).sort(),
+    );
+    assert.deepStrictEqual(
+      subjectsFor(engine.answer("mail:listFromCache", [{ folderKey: "primary", filterUnread: true, limit: 40 }]).data.emails, "gmail-all"),
+      ["Unread in All Mail"],
+    );
+    assert.deepStrictEqual(
+      engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderId: "[Gmail]/All Mail", limit: 20 }]).data.emails.map((row) => row.subject).sort(),
+      ["Archived client note", "Unread in All Mail"],
+    );
+    assert.deepStrictEqual(
+      engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderKey: "inbox", limit: 20 }]).data.emails.map((row) => row.subject),
+      ["Inbox only"],
+    );
+    const until = new Date(Date.now() + 3600000).toISOString();
+    db.setSnooze("gmail-all", "thr-all", until);
+    const snoozedPrimary = engine.answer("mail:listFromCache", [{ folderKey: "primary", limit: 40 }]).data.emails;
+    assert.equal(snoozedPrimary.some((row) => row.accountId === "gmail-all" && row.threadId === "thr-all"), false);
+    assert.equal(snoozedPrimary.some((row) => row.subject === "Unread in All Mail"), true);
+    assert.equal(
+      engine.answer("mail:listFromCache", [{ accountId: "gmail-all", folderId: "[Gmail]/All Mail", limit: 20 }]).data.emails.some((row) => row.threadId === "thr-all"),
+      true,
+    );
+    db.clearSnooze("gmail-all", "thr-all");
+    db.setSnooze("gmail-fallback", "thr-fallback", until);
+    assert.equal(engine.answer("mail:listFromCache", [{ folderKey: "primary", limit: 40 }]).data.emails.some((row) => row.id === "m-fallback-in"), false);
+    db.clearSnooze("gmail-fallback", "thr-fallback");
+    assert.equal(engine.answer("mail:listFromCache", [{ folderKey: "primary", limit: 40 }]).data.emails.some((row) => row.id === "m-fallback-in"), true);
     db.removeAccount("gmail-all");
     db.removeAccount("plain-all");
     db.removeAccount("special-all");
+    db.removeAccount("outlook-primary");
+    db.removeAccount("gmail-fallback");
+    db.removeAccount("gmail-well");
     savedRemote = {
       withClient: remote.withClient,
       searchUids: remote.searchUids,

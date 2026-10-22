@@ -56,6 +56,8 @@ const state = {
     collapsedFolders: {},
     scheduleDelay: 0,
     layout: { folders: 260, list: 360, reading: 0 },
+    timeFormat: "system",
+    dateFormat: "system",
   },
   providerFolders: null,
   dragMessage: null,
@@ -122,6 +124,8 @@ let brainCategoryIndex = -1;
 let brainCategoryGen = 0;
 let brainSkillBusy = false;
 let brainSkillDialogId = "";
+let customSkillCreating = false;
+let customSkillSaving = false;
 let brainFixBusy = false;
 let brainCategoryBusy = false;
 let brainSkillCache = {};
@@ -130,6 +134,7 @@ let calendarGen = 0;
 let agentGen = 0;
 let agentChatBusy = false;
 let agentTurns = [];
+let agentPaintPayload = null;
 let agentProposalIds = null;
 let agentPoll = null;
 let brainDragIndex = -1;
@@ -382,7 +387,10 @@ function accountLabel(account) {
 }
 
 function allInboxUnread(accounts) {
-  return (Array.isArray(accounts) ? accounts : []).reduce((sum, account) => {
+  const list = Array.isArray(accounts) ? accounts : [];
+  const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
+  if (helper && typeof helper.sumUnread === "function") return helper.sumUnread(list, foldersOf);
+  return list.reduce((sum, account) => {
     const count = Number(account && account.unreadCount);
     return sum + (Number.isFinite(count) && count > 0 ? count : 0);
   }, 0);
@@ -397,12 +405,12 @@ function allAccountMailTitle(unreadOnly) {
 }
 
 function allAccountMailSyncCopy() {
-  return "All Account Mail shows mail already downloaded. Open an Inbox to sync that account.";
+  return "All Account Mail shows mail already downloaded. Open Gmail All Mail, or Inbox for another account, to sync that account.";
 }
 
 function allAccountMailEmptyCopy(unreadOnly) {
   if (unreadOnly) return "No unread messages in All Account Mail.";
-  return "No downloaded messages in All Account Mail. Open an account's Inbox and use Sync to download recent mail.";
+  return "No downloaded messages in All Account Mail. Open Gmail All Mail, or Inbox for another account, and use Sync to download recent mail.";
 }
 
 function allAccountMailMatches(query) {
@@ -443,7 +451,12 @@ function mailListRequest(view) {
     return { channel: "mail:searchLocal", params };
   }
   if (source.allInbox) {
-    const params = { folderKey: "inbox", limit, offset };
+    const params = { folderKey: "primary", limit, offset };
+    const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
+    if (helper && typeof helper.primaryMailboxes === "function") {
+      const mailboxes = helper.primaryMailboxes(source.accounts, foldersOf);
+      if (mailboxes.length) params.mailboxes = mailboxes;
+    }
     if (source.unreadOnly) params.filterUnread = true;
     return { channel: "mail:listFromCache", params };
   }
@@ -1461,10 +1474,13 @@ function calendarView(payload) {
 function monthRange(year, month) {
   const start = new Date(year, month, 1);
   const end = new Date(year, month + 1, 1);
+  const label = typeof displayStamp === "function"
+    ? displayStamp(start, "month")
+    : start.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   return {
     timeMin: start.toISOString(),
     timeMax: end.toISOString(),
-    label: start.toLocaleString("en-US", { month: "long", year: "numeric" }),
+    label,
     year,
     month,
   };
@@ -1516,6 +1532,7 @@ function clockLabel(value) {
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return "";
   const date = new Date(time);
+  if (typeof displayStamp === "function") return displayStamp(date, "time");
   let hour = date.getHours();
   const minute = String(date.getMinutes()).padStart(2, "0");
   const suffix = hour >= 12 ? "PM" : "AM";
@@ -1535,14 +1552,16 @@ function formatEventWhen(event) {
 function formatEventDetailWhen(event) {
   if (!event || !event.start) return "";
   if (event.allDay) {
-    const start = String(event.start).slice(0, 10);
-    const end = String(event.end || "").slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(end) && end > start) return start + " – " + end + " (end date is exclusive)";
+    const start = shownDayKey(String(event.start).slice(0, 10));
+    const end = shownDayKey(String(event.end || "").slice(0, 10));
+    if (String(event.end || "").slice(0, 10) > String(event.start || "").slice(0, 10) && /^\d{4}-\d{2}-\d{2}$/.test(String(event.end || "").slice(0, 10))) {
+      return start + " – " + end + " (end date is exclusive)";
+    }
     return "All day · " + start;
   }
   const startMs = Date.parse(event.start);
   if (!Number.isFinite(startMs)) return formatEventWhen(event);
-  const date = new Date(startMs).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  const date = displayStamp(new Date(startMs), "date", { weekday: true });
   const when = formatEventWhen(event);
   return when ? date + " · " + when : date;
 }
@@ -1562,7 +1581,18 @@ function agendaEvents(events) {
 
 function agendaLine(event) {
   if (!event) return "";
-  const parts = [eventDay(event), formatEventWhen(event), event.title || "(no title)"];
+  let dayLabel = eventDay(event);
+  if (dayLabel && typeof displayStamp === "function") {
+    const bits = dayLabel.split("-");
+    if (bits.length === 3) {
+      const date = new Date(Number(bits[0]), Number(bits[1]) - 1, Number(bits[2]));
+      if (!Number.isNaN(date.getTime())) {
+        const formatted = displayStamp(date, "date");
+        if (formatted) dayLabel = formatted;
+      }
+    }
+  }
+  const parts = [dayLabel, formatEventWhen(event), event.title || "(no title)"];
   if (event.location) parts.push(event.location);
   return parts.filter(Boolean).join(" · ");
 }
@@ -1728,7 +1758,11 @@ function vacationConfirm(kind, owner, options) {
     if (!value) return end ? "No end" : "Immediately";
     const time = new Date(value);
     if (!Number.isFinite(time.getTime())) return "Unknown";
-    if (provider !== "imap") return time.toLocaleString() + " (" + zone + ")";
+    if (provider !== "imap") {
+      return typeof displayStamp === "function"
+        ? displayStamp(time, "dateTime", { withZone: true })
+        : time.toLocaleString() + " (" + zone + ")";
+    }
     const midnight = Date.parse(time.toISOString().slice(0, 10) + "T00:00:00.000Z");
     return new Date(midnight + (end && time.getTime() > midnight ? 86400000 : 0)).toISOString().slice(0, 10) + " 00:00 UTC" + (end ? " (exclusive)" : "");
   };
@@ -2162,17 +2196,73 @@ function applyShellTheme(root, theme, accent) {
   return mode;
 }
 
+function displayStamp(date, kind, extra) {
+  const options = extra && typeof extra === "object" ? extra : {};
+  const api = typeof morrowDisplayFormat === "object" && morrowDisplayFormat ? morrowDisplayFormat : null;
+  const prefs = state && state.prefs ? state.prefs : {};
+  if (kind === "weekdays") {
+    if (api && typeof api.weekdayLabels === "function") return api.weekdayLabels(options);
+    if (options.narrow) return ["S", "M", "T", "W", "T", "F", "S"];
+    return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  }
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  let text = "";
+  if (api) {
+    if (kind === "time") text = api.formatTime(date, prefs, options);
+    else if (kind === "date") text = api.formatDate(date, prefs, options);
+    else if (kind === "month") text = api.formatMonthLabel(date, prefs, options);
+    else if (kind === "list") text = api.formatListWhen(date, options.now instanceof Date ? options.now : new Date(), prefs, options);
+    else text = api.formatDateTime(date, prefs, options);
+  } else if (kind === "time") {
+    text = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  } else if (kind === "month") {
+    text = date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  } else if (kind === "list") {
+    const now = options.now instanceof Date ? options.now : new Date();
+    if (date.toDateString() === now.toDateString()) text = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    else {
+      const sameYear = date.getFullYear() === now.getFullYear();
+      text = date.toLocaleDateString([], sameYear
+        ? { month: "short", day: "numeric" }
+        : { year: "numeric", month: "short", day: "numeric" });
+    }
+  } else if (kind === "date") {
+    if (options.omitYear) text = date.toLocaleDateString([], { month: "short", day: "numeric" });
+    else if (options.weekday) {
+      text = date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+    } else text = date.toLocaleDateString();
+  } else if (options.compact) {
+    text = date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  } else if (options.medium) {
+    try { text = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date); }
+    catch { text = date.toLocaleString(); }
+  } else text = date.toLocaleString();
+  if (options.withZone && text) {
+    let zone = "";
+    try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { zone = ""; }
+    if (zone) text += " (" + zone + ")";
+  }
+  return text;
+}
+
+function shownWhen(date, withZone) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return displayStamp(date, "dateTime", withZone ? { withZone: true } : undefined);
+}
+
+function shownDayKey(value) {
+  const day = String(value || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return String(value || "");
+  const parts = day.split("-");
+  const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  if (Number.isNaN(date.getTime())) return day;
+  return displayStamp(date, "date") || day;
+}
+
 function listWhen(iso) {
   const date = iso ? new Date(iso) : null;
   if (!date || Number.isNaN(date.getTime())) return "";
-  const now = new Date();
-  if (date.toDateString() === now.toDateString()) {
-    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  }
-  const sameYear = date.getFullYear() === now.getFullYear();
-  return date.toLocaleDateString([], sameYear
-    ? { month: "short", day: "numeric" }
-    : { year: "numeric", month: "short", day: "numeric" });
+  return displayStamp(date, "list", { now: new Date() });
 }
 
 function nextRow(length, index, delta) {
@@ -2466,7 +2556,11 @@ function scheduledLine(row, accounts = []) {
   const subject = String((row && row.subject) || "").trim() || "(no subject)";
   const to = Array.isArray(row && row.to) ? row.to.filter(Boolean).join(", ") : String((row && row.to) || "").trim();
   const when = row && row.sendAt ? new Date(row.sendAt) : null;
-  const time = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")" : "Unknown time";
+  const time = when && !Number.isNaN(when.getTime())
+    ? (typeof displayStamp === "function"
+      ? displayStamp(when, "dateTime", { withZone: true })
+      : when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")")
+    : "Unknown time";
   const failed = row && row.status === "failed" ? (String(row.error || "").trim() || "Send failed.") : "";
   const account = accounts.find(item => item.id === row.accountId);
   return [account ? account.email : (row && row.accountId), subject, to, time, row.status === "failed" ? "Failed — check Sent before retrying" : row.status === "sending" ? "Sending" : "Pending", failed].filter(Boolean).join(" · ");
@@ -2661,8 +2755,8 @@ function readable(email) {
 }
 
 // Layout attributes and a filtered CSS subset. Handlers, embedded documents, and
-// active URLs stay out. Declarations are applied through CSSOM so the app CSP
-// can keep style-src 'self' (inline style attributes would not run).
+// active URLs stay out. Style attributes are renamed before the HTML parser sees
+// them, then declarations are applied through CSSOM. style-src stays 'self'.
 const MAIL_ALIGN = new Set("left right center justify top middle bottom baseline absbottom absmiddle texttop".split(" "));
 const MAIL_CSS_PROPS = new Set(("color background background-color background-image background-repeat background-position background-size " +
   "font font-family font-size font-weight font-style font-variant line-height letter-spacing word-spacing word-break overflow-wrap " +
@@ -2910,16 +3004,128 @@ function mailCopyLayout(el, tag, source, imagesOn) {
   }
 }
 
+// style-src 'self' refuses a style attribute while the parser builds the tree.
+// Rename it first so the console stays quiet, then read the parked value below.
+function parkMailStyleAttributes(html) {
+  const src = String(html || "");
+  const out = [];
+  const len = src.length;
+  let i = 0;
+  while (i < len) {
+    const lt = src.indexOf("<", i);
+    if (lt < 0) { out.push(src.slice(i)); break; }
+    if (lt > i) out.push(src.slice(i, lt));
+    if (src.startsWith("<!--", lt)) {
+      const end = src.indexOf("-->", lt + 4);
+      const stop = end < 0 ? len : end + 3;
+      out.push(src.slice(lt, stop));
+      i = stop;
+      continue;
+    }
+    if (src.startsWith("<!", lt) || src.startsWith("<?", lt)) {
+      const end = src.indexOf(">", lt + 2);
+      const stop = end < 0 ? len : end + 1;
+      out.push(src.slice(lt, stop));
+      i = stop;
+      continue;
+    }
+    if (src.charCodeAt(lt + 1) === 47) {
+      const end = src.indexOf(">", lt + 2);
+      const stop = end < 0 ? len : end + 1;
+      out.push(src.slice(lt, stop));
+      i = stop;
+      continue;
+    }
+    let j = lt + 1;
+    const nameStart = j;
+    while (j < len) {
+      const c = src.charCodeAt(j);
+      const ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 45 || c === 58 || c === 95;
+      if (!ok) break;
+      j += 1;
+    }
+    if (j === nameStart) { out.push("<"); i = lt + 1; continue; }
+    const tag = src.slice(nameStart, j);
+    out.push(src.slice(lt, j));
+    let closed = false;
+    while (j < len && !closed) {
+      const c = src.charCodeAt(j);
+      if (c === 32 || c === 9 || c === 10 || c === 12 || c === 13) { out.push(src[j]); j += 1; continue; }
+      if (c === 62) { out.push(">"); j += 1; closed = true; break; }
+      if (c === 47 && src.charCodeAt(j + 1) === 62) { out.push("/>"); j += 2; closed = true; break; }
+      const attrStart = j;
+      while (j < len) {
+        const a = src.charCodeAt(j);
+        if (a === 32 || a === 9 || a === 10 || a === 12 || a === 13 || a === 61 || a === 47 || a === 62) break;
+        j += 1;
+      }
+      const name = src.slice(attrStart, j);
+      if (!name) { out.push(src[j] || ""); j += 1; continue; }
+      out.push(/^style$/i.test(name) ? "data-mail-style" : name);
+      while (j < len) {
+        const s = src.charCodeAt(j);
+        if (s !== 32 && s !== 9 && s !== 10 && s !== 12 && s !== 13) break;
+        out.push(src[j]);
+        j += 1;
+      }
+      if (src.charCodeAt(j) !== 61) continue;
+      out.push("=");
+      j += 1;
+      while (j < len) {
+        const s = src.charCodeAt(j);
+        if (s !== 32 && s !== 9 && s !== 10 && s !== 12 && s !== 13) break;
+        out.push(src[j]);
+        j += 1;
+      }
+      const q = src.charCodeAt(j);
+      if (q === 34 || q === 39) {
+        const end = src.indexOf(src[j], j + 1);
+        const stop = end < 0 ? len : end + 1;
+        out.push(src.slice(j, stop));
+        j = stop;
+      } else {
+        const start = j;
+        while (j < len) {
+          const u = src.charCodeAt(j);
+          if (u === 32 || u === 9 || u === 10 || u === 12 || u === 13 || u === 62) break;
+          j += 1;
+        }
+        out.push(src.slice(start, j));
+      }
+    }
+    i = j;
+    if (/^(style|script|textarea|title)$/i.test(tag)) {
+      const rest = src.slice(i);
+      const close = new RegExp("</" + tag.replace(/[^\w:-]/g, "") + "\\s*>", "i");
+      const found = close.exec(rest);
+      if (!found) { out.push(rest); i = len; }
+      else {
+        const stop = found.index + found[0].length;
+        out.push(rest.slice(0, stop));
+        i += stop;
+      }
+    }
+  }
+  return out.join("");
+}
+
+function mailInlineStyle(source) {
+  if (!source || typeof source.getAttribute !== "function") return "";
+  const live = source.getAttribute("style");
+  if (live) return live;
+  return source.getAttribute("data-mail-style") || "";
+}
+
 function appendSafeMailHtml(parent, html, imagesOn) {
   const template = document.createElement("template");
-  template.innerHTML = String(html || "");
+  template.innerHTML = parkMailStyleAttributes(html);
   const allowed = new Set("p div span br hr b strong i em u s small sub sup blockquote pre code ul ol li table tbody thead tfoot tr td th col colgroup caption center font h1 h2 h3 h4 h5 h6 a".split(" "));
   const blocked = new Set("script iframe object embed svg math title template link meta base audio video source input textarea select noscript".split(" "));
   const styles = [];
   const inlines = [];
   function decorate(dest, tag, source) {
     mailCopyLayout(dest, tag, source, imagesOn);
-    const inline = source.getAttribute("style");
+    const inline = mailInlineStyle(source);
     if (inline) inlines.push({ el: dest, css: inline });
   }
   function placeImage(source, target) {
@@ -2941,7 +3147,7 @@ function appendSafeMailHtml(parent, html, imagesOn) {
       if (klass) image.setAttribute("class", klass);
       const id = mailScopeToken(source.getAttribute("id"));
       if (id) image.setAttribute("id", id);
-      const inline = source.getAttribute("style");
+      const inline = mailInlineStyle(source);
       if (inline) inlines.push({ el: image, css: inline });
       if (typeof image.addEventListener === "function") {
         image.addEventListener("load", () => {
@@ -4688,7 +4894,9 @@ function syncClock(ms) {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return "";
   try {
-    return new Date(n).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const date = new Date(n);
+    if (typeof displayStamp === "function") return displayStamp(date, "time");
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   } catch {
     return "";
   }
@@ -4698,11 +4906,22 @@ function syncDetail(sync) {
   if (!sync || !sync.state) return "";
   const where = [sync.accountLabel, sync.folderLabel].filter(Boolean).join(" · ");
   const phase = phaseWord(sync.phase);
-  const success = sync.lastSuccessAt && sync.accountId && sync.folderId ? new Date(sync.lastSuccessAt).toLocaleString() : "";
+  const success = sync.lastSuccessAt && sync.accountId && sync.folderId
+    ? (typeof displayStamp === "function"
+      ? displayStamp(new Date(sync.lastSuccessAt), "dateTime")
+      : new Date(sync.lastSuccessAt).toLocaleString())
+    : "";
   const successLine = success ? `${where} · Last checked ${success}` : "";
   if (sync.state === "syncing") return [where, phase || "Downloading recent mail", successLine].filter(Boolean).join(" · ");
   if (sync.state === "error") return [where, redactDebugText(sync.lastError || sync.message || "Sync failed"), sync.retrying ? "Retrying…" : ""].filter(Boolean).join(" · ");
-  if (sync.state === "paused") return [sync.message || "Paused for rate limit", where, sync.retryAt ? "Retrying at " + new Date(sync.retryAt).toLocaleString() : "Waiting before retrying"].filter(Boolean).join(" · ");
+  if (sync.state === "paused") {
+    const retry = sync.retryAt
+      ? "Retrying at " + (typeof displayStamp === "function"
+        ? displayStamp(new Date(sync.retryAt), "dateTime")
+        : new Date(sync.retryAt).toLocaleString())
+      : "Waiting before retrying";
+    return [sync.message || "Paused for rate limit", where, retry].filter(Boolean).join(" · ");
+  }
   if (sync.state === "done") return successLine || [where, "Not synced yet"].filter(Boolean).join(" · ");
   return sync.message || "";
 }
@@ -4804,11 +5023,9 @@ function finishLocalSync(kind, error) {
 }
 
 let supportLogLines = [];
-const logTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
-const logTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 function logLine(row) {
   const at = new Date(row && row.at);
-  const when = Number.isFinite(+at) ? logTimeFormat.format(at) + " (" + logTimeZone + ")" : "Unknown time";
+  const when = Number.isFinite(+at) ? shownWhen(at, true) : "Unknown time";
   return [when, redactDebugText(row && row.source), redactDebugText(row && row.text)].filter(Boolean).join(" · ");
 }
 function paintLog(lines) {
@@ -4849,7 +5066,7 @@ async function readSupportLog() {
   }
 }
 function previewSupportLog() {
-  const header = "Morrow Mail " + appVersion + " · Support preview · " + new Date().toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")\nKnown credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. Up to 200 recent session lines; this is not a full history.\n\n";
+  const header = "Morrow Mail " + appVersion + " · Support preview · " + shownWhen(new Date(), true) + "\nKnown credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. Up to 200 recent session lines; this is not a full history.\n\n";
   $("support-preview").value = header + filteredSupportLog().map(logLine).join("\n");
   $("support-copy-status").textContent = "Review the preview before copying.";
   openDialog("support-dialog");
@@ -5309,7 +5526,8 @@ function renderList() {
       const stamp = JSON.stringify([email.folderId, email.from, email.subject, email.snippet, email.date,
         email.unread, email.isStarred, !!state.query, state.allInbox,
         state.allInbox && mailbox ? accountLabel(mailbox) : "",
-        state.query && mailbox ? mailbox.email : ""]);
+        state.query && mailbox ? mailbox.email : "",
+        state.prefs.timeFormat, state.prefs.dateFormat]);
       let cached = messageRows.get(key);
       if (!cached || cached.stamp !== stamp) {
         const row = messageRow(email);
@@ -5728,6 +5946,7 @@ function renderReader(focus) {
   pane.replaceChildren();
   syncAttachmentPreview(email);
   if (!email) {
+    resetThreadStrip();
     const wrap = document.createElement("div");
     wrap.className = "empty-read";
     const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -5754,6 +5973,7 @@ function renderReader(focus) {
       hint.textContent = "Select a conversation to read.";
       wrap.append(mark, title, hint);
     }
+    if (isReaderWindow()) pane.appendChild(readerCloseBar());
     pane.appendChild(wrap);
     return;
   }
@@ -5766,24 +5986,22 @@ function renderReader(focus) {
     const when = document.createElement("p");
     when.className = "meta";
     const failedAt = email.date ? new Date(email.date) : null;
-    when.textContent = failedAt && !Number.isNaN(failedAt.getTime()) ? failedAt.toLocaleString() : "";
+    when.textContent = shownWhen(failedAt);
     const error = document.createElement("p");
     error.className = "hint error";
     error.setAttribute("role", "status");
     error.textContent = email.bodyError;
+    if (isReaderWindow()) pane.appendChild(readerCloseBar());
     pane.append(heading, from, when, error);
-    if (isReaderWindow()) pane.appendChild(renderReaderWindowBar(false));
     if (focus) {
       heading.tabIndex = -1;
       heading.focus();
     }
     return;
   }
-  if (isReaderWindow()) pane.appendChild(renderReaderWindowBar(true));
-  else {
-    renderActions(pane, email);
-    renderSuggestions(pane, email);
-  }
+  renderActions(pane, email);
+  renderSuggestions(pane, email);
+  appendReaderClose(pane);
   const heading = document.createElement("h2");
   heading.textContent = email.subject || "(no subject)";
   const from = document.createElement("p");
@@ -5792,14 +6010,14 @@ function renderReader(focus) {
   const when = document.createElement("p");
   when.className = "meta";
   const date = email.date ? new Date(email.date) : null;
-  when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  when.textContent = shownWhen(date);
   pane.append(heading, from, when);
   const until = snoozedUntilOf(email);
   const untilDate = until ? new Date(until) : null;
-  if (!isReaderWindow() && state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
+  if (state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
     const snooze = document.createElement("p");
     snooze.className = "meta";
-    snooze.textContent = `Snoozed until ${untilDate.toLocaleString()}`;
+    snooze.textContent = `Snoozed until ${shownWhen(untilDate)}`;
     pane.appendChild(snooze);
   }
   for (const [label, value] of [["To", email.to], ["Cc", email.cc]]) {
@@ -5814,14 +6032,12 @@ function renderReader(focus) {
   renderAttachments(pane, email);
   renderRemoteGate(pane, email);
   renderBody(pane, email);
-  if (!isReaderWindow()) {
-    const translated = document.createElement("div");
-    translated.className = "translation";
-    translated.setAttribute("role", "status");
-    translated.hidden = true;
-    pane.appendChild(translated);
-    paintTranslation();
-  }
+  const translated = document.createElement("div");
+  translated.className = "translation";
+  translated.setAttribute("role", "status");
+  translated.hidden = true;
+  pane.appendChild(translated);
+  paintTranslation();
   if (focus) {
     heading.tabIndex = -1;
     heading.focus();
@@ -5996,32 +6212,241 @@ async function cancelTranslate() {
   await call("mail:translateCancel", { reqId });
 }
 
-function renderThread(pane, email) {
-  if (state.prefs.conversation === false) return;
-  const members = state.thread.slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
-  if (members.length < 2) return;
-  const list = document.createElement("div");
-  list.className = "thread";
-  list.setAttribute("aria-label", `${members.length} messages in this conversation`);
-  for (const member of members) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "thread-item";
-    if (member.id === email.id) button.setAttribute("aria-current", "true");
-    const who = document.createElement("span");
-    who.textContent = `${senderName(member.from)} — ${member.subject || "(no subject)"}`;
+function threadCalendarTime(iso, now) {
+  const date = new Date(iso);
+  const clock = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(date.getTime()) || Number.isNaN(clock.getTime())) return "";
+  if (typeof displayStamp === "function") return displayStamp(date, "list", { now: clock });
+  if (date.toDateString() === clock.toDateString()) {
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  const sameYear = date.getFullYear() === clock.getFullYear();
+  const options = sameYear ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" };
+  return date.toLocaleDateString([], options);
+}
+
+function threadRelativeTime(iso, now) {
+  const date = iso ? new Date(iso) : null;
+  const clock = now instanceof Date ? now : new Date(typeof now === "number" || typeof now === "string" ? now : Date.now());
+  if (!date || Number.isNaN(date.getTime()) || Number.isNaN(clock.getTime())) return "";
+  const delta = clock.getTime() - date.getTime();
+  const minute = 60000;
+  const hour = 3600000;
+  const day = 86400000;
+  if (delta < minute && delta > -minute) return "just now";
+  if (delta < 0) return threadCalendarTime(iso, clock);
+  if (delta < hour) {
+    const minutes = Math.max(1, Math.floor(delta / minute));
+    return minutes === 1 ? "1 minute ago" : String(minutes) + " minutes ago";
+  }
+  if (delta < day) {
+    const hours = Math.max(1, Math.floor(delta / hour));
+    return hours === 1 ? "1 hour ago" : String(hours) + " hours ago";
+  }
+  if (delta < 7 * day) {
+    const days = Math.floor(delta / day);
+    if (days <= 1) return "yesterday";
+    return String(days) + " days ago";
+  }
+  return threadCalendarTime(iso, clock);
+}
+
+function threadSnippetLine(member) {
+  const raw = member && typeof member.snippet === "string" ? member.snippet : "";
+  const line = raw.replace(/\s+/g, " ").trim();
+  if (line.length <= 180) return line;
+  return line.slice(0, 179).trimEnd() + "…";
+}
+
+function threadEarlierLabel(count) {
+  return "Earlier in this conversation (" + count + ")";
+}
+
+function threadEarlierAnnouncement(count, expanded) {
+  const noun = count === 1 ? "message" : "messages";
+  if (expanded) return "Showing " + count + " earlier " + noun;
+  return String(count) + " earlier " + noun + " collapsed";
+}
+
+function threadListLabel(total, count, expanded) {
+  const messages = total === 1 ? "1 message" : String(total) + " messages";
+  if (!count || expanded) return messages + " in this conversation";
+  const earlier = count === 1 ? "1 earlier message collapsed" : String(count) + " earlier messages collapsed";
+  return messages + " in this conversation, " + earlier;
+}
+
+// Latest two stay visible. The open message stays visible when it is older than those two.
+// count is how many rows the Earlier control hides until it is expanded.
+function threadStripPlan(members, currentId, expanded) {
+  const rows = [];
+  for (const row of Array.isArray(members) ? members : []) {
+    if (row && row.id) rows.push(row);
+  }
+  rows.sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  const ids = [];
+  for (const row of rows) ids.push(String(row.id));
+  const total = ids.length;
+  const tailCount = total < 2 ? total : 2;
+  const tail = ids.slice(total - tailCount);
+  const older = ids.slice(0, total - tailCount);
+  const current = String(currentId || "");
+  let pinned = false;
+  const hiddenIds = [];
+  for (const id of older) {
+    if (id === current) pinned = true;
+    else hiddenIds.push(id);
+  }
+  const showControl = hiddenIds.length > 0;
+  const open = showControl && expanded === true;
+  let visibleIds = ids;
+  if (showControl && !open) visibleIds = pinned ? [current].concat(tail) : tail.slice();
+  return {
+    total: total,
+    count: hiddenIds.length,
+    showControl: showControl,
+    expanded: open,
+    visibleIds: visibleIds,
+  };
+}
+
+function threadStripKey(email, members) {
+  if (email && email.threadId) return String(email.threadId);
+  for (const row of Array.isArray(members) ? members : []) {
+    if (row && row.threadId) return String(row.threadId);
+  }
+  return email && email.id ? String(email.id) : "";
+}
+
+let threadEarlierKey = "";
+let threadEarlierOpen = false;
+
+function resetThreadStrip() {
+  threadEarlierKey = "";
+  threadEarlierOpen = false;
+}
+
+function rememberThreadStrip(email, members) {
+  const key = threadStripKey(email, members);
+  if (key === threadEarlierKey) return;
+  threadEarlierKey = key;
+  threadEarlierOpen = false;
+}
+
+function threadAbsoluteTime(iso) {
+  const date = iso ? new Date(iso) : null;
+  return shownWhen(date);
+}
+
+function threadMessageButton(member, email) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = member && member.unread ? "thread-item unread" : "thread-item";
+  if (member.id === email.id) button.setAttribute("aria-current", "true");
+  const who = document.createElement("span");
+  who.className = "thread-sender";
+  who.textContent = senderName(member.from);
+  button.appendChild(who);
+  const snippet = threadSnippetLine(member);
+  if (snippet) {
+    const preview = document.createElement("span");
+    preview.className = "thread-snippet";
+    preview.textContent = snippet;
+    button.appendChild(preview);
+  }
+  const relative = threadRelativeTime(member.date);
+  if (relative) {
     const when = document.createElement("time");
     when.className = "when";
-    if (member.date) when.dateTime = member.date;
-    when.textContent = listWhen(member.date);
-    button.append(who, when);
-    button.addEventListener("click", () => {
-      if (member.id === email.id) return;
-      openMessage(member.id).catch((error) => showStatus(error.message, true));
-    });
-    list.appendChild(button);
+    if (member.date) when.setAttribute("datetime", member.date);
+    const absolute = threadAbsoluteTime(member.date);
+    if (absolute) when.title = absolute;
+    when.textContent = relative;
+    button.appendChild(when);
   }
-  pane.appendChild(list);
+  button.addEventListener("click", () => {
+    if (member.id === email.id) return;
+    openMessage(member.id).catch((error) => showStatus(error.message, true));
+  });
+  return button;
+}
+
+function buildThreadStrip(email, members) {
+  const plan = threadStripPlan(members, email && email.id, threadEarlierOpen);
+  const byId = new Map();
+  for (const member of Array.isArray(members) ? members : []) {
+    if (member && member.id) byId.set(String(member.id), member);
+  }
+  const list = document.createElement("div");
+  list.className = "thread";
+  list.setAttribute("role", "group");
+  list.setAttribute("aria-label", threadListLabel(plan.total, plan.count, plan.expanded));
+  if (plan.showControl) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "thread-earlier";
+    toggle.setAttribute("aria-expanded", plan.expanded ? "true" : "false");
+    toggle.setAttribute("aria-controls", "thread-messages");
+    toggle.appendChild(strokeIcon([plan.expanded ? MOVE_CHEVRON_DOWN : MOVE_CHEVRON_RIGHT], 14));
+    const label = document.createElement("span");
+    label.textContent = threadEarlierLabel(plan.count);
+    toggle.appendChild(label);
+    toggle.addEventListener("click", () => toggleThreadEarlier());
+    list.appendChild(toggle);
+  }
+  const messages = document.createElement("div");
+  messages.id = "thread-messages";
+  messages.className = "thread-messages";
+  for (const id of plan.visibleIds) {
+    const member = byId.get(id);
+    if (member) messages.appendChild(threadMessageButton(member, email));
+  }
+  list.appendChild(messages);
+  if (plan.showControl) {
+    const status = document.createElement("p");
+    status.className = "sr thread-earlier-status";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    list.appendChild(status);
+  }
+  return list;
+}
+
+function paintThreadStrip(announce) {
+  const pane = $("reader");
+  const email = state.email;
+  if (!pane || !email || state.prefs.conversation === false) return;
+  const members = Array.isArray(state.thread) ? state.thread : [];
+  const list = buildThreadStrip(email, members);
+  const existing = pane.querySelector(".thread");
+  if (existing) existing.replaceWith(list);
+  else pane.appendChild(list);
+  if (!announce) return;
+  const plan = threadStripPlan(members, email.id, threadEarlierOpen);
+  const status = list.querySelector(".thread-earlier-status");
+  if (status && plan.showControl) status.textContent = threadEarlierAnnouncement(plan.count, plan.expanded);
+  const toggle = list.querySelector(".thread-earlier");
+  if (toggle && typeof toggle.focus === "function") toggle.focus();
+}
+
+function toggleThreadEarlier() {
+  threadEarlierOpen = !threadEarlierOpen;
+  paintThreadStrip(true);
+}
+
+function renderThread(pane, email) {
+  if (state.prefs.conversation === false || !email) {
+    resetThreadStrip();
+    return;
+  }
+  const members = Array.isArray(state.thread) ? state.thread : [];
+  let count = 0;
+  for (const row of members) if (row && row.id) count += 1;
+  if (count < 2) {
+    if (threadStripKey(email, members) !== threadEarlierKey) resetThreadStrip();
+    return;
+  }
+  rememberThreadStrip(email, members);
+  pane.appendChild(buildThreadStrip(email, members));
 }
 
 function attachmentPreviewKind(file) {
@@ -6063,6 +6488,8 @@ function previewMime(file, kind) {
 let attachmentPreviewToken = 0;
 let attachmentPreviewUrl = "";
 let attachmentPreviewEmailId = "";
+let attachmentPreviewAbort = null;
+let pdfPreviewLoader = null;
 
 function attachmentIcon(kind) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -6106,20 +6533,21 @@ function revokeAttachmentPreviewUrl() {
   attachmentPreviewUrl = "";
 }
 
-function resetPreviewFrame() {
-  const frame = $("attachment-preview-frame");
-  if (!frame || typeof frame.replaceWith !== "function" || typeof document.createElement !== "function") return;
-  const fresh = document.createElement("iframe");
-  fresh.id = "attachment-preview-frame";
-  fresh.hidden = true;
-  fresh.referrerPolicy = "no-referrer";
-  fresh.title = "PDF preview";
-  frame.replaceWith(fresh);
+function clearPdfPreviewPages() {
+  const pages = $("attachment-preview-pages");
+  if (!pages) return;
+  pages.replaceChildren();
+  pages.hidden = true;
+  pages.removeAttribute("aria-busy");
 }
 
 function clearAttachmentPreview() {
   attachmentPreviewToken += 1;
   attachmentPreviewEmailId = "";
+  if (attachmentPreviewAbort) {
+    attachmentPreviewAbort.abort();
+    attachmentPreviewAbort = null;
+  }
   const img = $("attachment-preview-image");
   if (img) {
     img.onload = null;
@@ -6128,7 +6556,7 @@ function clearAttachmentPreview() {
     img.alt = "";
     img.hidden = true;
   }
-  resetPreviewFrame();
+  clearPdfPreviewPages();
   revokeAttachmentPreviewUrl();
   const stage = $("attachment-preview-stage");
   if (stage) {
@@ -6162,7 +6590,6 @@ function showAttachmentPreviewShell(file, kind) {
   const status = $("attachment-preview-status");
   const stage = $("attachment-preview-stage");
   const img = $("attachment-preview-image");
-  const frame = $("attachment-preview-frame");
   const label = (file && file.filename) || "Attachment";
   if (title) title.textContent = label;
   if (status) {
@@ -6175,10 +6602,7 @@ function showAttachmentPreviewShell(file, kind) {
     img.removeAttribute("src");
     img.hidden = true;
   }
-  if (frame) {
-    frame.removeAttribute("src");
-    frame.hidden = true;
-  }
+  clearPdfPreviewPages();
   if (stage) {
     stage.classList.toggle("is-image", kind === "image");
     stage.classList.toggle("is-pdf", kind === "pdf");
@@ -6190,14 +6614,47 @@ function showAttachmentPreviewShell(file, kind) {
 
 function rememberPreviewUrl(url) {
   const previous = attachmentPreviewUrl;
-  attachmentPreviewUrl = url;
+  attachmentPreviewUrl = url || "";
   if (previous && previous !== url) URL.revokeObjectURL(previous);
+}
+
+function loadPdfPreview() {
+  if (window.morrowPdf && window.morrowPdf.render) return Promise.resolve(window.morrowPdf);
+  if (pdfPreviewLoader) return pdfPreviewLoader;
+  pdfPreviewLoader = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "./pdf-preview.bundle.js";
+    script.onload = () => {
+      if (window.morrowPdf && window.morrowPdf.render) resolve(window.morrowPdf);
+      else {
+        pdfPreviewLoader = null;
+        reject(new Error("PDF preview failed to load."));
+      }
+    };
+    script.onerror = () => {
+      pdfPreviewLoader = null;
+      reject(new Error("PDF preview failed to load."));
+    };
+    document.head.appendChild(script);
+  });
+  return pdfPreviewLoader;
+}
+
+function pdfPreviewError(error) {
+  const name = error && error.name;
+  if (name === "PasswordException") return "This PDF is password-protected. Save or Open it instead.";
+  if (name === "AbortError") return "";
+  return "This PDF could not be previewed. Save or Open it instead.";
 }
 
 async function previewAttachment(email, file) {
   const kind = attachmentPreviewKind(file);
   if (!kind || !file || !file.id) return;
   const gen = ++attachmentPreviewToken;
+  if (attachmentPreviewAbort) {
+    attachmentPreviewAbort.abort();
+    attachmentPreviewAbort = null;
+  }
   attachmentPreviewEmailId = email && email.id ? email.id : "";
   showAttachmentPreviewShell(file, kind);
   const label = file.filename || "attachment";
@@ -6230,10 +6687,13 @@ async function previewAttachment(email, file) {
     }
     return;
   }
-  const url = URL.createObjectURL(new Blob([bytes], { type: previewMime(file, kind) }));
-  rememberPreviewUrl(url);
-  if (gen !== attachmentPreviewToken) return;
   if (kind === "image") {
+    const url = URL.createObjectURL(new Blob([bytes], { type: previewMime(file, kind) }));
+    rememberPreviewUrl(url);
+    if (gen !== attachmentPreviewToken) {
+      if (attachmentPreviewUrl === url) revokeAttachmentPreviewUrl();
+      return;
+    }
     const img = $("attachment-preview-image");
     if (!img) return;
     img.alt = label;
@@ -6253,12 +6713,34 @@ async function previewAttachment(email, file) {
     img.src = url;
     return;
   }
-  const frame = $("attachment-preview-frame");
-  if (!frame) return;
-  frame.title = "PDF preview of " + label;
-  frame.hidden = false;
-  frame.src = url;
-  if (status) status.hidden = true;
+  if (gen !== attachmentPreviewToken) return;
+  rememberPreviewUrl("");
+  const pages = $("attachment-preview-pages");
+  const stage = $("attachment-preview-stage");
+  if (!pages || !stage) return;
+  pages.hidden = false;
+  const controller = new AbortController();
+  attachmentPreviewAbort = controller;
+  try {
+    const pdfApi = await loadPdfPreview();
+    if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
+    await pdfApi.render({
+      data: bytes,
+      pages,
+      stage,
+      signal: controller.signal,
+      onFirstPage() {
+        if (gen !== attachmentPreviewToken) return;
+        if (status) status.hidden = true;
+      },
+    });
+  } catch (error) {
+    if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
+    const message = pdfPreviewError(error);
+    if (!message || !status) return;
+    status.hidden = false;
+    status.textContent = message;
+  }
 }
 
 async function saveAttachmentsZip(email, files) {
@@ -6639,7 +7121,7 @@ async function snoozeOpen(email, preset) {
   const data = await call("mail:snoozeThread", { accountId: email.accountId, threadId, snoozedUntil });
   state.snoozed.set(threadId, (data && data.snoozedUntil) || snoozedUntil);
   const when = new Date(state.snoozed.get(threadId));
-  showStatus(Number.isNaN(when.getTime()) ? "Snoozed." : `Snoozed until ${when.toLocaleString()}.`);
+  showStatus(Number.isNaN(when.getTime()) ? "Snoozed." : `Snoozed until ${shownWhen(when)}.`);
   await loadList();
   renderReader(false);
   focusAction("snooze");
@@ -6762,6 +7244,7 @@ async function loadList(fromNetwork, requestedOffset) {
       fromNetwork: !state.allInbox && fromNetwork && isLive(account),
       accountId: account && account.id,
       folderId: state.folderId,
+      accounts: state.accounts,
       limit: LIST_PAGE_SIZE,
       offset,
     });
@@ -6775,6 +7258,7 @@ async function loadList(fromNetwork, requestedOffset) {
         unreadOnly: state.allInbox && state.allInboxUnreadOnly,
         accountId: account && account.id,
         folderId: state.folderId,
+        accounts: state.accounts,
         limit: LIST_PAGE_SIZE,
         offset,
       });
@@ -8050,7 +8534,6 @@ function onReaderContext(event) {
   if (!state.email) return;
   const target = readerContextTarget(event);
   if (target && target.closest && target.closest(".sender-address")) return;
-  if (isReaderWindow()) return;
   if (target && target.closest && target.closest("input, textarea, select, a")) return;
   event.preventDefault();
   openOrganizeMenu(state.email, event.clientX, event.clientY);
@@ -8462,6 +8945,7 @@ function listedMessage(emailId) {
 function paintReaderPending(email) {
   const pane = $("reader");
   pane.replaceChildren();
+  if (isReaderWindow()) pane.appendChild(readerCloseBar());
   pane.setAttribute("aria-busy", "true");
   const heading = document.createElement("h2");
   heading.textContent = (email && email.subject) || "(no subject)";
@@ -8471,7 +8955,7 @@ function paintReaderPending(email) {
   const when = document.createElement("p");
   when.className = "meta";
   const date = email && email.date ? new Date(email.date) : null;
-  when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  when.textContent = shownWhen(date);
   const pending = document.createElement("div");
   pending.className = "body-pending";
   pending.setAttribute("role", "status");
@@ -8834,10 +9318,10 @@ function setComposeFormatLocked(locked) {
 function revealEditorStyles(root) {
   if (!root || typeof root.querySelectorAll !== "function") return;
   let nodes = [];
-  try { nodes = root.querySelectorAll("[style], font[color], [bgcolor]"); } catch { return; }
+  try { nodes = root.querySelectorAll("[style], [data-mail-style], font[color], [bgcolor]"); } catch { return; }
   for (const el of nodes) {
     if (!el || el === root) continue;
-    const css = typeof el.getAttribute === "function" ? el.getAttribute("style") : "";
+    const css = mailInlineStyle(el);
     if (css) mailApplyCss(el, css, false, false);
     if (typeof el.getAttribute !== "function" || !el.style || typeof el.style.setProperty !== "function") continue;
     if (String(el.tagName || "").toLowerCase() === "font") {
@@ -9432,7 +9916,7 @@ function syncScheduleFields() {
   $("schedule-at").hidden = !custom;
   $("schedule-at-label").hidden = !custom;
   const when = scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
-  $("schedule-note").textContent = (when ? "Scheduled time: " + when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + "). " : "Choose a future local time. ") + "Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.";
+  $("schedule-note").textContent = (when ? "Scheduled time: " + shownWhen(when, true) + ". " : "Choose a future local time. ") + "Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.";
 }
 
 function renderScheduled(rows) {
@@ -10103,7 +10587,7 @@ function paintQuoteBody() {
     const when = document.createElement("p");
     when.className = "meta";
     const date = new Date(email.date);
-    when.textContent = Number.isNaN(date.getTime()) ? String(email.date) : date.toLocaleString();
+    when.textContent = Number.isNaN(date.getTime()) ? String(email.date) : shownWhen(date);
     head.appendChild(when);
   }
   if (email.subject) {
@@ -10484,28 +10968,47 @@ async function bootComposeWindow() {
   }
 }
 
-function renderReaderWindowBar(withReply) {
-  const bar = document.createElement("div");
-  bar.className = "reader-window-bar";
-  if (withReply) {
-    const reply = document.createElement("button");
-    reply.type = "button";
-    reply.className = "ghost";
-    reply.textContent = "Reply";
-    reply.addEventListener("click", () => {
-      Promise.resolve(openReaderCompose("reply")).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
-    });
-    bar.appendChild(reply);
-  }
+const READER_CLOSE_ICON = ["M18 6 6 18", "M6 6l12 12"];
+
+function readerCloseButton() {
   const close = document.createElement("button");
   close.type = "button";
-  close.className = "ghost";
-  close.textContent = "Close";
+  close.className = "ghost icon-btn";
+  close.dataset.action = "close-reader";
+  close.setAttribute("aria-label", "Close");
+  close.title = "Close";
+  close.appendChild(strokeIcon(READER_CLOSE_ICON, 16));
+  const text = document.createElement("span");
+  text.textContent = "Close";
+  close.appendChild(text);
   close.addEventListener("click", () => {
     if (typeof window.close === "function") window.close();
   });
-  bar.appendChild(close);
+  return close;
+}
+
+function readerCloseBar() {
+  const bar = document.createElement("div");
+  bar.className = "reader-actions";
+  bar.appendChild(readerCloseButton());
   return bar;
+}
+
+function appendReaderClose(pane) {
+  if (!isReaderWindow() || !pane || typeof pane.querySelector !== "function") return;
+  if (pane.querySelector('[data-action="close-reader"]')) return;
+  const bar = pane.querySelector(".reader-actions");
+  const menus = bar && typeof bar.querySelector === "function" ? bar.querySelector(".reader-menus") : null;
+  const button = readerCloseButton();
+  if (menus) {
+    menus.appendChild(button);
+    return;
+  }
+  if (bar) {
+    bar.appendChild(button);
+    return;
+  }
+  pane.appendChild(readerCloseBar());
 }
 
 function publishReaderTitle(subject) {
@@ -10523,7 +11026,7 @@ function showReaderOpenError(message) {
   const error = document.createElement("p");
   error.className = "hint error";
   error.textContent = message || "That message could not be opened.";
-  pane.append(heading, error, renderReaderWindowBar(false));
+  pane.append(readerCloseBar(), heading, error);
 }
 
 async function bootReaderWindow() {
@@ -10533,6 +11036,7 @@ async function bootReaderWindow() {
     return;
   }
   wire();
+  if (typeof api.on === "function") api.on("mail:translate:event", onTranslateEvent);
   await loadLook();
   await loadShellPrefs();
   try {
@@ -10576,6 +11080,10 @@ async function bootReaderWindow() {
   state.accountId = email.accountId || accountId || state.accountId;
   publishReaderTitle(email.subject || "");
   renderReader(false);
+  const openedId = email.id;
+  loadSnoozed().then(() => loadProviderFolders(accountGen)).then(() => {
+    if (state.email && state.email.id === openedId) renderReader(false);
+  }).catch(() => {});
   if (!email.unread) return;
   try {
     await call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead: true });
@@ -10997,7 +11505,11 @@ async function scheduleMail(whenOverride) {
     // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
     if (typeof publishComposeTitle === "function") publishComposeTitle("Scheduled receipt");
     state.composeBaseline = composeSnapshot();
-    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${state.composeMeta.fromAddress || account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
+    // Mailbox fixtures evaluate scheduleMail without the display helper.
+    const scheduledFor = typeof shownWhen === "function"
+      ? shownWhen(when, true)
+      : when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")";
+    setComposeStatus(`Scheduled for ${scheduledFor} from ${state.composeMeta.fromAddress || account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
     await loadScheduled();
   });
 }
@@ -11036,7 +11548,7 @@ function paintPreview(draft) {
   const date = schedule && draft.sendAt ? new Date(draft.sendAt) : null;
   if (date && !Number.isNaN(date.getTime())) {
     when.hidden = false;
-    when.textContent = "Scheduled for " + date.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ").";
+    when.textContent = "Scheduled for " + shownWhen(date, true) + ".";
   } else {
     when.hidden = true;
     when.textContent = "";
@@ -11512,10 +12024,14 @@ function runMailShortcut(action) {
   button.click();
 }
 
+function readerWindowShortcut(action) {
+  return action === "reply" || action === "reply-all" || action === "forward" || action === "delete";
+}
+
 function onMailShortcut(event) {
-  if (isReaderWindow()) return;
   const action = mailShortcut(event, mailShortcutContext(event));
   if (!action) return;
+  if (isReaderWindow() && !readerWindowShortcut(action)) return;
   event.preventDefault();
   runMailShortcut(action);
 }
@@ -11953,7 +12469,7 @@ function updateView(snapshot, version) {
 function paintUpdate(view) {
   $("about-version").textContent = view.version ? "Version " + view.version : "";
   const status = $("about-update-status");
-  status.textContent = (view.error ? view.status + " " + view.error : view.status) + (view.lastCheckedAt ? " Last checked " + new Date(view.lastCheckedAt).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : "");
+  status.textContent = (view.error ? view.status + " " + view.error : view.status) + (view.lastCheckedAt ? " Last checked " + shownWhen(new Date(view.lastCheckedAt), true) + "." : "");
   status.classList.toggle("error", !!view.error);
   $("about-update-check").disabled = !!view.busy;
   const install = $("about-update-install");
@@ -12144,6 +12660,13 @@ async function loadShellPrefs() {
     next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
     next.scheduleDelay = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
     next.layout = layoutPanesPref(await api.invoke("morrow:configGetLayoutPanes"));
+    const formats = typeof morrowDisplayFormat === "object" && morrowDisplayFormat ? morrowDisplayFormat : null;
+    next.timeFormat = formats
+      ? formats.castTimeFormat(await api.invoke("morrow:configGetTimeFormat"), true)
+      : "system";
+    next.dateFormat = formats
+      ? formats.castDateFormat(await api.invoke("morrow:configGetDateFormat"), true)
+      : "system";
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
@@ -12193,6 +12716,15 @@ function takePref(getChannel, kind, control) {
     state.prefs.syncHorizon = readPref(kind, control);
     return false; // The sync policy is read on the next host sync.
   }
+  if (getChannel === "morrow:configGetTimeFormat" || getChannel === "morrow:configGetDateFormat") {
+    const formats = typeof morrowDisplayFormat === "object" && morrowDisplayFormat ? morrowDisplayFormat : null;
+    if (getChannel === "morrow:configGetTimeFormat") {
+      state.prefs.timeFormat = formats ? formats.castTimeFormat(control.value, true) : "system";
+    } else {
+      state.prefs.dateFormat = formats ? formats.castDateFormat(control.value, true) : "system";
+    }
+    return true;
+  }
   return false;
 }
 
@@ -12201,6 +12733,30 @@ function paintPrefs() {
   renderAccounts();
   renderList();
   refreshReader();
+  repaintClockSurfaces();
+}
+
+function repaintClockSurfaces() {
+  if ($("refresh")) paintSyncControl();
+  if (state.view === "calendar" && state.calendarPayload && $("calendar-heading")) {
+    calendarGridKey = "";
+    calendarEventsKey = "";
+    const mini = $("calendar-mini");
+    if (mini && mini.dataset) delete mini.dataset.month;
+    paintCalendar(state.calendarPayload);
+  }
+  const history = $("sender-history");
+  if (history && history.open) paintSenderHistory();
+  const scheduled = $("scheduled-dialog");
+  if (scheduled && scheduled.open) loadScheduled().catch(() => {});
+  if ($("schedule-preset") && $("schedule-note")) syncScheduleFields();
+  if ($("compose-quote-body")) paintQuoteBody();
+  const preview = $("compose-preview");
+  if (preview && preview.open && previewDraftState) paintPreview(previewDraftState);
+  if (state.view === "log" && $("log-lines")) filterSupportLog();
+  if ($("mail-ooo")) paintMailVacation();
+  if (brainIsOpen() && $("brain-status")) paintBrain(brainSnapshot, brainView);
+  if (state.view === "agent" && agentPaintPayload && $("agent-status")) paintAgent(agentPaintPayload, "");
 }
 
 async function toggleProviderFolders(provider) {
@@ -12243,6 +12799,8 @@ function prefRows() {
   return [
     ["pref-theme", "config:getTheme", "config:setTheme", "select"],
     ["pref-accent", "morrow:configGetAccent", "morrow:configSetAccent", "text"],
+    ["pref-time-format", "morrow:configGetTimeFormat", "morrow:configSetTimeFormat", "select"],
+    ["pref-date-format", "morrow:configGetDateFormat", "morrow:configSetDateFormat", "select"],
     ["pref-conversation", "morrow:configGetConversationViewEnabled", "morrow:configSetConversationViewEnabled", "bool"],
     ["pref-images", "morrow:configGetAutoLoadRemoteImages", "morrow:configSetAutoLoadRemoteImages", "bool"],
     ["pref-undo", "morrow:configGetUndoSendDelaySeconds", "morrow:configSetUndoSendDelaySeconds", "seconds"],
@@ -12292,7 +12850,8 @@ async function loadSettings() {
   // must not repeat preference IPC reads or load closed provider/AI/Bot tabs.
   const keys = { ...SHELL_PREFS, ...READER_PREFS, "config:getTheme": "theme",
     "morrow:configGetAccent": "accent", "morrow:configGetUndoSendDelaySeconds": "undoSend",
-    "morrow:configGetSyncHorizonDays": "syncHorizon" };
+    "morrow:configGetSyncHorizonDays": "syncHorizon",
+    "morrow:configGetTimeFormat": "timeFormat", "morrow:configGetDateFormat": "dateFormat" };
   for (const [id, channel, , kind] of prefRows()) {
     applyPref(kind, $(id), state.prefs[keys[channel]]);
   }
@@ -13111,7 +13670,7 @@ function vacationSummary(data, now = Date.now()) {
   let start = Date.parse(settings.start), end = Date.parse(settings.end);
   if (!Number.isFinite(start) || !Number.isFinite(end)) return "Out of Office: scheduled — dates unavailable; manage to review";
   if (data.provider === "imap") { start = Math.floor(start / day) * day; end = Math.ceil(end / day) * day; }
-  const format = time => Number.isFinite(time) ? (data.provider === "imap" ? new Date(time).toISOString().slice(0, 10) + " 00:00 UTC" : new Date(time).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")") : "unknown";
+  const format = time => Number.isFinite(time) ? (data.provider === "imap" ? new Date(time).toISOString().slice(0, 10) + " 00:00 UTC" : shownWhen(new Date(time), true)) : "unknown";
   const phase = Number.isFinite(end) && now >= end ? "ended" : Number.isFinite(start) && now < start ? "scheduled" : "scheduled / active within these dates";
   return "Out of Office: " + phase + " · " + format(start) + " → " + format(end);
 }
@@ -13132,7 +13691,7 @@ function paintMailVacation() {
   const entry = mailVacation.get(account.id);
   const compact = !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
   const summary = vacationChipSummary(entry) || vacationSummary(entry?.data);
-  const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + new Date(entry.at).toLocaleString() : "");
+  const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + shownWhen(new Date(entry.at)) : "");
   box.classList.toggle("is-off", !!compact);
   box.title = detail;
   $("mail-ooo-status").textContent = compact ? "Out of Office: off" : detail;
@@ -13428,11 +13987,7 @@ function formatBrainTime(value) {
   const text = String(value || "").trim();
   const date = new Date(text);
   if (!text || Number.isNaN(date.getTime())) return text;
-  try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
-  } catch {
-    return text;
-  }
+  return displayStamp(date, "dateTime", { medium: true }) || text;
 }
 
 function brainRefreshChannels() {
@@ -14608,7 +15163,9 @@ function sectionEmptyCopy(reason) {
 function agentWhen(value) {
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return "";
-  return new Date(time).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const date = new Date(time);
+  if (typeof displayStamp === "function") return displayStamp(date, "dateTime", { compact: true });
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function agentMessageContext(item) {
@@ -14708,7 +15265,11 @@ function runModeLabel(row) {
   else if (row && row.schedule !== "disabled" && (row.schedule === "cron" || row.kind === "cron") && row.cron) text = "Scheduled · Cron " + String(row.cron) + ".";
   if (text.startsWith("Scheduled")) {
     const next = row.nextRunAt && new Date(row.nextRunAt);
-    text += next && Number.isFinite(+next) ? " Next run: " + next.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : " Next run not available.";
+    text += next && Number.isFinite(+next)
+      ? " Next run: " + (typeof displayStamp === "function"
+        ? displayStamp(next, "dateTime", { withZone: true })
+        : next.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")") + "."
+      : " Next run not available.";
     text += " Runs while Morrow is open; a missed run fires once on relaunch. Drafts need review and Send; filing needs confirmation.";
   }
   if (row && row.lastError) text += " Last run: " + String(row.lastError);
@@ -14725,6 +15286,29 @@ function skillStatusChip(row, mode) {
   }
   if (scheduled && (row.schedule === "cron" || row.kind === "cron") && row.cron) return { label: "Cron", tone: "scheduled" };
   return { label: "On demand", tone: "demand" };
+}
+
+function customSkillDraft(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const name = String(source.name || "").replace(/[\u0000-\u001F\u007F]/g, "").replace(/\s+/g, " ").trim();
+  const description = String(source.description || "").replace(/[\u0000-\u001F\u007F]/g, "").replace(/\s+/g, " ").trim();
+  const instruction = String(source.instruction || "").replace(/\r\n/g, "\n").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trim();
+  if (!name) return { error: "A skill needs a name." };
+  if (name.length > 80) return { error: "Use a name of 80 characters or fewer." };
+  if (description.length > 240) return { error: "Use a description of 240 characters or fewer." };
+  if (!instruction) return { error: "A skill needs an instruction." };
+  if (instruction.length > 4000) return { error: "Use an instruction of 4000 characters or fewer." };
+  const draft = {
+    name: name,
+    description: description,
+    instruction: instruction,
+    calendar: source.calendar === true,
+    person: source.person === true,
+    moves: source.moves === true,
+  };
+  const skillId = String(source.skillId || "").trim();
+  if (skillId) draft.skillId = skillId;
+  return draft;
 }
 
 function scheduleFormValue(input) {
@@ -14772,7 +15356,7 @@ function skillRequest(row, options) {
       snippet: email.snippet || "",
     };
   }
-  if (skillIdOf(row) === "brief-this-person") {
+  if (skillIdOf(row) === "brief-this-person" || (row && row.person === true)) {
     const contact = agentContact(opts.contact);
     if (contact) payload.contactEmail = contact;
   }
@@ -15212,10 +15796,11 @@ function appendSkillSchedule(parent, row) {
   contact.spellcheck = false;
   contact.placeholder = "name@example.com";
   contact.setAttribute("aria-label", "Contact email for this schedule");
+  const wantsPerson = skillId === "brief-this-person" || (row && row.person === true);
   const syncFields = () => {
     minutes.hidden = kind.value !== "interval";
     cron.hidden = kind.value !== "cron";
-    contact.hidden = skillId !== "brief-this-person" || kind.value === "off";
+    contact.hidden = !wantsPerson || kind.value === "off";
   };
   kind.addEventListener("change", syncFields);
   syncFields();
@@ -15269,7 +15854,7 @@ async function saveSkillSchedule(row, input) {
     const payload = { skillId, kind: draft.kind };
     if (draft.kind === "interval") payload.everyMinutes = draft.everyMinutes;
     if (draft.kind === "cron") payload.cron = draft.cron;
-    if (skillId === "brief-this-person") payload.contactEmail = draft.contactEmail;
+    if (skillId === "brief-this-person" || (row && row.person === true)) payload.contactEmail = draft.contactEmail;
     await call("emailBrain:setSkillSchedule", payload);
     setSkillStatus("Saved the schedule for " + name + ".", false);
   }
@@ -15337,6 +15922,12 @@ function paintSkillList(root, rows, empty, mode) {
       hint.textContent = detail;
       copy.appendChild(hint);
     }
+    if (row && row.custom === true) {
+      const kind = document.createElement("p");
+      kind.className = "hint";
+      kind.textContent = "Custom skill. Saved on this computer.";
+      copy.appendChild(kind);
+    }
     const modeLine = document.createElement("p");
     modeLine.className = "hint";
     modeLine.textContent = runModeLabel(row);
@@ -15359,11 +15950,21 @@ function paintSkillList(root, rows, empty, mode) {
     });
     actions.appendChild(button);
     if (mode === "run") {
+      if (row && row.custom === true) {
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "ghost";
+        edit.textContent = "Edit";
+        edit.setAttribute("aria-label", "Edit " + name);
+        edit.addEventListener("click", () => openBrainSkillDialog(row, "run"));
+        actions.appendChild(edit);
+      }
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "ghost";
-      remove.textContent = "Remove";
-      remove.setAttribute("aria-label", "Remove " + name);
+      const custom = row && row.custom === true;
+      remove.textContent = custom ? "Delete" : "Remove";
+      remove.setAttribute("aria-label", (custom ? "Delete " : "Remove ") + name);
       remove.addEventListener("click", () => {
         removeBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
@@ -15408,6 +16009,12 @@ function paintBrainSkillList(root, rows, empty, mode) {
       detail.className = "hint brain-skill-detail";
       detail.textContent = description;
       card.appendChild(detail);
+    }
+    if (row && row.custom === true) {
+      const customChip = document.createElement("span");
+      customChip.className = "brain-skill-chip is-custom";
+      customChip.textContent = "Custom";
+      card.appendChild(customChip);
     }
     const chipInfo = skillStatusChip(row, mode);
     const chip = document.createElement("span");
@@ -15460,19 +16067,52 @@ function findBrainSkill(skillId) {
   return null;
 }
 
+function setCustomSkillEditor(visible) {
+  const form = $("custom-skill-form");
+  if (form) form.hidden = !visible;
+}
+
+function fillCustomSkillForm(row) {
+  const skill = row && typeof row === "object" ? row : {};
+  const name = $("custom-skill-name");
+  const description = $("custom-skill-description");
+  const instruction = $("custom-skill-instruction");
+  const calendar = $("custom-skill-calendar");
+  const person = $("custom-skill-person");
+  const moves = $("custom-skill-moves");
+  if (name) name.value = row ? String(skill.name || "") : "";
+  if (description) description.value = row ? String(skill.description || "") : "";
+  if (instruction) instruction.value = row ? String(skill.instruction || "") : "";
+  if (calendar) calendar.checked = skill.calendar === true;
+  if (person) person.checked = skill.person === true;
+  if (moves) moves.checked = skill.moves === true;
+  const save = $("custom-skill-save");
+  if (save) save.textContent = row ? "Save changes" : "Save skill";
+}
+
+function customSkillEditorFocused() {
+  const active = document.activeElement;
+  return !!(active && active.closest && active.closest("#custom-skill-form"));
+}
+
 function paintBrainSkillDialog(row, mode) {
   const skillId = skillIdOf(row);
+  const custom = !!(row && row.custom === true);
   const name = (row && typeof row === "object" ? String(row.name || row.title || "").trim() : "") || skillLine(row) || "Skill";
   const title = $("brain-skill-dialog-title");
   if (title) title.textContent = name;
   const detail = $("brain-skill-dialog-detail");
   const description = row && typeof row === "object" ? String(row.description || "").trim() : "";
   if (detail) {
-    detail.textContent = description;
-    detail.hidden = !description;
+    detail.textContent = custom
+      ? "Custom skill. Stored on this computer and kept across app updates. Nothing is sent."
+      : description;
+    detail.hidden = custom ? false : !description;
   }
   const modeLine = $("brain-skill-dialog-mode");
   if (modeLine) modeLine.textContent = mode === "install" ? "This skill is in the library until you install it." : runModeLabel(row);
+  setCustomSkillEditor(custom);
+  if (custom) fillCustomSkillForm(row);
   const scheduleTitle = $("brain-skill-dialog-schedule-title");
   if (scheduleTitle) scheduleTitle.hidden = mode === "install";
   const actions = $("brain-skill-dialog-actions");
@@ -15494,8 +16134,8 @@ function paintBrainSkillDialog(row, mode) {
         runBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
       const remove = skillActionButton("ghost", "remove", brainSkillBusy);
-      remove.textContent = "Remove";
-      remove.setAttribute("aria-label", "Remove " + name);
+      remove.textContent = custom ? "Delete" : "Remove";
+      remove.setAttribute("aria-label", (custom ? "Delete " : "Remove ") + name);
       remove.addEventListener("click", () => {
         removeBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
@@ -15509,9 +16149,43 @@ function paintBrainSkillDialog(row, mode) {
   }
 }
 
+function openCustomSkillCreator() {
+  customSkillCreating = true;
+  brainSkillDialogId = "";
+  const title = $("brain-skill-dialog-title");
+  if (title) title.textContent = "New skill";
+  const detail = $("brain-skill-dialog-detail");
+  if (detail) {
+    detail.textContent = "Saved on this computer. App updates do not replace it. It runs on your mailbox cache and does not send mail.";
+    detail.hidden = false;
+  }
+  const modeLine = $("brain-skill-dialog-mode");
+  if (modeLine) modeLine.textContent = "This skill appears on Home after you save it.";
+  fillCustomSkillForm(null);
+  setCustomSkillEditor(true);
+  const scheduleTitle = $("brain-skill-dialog-schedule-title");
+  if (scheduleTitle) scheduleTitle.hidden = true;
+  const schedule = $("brain-skill-dialog-schedule");
+  if (schedule) schedule.replaceChildren();
+  const actions = $("brain-skill-dialog-actions");
+  if (actions) actions.replaceChildren();
+  const result = $("brain-skill-dialog-result");
+  if (result) result.replaceChildren();
+  const status = $("brain-skill-dialog-status");
+  if (status) {
+    status.textContent = "";
+    status.classList.remove("error");
+  }
+  const dialog = $("brain-skill-dialog");
+  if (dialog && !dialog.open) openDialog("brain-skill-dialog");
+  const name = $("custom-skill-name");
+  if (name) name.focus();
+}
+
 function openBrainSkillDialog(row, mode) {
   const skillId = skillIdOf(row);
   if (!skillId) return;
+  customSkillCreating = false;
   const switching = brainSkillDialogId !== skillId;
   brainSkillDialogId = skillId;
   paintBrainSkillDialog(row, mode);
@@ -15532,8 +16206,8 @@ function openBrainSkillDialog(row, mode) {
 
 function refreshBrainSkillDialog(force) {
   const dialog = $("brain-skill-dialog");
-  if (!dialog || !dialog.open || !brainSkillDialogId) return;
-  const editing = scheduleEditorFocused();
+  if (!dialog || !dialog.open || customSkillCreating || !brainSkillDialogId) return;
+  const editing = scheduleEditorFocused() || customSkillEditorFocused();
   if (!force && editing) return;
   const lists = brainSkillCache || {};
   const known = brainSkillLists().every(([id]) => Object.prototype.hasOwnProperty.call(lists, id));
@@ -15595,7 +16269,7 @@ function paintMailBody(pane, email, repaint) {
   const when = document.createElement("p");
   when.className = "meta";
   const date = email.date ? new Date(email.date) : null;
-  when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  when.textContent = shownWhen(date);
   pane.append(from, when);
   for (const [label, value] of [["To", email.to], ["Cc", email.cc]]) {
     const text = people(value);
@@ -15710,11 +16384,55 @@ async function installBrainSkill(row) {
   refreshBrainSkillDialog(true);
 }
 
+async function saveCustomSkillFromForm(event) {
+  if (event) event.preventDefault();
+  const form = $("custom-skill-form");
+  if (!form || form.hidden || customSkillSaving) return;
+  const draft = customSkillDraft({
+    skillId: customSkillCreating ? "" : brainSkillDialogId,
+    name: $("custom-skill-name") ? $("custom-skill-name").value : "",
+    description: $("custom-skill-description") ? $("custom-skill-description").value : "",
+    instruction: $("custom-skill-instruction") ? $("custom-skill-instruction").value : "",
+    calendar: !!($("custom-skill-calendar") && $("custom-skill-calendar").checked),
+    person: !!($("custom-skill-person") && $("custom-skill-person").checked),
+    moves: !!($("custom-skill-moves") && $("custom-skill-moves").checked),
+  });
+  if (draft.error) {
+    setSkillStatus(draft.error, true);
+    return;
+  }
+  customSkillSaving = true;
+  try {
+    const data = await call("emailBrain:saveCustomSkill", draft);
+    const savedId = data && data.skill && data.skill.id ? String(data.skill.id) : "";
+    customSkillCreating = false;
+    if (savedId) brainSkillDialogId = savedId;
+    setSkillStatus("Saved " + draft.name + ".", false);
+    await Promise.all([loadBrainSkills(), loadStudio()]);
+    if (savedId && data.skill) openBrainSkillDialog(data.skill, "run");
+  } catch (error) {
+    setSkillStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    customSkillSaving = false;
+  }
+}
+
 async function removeBrainSkill(row) {
   const skillId = skillIdOf(row);
   if (!skillId) throw new Error("That skill has no id.");
-  await call("emailBrain:removeSkill", { skillId });
-  setSkillStatus("Removed " + (row.name || skillId) + ". It is in the library.", false);
+  const custom = row && row.custom === true;
+  const name = row.name || skillId;
+  if (custom) {
+    const answer = await askConfirm({
+      title: "Delete custom skill",
+      body: "Delete " + name + "? This removes it from this computer.",
+      confirm: "Delete",
+      cancel: "Cancel",
+    });
+    if (!answer || !answer.ok) return;
+  }
+  await call(custom ? "emailBrain:deleteCustomSkill" : "emailBrain:removeSkill", { skillId });
+  setSkillStatus(custom ? "Deleted " + name + "." : "Removed " + name + ". It is in the library.", false);
   if (brainSkillDialogId === skillId) {
     brainSkillDialogId = "";
     closeDialog("brain-skill-dialog");
@@ -15750,6 +16468,10 @@ async function loadBrainSkills() {
     }
   }
   if (brainIsOpen()) paintBrainSkills(lists, errors.filter(Boolean).join(" "));
+  else {
+    brainSkillCache = lists;
+    refreshBrainSkillDialog(false);
+  }
 }
 
 function paintStudio(lists, errorText) {
@@ -15908,6 +16630,7 @@ function paintThread() {
 }
 
 function paintAgent(payload, errorText) {
+  if (payload && typeof payload === "object") agentPaintPayload = payload;
   const status = $("agent-status");
   const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
   if (status) {
@@ -16606,7 +17329,7 @@ function paintMiniMonth(year, month) {
   bar.append(prev, label, next);
   const grid = document.createElement("div");
   grid.className = "mini-grid";
-  for (const name of ["S", "M", "T", "W", "T", "F", "S"]) {
+  for (const name of displayStamp(null, "weekdays", { narrow: true })) {
     const dow = document.createElement("div");
     dow.className = "mini-dow";
     dow.textContent = name;
@@ -16812,7 +17535,7 @@ function ensureCalendarGrid(year, month) {
   grid.className = "calendar-grid";
   grid.setAttribute("role", "grid");
   grid.setAttribute("aria-label", range.label);
-  for (const name of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
+  for (const name of displayStamp(null, "weekdays")) {
     const head = document.createElement("div");
     head.className = "calendar-dow";
     head.textContent = name;
@@ -17195,14 +17918,15 @@ function paintBotGrants(grants) {
       const account = accounts.find((row) => row.accountId === id);
       return account ? account.email || account.displayName : "Disconnected mailbox";
     });
+    const expiryAt = new Date(grant.expiry && grant.expiry.expiresAt);
     const expiryText = grant.expiry && grant.expiry.kind === "never"
       ? "No expiry"
-      : `Expires ${new Date(grant.expiry && grant.expiry.expiresAt).toLocaleString()}`;
+      : "Expires " + (shownWhen(expiryAt) || "Unknown time");
     meta.textContent = `${names.join(", ")} · ${botPermissionNames(grant.capabilities)} · ${expiryText}`;
     const used = document.createElement("p");
     used.className = "hint";
     used.textContent = grant.lastUsedAt
-      ? `Last successful use ${new Date(grant.lastUsedAt).toLocaleString()}. ${grant.bytesToday || 0} bytes today.`
+      ? `Last successful use ${shownWhen(new Date(grant.lastUsedAt)) || "Unknown time"}. ${grant.bytesToday || 0} bytes today.`
       : "No successful bot use recorded.";
     const row = document.createElement("div");
     row.className = "row";
@@ -17805,7 +18529,7 @@ let senderHistoryView = null;
 
 function senderWhen(value) {
   const date = value ? new Date(value) : null;
-  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  return shownWhen(date);
 }
 
 function senderAccountLabel(account) {
@@ -18490,7 +19214,13 @@ function wire() {
   $("brain-skill-dialog-close").addEventListener("click", () => closeDialog("brain-skill-dialog"));
   $("brain-skill-dialog").addEventListener("close", () => {
     brainSkillDialogId = "";
+    customSkillCreating = false;
   });
+  $("custom-skill-form").addEventListener("submit", (event) => {
+    saveCustomSkillFromForm(event).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+  });
+  $("brain-skill-new").addEventListener("click", openCustomSkillCreator);
+  $("agent-skill-new").addEventListener("click", openCustomSkillCreator);
   $("brain-category-cancel").addEventListener("click", () => {
     resetCategoryForm();
     paintCategories();
