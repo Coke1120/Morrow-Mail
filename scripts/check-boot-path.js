@@ -11,6 +11,7 @@ const syntax = [
   "host/asar.js",
   "host/ipc.js",
   "host/mail/engine.js",
+  "host/mail/overnight.js",
   "host/mail/background-jobs.js",
   "host/mail/text-encoding.js",
   "host/mail/actions.js",
@@ -78,6 +79,7 @@ const syntax = [
   "scripts/check-vacation.js",
   "scripts/check-sync-retry.js",
   "scripts/check-background-folders.js",
+  "scripts/check-overnight-bodies.js",
   "scripts/bake-google-desktop-oauth.js",
   "scripts/check-bake-google-oauth.js",
 ];
@@ -9584,7 +9586,7 @@ require("./check-bot-setup-ux").run();
 
 checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-sync-retry").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
-}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => checkTranslateBatches()).then(() => {
+}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => require("./check-overnight-bodies").run()).then(() => checkTranslateBatches()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

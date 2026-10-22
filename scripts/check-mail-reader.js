@@ -201,12 +201,13 @@ async function main() {
   // A completed queued fetch must reuse fresh body, without another network call.
   const row = { id: 'a:1', account_id: 'a', uid: 1, body_complete: 0 };
   let fetched = 0;
-  const bodyCtx = vm.createContext({ db: { accountById: () => ({ id: 'a' }), messageById: () => ({ ...row, body_complete: 1, recipient_headers_json: '{}', html_body: '<p>Complete</p>' }) }, exclusive: async (_id, fn) => fn(), secretFor: () => { fetched++; throw Error('should not fetch'); } });
+  const bodyCtx = vm.createContext({ db: { accountById: () => ({ id: 'a' }), messageById: () => ({ ...row, body_complete: 1, recipient_headers_json: '{}', html_body: '<p>Complete</p>' }) }, exclusive: async (_id, fn) => fn(), priorityWaiting: () => false, secretFor: () => { fetched++; throw Error('should not fetch'); } });
   vm.runInContext(between(engine, 'async function ensureBody', 'function pushRows'), bodyCtx);
   assert.equal((await bodyCtx.ensureBody(row)).html_body, '<p>Complete</p>');
   assert.equal(fetched, 0);
   await assertDownloadedBodyStaysOnTheRequestedUid();
   await assertReaderKeepsTheSelectedMessage();
+  await assertCachedIncompleteSkipsTheSpinner();
   await assertThreadStripCollapsesOlderMessages();
   assertReaderWindowMatchesShellActions();
   console.log('mail reader synthetic checks passed');
@@ -252,6 +253,7 @@ async function assertDownloadedBodyStaysOnTheRequestedUid() {
       updateMessage(id, patch) { Object.assign(stored.get(id), patch); },
     },
     exclusive: async (_id, fn) => fn(),
+    priorityWaiting: () => false,
     secretFor: async () => 'secret',
     remote: {
       withClient: async (_account, _password, fn) => fn({}),
@@ -397,6 +399,7 @@ function loadReader(role) {
       openMessage,
       renderReader,
       showReaderOpenError,
+      applyBodyUpdate,
       setPending(id) { pendingOpenId = id || ""; pendingOpenBody = !!id; },
       set call(fn) { call = fn; },
       set renderList(fn) { renderList = fn; },
@@ -517,6 +520,46 @@ async function assertReaderKeepsTheSelectedMessage() {
   assert.match(shown, /Alpha/);
   assert.doesNotMatch(shown, /beta body/);
   assert.doesNotMatch(shown, /previous body/);
+}
+
+async function assertCachedIncompleteSkipsTheSpinner() {
+  const ui = loadReader();
+  const cached = { ...listed('C', 'Newsletter', false), hasBody: true };
+  ui.state.emails = [cached];
+  ui.state.thread = [];
+  ui.state.email = opened('prev', 'Previous', 'previous body');
+  ui.state.prefs.conversation = false;
+  let release;
+  ui.call = (channel, payload) => {
+    if (channel !== 'mail:openEmail') return Promise.resolve({});
+    return new Promise((resolve) => {
+      release = () => resolve({
+        email: { ...cached, textBody: 'Cached newsletter', htmlBody: null, bodyComplete: false, threadId: 'C' },
+        threadMessages: [{ id: 'C' }],
+      });
+    });
+  };
+  ui.renderReader(false);
+  let shown = readerText(ui.reader);
+  assert.match(shown, /previous body/);
+  const pending = ui.openMessage('C', false);
+  await flushReader();
+  shown = readerText(ui.reader);
+  assert.doesNotMatch(shown, /Loading message/);
+  assert.match(shown, /previous body/);
+  assert.equal(ui.reader.attrs['aria-busy'], undefined);
+  assert.equal(typeof release, 'function');
+  release();
+  await pending;
+  shown = readerText(ui.reader);
+  assert.match(shown, /Cached newsletter/);
+  assert.doesNotMatch(shown, /Loading message/);
+  ui.applyBodyUpdate({
+    email: { ...cached, textBody: 'Full newsletter', htmlBody: null, bodyComplete: true, threadId: 'C' },
+  });
+  shown = readerText(ui.reader);
+  assert.match(shown, /Full newsletter/);
+  assert.doesNotMatch(shown, /Cached newsletter/);
 }
 
 function threadNodes(root, className) {
