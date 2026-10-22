@@ -1,4 +1,5 @@
 const { Persistence } = require("./persistence");
+const primaryFolderLib = require("../../shared/primary-mailboxes");
 
 let db = null;
 let filePath = "";
@@ -407,6 +408,37 @@ function folderByWellKnown(accountId, wellKnown) {
   ));
 }
 
+function primaryMailboxes() {
+  if (!db) return [];
+  return primaryFolderLib.primaryMailboxes(listAccountRows(), (account) => foldersFor(account.id));
+}
+
+function mailboxPairs(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const box of list) {
+    if (!box || typeof box !== "object") continue;
+    const accountId = String(box.accountId || box.account_id || "");
+    const path = box.path == null ? "" : String(box.path);
+    if (!accountId || !path) continue;
+    out.push({ accountId, path });
+  }
+  return out;
+}
+
+function applyPrimaryScope(next, boxes) {
+  // This view is inbox-like: snoozed threads stay hidden here.
+  // Opening that account's All Mail folder still lists them.
+  next.excludeSnoozed = true;
+  if (!boxes.length) {
+    next.mailboxes = [];
+    next.folderPaths = ["__missing__"];
+    return next;
+  }
+  next.mailboxes = boxes;
+  return next;
+}
+
 function pathsForKey(accountId, folderKey) {
   const well = {
     inbox: "inbox",
@@ -415,6 +447,7 @@ function pathsForKey(accountId, folderKey) {
     trash: "deleteditems",
     archive: "archive",
     spam: "junkemail",
+    all: "all",
   }[folderKey];
   if (!well) return [];
   const sql = accountId
@@ -1149,6 +1182,14 @@ function whereFor(query) {
 
 function resolveScope(query) {
   const next = { ...query };
+  const explicit = mailboxPairs(query.mailboxes);
+  if (query.folderKey === "primary") {
+    const boxes = explicit.length
+      ? explicit
+      : primaryMailboxes().map((row) => ({ accountId: row.accountId, path: row.path }));
+    return applyPrimaryScope(next, boxes);
+  }
+  if (!query.folderKey && !query.folderId && explicit.length) return applyPrimaryScope(next, explicit);
   if (query.folderKey) {
     const paths = pathsForKey(query.accountId, query.folderKey);
     next.excludeSnoozed = query.folderKey === "inbox";
@@ -1662,6 +1703,7 @@ module.exports = {
   folderByPath,
   folderByWellKnown,
   pathsForKey,
+  primaryMailboxes,
   applyFolderSync,
   uidsFor,
   messageByUid,
