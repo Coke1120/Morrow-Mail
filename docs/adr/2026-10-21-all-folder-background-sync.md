@@ -13,3 +13,5 @@ The history horizon, rate-limit pause, and batch sizes are unchanged. A wider ho
 All history with many folders takes longer the first time and stores more mail. All Mail and labels can store another copy of a message that is also in Inbox or Sent.
 
 Opening a message whose body is not downloaded yet does not wait for the rest of that pass. The walk finishes the current folder batch, then the body fetch uses the account connection. The pass continues in the same tick when time remains, and otherwise on a later poll. See [2026-10-22-priority-open-over-background-sync.md](2026-10-22-priority-open-over-background-sync.md).
+
+From local midnight until 07:00 that same poll also downloads one incomplete body after the folder pass. It does not add a second timer. See [2026-10-22-overnight-body-fill.md](2026-10-22-overnight-body-fill.md).

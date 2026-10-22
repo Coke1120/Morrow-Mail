@@ -86,6 +86,7 @@ const LIST_PAGE_SIZE = 200;
 let openGen = 0;
 let pendingOpenId = "";
 let pendingOpenBody = false;
+const latestBodies = new Map();
 let peekGen = 0;
 let peekEmail = null;
 let reloadTimer = null;
@@ -7163,7 +7164,7 @@ async function deleteFromList(email) {
 async function replyFromList(email, kind) {
   let opened = state.email && state.email.id === email.id ? state.email : null;
   if (!opened) {
-    const data = await call("mail:openEmail", { emailId: email.id });
+    const data = await call("mail:openEmail", { emailId: email.id, full: true });
     opened = data && data.email;
   }
   if (!opened) throw new Error("That message is no longer in the mailbox.");
@@ -9073,6 +9074,59 @@ function listedMessage(emailId) {
   return rows.find((row) => row && String(row.id) === id) || null;
 }
 
+function listedHasBody(email) {
+  if (!email) return false;
+  if (typeof email.htmlBody === "string" && email.htmlBody.trim()) return true;
+  if (typeof email.textBody === "string" && email.textBody.trim()) return true;
+  return email.hasBody === true;
+}
+
+function noteBody(email) {
+  if (!email || email.id == null) return;
+  const id = String(email.id);
+  const previous = latestBodies.get(id);
+  if (!previous || bodyScore(email) >= bodyScore(previous)) latestBodies.set(id, email);
+}
+
+function bodyScore(email) {
+  if (!email) return 0;
+  return (email.bodyComplete ? 100000000 : 0) + String(email.htmlBody || "").length + String(email.textBody || "").length;
+}
+
+function preferBody(email) {
+  if (!email || email.id == null) return email;
+  const latest = latestBodies.get(String(email.id));
+  if (!latest || latest === email) return email;
+  if (bodyScore(latest) > bodyScore(email)) return { ...email, ...latest };
+  return email;
+}
+
+function applyBodyUpdate(payload) {
+  const email = payload && payload.email;
+  if (!email || email.id == null) return;
+  noteBody(email);
+  const id = String(email.id);
+  const known = listedMessage(id);
+  if (known) {
+    known.bodyComplete = email.bodyComplete === true;
+    known.hasBody = !!(email.htmlBody || email.textBody || email.hasBody);
+  }
+  if (peekEmail && String(peekEmail.id) === id) {
+    const nextPeek = preferBody(peekEmail);
+    const peekChanged = nextPeek.htmlBody !== peekEmail.htmlBody || nextPeek.textBody !== peekEmail.textBody;
+    peekEmail = nextPeek;
+    const dialog = $("agent-peek");
+    if (peekChanged && dialog && dialog.open) paintPeek(peekEmail);
+  }
+  if (pendingOpenId && String(pendingOpenId) !== id) return;
+  if (pendingOpenBody && pendingOpenId && String(pendingOpenId) === id) return;
+  if (!state.email || String(state.email.id) !== id) return;
+  const next = preferBody(state.email);
+  const contentSame = next.htmlBody === state.email.htmlBody && next.textBody === state.email.textBody;
+  state.email = next;
+  if (!contentSame) renderReader(false);
+}
+
 function paintReaderPending(email) {
   const pane = $("reader");
   pane.replaceChildren();
@@ -9105,7 +9159,7 @@ async function openMessage(emailId, focus) {
   const known = listedMessage(emailId);
   const showing = state.email && String(state.email.id) === String(emailId)
     && (state.email.htmlBody || state.email.textBody);
-  const waitForBody = !!(known && known.bodyComplete === false && !showing);
+  const waitForBody = !showing && !listedHasBody(known) && !!(known && known.bodyComplete === false);
   pendingOpenId = emailId;
   pendingOpenBody = waitForBody;
   if (waitForBody) paintReaderPending(known);
@@ -9141,7 +9195,8 @@ async function openMessage(emailId, focus) {
   }
   pendingOpenId = "";
   pendingOpenBody = false;
-  state.email = email;
+  noteBody(email);
+  state.email = preferBody(email);
   state.thread = state.prefs.conversation === false ? [] : threadMembers(fromOpen, listed);
   renderReader(focus !== false);
   renderList();
@@ -11181,6 +11236,7 @@ async function bootReaderWindow() {
   }
   wire();
   if (typeof api.on === "function") api.on("mail:translate:event", onTranslateEvent);
+  if (typeof api.on === "function") api.on("mail:bodyUpdated", applyBodyUpdate);
   await loadLook();
   await loadShellPrefs();
   try {
@@ -11219,7 +11275,8 @@ async function bootReaderWindow() {
     showStatus("That message is no longer in the mailbox.", true);
     return;
   }
-  state.email = email;
+  noteBody(email);
+  state.email = preferBody(email);
   state.thread = [];
   state.accountId = email.accountId || accountId || state.accountId;
   publishReaderTitle(email.subject || "");
@@ -11367,7 +11424,7 @@ async function requestComposeClose() {
 }
 
 async function resumeDraft(email, extra) {
-  const data = await call("mail:openEmail", { emailId: email.id });
+  const data = await call("mail:openEmail", { emailId: email.id, full: true });
   const draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
   await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
@@ -15548,7 +15605,7 @@ function proposalContext(proposal, kind) {
 async function describeDraftSource(node, draft) {
   if (!draft.messageId) { node.textContent += "\nSource missing — request a new draft from a message."; return; }
   try {
-    const data = await call("mail:openEmail", { emailId: draft.messageId });
+    const data = await call("mail:openEmail", { emailId: draft.messageId, full: true });
     const source = data?.email;
     if (!source || (draft.accountId && source.accountId !== draft.accountId)) throw new Error("Source unavailable or mailbox mismatch");
     const account = state.accounts.find(row => row.id === source.accountId);
@@ -16400,7 +16457,7 @@ async function reviewDraft(draft) {
   if (!body) throw new Error("That draft is empty.");
   const messageId = draft && draft.messageId;
   if (!messageId) throw new Error("This proposal has no source message. Open the intended message and request a new draft.");
-  const data = await call("mail:openEmail", { emailId: messageId });
+  const data = await call("mail:openEmail", { emailId: messageId, full: true });
   const email = data && data.email;
   if (!email || email.id !== messageId || !email.accountId || (draft.accountId && draft.accountId !== email.accountId)) {
     throw new Error("The proposal's source message or account is unavailable. Open the intended message and request a new draft.");
@@ -16456,7 +16513,8 @@ async function peekMessage(messageId) {
   if (gen !== peekGen) return;
   const email = data && data.email;
   if (!email) throw new Error("That message is no longer in the mailbox.");
-  peekEmail = email;
+  noteBody(email);
+  peekEmail = preferBody(email);
   paintPeek(email);
   openDialog("agent-peek");
 }
@@ -16472,7 +16530,7 @@ async function openPeekInMail() {
 
 async function openReplyCompose(messageId) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
-  const data = await call("mail:openEmail", { emailId: messageId });
+  const data = await call("mail:openEmail", { emailId: messageId, full: true });
   const email = data && data.email;
   if (!email || !email.accountId) throw new Error("That message is no longer in the mailbox.");
   const account = state.accounts.find((item) => item.id === email.accountId);
@@ -16876,7 +16934,7 @@ function paintAgentHome(payload) {
 async function replyToAgentItem(item, kind) {
   const context = agentMessageContext(item);
   if (!context) return;
-  const data = await call("mail:openEmail", { emailId: context.messageId });
+  const data = await call("mail:openEmail", { emailId: context.messageId, full: true });
   const email = data && data.email;
   if (!email || !email.accountId) throw new Error("That message is no longer in the mailbox.");
   const account = state.accounts.find((row) => row.id === email.accountId);
@@ -19718,6 +19776,7 @@ async function boot() {
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
+  api.on("mail:bodyUpdated", applyBodyUpdate);
   api.on("mail:actionsSettled", applyActionSettlement);
   api.on("mail:syncStatus", (payload) => {
     rememberSyncStatus(payload);

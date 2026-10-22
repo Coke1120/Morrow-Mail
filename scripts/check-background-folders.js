@@ -308,7 +308,7 @@ async function checkEngine() {
     console.log("background-folders-ok");
   } finally {
     Object.assign(remote, saved);
-    for (const id of ["bg-all", "bg-active", "bg-budget", "bg-manual", "bg-ol", "bg-rate", "bg-yield", "bg-resume", "bg-queue", "bg-manual-open", "bg-throw"]) {
+    for (const id of ["bg-all", "bg-active", "bg-budget", "bg-manual", "bg-ol", "bg-rate", "bg-yield", "bg-resume", "bg-queue", "bg-manual-open", "bg-throw", "bg-paint", "bg-prefetch", "bg-page"]) {
       try { secrets.deletePassword(id); } catch { /* already gone */ }
       engine.syncGates.delete(id);
     }
@@ -647,7 +647,123 @@ async function checkOpenPriority(engine, db, remote, secrets) {
     await Promise.allSettled([throwSync, throwOpen]);
   }
 
+  await checkPaintAndPrefetch(engine, db, remote, secrets);
   assert.equal(opens.max, 1, "a body fetch waits for the in-flight mailbox connection to close");
+}
+
+function insertBody(db, id, accountId, folderPath, uid, extra) {
+  const fields = extra || {};
+  db.insertMessage({
+    id,
+    accountId,
+    folderPath,
+    uid,
+    uidValidity: 1,
+    threadId: id,
+    subject: fields.subject || "Need body",
+    snippet: "snippet",
+    from: "Ada <ada@example.com>",
+    date: new Date().toISOString(),
+    listSortTs: fields.listSortTs,
+    unread: true,
+    bodyComplete: fields.bodyComplete === true,
+    htmlBody: fields.htmlBody || null,
+    textBody: fields.textBody || null,
+  });
+}
+
+async function tick() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function checkPaintAndPrefetch(engine, db, remote, secrets) {
+  const events = [];
+  let releaseFetch = () => {};
+  let markStarted = () => {};
+  let started = new Promise((resolve) => { markStarted = resolve; });
+  const arm = () => {
+    started = new Promise((resolve) => { markStarted = resolve; });
+    releaseFetch = () => {};
+  };
+  remote.fetchSource = async (_client, _folder, uid) => {
+    events.push(Number(uid));
+    markStarted();
+    await new Promise((resolve) => { releaseFetch = resolve; });
+    return sourceBody(uid, `<p>Full ${uid}</p>`);
+  };
+  db.insertAccount(accountRow("bg-paint", "paint@example.test", "custom"));
+  secrets.setPassword("bg-paint", "pw");
+  db.replaceFolders("bg-paint", [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }], "/");
+  insertBody(db, "bg-paint-cached", "bg-paint", "INBOX", 4, {
+    listSortTs: 40,
+    htmlBody: "<p>Cached newsletter</p>",
+    textBody: "Cached newsletter",
+  });
+  arm();
+  const painted = await engine.answer("mail:openEmail", [{ emailId: "bg-paint-cached" }]);
+  assert.equal(painted.success, true);
+  assert.equal(painted.data.email.htmlBody, "<p>Cached newsletter</p>");
+  assert.equal(painted.data.email.bodyComplete, false);
+  assert.equal(painted.data.email.hasBody, true);
+  await started;
+  assert.equal(db.messageById("bg-paint-cached").body_complete, 0, "paint-first returns before the full fetch finishes");
+  let fullDone = false;
+  const fullOpen = engine.answer("mail:openEmail", [{ emailId: "bg-paint-cached", full: true }]);
+  fullOpen.then(() => { fullDone = true; });
+  await tick();
+  assert.equal(fullDone, false, "a reply that asks for the full body still waits");
+  releaseFetch();
+  const full = await fullOpen;
+  assert.equal(full.success, true);
+  assert.equal(full.data.email.bodyComplete, true);
+  assert.match(full.data.email.htmlBody, /Full 4/);
+  assert.deepEqual(events, [4], "the background fill and the waiting open share one fetch");
+  assert.equal(db.messageById("bg-paint-cached").body_complete, 1);
+
+  remote.fetchSource = async (_client, _folder, uid) => {
+    events.push(Number(uid));
+    return sourceBody(uid, `<p>Full ${uid}</p>`);
+  };
+  events.length = 0;
+  db.insertAccount(accountRow("bg-prefetch", "prefetch@example.test", "custom"));
+  secrets.setPassword("bg-prefetch", "pw");
+  db.replaceFolders("bg-prefetch", [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }], "/");
+  insertBody(db, "bg-pre-3", "bg-prefetch", "INBOX", 3, { listSortTs: 300 });
+  insertBody(db, "bg-pre-2", "bg-prefetch", "INBOX", 2, { listSortTs: 200 });
+  insertBody(db, "bg-pre-1", "bg-prefetch", "INBOX", 1, { listSortTs: 100 });
+  insertBody(db, "bg-pre-open", "bg-prefetch", "INBOX", 9, { listSortTs: 50 });
+  const listed = engine.answer("mail:listFromCache", [{ accountId: "bg-prefetch", folderId: "INBOX", limit: 3 }]);
+  assert.deepEqual(listed.data.emails.map((row) => row.id), ["bg-pre-3", "bg-pre-2", "bg-pre-1"]);
+  const openResult = await engine.answer("mail:openEmail", [{ emailId: "bg-pre-open" }]);
+  assert.equal(openResult.success, true);
+  assert.match(openResult.data.email.htmlBody, /Full 9/);
+  for (let i = 0; i < 40 && events.length < 4; i += 1) await tick();
+  assert.equal(events[0], 9, "an open runs before a visible-page prefetch");
+  assert.deepEqual(events, [9, 3, 2, 1]);
+  assert.equal(db.messageById("bg-pre-1").body_complete, 1);
+  assert.equal(db.messageById("bg-pre-open").body_complete, 1);
+
+  events.length = 0;
+  db.insertAccount(accountRow("bg-page", "page@example.test", "custom"));
+  secrets.setPassword("bg-page", "pw");
+  db.replaceFolders("bg-page", [
+    { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+    { path: "Notes", name: "Notes", wellKnown: null },
+  ], "/");
+  insertBody(db, "bg-page-a1", "bg-page", "INBOX", 31, { listSortTs: 310 });
+  insertBody(db, "bg-page-a2", "bg-page", "INBOX", 32, { listSortTs: 300 });
+  insertBody(db, "bg-page-a3", "bg-page", "INBOX", 33, { listSortTs: 290 });
+  insertBody(db, "bg-page-old", "bg-page", "INBOX", 34, { listSortTs: 10 });
+  insertBody(db, "bg-page-b1", "bg-page", "Notes", 41, { listSortTs: 280 });
+  engine.answer("mail:listFromCache", [{ accountId: "bg-page", folderId: "INBOX", limit: 2 }]);
+  engine.answer("mail:listFromCache", [{ accountId: "bg-page", folderId: "Notes", limit: 50 }]);
+  for (let i = 0; i < 40 && events.length < 2; i += 1) await tick();
+  assert.equal(events.includes(32), false, "changing the page drops the rest of the previous prefetch");
+  assert.equal(events.includes(33), false, "changing the page drops the rest of the previous prefetch");
+  assert.equal(events.includes(34), false, "prefetch stays on the loaded page");
+  assert.ok(events.includes(41), "the new page prefetches its own incomplete row");
+  assert.equal(db.messageById("bg-page-a3").body_complete, 0);
+  assert.equal(db.messageById("bg-page-b1").body_complete, 1);
 }
 
 async function run() {

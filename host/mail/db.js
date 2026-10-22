@@ -1139,6 +1139,16 @@ function whereFor(query) {
   }
   if (query.filterAttachments === true) clauses.push("m.has_attachments = 1");
   if (query.filterAttachments === false) clauses.push("m.has_attachments = 0");
+  if (query.needsBody) {
+    clauses.push("m.uid > 0");
+    clauses.push("m.body_complete != 1");
+    clauses.push("m.is_draft = 0");
+    clauses.push(`NOT EXISTS (
+      SELECT 1 FROM folders f
+      WHERE f.account_id = m.account_id AND f.path = m.folder_path
+        AND f.well_known IN ('deleteditems', 'junkemail')
+    )`);
+  }
   if (query.beforeTs) {
     clauses.push("m.list_sort_ts < ?");
     params.push(query.beforeTs);
