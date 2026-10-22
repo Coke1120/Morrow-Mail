@@ -56,6 +56,8 @@ const state = {
     collapsedFolders: {},
     scheduleDelay: 0,
     layout: { folders: 260, list: 360, reading: 0 },
+    timeFormat: "system",
+    dateFormat: "system",
   },
   providerFolders: null,
   dragMessage: null,
@@ -132,6 +134,7 @@ let calendarGen = 0;
 let agentGen = 0;
 let agentChatBusy = false;
 let agentTurns = [];
+let agentPaintPayload = null;
 let agentProposalIds = null;
 let agentPoll = null;
 let brainDragIndex = -1;
@@ -1471,10 +1474,13 @@ function calendarView(payload) {
 function monthRange(year, month) {
   const start = new Date(year, month, 1);
   const end = new Date(year, month + 1, 1);
+  const label = typeof displayStamp === "function"
+    ? displayStamp(start, "month")
+    : start.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   return {
     timeMin: start.toISOString(),
     timeMax: end.toISOString(),
-    label: start.toLocaleString("en-US", { month: "long", year: "numeric" }),
+    label,
     year,
     month,
   };
@@ -1526,6 +1532,7 @@ function clockLabel(value) {
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return "";
   const date = new Date(time);
+  if (typeof displayStamp === "function") return displayStamp(date, "time");
   let hour = date.getHours();
   const minute = String(date.getMinutes()).padStart(2, "0");
   const suffix = hour >= 12 ? "PM" : "AM";
@@ -1545,14 +1552,16 @@ function formatEventWhen(event) {
 function formatEventDetailWhen(event) {
   if (!event || !event.start) return "";
   if (event.allDay) {
-    const start = String(event.start).slice(0, 10);
-    const end = String(event.end || "").slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(end) && end > start) return start + " – " + end + " (end date is exclusive)";
+    const start = shownDayKey(String(event.start).slice(0, 10));
+    const end = shownDayKey(String(event.end || "").slice(0, 10));
+    if (String(event.end || "").slice(0, 10) > String(event.start || "").slice(0, 10) && /^\d{4}-\d{2}-\d{2}$/.test(String(event.end || "").slice(0, 10))) {
+      return start + " – " + end + " (end date is exclusive)";
+    }
     return "All day · " + start;
   }
   const startMs = Date.parse(event.start);
   if (!Number.isFinite(startMs)) return formatEventWhen(event);
-  const date = new Date(startMs).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  const date = displayStamp(new Date(startMs), "date", { weekday: true });
   const when = formatEventWhen(event);
   return when ? date + " · " + when : date;
 }
@@ -1572,7 +1581,18 @@ function agendaEvents(events) {
 
 function agendaLine(event) {
   if (!event) return "";
-  const parts = [eventDay(event), formatEventWhen(event), event.title || "(no title)"];
+  let dayLabel = eventDay(event);
+  if (dayLabel && typeof displayStamp === "function") {
+    const bits = dayLabel.split("-");
+    if (bits.length === 3) {
+      const date = new Date(Number(bits[0]), Number(bits[1]) - 1, Number(bits[2]));
+      if (!Number.isNaN(date.getTime())) {
+        const formatted = displayStamp(date, "date");
+        if (formatted) dayLabel = formatted;
+      }
+    }
+  }
+  const parts = [dayLabel, formatEventWhen(event), event.title || "(no title)"];
   if (event.location) parts.push(event.location);
   return parts.filter(Boolean).join(" · ");
 }
@@ -1738,7 +1758,11 @@ function vacationConfirm(kind, owner, options) {
     if (!value) return end ? "No end" : "Immediately";
     const time = new Date(value);
     if (!Number.isFinite(time.getTime())) return "Unknown";
-    if (provider !== "imap") return time.toLocaleString() + " (" + zone + ")";
+    if (provider !== "imap") {
+      return typeof displayStamp === "function"
+        ? displayStamp(time, "dateTime", { withZone: true })
+        : time.toLocaleString() + " (" + zone + ")";
+    }
     const midnight = Date.parse(time.toISOString().slice(0, 10) + "T00:00:00.000Z");
     return new Date(midnight + (end && time.getTime() > midnight ? 86400000 : 0)).toISOString().slice(0, 10) + " 00:00 UTC" + (end ? " (exclusive)" : "");
   };
@@ -2172,17 +2196,73 @@ function applyShellTheme(root, theme, accent) {
   return mode;
 }
 
+function displayStamp(date, kind, extra) {
+  const options = extra && typeof extra === "object" ? extra : {};
+  const api = typeof morrowDisplayFormat === "object" && morrowDisplayFormat ? morrowDisplayFormat : null;
+  const prefs = state && state.prefs ? state.prefs : {};
+  if (kind === "weekdays") {
+    if (api && typeof api.weekdayLabels === "function") return api.weekdayLabels(options);
+    if (options.narrow) return ["S", "M", "T", "W", "T", "F", "S"];
+    return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  }
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  let text = "";
+  if (api) {
+    if (kind === "time") text = api.formatTime(date, prefs, options);
+    else if (kind === "date") text = api.formatDate(date, prefs, options);
+    else if (kind === "month") text = api.formatMonthLabel(date, prefs, options);
+    else if (kind === "list") text = api.formatListWhen(date, options.now instanceof Date ? options.now : new Date(), prefs, options);
+    else text = api.formatDateTime(date, prefs, options);
+  } else if (kind === "time") {
+    text = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  } else if (kind === "month") {
+    text = date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  } else if (kind === "list") {
+    const now = options.now instanceof Date ? options.now : new Date();
+    if (date.toDateString() === now.toDateString()) text = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    else {
+      const sameYear = date.getFullYear() === now.getFullYear();
+      text = date.toLocaleDateString([], sameYear
+        ? { month: "short", day: "numeric" }
+        : { year: "numeric", month: "short", day: "numeric" });
+    }
+  } else if (kind === "date") {
+    if (options.omitYear) text = date.toLocaleDateString([], { month: "short", day: "numeric" });
+    else if (options.weekday) {
+      text = date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+    } else text = date.toLocaleDateString();
+  } else if (options.compact) {
+    text = date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  } else if (options.medium) {
+    try { text = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date); }
+    catch { text = date.toLocaleString(); }
+  } else text = date.toLocaleString();
+  if (options.withZone && text) {
+    let zone = "";
+    try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { zone = ""; }
+    if (zone) text += " (" + zone + ")";
+  }
+  return text;
+}
+
+function shownWhen(date, withZone) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return displayStamp(date, "dateTime", withZone ? { withZone: true } : undefined);
+}
+
+function shownDayKey(value) {
+  const day = String(value || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return String(value || "");
+  const parts = day.split("-");
+  const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  if (Number.isNaN(date.getTime())) return day;
+  return displayStamp(date, "date") || day;
+}
+
 function listWhen(iso) {
   const date = iso ? new Date(iso) : null;
   if (!date || Number.isNaN(date.getTime())) return "";
-  const now = new Date();
-  if (date.toDateString() === now.toDateString()) {
-    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  }
-  const sameYear = date.getFullYear() === now.getFullYear();
-  return date.toLocaleDateString([], sameYear
-    ? { month: "short", day: "numeric" }
-    : { year: "numeric", month: "short", day: "numeric" });
+  return displayStamp(date, "list", { now: new Date() });
 }
 
 function nextRow(length, index, delta) {
@@ -2476,7 +2556,11 @@ function scheduledLine(row, accounts = []) {
   const subject = String((row && row.subject) || "").trim() || "(no subject)";
   const to = Array.isArray(row && row.to) ? row.to.filter(Boolean).join(", ") : String((row && row.to) || "").trim();
   const when = row && row.sendAt ? new Date(row.sendAt) : null;
-  const time = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")" : "Unknown time";
+  const time = when && !Number.isNaN(when.getTime())
+    ? (typeof displayStamp === "function"
+      ? displayStamp(when, "dateTime", { withZone: true })
+      : when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")")
+    : "Unknown time";
   const failed = row && row.status === "failed" ? (String(row.error || "").trim() || "Send failed.") : "";
   const account = accounts.find(item => item.id === row.accountId);
   return [account ? account.email : (row && row.accountId), subject, to, time, row.status === "failed" ? "Failed — check Sent before retrying" : row.status === "sending" ? "Sending" : "Pending", failed].filter(Boolean).join(" · ");
@@ -4810,7 +4894,9 @@ function syncClock(ms) {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return "";
   try {
-    return new Date(n).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const date = new Date(n);
+    if (typeof displayStamp === "function") return displayStamp(date, "time");
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   } catch {
     return "";
   }
@@ -4820,11 +4906,22 @@ function syncDetail(sync) {
   if (!sync || !sync.state) return "";
   const where = [sync.accountLabel, sync.folderLabel].filter(Boolean).join(" · ");
   const phase = phaseWord(sync.phase);
-  const success = sync.lastSuccessAt && sync.accountId && sync.folderId ? new Date(sync.lastSuccessAt).toLocaleString() : "";
+  const success = sync.lastSuccessAt && sync.accountId && sync.folderId
+    ? (typeof displayStamp === "function"
+      ? displayStamp(new Date(sync.lastSuccessAt), "dateTime")
+      : new Date(sync.lastSuccessAt).toLocaleString())
+    : "";
   const successLine = success ? `${where} · Last checked ${success}` : "";
   if (sync.state === "syncing") return [where, phase || "Downloading recent mail", successLine].filter(Boolean).join(" · ");
   if (sync.state === "error") return [where, redactDebugText(sync.lastError || sync.message || "Sync failed"), sync.retrying ? "Retrying…" : ""].filter(Boolean).join(" · ");
-  if (sync.state === "paused") return [sync.message || "Paused for rate limit", where, sync.retryAt ? "Retrying at " + new Date(sync.retryAt).toLocaleString() : "Waiting before retrying"].filter(Boolean).join(" · ");
+  if (sync.state === "paused") {
+    const retry = sync.retryAt
+      ? "Retrying at " + (typeof displayStamp === "function"
+        ? displayStamp(new Date(sync.retryAt), "dateTime")
+        : new Date(sync.retryAt).toLocaleString())
+      : "Waiting before retrying";
+    return [sync.message || "Paused for rate limit", where, retry].filter(Boolean).join(" · ");
+  }
   if (sync.state === "done") return successLine || [where, "Not synced yet"].filter(Boolean).join(" · ");
   return sync.message || "";
 }
@@ -4926,11 +5023,9 @@ function finishLocalSync(kind, error) {
 }
 
 let supportLogLines = [];
-const logTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
-const logTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 function logLine(row) {
   const at = new Date(row && row.at);
-  const when = Number.isFinite(+at) ? logTimeFormat.format(at) + " (" + logTimeZone + ")" : "Unknown time";
+  const when = Number.isFinite(+at) ? shownWhen(at, true) : "Unknown time";
   return [when, redactDebugText(row && row.source), redactDebugText(row && row.text)].filter(Boolean).join(" · ");
 }
 function paintLog(lines) {
@@ -4971,7 +5066,7 @@ async function readSupportLog() {
   }
 }
 function previewSupportLog() {
-  const header = "Morrow Mail " + appVersion + " · Support preview · " + new Date().toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")\nKnown credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. Up to 200 recent session lines; this is not a full history.\n\n";
+  const header = "Morrow Mail " + appVersion + " · Support preview · " + shownWhen(new Date(), true) + "\nKnown credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. Up to 200 recent session lines; this is not a full history.\n\n";
   $("support-preview").value = header + filteredSupportLog().map(logLine).join("\n");
   $("support-copy-status").textContent = "Review the preview before copying.";
   openDialog("support-dialog");
@@ -5431,7 +5526,8 @@ function renderList() {
       const stamp = JSON.stringify([email.folderId, email.from, email.subject, email.snippet, email.date,
         email.unread, email.isStarred, !!state.query, state.allInbox,
         state.allInbox && mailbox ? accountLabel(mailbox) : "",
-        state.query && mailbox ? mailbox.email : ""]);
+        state.query && mailbox ? mailbox.email : "",
+        state.prefs.timeFormat, state.prefs.dateFormat]);
       let cached = messageRows.get(key);
       if (!cached || cached.stamp !== stamp) {
         const row = messageRow(email);
@@ -5890,7 +5986,7 @@ function renderReader(focus) {
     const when = document.createElement("p");
     when.className = "meta";
     const failedAt = email.date ? new Date(email.date) : null;
-    when.textContent = failedAt && !Number.isNaN(failedAt.getTime()) ? failedAt.toLocaleString() : "";
+    when.textContent = shownWhen(failedAt);
     const error = document.createElement("p");
     error.className = "hint error";
     error.setAttribute("role", "status");
@@ -5914,14 +6010,14 @@ function renderReader(focus) {
   const when = document.createElement("p");
   when.className = "meta";
   const date = email.date ? new Date(email.date) : null;
-  when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  when.textContent = shownWhen(date);
   pane.append(heading, from, when);
   const until = snoozedUntilOf(email);
   const untilDate = until ? new Date(until) : null;
   if (state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
     const snooze = document.createElement("p");
     snooze.className = "meta";
-    snooze.textContent = `Snoozed until ${untilDate.toLocaleString()}`;
+    snooze.textContent = `Snoozed until ${shownWhen(untilDate)}`;
     pane.appendChild(snooze);
   }
   for (const [label, value] of [["To", email.to], ["Cc", email.cc]]) {
@@ -6120,6 +6216,7 @@ function threadCalendarTime(iso, now) {
   const date = new Date(iso);
   const clock = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(date.getTime()) || Number.isNaN(clock.getTime())) return "";
+  if (typeof displayStamp === "function") return displayStamp(date, "list", { now: clock });
   if (date.toDateString() === clock.toDateString()) {
     return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
@@ -6237,8 +6334,7 @@ function rememberThreadStrip(email, members) {
 
 function threadAbsoluteTime(iso) {
   const date = iso ? new Date(iso) : null;
-  if (!date || Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString();
+  return shownWhen(date);
 }
 
 function threadMessageButton(member, email) {
@@ -7025,7 +7121,7 @@ async function snoozeOpen(email, preset) {
   const data = await call("mail:snoozeThread", { accountId: email.accountId, threadId, snoozedUntil });
   state.snoozed.set(threadId, (data && data.snoozedUntil) || snoozedUntil);
   const when = new Date(state.snoozed.get(threadId));
-  showStatus(Number.isNaN(when.getTime()) ? "Snoozed." : `Snoozed until ${when.toLocaleString()}.`);
+  showStatus(Number.isNaN(when.getTime()) ? "Snoozed." : `Snoozed until ${shownWhen(when)}.`);
   await loadList();
   renderReader(false);
   focusAction("snooze");
@@ -8859,7 +8955,7 @@ function paintReaderPending(email) {
   const when = document.createElement("p");
   when.className = "meta";
   const date = email && email.date ? new Date(email.date) : null;
-  when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  when.textContent = shownWhen(date);
   const pending = document.createElement("div");
   pending.className = "body-pending";
   pending.setAttribute("role", "status");
@@ -9820,7 +9916,7 @@ function syncScheduleFields() {
   $("schedule-at").hidden = !custom;
   $("schedule-at-label").hidden = !custom;
   const when = scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
-  $("schedule-note").textContent = (when ? "Scheduled time: " + when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + "). " : "Choose a future local time. ") + "Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.";
+  $("schedule-note").textContent = (when ? "Scheduled time: " + shownWhen(when, true) + ". " : "Choose a future local time. ") + "Sends while the app is open. If Morrow Mail is closed at that time, it sends the next time you open it.";
 }
 
 function renderScheduled(rows) {
@@ -10491,7 +10587,7 @@ function paintQuoteBody() {
     const when = document.createElement("p");
     when.className = "meta";
     const date = new Date(email.date);
-    when.textContent = Number.isNaN(date.getTime()) ? String(email.date) : date.toLocaleString();
+    when.textContent = Number.isNaN(date.getTime()) ? String(email.date) : shownWhen(date);
     head.appendChild(when);
   }
   if (email.subject) {
@@ -11409,7 +11505,11 @@ async function scheduleMail(whenOverride) {
     // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
     if (typeof publishComposeTitle === "function") publishComposeTitle("Scheduled receipt");
     state.composeBaseline = composeSnapshot();
-    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${state.composeMeta.fromAddress || account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
+    // Mailbox fixtures evaluate scheduleMail without the display helper.
+    const scheduledFor = typeof shownWhen === "function"
+      ? shownWhen(when, true)
+      : when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")";
+    setComposeStatus(`Scheduled for ${scheduledFor} from ${state.composeMeta.fromAddress || account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
     await loadScheduled();
   });
 }
@@ -11448,7 +11548,7 @@ function paintPreview(draft) {
   const date = schedule && draft.sendAt ? new Date(draft.sendAt) : null;
   if (date && !Number.isNaN(date.getTime())) {
     when.hidden = false;
-    when.textContent = "Scheduled for " + date.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ").";
+    when.textContent = "Scheduled for " + shownWhen(date, true) + ".";
   } else {
     when.hidden = true;
     when.textContent = "";
@@ -12369,7 +12469,7 @@ function updateView(snapshot, version) {
 function paintUpdate(view) {
   $("about-version").textContent = view.version ? "Version " + view.version : "";
   const status = $("about-update-status");
-  status.textContent = (view.error ? view.status + " " + view.error : view.status) + (view.lastCheckedAt ? " Last checked " + new Date(view.lastCheckedAt).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : "");
+  status.textContent = (view.error ? view.status + " " + view.error : view.status) + (view.lastCheckedAt ? " Last checked " + shownWhen(new Date(view.lastCheckedAt), true) + "." : "");
   status.classList.toggle("error", !!view.error);
   $("about-update-check").disabled = !!view.busy;
   const install = $("about-update-install");
@@ -12560,6 +12660,13 @@ async function loadShellPrefs() {
     next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
     next.scheduleDelay = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
     next.layout = layoutPanesPref(await api.invoke("morrow:configGetLayoutPanes"));
+    const formats = typeof morrowDisplayFormat === "object" && morrowDisplayFormat ? morrowDisplayFormat : null;
+    next.timeFormat = formats
+      ? formats.castTimeFormat(await api.invoke("morrow:configGetTimeFormat"), true)
+      : "system";
+    next.dateFormat = formats
+      ? formats.castDateFormat(await api.invoke("morrow:configGetDateFormat"), true)
+      : "system";
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
@@ -12609,6 +12716,15 @@ function takePref(getChannel, kind, control) {
     state.prefs.syncHorizon = readPref(kind, control);
     return false; // The sync policy is read on the next host sync.
   }
+  if (getChannel === "morrow:configGetTimeFormat" || getChannel === "morrow:configGetDateFormat") {
+    const formats = typeof morrowDisplayFormat === "object" && morrowDisplayFormat ? morrowDisplayFormat : null;
+    if (getChannel === "morrow:configGetTimeFormat") {
+      state.prefs.timeFormat = formats ? formats.castTimeFormat(control.value, true) : "system";
+    } else {
+      state.prefs.dateFormat = formats ? formats.castDateFormat(control.value, true) : "system";
+    }
+    return true;
+  }
   return false;
 }
 
@@ -12617,6 +12733,30 @@ function paintPrefs() {
   renderAccounts();
   renderList();
   refreshReader();
+  repaintClockSurfaces();
+}
+
+function repaintClockSurfaces() {
+  if ($("refresh")) paintSyncControl();
+  if (state.view === "calendar" && state.calendarPayload && $("calendar-heading")) {
+    calendarGridKey = "";
+    calendarEventsKey = "";
+    const mini = $("calendar-mini");
+    if (mini && mini.dataset) delete mini.dataset.month;
+    paintCalendar(state.calendarPayload);
+  }
+  const history = $("sender-history");
+  if (history && history.open) paintSenderHistory();
+  const scheduled = $("scheduled-dialog");
+  if (scheduled && scheduled.open) loadScheduled().catch(() => {});
+  if ($("schedule-preset") && $("schedule-note")) syncScheduleFields();
+  if ($("compose-quote-body")) paintQuoteBody();
+  const preview = $("compose-preview");
+  if (preview && preview.open && previewDraftState) paintPreview(previewDraftState);
+  if (state.view === "log" && $("log-lines")) filterSupportLog();
+  if ($("mail-ooo")) paintMailVacation();
+  if (brainIsOpen() && $("brain-status")) paintBrain(brainSnapshot, brainView);
+  if (state.view === "agent" && agentPaintPayload && $("agent-status")) paintAgent(agentPaintPayload, "");
 }
 
 async function toggleProviderFolders(provider) {
@@ -12659,6 +12799,8 @@ function prefRows() {
   return [
     ["pref-theme", "config:getTheme", "config:setTheme", "select"],
     ["pref-accent", "morrow:configGetAccent", "morrow:configSetAccent", "text"],
+    ["pref-time-format", "morrow:configGetTimeFormat", "morrow:configSetTimeFormat", "select"],
+    ["pref-date-format", "morrow:configGetDateFormat", "morrow:configSetDateFormat", "select"],
     ["pref-conversation", "morrow:configGetConversationViewEnabled", "morrow:configSetConversationViewEnabled", "bool"],
     ["pref-images", "morrow:configGetAutoLoadRemoteImages", "morrow:configSetAutoLoadRemoteImages", "bool"],
     ["pref-undo", "morrow:configGetUndoSendDelaySeconds", "morrow:configSetUndoSendDelaySeconds", "seconds"],
@@ -12708,7 +12850,8 @@ async function loadSettings() {
   // must not repeat preference IPC reads or load closed provider/AI/Bot tabs.
   const keys = { ...SHELL_PREFS, ...READER_PREFS, "config:getTheme": "theme",
     "morrow:configGetAccent": "accent", "morrow:configGetUndoSendDelaySeconds": "undoSend",
-    "morrow:configGetSyncHorizonDays": "syncHorizon" };
+    "morrow:configGetSyncHorizonDays": "syncHorizon",
+    "morrow:configGetTimeFormat": "timeFormat", "morrow:configGetDateFormat": "dateFormat" };
   for (const [id, channel, , kind] of prefRows()) {
     applyPref(kind, $(id), state.prefs[keys[channel]]);
   }
@@ -13527,7 +13670,7 @@ function vacationSummary(data, now = Date.now()) {
   let start = Date.parse(settings.start), end = Date.parse(settings.end);
   if (!Number.isFinite(start) || !Number.isFinite(end)) return "Out of Office: scheduled — dates unavailable; manage to review";
   if (data.provider === "imap") { start = Math.floor(start / day) * day; end = Math.ceil(end / day) * day; }
-  const format = time => Number.isFinite(time) ? (data.provider === "imap" ? new Date(time).toISOString().slice(0, 10) + " 00:00 UTC" : new Date(time).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")") : "unknown";
+  const format = time => Number.isFinite(time) ? (data.provider === "imap" ? new Date(time).toISOString().slice(0, 10) + " 00:00 UTC" : shownWhen(new Date(time), true)) : "unknown";
   const phase = Number.isFinite(end) && now >= end ? "ended" : Number.isFinite(start) && now < start ? "scheduled" : "scheduled / active within these dates";
   return "Out of Office: " + phase + " · " + format(start) + " → " + format(end);
 }
@@ -13548,7 +13691,7 @@ function paintMailVacation() {
   const entry = mailVacation.get(account.id);
   const compact = !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
   const summary = vacationChipSummary(entry) || vacationSummary(entry?.data);
-  const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + new Date(entry.at).toLocaleString() : "");
+  const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + shownWhen(new Date(entry.at)) : "");
   box.classList.toggle("is-off", !!compact);
   box.title = detail;
   $("mail-ooo-status").textContent = compact ? "Out of Office: off" : detail;
@@ -13844,11 +13987,7 @@ function formatBrainTime(value) {
   const text = String(value || "").trim();
   const date = new Date(text);
   if (!text || Number.isNaN(date.getTime())) return text;
-  try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
-  } catch {
-    return text;
-  }
+  return displayStamp(date, "dateTime", { medium: true }) || text;
 }
 
 function brainRefreshChannels() {
@@ -15024,7 +15163,9 @@ function sectionEmptyCopy(reason) {
 function agentWhen(value) {
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return "";
-  return new Date(time).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const date = new Date(time);
+  if (typeof displayStamp === "function") return displayStamp(date, "dateTime", { compact: true });
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function agentMessageContext(item) {
@@ -15124,7 +15265,11 @@ function runModeLabel(row) {
   else if (row && row.schedule !== "disabled" && (row.schedule === "cron" || row.kind === "cron") && row.cron) text = "Scheduled · Cron " + String(row.cron) + ".";
   if (text.startsWith("Scheduled")) {
     const next = row.nextRunAt && new Date(row.nextRunAt);
-    text += next && Number.isFinite(+next) ? " Next run: " + next.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : " Next run not available.";
+    text += next && Number.isFinite(+next)
+      ? " Next run: " + (typeof displayStamp === "function"
+        ? displayStamp(next, "dateTime", { withZone: true })
+        : next.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")") + "."
+      : " Next run not available.";
     text += " Runs while Morrow is open; a missed run fires once on relaunch. Drafts need review and Send; filing needs confirmation.";
   }
   if (row && row.lastError) text += " Last run: " + String(row.lastError);
@@ -16124,7 +16269,7 @@ function paintMailBody(pane, email, repaint) {
   const when = document.createElement("p");
   when.className = "meta";
   const date = email.date ? new Date(email.date) : null;
-  when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  when.textContent = shownWhen(date);
   pane.append(from, when);
   for (const [label, value] of [["To", email.to], ["Cc", email.cc]]) {
     const text = people(value);
@@ -16485,6 +16630,7 @@ function paintThread() {
 }
 
 function paintAgent(payload, errorText) {
+  if (payload && typeof payload === "object") agentPaintPayload = payload;
   const status = $("agent-status");
   const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
   if (status) {
@@ -17183,7 +17329,7 @@ function paintMiniMonth(year, month) {
   bar.append(prev, label, next);
   const grid = document.createElement("div");
   grid.className = "mini-grid";
-  for (const name of ["S", "M", "T", "W", "T", "F", "S"]) {
+  for (const name of displayStamp(null, "weekdays", { narrow: true })) {
     const dow = document.createElement("div");
     dow.className = "mini-dow";
     dow.textContent = name;
@@ -17389,7 +17535,7 @@ function ensureCalendarGrid(year, month) {
   grid.className = "calendar-grid";
   grid.setAttribute("role", "grid");
   grid.setAttribute("aria-label", range.label);
-  for (const name of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
+  for (const name of displayStamp(null, "weekdays")) {
     const head = document.createElement("div");
     head.className = "calendar-dow";
     head.textContent = name;
@@ -17772,14 +17918,15 @@ function paintBotGrants(grants) {
       const account = accounts.find((row) => row.accountId === id);
       return account ? account.email || account.displayName : "Disconnected mailbox";
     });
+    const expiryAt = new Date(grant.expiry && grant.expiry.expiresAt);
     const expiryText = grant.expiry && grant.expiry.kind === "never"
       ? "No expiry"
-      : `Expires ${new Date(grant.expiry && grant.expiry.expiresAt).toLocaleString()}`;
+      : "Expires " + (shownWhen(expiryAt) || "Unknown time");
     meta.textContent = `${names.join(", ")} · ${botPermissionNames(grant.capabilities)} · ${expiryText}`;
     const used = document.createElement("p");
     used.className = "hint";
     used.textContent = grant.lastUsedAt
-      ? `Last successful use ${new Date(grant.lastUsedAt).toLocaleString()}. ${grant.bytesToday || 0} bytes today.`
+      ? `Last successful use ${shownWhen(new Date(grant.lastUsedAt)) || "Unknown time"}. ${grant.bytesToday || 0} bytes today.`
       : "No successful bot use recorded.";
     const row = document.createElement("div");
     row.className = "row";
@@ -18382,7 +18529,7 @@ let senderHistoryView = null;
 
 function senderWhen(value) {
   const date = value ? new Date(value) : null;
-  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+  return shownWhen(date);
 }
 
 function senderAccountLabel(account) {
