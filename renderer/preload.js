@@ -136,6 +136,8 @@ const INVOKE = [
   "emailBrain:getLibrarySkills",
   "emailBrain:installSkill",
   "emailBrain:removeSkill",
+  "emailBrain:saveCustomSkill",
+  "emailBrain:deleteCustomSkill",
   "emailBrain:runSkill",
   "emailBrain:setSkillSchedule",
   "emailBrain:deleteSkillSchedule",

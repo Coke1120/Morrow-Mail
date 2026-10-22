@@ -1,4 +1,5 @@
 const { gate: updateGate } = require("./update-quiescence");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { userDataDir, loadConfig } = require("./ai-config");
@@ -11,6 +12,11 @@ const MAIL_ERROR = "Connect a mailbox. Sample mail is not used.";
 const PERSON_ERROR = "Select a message or pass a contact email.";
 const CAL_NOTE = "No calendar grant. This plan uses mail only.";
 const SCHEDULE_NOTE = "Auto-run is off. This skill runs only when you ask.";
+const MAX_CUSTOM_SKILLS = 40;
+const MAX_SKILL_NAME = 80;
+const MAX_SKILL_DESCRIPTION = 240;
+const MAX_SKILL_INSTRUCTION = 4000;
+const USER_SKILL_ID = /^user:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const CATALOG = [
   {
@@ -70,11 +76,21 @@ const SYSTEM = [
   "Reply with JSON only, no markdown.",
   "Shape: {\"title\":string,\"summary\":string,\"sections\":[{\"title\":string,\"items\":[string]}],\"drafts\":[{\"messageId\":string,\"to\":string,\"subject\":string,\"body\":string}],\"moves\":[{\"messageId\":string,\"labelName\":string,\"reason\":string}],\"followUps\":[{\"messageId\":string,\"kind\":\"draft\"|\"open\"|\"flag-attachment\",\"label\":string,\"body\":string}]}.",
   "followUps.kind draft is a suggested reply, open means open the message, flag-attachment means an attachment is worth opening.",
-  "Omit moves unless the skill is Organize Inbox.",
 ].join(" ");
+
+function systemFor(skill) {
+  const moves = skill && skill.moves === true
+    ? "movesAllowed is true. You may propose moves. Do not claim anything was moved."
+    : "movesAllowed is false. Omit moves.";
+  return `${SYSTEM} ${moves}`;
+}
 
 function storePath() {
   return path.join(userDataDir(), "agent.json");
+}
+
+function customSkillsPath() {
+  return path.join(userDataDir(), "custom-skills.json");
 }
 
 const STALE_MS = 5 * 60 * 1000;
@@ -121,8 +137,245 @@ function clip(value, max) {
   return String(value || "").trim().slice(0, max);
 }
 
+function isUserSkillId(skillId) {
+  return USER_SKILL_ID.test(String(skillId || "").trim());
+}
+
+function stripControls(value, keepNewlines) {
+  const text = String(value || "");
+  if (keepNewlines) return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+  return text.replace(/[\u0000-\u001F\u007F]/g, "");
+}
+
+function cleanName(value) {
+  return stripControls(value, false).replace(/\s+/g, " ").trim();
+}
+
+function cleanDescription(value) {
+  return stripControls(value, false).replace(/\s+/g, " ").trim();
+}
+
+function cleanInstruction(value) {
+  return stripControls(value, true).replace(/\r\n/g, "\n").trim();
+}
+
+function readCustomDocument() {
+  const file = customSkillsPath();
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error && error.code === "ENOENT") return { ok: true, missing: true, meta: {}, skills: [] };
+    return { ok: false, error: "Custom skills could not be read. The file was left in place." };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: true, missing: false, meta: {}, skills: [] };
+  }
+  const meta = Object.assign({}, parsed);
+  delete meta.skills;
+  return {
+    ok: true,
+    missing: false,
+    meta,
+    skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+  };
+}
+
+function writeCustomDocument(meta, skills) {
+  const dest = customSkillsPath();
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const body = JSON.stringify(Object.assign({}, meta || {}, { skills: skills || [] }), null, 2);
+  const tmp = `${dest}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, body, { mode: 0o600 });
+  try {
+    fs.renameSync(tmp, dest);
+  } catch (error) {
+    try {
+      fs.copyFileSync(tmp, dest);
+      fs.rmSync(tmp, { force: true });
+    } catch (copyError) {
+      throw error;
+    }
+  }
+  try { fs.chmodSync(dest, 0o600); } catch { /* mode is best-effort on Windows */ }
+}
+
+function customEntryId(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "";
+  return String(raw.id || "").trim();
+}
+
+function activeCustom(raw) {
+  if (!isUserSkillId(customEntryId(raw))) return false;
+  const name = cleanName(raw.name);
+  const description = cleanDescription(raw.description);
+  const instruction = cleanInstruction(raw.instruction);
+  if (!instruction || instruction.length > MAX_SKILL_INSTRUCTION * 4) return false;
+  if (name.length > MAX_SKILL_NAME * 4) return false;
+  if (description.length > MAX_SKILL_DESCRIPTION * 4) return false;
+  return true;
+}
+
+function materializeCustom(raw) {
+  const name = cleanName(raw.name);
+  return {
+    id: customEntryId(raw),
+    name: name || "Custom skill",
+    description: cleanDescription(raw.description),
+    instruction: cleanInstruction(raw.instruction),
+    moves: raw.moves === true,
+    calendar: raw.calendar === true,
+    person: raw.person === true,
+    source: "user",
+    createdAt: typeof raw.createdAt === "string" ? raw.createdAt : "",
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "",
+  };
+}
+
+function listCustomSkills() {
+  const doc = readCustomDocument();
+  if (!doc.ok) return [];
+  const seen = new Set();
+  const skills = [];
+  for (const raw of doc.skills) {
+    if (!activeCustom(raw)) continue;
+    const skill = materializeCustom(raw);
+    if (seen.has(skill.id)) continue;
+    seen.add(skill.id);
+    skills.push(skill);
+  }
+  return skills;
+}
+
 function skillById(skillId) {
-  return CATALOG.find((skill) => skill.id === skillId) || null;
+  const id = String(skillId || "").trim();
+  if (!id) return null;
+  if (isUserSkillId(id)) return listCustomSkills().find((skill) => skill.id === id) || null;
+  return CATALOG.find((skill) => skill.id === id) || null;
+}
+
+function validateCustomInput(params) {
+  const name = cleanName(params && params.name);
+  const description = cleanDescription(params && params.description);
+  const instruction = cleanInstruction(params && params.instruction);
+  if (!name) return { error: "A skill needs a name." };
+  if (name.length > MAX_SKILL_NAME) return { error: "Use a name of 80 characters or fewer." };
+  if (description.length > MAX_SKILL_DESCRIPTION) return { error: "Use a description of 240 characters or fewer." };
+  if (!instruction) return { error: "A skill needs an instruction." };
+  if (instruction.length > MAX_SKILL_INSTRUCTION) return { error: "Use an instruction of 4000 characters or fewer." };
+  return {
+    name,
+    description,
+    instruction,
+    moves: !!(params && params.moves === true),
+    calendar: !!(params && params.calendar === true),
+    person: !!(params && params.person === true),
+  };
+}
+
+function countCustomEntries(skills) {
+  return (Array.isArray(skills) ? skills : []).filter((raw) => raw && typeof raw === "object" && !Array.isArray(raw)).length;
+}
+
+function saveCustomSkill(params) {
+  try {
+    const doc = readCustomDocument();
+    if (!doc.ok) return fail(new Error(doc.error));
+    const draft = validateCustomInput(params);
+    if (draft.error) return fail(new Error(draft.error));
+    const requested = params && typeof params.skillId === "string" ? params.skillId.trim() : "";
+    const now = new Date().toISOString();
+    const skills = doc.skills.slice();
+    if (!requested) {
+      if (countCustomEntries(skills) >= MAX_CUSTOM_SKILLS) {
+        return fail(new Error("You can save up to 40 custom skills."));
+      }
+      let id = "";
+      const taken = new Set(skills.map(customEntryId));
+      do { id = `user:${crypto.randomUUID()}`; } while (taken.has(id));
+      skills.push({
+        id,
+        name: draft.name,
+        description: draft.description,
+        instruction: draft.instruction,
+        moves: draft.moves,
+        calendar: draft.calendar,
+        person: draft.person,
+        createdAt: now,
+        updatedAt: now,
+      });
+      writeCustomDocument(doc.meta, skills);
+      const store = readStore();
+      const ids = installedIds(store);
+      if (!ids.includes(id)) ids.push(id);
+      store.installedSkillIds = ids;
+      writeStore(store);
+      const skill = skillById(id);
+      if (!skill) return fail(new Error("That custom skill could not be saved."));
+      return ok({ skill: publicSkill(skill, null), skills: listHomeSkills(), library: listLibrarySkills() });
+    }
+    if (!isUserSkillId(requested)) return fail(new Error("Built-in skills stay in the catalog."));
+    let replaced = false;
+    const next = skills.map((raw) => {
+      if (replaced || customEntryId(raw) !== requested) return raw;
+      replaced = true;
+      const base = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+      return Object.assign({}, base, {
+        id: requested,
+        name: draft.name,
+        description: draft.description,
+        instruction: draft.instruction,
+        moves: draft.moves,
+        calendar: draft.calendar,
+        person: draft.person,
+        createdAt: typeof base.createdAt === "string" && base.createdAt ? base.createdAt : now,
+        updatedAt: now,
+      });
+    });
+    if (!replaced) return fail(new Error("That custom skill is not on this computer."));
+    writeCustomDocument(doc.meta, next);
+    const skill = skillById(requested);
+    if (!skill) return fail(new Error("That custom skill could not be saved."));
+    return ok({
+      skill: publicSkill(skill, scheduleFor(requested)),
+      skills: listHomeSkills(),
+      library: listLibrarySkills(),
+    });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+function deleteCustomSkill(params) {
+  try {
+    const skillId = params && typeof params.skillId === "string" ? params.skillId.trim() : "";
+    if (!isUserSkillId(skillId)) return fail(new Error("Built-in skills stay in the catalog."));
+    const doc = readCustomDocument();
+    if (!doc.ok) return fail(new Error(doc.error));
+    let found = false;
+    const next = [];
+    for (const raw of doc.skills) {
+      if (customEntryId(raw) === skillId) {
+        found = true;
+        continue;
+      }
+      next.push(raw);
+    }
+    if (!found) return fail(new Error("That custom skill is not on this computer."));
+    writeCustomDocument(doc.meta, next);
+    const store = readStore();
+    store.installedSkillIds = installedIds(store).filter((id) => id !== skillId);
+    store.schedules = (store.schedules || []).filter((row) => row.skillId !== skillId);
+    writeStore(store);
+    return ok({ deleted: true, skillId, skills: listHomeSkills(), library: listLibrarySkills() });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+function scheduleFor(skillId) {
+  const store = readStore();
+  return (store.schedules || []).find((row) => row.skillId === skillId) || null;
 }
 
 function scheduleNoteFor(schedule) {
@@ -142,6 +395,12 @@ function publicSkill(skill, schedule) {
     id: skill.id,
     name: skill.name,
     description: skill.description,
+    source: skill.source === "user" ? "user" : "catalog",
+    custom: skill.source === "user",
+    instruction: skill.source === "user" ? skill.instruction : "",
+    moves: skill.moves === true,
+    calendar: skill.calendar === true,
+    person: skill.person === true,
     runMode: active && schedule ? "scheduled" : "on_demand",
     schedule: scheduleMode,
     kind: schedule ? schedule.kind : "",
@@ -157,9 +416,29 @@ function publicSkill(skill, schedule) {
 }
 
 function installedIds(store) {
-  if (!Array.isArray(store.installedSkillIds)) return CATALOG.map((skill) => skill.id);
-  const known = new Set(CATALOG.map((skill) => skill.id));
-  return store.installedSkillIds.map((id) => String(id || "").trim()).filter((id) => known.has(id));
+  const customIds = listCustomSkills().map((skill) => skill.id);
+  const catalogIds = CATALOG.map((skill) => skill.id);
+  const known = new Set(catalogIds.concat(customIds));
+  const stored = Array.isArray(store.installedSkillIds)
+    ? store.installedSkillIds.map((id) => String(id || "").trim()).filter(Boolean)
+    : null;
+  const out = [];
+  const seen = new Set();
+  const push = (id) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+  };
+  if (!stored) {
+    for (const id of catalogIds.concat(customIds)) push(id);
+    return out;
+  }
+  // Keep user: ids that this build does not recognize so a catalog change cannot drop them.
+  for (const id of stored) {
+    if (known.has(id) || isUserSkillId(id)) push(id);
+  }
+  for (const id of customIds) push(id);
+  return out;
 }
 
 function listHomeSkills() {
@@ -170,7 +449,7 @@ function listHomeSkills() {
 
 function listLibrarySkills() {
   const installed = new Set(installedIds(readStore()));
-  return CATALOG.filter((skill) => !installed.has(skill.id)).map((skill) => publicSkill(skill, null));
+  return CATALOG.filter((skill) => !isUserSkillId(skill.id) && !installed.has(skill.id)).map((skill) => publicSkill(skill, null));
 }
 
 function installSkill(params) {
@@ -186,6 +465,7 @@ function installSkill(params) {
 
 function removeSkill(params) {
   const skillId = params && typeof params.skillId === "string" ? params.skillId.trim() : "";
+  if (isUserSkillId(skillId)) return deleteCustomSkill(params);
   if (!skillById(skillId)) return fail(new Error("That skill is not on this host."));
   const store = readStore();
   store.installedSkillIds = installedIds(store).filter((id) => id !== skillId);
@@ -595,12 +875,13 @@ async function runSkill(params) {
   const note = calendar && !calendar.available ? calendar.note : "";
   try {
     const text = await complete([
-      { role: "system", content: SYSTEM },
+      { role: "system", content: systemFor(skill) },
       {
         role: "user",
         content: JSON.stringify({
           skill: skill.name,
-          instruction: skill.instruction,
+          instruction: clip(skill.instruction, MAX_SKILL_INSTRUCTION),
+          movesAllowed: skill.moves === true,
           categories: taxonomy(),
           writingRules: writingBrief(),
           notes: readMemory().notes,
@@ -1697,7 +1978,8 @@ function normalizeSchedules(value) {
   for (const raw of value) {
     if (!raw || typeof raw !== "object") continue;
     const skillId = String(raw.skillId || "").trim();
-    if (!skillById(skillId) || seen.has(skillId)) continue;
+    if (!skillId || seen.has(skillId)) continue;
+    if (!skillById(skillId) && !isUserSkillId(skillId)) continue;
     const kind = raw.kind === "cron" || raw.kind === "interval" ? raw.kind : "";
     if (!kind) continue;
     const everyMinutes = Number(raw.everyMinutes);
@@ -1778,7 +2060,7 @@ function setSkillSchedule(params) {
   }
   let contactEmail = existing ? existing.contactEmail : "";
   if (params && Object.prototype.hasOwnProperty.call(params, "contactEmail")) contactEmail = addressIn(params.contactEmail);
-  if (skill.person && !contactEmail) return fail(new Error("A schedule for Brief This Person needs a contact email."));
+  if (skill.person && !contactEmail) return fail(new Error("A schedule for this skill needs a contact email."));
   const now = new Date();
   const row = {
     skillId,
@@ -1863,6 +2145,7 @@ function pumpDueSkillsAdmitted(now) {
   let changed = false;
   for (const schedule of store.schedules || []) {
     if (!schedule || schedule.paused || !installed.has(schedule.skillId)) continue;
+    if (!skillById(schedule.skillId)) continue;
     const due = Date.parse(schedule.nextRunAt);
     if (Number.isFinite(due) && due > clock.getTime()) continue;
     if (inflightSkills.has(schedule.skillId)) continue;
@@ -2042,6 +2325,9 @@ module.exports = {
   normalizeSkillResult,
   setSkillSchedule,
   deleteSkillSchedule,
+  saveCustomSkill,
+  deleteCustomSkill,
+  customSkillsPath,
   pumpDueSkills,
   startSkillScheduler,
   cronMatches,

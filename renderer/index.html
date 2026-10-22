@@ -301,12 +301,18 @@
       </section>
       <section id="agent-tools" role="tabpanel" aria-labelledby="agent-tab-tools" hidden>
         <h3>Skills and history</h3>
-        <p class="hint">Skills are on demand unless their schedule is enabled below. Scheduled runs need Morrow open; a missed run fires once on relaunch. Pause stops scheduled runs. Drafts need review and Send; filing proposals need confirmation.</p>
+        <p class="hint">Skills are on demand unless their schedule is enabled below. Scheduled runs need Morrow open; a missed run fires once on relaunch. Pause stops scheduled runs. Drafts need review and Send; filing proposals need confirmation. New skill creates a custom skill, the same as Brain → Skills.</p>
         <p id="agent-skill-status" role="status"></p>
         <div id="agent-result" hidden></div>
         <label for="agent-contact">Person <span class="optional">(Brief This Person)</span></label>
         <input id="agent-contact" type="email" spellcheck="false" autocomplete="off" placeholder="name@example.com" />
-        <h3 id="agent-skills-title">Home skills</h3>
+        <div class="row brain-skill-head">
+          <h3 id="agent-skills-title">Home skills</h3>
+          <button type="button" class="ghost icon-label" id="agent-skill-new">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            New skill
+          </button>
+        </div>
         <div id="studio-home"></div>
         <h3>Library skills</h3>
         <div id="studio-library"></div>
@@ -407,8 +413,14 @@
         </form>
       </section>
       <section id="brain-skills" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-skills" hidden>
-        <h3 id="brain-skills-title">Skills</h3>
-        <p class="hint">Each skill is a card. Manage opens its schedule, run, and pause controls. Skills run on demand, on a saved schedule, or stay paused. Scheduled runs need Morrow open; a missed run fires once on relaunch. Drafts need review and Send; filing proposals need confirmation.</p>
+        <div class="row brain-skill-head">
+          <h3 id="brain-skills-title">Skills</h3>
+          <button type="button" class="ghost icon-label" id="brain-skill-new">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            New skill
+          </button>
+        </div>
+        <p class="hint">Each skill is a card. Manage opens its schedule, run, and pause controls. Skills run on demand, on a saved schedule, or stay paused. Scheduled runs need Morrow open; a missed run fires once on relaunch. Drafts need review and Send; filing proposals need confirmation. New skill saves a custom skill on this computer. It stays across app updates. Delete removes that custom skill. Catalog skills return to the library when removed.</p>
         <p id="brain-skill-status" role="status"></p>
         <div id="brain-skill-result"></div>
         <h3>Home skills</h3>
@@ -836,6 +848,21 @@
         </div>
         <p id="brain-skill-dialog-detail"></p>
         <p id="brain-skill-dialog-mode" class="hint"></p>
+        <form id="custom-skill-form" hidden>
+          <label for="custom-skill-name">Name</label>
+          <input id="custom-skill-name" type="text" maxlength="80" autocomplete="off" required />
+          <label for="custom-skill-description">Description</label>
+          <input id="custom-skill-description" type="text" maxlength="240" autocomplete="off" />
+          <label for="custom-skill-instruction">Instruction</label>
+          <textarea id="custom-skill-instruction" maxlength="4000" rows="6" required></textarea>
+          <label class="check" for="custom-skill-calendar"><input id="custom-skill-calendar" type="checkbox" /> Include calendar events when a calendar grant exists</label>
+          <label class="check" for="custom-skill-person"><input id="custom-skill-person" type="checkbox" /> Focus on one person. A run needs an open message or a contact email</label>
+          <label class="check" for="custom-skill-moves"><input id="custom-skill-moves" type="checkbox" /> Propose folder or label moves for confirmation</label>
+          <p class="hint">The instruction is the prompt. Nothing is sent. Moves stay proposals until you confirm them. With the switches off, the skill uses recent inbox mail only.</p>
+          <div class="row">
+            <button type="submit" class="primary" id="custom-skill-save">Save skill</button>
+          </div>
+        </form>
         <div class="row" id="brain-skill-dialog-actions"></div>
         <h3 id="brain-skill-dialog-schedule-title">Schedule</h3>
         <div id="brain-skill-dialog-schedule"></div>
