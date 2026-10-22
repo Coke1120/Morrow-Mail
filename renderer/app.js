@@ -2661,8 +2661,8 @@ function readable(email) {
 }
 
 // Layout attributes and a filtered CSS subset. Handlers, embedded documents, and
-// active URLs stay out. Declarations are applied through CSSOM so the app CSP
-// can keep style-src 'self' (inline style attributes would not run).
+// active URLs stay out. Style attributes are renamed before the HTML parser sees
+// them, then declarations are applied through CSSOM. style-src stays 'self'.
 const MAIL_ALIGN = new Set("left right center justify top middle bottom baseline absbottom absmiddle texttop".split(" "));
 const MAIL_CSS_PROPS = new Set(("color background background-color background-image background-repeat background-position background-size " +
   "font font-family font-size font-weight font-style font-variant line-height letter-spacing word-spacing word-break overflow-wrap " +
@@ -2910,16 +2910,128 @@ function mailCopyLayout(el, tag, source, imagesOn) {
   }
 }
 
+// style-src 'self' refuses a style attribute while the parser builds the tree.
+// Rename it first so the console stays quiet, then read the parked value below.
+function parkMailStyleAttributes(html) {
+  const src = String(html || "");
+  const out = [];
+  const len = src.length;
+  let i = 0;
+  while (i < len) {
+    const lt = src.indexOf("<", i);
+    if (lt < 0) { out.push(src.slice(i)); break; }
+    if (lt > i) out.push(src.slice(i, lt));
+    if (src.startsWith("<!--", lt)) {
+      const end = src.indexOf("-->", lt + 4);
+      const stop = end < 0 ? len : end + 3;
+      out.push(src.slice(lt, stop));
+      i = stop;
+      continue;
+    }
+    if (src.startsWith("<!", lt) || src.startsWith("<?", lt)) {
+      const end = src.indexOf(">", lt + 2);
+      const stop = end < 0 ? len : end + 1;
+      out.push(src.slice(lt, stop));
+      i = stop;
+      continue;
+    }
+    if (src.charCodeAt(lt + 1) === 47) {
+      const end = src.indexOf(">", lt + 2);
+      const stop = end < 0 ? len : end + 1;
+      out.push(src.slice(lt, stop));
+      i = stop;
+      continue;
+    }
+    let j = lt + 1;
+    const nameStart = j;
+    while (j < len) {
+      const c = src.charCodeAt(j);
+      const ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 45 || c === 58 || c === 95;
+      if (!ok) break;
+      j += 1;
+    }
+    if (j === nameStart) { out.push("<"); i = lt + 1; continue; }
+    const tag = src.slice(nameStart, j);
+    out.push(src.slice(lt, j));
+    let closed = false;
+    while (j < len && !closed) {
+      const c = src.charCodeAt(j);
+      if (c === 32 || c === 9 || c === 10 || c === 12 || c === 13) { out.push(src[j]); j += 1; continue; }
+      if (c === 62) { out.push(">"); j += 1; closed = true; break; }
+      if (c === 47 && src.charCodeAt(j + 1) === 62) { out.push("/>"); j += 2; closed = true; break; }
+      const attrStart = j;
+      while (j < len) {
+        const a = src.charCodeAt(j);
+        if (a === 32 || a === 9 || a === 10 || a === 12 || a === 13 || a === 61 || a === 47 || a === 62) break;
+        j += 1;
+      }
+      const name = src.slice(attrStart, j);
+      if (!name) { out.push(src[j] || ""); j += 1; continue; }
+      out.push(/^style$/i.test(name) ? "data-mail-style" : name);
+      while (j < len) {
+        const s = src.charCodeAt(j);
+        if (s !== 32 && s !== 9 && s !== 10 && s !== 12 && s !== 13) break;
+        out.push(src[j]);
+        j += 1;
+      }
+      if (src.charCodeAt(j) !== 61) continue;
+      out.push("=");
+      j += 1;
+      while (j < len) {
+        const s = src.charCodeAt(j);
+        if (s !== 32 && s !== 9 && s !== 10 && s !== 12 && s !== 13) break;
+        out.push(src[j]);
+        j += 1;
+      }
+      const q = src.charCodeAt(j);
+      if (q === 34 || q === 39) {
+        const end = src.indexOf(src[j], j + 1);
+        const stop = end < 0 ? len : end + 1;
+        out.push(src.slice(j, stop));
+        j = stop;
+      } else {
+        const start = j;
+        while (j < len) {
+          const u = src.charCodeAt(j);
+          if (u === 32 || u === 9 || u === 10 || u === 12 || u === 13 || u === 62) break;
+          j += 1;
+        }
+        out.push(src.slice(start, j));
+      }
+    }
+    i = j;
+    if (/^(style|script|textarea|title)$/i.test(tag)) {
+      const rest = src.slice(i);
+      const close = new RegExp("</" + tag.replace(/[^\w:-]/g, "") + "\\s*>", "i");
+      const found = close.exec(rest);
+      if (!found) { out.push(rest); i = len; }
+      else {
+        const stop = found.index + found[0].length;
+        out.push(rest.slice(0, stop));
+        i += stop;
+      }
+    }
+  }
+  return out.join("");
+}
+
+function mailInlineStyle(source) {
+  if (!source || typeof source.getAttribute !== "function") return "";
+  const live = source.getAttribute("style");
+  if (live) return live;
+  return source.getAttribute("data-mail-style") || "";
+}
+
 function appendSafeMailHtml(parent, html, imagesOn) {
   const template = document.createElement("template");
-  template.innerHTML = String(html || "");
+  template.innerHTML = parkMailStyleAttributes(html);
   const allowed = new Set("p div span br hr b strong i em u s small sub sup blockquote pre code ul ol li table tbody thead tfoot tr td th col colgroup caption center font h1 h2 h3 h4 h5 h6 a".split(" "));
   const blocked = new Set("script iframe object embed svg math title template link meta base audio video source input textarea select noscript".split(" "));
   const styles = [];
   const inlines = [];
   function decorate(dest, tag, source) {
     mailCopyLayout(dest, tag, source, imagesOn);
-    const inline = source.getAttribute("style");
+    const inline = mailInlineStyle(source);
     if (inline) inlines.push({ el: dest, css: inline });
   }
   function placeImage(source, target) {
@@ -2941,7 +3053,7 @@ function appendSafeMailHtml(parent, html, imagesOn) {
       if (klass) image.setAttribute("class", klass);
       const id = mailScopeToken(source.getAttribute("id"));
       if (id) image.setAttribute("id", id);
-      const inline = source.getAttribute("style");
+      const inline = mailInlineStyle(source);
       if (inline) inlines.push({ el: image, css: inline });
       if (typeof image.addEventListener === "function") {
         image.addEventListener("load", () => {
@@ -8834,10 +8946,10 @@ function setComposeFormatLocked(locked) {
 function revealEditorStyles(root) {
   if (!root || typeof root.querySelectorAll !== "function") return;
   let nodes = [];
-  try { nodes = root.querySelectorAll("[style], font[color], [bgcolor]"); } catch { return; }
+  try { nodes = root.querySelectorAll("[style], [data-mail-style], font[color], [bgcolor]"); } catch { return; }
   for (const el of nodes) {
     if (!el || el === root) continue;
-    const css = typeof el.getAttribute === "function" ? el.getAttribute("style") : "";
+    const css = mailInlineStyle(el);
     if (css) mailApplyCss(el, css, false, false);
     if (typeof el.getAttribute !== "function" || !el.style || typeof el.style.setProperty !== "function") continue;
     if (String(el.tagName || "").toLowerCase() === "font") {

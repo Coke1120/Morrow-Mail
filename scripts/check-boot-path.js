@@ -735,6 +735,8 @@ assert.strictEqual(sendDelayMs(null), 5000);
 assert.ok(html.includes("img-src 'self' data: blob: https: http:"));
 assert.ok(html.includes("frame-src blob: data:") && html.includes("object-src blob: data:"));
 assert.ok(html.includes("script-src 'self'") && html.includes("default-src 'none'"));
+assert.ok(html.includes("style-src 'self'"));
+assert.ok(!html.includes("unsafe-inline") && !html.includes("unsafe-hashes"));
 assert.ok(!html.includes("img-src *"));
 assert.ok(html.includes('id="attachment-preview"') && html.includes('id="attachment-preview-frame"'));
 const attachmentPreviewKind = extractFunction(appJs, "attachmentPreviewKind");

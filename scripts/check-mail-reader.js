@@ -134,7 +134,35 @@ for (const allowed of [false, true]) {
   }
   const font = nodes.find(n => n.localName === 'font');
   assert.equal(font.attrs.color, '#e10600');
+  assert.equal(bar.attrs.style, undefined);
+  assert.equal(bar.attrs['data-mail-style'], undefined);
 }
+const parked = ctx.parkMailStyleAttributes('<td STYLE = "color:#ffffff;text-align:center;padding:8px" class="nav">');
+assert.equal(/(?:^|[\s/>])style\s*=/i.test(parked), false);
+assert.equal(parked.includes('data-mail-style = "color:#ffffff;text-align:center;padding:8px"'), true);
+assert.equal(parked.includes('class="nav"'), true);
+const quoted = ctx.parkMailStyleAttributes("<span style='background-color:#fff3a0'>Ada</span>");
+assert.equal(quoted.includes("data-mail-style='background-color:#fff3a0'"), true);
+assert.equal(/\sstyle\s*=/i.test(quoted), false);
+const unquoted = ctx.parkMailStyleAttributes('<span style=color:red class=x>');
+assert.equal(unquoted.includes('data-mail-style=color:red'), true);
+assert.equal(unquoted.includes('class=x'), true);
+const kept = ctx.parkMailStyleAttributes('<style>.logo{color:#e10600}</style><!-- <i style="x"> --><script>var style="color:red"</script><b style="color:blue">');
+assert.equal(kept.includes('<style>.logo{color:#e10600}</style>'), true);
+assert.equal(kept.includes('<!-- <i style="x"> -->'), true);
+assert.equal(kept.includes('var style="color:red"'), true);
+assert.equal(kept.includes('data-mail-style="color:blue"'), true);
+function parkedStyleAttrs(html) {
+  const found = [];
+  const walkNode = (node) => {
+    if (node.attribs && Object.prototype.hasOwnProperty.call(node.attribs, 'style')) found.push(node.attribs.style);
+    for (const child of node.children || []) walkNode(child);
+  };
+  walkNode(parseDocument(ctx.parkMailStyleAttributes(html)));
+  return found;
+}
+assert.deepEqual(parkedStyleAttrs(newsletter), []);
+assert.deepEqual(parkedStyleAttrs('<p><span style="background-color:#fff3a0">Ada</span></p>'), []);
 assert.equal(ctx.readable({ textBody: 'MIME plain text', htmlBody: hostile }), 'MIME plain text');
 assert(!ctx.readable({ htmlBody: hostile }).includes('evil-css'));
 assert(!ctx.readable({ htmlBody: newsletter }).includes('#e10600'));
