@@ -11,7 +11,7 @@ app.setPath('userData',path.join(temp,'profile'));app.disableHardwareAcceleratio
 const preload=path.join(temp,'preload.cjs');
 fs.writeFileSync(preload,`
 const {contextBridge}=require('electron');
-let populated=false, failSave=true, queueReady=false, failRead=false;
+let populated=false, failSave=true, queueReady=false, failRead=false, rejectReader=false;
 let queue=[], update={enabled:false};
 const calls=[], listeners={};
 const accounts=['a','b'].map(id=>({id,email:id+'@example.test',platform:'imap',imapSmtpProfile:'custom',folders:{primary:[{id:'Inbox',name:'Inbox',wellKnownName:'inbox'},{id:'Drafts',name:'Drafts',wellKnownName:'drafts'}],more:[{id:'Archive',name:'Archive',wellKnownName:'archive'}]}}));
@@ -64,10 +64,18 @@ contextBridge.exposeInMainWorld('morrow',{
  if(channel==='bot:getAccess'||channel==='bot:setEnabled')return ok(access);
  if(channel==='host:aiGetConfig')return {baseUrl:'',model:'',hasKey:false};
  if(channel==='host:getDebugLog')return ok({lines:[{at:1792310400000,source:'sync',text:'address@example.test password=fixture-private-value'}]});
+ if(channel==='mail:searchSender'){
+  const address=String(payload&&payload.address||'');
+  if(address==='empty@example.test') return ok({rows:[],exhausted:true,accounts:[{accountId:'a',email:'a@example.test',label:'Desk',name:'Provider',status:'ok',message:''}],resume:{}});
+  if(address==='fail@example.test') return ok({rows:[{id:'two',accountId:'b',subject:'Older',date:'2026-10-17T08:00:00Z',unread:false,messageId:'<old@test>',current:false}],exhausted:true,accounts:[{accountId:'a',email:'a@example.test',name:'Desk',status:'error',message:'Mailbox refused'},{accountId:'b',email:'b@example.test',name:'Ben',status:'ok',message:''}],resume:{}});
+  return ok({rows:[{id:'one',accountId:'a',subject:'Alpha report',date:'2026-10-18T08:00:00Z',unread:true,messageId:'<alpha@test>',current:true},{id:'two',accountId:'b',subject:'Beta report',date:'2026-10-18T07:00:00Z',unread:false,messageId:'<beta@test>',current:false}],exhausted:true,accounts:[{accountId:'a',email:'a@example.test',label:'Desk',name:'Provider',status:'ok',message:''},{accountId:'b',email:'b@example.test',name:'Ben',status:'ok',message:''}],resume:{}});
+ }
  return ok(null);
- },on(channel,callback){listeners[channel]=callback;return()=>{};}
+ },on(channel,callback){listeners[channel]=callback;return()=>{};},
+ openReaderWindow(seed){calls.push({channel:'reader:open',payload:seed});if(rejectReader){rejectReader=false;throw new Error('That message could not be opened.');}return {ok:true,id:1};},
+ pullReaderSeed(){return {accountId:'a',messageId:'one'};}
 });
-contextBridge.exposeInMainWorld('uxFixture',{queueWorks(){queueReady=true;queue.push({id:'failed-fixture',accountId:'a',subject:'Failed queued mail',to:'recipient@example.test',sendAt:'2026-10-18T08:00:00Z',status:'failed',error:'Fixture failure'});},readyUpdate(){update={enabled:true,downloaded:true,version:'9.9.9-fixture',lastCheckedAt:'2026-10-18T08:00:00Z'};},failRead(){failRead=true;messages[0].unread=true;},populate(){populated=true;},saveWorks(){failSave=false;},counts(){return calls.reduce((out,row)=>(out[row.channel]=(out[row.channel]||0)+1,out),{});},last(channel){for(let i=calls.length-1;i>=0;i-=1)if(calls[i].channel===channel)return calls[i].payload;return null;},emit(channel,payload){if(listeners[channel])listeners[channel](payload);}});
+contextBridge.exposeInMainWorld('uxFixture',{queueWorks(){queueReady=true;queue.push({id:'failed-fixture',accountId:'a',subject:'Failed queued mail',to:'recipient@example.test',sendAt:'2026-10-18T08:00:00Z',status:'failed',error:'Fixture failure'});},readyUpdate(){update={enabled:true,downloaded:true,version:'9.9.9-fixture',lastCheckedAt:'2026-10-18T08:00:00Z'};},failRead(){failRead=true;messages[0].unread=true;},populate(){populated=true;},saveWorks(){failSave=false;},counts(){return calls.reduce((out,row)=>(out[row.channel]=(out[row.channel]||0)+1,out),{});},last(channel){for(let i=calls.length-1;i>=0;i-=1)if(calls[i].channel===channel)return calls[i].payload;return null;},emit(channel,payload){if(listeners[channel])listeners[channel](payload);},rejectReader(){rejectReader=true;}});
 `);
 let win;const run=async code=>{try{return await win.webContents.executeJavaScript(code,true);}catch(error){throw new Error('Fixture step failed: '+code.slice(0,100)+' '+error.message);}};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -189,24 +197,34 @@ app.whenReady().then(async()=>{
  assert.equal(await run(`$('rail-log').nextElementSibling.id`),'rail-about');
  assert.equal(await run(`$('about-update-install').textContent`),'Restart and install');assert.equal(await run(`$('about-update-quit').hidden`),false);
  await shot('about-updates');await run(`$('about-dialog').close();$('rail-shortcuts').click()`);
- await waitFor(`state.view==='shortcuts' && $('shortcuts-list').textContent.includes('New Mail')`);
+ await waitFor(`state.view==='features' && !$('features-panel').hidden && $('log-panel').hidden && $('features-tab-catalog').getAttribute('aria-selected')==='true' && $('features-pane-shortcuts').hidden && $('features-pane-cli').hidden`);
+ const catalogText = await run(`$('features-pane-catalog').textContent`);
+ for (const title of ['Email Brain', 'Agent triage', 'Compose in its own window', 'Bot bridge', 'In-app updates']) {
+  assert.match(catalogText, new RegExp(title));
+ }
+ assert.doesNotMatch(catalogText, /npm start/);
+ const shortcutSize = win.getContentSize();
+ win.setContentSize(1180, 1400);
+ await sleep(200);
+ await run(`$('features-panel').scrollTop = 0`);
+ await shot('features-catalog');
+ await run(`$('features-tab-shortcuts').click()`);
+ await waitFor(`$('features-tab-shortcuts').getAttribute('aria-selected')==='true' && !$('features-pane-shortcuts').hidden`);
  assert.match(await run(`$('shortcuts-note').textContent`), /Reload/);
+ assert.match(await run(`$('shortcuts-list').textContent`), /New Mail/);
  assert.match(await run(`$('shortcuts-list').textContent`), /Reply to the open message/);
  assert.doesNotMatch(await run(`$('shortcuts-list').textContent`), /⌘R|Ctrl\+R/);
  assert.doesNotMatch(await run(`$('shortcuts-list').textContent`), /npm start/);
+ await run(`$('features-panel').scrollTop = 0`);
+ await shot('shortcuts');
+ await run(`$('features-tab-cli').click()`);
+ await waitFor(`$('features-tab-cli').getAttribute('aria-selected')==='true' && !$('features-pane-cli').hidden`);
  assert.match(await run(`$('cli-title').textContent`), /^CLI$/);
  assert.match(await run(`$('cli-note').textContent`), /no morrow command/);
  assert.match(await run(`$('cli-note').textContent`), /Copy does not run/);
  assert.match(await run(`$('cli-list').textContent`), /npm start/);
  assert.match(await run(`$('cli-list').textContent`), /npm run check/);
  assert.match(await run(`$('cli-list').textContent`), /node scripts\/morrow-bot-call\.js/);
- assert.equal(await run(`$('shortcuts-panel').hidden`), false);
- assert.equal(await run(`$('log-panel').hidden`), true);
- const shortcutSize = win.getContentSize();
- win.setContentSize(1180, 1400);
- await sleep(200);
- await run(`$('shortcuts-panel').scrollTop = 0`);
- await shot('shortcuts');
  await run(`document.querySelector('#cli-list [data-cli-copy="npm start"]').click()`);
  await waitFor(`$('cli-copy-status').textContent.length > 0`);
  assert.match(await run(`$('cli-copy-status').textContent`), /Command copied\. Morrow did not run it\.|Could not copy\. Select the command and copy it\./);
@@ -219,12 +237,38 @@ app.whenReady().then(async()=>{
  await run(`document.documentElement.dataset.theme = 'light'`);
  win.setContentSize(720, 900);
  await sleep(200);
- await run(`$('shortcuts-panel').scrollTop = 0`);
+ await run(`$('features-tab-shortcuts').click(); $('features-panel').scrollTop = 0`);
  await shot('shortcuts-narrow');
- await run(`$('cli-title').scrollIntoView({block:'start'})`);
+ await run(`$('features-tab-cli').click(); $('cli-title').scrollIntoView({block:'start'})`);
  await shot('shortcuts-cli-narrow');
  win.setContentSize(shortcutSize[0], shortcutSize[1]);
  await sleep(100);
+ await run(`
+  const press = (id, key) => {
+    const tab = $(id);
+    tab.focus();
+    tab.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+  };
+  press('features-tab-catalog', 'ArrowRight');
+  if ($('features-tab-shortcuts').getAttribute('aria-selected') !== 'true' || document.activeElement !== $('features-tab-shortcuts')) throw new Error('ArrowRight');
+  press('features-tab-catalog', 'ArrowLeft');
+  if ($('features-tab-cli').getAttribute('aria-selected') !== 'true' || document.activeElement !== $('features-tab-cli')) throw new Error('ArrowLeft');
+  press('features-tab-cli', 'Home');
+  if ($('features-tab-catalog').getAttribute('aria-selected') !== 'true') throw new Error('Home');
+  press('features-tab-catalog', 'End');
+  if ($('features-tab-cli').getAttribute('aria-selected') !== 'true') throw new Error('End');
+ `);
+ await run(`$('features-tab-cli').click(); $('rail-mail').click()`);
+ await waitFor(`state.view==='mail'`);
+ await run(`$('rail-shortcuts').click()`);
+ await waitFor(`state.view==='features' && $('features-tab-catalog').getAttribute('aria-selected')==='true'`);
+ await run(`location.hash = '#shortcuts'`);
+ await waitFor(`state.view==='features' && $('features-tab-catalog').getAttribute('aria-selected')==='true' && location.hash==='#features'`);
+ await run(`window.__savedFeatures = window.morrowFeaturesCatalog; window.morrowFeaturesCatalog = { items: [] }; paintFeatureCatalog();`);
+ assert.match(await run(`$('features-pane-catalog').textContent`), /No features listed/);
+ await run(`$('features-tab-shortcuts').click()`);
+ assert.match(await run(`$('shortcuts-list').textContent`), /New Mail/);
+ await run(`window.morrowFeaturesCatalog = window.__savedFeatures; paintFeatureCatalog();`);
  await run(`$('rail-log').click()`);await waitFor(`state.view==='log'`);
  await run(`refreshLog();`);await run(`$('log-preview').click()`);
  const support=await run(`$('support-preview').value`);assert.doesNotMatch(support,/fixture-private-value/);assert.match(support,/addresses.*may remain/);assert.match(support,/2026/);assert.match(support,/address@example.test/);
@@ -347,6 +391,45 @@ app.whenReady().then(async()=>{
  await waitFor(`$('compose').open && $('compose-title').textContent==='New message'`);
  await run(`closeDialog('compose')`);
  await run(`setNavCollapsed(true)`);assert.equal(await run(`readNavCollapsed()`),true);await run(`setNavCollapsed(false)`);assert.equal(await run(`readNavCollapsed()`),false);
+ await run("openMessage('one', false)");
+ await waitFor("!!document.querySelector('#reader .sender-address')");
+ assert.equal(await run("document.querySelectorAll('.sender-address').length"), 1);
+ await run("document.querySelector('#reader h2').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:20,clientY:20}))");
+ assert.doesNotMatch(await run("(($('organize-menu') && $('organize-menu').textContent) || '')"), /Previous emails/);
+ await run("closeOrganizeMenu()");
+ await run("(() => { const meta = document.querySelector('#reader p.meta'); const name = meta && meta.firstChild; const target = name && name.nodeType === 3 ? name : meta; target.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:24,clientY:40})); })()");
+ assert.doesNotMatch(await run("(($('organize-menu') && $('organize-menu').textContent) || '')"), /Previous emails/);
+ await run("closeOrganizeMenu()");
+ await run("document.querySelector('#reader .sender-address').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:30,clientY:48}))");
+ await waitFor("$('organize-menu') && !$('organize-menu').hidden");
+ assert.match(await run("$('organize-menu').textContent"), /Previous emails…/);
+ assert.equal(await run("$('organize-menu').getAttribute('aria-label')"), "Previous emails");
+ await run("closeOrganizeMenu()");
+ await run("document.querySelector('#reader .sender-address').click()");
+ await waitFor("$('sender-history').open && !!document.querySelector('.sender-history-row')");
+ assert.equal(await run("Array.from(document.querySelectorAll('.sender-history-row .subject')).map((node) => node.textContent).join('|')"), "Alpha report|Beta report");
+ assert.match(await run("document.querySelector('.sender-history-row').textContent"), /Current/);
+ assert.equal(await run("document.querySelector('.sender-history-row').getAttribute('aria-current')"), "true");
+ assert.equal(await run("document.querySelector('.sender-history-row').classList.contains('unread')"), true);
+ assert.equal(await run("(() => { const rows = document.querySelectorAll('.sender-history-row'); return getComputedStyle(rows[0].querySelector('.subject')).fontWeight + '|' + getComputedStyle(rows[1].querySelector('.subject')).fontWeight; })()"), "600|400");
+ assert.match(await run("document.querySelector('.sender-history-row').textContent"), /Desk · a@example.test/);
+ assert.ok((await run("document.querySelector('.sender-history-row .when').textContent")).length > 0);
+ await run("document.querySelector('.sender-history-row').click()");
+ await waitFor("(uxFixture.counts()['reader:open'] || 0) >= 1");
+ assert.deepEqual(await run("uxFixture.last('reader:open')"), { accountId: "a", messageId: "one" });
+ assert.equal(await run("$('sender-history').open"), true);
+ await run("uxFixture.rejectReader()");
+ await run("document.querySelector('.sender-history-row').click()");
+ await waitFor("$('status').textContent.includes('That message could not be opened')");
+ assert.equal(await run("$('sender-history').open"), true);
+ await run("window.__readerCloseSpy = 0; window.close = () => { window.__readerCloseSpy += 1; }; 0");
+ await run("$('sender-history').dispatchEvent(new Event('cancel',{bubbles:true,cancelable:true}))");
+ await waitFor("!$('sender-history').open");
+ assert.equal(await run("window.__readerCloseSpy || 0"), 0);
+ await run("openSenderHistory('empty@example.test')");
+ await waitFor("document.getElementById('sender-history-body').textContent.includes('No earlier mail from empty@example.test.')");
+ await run("openSenderHistory('fail@example.test')");
+ await waitFor("document.getElementById('sender-history-body').textContent.includes('Older') && document.getElementById('sender-history-chips').textContent.includes('Mailbox refused')");
  const counts=await run('uxFixture.counts()');
  const result={result:'UX_FIXTURE_OK',network:'blocked',mailSendCalls:counts['mail:send'],explicitScheduleCalls:counts['mail:scheduleSend'],liveProviderCalls:0};
  if(out)fs.writeFileSync(path.join(out,'checks.json'),JSON.stringify(result,null,2)+'\n');

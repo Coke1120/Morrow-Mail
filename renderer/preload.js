@@ -87,6 +87,7 @@ const INVOKE = [
   "mail:toggleStarBatch",
   "mail:search",
   "mail:searchLocal",
+  "mail:searchSender",
   "mail:listThreadMessages",
   "mail:downloadAttachment",
   "mail:downloadAttachmentsZip",
@@ -168,6 +169,8 @@ const INVOKE = [
   "compose:open",
   "compose:pullSeed",
   "compose:setTitle",
+  "reader:open",
+  "reader:pullSeed",
 ];
 
 const EVENTS = [
@@ -187,6 +190,7 @@ const EVENTS = [
   "app:confirmQuitScheduled",
   "app:dismissQuitScheduled",
   "compose:requestClose",
+  "reader:openFailed",
 ];
 
 const invokeSet = new Set(INVOKE);
@@ -222,6 +226,12 @@ contextBridge.exposeInMainWorld("morrow", {
   setComposeTitle(title) {
     const text = typeof title === "string" ? title : "";
     return ipcRenderer.invoke("compose:setTitle", text);
+  },
+  openReaderWindow(seed) {
+    return ipcRenderer.invoke("reader:open", seed);
+  },
+  pullReaderSeed() {
+    return ipcRenderer.invoke("reader:pullSeed");
   },
   invoke(channel, payload) {
     if (!invokeSet.has(channel)) {

@@ -3,7 +3,8 @@ const fs = require("fs");
 const path = require("path");
 const { userDataDir, loadConfig } = require("./ai-config");
 const { complete, extractJson } = require("./openai-client");
-const { writingBrief, taxonomy } = require("./brain");
+const { writingBrief, identityBrief, taxonomy } = require("./brain");
+const { triageSystemPrompt } = require("./brain-persona");
 
 const KEY_ERROR = "Add an API key in Morrow Mail → AI Setup.";
 const MAIL_ERROR = "Connect a mailbox. Sample mail is not used.";
@@ -70,16 +71,6 @@ const SYSTEM = [
   "Shape: {\"title\":string,\"summary\":string,\"sections\":[{\"title\":string,\"items\":[string]}],\"drafts\":[{\"messageId\":string,\"to\":string,\"subject\":string,\"body\":string}],\"moves\":[{\"messageId\":string,\"labelName\":string,\"reason\":string}],\"followUps\":[{\"messageId\":string,\"kind\":\"draft\"|\"open\"|\"flag-attachment\",\"label\":string,\"body\":string}]}.",
   "followUps.kind draft is a suggested reply, open means open the message, flag-attachment means an attachment is worth opening.",
   "Omit moves unless the skill is Organize Inbox.",
-].join(" ");
-
-const TRIAGE_SYSTEM = [
-  "You sort inbox mail into the user's categories.",
-  "Use only the messages and categories in the user JSON.",
-  "Do not invent messages.",
-  "Do not send mail.",
-  "Reply with JSON only, no markdown.",
-  "Shape: {\"items\":[{\"messageId\":string,\"categoryId\":string,\"summary\":string,\"followUps\":[{\"messageId\":string,\"kind\":\"draft\"|\"open\"|\"flag-attachment\",\"label\":string,\"body\":string}]}]}.",
-  "Assign each message exactly once. summary is one short sentence from that message.",
 ].join(" ");
 
 function storePath() {
@@ -708,18 +699,18 @@ async function triage() {
     return ok(homePayload());
   }
   try {
+    const brief = identityBrief();
+    const user = {
+      instruction: "Assign each message to one categoryId.",
+      categories,
+      writingRules: writingBrief(),
+      notes: readMemory().notes,
+      messages,
+    };
+    if (brief) user.identity = brief;
     const text = await complete([
-      { role: "system", content: TRIAGE_SYSTEM },
-      {
-        role: "user",
-        content: JSON.stringify({
-          instruction: "Assign each message to one categoryId.",
-          categories,
-          writingRules: writingBrief(),
-          notes: readMemory().notes,
-          messages,
-        }),
-      },
+      { role: "system", content: triageSystemPrompt(brief) },
+      { role: "user", content: JSON.stringify(user) },
     ], { temperature: 0.2 });
     const parsed = extractJson(text);
     const items = parsed && Array.isArray(parsed.items) ? parsed.items : [];

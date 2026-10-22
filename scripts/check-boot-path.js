@@ -64,6 +64,7 @@ const syntax = [
   "scripts/check-bot-bridge.js",
   "renderer/preload.js",
   "renderer/app.js",
+  "renderer/features-catalog.js",
   "renderer/motion-ui.js",
   "scripts/check-vacation.js",
   "scripts/check-sync-retry.js",
@@ -326,7 +327,7 @@ assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell doe
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.2.26");
+assert.strictEqual(pkg.version, "0.2.27");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -365,6 +366,149 @@ assert.ok(appJs.includes("presentCompose(newMailSeed())"));
 assert.ok(html.includes("compose-role.js"));
 assert.ok(css.includes('html[data-window="compose"]'));
 assert.ok(fs.existsSync(path.join(root, "docs/adr/2026-10-21-compose-window.md")));
+const senderHistory = require("../shared/sender-history");
+assert.deepEqual(senderHistory.parseSenderAddresses("Ada Lovelace <Ada@Example.com>"), ["Ada@Example.com"]);
+assert.deepEqual(senderHistory.parseSenderAddresses("Ada@Example.com"), ["Ada@Example.com"]);
+assert.deepEqual(senderHistory.parseSenderAddresses("Ada@Lovelace"), []);
+assert.strictEqual(senderHistory.isAddrSpec('"ada"@example.com'), false);
+assert.strictEqual(senderHistory.isAddrSpec("ada @example.com"), false);
+assert.strictEqual(senderHistory.isAddrSpec("ada@example"), false);
+assert.strictEqual(senderHistory.isAddrSpec("Ada@Example.com"), true);
+assert.strictEqual(senderHistory.isAddrSpec("o'hara@example.com"), false);
+assert.strictEqual(senderHistory.gmailFromQuery("Ada@Example.com"), 'from:"ada@example.com"');
+assert.strictEqual(senderHistory.graphFromFilter("Ada@Example.com"), "from/emailAddress/address eq 'ada@example.com'");
+assert.strictEqual(senderHistory.imapFromNeedle("Ada@Example.com"), "from:ada@example.com");
+assert.strictEqual(senderHistory.gmailFromQuery("o'hara@example.com"), "");
+const senderMerged = senderHistory.pageSenderHistory({
+  preferAccountId: "a",
+  accounts: [
+    { accountId: "a", order: 0, exhausted: true, hits: [
+      { id: "a1", subject: "older", date: "2026-10-01T00:00:00Z", listSortTs: Date.parse("2026-10-01T00:00:00Z"), messageId: "<a1@t>" },
+      { id: "a2", subject: "newer", date: "2026-10-20T00:00:00Z", listSortTs: Date.parse("2026-10-20T00:00:00Z"), messageId: "<a2@t>" },
+    ] },
+    { accountId: "b", order: 1, exhausted: true, hits: [
+      { id: "b1", subject: "mid", date: "2026-10-10T00:00:00Z", listSortTs: Date.parse("2026-10-10T00:00:00Z"), messageId: "<b1@t>" },
+    ] },
+  ],
+});
+assert.deepEqual(senderMerged.rows.map((row) => row.id), ["a2", "b1", "a1"]);
+const senderMany = [];
+for (let senderIndex = 0; senderIndex < 60; senderIndex += 1) {
+  senderMany.push({ id: "m" + senderIndex, listSortTs: 1000 - senderIndex, messageId: "<m" + senderIndex + "@t>", subject: "s" });
+}
+const senderCapped = senderHistory.pageSenderHistory({
+  accounts: [{ accountId: "a", order: 0, exhausted: true, hits: senderMany }],
+});
+assert.strictEqual(senderCapped.rows.length, 50);
+assert.strictEqual(senderCapped.rows[0].id, "m0");
+const senderPrefer = senderHistory.pageSenderHistory({
+  preferAccountId: "b",
+  accounts: [
+    { accountId: "a", order: 0, exhausted: true, hits: [{ id: "lose", listSortTs: 2, messageId: "<same@t>" }] },
+    { accountId: "b", order: 1, exhausted: true, hits: [{ id: "win", listSortTs: 2, messageId: "<same@t>" }] },
+  ],
+});
+assert.strictEqual(senderPrefer.rows.length, 1);
+assert.strictEqual(senderPrefer.rows[0].id, "win");
+assert.ok(senderPrefer.resume.seenIds.includes("lose"));
+const senderOrdered = senderHistory.pageSenderHistory({
+  accounts: [
+    { accountId: "b", order: 1, exhausted: true, hits: [{ id: "later", listSortTs: 2, messageId: "<same@t>" }] },
+    { accountId: "a", order: 0, exhausted: true, hits: [{ id: "earlier", listSortTs: 2, messageId: "<Same@t>" }] },
+  ],
+});
+assert.strictEqual(senderOrdered.rows[0].id, "earlier");
+assert.ok(senderOrdered.resume.seenIds.includes("later"));
+const senderBlanks = senderHistory.pageSenderHistory({
+  accounts: [{ accountId: "a", order: 0, exhausted: true, hits: [
+    { id: "e1", listSortTs: 2, messageId: "" },
+    { id: "e2", listSortTs: 1, messageId: "" },
+  ] }],
+});
+assert.strictEqual(senderBlanks.rows.length, 2);
+const senderCurrent = senderHistory.pageSenderHistory({
+  currentId: "local",
+  currentMessageId: "<Open@T>",
+  accounts: [{ accountId: "a", order: 0, exhausted: true, hits: [
+    { id: "other", listSortTs: 3, messageId: "<open@t>" },
+    { id: "local", listSortTs: 2, messageId: "<nope@t>" },
+  ] }],
+});
+assert.strictEqual(senderCurrent.rows.find((row) => row.id === "other").current, true);
+assert.strictEqual(senderCurrent.rows.find((row) => row.id === "local").current, true);
+const senderFirstHits = [];
+for (let senderIndex = 0; senderIndex < 51; senderIndex += 1) {
+  senderFirstHits.push({ id: "h" + senderIndex, listSortTs: 1000 - senderIndex, messageId: "<h" + senderIndex + "@t>" });
+}
+const senderFirstPage = senderHistory.pageSenderHistory({
+  accounts: [{ accountId: "a", order: 0, exhausted: true, hits: senderFirstHits }],
+});
+assert.strictEqual(senderFirstPage.rows.length, 50);
+assert.ok(!senderFirstPage.resume.seenIds.includes("h50"));
+const senderSecond = senderHistory.pageSenderHistory({
+  accounts: [{ accountId: "a", order: 0, exhausted: true, hits: [] }],
+  resume: senderFirstPage.resume,
+});
+assert.strictEqual(senderSecond.rows[0].id, "h50");
+const senderPartial = senderHistory.pageSenderHistory({
+  accounts: [
+    { accountId: "a", order: 0, status: "error", message: "Mailbox refused", exhausted: false, hits: [] },
+    { accountId: "b", order: 1, status: "ok", exhausted: true, hits: [{ id: "b-row", listSortTs: 1, messageId: "<b@t>" }] },
+  ],
+});
+assert.strictEqual(senderPartial.rows.length, 1);
+assert.strictEqual(senderPartial.rows[0].id, "b-row");
+assert.strictEqual(senderPartial.accounts[0].status, "error");
+assert.strictEqual(senderPartial.accounts[0].message, "Mailbox refused");
+const senderUnavailable = senderHistory.pageSenderHistory({
+  accounts: [{ accountId: "a", order: 0, status: "unavailable", message: "Unavailable", exhausted: true, hits: [] }],
+});
+assert.strictEqual(senderUnavailable.accounts[0].status, "unavailable");
+assert.deepEqual(senderUnavailable.rows, []);
+const readerHost = require("../host/reader-window");
+assert.deepEqual(readerHost.CHANNELS, ["reader:open", "reader:pullSeed"]);
+assert.strictEqual(readerHost.readerWindowTitle("  Hello  "), "Hello — Morrow Mail");
+assert.strictEqual(readerHost.readerWindowTitle(""), "Message — Morrow Mail");
+assert.strictEqual(readerHost.readerWindowTitle("x".repeat(200)).slice(0, 180), "x".repeat(180));
+assert.throws(() => readerHost.sanitizeReaderSeed(null), /That message could not be opened/);
+assert.throws(() => readerHost.sanitizeReaderSeed({ accountId: "a", messageId: "" }), /That message could not be opened/);
+assert.throws(() => readerHost.sanitizeReaderSeed({ accountId: "a", messageId: "bad\n" }), /That message could not be opened/);
+assert.throws(() => readerHost.sanitizeReaderSeed({ accountId: "a", messageId: "m".repeat(201) }), /That message could not be opened/);
+assert.deepEqual(readerHost.sanitizeReaderSeed({ accountId: "a", messageId: "m", extra: "no" }), { accountId: "a", messageId: "m" });
+const readerPlaced = readerHost.readerWindowBounds({ x: 0, y: 0 }, 1);
+assert.strictEqual(readerPlaced.x, 48 + 28);
+assert.strictEqual(readerPlaced.y, 48 + 28);
+assert.strictEqual(readerPlaced.width, 960);
+assert.strictEqual(readerPlaced.minHeight, 480);
+assert.strictEqual(readerHost.readerWindowBounds(null, 1).x, undefined);
+const senderEngineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
+assert.ok(senderEngineSrc.includes('case "mail:searchSender"'));
+assert.ok(!functionSource(senderEngineSrc, "searchRemote").includes("searchSender"));
+const senderSearchAt = senderEngineSrc.indexOf('case "mail:search":');
+const senderSearchNext = senderEngineSrc.indexOf('case "mail:searchSender":');
+assert.ok(senderSearchAt >= 0 && senderSearchNext > senderSearchAt);
+const senderSearchCase = senderEngineSrc.slice(senderSearchAt, senderSearchNext);
+assert.ok(senderSearchCase.includes("searchRemote"));
+assert.ok(!senderSearchCase.includes("searchSender"));
+assert.ok(main.includes('require("./reader-window")'));
+assert.ok(main.includes("readerWindows.CHANNELS"));
+assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
+assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
+assert.strictEqual(pkg.version, "0.2.27");
+assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
+const readerBoot = functionSource(appJs, "bootReaderWindow");
+assert.ok(!readerBoot.includes("mail:setOnline"));
+assert.ok(!readerBoot.includes("mail:emailsUpdated"));
+assert.ok(!readerBoot.includes("host:updateGetState"));
+assert.ok(html.includes('id="sender-history"'));
+assert.ok(html.includes("sender-history.js"));
+assert.ok(css.includes('html[data-window="reader"]'));
+assert.ok(fs.readFileSync(path.join(root, "renderer/compose-role.js"), "utf8").includes('dataset.window = "reader"'));
+assert.ok(functionSource(appJs, "onReaderContext").includes("sender-address"));
+const senderRemoteSrc = fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8");
+assert.ok(senderRemoteSrc.includes("async function findFrom"));
+assert.ok(!functionSource(senderRemoteSrc, "findText").includes("beforeUid"));
+assert.strictEqual(typeof require("../host/mail/remote").findFrom, "function");
 assert.strictEqual(pkg.build.productName, "Morrow Mail");
 assert.strictEqual(pkg.build.appId, "com.coke1120.morrow-mail");
 assert.notStrictEqual(pkg.build.appId, "org.morrowmail.desktop");
@@ -1360,7 +1504,8 @@ assert.strictEqual(syncUi.redactDebugText("bearer ya29.secretvalue password: hun
 assert.strictEqual(syncUi.redactDebugText("api_key=sk-abcdefghij1234567890"), "api_key [redacted]");
 assert.ok(syncUi.redactDebugText("synced ada@example.com").includes("ada@example.com"));
 assert.ok(html.includes('id="sync-detail"') && html.includes('id="log-panel"') && html.includes('id="nav-collapse"') && html.includes('id="rail-log"'));
-assert.ok(html.includes('id="rail-shortcuts"') && html.includes('id="shortcuts-panel"'));
+assert.ok(html.includes('id="rail-shortcuts"') && html.includes('id="features-panel"'));
+assert.ok(!html.includes('id="shortcuts-panel"'));
 assert.ok(html.indexOf('id="rail-shortcuts"') < html.indexOf('id="rail-log"'));
 assert.ok(html.indexOf('id="rail-log"') < html.indexOf('id="rail-about"'));
 assert.ok(html.includes('data-label="Calendar"') && html.includes('data-label="Settings"') && html.includes('data-label="Email Brain"'));
@@ -2197,7 +2342,8 @@ assert.ok(html.indexOf('id="rail-mail"') < html.indexOf('id="rail-calendar"'));
 assert.ok(html.indexOf('id="rail-calendar"') < html.indexOf('id="rail-brain"'));
 assert.ok(html.indexOf('id="shell"') < html.indexOf('id="agent-panel"'));
 assert.ok(html.indexOf('id="calendar-panel"') < html.indexOf('id="brain"'));
-assert.ok(appJs.includes('["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "shortcuts-panel"]') && appJs.includes("nativeAgent:home:todosCached"));
+assert.ok(appJs.includes('["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "features-panel"]') && appJs.includes("nativeAgent:home:todosCached"));
+assert.ok(!appJs.includes('["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "shortcuts-panel"]'));
 assert.ok(appJs.includes("nativeAgent:home:refreshTaxonomy") && appJs.includes("nativeAgent:home:todoUpdate"));
 assert.ok(appJs.includes('source: "manual"') && appJs.includes('source: "open"'));
 assert.ok(appJs.includes("nativeAgent:chat") && appJs.includes("nativeAgent:memorySet") && appJs.includes("nativeAgent:chatHistory"));
@@ -3063,14 +3209,88 @@ assert.ok(cliRows.some((row) => row.command === "npm run check"));
 assert.ok(cliRows.some((row) => row.command.includes("--operation bridge.describe")));
 assert.ok(cliRows.some((row) => row.command.includes("--operation mail.send") && row.command.includes("--request-id <uuid>")));
 assert.ok(cliRows.some((row) => row.command === "tailscale serve status --json"));
-assert.match(functionSource(appJs, "paintShortcuts"), /paintCli\(\)/);
+assert.doesNotMatch(functionSource(appJs, "paintShortcuts"), /paintCli\(\)/);
+const showFeaturesSource = functionSource(appJs, "showFeatures");
+assert.match(showFeaturesSource, /paintFeatureCatalog\(\)/);
+assert.match(showFeaturesSource, /paintShortcuts\(\)/);
+assert.match(showFeaturesSource, /paintCli\(\)/);
+assert.match(showFeaturesSource, /showFeaturesTab\("catalog"\)/);
+const showPrimarySource = functionSource(appJs, "showPrimary");
+assert.match(showPrimarySource, /view === "shortcuts"/);
+assert.match(showPrimarySource, /id === "shortcuts-panel"/);
+assert.match(showPrimarySource, /"features-panel"/);
+assert.match(functionSource(appJs, "onShellKey"), /state\.view === "features"/);
 assert.ok(html.includes('id="cli-list"') && html.includes('id="cli-note"') && html.includes('id="cli-title"') && html.includes('id="cli-copy-status"'));
 assert.ok(html.indexOf('id="shortcuts-list"') < html.indexOf('id="cli-list"'));
 assert.ok(html.indexOf('id="cli-list"') < html.indexOf('id="log-panel"'));
 assert.ok(html.includes('aria-labelledby="shortcuts-title"') && html.includes('aria-labelledby="cli-title"'));
 assert.ok(css.includes(".cli-head") && css.includes(".cli-row") && css.includes(".cli-command"));
-assert.match(independentDoc, /CLI lists the checkout commands/);
-assert.match(parityDoc, /CLI section for the checkout/);
+assert.ok(css.includes(".features-tabs") && css.includes(".feature-card"));
+assert.match(independentDoc, /The CLI tab lists the checkout commands/);
+assert.match(parityDoc, /CLI tab for the checkout/);
+const railFeatures = html.slice(html.indexOf('id="rail-shortcuts"'), html.indexOf('id="rail-log"'));
+assert.ok(railFeatures.includes('aria-label="Features"') && railFeatures.includes('data-label="Features"') && railFeatures.includes('title="Features"'));
+assert.ok(railFeatures.includes(">Features</span>") && railFeatures.includes('viewBox="0 0 24 24"') && railFeatures.includes("M7 16h10"));
+assert.ok(html.includes('id="features-tabs"') && html.includes('id="features-tab-catalog"') && html.includes('id="features-tab-shortcuts"') && html.includes('id="features-tab-cli"'));
+assert.ok(html.includes('id="features-title"') && html.includes('id="features-catalog"') && html.includes('id="features-empty"') && html.includes("No features listed"));
+assert.ok(html.indexOf('src="./features-catalog.js"') < html.indexOf('src="./app.js"'));
+const featureCatalog = require("../renderer/features-catalog.js");
+const featureSeed = [
+  ["email-brain", "Email Brain", "Agent", "Profile, categories, skills, and inbox rules built from your mail. Skills can draft a reply or propose a move. You still press Send."],
+  ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. Reply opens a compose window. Done and Dismiss stay on this computer."],
+  ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send."],
+  ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
+  ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
+  ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
+  ["inbox-rules", "Inbox rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
+  ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded Inbox mail from every account."],
+  ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose drafts. It stays off until you turn it on. Opening a proposal does not send it."],
+  ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page."],
+  ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release. Restart and install applies a downloaded update once every compose window is closed."],
+];
+assert.deepStrictEqual(featureCatalog.items.map((row) => [row.id, row.title, row.category, row.blurb]), featureSeed);
+const featureUi = loadFunctions(appJs, ["normalizeFeatureCatalog", "groupFeatureCatalog"]);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog(null), []);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog(4), []);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog({ items: [] }), []);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog([
+  null,
+  1,
+  [],
+  { id: "Bad Id", title: "Nope", blurb: "x" },
+  { id: "ok-row", title: "  Kept  ", blurb: 12, category: "  Mail  " },
+  { id: "ok-row", title: "Second", blurb: "nope" },
+  { id: "blank", title: "   ", blurb: "x" },
+  { id: "plain", title: "Plain" },
+]), [
+  { id: "ok-row", title: "Kept", blurb: "", category: "Mail" },
+  { id: "plain", title: "Plain", blurb: "", category: "" },
+]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog([
+  { id: "b", title: "B", blurb: "", category: "Beta" },
+  { id: "a", title: "A", blurb: "", category: "Alpha" },
+  { id: "b2", title: "B2", blurb: "", category: "Beta" },
+]).map((group) => [group.heading, group.items.map((row) => row.id)]), [["Beta", ["b", "b2"]], ["Alpha", ["a"]]]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog([
+  { id: "m", title: "M", blurb: "", category: "Mail" },
+  { id: "x", title: "X", blurb: "", category: "" },
+]).map((group) => [group.heading, group.items.map((row) => row.id)]), [["Mail", ["m"]], ["Other", ["x"]]]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog([
+  { id: "o", title: "O", blurb: "", category: "Other" },
+  { id: "m", title: "M", blurb: "", category: "Mail" },
+  { id: "u", title: "U", blurb: "", category: "" },
+]).map((group) => [group.heading, group.items.map((row) => row.id)]), [["Mail", ["m"]], ["Other", ["o", "u"]]]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog([
+  { id: "a", title: "A", blurb: "", category: "" },
+  { id: "b", title: "B", blurb: "", category: "" },
+]), [{ heading: "", items: [
+  { id: "a", title: "A", blurb: "", category: "" },
+  { id: "b", title: "B", blurb: "", category: "" },
+] }]);
+assert.deepStrictEqual(featureUi.groupFeatureCatalog(null), []);
+assert.deepStrictEqual(featureUi.normalizeFeatureCatalog([null, { title: "missing" }, { id: "ok", title: "Ok", extra: true }]), [
+  { id: "ok", title: "Ok", blurb: "", category: "" },
+]);
 const openMail = { view: "mail", mailOpen: true, typing: false, dialog: false, menu: false, textSelected: false, topDialog: "" };
 assert.strictEqual(shortcuts.mailShortcut({ key: "Delete" }, openMail), "delete");
 assert.strictEqual(shortcuts.mailShortcut({ key: "Backspace" }, openMail), "delete");
@@ -3088,7 +3308,7 @@ assert.strictEqual(shortcuts.mailShortcut({ key: "R", ctrlKey: true, shiftKey: t
 assert.strictEqual(shortcuts.mailShortcut({ key: "r", shiftKey: true }, openMail), "");
 assert.strictEqual(shortcuts.mailShortcut({ key: "r" }, { ...openMail, typing: true }), "");
 assert.strictEqual(shortcuts.mailShortcut({ key: "r" }, { ...openMail, mailOpen: false }), "");
-assert.strictEqual(shortcuts.mailShortcut({ key: "f" }, { ...openMail, view: "shortcuts" }), "");
+assert.strictEqual(shortcuts.mailShortcut({ key: "f" }, { ...openMail, view: "features" }), "");
 assert.strictEqual(shortcuts.mailShortcut({ key: "f", metaKey: true, shiftKey: true }, openMail), "");
 assert.strictEqual(shortcuts.mailShortcut({ key: "n", metaKey: true }, { ...openMail, typing: true }), "new-mail");
 assert.strictEqual(shortcuts.mailShortcut({ key: "n", ctrlKey: true }, openMail), "new-mail");
@@ -3778,6 +3998,13 @@ assert.throws(() => gmailApi.normalizeGmailLabels({}), /label list/);
 assert.ok(gmailApi.gmailModifyUrl("msg-1").endsWith("/messages/msg-1/modify"));
 assert.ok(decodeURIComponent(gmailApi.graphSearchUrl('say "hi"', 10)).includes('$search="say+hi"'));
 assert.strictEqual(gmailApi.SEARCH_CAP, 80);
+const senderGraphUrl = decodeURIComponent(gmailApi.graphFromAddressUrl("ada@example.com", 50)).replace(/\+/g, " ");
+assert.ok(senderGraphUrl.includes("from/emailAddress/address eq 'ada@example.com'"));
+assert.ok(senderGraphUrl.includes("receivedDateTime desc"));
+assert.ok(!senderGraphUrl.includes("ConsistencyLevel"));
+assert.ok(gmailApi.graphSenderNext("https://graph.microsoft.com/v1.0/me/messages?$skiptoken=abc").includes("/v1.0/me/messages"));
+assert.strictEqual(gmailApi.graphSenderNext("https://evil.example/v1.0/me/messages"), "");
+assert.strictEqual(gmailApi.graphSenderNext("https://graph.microsoft.com/v1.0/me/events"), "");
 const oauthConfig = require("../host/mail/oauth-config");
 assert.strictEqual(oauthConfig.SCOPES.google, "openid email https://mail.google.com/");
 assert.strictEqual(
