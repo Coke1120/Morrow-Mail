@@ -1387,6 +1387,23 @@ button.brain-skill {
   color: var(--danger);
 }
 
+.brain-skill-chip.is-custom {
+  background: color-mix(in srgb, var(--accent) 16%, var(--paper));
+  color: var(--accent-ink);
+}
+
+.brain-skill-head {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brain-skill-head h3 { margin: 0; }
+
+#custom-skill-form { display: grid; gap: 8px; margin-top: 8px; }
+#custom-skill-form[hidden] { display: none; }
+#custom-skill-form textarea { min-height: 120px; }
+#custom-skill-form label.check { margin: 0; }
+
 .brain-skill-card .row.brain-skill-actions { margin-top: auto; }
 
 button.inline-link {

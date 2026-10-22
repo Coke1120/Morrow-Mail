@@ -107,7 +107,7 @@ killall Dock
 
 Quit and reopen Morrow Mail after that. Launching the app also sets the Dock tile from `resources/icon.png`.
 
-Mail, settings, and `ai.json` follow Electron's userData path for Morrow Mail once the app is ready. This build does not copy files from an older application-support folder. Keychain storage is described in [OAUTH.md](OAUTH.md).
+Mail, settings, and `ai.json` follow Electron's userData path for Morrow Mail once the app is ready. Custom Brain skills use that same directory (`custom-skills.json`, beside `agent.json` and `brain.json`). NSIS does not delete app data on uninstall, and the macOS in-app update replaces the app bundle only. This build does not copy files from an older application-support folder. Keychain storage is described in [OAUTH.md](OAUTH.md).
 
 ## Version
 

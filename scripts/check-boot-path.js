@@ -2133,6 +2133,10 @@ assert.ok(html.includes('id="brain-category-list"') && html.includes('id="brain-
 assert.ok(html.includes('id="brain-category-collapse"') && html.includes('id="brain-category-save"') && html.includes('id="brain-category-ai"'));
 assert.ok(html.includes('id="brain-skills"') && html.includes('id="brain-home-skills"') && html.includes('id="brain-library-skills"') && html.includes('id="brain-skill-status"'));
 assert.ok(html.includes('id="brain-skill-dialog"') && html.includes('id="brain-skill-dialog-title"') && html.includes('id="settings-tab-compose"') && html.includes('id="settings-compose"'));
+assert.ok(html.includes('id="brain-skill-new"') && html.includes('id="agent-skill-new"') && html.includes('id="custom-skill-form"'));
+assert.ok(html.includes('id="custom-skill-name"') && html.includes('id="custom-skill-instruction"') && html.includes('id="custom-skill-save"'));
+assert.ok(appJs.includes("emailBrain:saveCustomSkill") && appJs.includes("emailBrain:deleteCustomSkill"));
+assert.ok(functionSource(appJs, "paintBrainSkillDialog").includes("setCustomSkillEditor"));
 assert.ok(html.includes("Compose defaults live in") && html.includes('id="brain-open-compose-settings"'));
 const brainProfileHtml = html.slice(html.indexOf('id="brain-profile"'), html.indexOf('id="brain-categories"'));
 assert.ok(!brainProfileHtml.includes('id="brain-compose-form"') && !brainProfileHtml.includes("<summary>Compose defaults and aliases</summary>"), "compose form leaves Brain profile");
@@ -2204,6 +2208,29 @@ assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 1
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "interval", everyMinutes: 0 }).error.includes("10080"), true);
 assert.strictEqual(agentUi.scheduleFormValue({ kind: "cron", cron: "  0   8 * * 1-5  " }).cron, "0 8 * * 1-5");
 assert.ok(agentUi.scheduleFormValue({ kind: "cron", cron: "   " }).error);
+const draftUi = loadFunctions(appJs, ["customSkillDraft"]);
+assert.strictEqual(draftUi.customSkillDraft({ name: "  ", instruction: "Hi" }).error, "A skill needs a name.");
+assert.strictEqual(draftUi.customSkillDraft({ name: "Desk", instruction: "  " }).error, "A skill needs an instruction.");
+assert.strictEqual(draftUi.customSkillDraft({ name: "n".repeat(81), instruction: "Hi" }).error.includes("80"), true);
+assert.strictEqual(draftUi.customSkillDraft({ name: "Desk", description: "d".repeat(241), instruction: "Hi" }).error.includes("240"), true);
+assert.strictEqual(draftUi.customSkillDraft({ name: "Desk", instruction: "i".repeat(4001) }).error.includes("4000"), true);
+const draftedSkill = draftUi.customSkillDraft({
+  skillId: " user:abc ",
+  name: " Desk ",
+  description: " Overnight ",
+  instruction: " Summarize.\n",
+  calendar: true,
+  person: false,
+  moves: true,
+});
+assert.strictEqual(draftedSkill.name, "Desk");
+assert.strictEqual(draftedSkill.description, "Overnight");
+assert.strictEqual(draftedSkill.instruction, "Summarize.");
+assert.strictEqual(draftedSkill.calendar, true);
+assert.strictEqual(draftedSkill.person, false);
+assert.strictEqual(draftedSkill.moves, true);
+assert.strictEqual(draftedSkill.skillId, "user:abc");
+assert.ok(!draftUi.customSkillDraft({ name: "Desk", instruction: "Hi" }).skillId);
 assert.ok(appJs.includes("emailBrain:setSkillSchedule") && appJs.includes("emailBrain:deleteSkillSchedule"));
 assert.ok(appJs.includes("emailBrain:scheduleFired") && appJs.includes('textContent = paused ? "Resume" : "Pause"'));
 assert.ok(appJs.includes('textContent = "Save schedule"'));
@@ -2237,6 +2264,8 @@ assert.deepStrictEqual(requestUi.skillRequest({ id: "brief-this-person" }, {
   contactEmail: "ada@example.com",
 });
 assert.ok(!requestUi.skillRequest({ id: "morning-brief" }, { contact: "ada@example.com" }).contactEmail);
+assert.strictEqual(requestUi.skillRequest({ id: "user:1", person: true }, { contact: "ada@example.com" }).contactEmail, "ada@example.com");
+assert.ok(!requestUi.skillRequest({ id: "user:1" }, { contact: "ada@example.com" }).contactEmail);
 assert.match(requestUi.agentContextCopy(null), /No message is open/);
 assert.match(requestUi.agentContextCopy({ id: "m1", from: "Ada", subject: "Hi" }), /Ada — Hi/);
 assert.strictEqual(requestUi.agentMessageContext(null), null);
@@ -2362,6 +2391,9 @@ assert.ok(parity.includes("calendar") && parity.includes("nativeAgent:triage") &
 assert.ok(!parity.includes("full agent skill runner"));
 const brainDoc = fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8");
 assert.ok(brainDoc.includes("Morning Brief") && brainDoc.includes("Meeting Prep") && brainDoc.includes("Organize Inbox"));
+assert.ok(brainDoc.includes("custom-skills.json") && brainDoc.includes("emailBrain:saveCustomSkill") && brainDoc.includes("emailBrain:deleteCustomSkill"));
+assert.ok(parity.includes("emailBrain:saveCustomSkill") && parity.includes("custom-skills.json"));
+assert.ok(independentDoc.includes("emailBrain:saveCustomSkill") && independentDoc.includes("custom-skills.json"));
 assert.ok(brainDoc.includes("on_demand") && /never send|Nothing is sent/i.test(brainDoc));
 assert.ok(brainDoc.includes("Brief This Person") && brainDoc.includes("Plan My Week") && brainDoc.includes("Newsletter Digest"));
 assert.ok(brainDoc.includes("Catch Me Up"));
@@ -4241,6 +4273,164 @@ async function checkAiDraft() {
   assert.ok(installedSkill.data.skills.some((row) => row.id === "newsletter-digest"));
   assert.deepStrictEqual(installedSkill.data.library, []);
   assert.strictEqual(brain.answer("emailBrain:installSkill", [{ skillId: "skill-tone" }]).success, false);
+  {
+    const agentFile = path.join(process.env.MORROW_AI_CONFIG_DIR, "agent.json");
+    const customFile = agent.customSkillsPath();
+    const agentBefore = fs.existsSync(agentFile) ? fs.readFileSync(agentFile, "utf8") : null;
+    const catalogBackup = agent.CATALOG.map((row) => Object.assign({}, row));
+    assert.strictEqual(path.dirname(customFile), process.env.MORROW_AI_CONFIG_DIR);
+    assert.strictEqual(path.basename(customFile), "custom-skills.json");
+    assert.ok(!customFile.startsWith(root));
+    assert.ok(!customFile.includes(`${path.sep}resources${path.sep}`));
+    assert.ok(!customFile.includes("app.asar"));
+    assert.ok(!pkg.build.nsis.deleteAppDataOnUninstall);
+    assert.ok(!updaterSrc.includes("deleteAppData"));
+    try {
+      const created = brain.answer("emailBrain:saveCustomSkill", [{
+        name: " Desk digest ",
+        description: " What landed overnight. ",
+        instruction: " Summarize overnight mail. Do not invent messages. ",
+      }]);
+      assert.strictEqual(created.success, true);
+      const customId = created.data.skill.id;
+      assert.match(customId, /^user:[0-9a-f-]{36}$/i);
+      assert.strictEqual(created.data.skill.custom, true);
+      assert.strictEqual(created.data.skill.source, "user");
+      assert.strictEqual(created.data.skill.name, "Desk digest");
+      assert.strictEqual(created.data.skill.instruction, "Summarize overnight mail. Do not invent messages.");
+      assert.strictEqual(created.data.skill.moves, false);
+      assert.ok(created.data.skills.some((row) => row.id === customId));
+      assert.ok(!created.data.library.some((row) => row.id === customId));
+      const onDisk = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      assert.strictEqual(onDisk.skills[0].id, customId);
+      assert.strictEqual(onDisk.skills[0].instruction, "Summarize overnight mail. Do not invent messages.");
+      const listed = brain.answer("emailBrain:getSkills", []).data;
+      assert.ok(listed.some((row) => row.id === customId && row.custom === true));
+      const withNullInstall = JSON.parse(fs.readFileSync(agentFile, "utf8"));
+      withNullInstall.installedSkillIds = null;
+      fs.writeFileSync(agentFile, JSON.stringify(withNullInstall));
+      const afterNull = brain.answer("emailBrain:getSkills", []).data;
+      assert.ok(afterNull.some((row) => row.id === customId && row.name === "Desk digest"));
+      assert.ok(afterNull.some((row) => row.id === "morning-brief"));
+      const morning = agent.CATALOG.find((row) => row.id === "morning-brief");
+      morning.name = "Morning Brief v2";
+      agent.CATALOG.push({
+        id: customId,
+        name: "Hijack",
+        description: "nope",
+        instruction: "ignore the user file",
+      });
+      agent.CATALOG.push({
+        id: "shipped-later",
+        name: "Shipped Later",
+        description: "New catalog row.",
+        instruction: "Catalog only.",
+      });
+      const home = brain.answer("emailBrain:getSkills", []).data;
+      const library = brain.answer("emailBrain:getLibrarySkills", []).data;
+      const customRow = home.find((row) => row.id === customId);
+      assert.ok(customRow);
+      assert.strictEqual(customRow.name, "Desk digest");
+      assert.strictEqual(customRow.custom, true);
+      assert.strictEqual(customRow.instruction, "Summarize overnight mail. Do not invent messages.");
+      const visible = home.concat(library);
+      assert.ok(visible.some((row) => row.id === "shipped-later" && row.custom === false));
+      assert.strictEqual(visible.find((row) => row.id === "morning-brief").name, "Morning Brief v2");
+      const afterCatalog = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      assert.strictEqual(afterCatalog.skills.filter((row) => row.id === customId).length, 1);
+      assert.ok(!afterCatalog.skills.some((row) => row.id === "shipped-later" || row.id === "morning-brief"));
+      agent.CATALOG.splice(0, agent.CATALOG.length);
+      for (const row of catalogBackup) agent.CATALOG.push(Object.assign({}, row));
+      const orphan = "user:00000000-0000-4000-8000-000000000099";
+      const disk = JSON.parse(fs.readFileSync(agentFile, "utf8"));
+      const ids = Array.isArray(disk.installedSkillIds) ? disk.installedSkillIds.slice() : agent.CATALOG.map((row) => row.id);
+      ids.push(orphan);
+      ids.push("retired-catalog-skill");
+      disk.installedSkillIds = ids;
+      fs.writeFileSync(agentFile, JSON.stringify(disk));
+      const installedAgain = brain.answer("emailBrain:installSkill", [{ skillId: "morning-brief" }]);
+      assert.strictEqual(installedAgain.success, true);
+      const keptIds = JSON.parse(fs.readFileSync(agentFile, "utf8")).installedSkillIds;
+      assert.ok(keptIds.includes(orphan));
+      assert.ok(keptIds.includes(customId));
+      assert.ok(!keptIds.includes("retired-catalog-skill"));
+      const customBeforeSchedule = fs.readFileSync(customFile, "utf8");
+      const scheduled = brain.answer("emailBrain:setSkillSchedule", [{ skillId: customId, kind: "interval", everyMinutes: 45 }]);
+      assert.strictEqual(scheduled.success, true);
+      assert.strictEqual(fs.readFileSync(customFile, "utf8"), customBeforeSchedule);
+      assert.ok(JSON.parse(fs.readFileSync(agentFile, "utf8")).schedules.some((row) => row.skillId === customId && row.everyMinutes === 45));
+      const brokenId = "user:11111111-1111-4111-8111-111111111111";
+      const withBroken = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      withBroken.keeper = "stay";
+      withBroken.skills.push({ id: brokenId, name: "Broken", instruction: "  ", note: "keep-me" });
+      fs.writeFileSync(customFile, JSON.stringify(withBroken));
+      const edited = brain.answer("emailBrain:saveCustomSkill", [{
+        skillId: customId,
+        name: "Desk digest",
+        description: "Overnight only.",
+        instruction: "Summarize overnight mail in three lines.",
+        moves: true,
+      }]);
+      assert.strictEqual(edited.success, true);
+      assert.strictEqual(edited.data.skill.moves, true);
+      assert.strictEqual(edited.data.skill.description, "Overnight only.");
+      const preserved = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      assert.strictEqual(preserved.keeper, "stay");
+      assert.strictEqual(preserved.skills.find((row) => row.id === brokenId).note, "keep-me");
+      assert.ok(!brain.answer("emailBrain:getSkills", []).data.some((row) => row.id === brokenId));
+      assert.strictEqual(brain.answer("emailBrain:saveCustomSkill", [{ name: "X", instruction: "   " }]).success, false);
+      assert.strictEqual(brain.answer("emailBrain:saveCustomSkill", [{ name: " ", instruction: "Hello there." }]).success, false);
+      assert.strictEqual(brain.answer("emailBrain:saveCustomSkill", [{ skillId: "morning-brief", name: "X", instruction: "Hello there." }]).success, false);
+      assert.strictEqual(brain.answer("emailBrain:deleteCustomSkill", [{ skillId: "morning-brief" }]).success, false);
+      const blockedRun = await brain.answer("emailBrain:runSkill", [{ skillId: customId }]);
+      assert.strictEqual(blockedRun.success, true);
+      assert.strictEqual(blockedRun.data.accepted, false);
+      assert.match(blockedRun.data.error, /API key/);
+      const deleted = brain.answer("emailBrain:deleteCustomSkill", [{ skillId: customId }]);
+      assert.strictEqual(deleted.success, true);
+      assert.strictEqual(deleted.data.deleted, true);
+      const afterDelete = JSON.parse(fs.readFileSync(customFile, "utf8"));
+      assert.ok(!afterDelete.skills.some((row) => row.id === customId));
+      assert.strictEqual(afterDelete.skills.find((row) => row.id === brokenId).note, "keep-me");
+      assert.ok(!brain.answer("emailBrain:getSkills", []).data.some((row) => row.id === customId));
+      assert.ok(!brain.answer("emailBrain:getLibrarySkills", []).data.some((row) => row.id === customId));
+      assert.ok(!(JSON.parse(fs.readFileSync(agentFile, "utf8")).schedules || []).some((row) => row.skillId === customId));
+      assert.strictEqual(brain.answer("emailBrain:deleteCustomSkill", [{ skillId: brokenId }]).success, true);
+      const second = brain.answer("emailBrain:saveCustomSkill", [{
+        name: "Second",
+        description: "Other",
+        instruction: "List unread mail.",
+      }]);
+      assert.strictEqual(second.success, true);
+      assert.strictEqual(brain.answer("emailBrain:removeSkill", [{ skillId: second.data.skill.id }]).success, true);
+      assert.ok(!JSON.parse(fs.readFileSync(customFile, "utf8")).skills.some((row) => row.id === second.data.skill.id));
+      const fillers = [];
+      for (let index = 0; index < 40; index += 1) {
+        fillers.push({
+          id: `user:00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
+          name: "Filled",
+          description: "",
+          instruction: "Keep.",
+        });
+      }
+      fs.writeFileSync(customFile, JSON.stringify({ skills: fillers }));
+      const capped = brain.answer("emailBrain:saveCustomSkill", [{ name: "One more", instruction: "No room." }]);
+      assert.strictEqual(capped.success, false);
+      assert.match(capped.error.message, /40/);
+      assert.strictEqual(JSON.parse(fs.readFileSync(customFile, "utf8")).skills.length, 40);
+      fs.writeFileSync(customFile, "{");
+      const refused = brain.answer("emailBrain:saveCustomSkill", [{ name: "Nope", instruction: "Do a thing." }]);
+      assert.strictEqual(refused.success, false);
+      assert.match(refused.error.message, /left in place/);
+      assert.strictEqual(fs.readFileSync(customFile, "utf8"), "{");
+    } finally {
+      agent.CATALOG.splice(0, agent.CATALOG.length);
+      for (const row of catalogBackup) agent.CATALOG.push(Object.assign({}, row));
+      if (agentBefore == null) fs.rmSync(agentFile, { force: true });
+      else fs.writeFileSync(agentFile, agentBefore);
+      fs.rmSync(customFile, { force: true });
+    }
+  }
   const missingKey = await brain.answer("emailBrain:runSkill", [{ skillId: "morning-brief" }]);
   assert.strictEqual(missingKey.success, true);
   assert.strictEqual(missingKey.data.accepted, false);
@@ -4275,6 +4465,12 @@ async function checkAiDraft() {
   );
   assert.strictEqual(dropped.moves.length, 1);
   assert.strictEqual(dropped.moves[0].messageId, "m-live");
+  const customDropped = agent.normalizeSkillResult(
+    { moves: false, name: "Desk digest" },
+    { title: "Desk", summary: "Quiet.", moves: [{ messageId: "m-live", labelName: "FYI", reason: "Bulk" }] },
+    { messages: [{ id: "m-live" }] },
+  );
+  assert.strictEqual(customDropped.moves.length, 0);
   process.env.MORROW_AI_API_KEY = "sk-test";
   const originalFetch = global.fetch;
   global.fetch = async () => { throw new Error("rebuild must not call the model without a mailbox"); };
@@ -4358,7 +4554,7 @@ async function checkAiDraft() {
         summary: "Ada asked for the notes.",
         sections: [{ title: "Needs You", items: ["Reply to Ada"] }],
         drafts: [{ messageId: "m-live", to: "ada@example.com", subject: "Re: Need the notes", body: "I will look." }],
-        moves: body.includes("Organize Inbox")
+        moves: body.includes("Organize Inbox") || body.includes('\\"movesAllowed\\":true')
           ? [{ messageId: "m-live", labelName: "FYI", reason: "Bulk" }, { messageId: "made-up", labelName: "FYI", reason: "nope" }]
           : [],
         followUps: [{ messageId: "m-live", kind: "open", label: "Open" }],
@@ -4394,6 +4590,53 @@ async function checkAiDraft() {
     assert.strictEqual(confirmed.data.accepted, false);
     assert.match(confirmed.data.error, /not in the local mailbox/);
     assert.ok(confirmed.data.proposals.some((row) => row.id === organized.data.proposals[0].id));
+    {
+      let customRunId = "";
+      let personId = "";
+      try {
+        const customMade = brain.answer("emailBrain:saveCustomSkill", [{
+          name: "File the noise",
+          description: "Propose filing.",
+          instruction: "Propose a folder for bulk mail.",
+          moves: true,
+          calendar: true,
+        }]);
+        assert.strictEqual(customMade.success, true);
+        customRunId = customMade.data.skill.id;
+        const customRun = await brain.answer("emailBrain:runSkill", [{ skillId: customRunId }]);
+        assert.strictEqual(customRun.data.accepted, true);
+        assert.ok(seenBodies.some((body) => body.includes("Propose a folder for bulk mail.") && body.includes('\\"movesAllowed\\":true')));
+        assert.strictEqual(customRun.data.proposals.length, 1);
+        assert.strictEqual(customRun.data.proposals[0].status, "pending");
+        assert.match(customRun.data.note, /mail only/);
+        const quiet = brain.answer("emailBrain:saveCustomSkill", [{
+          skillId: customRunId,
+          name: "File the noise",
+          description: "Propose filing.",
+          instruction: "Propose a folder for bulk mail.",
+        }]);
+        assert.strictEqual(quiet.success, true);
+        assert.strictEqual(quiet.data.skill.moves, false);
+        const quietRun = await brain.answer("emailBrain:runSkill", [{ skillId: customRunId }]);
+        assert.strictEqual(quietRun.data.accepted, true);
+        assert.strictEqual((quietRun.data.proposals || []).length, 0);
+        assert.ok(seenBodies.some((body) => body.includes('\\"movesAllowed\\":false')));
+        const personSkill = brain.answer("emailBrain:saveCustomSkill", [{
+          name: "One sender",
+          description: "Mail from one person.",
+          instruction: "Brief that person from the messages.",
+          person: true,
+        }]);
+        assert.strictEqual(personSkill.success, true);
+        personId = personSkill.data.skill.id;
+        const personBlocked = await brain.answer("emailBrain:runSkill", [{ skillId: personId }]);
+        assert.strictEqual(personBlocked.data.accepted, false);
+        assert.match(personBlocked.data.error, /contact email|Select a message/);
+      } finally {
+        if (customRunId) brain.answer("emailBrain:deleteCustomSkill", [{ skillId: customRunId }]);
+        if (personId) brain.answer("emailBrain:deleteCustomSkill", [{ skillId: personId }]);
+      }
+    }
     const triaged = await agent.answer("nativeAgent:triage", []);
     assert.strictEqual(triaged.data.reason, "ready");
     const needsYou = triaged.data.sections.find((section) => section.id === "needs-you");

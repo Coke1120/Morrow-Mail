@@ -122,6 +122,8 @@ let brainCategoryIndex = -1;
 let brainCategoryGen = 0;
 let brainSkillBusy = false;
 let brainSkillDialogId = "";
+let customSkillCreating = false;
+let customSkillSaving = false;
 let brainFixBusy = false;
 let brainCategoryBusy = false;
 let brainSkillCache = {};
@@ -14727,6 +14729,29 @@ function skillStatusChip(row, mode) {
   return { label: "On demand", tone: "demand" };
 }
 
+function customSkillDraft(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const name = String(source.name || "").replace(/[\u0000-\u001F\u007F]/g, "").replace(/\s+/g, " ").trim();
+  const description = String(source.description || "").replace(/[\u0000-\u001F\u007F]/g, "").replace(/\s+/g, " ").trim();
+  const instruction = String(source.instruction || "").replace(/\r\n/g, "\n").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trim();
+  if (!name) return { error: "A skill needs a name." };
+  if (name.length > 80) return { error: "Use a name of 80 characters or fewer." };
+  if (description.length > 240) return { error: "Use a description of 240 characters or fewer." };
+  if (!instruction) return { error: "A skill needs an instruction." };
+  if (instruction.length > 4000) return { error: "Use an instruction of 4000 characters or fewer." };
+  const draft = {
+    name: name,
+    description: description,
+    instruction: instruction,
+    calendar: source.calendar === true,
+    person: source.person === true,
+    moves: source.moves === true,
+  };
+  const skillId = String(source.skillId || "").trim();
+  if (skillId) draft.skillId = skillId;
+  return draft;
+}
+
 function scheduleFormValue(input) {
   const source = input && typeof input === "object" ? input : {};
   const kind = String(source.kind || "off").trim();
@@ -14772,7 +14797,7 @@ function skillRequest(row, options) {
       snippet: email.snippet || "",
     };
   }
-  if (skillIdOf(row) === "brief-this-person") {
+  if (skillIdOf(row) === "brief-this-person" || (row && row.person === true)) {
     const contact = agentContact(opts.contact);
     if (contact) payload.contactEmail = contact;
   }
@@ -15212,10 +15237,11 @@ function appendSkillSchedule(parent, row) {
   contact.spellcheck = false;
   contact.placeholder = "name@example.com";
   contact.setAttribute("aria-label", "Contact email for this schedule");
+  const wantsPerson = skillId === "brief-this-person" || (row && row.person === true);
   const syncFields = () => {
     minutes.hidden = kind.value !== "interval";
     cron.hidden = kind.value !== "cron";
-    contact.hidden = skillId !== "brief-this-person" || kind.value === "off";
+    contact.hidden = !wantsPerson || kind.value === "off";
   };
   kind.addEventListener("change", syncFields);
   syncFields();
@@ -15269,7 +15295,7 @@ async function saveSkillSchedule(row, input) {
     const payload = { skillId, kind: draft.kind };
     if (draft.kind === "interval") payload.everyMinutes = draft.everyMinutes;
     if (draft.kind === "cron") payload.cron = draft.cron;
-    if (skillId === "brief-this-person") payload.contactEmail = draft.contactEmail;
+    if (skillId === "brief-this-person" || (row && row.person === true)) payload.contactEmail = draft.contactEmail;
     await call("emailBrain:setSkillSchedule", payload);
     setSkillStatus("Saved the schedule for " + name + ".", false);
   }
@@ -15337,6 +15363,12 @@ function paintSkillList(root, rows, empty, mode) {
       hint.textContent = detail;
       copy.appendChild(hint);
     }
+    if (row && row.custom === true) {
+      const kind = document.createElement("p");
+      kind.className = "hint";
+      kind.textContent = "Custom skill. Saved on this computer.";
+      copy.appendChild(kind);
+    }
     const modeLine = document.createElement("p");
     modeLine.className = "hint";
     modeLine.textContent = runModeLabel(row);
@@ -15359,11 +15391,21 @@ function paintSkillList(root, rows, empty, mode) {
     });
     actions.appendChild(button);
     if (mode === "run") {
+      if (row && row.custom === true) {
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "ghost";
+        edit.textContent = "Edit";
+        edit.setAttribute("aria-label", "Edit " + name);
+        edit.addEventListener("click", () => openBrainSkillDialog(row, "run"));
+        actions.appendChild(edit);
+      }
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "ghost";
-      remove.textContent = "Remove";
-      remove.setAttribute("aria-label", "Remove " + name);
+      const custom = row && row.custom === true;
+      remove.textContent = custom ? "Delete" : "Remove";
+      remove.setAttribute("aria-label", (custom ? "Delete " : "Remove ") + name);
       remove.addEventListener("click", () => {
         removeBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
@@ -15408,6 +15450,12 @@ function paintBrainSkillList(root, rows, empty, mode) {
       detail.className = "hint brain-skill-detail";
       detail.textContent = description;
       card.appendChild(detail);
+    }
+    if (row && row.custom === true) {
+      const customChip = document.createElement("span");
+      customChip.className = "brain-skill-chip is-custom";
+      customChip.textContent = "Custom";
+      card.appendChild(customChip);
     }
     const chipInfo = skillStatusChip(row, mode);
     const chip = document.createElement("span");
@@ -15460,19 +15508,52 @@ function findBrainSkill(skillId) {
   return null;
 }
 
+function setCustomSkillEditor(visible) {
+  const form = $("custom-skill-form");
+  if (form) form.hidden = !visible;
+}
+
+function fillCustomSkillForm(row) {
+  const skill = row && typeof row === "object" ? row : {};
+  const name = $("custom-skill-name");
+  const description = $("custom-skill-description");
+  const instruction = $("custom-skill-instruction");
+  const calendar = $("custom-skill-calendar");
+  const person = $("custom-skill-person");
+  const moves = $("custom-skill-moves");
+  if (name) name.value = row ? String(skill.name || "") : "";
+  if (description) description.value = row ? String(skill.description || "") : "";
+  if (instruction) instruction.value = row ? String(skill.instruction || "") : "";
+  if (calendar) calendar.checked = skill.calendar === true;
+  if (person) person.checked = skill.person === true;
+  if (moves) moves.checked = skill.moves === true;
+  const save = $("custom-skill-save");
+  if (save) save.textContent = row ? "Save changes" : "Save skill";
+}
+
+function customSkillEditorFocused() {
+  const active = document.activeElement;
+  return !!(active && active.closest && active.closest("#custom-skill-form"));
+}
+
 function paintBrainSkillDialog(row, mode) {
   const skillId = skillIdOf(row);
+  const custom = !!(row && row.custom === true);
   const name = (row && typeof row === "object" ? String(row.name || row.title || "").trim() : "") || skillLine(row) || "Skill";
   const title = $("brain-skill-dialog-title");
   if (title) title.textContent = name;
   const detail = $("brain-skill-dialog-detail");
   const description = row && typeof row === "object" ? String(row.description || "").trim() : "";
   if (detail) {
-    detail.textContent = description;
-    detail.hidden = !description;
+    detail.textContent = custom
+      ? "Custom skill. Stored on this computer and kept across app updates. Nothing is sent."
+      : description;
+    detail.hidden = custom ? false : !description;
   }
   const modeLine = $("brain-skill-dialog-mode");
   if (modeLine) modeLine.textContent = mode === "install" ? "This skill is in the library until you install it." : runModeLabel(row);
+  setCustomSkillEditor(custom);
+  if (custom) fillCustomSkillForm(row);
   const scheduleTitle = $("brain-skill-dialog-schedule-title");
   if (scheduleTitle) scheduleTitle.hidden = mode === "install";
   const actions = $("brain-skill-dialog-actions");
@@ -15494,8 +15575,8 @@ function paintBrainSkillDialog(row, mode) {
         runBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
       const remove = skillActionButton("ghost", "remove", brainSkillBusy);
-      remove.textContent = "Remove";
-      remove.setAttribute("aria-label", "Remove " + name);
+      remove.textContent = custom ? "Delete" : "Remove";
+      remove.setAttribute("aria-label", (custom ? "Delete " : "Remove ") + name);
       remove.addEventListener("click", () => {
         removeBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
@@ -15509,9 +15590,43 @@ function paintBrainSkillDialog(row, mode) {
   }
 }
 
+function openCustomSkillCreator() {
+  customSkillCreating = true;
+  brainSkillDialogId = "";
+  const title = $("brain-skill-dialog-title");
+  if (title) title.textContent = "New skill";
+  const detail = $("brain-skill-dialog-detail");
+  if (detail) {
+    detail.textContent = "Saved on this computer. App updates do not replace it. It runs on your mailbox cache and does not send mail.";
+    detail.hidden = false;
+  }
+  const modeLine = $("brain-skill-dialog-mode");
+  if (modeLine) modeLine.textContent = "This skill appears on Home after you save it.";
+  fillCustomSkillForm(null);
+  setCustomSkillEditor(true);
+  const scheduleTitle = $("brain-skill-dialog-schedule-title");
+  if (scheduleTitle) scheduleTitle.hidden = true;
+  const schedule = $("brain-skill-dialog-schedule");
+  if (schedule) schedule.replaceChildren();
+  const actions = $("brain-skill-dialog-actions");
+  if (actions) actions.replaceChildren();
+  const result = $("brain-skill-dialog-result");
+  if (result) result.replaceChildren();
+  const status = $("brain-skill-dialog-status");
+  if (status) {
+    status.textContent = "";
+    status.classList.remove("error");
+  }
+  const dialog = $("brain-skill-dialog");
+  if (dialog && !dialog.open) openDialog("brain-skill-dialog");
+  const name = $("custom-skill-name");
+  if (name) name.focus();
+}
+
 function openBrainSkillDialog(row, mode) {
   const skillId = skillIdOf(row);
   if (!skillId) return;
+  customSkillCreating = false;
   const switching = brainSkillDialogId !== skillId;
   brainSkillDialogId = skillId;
   paintBrainSkillDialog(row, mode);
@@ -15532,8 +15647,8 @@ function openBrainSkillDialog(row, mode) {
 
 function refreshBrainSkillDialog(force) {
   const dialog = $("brain-skill-dialog");
-  if (!dialog || !dialog.open || !brainSkillDialogId) return;
-  const editing = scheduleEditorFocused();
+  if (!dialog || !dialog.open || customSkillCreating || !brainSkillDialogId) return;
+  const editing = scheduleEditorFocused() || customSkillEditorFocused();
   if (!force && editing) return;
   const lists = brainSkillCache || {};
   const known = brainSkillLists().every(([id]) => Object.prototype.hasOwnProperty.call(lists, id));
@@ -15710,11 +15825,55 @@ async function installBrainSkill(row) {
   refreshBrainSkillDialog(true);
 }
 
+async function saveCustomSkillFromForm(event) {
+  if (event) event.preventDefault();
+  const form = $("custom-skill-form");
+  if (!form || form.hidden || customSkillSaving) return;
+  const draft = customSkillDraft({
+    skillId: customSkillCreating ? "" : brainSkillDialogId,
+    name: $("custom-skill-name") ? $("custom-skill-name").value : "",
+    description: $("custom-skill-description") ? $("custom-skill-description").value : "",
+    instruction: $("custom-skill-instruction") ? $("custom-skill-instruction").value : "",
+    calendar: !!($("custom-skill-calendar") && $("custom-skill-calendar").checked),
+    person: !!($("custom-skill-person") && $("custom-skill-person").checked),
+    moves: !!($("custom-skill-moves") && $("custom-skill-moves").checked),
+  });
+  if (draft.error) {
+    setSkillStatus(draft.error, true);
+    return;
+  }
+  customSkillSaving = true;
+  try {
+    const data = await call("emailBrain:saveCustomSkill", draft);
+    const savedId = data && data.skill && data.skill.id ? String(data.skill.id) : "";
+    customSkillCreating = false;
+    if (savedId) brainSkillDialogId = savedId;
+    setSkillStatus("Saved " + draft.name + ".", false);
+    await Promise.all([loadBrainSkills(), loadStudio()]);
+    if (savedId && data.skill) openBrainSkillDialog(data.skill, "run");
+  } catch (error) {
+    setSkillStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    customSkillSaving = false;
+  }
+}
+
 async function removeBrainSkill(row) {
   const skillId = skillIdOf(row);
   if (!skillId) throw new Error("That skill has no id.");
-  await call("emailBrain:removeSkill", { skillId });
-  setSkillStatus("Removed " + (row.name || skillId) + ". It is in the library.", false);
+  const custom = row && row.custom === true;
+  const name = row.name || skillId;
+  if (custom) {
+    const answer = await askConfirm({
+      title: "Delete custom skill",
+      body: "Delete " + name + "? This removes it from this computer.",
+      confirm: "Delete",
+      cancel: "Cancel",
+    });
+    if (!answer || !answer.ok) return;
+  }
+  await call(custom ? "emailBrain:deleteCustomSkill" : "emailBrain:removeSkill", { skillId });
+  setSkillStatus(custom ? "Deleted " + name + "." : "Removed " + name + ". It is in the library.", false);
   if (brainSkillDialogId === skillId) {
     brainSkillDialogId = "";
     closeDialog("brain-skill-dialog");
@@ -15750,6 +15909,10 @@ async function loadBrainSkills() {
     }
   }
   if (brainIsOpen()) paintBrainSkills(lists, errors.filter(Boolean).join(" "));
+  else {
+    brainSkillCache = lists;
+    refreshBrainSkillDialog(false);
+  }
 }
 
 function paintStudio(lists, errorText) {
@@ -18490,7 +18653,13 @@ function wire() {
   $("brain-skill-dialog-close").addEventListener("click", () => closeDialog("brain-skill-dialog"));
   $("brain-skill-dialog").addEventListener("close", () => {
     brainSkillDialogId = "";
+    customSkillCreating = false;
   });
+  $("custom-skill-form").addEventListener("submit", (event) => {
+    saveCustomSkillFromForm(event).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+  });
+  $("brain-skill-new").addEventListener("click", openCustomSkillCreator);
+  $("agent-skill-new").addEventListener("click", openCustomSkillCreator);
   $("brain-category-cancel").addEventListener("click", () => {
     resetCategoryForm();
     paintCategories();

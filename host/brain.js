@@ -477,6 +477,10 @@ function answer(channel, args) {
       return require("./agent").installSkill(params);
     case "emailBrain:removeSkill":
       return require("./agent").removeSkill(params);
+    case "emailBrain:saveCustomSkill":
+      return require("./agent").saveCustomSkill(params);
+    case "emailBrain:deleteCustomSkill":
+      return require("./agent").deleteCustomSkill(params);
     case "emailBrain:runSkill":
       return require("./agent").runSkill(params);
     case "emailBrain:confirmProposal":
