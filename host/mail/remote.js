@@ -598,6 +598,92 @@ async function findText(client, folderPath, text, limit, options) {
   }
 }
 
+function classifyImapSearchError(error) {
+  if (!error || typeof error !== "object") return error;
+  const text = `${error.message || ""} ${error.responseText || ""} ${error.response || ""}`;
+  if (/NONEXISTENT|does not exist|Unknown Mailbox|Mailbox doesn't exist|TRYCREATE/i.test(text)) {
+    error.code = "mailbox_missing";
+    return error;
+  }
+  const status = String(error.responseStatus || "");
+  if (status === "NO" || status === "BAD" || /unsupported|not supported|unknown command/i.test(text)) {
+    error.code = "search_unsupported";
+  }
+  return error;
+}
+
+async function searchFromUids(client, address, gmail) {
+  const needle = `from:${address}`;
+  if (gmail) {
+    try {
+      return await client.search({ gmraw: needle }, { uid: true });
+    } catch (error) {
+      throwRate(error);
+      classifyImapSearchError(error);
+      if (error && error.code === "mailbox_missing") throw error;
+    }
+    try {
+      return await client.search({ gmRaw: needle }, { uid: true });
+    } catch (error) {
+      throwRate(error);
+      classifyImapSearchError(error);
+      throw error;
+    }
+  }
+  try {
+    return await client.search({ from: address }, { uid: true });
+  } catch (error) {
+    throwRate(error);
+    classifyImapSearchError(error);
+    throw error;
+  }
+}
+
+async function findFrom(client, folderPath, address, limit, options) {
+  const addr = String(address || "").trim();
+  if (!addr) return null;
+  let lock;
+  try {
+    lock = await client.getMailboxLock(folderPath);
+  } catch (error) {
+    throwRate(error);
+    classifyImapSearchError(error);
+    throw error;
+  }
+  try {
+    let uids = [];
+    try {
+      uids = await searchFromUids(client, addr, !!(options && options.gmail));
+    } catch (error) {
+      throwRate(error);
+      classifyImapSearchError(error);
+      throw error;
+    }
+    const before = Number(options && options.beforeUid) || 0;
+    let list = (uids || []).map(Number).filter((uid) => uid > 0);
+    if (before > 0) list = list.filter((uid) => uid < before);
+    list.sort((a, b) => b - a);
+    const cap = Math.min(Math.max(Number(limit) || 50, 1), 50);
+    const more = list.length > cap;
+    const picked = list.slice(0, cap);
+    const lowestUid = picked.length ? picked[picked.length - 1] : 0;
+    const validity = Number((client.mailbox || {}).uidValidity) || 0;
+    if (!picked.length) return { messages: [], validity, searched: true, more: false, lowestUid: 0 };
+    const messages = [];
+    try {
+      for await (const msg of client.fetch(picked.join(","), FETCH_FIELDS, { uid: true })) {
+        messages.push(await readFetched(msg, validity));
+      }
+    } catch (error) {
+      throwRate(error);
+      throw error;
+    }
+    return { messages, validity, searched: true, more, lowestUid };
+  } finally {
+    lock.release();
+  }
+}
+
 async function buildRaw(options) {
   const composer = new MailComposer(options);
   return composer.compile().build();
@@ -634,6 +720,7 @@ module.exports = {
   renameBox,
   appendRaw,
   findText,
+  findFrom,
   buildRaw,
   sendSmtp,
   walkParts,

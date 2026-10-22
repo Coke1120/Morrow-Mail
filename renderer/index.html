@@ -1403,6 +1403,17 @@
         </div>
       </form>
     </dialog>
+    <dialog id="sender-history" aria-labelledby="sender-history-title" aria-describedby="sender-history-desc">
+      <div class="dialog-body">
+        <h2 id="sender-history-title" tabindex="-1">Previous emails</h2>
+        <p id="sender-history-desc" class="hint"></p>
+        <div id="sender-history-chips" class="sender-history-chips"></div>
+        <div id="sender-history-body"></div>
+        <div class="row">
+          <button type="button" class="ghost" id="sender-history-more" hidden>Load more</button>
+        </div>
+      </div>
+    </dialog>
     <dialog id="confirm" aria-labelledby="confirm-title">
       <form id="confirm-form">
         <h2 id="confirm-title">Confirm</h2>
@@ -1424,6 +1435,7 @@
     <script src="../shared/sync-retry.js"></script>
     <script src="./brain-compose.js"></script>
     <script src="./features-catalog.js"></script>
+    <script src="../shared/sender-history.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

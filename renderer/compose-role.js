@@ -3,5 +3,6 @@
   try {
     var params = new URLSearchParams(window.location.search);
     if (params.get("role") === "compose") document.documentElement.dataset.window = "compose";
+    if (params.get("role") === "reader") document.documentElement.dataset.window = "reader";
   } catch (error) { /* a non-browser check has no location */ }
 })();
