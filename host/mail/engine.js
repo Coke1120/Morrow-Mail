@@ -20,6 +20,7 @@ const inboxRules = require("./inbox-rules");
 const http = require("./provider-http");
 const providerApi = require("./provider-api");
 const idle = require("./idle");
+const overnight = require("./overnight");
 const syncRetry = require("../../shared/sync-retry");
 const debugLog = require("../debug-log");
 const composeIdentity = require("./compose-identity");
@@ -62,11 +63,12 @@ const GMAIL_ALL = remote.GMAIL_ALL_PATHS;
 
 let ready = false;
 // One running mailbox job per account. User work (open, flags, manual Sync)
-// waits on `user`. Background folder walks and visible-page body fills wait
-// on `background` and run only when no user job is queued. A running walk
-// checks between folders and returns so a queued open can fetch a body
-// before the next folder. A body fill already inside IMAP finishes; the next
-// one waits.
+// waits on `user`. Background folder walks, visible-page body fills, and the
+// off-hours body fill wait on `background` and run only when no user job is
+// queued. A running walk checks between folders and returns so a queued open
+// can fetch a body before the next folder. A body fill already inside IMAP
+// finishes; the next one waits. Overnight fill does not start while a visible
+// prefetch still wants the connection.
 const lanes = new Map();
 
 function ok(data) {
@@ -131,8 +133,8 @@ function drainLane(accountId) {
 function exclusive(accountId, fn, options) {
   // Every call site enters once. A concurrent IPC/sync request is not a nested
   // call and must wait; awaiting exclusive again on this account deadlocks.
-  // Pass { background: true } only for the rotating folder walk. That walk
-  // yields between folders while user work is queued.
+  // Pass { background: true } for the rotating folder walk and for body fills
+  // that must wait behind an open. That work yields while user work is queued.
   const lane = laneFor(accountId);
   let settle;
   let fail;
@@ -1017,6 +1019,10 @@ async function syncAccountAdmitted(account, options) {
   }
 }
 
+async function syncAllForTest(options) {
+  return syncAll(options || { background: true });
+}
+
 async function syncAll(options) {
   return updateGate.run(() => syncAllAdmitted(options));
 }
@@ -1047,6 +1053,9 @@ async function syncAllAdmitted(options) {
       if (error && error.syncReported) continue;
       reportSyncFailure(account, error);
     }
+  }
+  if (scope.background) {
+    try { await fillOvernightBodies(); } catch { /* one body must not stop the next poll */ }
   }
   emitAccounts();
 }
@@ -1715,7 +1724,7 @@ function rowNeedsBody(row) {
   return !!(row && Number(row.uid) > 0 && row.body_complete !== 1);
 }
 
-// Visible-list prefetch only. A later idle pass could backfill older mail.
+// Visible-list prefetch only. Older mail waits for the off-hours fill.
 const BODY_PREFETCH_LIMIT = 200;
 const bodyJobs = new Set();
 let fillQueue = [];
@@ -1804,6 +1813,85 @@ async function pumpBodyFills() {
   }
 }
 
+function overnightNow() {
+  const raw = process.env.MORROW_OVERNIGHT_AT;
+  if (raw != null && String(raw).trim() !== "") {
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+function overnightZone() {
+  const zone = (process.env.MORROW_OVERNIGHT_TZ || "").trim();
+  return zone || undefined;
+}
+
+const overnightTried = new Set();
+let overnightSawWindow = false;
+let overnightRunning = false;
+
+function resetOvernightForTest() {
+  overnightTried.clear();
+  overnightSawWindow = false;
+  overnightRunning = false;
+  fillRunning = false;
+  fillQueue = [];
+  fillKey = null;
+  fillGen += 1;
+}
+
+function nextOvernightRow(now) {
+  const days = syncHorizonDays();
+  const query = { needsBody: true, limit: 200 };
+  if (days) query.sinceTs = now - days * DAY_MS;
+  const rows = db.selectMessages(query);
+  for (const row of rows) {
+    if (!row || overnightTried.has(String(row.id))) continue;
+    if (!rowNeedsBody(row)) continue;
+    if (!gateOpen(row.account_id) || priorityWaiting(row.account_id)) continue;
+    const account = db.accountById(row.account_id);
+    if (!account || account.auth_error) continue;
+    return row;
+  }
+  return null;
+}
+
+async function fillOvernightBodies() {
+  if (overnightRunning) return { ran: false, fetched: 0, busy: true, window: true };
+  const now = overnightNow();
+  if (!overnight.inOvernightWindow(now, overnightZone())) {
+    if (overnightSawWindow) overnightTried.clear();
+    overnightSawWindow = false;
+    return { ran: false, fetched: 0, window: false };
+  }
+  overnightSawWindow = true;
+  if (fillRunning || fillQueue.length) return { ran: false, fetched: 0, window: true, yielded: "prefetch" };
+  const row = nextOvernightRow(now);
+  if (!row) return { ran: true, fetched: 0, window: true };
+  overnightRunning = true;
+  fillRunning = true;
+  overnightTried.add(String(row.id));
+  const outcome = { skipped: false, rateLimited: false };
+  try {
+    await fillBodyInBackground(row, outcome);
+  } finally {
+    overnightRunning = false;
+    fillRunning = false;
+    if (fillQueue.length) pumpBodyFills();
+  }
+  if (outcome.skipped) {
+    overnightTried.delete(String(row.id));
+    return { ran: true, fetched: 0, window: true, yielded: "open" };
+  }
+  if (outcome.rateLimited) {
+    overnightTried.delete(String(row.id));
+    return { ran: true, fetched: 0, window: true, yielded: "rate" };
+  }
+  const fresh = db.messageById(row.id);
+  return { ran: true, fetched: fresh && fresh.body_complete === 1 ? 1 : 0, window: true };
+}
+
 async function ensureBody(row, options) {
   const background = !!(options && options.background);
   const outcome = options && options.outcome;
@@ -1844,7 +1932,11 @@ async function ensureBody(row, options) {
     });
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
-  } catch {
+  } catch (error) {
+    if (background && account && http.isRateLimit(error)) {
+      noteRateLimit(account.id, error);
+      if (outcome) outcome.rateLimited = true;
+    }
     return row;
   }
 }
@@ -3403,6 +3495,9 @@ module.exports = {
   noteActive,
   mailQueueForTest,
   syncAccountById,
+  syncAllForTest,
+  fillOvernightBodies,
+  resetOvernightForTest,
   syncPolicy: {
     get syncDays() { return syncHorizonDays(); },
     headerBatch: HEADER_BATCH,
