@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const yaml = require('js-yaml');
-const { verifyManifest, validateArtifact } = require('../host/update-manifest');
+const { verifyManifest, validateArtifact, macZipName } = require('../host/update-manifest');
 async function digest(file, algorithm = 'sha256', encoding = 'hex') {
   const handle = await fs.open(file, require('node:fs').constants.O_RDONLY | require('node:fs').constants.O_NOFOLLOW);
   try {
@@ -17,8 +17,12 @@ async function digest(file, algorithm = 'sha256', encoding = 'hex') {
 }
 function namesFor(platform, version) {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) throw Error('Stable version required.');
-  if (platform === 'windows') return [`Morrow-Mail-Setup-${version}.exe`, `Morrow-Mail-Setup-${version}.exe.blockmap`, `Morrow-Mail-${version}.exe`, 'latest.yml'];
-  if (platform === 'macos') return [`Morrow-Mail-${version}-arm64-mac.zip`, `Morrow-Mail-${version}-arm64-mac.zip.blockmap`, 'latest-mac.yml', 'update-manifest-macos-arm64.json', 'update-manifest-macos-arm64.json.sig'];
+  // Filenames omit the version. The GitHub tag isolates each release.
+  if (platform === 'windows') return ['Morrow-Mail-Setup.exe', 'Morrow-Mail-Setup.exe.blockmap', 'Morrow-Mail.exe', 'latest.yml'];
+  if (platform === 'macos') {
+    const zip = macZipName('arm64');
+    return [zip, `${zip}.blockmap`, 'latest-mac.yml', 'update-manifest-macos-arm64.json', 'update-manifest-macos-arm64.json.sig'];
+  }
   throw Error('Unknown release platform.');
 }
 async function validateFeed(directory, platform, version) {
@@ -45,7 +49,7 @@ async function prepare({ platform, version, commit, runId, runAttempt, dist = 'd
   const available = await fs.readdir(dist);
   for (const name of names) {
     const source = name.startsWith('update-manifest-') ? path.join(dist, 'signed-update-manifest', name) : (() => {
-      // electron-builder uses spaces locally; GitHub feeds use dashed names.
+      // Stable names are already GitHub-safe. A spaced local file still matches after dashes.
       const matches = available.filter(local => local.replace(/ /g, '-') === name);
       if (matches.length !== 1) throw Error('Missing or ambiguous release asset: ' + name);
       return path.join(dist, matches[0]);

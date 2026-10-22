@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { extractZip, verifyBundle, assessBundleTrust } = require('../host/update-installer');
+const { macZipName } = require('../host/update-manifest');
 
 async function verifyReleaseMacos({ artifact, version, extract = extractZip, verify = verifyBundle, assess = assessBundleTrust, tempRoot = os.tmpdir() }) {
   // macOS TMPDIR may use /var while realpath resolves /private/var. Anchor
@@ -33,7 +34,7 @@ if (require.main === module) {
     console.error('Native verification must run without a release signing secret.');
     process.exitCode = 1;
   } else {
-    verifyReleaseMacos({ artifact: path.join('dist', `Morrow Mail-${version}-arm64-mac.zip`), version })
+    verifyReleaseMacos({ artifact: path.join('dist', macZipName('arm64')), version })
       .then(result => {
         console.log('Extracted release ZIP passed path, bundle identity, architecture and strict integrity checks.');
         console.log(`Build-host policy assessment: ${result.platformTrust}. Distribution is ad hoc, without Apple notarization; installation remains subject to each Mac and user approval.`);

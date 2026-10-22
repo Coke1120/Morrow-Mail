@@ -26,7 +26,17 @@ That flag also skips electron-builder's own resource edit, which would leave the
 
 4. After both builds succeed, the final publisher uploads the NSIS setup exe, its `.blockmap`, the portable exe, `latest.yml`, the macOS ZIP/feed/blockmap, signed manifest pair and provenance records to a draft release. It verifies downloaded bytes before promotion. `latest.yml` remains the Windows electron-updater feed and names the NSIS setup; the portable exe is a no-install download.
 
-The feed URL uses dashes (`Morrow-Mail-Setup-VERSION.exe`); local build filenames may contain spaces. Staging checks that feed hashes and sizes match the final artifacts.
+Download filenames omit the package version. The GitHub release tag (`v` plus that version) isolates each copy, so a release does not also publish a versioned twin of the same bytes:
+
+- Windows NSIS: `Morrow-Mail-Setup.exe`
+- NSIS differential blockmap: `Morrow-Mail-Setup.exe.blockmap`
+- Windows portable (manual download, not the in-app update): `Morrow-Mail.exe`
+- macOS zip: `Morrow-Mail-arm64-mac.zip`
+- macOS zip blockmap: `Morrow-Mail-arm64-mac.zip.blockmap`
+
+`latest.yml` `path` and `files[0].url` are `Morrow-Mail-Setup.exe`. `latest-mac.yml` uses `Morrow-Mail-arm64-mac.zip`. Staging checks that those feed fields, the sha512, and the size match the staged file. electron-updater loads the blockmap by appending `.blockmap` to that filename. The version remains in the tag path (`/releases/download/vX.Y.Z/`). That path is what electron-updater rewrites when it asks the previous release for a blockmap, so differential updates keep working once both releases use these names. The first Windows update from a release that still published `Morrow-Mail-Setup-X.Y.Z.exe` falls back to a full download when the older blockmap name is absent. The installed Windows program is still `Morrow Mail.exe`; only the downloadable setup and portable names are stable.
+
+The signed macOS manifest URL is `https://github.com/Coke1120/Morrow-Mail/releases/download/vX.Y.Z/Morrow-Mail-arm64-mac.zip`. A Mac build whose verifier still requires `Morrow-Mail-X.Y.Z-arm64-mac.zip` rejects that manifest. Those installs need one manual download of the first stable-name release. Later macOS updates use the stable zip. Windows reads the setup name from `latest.yml` and does not need that manual step.
 
 The final publisher binds a new release tag to the exact workflow source SHA, after both platform artifacts pass validation.
 
@@ -39,7 +49,7 @@ npm ci
 CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win
 ```
 
-Artifacts land in `dist/` (`latest.yml`, `*Setup*.exe`, `*.exe.blockmap`, portable exe).
+Artifacts land in `dist/` (`latest.yml`, `Morrow-Mail-Setup.exe`, `Morrow-Mail-Setup.exe.blockmap`, `Morrow-Mail.exe`).
 
 On Linux, the NSIS uninstaller step needs Wine, including `wine32:i386`. The release job runs on `windows-latest` and does not use Wine.
 

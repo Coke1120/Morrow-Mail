@@ -41,13 +41,15 @@ async function main() {
   assert.throws(() => verifyManifest(bytes, Buffer.alloc(64).toString('base64'), opts));
   assert.throws(() => verify(manifest, { publicKey: null }));
   assert.throws(() => verify(manifest, { publicKey: crypto.generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }) }));
-  for (const change of [{ arch: 'x64' }, { platform: 'win32' }, { version: '0.2.5' }, { version: '0.2.4' }, { version: '0.2.6-beta.1' }, { size: -1 }, { size: 751 * 1024 * 1024 }, { sha256: '0' }, { extra: true }, { url: manifest.url.replace('Coke1120', 'attacker') }]) assert.throws(() => verify({ ...manifest, ...change }));
+  for (const change of [{ arch: 'x64' }, { platform: 'win32' }, { version: '0.2.5' }, { version: '0.2.4' }, { version: '0.2.6-beta.1' }, { size: -1 }, { size: 751 * 1024 * 1024 }, { sha256: '0' }, { extra: true }, { url: manifest.url.replace('Coke1120', 'attacker') }, { url: manifest.url.replace('Morrow-Mail-arm64-mac.zip', 'Morrow-Mail-0.2.6-arm64-mac.zip') }]) assert.throws(() => verify({ ...manifest, ...change }));
   assert.throws(() => verify(manifest, { highestAcceptedVersion: '0.2.6' }));
   assert.throws(() => verify(manifest, { expectedVersion: '0.2.7' }));
   const installed = { ...manifest, version: '0.2.5', url: artifactURL('0.2.5', 'arm64') };
   assert.throws(() => verify(installed), error => error.code === 'UPDATE_NOT_NEWER');
   assert.throws(() => verify({ ...installed, size: 0 }), error => error.code !== 'UPDATE_NOT_NEWER');
-  for (const url of ['http://github.com/x', manifest.url + '?x=1', manifest.url + '#x', manifest.url.replace('github.com', 'github.com.attacker.test'), manifest.url.replace('https://', 'https://user:pass@'), manifest.url.replace('Morrow-Mail-0.2.6', '../Morrow-Mail-0.2.6'), 'https://release-assets.githubusercontent.com/unrelated']) assert.throws(() => allowedURL(url, true));
+  for (const url of ['http://github.com/x', manifest.url + '?x=1', manifest.url + '#x', manifest.url.replace('github.com', 'github.com.attacker.test'), manifest.url.replace('https://', 'https://user:pass@'), manifest.url.replace('Morrow-Mail-arm64', '../Morrow-Mail-arm64'), manifest.url.replace('Morrow-Mail-arm64-mac.zip', 'Morrow-Mail-0.2.6-arm64-mac.zip'), 'https://release-assets.githubusercontent.com/unrelated']) assert.throws(() => allowedURL(url, true));
+  assert.equal(allowedURL(artifactURL('0.2.6', 'arm64')).href, artifactURL('0.2.6', 'arm64'));
+  assert.equal(allowedURL(artifactURL('1.0.0', 'x64')).href, artifactURL('1.0.0', 'x64'));
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'morrow-manifest-test-'));
   const request = (chunks, headers = {}, statusCode = 200) => (_url, _options, callback) => {
     const req = new EventEmitter();

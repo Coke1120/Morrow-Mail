@@ -96,6 +96,7 @@
       "notarize": false,
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
+      "artifactName": "Morrow-Mail-${arch}-mac.${ext}",
       "extendInfo": {
         "CFBundleDisplayName": "Morrow Mail",
         "CFBundleName": "Morrow Mail"
@@ -124,7 +125,11 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico"
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "Morrow-Mail-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "Morrow-Mail.${ext}"
     },
     "linux": {
       "icon": "build/icon.png",
