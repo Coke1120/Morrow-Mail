@@ -62,9 +62,11 @@ const GMAIL_ALL = remote.GMAIL_ALL_PATHS;
 
 let ready = false;
 // One running mailbox job per account. User work (open, flags, manual Sync)
-// waits on `user`. Background folder walks wait on `background` and run only
-// when no user job is queued. A running walk checks between folders and
-// returns so a queued open can fetch a body before the next folder.
+// waits on `user`. Background folder walks and visible-page body fills wait
+// on `background` and run only when no user job is queued. A running walk
+// checks between folders and returns so a queued open can fetch a body
+// before the next folder. A body fill already inside IMAP finishes; the next
+// one waits.
 const lanes = new Map();
 
 function ok(data) {
@@ -122,6 +124,7 @@ function drainLane(accountId) {
     .finally(() => {
       lane.active = false;
       drainLane(accountId);
+      pumpBodyFills();
     });
 }
 
@@ -269,6 +272,7 @@ function listRow(row) {
     inReplyTo: row.in_reply_to || null,
     recipientHeaders: JSON.parse(row.recipient_headers_json || "{}"),
     bodyComplete: row.body_complete === 1,
+    hasBody: usableStoredBody(row),
   };
 }
 
@@ -381,6 +385,12 @@ function listPayload(params) {
     pageToken: more ? String(oldest || offset) : null,
     geometry: { total, aboveTop: offset },
   };
+}
+
+function cachedList(params) {
+  const payload = listPayload(params);
+  scheduleVisibleBodyPrefetch(payload.emails);
+  return { ...payload, sync: publicSync(params) };
 }
 
 async function secretFor(account) {
@@ -1693,12 +1703,128 @@ function mimeOptions(account, params, files) {
   };
 }
 
-async function ensureBody(row) {
+function storedBodyText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function usableStoredBody(row) {
+  return !!(row && (storedBodyText(row.html_body) || storedBodyText(row.text_body)));
+}
+
+function rowNeedsBody(row) {
+  return !!(row && Number(row.uid) > 0 && row.body_complete !== 1);
+}
+
+// Visible-list prefetch only. A later idle pass could backfill older mail.
+const BODY_PREFETCH_LIMIT = 200;
+const bodyJobs = new Set();
+let fillQueue = [];
+let fillGen = 0;
+let fillKey = null;
+let fillRunning = false;
+
+function scheduleVisibleBodyPrefetch(emails) {
+  const page = Array.isArray(emails) ? emails.slice(0, BODY_PREFETCH_LIMIT) : [];
+  const ids = [];
+  for (const email of page) {
+    if (!email || email.id == null || email.bodyComplete === true) continue;
+    ids.push(String(email.id));
+  }
+  const key = ids.join("\n");
+  if (key === fillKey) return;
+  fillKey = key;
+  fillGen += 1;
+  const gen = fillGen;
+  fillQueue = fillQueue.filter((item) => item.kind === "open");
+  for (const id of ids) {
+    if (bodyJobs.has(id) || fillQueue.some((item) => item.id === id)) continue;
+    fillQueue.push({ id, gen, kind: "prefetch" });
+  }
+  pumpBodyFills();
+}
+
+function queueOpenFill(row) {
+  if (!row || !rowNeedsBody(row)) return;
+  const id = String(row.id);
+  if (bodyJobs.has(id)) return;
+  fillQueue = fillQueue.filter((item) => item.id !== id);
+  fillQueue.unshift({ id, gen: fillGen, kind: "open" });
+  pumpBodyFills();
+}
+
+function fillBodyInBackground(row, outcome) {
+  if (!row || row.id == null) return Promise.resolve(row);
+  const id = String(row.id);
+  if (bodyJobs.has(id) || !rowNeedsBody(row)) return Promise.resolve(row);
+  bodyJobs.add(id);
+  const beforeHtml = row.html_body;
+  const beforeText = row.text_body;
+  const beforeComplete = row.body_complete;
+  return ensureBody(row, { background: true, outcome }).then((fresh) => {
+    const next = fresh || row;
+    if (outcome && outcome.skipped) return next;
+    if (next.html_body !== beforeHtml || next.text_body !== beforeText || next.body_complete !== beforeComplete) {
+      broadcast("mail:bodyUpdated", { email: detailOf(next) });
+    }
+    return next;
+  }).finally(() => {
+    bodyJobs.delete(id);
+  });
+}
+
+async function pumpBodyFills() {
+  if (fillRunning) return;
+  fillRunning = true;
+  try {
+    while (fillQueue.length) {
+      const item = fillQueue[0];
+      if (item.kind === "prefetch" && item.gen !== fillGen) {
+        fillQueue.shift();
+        continue;
+      }
+      const row = db.messageById(item.id);
+      if (!row || !rowNeedsBody(row)) {
+        fillQueue.shift();
+        continue;
+      }
+      if (priorityWaiting(row.account_id)) return;
+      const outcome = { skipped: false };
+      fillQueue.shift();
+      await fillBodyInBackground(row, outcome);
+      if (outcome.skipped) {
+        if (!fillQueue.some((queued) => queued.id === item.id)) fillQueue.unshift(item);
+        return;
+      }
+    }
+  } finally {
+    fillRunning = false;
+    const next = fillQueue[0];
+    const pending = next && db.messageById(next.id);
+    if (next && (!pending || !priorityWaiting(pending.account_id))) pumpBodyFills();
+  }
+}
+
+async function ensureBody(row, options) {
+  const background = !!(options && options.background);
+  const outcome = options && options.outcome;
+  const markSkip = () => {
+    if (outcome) outcome.skipped = true;
+  };
+  // Full RFC822 via fetchSource. A text/html part fetch needs stored structure
+  // so attachments and recipient headers stay intact.
   if (!row || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
   const account = db.accountById(row.account_id);
   if (!account) return row;
+  if (background && priorityWaiting(account.id)) {
+    markSkip();
+    return row;
+  }
   try {
     return await exclusive(account.id, async () => {
+    if (background && priorityWaiting(account.id)) {
+      markSkip();
+      return db.messageById(row.id) || row;
+    }
     // Another open may have filled the cache while this request queued.
     row = db.messageById(row.id);
     if (!row || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
@@ -1717,7 +1843,7 @@ async function ensureBody(row) {
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
     });
     return db.messageById(row.id);
-    });
+    }, background ? { background: true } : undefined);
   } catch {
     return row;
   }
@@ -2742,14 +2868,14 @@ function answer(channel, args) {
       if (params && params.accountId && params.folderId && !virtuals.get(params.folderId)) {
         noteActive(params.accountId, params.folderId);
       }
-      return ok({ ...listPayload(params), sync: publicSync(params) });
+      return ok(cachedList(params));
     case "mail:getSyncStatus":
       return ok(publicSync(params));
     case "mail:listFromNetwork":
       return (async () => {
         const query = params || {};
         if (virtuals.get(query.folderId)) {
-          return ok({ ...listPayload(query), sync: publicSync(query) });
+          return ok(cachedList(query));
         }
         const account = query.accountId ? db.accountById(query.accountId) : null;
         if (account && query.folderId) noteActive(account.id, query.folderId);
@@ -2768,7 +2894,7 @@ function answer(channel, args) {
           if (!http.isRateLimit(error) && db.countMessages(queryFrom(query)) === 0) return fail("sync", remote.explain(error));
         }
         emitAccounts();
-        return ok({ ...listPayload(query), sync: publicSync(query) });
+        return ok(cachedList(query));
       })();
     case "mail:kickoffAggregateSync":
       setTimeout(() => { syncAll({ folderKey: params && params.folderKey }).catch(() => {}); }, 0);
@@ -2819,8 +2945,14 @@ function answer(channel, args) {
       return searchSender(params || {});
     case "mail:openEmail":
       return (async () => {
-        const row = await ensureBody(db.messageById(params && params.emailId));
+        const stored = db.messageById(params && params.emailId);
+        if (!stored) return fail("email-gone", "That message is no longer in the mailbox.");
+        const paintFirst = !(params && params.full === true)
+          && stored.body_complete !== 1
+          && usableStoredBody(stored);
+        const row = paintFirst ? stored : await ensureBody(stored);
         if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
+        if (paintFirst) queueOpenFill(stored);
         const members = db.messagesByThread(row.account_id, row.thread_id).map(listRow);
         return ok({
           email: detailOf(row),
