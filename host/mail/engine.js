@@ -61,7 +61,11 @@ const SEARCH_LIMIT = 100;
 const GMAIL_ALL = remote.GMAIL_ALL_PATHS;
 
 let ready = false;
-const tails = new Map();
+// One running mailbox job per account. User work (open, flags, manual Sync)
+// waits on `user`. Background folder walks wait on `background` and run only
+// when no user job is queued. A running walk checks between folders and
+// returns so a queued open can fetch a body before the next folder.
+const lanes = new Map();
 
 function ok(data) {
   return { success: true, data };
@@ -92,13 +96,58 @@ async function init() {
   actions.resume();
 }
 
-function exclusive(accountId, fn) {
+function laneFor(accountId) {
+  let lane = lanes.get(accountId);
+  if (!lane) {
+    lane = { user: [], background: [], active: false };
+    lanes.set(accountId, lane);
+  }
+  return lane;
+}
+
+function priorityWaiting(accountId) {
+  const lane = lanes.get(accountId);
+  return !!(lane && lane.user.length > 0);
+}
+
+function drainLane(accountId) {
+  const lane = lanes.get(accountId);
+  if (!lane || lane.active) return;
+  const job = lane.user.shift() || lane.background.shift();
+  if (!job) return;
+  lane.active = true;
+  Promise.resolve()
+    .then(job.fn)
+    .then(job.settle, job.fail)
+    .finally(() => {
+      lane.active = false;
+      drainLane(accountId);
+    });
+}
+
+function exclusive(accountId, fn, options) {
   // Every call site enters once. A concurrent IPC/sync request is not a nested
-  // call and must wait for the preceding operation on this account.
-  const prev = tails.get(accountId) || Promise.resolve();
-  const run = prev.catch(() => {}).then(fn);
-  tails.set(accountId, run.catch(() => {}));
-  return run;
+  // call and must wait; awaiting exclusive again on this account deadlocks.
+  // Pass { background: true } only for the rotating folder walk. That walk
+  // yields between folders while user work is queued.
+  const lane = laneFor(accountId);
+  let settle;
+  let fail;
+  const done = new Promise((resolve, reject) => {
+    settle = resolve;
+    fail = reject;
+  });
+  const job = { fn, settle, fail };
+  if (options && options.background) lane.background.push(job);
+  else lane.user.push(job);
+  drainLane(accountId);
+  return done;
+}
+
+function mailQueueForTest(accountId) {
+  const lane = lanes.get(accountId);
+  if (!lane) return { user: 0, background: 0, active: false };
+  return { user: lane.user.length, background: lane.background.length, active: lane.active === true };
 }
 
 function broadcast(channel, payload) {
@@ -869,53 +918,79 @@ async function syncAccountAdmitted(account, options) {
     return;
   }
   const password = await secretFor(account);
-  await exclusive(account.id, async () => {
-    let jobs = [];
-    let paused = false;
-    let allDone = true;
-    await remote.withClient(account, password, async (client) => {
-      emitSync("syncing", { accountId: account.id, phase: "listing" });
-      const listed = await remote.listFolderRecords(client);
-      db.replaceFolders(account.id, listed.folders, listed.delimiter);
-      const folders = db.foldersFor(account.id);
-      const background = !!(options && options.background);
-      let plan = null;
-      if (background) {
-        plan = planBackgroundFolders(folders, activeFolder.get(account.id), backgroundCursor.get(account.id) || 0);
-        jobs = plan.jobs;
-      } else {
-        jobs = jobFolders(folders, options);
+  const background = !!(options && options.background);
+  const deadline = Date.now() + tickMs();
+  // One pass keeps its folder list and visited set across yields. The cursor
+  // is the same one a single exclusive walk would have saved.
+  let jobs = null;
+  let plan = null;
+  const visited = new Set();
+  let paused = false;
+  let pausedPath = "";
+  let incomplete = false;
+  while (true) {
+    let yielded = false;
+    await exclusive(account.id, async () => {
+      if (!gateOpen(account.id)) {
+        emitSync("paused", { accountId: account.id, message: "Paused for rate limit" });
+        paused = true;
+        return;
       }
-      const deadline = Date.now() + tickMs();
-      const visited = new Set();
-      let pausedPath = "";
-      for (const folder of jobs) {
-        if (background && visited.size > 0 && Date.now() >= deadline) break;
-        const result = await syncFolderPolicy(
-          client,
-          account,
-          folder.path,
-          background ? { oneBatch: true, deadline } : null,
-        );
-        visited.add(folder.path);
-        if (result && result.paused) {
-          paused = true;
-          pausedPath = folder.path;
-          break;
+      // The in-flight folder batch finishes before this runs again. A waiting
+      // open then takes the only connection. The rest of the pass continues
+      // only while this tick still has time.
+      if (background && visited.size > 0 && Date.now() >= deadline) return;
+      if (background && priorityWaiting(account.id)) {
+        yielded = true;
+        return;
+      }
+      await remote.withClient(account, password, async (client) => {
+        if (!jobs) {
+          emitSync("syncing", { accountId: account.id, phase: "listing" });
+          const listed = await remote.listFolderRecords(client);
+          db.replaceFolders(account.id, listed.folders, listed.delimiter);
+          const folders = db.foldersFor(account.id);
+          if (background) {
+            plan = planBackgroundFolders(folders, activeFolder.get(account.id), backgroundCursor.get(account.id) || 0);
+            jobs = plan.jobs;
+          } else {
+            jobs = jobFolders(folders, options);
+          }
         }
-        if (!result || !result.bootstrapped) allDone = false;
+        for (const folder of jobs) {
+          if (visited.has(folder.path)) continue;
+          if (background && priorityWaiting(account.id)) {
+            yielded = true;
+            break;
+          }
+          if (background && visited.size > 0 && Date.now() >= deadline) break;
+          const result = await syncFolderPolicy(
+            client,
+            account,
+            folder.path,
+            background ? { oneBatch: true, deadline } : null,
+          );
+          visited.add(folder.path);
+          if (result && result.paused) {
+            paused = true;
+            pausedPath = folder.path;
+            break;
+          }
+          if (!result || !result.bootstrapped) incomplete = true;
+        }
+        if (background && plan) {
+          backgroundCursor.set(account.id, pausedPath ? plan.cursorFor(pausedPath) : plan.nextCursor(visited));
+        }
+      });
+      const passDone = !!(jobs && jobs.length && visited.size === jobs.length && !incomplete);
+      finishSync(jobs || [], paused, passDone, account.id);
+      if (!paused) {
+        db.clearAuthError(account.id);
+        syncRetryScheduler.noteSuccess(account.id);
       }
-      if (background && plan) {
-        if (visited.size < jobs.length) allDone = false;
-        backgroundCursor.set(account.id, pausedPath ? plan.cursorFor(pausedPath) : plan.nextCursor(visited));
-      }
-    });
-    finishSync(jobs, paused, allDone, account.id);
-    if (!paused) {
-      db.clearAuthError(account.id);
-      syncRetryScheduler.noteSuccess(account.id);
-    }
-  });
+    }, background ? { background: true } : undefined);
+    if (!background || !yielded || paused) break;
+  }
 }
 
 async function syncAll(options) {
@@ -1437,6 +1512,8 @@ async function removeAccount(params) {
   idleReported.delete(id);
   backgroundCursor.delete(id);
   activeFolder.delete(id);
+  const lane = lanes.get(id);
+  if (lane && !lane.active && !lane.user.length && !lane.background.length) lanes.delete(id);
   syncRetryScheduler.clear(id);
   db.removeAccount(id);
   emitAccounts();
@@ -3178,6 +3255,7 @@ module.exports = {
   markMissingOAuthSecrets,
   syncGates,
   noteActive,
+  mailQueueForTest,
   syncAccountById,
   syncPolicy: {
     get syncDays() { return syncHorizonDays(); },
