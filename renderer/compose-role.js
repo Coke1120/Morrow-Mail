@@ -4,5 +4,6 @@
     var params = new URLSearchParams(window.location.search);
     if (params.get("role") === "compose") document.documentElement.dataset.window = "compose";
     if (params.get("role") === "reader") document.documentElement.dataset.window = "reader";
+    if (params.get("role") === "translate") document.documentElement.dataset.window = "translate";
   } catch (error) { /* a non-browser check has no location */ }
 })();

@@ -14,6 +14,8 @@ const INVOKE = [
   "morrow:configSetTimeFormat",
   "morrow:configGetDateFormat",
   "morrow:configSetDateFormat",
+  "morrow:configGetTranslateTargetLanguage",
+  "morrow:configSetTranslateTargetLanguage",
   "morrow:configGetConversationViewEnabled",
   "morrow:configSetConversationViewEnabled",
   "morrow:configGetAutoLoadRemoteImages",
@@ -177,6 +179,9 @@ const INVOKE = [
   "compose:setTitle",
   "reader:open",
   "reader:pullSeed",
+  "translate:open",
+  "translate:pullSeed",
+  "translate:report",
 ];
 
 const EVENTS = [
@@ -187,6 +192,7 @@ const EVENTS = [
   "mail:actionsSettled",
   "mail:syncStatus",
   "mail:translate:event",
+  "translate:update",
   "aiDraftWrite:event",
   "emailBrain:updated",
   "emailBrain:refreshState",
@@ -238,6 +244,15 @@ contextBridge.exposeInMainWorld("morrow", {
   },
   pullReaderSeed() {
     return ipcRenderer.invoke("reader:pullSeed");
+  },
+  openTranslateWindow(seed) {
+    return ipcRenderer.invoke("translate:open", seed);
+  },
+  pullTranslateSeed() {
+    return ipcRenderer.invoke("translate:pullSeed");
+  },
+  reportTranslate(payload) {
+    return ipcRenderer.invoke("translate:report", payload);
   },
   invoke(channel, payload) {
     if (!invokeSet.has(channel)) {

@@ -699,7 +699,7 @@ function assertReaderWindowMatchesShellActions() {
   const shown = readerText(ui.reader);
   assert.deepEqual(actionNames(ui.reader), [
     'reply', 'reply-all', 'suggest', 'forward',
-    'star', 'translate-lang', 'translate', 'translate-cancel',
+    'star', 'translate', 'translate-cancel',
     'archive', 'trash', 'move', 'organize', 'snooze', 'close-reader',
   ]);
   assert.equal(ui.reader.querySelector('.reader-actions').className, 'reader-actions');
