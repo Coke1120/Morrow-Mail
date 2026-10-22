@@ -211,8 +211,8 @@ Toasts, via `showStatus` as an error, one per action:
 - Channels: `reader:open`, `reader:pullSeed`.
 - `reader:open` accepts `{ accountId, messageId }`. Both are strings, at most 200 characters, with no control characters. Anything else throws `That message could not be opened.` The host does not open a window for a bad seed.
 - The window is not parented and not modal. The shell stays usable after the dialog closes, and a reader window does not hide with the shell.
-- Several reader windows may exist. There is no cap. Cascade uses the compose step: shell bounds plus 48px plus `28px * (open reader count % 6)`. Compose windows are not part of that count. Size is 960×760, minimum 640×480. Missing shell bounds omit `x` and `y` and let the system place the window.
-- Bounds are not written to `window-state.json`. The window does not change the shell’s zoom. It opens at zoom level 0.
+- Several reader windows may exist. There is no cap. Compose windows are not part of that count. Minimum size is 640×480. The window does not change the shell’s zoom. It opens at zoom level 0.
+- The last reader frame is `reader-window-state.json` (`x`, `y`, `width`, `height`), written on move, resize, and close. It is not `window-state.json`. `place()` from `host/window-state.js` keeps a saved position only when enough of the window still sits on a display. The first open reader uses that clamped frame. Each later reader adds `28px * (open reader count % 6)`. A save subtracts that same offset so the stored origin stays the unstacked frame. With no saved frame, size stays 960×760 and position is the shell origin plus 48px plus that same offset. Missing shell bounds omit `x` and `y`.
 - The page is `renderer/index.html?role=reader`, or `morrow://local/index.html?role=reader` when the host is in asar mode. The same preload and the same `webPreferences` as compose are used.
 - `renderer/compose-role.js` also sets `document.documentElement.dataset.window = "reader"` when the query role is `reader`, before first paint.
 - Title is `{subject or "Message"} — Morrow Mail`, with the subject trimmed and cut at 180 characters, the same cut compose uses. The window updates the title after `mail:openEmail` returns.
@@ -224,7 +224,7 @@ Toasts, via `showStatus` as an error, one per action:
 
 `boot` treats `role=reader` the way it treats compose: `bootReaderWindow` runs and the shell boot does not. The reader window loads theme and shell prefs, loads accounts, pulls the seed, and calls `mail:openEmail`. It does not call `mail:setOnline`, does not subscribe to `mail:emailsUpdated`, and does not call `host:updateGetState`.
 
-The page shows one message: subject, the From line (with the same address button), date, To, Cc, the existing sanitized HTML or plain body, the remote-image gate, and the existing attachment card (save, open, preview). It does not show the thread stack, the shell toolbar, Organize, labels, snooze, translate, or suggest.
+The page shows one message with the same reading toolbar as the shell (`renderActions` and reply suggestions): Reply, Reply All, Suggest, Forward, Star, Translate, Archive, Delete, Move, Organize, Snooze, and labels when that mailbox has them. Close sits at the end of that toolbar and calls `window.close()` with no discard confirm. Subject, From, date, the snooze line, To, Cc, the sanitized body, the remote-image gate, the translation, and the attachment card use the shell reading-pane spacing. The thread strip, the message list, and the rail stay hidden. A failed open, an empty reader, and the loading state show Close without the rest of the toolbar.
 
 Until `mail:openEmail` resolves, the page shows `Loading message…` with the same pending spinner the shell uses. A failed open shows the error in the page and toasts it. The window stays open so the user can close it. An unread message is marked read with `mail:markRead` after a successful open, same as `openMessage`. A mark-read failure toasts the shell’s existing sentence, `Message opened, but marking it read was not confirmed. Other clients may still show it unread.`, plus the error text, and leaves the message on screen. The modal does not repaint its rows; the next open of the modal searches again.
 
@@ -232,7 +232,7 @@ CSS under `html[data-window="reader"]` hides the rail, the workspace header, and
 
 ### Reply
 
-The reader window has **Close** and **Reply**. Reply calls the existing `openReaderCompose("reply")` → `presentCompose` → `compose:open`, after accounts are loaded so the seed has a From address. Reply All, Forward, and the R / A / F shortcuts are not wired in this window. Close calls `window.close()`.
+Reply, Reply All, and Forward call `openReaderCompose` → `presentCompose` → `compose:open`. R, A, and F do the same. Delete and Backspace trash the open message. Search, New Mail, and Settings stay on the shell. Close calls `window.close()`.
 
 Reply is in v1 because `presentCompose` is already the compose-window path. No second compose host is added.
 
@@ -262,7 +262,7 @@ Reply is in v1 because `presentCompose` is already the compose-window path. No s
 - Resume: a buffered hit that lost the first cut of 50 is the first row of the next page and is not skipped.
 - Partial failure: one account’s `error` leaves the other account’s rows in the list and records the chip status.
 - `unavailable` is a status, not a throw.
-- Reader-window helpers, with no Electron: title cut, seed rejection, cascade math (`x`/`y` at shell origin + 48 + 28 for index 1; width 960; minimum height 480), and `CHANNELS`.
+- Reader-window helpers, with no Electron: title cut, seed rejection, cascade math (`x`/`y` at shell origin + 48 + 28 for index 1; width 960; minimum height 480), saved-frame `place()` plus the 28px nudge, canonical bounds after that nudge, `reader-window-state.json` read/write, and `CHANNELS`.
 - Wiring assertions: `host/main.js` registers the reader host before `attachIpc`, the preload lists `reader:open` and `reader:pullSeed`, and `mail:searchSender` is in the preload allowlist and the engine dispatch. `package.json` version stays `0.2.26`.
 
 UX fixture coverage belongs in `scripts/check-ux-renderer.cjs` (synthetic IPC, no production host, no network), asserting visible behavior:
@@ -283,6 +283,7 @@ UX fixture coverage belongs in `scripts/check-ux-renderer.cjs` (synthetic IPC, n
 - `host/mail/remote.js` — IMAP `FROM` / Gmail `from:` fetch beside `findText`
 - `host/mail/engine.js` — `mail:searchSender`
 - `host/reader-window.js` — reader `BrowserWindow`
+- `host/reader-window-state.js` — last reader frame in `reader-window-state.json`
 - `host/main.js` — register the reader host the way compose is registered
 - `renderer/preload.js` — allow the new channels and expose `openReaderWindow` / `pullReaderSeed`
 - `renderer/compose-role.js` — set `data-window="reader"`

@@ -208,6 +208,7 @@ async function main() {
   await assertDownloadedBodyStaysOnTheRequestedUid();
   await assertReaderKeepsTheSelectedMessage();
   await assertThreadStripCollapsesOlderMessages();
+  assertReaderWindowMatchesShellActions();
   console.log('mail reader synthetic checks passed');
 }
 
@@ -357,20 +358,32 @@ function readerText(node) {
   return parts.join('\n');
 }
 
-function loadReader() {
+function loadReader(role) {
+  const nodes = new Map();
   const reader = domNode('section');
   const status = domNode('p');
+  nodes.set('reader', reader);
+  nodes.set('status', status);
   const document = {
+    documentElement: { dataset: role === 'reader' ? { window: 'reader' } : {} },
     getElementById(id) {
-      if (id === 'reader') return reader;
-      if (id === 'status') return status;
-      return domNode('div');
+      if (!nodes.has(id)) {
+        const node = domNode('div');
+        if (id === 'organize-menu') node.hidden = true;
+        nodes.set(id, node);
+      }
+      return nodes.get(id);
     },
     createElement: domNode,
     createElementNS: (_ns, tag) => domNode(tag),
   };
   const context = vm.createContext({
-    window: { morrow: { on() {}, invoke: async () => ({}) }, addEventListener() {} },
+    window: {
+      morrow: { on() {}, invoke: async () => ({}) },
+      location: { search: role === 'reader' ? '?role=reader' : '' },
+      close() { this.closeCount = (this.closeCount || 0) + 1; },
+      addEventListener() {},
+    },
     document,
     console,
     setTimeout,
@@ -383,6 +396,8 @@ function loadReader() {
       get state() { return state; },
       openMessage,
       renderReader,
+      showReaderOpenError,
+      setPending(id) { pendingOpenId = id || ""; pendingOpenBody = !!id; },
       set call(fn) { call = fn; },
       set renderList(fn) { renderList = fn; },
     };`
@@ -390,11 +405,34 @@ function loadReader() {
   vm.runInContext(source, context);
   const api = context.__readerApi;
   api.reader = reader;
+  api.context = context;
   api.renderList = () => {};
   api.state.accounts = [{ id: 'acct', email: 'ada@example.test' }];
   api.state.accountId = 'acct';
   api.state.prefs.conversation = true;
   return api;
+}
+
+function actionNames(node) {
+  const names = [];
+  const walk = (current) => {
+    if (!current) return;
+    if (current.dataset && current.dataset.action) names.push(current.dataset.action);
+    for (const child of current.children || []) walk(child);
+  };
+  walk(node);
+  return names;
+}
+
+function hasClass(node, name) {
+  const found = [];
+  const walk = (current) => {
+    if (!current) return;
+    if (String(current.className || '').split(/\s+/).includes(name)) found.push(current);
+    for (const child of current.children || []) walk(child);
+  };
+  walk(node);
+  return found.length > 0;
 }
 
 function listed(id, subject, bodyComplete) {
@@ -624,5 +662,124 @@ async function assertThreadStripCollapsesOlderMessages() {
   assert.doesNotMatch(shown, /Earlier in this conversation/);
   assert.match(shown, /latest body/);
 }
+
+function pressReaderKey(ui, key, extra) {
+  ui.context.prevented = false;
+  const fields = Object.assign({
+    key,
+    target: null,
+    isComposing: false,
+    repeat: false,
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+  }, extra || {});
+  const literal = JSON.stringify(fields);
+  ui.context.vmRun(`onMailShortcut(Object.assign(${literal}, { preventDefault() { prevented = true; } }))`);
+  return ui.context.prevented === true;
+}
+
+function assertReaderWindowMatchesShellActions() {
+  const rows = [];
+  for (let i = 0; i < 4; i += 1) rows.push(threadMember('r' + i, 'Reader snippet ' + i));
+  const email = {
+    ...rows[3],
+    textBody: 'reader body',
+    to: ['Ada <ada@example.test>'],
+    cc: ['Grace <grace@example.test>'],
+  };
+  const ui = loadReader('reader');
+  ui.context.vmRun = (code) => vm.runInContext(code, ui.context);
+  ui.state.prefs.snooze = true;
+  ui.state.thread = rows;
+  ui.state.email = email;
+  ui.state.snoozed = new Map([[email.threadId, '2026-10-22T18:00:00.000Z']]);
+  ui.renderReader(false);
+  const shown = readerText(ui.reader);
+  assert.deepEqual(actionNames(ui.reader), [
+    'reply', 'reply-all', 'suggest', 'forward',
+    'star', 'translate-lang', 'translate', 'translate-cancel',
+    'archive', 'trash', 'move', 'organize', 'snooze', 'close-reader',
+  ]);
+  assert.equal(ui.reader.querySelector('.reader-actions').className, 'reader-actions');
+  assert.equal(hasClass(ui.reader, 'reader-window-bar'), false);
+  assert.equal(hasClass(ui.reader, 'suggestions'), true);
+  assert.equal(hasClass(ui.reader, 'translation'), true);
+  assert.equal(hasClass(ui.reader, 'thread'), false);
+  assert.match(shown, /reader body/);
+  assert.match(shown, /To Ada/);
+  assert.match(shown, /Snoozed until/);
+  assert.doesNotMatch(shown, /Earlier in this conversation/);
+  assert.doesNotMatch(shown, /Reader snippet 0/);
+  ui.reader.querySelector('[data-action="close-reader"]').click();
+  assert.equal(ui.context.window.closeCount, 1);
+
+  const broken = loadReader('reader');
+  broken.state.email = { ...email, bodyError: 'Could not download this message.' };
+  broken.state.thread = rows;
+  broken.renderReader(false);
+  assert.deepEqual(actionNames(broken.reader), ['close-reader']);
+  assert.match(readerText(broken.reader), /Could not download this message/);
+  assert.doesNotMatch(readerText(broken.reader), /Reply All/);
+  broken.reader.querySelector('[data-action="close-reader"]').click();
+  assert.equal(broken.context.window.closeCount, 1);
+
+  const pending = loadReader('reader');
+  pending.state.emails = [email];
+  pending.setPending('r3');
+  pending.renderReader(false);
+  assert.deepEqual(actionNames(pending.reader), ['close-reader']);
+  assert.match(readerText(pending.reader), /Loading message/);
+  assert.doesNotMatch(readerText(pending.reader), /reader body/);
+
+  const failedOpen = loadReader('reader');
+  failedOpen.showReaderOpenError('That message could not be opened.');
+  assert.deepEqual(actionNames(failedOpen.reader), ['close-reader']);
+  assert.match(readerText(failedOpen.reader), /That message could not be opened/);
+
+  const empty = loadReader('reader');
+  empty.state.email = null;
+  empty.renderReader(false);
+  assert.deepEqual(actionNames(empty.reader), ['close-reader']);
+  assert.match(readerText(empty.reader), /No conversation selected/);
+
+  const shell = loadReader();
+  shell.state.prefs.snooze = true;
+  shell.state.thread = rows;
+  shell.state.email = email;
+  shell.state.snoozed = ui.state.snoozed;
+  shell.renderReader(false);
+  assert.equal(actionNames(shell.reader).includes('close-reader'), false);
+  assert.equal(actionNames(shell.reader).includes('reply'), true);
+  assert.match(readerText(shell.reader), /Earlier in this conversation/);
+  assert.equal(hasClass(shell.reader, 'thread'), true);
+
+  for (const surface of [ui, shell]) {
+    surface.context.kinds = [];
+    surface.context.vmRun = (code) => vm.runInContext(code, surface.context);
+    surface.context.vmRun(`
+      kinds = [];
+      guard = (fn) => { fn(); };
+      openReaderCompose = (kind) => { kinds.push(kind); };
+      trashOpen = () => { kinds.push('delete'); };
+      $('compose-open').addEventListener('click', () => { kinds.push('new-mail'); });
+    `);
+  }
+  assert.equal(pressReaderKey(ui, 'r'), true);
+  pressReaderKey(ui, 'a');
+  pressReaderKey(ui, 'f');
+  pressReaderKey(ui, 'Delete');
+  pressReaderKey(ui, 'n', { metaKey: true });
+  assert.equal(pressReaderKey(ui, 'f', { metaKey: true }), false);
+  assert.deepEqual(Array.from(ui.context.kinds), ['reply', 'all', 'forward', 'delete']);
+  assert.equal(ui.context.document.getElementById('search-query').focused, undefined);
+  pressReaderKey(shell, 'r');
+  pressReaderKey(shell, 'n', { metaKey: true });
+  pressReaderKey(shell, 'f', { metaKey: true });
+  assert.deepEqual(Array.from(shell.context.kinds), ['reply', 'new-mail']);
+  assert.equal(shell.context.document.getElementById('search-query').focused, true);
+}
+
 module.exports = { run: main };
 if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });

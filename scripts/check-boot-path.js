@@ -43,6 +43,8 @@ const syntax = [
   "scripts/check-brain-profile-layout.js",
   "host/agent.js",
   "host/compose-window.js",
+  "host/reader-window.js",
+  "host/reader-window-state.js",
   "host/bot/constants.js",
   "host/bot/json.js",
   "host/bot/store.js",
@@ -606,8 +608,95 @@ const readerPlaced = readerHost.readerWindowBounds({ x: 0, y: 0 }, 1);
 assert.strictEqual(readerPlaced.x, 48 + 28);
 assert.strictEqual(readerPlaced.y, 48 + 28);
 assert.strictEqual(readerPlaced.width, 960);
+assert.strictEqual(readerPlaced.height, 760);
 assert.strictEqual(readerPlaced.minHeight, 480);
+assert.strictEqual(readerPlaced.originShift, 28);
 assert.strictEqual(readerHost.readerWindowBounds(null, 1).x, undefined);
+const readerDisplay = { workArea: { x: 0, y: 0, width: 1440, height: 900 } };
+const readerSaved = { x: 120, y: 80, width: 1000, height: 700 };
+const readerFirst = readerHost.readerWindowBounds({ x: 10, y: 20 }, 0, readerSaved, [readerDisplay]);
+assert.strictEqual(readerFirst.x, 120);
+assert.strictEqual(readerFirst.y, 80);
+assert.strictEqual(readerFirst.width, 1000);
+assert.strictEqual(readerFirst.height, 700);
+assert.strictEqual(readerFirst.originShift, 0);
+const readerNudged = readerHost.readerWindowBounds({ x: 10, y: 20 }, 1, readerSaved, [readerDisplay]);
+assert.strictEqual(readerNudged.x, 148);
+assert.strictEqual(readerNudged.y, 108);
+assert.strictEqual(readerNudged.width, 1000);
+assert.strictEqual(readerNudged.originShift, 28);
+const readerWrapped = readerHost.readerWindowBounds({ x: 0, y: 0 }, 6, readerSaved, [readerDisplay]);
+assert.strictEqual(readerWrapped.x, 120);
+assert.strictEqual(readerWrapped.originShift, 0);
+const readerBrowser = readerHost.readerBrowserBounds(readerNudged);
+assert.strictEqual(readerBrowser.x, 148);
+assert.strictEqual(readerBrowser.originShift, undefined);
+assert.strictEqual(readerBrowser.minWidth, 640);
+assert.deepStrictEqual(
+  readerHost.canonicalReaderBounds({ x: 148, y: 108, width: 1000, height: 700 }, 28),
+  { x: 120, y: 80, width: 1000, height: 700 },
+);
+assert.strictEqual(readerHost.canonicalReaderBounds({ x: 1 }, 0), null);
+const readerFresh = readerHost.readerWindowBounds({ x: 10, y: 20 }, 0, { x: null, y: null, width: null, height: null }, [readerDisplay]);
+assert.strictEqual(readerFresh.x, 58);
+assert.strictEqual(readerFresh.y, 68);
+assert.strictEqual(readerFresh.width, 960);
+assert.strictEqual(readerFresh.height, 760);
+const readerOff = readerHost.readerWindowBounds({ x: 10, y: 20 }, 0, { x: -4000, y: -4000, width: 800, height: 600 }, [readerDisplay]);
+assert.strictEqual(readerOff.x, 58);
+assert.strictEqual(readerOff.y, 68);
+assert.strictEqual(readerOff.width, 800);
+assert.strictEqual(readerOff.height, 600);
+const readerTiny = readerHost.readerWindowBounds({ x: 0, y: 0 }, 0, { x: 40, y: 50, width: 10, height: 10 }, [readerDisplay]);
+assert.strictEqual(readerTiny.width, 960);
+assert.strictEqual(readerTiny.height, 760);
+assert.strictEqual(readerTiny.x, 40);
+assert.strictEqual(readerTiny.y, 50);
+const readerHeadless = readerHost.readerWindowBounds({ x: 5, y: 6 }, 1, readerSaved, []);
+assert.strictEqual(readerHeadless.x, 5 + 48 + 28);
+assert.strictEqual(readerHeadless.y, 6 + 48 + 28);
+assert.strictEqual(readerHeadless.width, 1000);
+const readerState = require("../host/reader-window-state");
+{
+  const os = require("os");
+  const prevData = process.env.MORROW_USER_DATA;
+  const readerDir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-reader-window-"));
+  process.env.MORROW_USER_DATA = readerDir;
+  try {
+    assert.deepStrictEqual(readerState.read(), { x: null, y: null, width: null, height: null });
+    const sized = readerState.update({ width: 1000, height: 700 });
+    assert.strictEqual(sized.x, null);
+    assert.strictEqual(sized.width, 1000);
+    const moved = readerState.update({ x: 30, y: 40 });
+    assert.strictEqual(moved.x, 30);
+    assert.strictEqual(moved.y, 40);
+    assert.strictEqual(moved.width, 1000);
+    assert.strictEqual(moved.height, 700);
+    assert.deepStrictEqual(readerState.read(), moved);
+    assert.strictEqual(readerState.update({ width: 10, height: 10 }).width, null);
+    assert.strictEqual(readerState.read().x, 30);
+    fs.writeFileSync(path.join(readerDir, "reader-window-state.json"), "{");
+    assert.deepStrictEqual(readerState.read(), { x: null, y: null, width: null, height: null });
+    readerState.update({ x: 80, y: 90, width: 1100, height: 720 });
+    assert.ok(fs.existsSync(path.join(readerDir, "reader-window-state.json")));
+    assert.ok(!fs.existsSync(path.join(readerDir, "window-state.json")));
+    const placedFromFile = readerHost.readerWindowBounds({ x: 0, y: 0 }, 1, readerState.read(), [readerDisplay]);
+    assert.strictEqual(placedFromFile.x, 108);
+    assert.strictEqual(placedFromFile.y, 118);
+    assert.strictEqual(placedFromFile.width, 1100);
+    assert.strictEqual(placedFromFile.height, 720);
+  } finally {
+    if (prevData === undefined) delete process.env.MORROW_USER_DATA;
+    else process.env.MORROW_USER_DATA = prevData;
+    fs.rmSync(readerDir, { recursive: true, force: true });
+  }
+}
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes('win.on("resize"'));
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes('win.on("move"'));
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes('win.on("close"'));
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes("canonicalReaderBounds"));
+assert.ok(fs.readFileSync(path.join(root, "host/reader-window-state.js"), "utf8").includes("reader-window-state.json"));
+assert.ok(!fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8").includes("window-state.json"));
 const senderEngineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
 assert.ok(senderEngineSrc.includes('case "mail:searchSender"'));
 assert.ok(!functionSource(senderEngineSrc, "searchRemote").includes("searchSender"));
@@ -632,6 +721,35 @@ assert.ok(html.includes("sender-history.js"));
 assert.ok(css.includes('html[data-window="reader"]'));
 assert.ok(fs.readFileSync(path.join(root, "renderer/compose-role.js"), "utf8").includes('dataset.window = "reader"'));
 assert.ok(functionSource(appJs, "onReaderContext").includes("sender-address"));
+assert.ok(!functionSource(appJs, "onReaderContext").includes("isReaderWindow"));
+const readerRender = functionSource(appJs, "renderReader");
+assert.ok(readerRender.includes("renderActions(pane, email)"));
+assert.ok(readerRender.includes("renderSuggestions(pane, email)"));
+assert.ok(readerRender.includes("appendReaderClose(pane)"));
+assert.ok(readerRender.includes("if (!isReaderWindow()) renderThread(pane, email)"));
+assert.ok(!readerRender.includes("renderReaderWindowBar"));
+assert.ok(!appJs.includes("reader-window-bar"));
+assert.ok(functionSource(appJs, "readerCloseButton").includes("window.close()"));
+assert.ok(!functionSource(appJs, "readerCloseButton").includes("confirm"));
+assert.ok(!functionSource(appJs, "readerCloseButton").includes("discard"));
+const readerShortcuts = loadFunctions(appJs, ["readerWindowShortcut"]);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("reply"), true);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("reply-all"), true);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("forward"), true);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("delete"), true);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("search"), false);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("new-mail"), false);
+assert.strictEqual(readerShortcuts.readerWindowShortcut("settings"), false);
+const readerShortcutSrc = functionSource(appJs, "onMailShortcut");
+assert.ok(!/if\s*\(\s*isReaderWindow\(\)\s*\)\s*return\s*;/.test(readerShortcutSrc));
+assert.ok(readerShortcutSrc.includes("readerWindowShortcut(action)"));
+assert.ok(functionSource(appJs, "bootReaderWindow").includes('api.on("mail:translate:event"'));
+assert.ok(functionSource(appJs, "bootReaderWindow").includes("loadSnoozed"));
+assert.ok(functionSource(appJs, "bootReaderWindow").includes("loadProviderFolders"));
+const readerCss = css.slice(css.indexOf('html[data-window="reader"] #reader'));
+assert.ok(readerCss.startsWith('html[data-window="reader"] #reader'));
+assert.ok(readerCss.slice(0, 280).includes("border-radius: 0"));
+assert.ok(readerCss.slice(0, 280).includes("box-shadow: none"));
 const senderRemoteSrc = fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8");
 assert.ok(senderRemoteSrc.includes("async function findFrom"));
 assert.ok(!functionSource(senderRemoteSrc, "findText").includes("beforeUid"));

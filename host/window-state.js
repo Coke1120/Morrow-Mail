@@ -112,6 +112,7 @@ module.exports = {
   read,
   update,
   place,
+  sanitize,
   ZOOM_MIN,
   ZOOM_MAX,
 };
