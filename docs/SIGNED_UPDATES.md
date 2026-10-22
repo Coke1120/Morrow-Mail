@@ -16,7 +16,7 @@ The detached Ed25519 signature covers the exact UTF-8 bytes of the JSON file, in
   "version": "0.2.6",
   "platform": "darwin",
   "arch": "arm64",
-  "url": "https://github.com/Coke1120/Morrow-Mail/releases/download/v0.2.6/Morrow-Mail-0.2.6-arm64-mac.zip",
+  "url": "https://github.com/Coke1120/Morrow-Mail/releases/download/v0.2.6/Morrow-Mail-arm64-mac.zip",
   "size": 123456789,
   "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }
@@ -28,7 +28,9 @@ Upload these as a pair alongside the exact archive:
 
 - `update-manifest-macos-arm64.json`
 - `update-manifest-macos-arm64.json.sig`
-- `Morrow-Mail-VERSION-arm64-mac.zip`
+- `Morrow-Mail-arm64-mac.zip`
+
+The version stays in the tag path (`download/vX.Y.Z/`). Tags already published with `Morrow-Mail-X.Y.Z-arm64-mac.zip` keep that signed filename. A Mac whose bundled verifier still requires the versioned filename cannot accept a stable-name manifest and needs one manual install of the first release that uses `Morrow-Mail-arm64-mac.zip`. That install then accepts later stable-name updates. Windows electron-updater reads `Morrow-Mail-Setup.exe` from `latest.yml` and does not need the same manual step.
 
 The signature authenticates the publisher holding the approved key. Strict macOS bundle verification separately checks that the bundle's resource/code seals are intact. Neither an Ed25519 manifest nor an ad hoc codesign signature establishes Apple Developer ID identity or notarization. New downloads without quarantine receive an active quarantine attribute; an existing valid attribute and its system-managed flags are preserved exactly, without resetting user authorization. Copying the attribute is mandatory. The signed-manifest updater calls `assessBundleTrust(..., { enforce: false })` before helper handoff, before replacement, and before each launch, including recovery launches. That call tolerates only an explicit Gatekeeper denial (`spctl` exit code 3) for these ad hoc, non-notarized builds, and then continues automatic installation. Timeouts and every other assessment error still fail with `UPDATE_MANUAL_TRUST` and stop automatic installation or launch. Ed25519 manifest authentication, SHA-256 and size checks, quarantine, and strict `codesign` verification stay required. A correct Ed25519 signature does not override those checks or turn a timeout into permission to install. Gatekeeper and quarantine continue to apply. Never remove quarantine, disable Gatekeeper, weaken designated requirements, or launch a system-blocked app to make a test pass.
 
@@ -40,14 +42,14 @@ After building and strict-verifying the final ARM64 app and ZIP, with `package.j
 
 ```bash
 node scripts/create-update-manifest.js \
-  --artifact 'dist/Morrow Mail-0.2.6-arm64-mac.zip' \
+  --artifact 'dist/Morrow-Mail-arm64-mac.zip' \
   --version 0.2.6 \
   --private-key /approved/protected/path/update-signing-key.pem \
   --public-key /approved/path/update-public-key.pem \
   --out-dir /fresh/output/directory
 ```
 
-Replace example paths and version. The local ZIP may contain spaces; the signed GitHub asset URL uses dashes. The generator requires a fresh output directory, a nonempty regular artifact, a matching Ed25519 pair and a matching package version. It hashes the actual final archive and verifies its own generated signature. It does not establish build provenance or inspect the ZIP contents: the release pipeline must bind the reviewed source SHA, package version, finished strict-verified ZIP, manifest pair, and published bytes to the same build. Never rebuild or re-sign the app after creating its archive manifest. Never publish partial output after an error. Do not replace an existing published signed pair or tag.
+Replace example paths and version. The zip filename is `Morrow-Mail-arm64-mac.zip`. The signed URL places that name under `download/v${version}/`. The generator requires a fresh output directory, a nonempty regular artifact, a matching Ed25519 pair and a matching package version. It hashes the actual final archive and verifies its own generated signature. It does not establish build provenance or inspect the ZIP contents: the release pipeline must bind the reviewed source SHA, package version, finished strict-verified ZIP, manifest pair, and published bytes to the same build. Never rebuild or re-sign the app after creating its archive manifest. Never publish partial output after an error. Do not replace an existing published signed pair or tag.
 
 ## Release workflow gate
 

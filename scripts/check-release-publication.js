@@ -5,6 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { prepare, namesFor } = require('./prepare-release-assets');
+const { artifactURL, macZipName } = require('../host/update-manifest');
 const { createManifest } = require('./create-update-manifest');
 const publish = require('./publish-release');
 const version = '0.2.6', sha = 'a'.repeat(40), runId = '123', runAttempt = '1';
@@ -29,6 +30,16 @@ function mock({ failUpload = false, corruptDownload = false, existing = false, w
     paginate: async () => calls.filter(call => call[0] === 'upload').map((call, i) => ({ id: i + 1, name: call[1] })) };
 }
 (async () => {
+  const pkg = require('../package.json');
+  const expand = (pattern, values) => Object.entries(values).reduce((name, [key, value]) => name.split('${' + key + '}').join(value), pattern);
+  assert.deepEqual(namesFor('windows', version), ['Morrow-Mail-Setup.exe', 'Morrow-Mail-Setup.exe.blockmap', 'Morrow-Mail.exe', 'latest.yml']);
+  assert.equal(namesFor('macos', version)[0], macZipName('arm64'));
+  assert.equal(namesFor('macos', version)[1], `${macZipName('arm64')}.blockmap`);
+  assert.equal(expand(pkg.build.nsis.artifactName, { ext: 'exe' }), namesFor('windows', version)[0]);
+  assert.equal(expand(pkg.build.portable.artifactName, { ext: 'exe' }), namesFor('windows', version)[2]);
+  assert.equal(expand(pkg.build.mac.artifactName, { ext: 'zip', arch: 'arm64' }), namesFor('macos', version)[0]);
+  assert.equal(artifactURL(version, 'arm64'), `https://github.com/Coke1120/Morrow-Mail/releases/download/v${version}/${macZipName('arm64')}`);
+  for (const name of [...namesFor('windows', version), ...namesFor('macos', version)]) assert.equal(name.includes(version), false, name);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'morrow-release-test-'));
   try {
     const keys = crypto.generateKeyPairSync('ed25519');

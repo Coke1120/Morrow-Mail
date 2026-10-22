@@ -30,7 +30,7 @@ const { createManifest, MANIFEST_NAME, SIGNATURE_NAME } = require('./create-upda
     assert.equal(await validateArtifact(artifact, accepted), true);
     assert.equal(result.size, payload.length);
     assert.equal(result.sha256, crypto.createHash('sha256').update(payload).digest('hex'));
-    assert.equal(result.url, 'https://github.com/Coke1120/Morrow-Mail/releases/download/v0.2.6/Morrow-Mail-0.2.6-arm64-mac.zip');
+    assert.equal(result.url, 'https://github.com/Coke1120/Morrow-Mail/releases/download/v0.2.6/Morrow-Mail-arm64-mac.zip');
     assert.equal(crypto.verify(null, Buffer.concat([bytes, Buffer.from(' ')]), pair.publicKey, sig), false);
     const other = crypto.generateKeyPairSync('ed25519');
     assert.equal(crypto.verify(null, bytes, other.publicKey, sig), false);

@@ -13,7 +13,8 @@ function allowedURL(input, redirect = false) {
   if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hash) throw new Error('Unsafe update download URL.');
   if (redirect && url.hostname === 'release-assets.githubusercontent.com' && url.pathname.startsWith('/github-production-release-asset/')) return url;
   const suffix = input.slice(RELEASE_ROOT.length);
-  if (!input.startsWith(RELEASE_ROOT) || url.search || !/^(?:latest\/download|download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\/(?:update-manifest-macos-(?:arm64|x64)\.json(?:\.sig)?|Morrow-Mail-(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-(?:arm64|x64)-mac\.zip)$/.test(suffix)) throw new Error('Update download origin or path rejected.');
+  // The version stays in download/vX.Y.Z/. The zip filename is stable per tag.
+  if (!input.startsWith(RELEASE_ROOT) || url.search || !/^(?:latest\/download|download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\/(?:update-manifest-macos-(?:arm64|x64)\.json(?:\.sig)?|Morrow-Mail-(?:arm64|x64)-mac\.zip)$/.test(suffix)) throw new Error('Update download origin or path rejected.');
   return url;
 }
 async function streamDownload(input, { maxBytes, signal, request = https.get, timeoutMs = 15 * 60 * 1000, idleTimeoutMs = 60000, onChunk,

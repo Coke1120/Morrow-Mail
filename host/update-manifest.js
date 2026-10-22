@@ -15,10 +15,13 @@ function compareVersions(a, b) {
   for (let i = 0; i < 3; i++) if (aa[i] !== bb[i]) return aa[i] > bb[i] ? 1 : -1;
   return 0;
 }
+function macZipName(arch) {
+  if (!['arm64', 'x64'].includes(arch)) throw new Error('Unsupported update architecture.');
+  return `Morrow-Mail-${arch}-mac.zip`;
+}
 function artifactURL(version, arch) {
   versionParts(version);
-  if (!['arm64', 'x64'].includes(arch)) throw new Error('Unsupported update architecture.');
-  return `${RELEASE_ROOT}download/v${version}/Morrow-Mail-${version}-${arch}-mac.zip`;
+  return `${RELEASE_ROOT}download/v${version}/${macZipName(arch)}`;
 }
 function verifyManifest(bytes, signature, options = {}) {
   if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MANIFEST_LIMIT) throw new Error('Invalid update manifest size.');
@@ -49,4 +52,4 @@ async function validateArtifact(file, manifest) {
     return true;
   } finally { await handle.close(); }
 }
-module.exports = { MANIFEST_LIMIT, ARCHIVE_LIMIT, RELEASE_ROOT, compareVersions, artifactURL, verifyManifest, validateArtifact };
+module.exports = { MANIFEST_LIMIT, ARCHIVE_LIMIT, RELEASE_ROOT, compareVersions, macZipName, artifactURL, verifyManifest, validateArtifact };
