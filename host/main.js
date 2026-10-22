@@ -655,6 +655,25 @@ async function requestQuitChoice(prompt) {
   return nativeQuitChoice(prompt);
 }
 
+function scheduledQuitTime(when) {
+  try {
+    const display = require("../shared/display-format");
+    const settings = require("./settings");
+    const prefs = {
+      timeFormat: settings.answer("morrow:configGetTimeFormat", []),
+      dateFormat: settings.answer("morrow:configGetDateFormat", []),
+    };
+    const text = display.formatDateTime(when, prefs);
+    let zone = "";
+    try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { zone = ""; }
+    return text + (zone ? " (" + zone + ")" : "");
+  } catch {
+    let zone = "";
+    try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { zone = ""; }
+    return when.toLocaleString() + (zone ? " (" + zone + ")" : "");
+  }
+}
+
 const quitController = quitScheduled.createQuitController({
   listRows: listScheduledRows,
   requestChoice: requestQuitChoice,
@@ -664,6 +683,7 @@ const quitController = quitScheduled.createQuitController({
     try { await require("./mail/engine").stopIdle(); } catch { /* mail is not open */ }
   },
   platform: process.platform,
+  format: scheduledQuitTime,
 });
 
 app.on("before-quit", (event) => {

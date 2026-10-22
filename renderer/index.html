@@ -911,6 +911,27 @@
               </div>
               <p class="hint" id="pref-accent-help">Colors highlights and buttons, such as the unread dot, avatars, and primary buttons. Theme sets the light or dark shell, including the rail and canvas.</p>
             </div>
+            <div class="field">
+              <label for="pref-time-format">Time</label>
+              <select id="pref-time-format" aria-describedby="pref-time-format-help">
+                <option value="system">System</option>
+                <option value="12h">12-hour</option>
+                <option value="24h">24-hour</option>
+              </select>
+              <p class="hint" id="pref-time-format-help">How clocks are shown. System follows this computer.</p>
+            </div>
+            <div class="field">
+              <label for="pref-date-format">Date</label>
+              <select id="pref-date-format" aria-describedby="pref-date-format-help">
+                <option value="system">System</option>
+                <option value="dd/mm/yyyy">22/10/2026</option>
+                <option value="dd/mmmm/yyyy">22 October 2026</option>
+                <option value="mm/dd/yyyy">10/22/2026</option>
+                <option value="yyyy-mm-dd">2026-10-22</option>
+                <option value="d mmm yyyy">22 Oct 2026</option>
+              </select>
+              <p class="hint" id="pref-date-format-help">How dates are shown. Stored mail times stay unchanged.</p>
+            </div>
             <div class="checks">
               <h4>Sidebar &amp; navigation</h4>
               <label class="check" for="pref-folder-chips"><input id="pref-folder-chips" type="checkbox" /> Show folder chips</label>
@@ -1464,6 +1485,7 @@
     <script src="./brain-compose.js"></script>
     <script src="./features-catalog.js"></script>
     <script src="../shared/sender-history.js"></script>
+    <script src="../shared/display-format.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

@@ -17,6 +17,7 @@ const syntax = [
   "host/mail/idle.js",
   "shared/sync-retry.js",
   "shared/primary-mailboxes.js",
+  "shared/display-format.js",
   "host/mail/remote.js",
   "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
@@ -1479,7 +1480,7 @@ assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
 const settingsSrc = fs.readFileSync(path.join(root, "host/settings.js"), "utf8");
 const prefs = prefRows();
-assert.strictEqual(prefs.length, 12);
+assert.strictEqual(prefs.length, 14);
 const prefKinds = new Set();
 for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(html.includes('id="' + id + '"'), `settings control missing ${id}`);
@@ -1499,6 +1500,19 @@ assert.ok(settingsHtml.includes('type="password"') && settingsHtml.includes('id=
 assert.ok(settingsHtml.includes('id="ai-model-chooser"') && !settingsHtml.includes("<datalist") && !settingsHtml.includes('list="ai-model-list"'));
 assert.match(settingsHtml, /id="pref-accent-help"/);
 assert.match(settingsHtml, /Theme sets the light or dark shell/);
+assert.ok(html.includes('src="../shared/display-format.js"'), "renderer does not load the display format helper");
+assert.ok(settingsHtml.includes('id="pref-time-format"') && settingsHtml.includes('id="pref-date-format"'));
+assert.ok(settingsHtml.includes(">System<") && settingsHtml.includes(">12-hour<") && settingsHtml.includes(">24-hour<"));
+assert.ok(settingsHtml.includes("22/10/2026") && settingsHtml.includes("22 October 2026"));
+assert.ok(settingsHtml.includes("10/22/2026") && settingsHtml.includes("2026-10-22") && settingsHtml.includes("22 Oct 2026"));
+assert.ok(settingsHtml.indexOf('id="pref-accent"') < settingsHtml.indexOf('id="pref-time-format"'));
+assert.ok(settingsHtml.indexOf('id="pref-time-format"') < settingsHtml.indexOf('id="pref-date-format"'));
+assert.ok(functionSource(appJs, "listWhen").includes("displayStamp"));
+assert.ok(functionSource(appJs, "threadCalendarTime").includes('displayStamp(date, "list"'));
+assert.ok(functionSource(appJs, "threadAbsoluteTime").includes("shownWhen"));
+assert.ok(functionSource(appJs, "clockLabel").includes("displayStamp"));
+assert.ok(functionSource(appJs, "takePref").includes("morrow:configGetTimeFormat"));
+assert.ok(functionSource(appJs, "paintPrefs").includes("repaintClockSurfaces"));
 assert.ok(!html.includes("hkbscl"));
 assert.ok(html.includes("@example.com = colleague@example.com, team@example.org"));
 assert.ok(html.includes("ada@example.org = example.com"));
@@ -1544,6 +1558,7 @@ for (const channel of [
   assert.ok(!ipcSrc.includes('"' + channel + '"'), channel + " still stubbed in ipc");
 }
 checkSettingsRoundTrip();
+checkDisplayFormats();
 
 function checkSettingsRoundTrip() {
   const os = require("os");
@@ -1578,6 +1593,8 @@ function checkSettingsRoundTrip() {
     assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), {});
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
     assert.strictEqual(answer("morrow:configGetDefaultScheduleDelayMinutes", []), 0);
+    assert.strictEqual(answer("morrow:configGetTimeFormat", []), "system");
+    assert.strictEqual(answer("morrow:configGetDateFormat", []), "system");
     assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 260, list: 360, reading: 0 });
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
@@ -1598,6 +1615,8 @@ function checkSettingsRoundTrip() {
     }]), { leo: ["AriesCPA.com"] });
     assert.strictEqual(answer("morrow:configSetComposeQuoteWidth", [560]), 560);
     assert.strictEqual(answer("morrow:configSetDefaultScheduleDelayMinutes", [90]), 90);
+    assert.strictEqual(answer("morrow:configSetTimeFormat", [" 24h "]), "24h");
+    assert.strictEqual(answer("morrow:configSetDateFormat", ["  d mmm yyyy  "]), "d mmm yyyy");
     assert.deepStrictEqual(answer("morrow:configSetLayoutPanes", [{ folders: 300, list: 480, reading: 640 }]), { folders: 300, list: 480, reading: 640 });
     assert.strictEqual(answer("config:getTheme", []), "dark");
     assert.strictEqual(answer("morrow:configGetAccent", []), "#112233");
@@ -1628,6 +1647,8 @@ function checkSettingsRoundTrip() {
         outlookFolders: answer("morrow:configGetSidebarOutlookFoldersExpanded", []),
         collapsed: answer("morrow:configGetSidebarCollapsedFolders", []),
         quoteWidth: answer("morrow:configGetComposeQuoteWidth", []),
+        timeFormat: answer("morrow:configGetTimeFormat", []),
+        dateFormat: answer("morrow:configGetDateFormat", []),
       }));
     `], { encoding: "utf8" });
     assert.strictEqual(reloaded.status, 0, reloaded.stderr);
@@ -1644,6 +1665,8 @@ function checkSettingsRoundTrip() {
       outlookFolders: true,
       collapsed: { leo: ["AriesCPA.com"] },
       quoteWidth: 560,
+      timeFormat: "24h",
+      dateFormat: "d mmm yyyy",
     });
     assert.throws(() => answer("config:setTheme", ["neon"]), /light or dark/);
     assert.strictEqual(answer("config:getTheme", []), "dark");
@@ -1665,8 +1688,21 @@ function checkSettingsRoundTrip() {
     assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 300, list: 480, reading: 640 });
     assert.throws(() => answer("morrow:configSetSidebarCollapsedFolders", ["nope"]), /folder ids/);
     assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), { leo: ["AriesCPA.com"] });
+    assert.throws(() => answer("morrow:configSetTimeFormat", ["12H"]), /Time format/);
+    assert.strictEqual(answer("morrow:configGetTimeFormat", []), "24h");
+    assert.throws(() => answer("morrow:configSetDateFormat", ["dd-mm-yyyy"]), /Date format/);
+    assert.throws(() => answer("morrow:configSetDateFormat", ["DD/MM/YYYY"]), /Date format/);
+    assert.strictEqual(answer("morrow:configGetDateFormat", []), "d mmm yyyy");
+    const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+    stored.timeFormat = "12H";
+    stored.dateFormat = "yyyy-mm-dd";
+    fs.writeFileSync(file, JSON.stringify(stored));
+    assert.strictEqual(answer("morrow:configGetTimeFormat", []), "system");
+    assert.strictEqual(answer("morrow:configGetDateFormat", []), "yyyy-mm-dd");
     fs.writeFileSync(file, "{");
     assert.strictEqual(answer("config:getTheme", []), "light");
+    assert.strictEqual(answer("morrow:configGetTimeFormat", []), "system");
+    assert.strictEqual(answer("morrow:configGetDateFormat", []), "system");
     assert.strictEqual(answer("morrow:configGetComposeQuoteWidth", []), 420);
     assert.strictEqual(answer("morrow:configGetDefaultScheduleDelayMinutes", []), 0);
     assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 260, list: 360, reading: 0 });
@@ -1679,6 +1715,82 @@ function checkSettingsRoundTrip() {
       else process.env[key] = value;
     }
   }
+}
+
+function checkDisplayFormats() {
+  const display = require("../shared/display-format");
+  const afternoon = new Date(2026, 9, 22, 15, 4, 7);
+  const morning = new Date(2026, 9, 5, 9, 5, 0);
+  const en = { locale: "en-US" };
+  const gb = { locale: "en-GB" };
+  const prefs = (timeFormat, dateFormat) => ({ timeFormat, dateFormat });
+  assert.strictEqual(display.castTimeFormat("12H", false), null);
+  assert.strictEqual(display.castTimeFormat("12H", true), "system");
+  assert.strictEqual(display.castTimeFormat(" 24h ", false), "24h");
+  assert.strictEqual(display.castTimeFormat(12, true), "system");
+  assert.strictEqual(display.castDateFormat("dd-mm-yyyy", false), null);
+  assert.strictEqual(display.castDateFormat("DD/MM/YYYY", false), null);
+  assert.strictEqual(display.castDateFormat("  d mmm yyyy  ", false), "d mmm yyyy");
+  assert.strictEqual(display.castDateFormat(null, true), "system");
+  assert.deepStrictEqual(display.TIME_FORMATS, ["system", "12h", "24h"]);
+  assert.deepStrictEqual(display.DATE_FORMATS, ["system", "dd/mm/yyyy", "dd/mmmm/yyyy", "mm/dd/yyyy", "yyyy-mm-dd", "d mmm yyyy"]);
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "dd/mm/yyyy"), en), "22/10/2026");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "dd/mmmm/yyyy"), en), "22 October 2026");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "mm/dd/yyyy"), en), "10/22/2026");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "yyyy-mm-dd"), en), "2026-10-22");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "d mmm yyyy"), en), "22 Oct 2026");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "dd/mm/yyyy"), en), "05/10/2026");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "dd/mmmm/yyyy"), en), "05 October 2026");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "mm/dd/yyyy"), en), "10/05/2026");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "yyyy-mm-dd"), en), "2026-10-05");
+  assert.strictEqual(display.formatDate(morning, prefs("system", "d mmm yyyy"), en), "5 Oct 2026");
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "system"), en), afternoon.toLocaleDateString("en-US"));
+  assert.strictEqual(display.formatDate(afternoon, prefs("system", "system"), gb), afternoon.toLocaleDateString("en-GB"));
+  assert.strictEqual(display.formatTime(afternoon, prefs("12h", "system"), en), "3:04 PM");
+  assert.strictEqual(display.formatTime(morning, prefs("12h", "system"), en), "9:05 AM");
+  assert.strictEqual(display.formatTime(afternoon, prefs("24h", "system"), en), "15:04");
+  assert.strictEqual(display.formatTime(morning, prefs("24h", "system"), en), "09:05");
+  assert.strictEqual(display.formatTime(afternoon, prefs("12h", "system"), gb), "3:04 pm");
+  assert.strictEqual(display.formatTime(morning, prefs("12h", "system"), gb), "9:05 am");
+  assert.strictEqual(display.formatTime(afternoon, prefs("24h", "system"), gb), "15:04");
+  assert.strictEqual(
+    display.formatTime(afternoon, prefs("system", "system"), gb),
+    afternoon.toLocaleTimeString("en-GB", { hour: "numeric", minute: "2-digit" }),
+  );
+  assert.strictEqual(
+    display.formatTime(afternoon, prefs("system", "system"), en),
+    afternoon.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+  );
+  assert.strictEqual(display.formatDateTime(afternoon, prefs("24h", "yyyy-mm-dd"), en), "2026-10-22, 15:04");
+  assert.strictEqual(display.formatDateTime(afternoon, prefs("12h", "d mmm yyyy"), en), "22 Oct 2026, 3:04 PM");
+  assert.strictEqual(
+    display.formatDateTime(afternoon, prefs("system", "system"), en),
+    afternoon.toLocaleString("en-US"),
+  );
+  assert.ok(!display.formatDateTime(afternoon, prefs("24h", "yyyy-mm-dd"), en).includes(":07"));
+  const sameDay = new Date(2026, 9, 22, 8, 0, 0);
+  assert.strictEqual(display.formatListWhen(afternoon, sameDay, prefs("12h", "yyyy-mm-dd"), en), "3:04 PM");
+  assert.strictEqual(display.formatListWhen(morning, afternoon, prefs("system", "dd/mm/yyyy"), en), "05/10/2026");
+  assert.strictEqual(
+    display.formatListWhen(new Date(2026, 0, 2, 15, 4), afternoon, prefs("system", "system"), en),
+    new Date(2026, 0, 2, 15, 4).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+  );
+  assert.strictEqual(
+    display.formatListWhen(new Date(2025, 0, 2, 15, 4), afternoon, prefs("system", "system"), en),
+    new Date(2025, 0, 2, 15, 4).toLocaleDateString("en-US"),
+  );
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "system"), en), "October 2026");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "dd/mmmm/yyyy"), en), "October 2026");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "d mmm yyyy"), en), "Oct 2026");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "yyyy-mm-dd"), en), "2026-10");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "dd/mm/yyyy"), en), "10/2026");
+  assert.strictEqual(display.formatMonthLabel(afternoon, prefs("system", "mm/dd/yyyy"), en), "10/2026");
+  const weekdays = display.weekdayLabels(en);
+  assert.strictEqual(weekdays.length, 7);
+  assert.strictEqual(weekdays[0], "Sun");
+  assert.deepStrictEqual(display.weekdayLabels({ locale: "en-US", narrow: true })[0], "S");
+  assert.strictEqual(display.formatTime(new Date("nope"), prefs("12h", "system"), en), "");
+  assert.strictEqual(display.formatDate(null, prefs("system", "yyyy-mm-dd"), en), "");
 }
 
 for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateInstall"]) {

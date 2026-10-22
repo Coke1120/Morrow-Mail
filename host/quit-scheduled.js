@@ -114,9 +114,9 @@ function nativeResponseChoice(response) {
   return response === 1 ? "quit" : "stay";
 }
 
-function readPrompt(listRows) {
+function readPrompt(listRows, format) {
   try {
-    return quitPrompt(listRows());
+    return quitPrompt(listRows(), format);
   } catch {
     return uncertainPrompt();
   }
@@ -127,7 +127,7 @@ function hidesWindowOnClose(platform) {
   return platform === "darwin";
 }
 
-function createQuitController({ listRows, requestChoice, quitApp, cleanup, platform }) {
+function createQuitController({ listRows, requestChoice, quitApp, cleanup, platform, format }) {
   let confirmed = false;
   let cleaning = false;
   let prompting = null;
@@ -164,7 +164,7 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup, platf
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       return "hide";
     }
-    const prompt = readPrompt(listRows);
+    const prompt = readPrompt(listRows, format);
     if (!prompt) return "allow";
     if (event && typeof event.preventDefault === "function") event.preventDefault();
     startPrompt(prompt);
@@ -178,7 +178,7 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup, platf
       startCleanup();
       return "cleanup";
     }
-    const prompt = readPrompt(listRows);
+    const prompt = readPrompt(listRows, format);
     if (!prompt) {
       startCleanup();
       return "cleanup";

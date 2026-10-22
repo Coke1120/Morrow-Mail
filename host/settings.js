@@ -2,10 +2,13 @@ const fs = require("fs");
 const path = require("path");
 const { userDataDir } = require("./paths");
 const folderCollapse = require("../shared/folder-collapse");
+const displayFormat = require("../shared/display-format");
 
 const DEFAULTS = {
   theme: "light",
   accent: "#193C34",
+  timeFormat: "system",
+  dateFormat: "system",
   conversationView: true,
   remoteImages: true,
   undoSendDelaySeconds: 30,
@@ -26,6 +29,8 @@ const DEFAULTS = {
 const GET = {
   "config:getTheme": "theme",
   "morrow:configGetAccent": "accent",
+  "morrow:configGetTimeFormat": "timeFormat",
+  "morrow:configGetDateFormat": "dateFormat",
   "morrow:configGetConversationViewEnabled": "conversationView",
   "morrow:configGetAutoLoadRemoteImages": "remoteImages",
   "morrow:configGetUndoSendDelaySeconds": "undoSendDelaySeconds",
@@ -46,6 +51,8 @@ const GET = {
 const SET = {
   "config:setTheme": "theme",
   "morrow:configSetAccent": "accent",
+  "morrow:configSetTimeFormat": "timeFormat",
+  "morrow:configSetDateFormat": "dateFormat",
   "morrow:configSetConversationViewEnabled": "conversationView",
   "morrow:configSetAutoLoadRemoteImages": "remoteImages",
   "morrow:configSetUndoSendDelaySeconds": "undoSendDelaySeconds",
@@ -81,6 +88,8 @@ function storePath() {
 function reject(key) {
   if (key === "theme") throw new Error("Theme must be light or dark");
   if (key === "accent") throw new Error("Accent must be a #RRGGBB color");
+  if (key === "timeFormat") throw new Error("Time format must be system, 12h, or 24h");
+  if (key === "dateFormat") throw new Error("Date format must be system, dd/mm/yyyy, dd/mmmm/yyyy, mm/dd/yyyy, yyyy-mm-dd, or d mmm yyyy");
   if (key === "undoSendDelaySeconds") throw new Error("Undo send delay must be 0 to 30 seconds");
   if (key === "composeQuoteWidth") throw new Error("Quote pane width must be 220 to 720");
   if (key === "syncHorizonDays") throw new Error("Sync history must be 180 days, 365 days, or All");
@@ -123,6 +132,11 @@ function cast(key, value, loose) {
   } else if (key === "accent") {
     const accent = typeof value === "string" ? value.trim() : "";
     if (/^#[0-9A-Fa-f]{6}$/.test(accent)) return accent.toUpperCase();
+  } else if (key === "timeFormat" || key === "dateFormat") {
+    const next = key === "timeFormat"
+      ? displayFormat.castTimeFormat(value, loose)
+      : displayFormat.castDateFormat(value, loose);
+    if (next) return next;
   } else if (key === "undoSendDelaySeconds") {
     if (Number.isInteger(value) && value >= 0 && value <= 30) return value;
   } else if (key === "composeQuoteWidth") {
