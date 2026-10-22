@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data: blob: https: http:; frame-src blob: data:; object-src blob: data:;" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data: blob: https: http:; connect-src 'self'; frame-src blob: data:; object-src blob: data:;" />
     <title>Morrow Mail</title>
     <link rel="icon" href="./morrow-icon.svg" />
     <link rel="stylesheet" href="./app.css" />
@@ -1371,7 +1371,7 @@
         <p id="attachment-preview-status" class="hint" role="status" hidden>Loading preview…</p>
         <div id="attachment-preview-stage">
           <img id="attachment-preview-image" alt="" hidden />
-          <iframe id="attachment-preview-frame" title="PDF preview" referrerpolicy="no-referrer" hidden></iframe>
+          <div id="attachment-preview-pages" hidden aria-label="PDF pages"></div>
         </div>
       </div>
     </dialog>
