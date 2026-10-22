@@ -3550,8 +3550,46 @@ button.message .star svg { display: block; }
   padding: 4px 16px 8px;
 }
 
+.thread-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+button.thread-earlier {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+button.thread-earlier svg { display: block; flex: none; }
+
+button.thread-earlier span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.thread-earlier:hover,
+button.thread-earlier:focus-visible,
+button.thread-item:hover { background: var(--hover); }
+
+button.thread-earlier[aria-expanded="true"] { color: var(--ink); }
+
 button.thread-item {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   width: 100%;
@@ -3570,9 +3608,31 @@ button.thread-item span {
   white-space: nowrap;
 }
 
-button.thread-item .when { color: var(--muted); font-size: 12px; }
+button.thread-item .thread-sender {
+  flex: 0 0 auto;
+  max-width: 46%;
+  font-weight: 600;
+}
+
+button.thread-item.unread .thread-sender { font-weight: 700; }
+
+button.thread-item .thread-snippet {
+  flex: 1 1 auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+button.thread-item .when {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
 
 button.thread-item[aria-current="true"] { background: var(--selected); }
+
+button.thread-item[aria-current="true"]:hover { background: var(--selected); }
 
 .attachment-card {
   margin: 8px 16px 12px;
@@ -3848,6 +3908,12 @@ button.attachment-name:hover { text-decoration: underline; }
 :root[data-theme="dark"] button.chip:not([aria-current="true"]) {
   background-color: transparent;
   color: inherit;
+}
+
+:root[data-theme="dark"] button.thread-item:not([aria-current="true"]):hover,
+:root[data-theme="dark"] button.thread-earlier:hover,
+:root[data-theme="dark"] button.thread-earlier:focus-visible {
+  background-color: var(--hover);
 }
 
 :root[data-theme="dark"] .message-row:hover button.message:not([aria-current="true"]),

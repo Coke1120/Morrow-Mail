@@ -5728,6 +5728,7 @@ function renderReader(focus) {
   pane.replaceChildren();
   syncAttachmentPreview(email);
   if (!email) {
+    resetThreadStrip();
     const wrap = document.createElement("div");
     wrap.className = "empty-read";
     const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -5996,32 +5997,241 @@ async function cancelTranslate() {
   await call("mail:translateCancel", { reqId });
 }
 
-function renderThread(pane, email) {
-  if (state.prefs.conversation === false) return;
-  const members = state.thread.slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
-  if (members.length < 2) return;
-  const list = document.createElement("div");
-  list.className = "thread";
-  list.setAttribute("aria-label", `${members.length} messages in this conversation`);
-  for (const member of members) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "thread-item";
-    if (member.id === email.id) button.setAttribute("aria-current", "true");
-    const who = document.createElement("span");
-    who.textContent = `${senderName(member.from)} — ${member.subject || "(no subject)"}`;
+function threadCalendarTime(iso, now) {
+  const date = new Date(iso);
+  const clock = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(date.getTime()) || Number.isNaN(clock.getTime())) return "";
+  if (date.toDateString() === clock.toDateString()) {
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  const sameYear = date.getFullYear() === clock.getFullYear();
+  const options = sameYear ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" };
+  return date.toLocaleDateString([], options);
+}
+
+function threadRelativeTime(iso, now) {
+  const date = iso ? new Date(iso) : null;
+  const clock = now instanceof Date ? now : new Date(typeof now === "number" || typeof now === "string" ? now : Date.now());
+  if (!date || Number.isNaN(date.getTime()) || Number.isNaN(clock.getTime())) return "";
+  const delta = clock.getTime() - date.getTime();
+  const minute = 60000;
+  const hour = 3600000;
+  const day = 86400000;
+  if (delta < minute && delta > -minute) return "just now";
+  if (delta < 0) return threadCalendarTime(iso, clock);
+  if (delta < hour) {
+    const minutes = Math.max(1, Math.floor(delta / minute));
+    return minutes === 1 ? "1 minute ago" : String(minutes) + " minutes ago";
+  }
+  if (delta < day) {
+    const hours = Math.max(1, Math.floor(delta / hour));
+    return hours === 1 ? "1 hour ago" : String(hours) + " hours ago";
+  }
+  if (delta < 7 * day) {
+    const days = Math.floor(delta / day);
+    if (days <= 1) return "yesterday";
+    return String(days) + " days ago";
+  }
+  return threadCalendarTime(iso, clock);
+}
+
+function threadSnippetLine(member) {
+  const raw = member && typeof member.snippet === "string" ? member.snippet : "";
+  const line = raw.replace(/\s+/g, " ").trim();
+  if (line.length <= 180) return line;
+  return line.slice(0, 179).trimEnd() + "…";
+}
+
+function threadEarlierLabel(count) {
+  return "Earlier in this conversation (" + count + ")";
+}
+
+function threadEarlierAnnouncement(count, expanded) {
+  const noun = count === 1 ? "message" : "messages";
+  if (expanded) return "Showing " + count + " earlier " + noun;
+  return String(count) + " earlier " + noun + " collapsed";
+}
+
+function threadListLabel(total, count, expanded) {
+  const messages = total === 1 ? "1 message" : String(total) + " messages";
+  if (!count || expanded) return messages + " in this conversation";
+  const earlier = count === 1 ? "1 earlier message collapsed" : String(count) + " earlier messages collapsed";
+  return messages + " in this conversation, " + earlier;
+}
+
+// Latest two stay visible. The open message stays visible when it is older than those two.
+// count is how many rows the Earlier control hides until it is expanded.
+function threadStripPlan(members, currentId, expanded) {
+  const rows = [];
+  for (const row of Array.isArray(members) ? members : []) {
+    if (row && row.id) rows.push(row);
+  }
+  rows.sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  const ids = [];
+  for (const row of rows) ids.push(String(row.id));
+  const total = ids.length;
+  const tailCount = total < 2 ? total : 2;
+  const tail = ids.slice(total - tailCount);
+  const older = ids.slice(0, total - tailCount);
+  const current = String(currentId || "");
+  let pinned = false;
+  const hiddenIds = [];
+  for (const id of older) {
+    if (id === current) pinned = true;
+    else hiddenIds.push(id);
+  }
+  const showControl = hiddenIds.length > 0;
+  const open = showControl && expanded === true;
+  let visibleIds = ids;
+  if (showControl && !open) visibleIds = pinned ? [current].concat(tail) : tail.slice();
+  return {
+    total: total,
+    count: hiddenIds.length,
+    showControl: showControl,
+    expanded: open,
+    visibleIds: visibleIds,
+  };
+}
+
+function threadStripKey(email, members) {
+  if (email && email.threadId) return String(email.threadId);
+  for (const row of Array.isArray(members) ? members : []) {
+    if (row && row.threadId) return String(row.threadId);
+  }
+  return email && email.id ? String(email.id) : "";
+}
+
+let threadEarlierKey = "";
+let threadEarlierOpen = false;
+
+function resetThreadStrip() {
+  threadEarlierKey = "";
+  threadEarlierOpen = false;
+}
+
+function rememberThreadStrip(email, members) {
+  const key = threadStripKey(email, members);
+  if (key === threadEarlierKey) return;
+  threadEarlierKey = key;
+  threadEarlierOpen = false;
+}
+
+function threadAbsoluteTime(iso) {
+  const date = iso ? new Date(iso) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString();
+}
+
+function threadMessageButton(member, email) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = member && member.unread ? "thread-item unread" : "thread-item";
+  if (member.id === email.id) button.setAttribute("aria-current", "true");
+  const who = document.createElement("span");
+  who.className = "thread-sender";
+  who.textContent = senderName(member.from);
+  button.appendChild(who);
+  const snippet = threadSnippetLine(member);
+  if (snippet) {
+    const preview = document.createElement("span");
+    preview.className = "thread-snippet";
+    preview.textContent = snippet;
+    button.appendChild(preview);
+  }
+  const relative = threadRelativeTime(member.date);
+  if (relative) {
     const when = document.createElement("time");
     when.className = "when";
-    if (member.date) when.dateTime = member.date;
-    when.textContent = listWhen(member.date);
-    button.append(who, when);
-    button.addEventListener("click", () => {
-      if (member.id === email.id) return;
-      openMessage(member.id).catch((error) => showStatus(error.message, true));
-    });
-    list.appendChild(button);
+    if (member.date) when.setAttribute("datetime", member.date);
+    const absolute = threadAbsoluteTime(member.date);
+    if (absolute) when.title = absolute;
+    when.textContent = relative;
+    button.appendChild(when);
   }
-  pane.appendChild(list);
+  button.addEventListener("click", () => {
+    if (member.id === email.id) return;
+    openMessage(member.id).catch((error) => showStatus(error.message, true));
+  });
+  return button;
+}
+
+function buildThreadStrip(email, members) {
+  const plan = threadStripPlan(members, email && email.id, threadEarlierOpen);
+  const byId = new Map();
+  for (const member of Array.isArray(members) ? members : []) {
+    if (member && member.id) byId.set(String(member.id), member);
+  }
+  const list = document.createElement("div");
+  list.className = "thread";
+  list.setAttribute("role", "group");
+  list.setAttribute("aria-label", threadListLabel(plan.total, plan.count, plan.expanded));
+  if (plan.showControl) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "thread-earlier";
+    toggle.setAttribute("aria-expanded", plan.expanded ? "true" : "false");
+    toggle.setAttribute("aria-controls", "thread-messages");
+    toggle.appendChild(strokeIcon([plan.expanded ? MOVE_CHEVRON_DOWN : MOVE_CHEVRON_RIGHT], 14));
+    const label = document.createElement("span");
+    label.textContent = threadEarlierLabel(plan.count);
+    toggle.appendChild(label);
+    toggle.addEventListener("click", () => toggleThreadEarlier());
+    list.appendChild(toggle);
+  }
+  const messages = document.createElement("div");
+  messages.id = "thread-messages";
+  messages.className = "thread-messages";
+  for (const id of plan.visibleIds) {
+    const member = byId.get(id);
+    if (member) messages.appendChild(threadMessageButton(member, email));
+  }
+  list.appendChild(messages);
+  if (plan.showControl) {
+    const status = document.createElement("p");
+    status.className = "sr thread-earlier-status";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    list.appendChild(status);
+  }
+  return list;
+}
+
+function paintThreadStrip(announce) {
+  const pane = $("reader");
+  const email = state.email;
+  if (!pane || !email || state.prefs.conversation === false) return;
+  const members = Array.isArray(state.thread) ? state.thread : [];
+  const list = buildThreadStrip(email, members);
+  const existing = pane.querySelector(".thread");
+  if (existing) existing.replaceWith(list);
+  else pane.appendChild(list);
+  if (!announce) return;
+  const plan = threadStripPlan(members, email.id, threadEarlierOpen);
+  const status = list.querySelector(".thread-earlier-status");
+  if (status && plan.showControl) status.textContent = threadEarlierAnnouncement(plan.count, plan.expanded);
+  const toggle = list.querySelector(".thread-earlier");
+  if (toggle && typeof toggle.focus === "function") toggle.focus();
+}
+
+function toggleThreadEarlier() {
+  threadEarlierOpen = !threadEarlierOpen;
+  paintThreadStrip(true);
+}
+
+function renderThread(pane, email) {
+  if (state.prefs.conversation === false || !email) {
+    resetThreadStrip();
+    return;
+  }
+  const members = Array.isArray(state.thread) ? state.thread : [];
+  let count = 0;
+  for (const row of members) if (row && row.id) count += 1;
+  if (count < 2) {
+    if (threadStripKey(email, members) !== threadEarlierKey) resetThreadStrip();
+    return;
+  }
+  rememberThreadStrip(email, members);
+  pane.appendChild(buildThreadStrip(email, members));
 }
 
 function attachmentPreviewKind(file) {
