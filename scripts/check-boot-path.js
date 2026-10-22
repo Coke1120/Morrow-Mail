@@ -46,6 +46,9 @@ const syntax = [
   "host/compose-window.js",
   "host/reader-window.js",
   "host/reader-window-state.js",
+  "host/translate.js",
+  "host/translate-window.js",
+  "shared/translate-lang.js",
   "host/bot/constants.js",
   "host/bot/json.js",
   "host/bot/store.js",
@@ -457,7 +460,7 @@ assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell doe
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.2.28");
+assert.strictEqual(pkg.version, "0.2.29");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -711,7 +714,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.2.28");
+assert.strictEqual(pkg.version, "0.2.29");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -720,6 +723,69 @@ assert.ok(!readerBoot.includes("host:updateGetState"));
 assert.ok(html.includes('id="sender-history"'));
 assert.ok(html.includes("sender-history.js"));
 assert.ok(css.includes('html[data-window="reader"]'));
+assert.ok(css.includes('html[data-window="translate"]'));
+assert.ok(css.includes(".translate-columns"));
+assert.ok(fs.readFileSync(path.join(root, "renderer/compose-role.js"), "utf8").includes('dataset.window = "translate"'));
+const translateHost = require("../host/translate-window");
+assert.deepEqual(translateHost.CHANNELS, ["translate:open", "translate:pullSeed", "translate:report"]);
+assert.strictEqual(translateHost.translateWindowTitle("Quarterly update", "Traditional Chinese (繁體中文)"), "Quarterly update — Traditional Chinese (繁體中文) — Morrow Mail");
+assert.strictEqual(translateHost.translateWindowTitle("", ""), "Translation — Morrow Mail");
+assert.strictEqual(translateHost.translateWindowTitle("", "English"), "Translation — English — Morrow Mail");
+assert.strictEqual(translateHost.translateWindowTitle("x".repeat(200), "English").slice(0, 180), "x".repeat(180));
+assert.throws(() => translateHost.sanitizeTranslateSeed(null), /could not be opened/);
+assert.throws(() => translateHost.sanitizeTranslateSeed({ reqId: "t", original: "  " }), /could not be opened/);
+const cleanSeed = translateHost.sanitizeTranslateSeed({
+  reqId: "tr-1",
+  subject: "Hello",
+  language: "Traditional Chinese (繁體中文)",
+  original: "Line\nTAIL\u0000",
+  nodeIds: ["n0", "n0"],
+});
+assert.strictEqual(cleanSeed.original, "Line\nTAIL");
+assert.deepEqual(cleanSeed.nodeIds, ["n0"]);
+const translatePlaced = translateHost.translateWindowBounds({ x: 0, y: 0 }, 1);
+assert.strictEqual(translatePlaced.x, 48 + 28);
+assert.strictEqual(translatePlaced.y, 48 + 28);
+assert.strictEqual(translatePlaced.width, 1100);
+assert.strictEqual(translatePlaced.minWidth, 760);
+assert.strictEqual(translatePlaced.minHeight, 480);
+const translateRecord = {
+  reqId: "t",
+  subject: "Hello",
+  language: "Traditional Chinese (繁體中文)",
+  original: "Original body",
+  nodeIds: ["n0"],
+  texts: {},
+  translated: "",
+  error: "",
+  pending: true,
+  current: 0,
+  total: 1,
+  seq: 1,
+};
+assert.strictEqual(translateHost.publicSnapshot(translateRecord).pending, true);
+assert.strictEqual(translateHost.publicSnapshot(translateRecord).original, "Original body");
+assert.strictEqual(translateHost.publicSnapshot(translateRecord).translated, "");
+translateHost.applyTranslateEvent(translateRecord, { reqId: "t", type: "node", nodeId: "n0", translatedText: "譯文", status: "success" });
+assert.strictEqual(translateRecord.translated, "譯文");
+assert.strictEqual(translateRecord.pending, true);
+translateHost.applyTranslateEvent(translateRecord, { reqId: "t", type: "error", message: "Add an API key in Morrow Mail → AI Setup." });
+assert.strictEqual(translateRecord.pending, false);
+assert.strictEqual(translateRecord.error, "Add an API key in Morrow Mail → AI Setup.");
+assert.strictEqual(translateRecord.original, "Original body");
+assert.ok(main.includes('require("./translate-window")'));
+assert.ok(main.includes("translateWindows.CHANNELS"));
+assert.ok(main.indexOf("createTranslateHost") < main.lastIndexOf("attachIpc(preloadFile)"));
+assert.ok(preload.includes('"translate:open"') && preload.includes('"translate:pullSeed"') && preload.includes('"translate:report"') && preload.includes('"translate:update"'));
+assert.ok(!fs.readFileSync(path.join(root, "host/translate.js"), "utf8").includes("slice(0, 2000)"));
+assert.ok(functionSource(appJs, "startTranslate").indexOf("openTranslationWindow") < functionSource(appJs, "startTranslate").indexOf("mail:translateStart"));
+assert.ok(functionSource(appJs, "renderActions").includes("renderTranslate"));
+assert.ok(functionSource(appJs, "boot").includes("bootTranslateWindow"));
+assert.ok(!appJs.includes('"translate-lang"'));
+assert.ok(!appJs.includes("'translate-lang'"));
+assert.ok(html.includes('id="pref-translate-language"'));
+assert.ok(html.includes("Traditional Chinese"));
+assert.ok(html.includes("繁體中文"));
 assert.ok(fs.readFileSync(path.join(root, "renderer/compose-role.js"), "utf8").includes('dataset.window = "reader"'));
 assert.ok(functionSource(appJs, "onReaderContext").includes("sender-address"));
 assert.ok(!functionSource(appJs, "onReaderContext").includes("isReaderWindow"));
@@ -1216,6 +1282,18 @@ assert.deepStrictEqual(bodyNodes("One\n\nTwo"), [
 ]);
 assert.deepStrictEqual(bodyNodes("  "), []);
 assert.deepStrictEqual(bodyNodes("Line"), [{ node_id: "n0", text: "Line" }]);
+const translateFns = loadFunctions(appJs, ["plainFromMailHtml", "translateSource", "translateNodes"]);
+const quoted = translateFns.translateSource({
+  textBody: "Latest",
+  htmlBody: "<p>Latest</p><blockquote>History tail</blockquote>",
+});
+assert.ok(quoted.includes("History tail"));
+assert.ok(quoted.includes("Latest"));
+const longThread = "line\n".repeat(3000) + "TAIL";
+const longNodes = translateFns.translateNodes(longThread);
+assert.strictEqual(longNodes.length, 1);
+assert.ok(longNodes[0].text.length > 2000);
+assert.ok(longNodes[0].text.endsWith("TAIL"));
 
 const applyTranslate = extractFunction(appJs, "applyTranslate");
 const translationText = extractFunction(appJs, "translationText");
@@ -1480,7 +1558,7 @@ assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
 const settingsSrc = fs.readFileSync(path.join(root, "host/settings.js"), "utf8");
 const prefs = prefRows();
-assert.strictEqual(prefs.length, 14);
+assert.strictEqual(prefs.length, 15);
 const prefKinds = new Set();
 for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(html.includes('id="' + id + '"'), `settings control missing ${id}`);
@@ -1577,6 +1655,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:getTheme", []), "light");
     assert.strictEqual(answer("morrow:configGetAccent", []), "#193C34");
+    assert.strictEqual(answer("morrow:configGetTranslateTargetLanguage", []), "zh-Hant");
     fs.writeFileSync(file, JSON.stringify({ accent: "#7C3AED" }));
     assert.strictEqual(answer("morrow:configGetAccent", []), "#193C34");
     fs.unlinkSync(file);
@@ -1618,6 +1697,12 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configSetTimeFormat", [" 24h "]), "24h");
     assert.strictEqual(answer("morrow:configSetDateFormat", ["  d mmm yyyy  "]), "d mmm yyyy");
     assert.deepStrictEqual(answer("morrow:configSetLayoutPanes", [{ folders: 300, list: 480, reading: 640 }]), { folders: 300, list: 480, reading: 640 });
+    assert.strictEqual(answer("morrow:configSetTranslateTargetLanguage", ["en"]), "en");
+    assert.strictEqual(answer("morrow:configGetTranslateTargetLanguage", []), "en");
+    assert.strictEqual(answer("morrow:configSetTranslateTargetLanguage", ["Chinese"]), "zh-Hant");
+    assert.strictEqual(answer("morrow:configSetTranslateTargetLanguage", ["zh-Hans"]), "zh-Hant");
+    assert.strictEqual(answer("morrow:configSetTranslateTargetLanguage", ["zh-TW"]), "zh-Hant");
+    assert.strictEqual(answer("morrow:configSetTranslateTargetLanguage", ["Simplified Chinese"]), "zh-Hant");
     assert.strictEqual(answer("config:getTheme", []), "dark");
     assert.strictEqual(answer("morrow:configGetAccent", []), "#112233");
     assert.strictEqual(answer("morrow:configGetConversationViewEnabled", []), false);
@@ -1649,6 +1734,7 @@ function checkSettingsRoundTrip() {
         quoteWidth: answer("morrow:configGetComposeQuoteWidth", []),
         timeFormat: answer("morrow:configGetTimeFormat", []),
         dateFormat: answer("morrow:configGetDateFormat", []),
+        translateTargetLanguage: answer("morrow:configGetTranslateTargetLanguage", []),
       }));
     `], { encoding: "utf8" });
     assert.strictEqual(reloaded.status, 0, reloaded.stderr);
@@ -1667,6 +1753,7 @@ function checkSettingsRoundTrip() {
       quoteWidth: 560,
       timeFormat: "24h",
       dateFormat: "d mmm yyyy",
+      translateTargetLanguage: "zh-Hant",
     });
     assert.throws(() => answer("config:setTheme", ["neon"]), /light or dark/);
     assert.strictEqual(answer("config:getTheme", []), "dark");
@@ -1693,6 +1780,8 @@ function checkSettingsRoundTrip() {
     assert.throws(() => answer("morrow:configSetDateFormat", ["dd-mm-yyyy"]), /Date format/);
     assert.throws(() => answer("morrow:configSetDateFormat", ["DD/MM/YYYY"]), /Date format/);
     assert.strictEqual(answer("morrow:configGetDateFormat", []), "d mmm yyyy");
+    assert.throws(() => answer("morrow:configSetTranslateTargetLanguage", ["Klingon"]), /translation language/i);
+    assert.strictEqual(answer("morrow:configGetTranslateTargetLanguage", []), "zh-Hant");
     const stored = JSON.parse(fs.readFileSync(file, "utf8"));
     stored.timeFormat = "12H";
     stored.dateFormat = "yyyy-mm-dd";
@@ -1707,6 +1796,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetDefaultScheduleDelayMinutes", []), 0);
     assert.deepStrictEqual(answer("morrow:configGetLayoutPanes", []), { folders: 260, list: 360, reading: 0 });
     assert.deepStrictEqual(answer("morrow:configGetSidebarCollapsedFolders", []), {});
+    assert.strictEqual(answer("morrow:configGetTranslateTargetLanguage", []), "zh-Hant");
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
     assert.strictEqual(answer("config:getTheme", []), "dark");
   } finally {
@@ -9415,6 +9505,77 @@ async function checkFetchedModelChooser() {
   assert.strictEqual(ui.run('$("ai-model").value'), "beta");
 }
 
+async function checkTranslateBatches() {
+  const translate = require("../host/translate");
+  const piece = "a".repeat(5000) + "TAIL";
+  const parts = translate.splitSegment(piece, translate.SEGMENT_CHARS);
+  assert.strictEqual(parts.join(""), piece);
+  assert.ok(parts.length > 1);
+  assert.ok(parts.every((part) => part.length <= translate.SEGMENT_CHARS));
+  assert.ok(parts[parts.length - 1].endsWith("TAIL"));
+  const sent = [];
+  let system = "";
+  const long = await translate.translateSegments([{ node_id: "n0", text: piece }], {
+    targetLanguage: "zh-Hant",
+    complete: async (messages) => {
+      system = messages[0].content;
+      const rows = JSON.parse(messages[1].content);
+      for (const row of rows) {
+        assert.ok(row.text.length <= translate.SEGMENT_CHARS);
+        sent.push(row.text);
+      }
+      return JSON.stringify({ translations: rows.map((row) => ({ node_id: row.node_id, text: "譯" })) });
+    },
+  });
+  assert.strictEqual(sent.join(""), piece);
+  assert.ok(sent.length > 1);
+  assert.strictEqual(long[0].node_id, "n0");
+  assert.ok(long[0].text.includes("譯"));
+  assert.match(system, /Traditional Chinese \(zh-Hant\)/);
+  assert.doesNotMatch(system, /into Simplified/);
+  let defaultSystem = "";
+  await translate.translateSegments([{ node_id: "n0", text: "Hi" }], {
+    complete: async (messages) => {
+      defaultSystem = messages[0].content;
+      const rows = JSON.parse(messages[1].content);
+      return JSON.stringify({ translations: rows.map((row) => ({ node_id: row.node_id, text: "嗨" })) });
+    },
+  });
+  assert.match(defaultSystem, /Traditional Chinese \(zh-Hant\)/);
+  let fatalCalls = 0;
+  await assert.rejects(() => translate.translateSegments([{ node_id: "n0", text: "Hello" }], {
+    targetLanguage: "zh-Hant",
+    complete: async () => {
+      fatalCalls += 1;
+      const error = new Error("Add an API key in Morrow Mail → AI Setup.");
+      error.code = "ai-unconfigured";
+      throw error;
+    },
+  }));
+  assert.strictEqual(fatalCalls, 1);
+  let splitCalls = 0;
+  let splitSystem = "";
+  const left = "A".repeat(1000);
+  const right = "B".repeat(1000);
+  const split = await translate.translateSegments([
+    { node_id: "n0", text: left },
+    { node_id: "n1", text: right },
+  ], {
+    targetLanguage: "en",
+    complete: async (messages) => {
+      splitCalls += 1;
+      splitSystem = messages[0].content;
+      const rows = JSON.parse(messages[1].content);
+      if (rows.length > 1) return "not-json";
+      return JSON.stringify({ translations: rows.map((row) => ({ node_id: row.node_id, text: "X" + row.node_id })) });
+    },
+  });
+  assert.ok(splitCalls >= 3);
+  assert.deepStrictEqual(split.map((row) => row.text), ["Xn0#0", "Xn1#0"]);
+  assert.match(splitSystem, /into English/);
+  assert.doesNotMatch(splitSystem, /Traditional Chinese/);
+}
+
 checkGoogleOauthAlias();
 require("./check-bake-google-oauth").run();
 require("./check-win-secrets").run();
@@ -9423,7 +9584,7 @@ require("./check-bot-setup-ux").run();
 
 checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-sync-retry").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
-}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => {
+}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => checkTranslateBatches()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

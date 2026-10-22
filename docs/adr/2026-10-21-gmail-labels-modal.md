@@ -4,4 +4,4 @@ The reading toolbar and the selection bar edit Gmail labels in one modal. Checkb
 
 Move stays a separate folder action. Organize and the message menu open this same dialog instead of separate Add and Remove lists. Outlook does not use the dialog; it keeps Move in Outlook.
 
-Translate's language list and Translate button sit beside Star. Snooze is unchanged.
+Translate sits beside Star and uses the language in Settings (see [2026-10-22-translate-language-window.md](2026-10-22-translate-language-window.md)). Snooze is unchanged.

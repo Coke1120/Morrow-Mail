@@ -164,6 +164,7 @@ async function main() {
   ui.state.accounts = [{ id: "alpha", email: "me@alpha.test" }];
   ui.state.accountId = "alpha";
   ui.state.prefs.aiReply = true;
+  ui.state.prefs.snooze = true;
   const calls = [];
   let opened = null;
   ui.call = async (channel) => {
@@ -185,8 +186,8 @@ async function main() {
   const readerActions = actions(ui.reader);
   assert.deepEqual(readerActions.slice(0, 4), ["reply", "reply-all", "suggest", "forward"]);
   const starAt = readerActions.indexOf("star");
-  assert.equal(readerActions[starAt + 1], "translate-lang");
-  assert.equal(readerActions[starAt + 2], "translate");
+  assert.equal(readerActions[starAt + 1], "translate");
+  assert.equal(readerActions[starAt + 2], "translate-cancel");
   assert.equal(readerActions.includes("translate-cancel"), true);
   assert.equal(readerActions.includes("snooze"), true);
   assert.equal(ui.reader.children.some((child) => child.className === "translate"), false);

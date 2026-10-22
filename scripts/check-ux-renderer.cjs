@@ -294,8 +294,8 @@ app.whenReady().then(async()=>{
  })()`);
  const readerActions = await run(`[...document.querySelectorAll('#reader .reader-actions [data-action]')].map((node) => node.dataset.action)`);
  const starAt = readerActions.indexOf('star');
- assert.equal(readerActions[starAt + 1], 'translate-lang');
- assert.equal(readerActions[starAt + 2], 'translate');
+ assert.equal(readerActions[starAt + 1], 'translate');
+ assert.equal(readerActions[starAt + 2], 'translate-cancel');
  assert.equal(readerActions.includes('snooze'), true);
  assert.equal(readerActions.includes('labels'), true);
  assert.equal(await run(`document.querySelector('#reader .translate') !== null`), true);

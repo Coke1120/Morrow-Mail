@@ -3,12 +3,14 @@ const path = require("path");
 const { userDataDir } = require("./paths");
 const folderCollapse = require("../shared/folder-collapse");
 const displayFormat = require("../shared/display-format");
+const translateLang = require("../shared/translate-lang");
 
 const DEFAULTS = {
   theme: "light",
   accent: "#193C34",
   timeFormat: "system",
   dateFormat: "system",
+  translateTargetLanguage: "zh-Hant",
   conversationView: true,
   remoteImages: true,
   undoSendDelaySeconds: 30,
@@ -31,6 +33,7 @@ const GET = {
   "morrow:configGetAccent": "accent",
   "morrow:configGetTimeFormat": "timeFormat",
   "morrow:configGetDateFormat": "dateFormat",
+  "morrow:configGetTranslateTargetLanguage": "translateTargetLanguage",
   "morrow:configGetConversationViewEnabled": "conversationView",
   "morrow:configGetAutoLoadRemoteImages": "remoteImages",
   "morrow:configGetUndoSendDelaySeconds": "undoSendDelaySeconds",
@@ -53,6 +56,7 @@ const SET = {
   "morrow:configSetAccent": "accent",
   "morrow:configSetTimeFormat": "timeFormat",
   "morrow:configSetDateFormat": "dateFormat",
+  "morrow:configSetTranslateTargetLanguage": "translateTargetLanguage",
   "morrow:configSetConversationViewEnabled": "conversationView",
   "morrow:configSetAutoLoadRemoteImages": "remoteImages",
   "morrow:configSetUndoSendDelaySeconds": "undoSendDelaySeconds",
@@ -90,6 +94,7 @@ function reject(key) {
   if (key === "accent") throw new Error("Accent must be a #RRGGBB color");
   if (key === "timeFormat") throw new Error("Time format must be system, 12h, or 24h");
   if (key === "dateFormat") throw new Error("Date format must be system, dd/mm/yyyy, dd/mmmm/yyyy, mm/dd/yyyy, yyyy-mm-dd, or d mmm yyyy");
+  if (key === "translateTargetLanguage") throw new Error("Translation language is not supported");
   if (key === "undoSendDelaySeconds") throw new Error("Undo send delay must be 0 to 30 seconds");
   if (key === "composeQuoteWidth") throw new Error("Quote pane width must be 220 to 720");
   if (key === "syncHorizonDays") throw new Error("Sync history must be 180 days, 365 days, or All");
@@ -126,6 +131,7 @@ function cast(key, value, loose) {
     try { return policy.normalizeSettings(value); }
     catch (error) { if (!loose) throw error; return policy.emptySettings(); }
   }
+  if (key === "translateTargetLanguage") return translateLang.cast(value, !!loose);
   if (key === "theme") {
     const theme = typeof value === "string" ? value.trim().toLowerCase() : "";
     if (theme === "light" || theme === "dark") return theme;
