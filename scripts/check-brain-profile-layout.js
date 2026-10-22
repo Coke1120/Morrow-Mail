@@ -48,6 +48,19 @@ const persona = {
           { id: "how-you-write:0", label: "Tone", value: "Direct and brief.", source: "auto" },
         ],
       }],
+      identity: {
+        ownerName: "Ada Lovelace",
+        displayNames: [{ id: "identity:displayNames:a-lovelace", value: "A. Lovelace", source: "auto" }],
+        emails: [{
+          id: "identity:emails:ada.lovelace@example.com",
+          address: "ada.lovelace@example.com",
+          source: "account",
+          accountId: "acct-ada",
+          kind: "primary",
+        }],
+        nicknames: [{ id: "identity:nicknames:ada", value: "Ada", source: "auto" }],
+        orgs: [{ id: "identity:orgs:analytical-engines", value: "Analytical Engines", source: "auto" }],
+      },
     },
   },
   fetchedAt: "2026-10-21T12:00:00.000Z",
@@ -58,7 +71,7 @@ const { contextBridge } = require("electron");
 const sent = [];
 const listeners = {};
 const account = ${JSON.stringify(account)};
-const persona = ${JSON.stringify(persona)};
+let persona = ${JSON.stringify(persona)};
 function envelope(data) { return { success: true, data: data }; }
 function raw(channel) {
   if (channel === "app:getVersion") return "0.2.22";
@@ -124,6 +137,10 @@ contextBridge.exposeInMainWorld("morrowShot", {
     } catch (error) {
       return "threw " + String(error && error.message || error);
     }
+  },
+  setPersona(next) {
+    persona = JSON.parse(String(next || "null"));
+    return "set";
   },
 });
 `);
@@ -273,7 +290,50 @@ app.whenReady().then(async () => {
   assert.equal(settled.refreshDisabled, false);
   assert.equal(settled.progressHidden, true);
   assert.ok(settled.summary.width > 200 && settled.summary.height > 80);
+  const identity = await json(win, `(() => {
+    const node = document.getElementById("brain-identity");
+    const list = document.getElementById("brain-identity-list");
+    const rows = [...list.querySelectorAll(".brain-row")];
+    const email = rows.find((row) => (row.textContent || "").includes("ada.lovelace@example.com"));
+    const nick = rows.find((row) => (row.textContent || "").includes("Ada — auto"));
+    return {
+      open: node.open,
+      summary: document.querySelector("#brain-identity summary").textContent,
+      headings: [...list.querySelectorAll("h3")].map((node) => node.textContent),
+      email: email ? email.textContent : "",
+      emailButtons: email ? email.querySelectorAll("button").length : -1,
+      nickFix: nick ? nick.querySelector("[aria-label='Fix Ada']") !== null : false,
+      nickForget: nick ? nick.querySelector("[aria-label='Forget Ada']") !== null : false,
+    };
+  })()`);
+  assert.equal(identity.open, false);
+  assert.match(identity.summary, /Identity/);
+  assert.deepStrictEqual(identity.headings, ["Emails", "Names", "Nicknames", "Organizations"]);
+  assert.match(identity.email, /ada\.lovelace@example\.com/);
+  assert.match(identity.email, /account/);
+  assert.equal(identity.emailButtons, 0);
+  assert.equal(identity.nickFix, true);
+  assert.equal(identity.nickForget, true);
   const settledShot = await shot(win, "brain-profile-summary");
+  const withoutIdentity = JSON.parse(JSON.stringify(persona));
+  delete withoutIdentity.persona.profile.identity;
+  await win.webContents.executeJavaScript("window.morrowShot.setPersona(" + JSON.stringify(JSON.stringify(withoutIdentity)) + ")", true);
+  const missingEmit = await win.webContents.executeJavaScript(`window.morrowShot.emit("emailBrain:updated", {})`, true);
+  assert.equal(missingEmit, "called undefined");
+  await waitFor(win, `document.getElementById("brain-identity-list").textContent.includes("Refresh learns names from your mail")`, "identity hint");
+  const hinted = await json(win, `document.getElementById("brain-identity").open === false && document.getElementById("brain-identity-list").textContent`);
+  assert.match(hinted, /Mailbox addresses show up here after that distill/);
+  const renamed = JSON.parse(JSON.stringify(persona));
+  renamed.persona.profile.identity.nicknames = [{ id: "identity:nicknames:augusta", value: "Augusta", source: "auto" }];
+  await win.webContents.executeJavaScript("window.morrowShot.setPersona(" + JSON.stringify(JSON.stringify(renamed)) + ")", true);
+  await win.webContents.executeJavaScript(`window.morrowShot.emit("emailBrain:updated", {})`, true);
+  await waitFor(win, `document.getElementById("brain-identity-list").textContent.includes("Augusta")`, "identity refresh");
+  const renamedList = await json(win, `document.getElementById("brain-identity-list").textContent`);
+  assert.match(renamedList, /Augusta — auto/);
+  assert.equal(renamedList.includes("Ada — auto"), false);
+  await win.webContents.executeJavaScript(`document.getElementById("brain-identity").open = true; document.getElementById("brain-identity").scrollIntoView({ block: "center" }); true`, true);
+  const identityShot = await shot(win, "brain-identity-open");
+  await win.webContents.executeJavaScript(`document.getElementById("brain-identity").open = false; document.querySelector(".brain-summary").scrollIntoView({ block: "center" }); true`, true);
   await win.webContents.executeJavaScript(`document.getElementById("brain-refresh").click(); true`, true);
   await waitFor(win, `document.getElementById("brain-status").textContent.includes("Refreshing") && document.getElementById("brain-refresh").disabled`, "refreshing");
   const refreshing = await measure(win);
@@ -317,7 +377,7 @@ app.whenReady().then(async () => {
   assert.equal(readyEmit, "called undefined");
   await waitFor(win, `!document.getElementById("brain-rebuild").disabled`, "rebuild idle");
 
-  console.log(JSON.stringify({ ok: true, settledShot, refreshingShot, rebuildingShot }, null, 2));
+  console.log(JSON.stringify({ ok: true, settledShot, identityShot, refreshingShot, rebuildingShot }, null, 2));
   app.quit();
 }).catch((error) => {
   console.error("CAUGHT", error && error.message);

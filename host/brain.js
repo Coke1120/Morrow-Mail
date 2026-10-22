@@ -4,7 +4,16 @@ const path = require("path");
 const { BrowserWindow } = require("electron");
 const { loadConfig, userDataDir } = require("./ai-config");
 const { complete, extractJson } = require("./openai-client");
-const { personaSystemPrompt, applyGenerated } = require("./brain-persona");
+const {
+  personaSystemPrompt,
+  applyGenerated,
+  identityPriorForPrompt,
+  identityBriefFrom,
+  forgetIdentity,
+  identityFixTarget,
+  rewriteIdentityItem,
+  collectIdentityEmails,
+} = require("./brain-persona");
 
 const DEFAULT_CATEGORIES = [
   { id: "needs-you", name: "Needs You", description: "Messages that need a reply or a decision from you.", collapseView: false },
@@ -129,19 +138,23 @@ function personaFrom(store) {
       rows: recentMailSection(),
     });
   }
+  const profile = {
+    meta: {
+      ownerName: (generated && generated.ownerName) || "",
+      emailsAnalyzed: generated ? generated.emailsAnalyzed || 0 : 0,
+      factsLearned: writingRows.length + learned.reduce((n, section) => n + (section.rows || []).length, 0),
+      updatedAt: (generated && generated.updatedAt) || null,
+    },
+    sections,
+  };
+  if (generated && generated.identity && typeof generated.identity === "object" && !Array.isArray(generated.identity)) {
+    profile.identity = generated.identity;
+  }
   return {
     status: "ready",
     updatedAt: (generated && generated.updatedAt) || new Date().toISOString(),
     recentActivity: (store.activity || []).slice(0, 12),
-    profile: {
-      meta: {
-        ownerName: (generated && generated.ownerName) || "",
-        emailsAnalyzed: generated ? generated.emailsAnalyzed || 0 : 0,
-        factsLearned: writingRows.length + learned.reduce((n, section) => n + (section.rows || []).length, 0),
-        updatedAt: (generated && generated.updatedAt) || null,
-      },
-      sections,
-    },
+    profile,
   };
 }
 
@@ -181,6 +194,28 @@ function writingBrief() {
     return rules.length ? rules.map((rule) => `- ${rule}`).join("\n") : "";
   } catch {
     return "";
+  }
+}
+
+function identityBrief() {
+  try {
+    return identityBriefFrom(readStore().generated);
+  } catch {
+    return null;
+  }
+}
+
+function collectAccountEmails(priorEmails) {
+  try {
+    const db = require("./mail/db");
+    if (!db.isReady()) return null;
+    const accounts = db.listAccountRows();
+    if (!Array.isArray(accounts)) return null;
+    const settings = require("./settings").answer("emailBrain:getComposeSettings", []);
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) return null;
+    return collectIdentityEmails(accounts, settings, priorEmails);
+  } catch {
+    return null;
   }
 }
 
@@ -240,6 +275,7 @@ async function runPersona(mode, sample, prior) {
           writing: prior && prior.writing || [],
           sections: prior && prior.sections || [],
           voiceQuotes: prior && prior.voiceQuotes || [],
+          identity: identityPriorForPrompt(prior),
         },
         messages: sample.messages,
       }),
@@ -275,7 +311,8 @@ async function analyzeMailAdmitted(mode) {
     const store = readStore();
     const parsed = await runPersona(mode, sample, store.generated);
     if (!refresh) emit("emailBrain:rebuildState", { rebuilding: true, phase: "saving", percent: 85, error: null });
-    applyGenerated(store, parsed, sample, mode);
+    const priorEmails = store.generated && store.generated.identity && store.generated.identity.emails;
+    applyGenerated(store, parsed, sample, mode, collectAccountEmails(priorEmails));
     pushActivity(store, mode, refresh
       ? `Distilled from ${sample.sentCount} sent and ${sample.inboxCount} inbox messages.`
       : `Rebuilt a distilled persona from ${sample.sentCount} sent and ${sample.inboxCount} inbox messages.`);
@@ -398,6 +435,10 @@ function answer(channel, args) {
       if (store.generated && Array.isArray(store.generated.voiceQuotes)) {
         store.generated.voiceQuotes = store.generated.voiceQuotes.filter((_value, index) => `voice:${index}` !== itemId);
       }
+      if (store.generated && store.generated.identity) {
+        const forgotten = forgetIdentity(store.generated.identity, itemId);
+        if (forgotten.removed) store.generated.identity = forgotten.identity;
+      }
       const removed = before !== JSON.stringify({ rules: store.userRules, generated: store.generated });
       if (removed && channel === "emailBrain:forgetItem") pushActivity(store, "forget", "Forgot one profile row.");
       writeStore(store);
@@ -508,10 +549,20 @@ async function fixCategory(params) {
 }
 
 function persistItemValue(store, itemId, value) {
+  const target = identityFixTarget(itemId);
+  if (target === "emails") throw new Error("Account addresses stay with the connected mailbox.");
+  if (target === "auto") {
+    if (!store.generated || !store.generated.identity) return false;
+    const result = rewriteIdentityItem(store.generated.identity, itemId, value);
+    if (result.error) throw new Error(result.error);
+    if (!result.wrote) return false;
+    store.generated.identity = result.identity;
+    return true;
+  }
   const rule = store.userRules.find((item) => item.id === itemId);
   if (rule) {
     rule.value = value;
-    return;
+    return true;
   }
   if (store.generated && Array.isArray(store.generated.writing)) {
     store.generated.writing = store.generated.writing.map((item, index) => {
@@ -528,10 +579,15 @@ function persistItemValue(store, itemId, value) {
       });
     }
   }
+  return true;
 }
 
 async function fixItem(params) {
   try {
+    const itemId = params && params.itemId;
+    if (identityFixTarget(itemId) === "emails") {
+      return fail(new Error("Account addresses stay with the connected mailbox."));
+    }
     const text = await complete([
       {
         role: "system",
@@ -542,7 +598,8 @@ async function fixItem(params) {
     const value = text.trim();
     if (!value) return fail(new Error("The model returned an empty rewrite."));
     const store = readStore();
-    persistItemValue(store, params && params.itemId, value);
+    const wrote = persistItemValue(store, itemId, value);
+    if (wrote === false) return ok({ value });
     pushActivity(store, "fix", "Rewrote one profile row.");
     writeStore(store);
     emit("emailBrain:updated", {});
@@ -552,4 +609,4 @@ async function fixItem(params) {
   }
 }
 
-module.exports = { answer, emit, personaFrom, writingBrief, taxonomy, scheduleLivingRefresh, refreshFromMail, rebuildFromMail };
+module.exports = { answer, emit, personaFrom, writingBrief, identityBrief, taxonomy, scheduleLivingRefresh, refreshFromMail, rebuildFromMail };

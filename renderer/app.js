@@ -13690,6 +13690,87 @@ function paintBrainMeta(snapshot) {
   }
 }
 
+function brainIdentityHint() {
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Refresh learns names from your mail. Mailbox addresses show up here after that distill.";
+  return hint;
+}
+
+function brainIdentityActions(value, itemId) {
+  const name = String(value || "").slice(0, 80);
+  const actions = document.createElement("div");
+  actions.className = "row brain-actions";
+  const fix = document.createElement("button");
+  fix.type = "button";
+  fix.className = "ghost";
+  fix.textContent = "Fix";
+  fix.setAttribute("aria-label", "Fix " + name);
+  fix.disabled = brainFixBusy;
+  fix.addEventListener("click", () => {
+    fixBrainItem({ id: itemId, value: name });
+  });
+  const forget = document.createElement("button");
+  forget.type = "button";
+  forget.className = "ghost";
+  forget.textContent = "Forget";
+  forget.setAttribute("aria-label", "Forget " + name);
+  forget.disabled = brainFixBusy;
+  forget.addEventListener("click", () => {
+    forgetBrainItem({ id: itemId, value: name });
+  });
+  actions.append(fix, forget);
+  return actions;
+}
+
+function paintBrainIdentity(snapshot) {
+  const list = $("brain-identity-list");
+  if (!list) return;
+  list.replaceChildren();
+  const persona = snapshot && snapshot.persona;
+  const profile = persona && persona.profile;
+  const identity = profile && profile.identity;
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) {
+    list.appendChild(brainIdentityHint());
+    return;
+  }
+  const groups = [
+    ["Emails", "emails"],
+    ["Names", "displayNames"],
+    ["Nicknames", "nicknames"],
+    ["Organizations", "orgs"],
+  ];
+  for (const [title, key] of groups) {
+    const rows = Array.isArray(identity[key]) ? identity[key] : [];
+    const visible = rows.filter((row) => {
+      if (!row) return false;
+      if (key === "emails") return String(row.address || "").trim() !== "";
+      return String(row.value || "").trim() !== "";
+    });
+    if (!visible.length) continue;
+    const block = document.createElement("section");
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    block.appendChild(heading);
+    for (const row of visible) {
+      const line = document.createElement("div");
+      line.className = "brain-row";
+      const text = document.createElement("p");
+      if (key === "emails") {
+        text.textContent = String(row.address || "").trim() + " — account";
+        line.appendChild(text);
+      } else {
+        const value = String(row.value || "").trim();
+        text.textContent = value + " — auto";
+        line.appendChild(text);
+        line.appendChild(brainIdentityActions(value, row.id));
+      }
+      block.appendChild(line);
+    }
+    list.appendChild(block);
+  }
+}
+
 function paintBrain(snapshot, view) {
   const message = brainMessage(view);
   const status = $("brain-status");
@@ -13697,6 +13778,7 @@ function paintBrain(snapshot, view) {
   status.classList.toggle("error", message.error);
   paintBrainProgress(view);
   paintBrainMeta(snapshot);
+  paintBrainIdentity(snapshot);
   paintBrainActivity(snapshot);
   const root = $("brain-sections");
   root.replaceChildren();

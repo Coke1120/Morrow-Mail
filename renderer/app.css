@@ -1239,6 +1239,43 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 
 .brain-meta dd { margin: 0; font-size: 13px; }
 
+#brain-identity { margin: 0 0 8px; }
+
+#brain-identity > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+#brain-identity > summary::-webkit-details-marker { display: none; }
+
+#brain-identity > summary:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+#brain-identity > summary svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  flex: none;
+}
+
+#brain-identity-list { margin-top: 6px; }
+
+#brain-identity-list h3 {
+  margin: 8px 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#brain-identity-list .hint { margin: 4px 0 0; }
+
 #brain-progress {
   height: 4px;
   margin: 8px 0;
