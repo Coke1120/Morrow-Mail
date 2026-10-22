@@ -22,6 +22,7 @@ const updater = require("./updater");
 const windowState = require("./window-state");
 const composeWindows = require("./compose-window");
 const readerWindows = require("./reader-window");
+const translateWindows = require("./translate-window");
 const { gate: updateGate, requestRendererQuiescence } = require("./update-quiescence");
 const ZOOM_STEP = 0.5;
 
@@ -175,6 +176,7 @@ function attachIpc(preloadFile) {
   for (const name of composeWindows.CHANNELS) directHost.add(name);
   for (const name of readerWindows.CHANNELS) directHost.add(name);
   directHost.add("reader:openFailed");
+  for (const name of translateWindows.CHANNELS) directHost.add(name);
   for (const channel of channels) {
     if (directHost.has(channel)) continue;
     ipcMain.handle(channel, (event, ...args) => updateGate.run(() => bus.handle(event, channel, ...args)));
@@ -776,6 +778,14 @@ app.whenReady().then(async () => {
       backgroundColor: () => (shellSession && shellSession.mode === "asar" ? "#193c34" : "#e7f0e4"),
     }).register();
     readerWindows.createReaderHost({
+      getParent: () => shellWindow,
+      preloadFile: () => shellSession && shellSession.preloadFile,
+      mode: () => shellSession && shellSession.mode,
+      htmlFile: FIRST_PARTY_HTML,
+      icon: APP_ICON,
+      backgroundColor: () => (shellSession && shellSession.mode === "asar" ? "#193c34" : "#e7f0e4"),
+    }).register();
+    translateWindows.createTranslateHost({
       getParent: () => shellWindow,
       preloadFile: () => shellSession && shellSession.preloadFile,
       mode: () => shellSession && shellSession.mode,

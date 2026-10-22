@@ -49,6 +49,7 @@ async function complete(messages, options = {}) {
       messages,
       temperature: options.temperature ?? 0.4,
       stream: false,
+      ...(Number.isInteger(options.max_tokens) && options.max_tokens > 0 ? { max_tokens: options.max_tokens } : {}),
     }),
     signal: options.signal,
   });

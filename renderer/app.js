@@ -34,7 +34,6 @@ const state = {
   signatures: [],
   signatureText: "",
   signatureHtml: "",
-  translateLang: "English",
   translate: null,
   draftWrite: null,
   suggestions: null,
@@ -46,6 +45,7 @@ const state = {
     outlookOpen: false,
     theme: "light",
     accent: "#193C34",
+    translateLang: "zh-Hant",
     conversation: true,
     images: true,
     undoSend: 30,
@@ -2577,7 +2577,42 @@ function usesThread(email, members) {
   return (members || []).some((row) => row && row.id && row.id !== email.id);
 }
 
-const TRANSLATE_LANGS = ["English", "Spanish", "French", "German", "Chinese", "Japanese"];
+function translateLangPref(value) {
+  const lang = typeof window !== "undefined" && window.morrowTranslateLang;
+  if (lang && typeof lang.cast === "function") {
+    try { return lang.cast(value, true); } catch { return "zh-Hant"; }
+  }
+  const aliases = {
+    "zh-hant": "zh-Hant",
+    "zh-tw": "zh-Hant",
+    "zh-hk": "zh-Hant",
+    "zh-hans": "zh-Hant",
+    "zh-cn": "zh-Hant",
+    chinese: "zh-Hant",
+    "simplified chinese": "zh-Hant",
+    "traditional chinese": "zh-Hant",
+    en: "en",
+    english: "en",
+    es: "es",
+    spanish: "es",
+    fr: "fr",
+    french: "fr",
+    de: "de",
+    german: "de",
+    ja: "ja",
+    japanese: "ja",
+  };
+  const key = String(value == null ? "" : value).trim().toLowerCase().replace(/\s+/g, " ");
+  return aliases[key] || "zh-Hant";
+}
+
+function translateLangLabel(value) {
+  const code = translateLangPref(value);
+  const lang = typeof window !== "undefined" && window.morrowTranslateLang;
+  if (lang && typeof lang.label === "function") return lang.label(code);
+  if (code === "zh-Hant") return "Traditional Chinese (繁體中文)";
+  return { en: "English", es: "Spanish", fr: "French", de: "German", ja: "Japanese" }[code] || "Traditional Chinese (繁體中文)";
+}
 
 function bodyNodes(text) {
   return String(text || "")
@@ -2752,6 +2787,33 @@ function readable(email) {
     .replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&")
     .trim();
   return text || (email && email.snippet) || "";
+}
+
+function plainFromMailHtml(html) {
+  return String(html || "")
+    .replace(/<(script|style|head|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<br\s*\/?>|<\/(?:p|div|tr|li|h[1-6]|blockquote)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&")
+    .trim();
+}
+
+function translateSource(email) {
+  if (email && email.htmlBody) {
+    const text = plainFromMailHtml(email.htmlBody);
+    if (text) return text;
+  }
+  if (email && email.textBody) return String(email.textBody);
+  return (email && email.snippet) || "";
+}
+
+function translateNodes(text) {
+  return String(text || "")
+    .split(/\n\s*\n/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part, index) => ({ node_id: "n" + index, text: part }));
 }
 
 // Layout attributes and a filtered CSS subset. Handlers, embedded documents, and
@@ -6002,6 +6064,8 @@ function renderReader(focus) {
   renderActions(pane, email);
   renderSuggestions(pane, email);
   appendReaderClose(pane);
+  appendTranslateStatus(pane);
+  paintTranslation();
   const heading = document.createElement("h2");
   heading.textContent = email.subject || "(no subject)";
   const from = document.createElement("p");
@@ -6032,12 +6096,6 @@ function renderReader(focus) {
   renderAttachments(pane, email);
   renderRemoteGate(pane, email);
   renderBody(pane, email);
-  const translated = document.createElement("div");
-  translated.className = "translation";
-  translated.setAttribute("role", "status");
-  translated.hidden = true;
-  pane.appendChild(translated);
-  paintTranslation();
   if (focus) {
     heading.tabIndex = -1;
     heading.focus();
@@ -6090,22 +6148,42 @@ function renderRemoteGate(pane, email, repaint) {
   pane.appendChild(bar);
 }
 
+function translateIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  circle.setAttribute("cx", "12");
+  circle.setAttribute("cy", "12");
+  circle.setAttribute("r", "10");
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", "2");
+  line.setAttribute("y1", "12");
+  line.setAttribute("x2", "22");
+  line.setAttribute("y2", "12");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z");
+  svg.append(circle, line, path);
+  return svg;
+}
+
 function renderTranslate(pane, email) {
   const bar = document.createElement("div");
   bar.className = "translate";
-  const select = document.createElement("select");
-  select.dataset.action = "translate-lang";
-  select.setAttribute("aria-label", "Translate into");
-  for (const lang of TRANSLATE_LANGS) select.append(option(lang, lang));
-  select.value = state.translateLang || "English";
-  select.addEventListener("change", () => {
-    state.translateLang = select.value;
-  });
   const go = document.createElement("button");
   go.type = "button";
   go.className = "ghost";
   go.dataset.action = "translate";
-  go.textContent = "Translate";
+  const label = document.createElement("span");
+  label.textContent = "Translate";
+  go.append(translateIcon(), label);
   go.addEventListener("click", () => {
     startTranslate(email).catch((error) => showStatus(error.message, true));
   });
@@ -6118,8 +6196,16 @@ function renderTranslate(pane, email) {
   cancel.addEventListener("click", () => {
     cancelTranslate().catch((error) => showStatus(error.message, true));
   });
-  bar.append(select, go, cancel);
+  bar.append(go, cancel);
   pane.appendChild(bar);
+}
+
+function appendTranslateStatus(pane) {
+  const translated = document.createElement("div");
+  translated.className = "translation";
+  translated.setAttribute("role", "status");
+  translated.hidden = true;
+  pane.appendChild(translated);
 }
 
 function paintTranslation() {
@@ -6138,23 +6224,26 @@ function paintTranslation() {
     return;
   }
   const text = translationText(view);
-  const show = !!(view.pending || view.error || text);
+  const failed = !!(view.error || view.openError);
+  const show = !!(view.pending || failed || view.windowOpen || text);
   box.hidden = !show;
   if (!show) return;
-  if (view.pending) {
-    const line = document.createElement("p");
-    const total = view.total || view.nodes.length;
-    const current = view.current || 0;
-    line.textContent = total ? `Translating… ${current}/${total}` : "Translating…";
-    box.appendChild(line);
-  }
-  if (view.error) {
+  if (failed) {
     const line = document.createElement("p");
     line.className = "error";
-    line.textContent = view.error;
+    line.textContent = view.error || view.openError;
     box.appendChild(line);
   }
-  if (text) {
+  if (view.pending && !view.error) {
+    const line = document.createElement("p");
+    line.textContent = view.windowOpen ? "Translating… Opened in a new window." : "Translating…";
+    box.appendChild(line);
+  } else if (view.windowOpen && !failed) {
+    const line = document.createElement("p");
+    line.textContent = "Opened in a new window.";
+    box.appendChild(line);
+  }
+  if (text && (!view.windowOpen || view.openError)) {
     const pre = document.createElement("pre");
     pre.textContent = text;
     box.appendChild(pre);
@@ -6170,36 +6259,77 @@ function stopTranslate() {
   const current = state.translate;
   if (!current || !current.pending) return;
   current.pending = false;
+  current.error = current.error || "Translation cancelled.";
   call("mail:translateCancel", { reqId: current.reqId }).catch(() => {});
 }
 
+function reportTranslation(reqId, message) {
+  if (!api || typeof api.reportTranslate !== "function") return;
+  api.reportTranslate({ reqId: reqId, type: "error", message: message }).catch(() => {});
+}
+
+async function openTranslationWindow(view) {
+  const seed = {
+    reqId: view.reqId,
+    subject: view.subject,
+    language: view.languageLabel,
+    original: view.source,
+    nodeIds: view.nodes.map((node) => node.node_id),
+  };
+  if (!api || typeof api.openTranslateWindow !== "function") {
+    throw new Error("Translation window is unavailable.");
+  }
+  const opened = await api.openTranslateWindow(seed);
+  if (!opened || opened.ok === false) {
+    throw new Error((opened && opened.message) || "That translation could not be opened.");
+  }
+}
+
 async function startTranslate(email) {
-  const nodes = bodyNodes(readable(email));
+  const nodes = translateNodes(translateSource(email));
   if (!nodes.length) {
     showStatus("This message has no text to translate.", true);
     return;
   }
   stopTranslate();
   const reqId = `tr-${Date.now().toString(36)}-${translateSeq += 1}`;
-  const targetLanguage = state.translateLang || "English";
-  state.translate = {
-    reqId,
-    emailId: email.id,
-    nodes,
+  const code = translateLangPref(state.prefs && state.prefs.translateLang);
+  const view = {
+    reqId: reqId,
+    emailId: email && email.id,
+    subject: email && email.subject ? String(email.subject) : "",
+    nodes: nodes,
     texts: {},
+    source: nodes.map((node) => node.text).join("\n\n"),
+    language: code,
+    languageLabel: translateLangLabel(code),
     error: "",
+    openError: "",
+    windowOpen: false,
     pending: true,
     current: 0,
     total: nodes.length,
   };
+  state.translate = view;
   paintTranslation();
   try {
-    await call("mail:translateStart", { reqId, targetLanguage, nodes });
+    await openTranslationWindow(view);
+    if (state.translate === view) view.windowOpen = true;
   } catch (error) {
-    if (!state.translate || state.translate.reqId !== reqId) return;
-    state.translate.pending = false;
-    state.translate.error = error instanceof Error ? error.message : String(error);
+    if (state.translate !== view) return;
+    view.openError = error instanceof Error ? error.message : String(error);
+  }
+  paintTranslation();
+  if (state.translate !== view) return;
+  try {
+    await call("mail:translateStart", { reqId, targetLanguage: code, nodes });
+  } catch (error) {
+    if (state.translate !== view) return;
+    const message = error instanceof Error ? error.message : String(error);
+    view.pending = false;
+    view.error = message;
     paintTranslation();
+    reportTranslation(reqId, message);
   }
 }
 
@@ -6208,6 +6338,7 @@ async function cancelTranslate() {
   if (!current || !current.pending) return;
   const reqId = current.reqId;
   current.pending = false;
+  current.error = "Translation cancelled.";
   paintTranslation();
   await call("mail:translateCancel", { reqId });
 }
@@ -10833,6 +10964,19 @@ function isReaderWindow() {
   return false;
 }
 
+function isTranslateWindow() {
+  try {
+    const root = document.documentElement;
+    if (root && root.dataset && root.dataset.window === "translate") return true;
+    const search = window.location && window.location.search;
+    if (typeof search === "string" && new URLSearchParams(search).get("role") === "translate") {
+      if (root && root.dataset) root.dataset.window = "translate";
+      return true;
+    }
+  } catch { /* vm checks have no location */ }
+  return false;
+}
+
 function isComposeWindow() {
   try {
     const root = document.documentElement;
@@ -12648,6 +12792,7 @@ async function loadShellPrefs() {
     });
     next.theme = look.theme;
     next.accent = look.accent;
+    next.translateLang = translateLangPref(await api.invoke("morrow:configGetTranslateTargetLanguage"));
     for (const [channel, key] of Object.entries(READER_PREFS)) {
       next[key] = (await api.invoke(channel)) === true;
     }
@@ -12707,6 +12852,10 @@ function takePref(getChannel, kind, control) {
     state.prefs.theme = look.theme;
     state.prefs.accent = look.accent;
     return true;
+  }
+  if (getChannel === "morrow:configGetTranslateTargetLanguage") {
+    state.prefs.translateLang = translateLangPref(readPref(kind, control));
+    return false;
   }
   if (getChannel === "morrow:configGetUndoSendDelaySeconds") {
     state.prefs.undoSend = sendDelayMs(readPref(kind, control)) / 1000;
@@ -12801,6 +12950,7 @@ function prefRows() {
     ["pref-accent", "morrow:configGetAccent", "morrow:configSetAccent", "text"],
     ["pref-time-format", "morrow:configGetTimeFormat", "morrow:configSetTimeFormat", "select"],
     ["pref-date-format", "morrow:configGetDateFormat", "morrow:configSetDateFormat", "select"],
+    ["pref-translate-language", "morrow:configGetTranslateTargetLanguage", "morrow:configSetTranslateTargetLanguage", "select"],
     ["pref-conversation", "morrow:configGetConversationViewEnabled", "morrow:configSetConversationViewEnabled", "bool"],
     ["pref-images", "morrow:configGetAutoLoadRemoteImages", "morrow:configSetAutoLoadRemoteImages", "bool"],
     ["pref-undo", "morrow:configGetUndoSendDelaySeconds", "morrow:configSetUndoSendDelaySeconds", "seconds"],
@@ -12851,7 +13001,8 @@ async function loadSettings() {
   const keys = { ...SHELL_PREFS, ...READER_PREFS, "config:getTheme": "theme",
     "morrow:configGetAccent": "accent", "morrow:configGetUndoSendDelaySeconds": "undoSend",
     "morrow:configGetSyncHorizonDays": "syncHorizon",
-    "morrow:configGetTimeFormat": "timeFormat", "morrow:configGetDateFormat": "dateFormat" };
+    "morrow:configGetTimeFormat": "timeFormat", "morrow:configGetDateFormat": "dateFormat",
+    "morrow:configGetTranslateTargetLanguage": "translateLang" };
   for (const [id, channel, , kind] of prefRows()) {
     applyPref(kind, $(id), state.prefs[keys[channel]]);
   }
@@ -19386,9 +19537,162 @@ function watchNetwork() {
   send();
 }
 
+let translateSnapSeq = 0;
+
+function translateHeading(snap) {
+  const subject = snap && snap.subject ? String(snap.subject).trim() : "";
+  const language = snap && snap.language ? String(snap.language).trim() : "";
+  if (subject && language) return subject + " — " + language;
+  if (subject) return subject;
+  if (language) return "Translation — " + language;
+  return "Translation";
+}
+
+function translateStatusLabel(snap) {
+  const total = Number(snap && snap.total) || 0;
+  const current = Number(snap && snap.current) || 0;
+  if (total > 0) return "Translating… " + current + "/" + total;
+  return "Translating…";
+}
+
+function buildTranslateWindow(pane, snap) {
+  pane.replaceChildren();
+  const chrome = document.createElement("div");
+  chrome.className = "translate-chrome";
+  const heading = document.createElement("h2");
+  heading.className = "translate-title";
+  heading.dataset.role = "translate-title";
+  heading.textContent = translateHeading(snap);
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "ghost";
+  cancel.dataset.action = "translate-cancel";
+  cancel.textContent = "Cancel";
+  cancel.hidden = true;
+  cancel.addEventListener("click", () => {
+    const reqId = pane.dataset.translateReq;
+    if (!reqId || !api) return;
+    api.invoke("mail:translateCancel", { reqId: reqId }).catch(() => {});
+  });
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "ghost";
+  close.textContent = "Close";
+  close.addEventListener("click", () => {
+    if (typeof window.close === "function") window.close();
+  });
+  chrome.append(heading, cancel, close);
+  const columns = document.createElement("div");
+  columns.className = "translate-columns";
+  const left = document.createElement("section");
+  left.className = "translate-column";
+  const leftLabel = document.createElement("h2");
+  leftLabel.textContent = "Original";
+  const leftBody = document.createElement("div");
+  leftBody.className = "translate-column-body";
+  const original = document.createElement("pre");
+  original.dataset.role = "original";
+  original.textContent = snap && snap.original ? String(snap.original) : "";
+  leftBody.appendChild(original);
+  left.append(leftLabel, leftBody);
+  const right = document.createElement("section");
+  right.className = "translate-column";
+  const rightLabel = document.createElement("h2");
+  rightLabel.textContent = "Translation";
+  const stateLine = document.createElement("p");
+  stateLine.dataset.role = "translate-state";
+  stateLine.setAttribute("role", "status");
+  const errorLine = document.createElement("p");
+  errorLine.dataset.role = "translate-error";
+  errorLine.className = "error";
+  errorLine.setAttribute("role", "status");
+  errorLine.hidden = true;
+  const rightBody = document.createElement("div");
+  rightBody.className = "translate-column-body";
+  const translated = document.createElement("pre");
+  translated.dataset.role = "translated";
+  rightBody.appendChild(translated);
+  right.append(rightLabel, stateLine, errorLine, rightBody);
+  columns.append(left, right);
+  pane.append(chrome, columns);
+}
+
+function renderTranslateWindow(snap) {
+  const pane = $("reader");
+  if (!pane || !snap) return;
+  const reqId = snap.reqId ? String(snap.reqId) : "";
+  if (pane.dataset.translateReq !== reqId || !pane.querySelector("[data-role='original']")) {
+    pane.dataset.translateReq = reqId;
+    buildTranslateWindow(pane, snap);
+  }
+  const heading = pane.querySelector("[data-role='translate-title']");
+  const stateLine = pane.querySelector("[data-role='translate-state']");
+  const errorLine = pane.querySelector("[data-role='translate-error']");
+  const translated = pane.querySelector("[data-role='translated']");
+  const cancel = pane.querySelector("[data-action='translate-cancel']");
+  if (heading) heading.textContent = translateHeading(snap);
+  document.title = translateHeading(snap).slice(0, 180) + " — Morrow Mail";
+  const pending = snap.pending === true && !snap.error;
+  if (pending) pane.setAttribute("aria-busy", "true");
+  else pane.removeAttribute("aria-busy");
+  if (stateLine) {
+    stateLine.hidden = !pending;
+    stateLine.textContent = pending ? translateStatusLabel(snap) : "";
+  }
+  if (errorLine) {
+    errorLine.hidden = !snap.error;
+    errorLine.textContent = snap.error ? String(snap.error) : "";
+  }
+  const nextText = snap.translated ? String(snap.translated) : "";
+  if (translated && translated.textContent !== nextText) translated.textContent = nextText;
+  if (cancel) cancel.hidden = !pending;
+}
+
+function acceptTranslateSnap(snap) {
+  if (!snap || typeof snap.seq !== "number") return;
+  if (snap.seq < translateSnapSeq) return;
+  translateSnapSeq = snap.seq;
+  renderTranslateWindow(snap);
+}
+
+async function bootTranslateWindow() {
+  try { document.documentElement.dataset.window = "translate"; } catch { /* the page is still the translation surface */ }
+  if (!api) {
+    showStatus("Mail preload is unavailable.", true);
+    return;
+  }
+  await loadLook();
+  if (typeof api.on === "function") api.on("translate:update", acceptTranslateSnap);
+  let snap = null;
+  try {
+    if (typeof api.pullTranslateSeed === "function") snap = await api.pullTranslateSeed();
+  } catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+  }
+  if (snap) acceptTranslateSnap(snap);
+  else {
+    renderTranslateWindow({
+      seq: 0,
+      reqId: "",
+      subject: "",
+      language: "",
+      original: "",
+      translated: "",
+      error: "That translation could not be opened.",
+      pending: false,
+      current: 0,
+      total: 0,
+    });
+  }
+}
+
 async function boot() {
   if (isComposeWindow()) {
     await bootComposeWindow();
+    return;
+  }
+  if (isTranslateWindow()) {
+    await bootTranslateWindow();
     return;
   }
   if (isReaderWindow()) {
