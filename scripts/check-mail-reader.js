@@ -179,6 +179,7 @@ async function main() {
   assert.equal(fetched, 0);
   await assertDownloadedBodyStaysOnTheRequestedUid();
   await assertReaderKeepsTheSelectedMessage();
+  await assertThreadStripCollapsesOlderMessages();
   console.log('mail reader synthetic checks passed');
 }
 
@@ -256,9 +257,28 @@ function domNode(tag) {
       return child;
     },
     replaceChildren() { this.children = []; },
-    addEventListener() {},
+    addEventListener(type, fn) {
+      if (!this.listeners) this.listeners = {};
+      if (!this.listeners[type]) this.listeners[type] = [];
+      this.listeners[type].push(fn);
+    },
     removeEventListener() {},
-    focus() {},
+    click() {
+      for (const fn of (this.listeners && this.listeners.click) || []) fn();
+    },
+    replaceWith(next) {
+      const parent = this.parentNode;
+      if (!parent || !parent.children) return;
+      if (next && next.parentNode && next.parentNode.children) {
+        next.parentNode.children = next.parentNode.children.filter((item) => item !== next);
+      }
+      if (next) next.parentNode = parent;
+      const index = parent.children.indexOf(this);
+      if (index < 0) parent.children.push(next);
+      else parent.children.splice(index, 1, next);
+      this.parentNode = null;
+    },
+    focus() { this.focused = true; },
     getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 }; },
     querySelector(selector) { return queryNode(this, selector); },
   };
@@ -431,6 +451,150 @@ async function assertReaderKeepsTheSelectedMessage() {
   assert.match(shown, /Alpha/);
   assert.doesNotMatch(shown, /beta body/);
   assert.doesNotMatch(shown, /previous body/);
+}
+
+function threadNodes(root, className) {
+  const found = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.className && node.className.split(/\s+/).includes(className)) found.push(node);
+    for (const child of node.children || []) walk(child);
+  };
+  walk(root);
+  return found;
+}
+
+function threadMember(id, snippet) {
+  return {
+    id,
+    threadId: 'thread-same',
+    subject: 'RE: Same subject',
+    snippet,
+    from: 'Sender ' + id,
+    date: '2026-10-' + String(10 + Number(String(id).slice(1))).padStart(2, '0') + 'T12:00:00.000Z',
+    accountId: 'acct',
+    unread: false,
+    textBody: 'body ' + id,
+    htmlBody: null,
+  };
+}
+
+async function assertThreadStripCollapsesOlderMessages() {
+  const ui = loadReader();
+  const calls = [];
+  const rows = [];
+  for (let i = 0; i < 8; i += 1) rows.push(threadMember('m' + i, 'Snippet ' + i));
+  const current = { ...rows[7], textBody: 'latest body', hasAttachments: true };
+  ui.call = (channel, payload) => {
+    calls.push({ channel, payload });
+    if (channel !== 'mail:openEmail') return Promise.resolve({});
+    const row = rows.find((item) => item.id === payload.emailId) || current;
+    return Promise.resolve({
+      email: { ...row, textBody: 'body ' + payload.emailId, htmlBody: null, hasAttachments: true },
+      threadMessages: rows,
+    });
+  };
+  ui.state.emails = rows;
+  ui.state.thread = rows;
+  ui.state.email = current;
+  ui.renderReader(false);
+  let shown = readerText(ui.reader);
+  assert.match(shown, /Earlier in this conversation \(6\)/);
+  assert.match(shown, /Snippet 6/);
+  assert.match(shown, /Snippet 7/);
+  assert.match(shown, /latest body/);
+  assert.match(shown, /This message has attachments/);
+  assert.doesNotMatch(shown, /Snippet 0/);
+  assert.doesNotMatch(shown, /Snippet 5/);
+  assert.equal(shown.split('RE: Same subject').length - 1, 1);
+  const toggle = threadNodes(ui.reader, 'thread-earlier')[0];
+  assert.equal(toggle.tag, 'button');
+  assert.equal(toggle.type, 'button');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle.getAttribute('aria-controls'), 'thread-messages');
+  assert.match(threadNodes(ui.reader, 'thread')[0].getAttribute('aria-label'), /8 messages in this conversation, 6 earlier messages collapsed/);
+  assert.equal(threadNodes(ui.reader, 'thread-item').length, 2);
+  assert.equal(calls.length, 0);
+  const earlierIndex = shown.indexOf('Earlier in this conversation');
+  const attachmentIndex = shown.indexOf('This message has attachments');
+  const bodyIndex = shown.indexOf('latest body');
+  assert.ok(earlierIndex >= 0 && earlierIndex < attachmentIndex && attachmentIndex < bodyIndex);
+
+  toggle.click();
+  shown = readerText(ui.reader);
+  assert.match(shown, /Earlier in this conversation \(6\)/);
+  assert.match(shown, /Showing 6 earlier messages/);
+  assert.match(shown, /Snippet 0/);
+  assert.match(shown, /Snippet 5/);
+  assert.equal(shown.split('RE: Same subject').length - 1, 1);
+  assert.equal(threadNodes(ui.reader, 'thread-earlier')[0].getAttribute('aria-expanded'), 'true');
+  assert.equal(threadNodes(ui.reader, 'thread-earlier')[0].focused, true);
+  assert.equal(threadNodes(ui.reader, 'thread-item').length, 8);
+  for (const row of threadNodes(ui.reader, 'thread-item')) {
+    const rowText = readerText(row);
+    assert.equal(rowText.includes('RE: Same subject'), false);
+    assert.match(rowText, /Sender m/);
+    const when = threadNodes(row, 'when')[0];
+    assert.ok(when && when.textContent);
+    assert.equal(when.textContent.includes('RE:'), false);
+  }
+  const older = threadNodes(ui.reader, 'thread-item').find((row) => readerText(row).includes('Snippet 1'));
+  older.click();
+  await flushReader();
+  assert.equal(calls[0].channel, 'mail:openEmail');
+  assert.equal(calls[0].payload.emailId, 'm1');
+  shown = readerText(ui.reader);
+  assert.match(shown, /body m1/);
+  assert.match(shown, /Snippet 0/);
+  const currentRow = threadNodes(ui.reader, 'thread-item').find((row) => row.getAttribute('aria-current') === 'true');
+  assert.match(readerText(currentRow), /Snippet 1/);
+
+  const collapsed = threadNodes(ui.reader, 'thread-earlier')[0];
+  collapsed.click();
+  shown = readerText(ui.reader);
+  assert.match(shown, /Earlier in this conversation \(5\)/);
+  assert.match(shown, /5 earlier messages collapsed/);
+  assert.equal(threadNodes(ui.reader, 'thread-earlier')[0].getAttribute('aria-expanded'), 'false');
+  assert.doesNotMatch(shown, /Snippet 0/);
+  assert.match(shown, /Snippet 1/);
+  assert.match(shown, /Snippet 6/);
+  assert.match(shown, /body m1/);
+
+  const pinned = loadReader();
+  pinned.call = async () => ({});
+  const oldest = { ...rows[0], textBody: 'oldest body' };
+  pinned.state.thread = rows;
+  pinned.state.email = oldest;
+  pinned.renderReader(false);
+  shown = readerText(pinned.reader);
+  assert.match(shown, /Earlier in this conversation \(5\)/);
+  assert.match(shown, /Snippet 0/);
+  assert.match(shown, /Snippet 6/);
+  assert.match(shown, /Snippet 7/);
+  assert.doesNotMatch(shown, /Snippet 1/);
+  assert.equal(threadNodes(pinned.reader, 'thread-item').length, 3);
+
+  const pair = loadReader();
+  pair.call = async () => ({});
+  const two = [threadMember('m0', 'Snippet 0'), threadMember('m1', 'Snippet 1')];
+  pair.state.thread = two;
+  pair.state.email = { ...two[1], textBody: 'pair body' };
+  pair.renderReader(false);
+  shown = readerText(pair.reader);
+  assert.equal(threadNodes(pair.reader, 'thread-earlier').length, 0);
+  assert.equal(threadNodes(pair.reader, 'thread-item').length, 2);
+  assert.match(shown, /Snippet 0/);
+  assert.match(shown, /Snippet 1/);
+  assert.equal(shown.split('RE: Same subject').length - 1, 1);
+
+  ui.state.prefs.conversation = false;
+  ui.state.email = current;
+  ui.state.thread = rows;
+  ui.renderReader(false);
+  shown = readerText(ui.reader);
+  assert.equal(threadNodes(ui.reader, 'thread-item').length, 0);
+  assert.doesNotMatch(shown, /Earlier in this conversation/);
+  assert.match(shown, /latest body/);
 }
 module.exports = { run: main };
 if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });

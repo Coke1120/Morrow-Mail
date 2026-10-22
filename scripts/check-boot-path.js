@@ -623,6 +623,74 @@ assert.deepStrictEqual(threadMembers([], [{ id: "a" }, { id: "b" }]).map((row) =
 assert.deepStrictEqual(threadMembers([{ id: "" }], null), []);
 assert.deepStrictEqual(threadMembers(null, null), []);
 
+const threadStrip = loadFunctions(appJs, [
+  "threadCalendarTime",
+  "threadRelativeTime",
+  "threadSnippetLine",
+  "threadEarlierLabel",
+  "threadEarlierAnnouncement",
+  "threadListLabel",
+  "threadStripPlan",
+]);
+const threadNow = new Date("2026-10-22T12:00:00Z");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T11:59:40Z", threadNow), "just now");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T11:59:00Z", threadNow), "1 minute ago");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T11:30:00Z", threadNow), "30 minutes ago");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T10:00:00Z", threadNow), "2 hours ago");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-22T11:00:00Z", threadNow), "1 hour ago");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-21T12:00:00Z", threadNow), "yesterday");
+assert.strictEqual(threadStrip.threadRelativeTime("2026-10-18T12:00:00Z", threadNow), "4 days ago");
+assert.strictEqual(threadStrip.threadRelativeTime("", threadNow), "");
+assert.ok(threadStrip.threadRelativeTime("2026-09-01T12:00:00Z", threadNow));
+assert.ok(!threadStrip.threadRelativeTime("2026-09-01T12:00:00Z", threadNow).includes("ago"));
+assert.ok(!String(threadStrip.threadRelativeTime("2026-10-23T12:00:00Z", threadNow)).includes("ago"));
+assert.strictEqual(threadStrip.threadSnippetLine({ snippet: "  hello\nthere  ", subject: "RE: Secret" }), "hello there");
+assert.strictEqual(threadStrip.threadSnippetLine({ snippet: "", subject: "RE: Secret" }), "");
+assert.strictEqual(threadStrip.threadSnippetLine(null), "");
+assert.strictEqual(threadStrip.threadEarlierLabel(18), "Earlier in this conversation (18)");
+assert.strictEqual(threadStrip.threadEarlierLabel(1), "Earlier in this conversation (1)");
+assert.strictEqual(threadStrip.threadEarlierAnnouncement(6, false), "6 earlier messages collapsed");
+assert.strictEqual(threadStrip.threadEarlierAnnouncement(1, true), "Showing 1 earlier message");
+assert.strictEqual(threadStrip.threadListLabel(20, 18, false), "20 messages in this conversation, 18 earlier messages collapsed");
+assert.strictEqual(threadStrip.threadListLabel(20, 18, true), "20 messages in this conversation");
+function threadStripRow(id, date) {
+  return { id, date, subject: "RE: Same subject", snippet: "Snippet " + id };
+}
+const threadStripRows = ["a", "b", "c", "d", "e"].map((id, index) => threadStripRow(id, "2026-10-1" + index));
+assert.deepStrictEqual(threadStrip.threadStripPlan(threadStripRows, "e", false).visibleIds, ["d", "e"]);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "e", false).count, 3);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "e", false).showControl, true);
+assert.deepStrictEqual(threadStrip.threadStripPlan(threadStripRows, "b", false).visibleIds, ["b", "d", "e"]);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "b", false).count, 2);
+assert.deepStrictEqual(threadStrip.threadStripPlan(threadStripRows, "b", true).visibleIds, ["a", "b", "c", "d", "e"]);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "b", true).count, 2);
+assert.strictEqual(threadStrip.threadStripPlan(threadStripRows, "b", true).expanded, true);
+const threadStripPair = threadStrip.threadStripPlan([threadStripRow("a", "1"), threadStripRow("b", "2")], "b", false);
+assert.strictEqual(threadStripPair.showControl, false);
+assert.deepStrictEqual(threadStripPair.visibleIds, ["a", "b"]);
+const threadStripOldest = threadStrip.threadStripPlan([
+  threadStripRow("a", "1"),
+  threadStripRow("b", "2"),
+  threadStripRow("c", "3"),
+], "a", false);
+assert.strictEqual(threadStripOldest.showControl, false);
+assert.deepStrictEqual(threadStripOldest.visibleIds, ["a", "b", "c"]);
+assert.deepStrictEqual(threadStrip.threadStripPlan([
+  threadStripRow("b", "2"),
+  threadStripRow("a", "1"),
+  threadStripRow("c", "3"),
+], "c", false).visibleIds, ["b", "c"]);
+const threadRowSource = functionSource(appJs, "threadMessageButton");
+assert.ok(!threadRowSource.includes("subject"), "conversation rows repeat the subject");
+assert.ok(threadRowSource.includes("openMessage(member.id)"));
+assert.ok(threadRowSource.includes("threadSnippetLine"));
+assert.ok(threadRowSource.includes("threadRelativeTime"));
+assert.ok(functionSource(appJs, "buildThreadStrip").includes('aria-expanded'));
+assert.ok(functionSource(appJs, "buildThreadStrip").includes("thread-earlier"));
+assert.ok(functionSource(appJs, "toggleThreadEarlier").includes("paintThreadStrip(true)"));
+assert.ok(css.includes("button.thread-earlier"));
+assert.ok(css.includes(".thread-snippet"));
+
 const paneWidth = extractFunction(appJs, "paneWidth");
 assert.strictEqual(paneWidth(200, -80, 140, 400), 140);
 assert.strictEqual(paneWidth(200, 300, 140, 400), 400);
