@@ -1995,6 +1995,18 @@ function openDialog(id) {
   if (motion) motion.dialogIn(dialog);
 }
 
+const dialogCloseGen = new WeakMap();
+
+function clearDialogMotion(dialog) {
+  if (dialog.getAnimations) {
+    for (const animation of dialog.getAnimations()) animation.cancel();
+  }
+  dialog.style.opacity = "";
+  dialog.style.transform = "";
+  dialog.style.transformOrigin = "";
+  delete dialog.dataset.closing;
+}
+
 function closeDialog(id) {
   const dialog = $(id);
   if (!dialog || !dialog.open || dialog.dataset.closing === "1") return;
@@ -2003,17 +2015,20 @@ function closeDialog(id) {
     dialog.close();
     return;
   }
+  const generation = (dialogCloseGen.get(dialog) || 0) + 1;
+  dialogCloseGen.set(dialog, generation);
   dialog.dataset.closing = "1";
   return motion.dialogOut(dialog).then(() => {
+    if (dialogCloseGen.get(dialog) !== generation) return;
     if (dialog.open) dialog.close();
-    if (dialog.getAnimations) {
-      for (const animation of dialog.getAnimations()) animation.cancel();
-    }
-    dialog.style.opacity = "";
-    dialog.style.transform = "";
-    dialog.style.transformOrigin = "";
-    delete dialog.dataset.closing;
+    clearDialogMotion(dialog);
   });
+}
+
+function releaseClosingDialog(dialog) {
+  dialogCloseGen.set(dialog, (dialogCloseGen.get(dialog) || 0) + 1);
+  clearDialogMotion(dialog);
+  if (dialog.open) dialog.close();
 }
 
 let confirmResult = null;
@@ -2052,9 +2067,17 @@ function askConfirm(copy) {
   }
   confirmCopy = copy;
   paintConfirm(copy);
+  let resolveConfirm = null;
   const pending = new Promise((resolve) => {
-    confirmResult = resolve;
+    resolveConfirm = resolve;
   });
+  // Close motion still has the dialog open. Drop that generation before the
+  // close event so it cannot cancel this prompt, then show the new one now.
+  if (dialog.open && dialog.dataset.closing === "1") {
+    confirmResult = null;
+    releaseClosingDialog(dialog);
+  }
+  confirmResult = resolveConfirm;
   if (!dialog.open) openDialog("confirm");
   focusConfirm(copy);
   return pending;
@@ -5739,7 +5762,7 @@ function renderReader(focus) {
     heading.textContent = email.subject || "(no subject)";
     const from = document.createElement("p");
     from.className = "meta";
-    from.textContent = email.from || "";
+    paintSenderAddress(from, email.from || "");
     const when = document.createElement("p");
     when.className = "meta";
     const failedAt = email.date ? new Date(email.date) : null;
@@ -5749,19 +5772,23 @@ function renderReader(focus) {
     error.setAttribute("role", "status");
     error.textContent = email.bodyError;
     pane.append(heading, from, when, error);
+    if (isReaderWindow()) pane.appendChild(renderReaderWindowBar(false));
     if (focus) {
       heading.tabIndex = -1;
       heading.focus();
     }
     return;
   }
-  renderActions(pane, email);
-  renderSuggestions(pane, email);
+  if (isReaderWindow()) pane.appendChild(renderReaderWindowBar(true));
+  else {
+    renderActions(pane, email);
+    renderSuggestions(pane, email);
+  }
   const heading = document.createElement("h2");
   heading.textContent = email.subject || "(no subject)";
   const from = document.createElement("p");
   from.className = "meta";
-  from.textContent = email.from || "";
+  paintSenderAddress(from, email.from || "");
   const when = document.createElement("p");
   when.className = "meta";
   const date = email.date ? new Date(email.date) : null;
@@ -5769,7 +5796,7 @@ function renderReader(focus) {
   pane.append(heading, from, when);
   const until = snoozedUntilOf(email);
   const untilDate = until ? new Date(until) : null;
-  if (state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
+  if (!isReaderWindow() && state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
     const snooze = document.createElement("p");
     snooze.className = "meta";
     snooze.textContent = `Snoozed until ${untilDate.toLocaleString()}`;
@@ -5783,16 +5810,18 @@ function renderReader(focus) {
     line.textContent = `${label} ${text}`;
     pane.appendChild(line);
   }
-  renderThread(pane, email);
+  if (!isReaderWindow()) renderThread(pane, email);
   renderAttachments(pane, email);
   renderRemoteGate(pane, email);
   renderBody(pane, email);
-  const translated = document.createElement("div");
-  translated.className = "translation";
-  translated.setAttribute("role", "status");
-  translated.hidden = true;
-  pane.appendChild(translated);
-  paintTranslation();
+  if (!isReaderWindow()) {
+    const translated = document.createElement("div");
+    translated.className = "translation";
+    translated.setAttribute("role", "status");
+    translated.hidden = true;
+    pane.appendChild(translated);
+    paintTranslation();
+  }
   if (focus) {
     heading.tabIndex = -1;
     heading.focus();
@@ -8010,9 +8039,19 @@ function onListContext(event) {
   openOrganizeMenu(email, event.clientX, event.clientY);
 }
 
+function readerContextTarget(event) {
+  const target = event && event.target;
+  if (!target) return null;
+  if (typeof target.closest === "function") return target;
+  return target.parentElement || null;
+}
+
 function onReaderContext(event) {
   if (!state.email) return;
-  if (event.target.closest && event.target.closest("input, textarea, select, a")) return;
+  const target = readerContextTarget(event);
+  if (target && target.closest && target.closest(".sender-address")) return;
+  if (isReaderWindow()) return;
+  if (target && target.closest && target.closest("input, textarea, select, a")) return;
   event.preventDefault();
   openOrganizeMenu(state.email, event.clientX, event.clientY);
 }
@@ -10297,6 +10336,19 @@ function changeComposeFrom() {
   paintComposeNote();
 }
 
+function isReaderWindow() {
+  try {
+    const root = document.documentElement;
+    if (root && root.dataset && root.dataset.window === "reader") return true;
+    const search = window.location && window.location.search;
+    if (typeof search === "string" && new URLSearchParams(search).get("role") === "reader") {
+      if (root && root.dataset) root.dataset.window = "reader";
+      return true;
+    }
+  } catch { /* vm checks have no location */ }
+  return false;
+}
+
 function isComposeWindow() {
   try {
     const root = document.documentElement;
@@ -10429,6 +10481,106 @@ async function bootComposeWindow() {
   catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     flushComposeWindowClose();
+  }
+}
+
+function renderReaderWindowBar(withReply) {
+  const bar = document.createElement("div");
+  bar.className = "reader-window-bar";
+  if (withReply) {
+    const reply = document.createElement("button");
+    reply.type = "button";
+    reply.className = "ghost";
+    reply.textContent = "Reply";
+    reply.addEventListener("click", () => {
+      Promise.resolve(openReaderCompose("reply")).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+    });
+    bar.appendChild(reply);
+  }
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "ghost";
+  close.textContent = "Close";
+  close.addEventListener("click", () => {
+    if (typeof window.close === "function") window.close();
+  });
+  bar.appendChild(close);
+  return bar;
+}
+
+function publishReaderTitle(subject) {
+  const title = String(subject || "").trim() || "Message";
+  document.title = title.slice(0, 180) + " — Morrow Mail";
+}
+
+function showReaderOpenError(message) {
+  const pane = $("reader");
+  if (!pane) return;
+  pane.removeAttribute("aria-busy");
+  pane.replaceChildren();
+  const heading = document.createElement("h2");
+  heading.textContent = "Message";
+  const error = document.createElement("p");
+  error.className = "hint error";
+  error.textContent = message || "That message could not be opened.";
+  pane.append(heading, error, renderReaderWindowBar(false));
+}
+
+async function bootReaderWindow() {
+  try { document.documentElement.dataset.window = "reader"; } catch { /* the page is still the reader surface */ }
+  if (!api) {
+    showStatus("Mail preload is unavailable.", true);
+    return;
+  }
+  wire();
+  await loadLook();
+  await loadShellPrefs();
+  try {
+    const data = await call("mail:listAccounts");
+    state.accounts = Array.isArray(data) ? data : [];
+  } catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+  }
+  let seed = null;
+  try {
+    if (typeof api.pullReaderSeed === "function") seed = await api.pullReaderSeed();
+  } catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+  }
+  publishReaderTitle("");
+  paintReaderPending({ subject: "" });
+  const messageId = seed && seed.messageId;
+  const accountId = seed && seed.accountId;
+  if (!messageId) {
+    showReaderOpenError("That message could not be opened.");
+    showStatus("That message could not be opened.", true);
+    return;
+  }
+  let opened;
+  try {
+    opened = await call("mail:openEmail", { emailId: messageId, accountId: accountId });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    showReaderOpenError(message);
+    showStatus(message, true);
+    return;
+  }
+  const email = opened && opened.email;
+  if (!email) {
+    showReaderOpenError("That message is no longer in the mailbox.");
+    showStatus("That message is no longer in the mailbox.", true);
+    return;
+  }
+  state.email = email;
+  state.thread = [];
+  state.accountId = email.accountId || accountId || state.accountId;
+  publishReaderTitle(email.subject || "");
+  renderReader(false);
+  if (!email.unread) return;
+  try {
+    await call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead: true });
+  } catch (error) {
+    showStatus("Message opened, but marking it read was not confirmed. Other clients may still show it unread. " + (error.message || String(error)), true);
   }
 }
 
@@ -11361,6 +11513,7 @@ function runMailShortcut(action) {
 }
 
 function onMailShortcut(event) {
+  if (isReaderWindow()) return;
   const action = mailShortcut(event, mailShortcutContext(event));
   if (!action) return;
   event.preventDefault();
@@ -17602,6 +17755,311 @@ function wireBot() {
   }
 }
 
+function senderHistoryApi() {
+  return typeof window !== "undefined" ? window.morrowSenderHistory : null;
+}
+
+function paintSenderAddress(node, from) {
+  const header = String(from || "");
+  const history = senderHistoryApi();
+  if (!node) return;
+  if (!history || typeof history.senderHeader !== "function") {
+    node.textContent = header;
+    return;
+  }
+  const parsed = history.senderHeader(header);
+  if (!parsed.address) {
+    node.textContent = header;
+    return;
+  }
+  node.replaceChildren();
+  if (parsed.displayName) node.appendChild(document.createTextNode(parsed.displayName + " "));
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "sender-address";
+  button.dataset.senderAddress = parsed.address;
+  button.setAttribute("aria-label", "Previous emails from " + parsed.address);
+  button.textContent = parsed.address;
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    openSenderHistory(parsed.address);
+  });
+  button.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openSenderAddressMenu(parsed.address, event.clientX, event.clientY);
+  });
+  node.appendChild(button);
+}
+
+function openSenderAddressMenu(address, x, y) {
+  const menu = ensureOrganizeMenu();
+  menu.setAttribute("aria-label", "Previous emails");
+  menu.replaceChildren();
+  appendMenuAction(menu, "Previous emails…", () => openSenderHistory(address));
+  placeMenu(menu, x, y);
+}
+
+let senderHistoryGen = 0;
+let senderHistoryView = null;
+
+function senderWhen(value) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
+}
+
+function senderAccountLabel(account) {
+  return accountLabel({
+    id: account && account.accountId,
+    email: account && account.email,
+    label: account && account.label,
+    name: account && account.name,
+  });
+}
+
+function toastSenderFailures(accounts) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  const auth = list.find((row) => row && row.status === "auth");
+  if (auth) {
+    showStatus("Sign in again to search " + senderAccountLabel(auth) + ".", true);
+    return;
+  }
+  const limited = list.find((row) => row && row.status === "rate_limit");
+  if (limited) {
+    showStatus("Paused for rate limit", true);
+    return;
+  }
+  const failed = list.find((row) => row && row.status === "error");
+  if (failed) showStatus(failed.message || "Previous mail could not be loaded.", true);
+}
+
+function senderChipText(account) {
+  const status = account && account.status;
+  if (status === "auth") return "Sign in again";
+  if (status === "rate_limit") return "Paused for rate limit";
+  if (status === "unavailable") return "Unavailable";
+  if (status === "error") return account.message || "Could not search";
+  return "";
+}
+
+function paintSenderChips(host) {
+  host.replaceChildren();
+  const accounts = (senderHistoryView && senderHistoryView.accounts) || [];
+  for (const account of accounts) {
+    if (!account || !account.status || account.status === "ok") continue;
+    const chip = document.createElement("div");
+    chip.className = "sender-history-chip";
+    const label = document.createElement("span");
+    label.textContent = senderAccountLabel(account) + " · " + senderChipText(account);
+    chip.appendChild(label);
+    if (account.status === "auth" || account.status === "rate_limit" || account.status === "error") {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "ghost";
+      retry.textContent = "Retry";
+      retry.addEventListener("click", () => retrySenderAccount(account.accountId));
+      chip.appendChild(retry);
+    }
+    host.appendChild(chip);
+  }
+}
+
+function senderHistoryRow(row) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "sender-history-row" + (row.unread ? " unread" : "");
+  if (row.current) button.setAttribute("aria-current", "true");
+  const read = row.unread ? "Unread" : "Read";
+  const subject = row.subject || "(no subject)";
+  const when = senderWhen(row.date);
+  const account = ((senderHistoryView && senderHistoryView.accounts) || []).find((item) => item.accountId === row.accountId);
+  const chip = senderAccountLabel(account || { accountId: row.accountId });
+  const parts = [when, subject, chip, read];
+  if (row.current) parts.push("Current");
+  button.setAttribute("aria-label", parts.filter(Boolean).join(", "));
+  const date = document.createElement("span");
+  date.className = "when";
+  date.textContent = when;
+  const title = document.createElement("span");
+  title.className = "subject";
+  title.textContent = subject;
+  const accountNode = document.createElement("span");
+  accountNode.className = "sender-history-account";
+  accountNode.textContent = chip;
+  const stateNode = document.createElement("span");
+  stateNode.className = "sender-history-read";
+  stateNode.textContent = read;
+  button.append(date, title, accountNode, stateNode);
+  if (row.current) {
+    const current = document.createElement("span");
+    current.className = "sender-history-current";
+    current.textContent = "Current";
+    button.appendChild(current);
+  }
+  button.addEventListener("click", () => openSenderReader(row));
+  return button;
+}
+
+function paintSenderHistory() {
+  const view = senderHistoryView;
+  const dialog = $("sender-history");
+  const desc = $("sender-history-desc");
+  const chips = $("sender-history-chips");
+  const body = $("sender-history-body");
+  const more = $("sender-history-more");
+  if (!view || !dialog || !body) return;
+  if (desc) desc.textContent = "From " + view.address;
+  const busy = !!(view.loading && !view.rows.length);
+  dialog.setAttribute("aria-busy", busy ? "true" : "false");
+  if (chips) paintSenderChips(chips);
+  body.replaceChildren();
+  if (view.loading && !view.rows.length) {
+    const pending = document.createElement("div");
+    pending.className = "body-pending";
+    pending.setAttribute("role", "status");
+    const spin = document.createElement("div");
+    spin.className = "page-busy-spin";
+    spin.setAttribute("aria-hidden", "true");
+    const label = document.createElement("p");
+    label.textContent = "Searching…";
+    pending.append(spin, label);
+    body.appendChild(pending);
+  } else if (!view.rows.length && (view.failed || (view.accounts || []).some((row) => row && row.status && row.status !== "ok"))) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "Previous mail could not be loaded.";
+    body.appendChild(note);
+  } else if (!view.rows.length && !view.loading) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "No earlier mail from " + view.address + ".";
+    body.appendChild(note);
+  } else {
+    for (const row of view.rows) body.appendChild(senderHistoryRow(row));
+  }
+  if (more) {
+    more.hidden = !view.rows.length || !!view.exhausted;
+    const spinning = !!(view.loading || view.loadingMore);
+    more.disabled = spinning;
+    more.setAttribute("aria-busy", spinning ? "true" : "false");
+  }
+}
+
+async function requestSenderHistory(gen, append, retryAccountId) {
+  const view = senderHistoryView;
+  if (!view || !api) return;
+  const payload = {
+    address: view.address,
+    preferAccountId: view.preferAccountId,
+    currentId: view.currentId,
+    currentMessageId: view.currentMessageId,
+    limit: 50,
+  };
+  if (append && view.resume) payload.resume = view.resume;
+  if (retryAccountId) payload.retryAccountId = retryAccountId;
+  try {
+    const data = await call("mail:searchSender", payload);
+    if (gen !== senderHistoryGen || !senderHistoryView) return;
+    senderHistoryView.resume = data && data.resume;
+    senderHistoryView.accounts = (data && data.accounts) || [];
+    senderHistoryView.exhausted = !!(data && data.exhausted);
+    const rows = (data && data.rows) || [];
+    senderHistoryView.rows = append ? senderHistoryView.rows.concat(rows) : rows;
+    senderHistoryView.failed = false;
+    senderHistoryView.loading = false;
+    senderHistoryView.loadingMore = false;
+    paintSenderHistory();
+    toastSenderFailures(senderHistoryView.accounts);
+  } catch (error) {
+    if (gen !== senderHistoryGen || !senderHistoryView) return;
+    senderHistoryView.loading = false;
+    senderHistoryView.loadingMore = false;
+    if (!senderHistoryView.rows.length) senderHistoryView.failed = true;
+    paintSenderHistory();
+    showStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+function openSenderHistory(address) {
+  const email = state.email || {};
+  senderHistoryGen += 1;
+  const gen = senderHistoryGen;
+  senderHistoryView = {
+    address: address,
+    preferAccountId: email.accountId || "",
+    currentId: email.id || "",
+    currentMessageId: email.messageId || "",
+    resume: null,
+    rows: [],
+    accounts: [],
+    exhausted: false,
+    loading: true,
+    loadingMore: false,
+    failed: false,
+  };
+  paintSenderHistory();
+  const dialog = $("sender-history");
+  if (dialog && !dialog.open) openDialog("sender-history");
+  const title = $("sender-history-title");
+  if (title && typeof title.focus === "function") title.focus();
+  return requestSenderHistory(gen, false, "");
+}
+
+function loadMoreSenderHistory() {
+  if (!senderHistoryView || senderHistoryView.exhausted || senderHistoryView.loading || senderHistoryView.loadingMore) return;
+  senderHistoryGen += 1;
+  const gen = senderHistoryGen;
+  senderHistoryView.loadingMore = true;
+  paintSenderHistory();
+  return requestSenderHistory(gen, true, "");
+}
+
+function retrySenderAccount(accountId) {
+  if (!senderHistoryView || !accountId) return;
+  senderHistoryGen += 1;
+  const gen = senderHistoryGen;
+  senderHistoryView.loading = true;
+  paintSenderHistory();
+  return requestSenderHistory(gen, true, accountId);
+}
+
+async function openSenderReader(row) {
+  if (!row) return;
+  if (!api || typeof api.openReaderWindow !== "function") {
+    showStatus("That message could not be opened.", true);
+    return;
+  }
+  try {
+    await api.openReaderWindow({ accountId: String(row.accountId), messageId: String(row.id) });
+  } catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+function wireSenderHistory() {
+  const dialog = $("sender-history");
+  if (!dialog || dialog.dataset.wired === "1") return;
+  dialog.dataset.wired = "1";
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) closeDialog("sender-history");
+  });
+  dialog.addEventListener("close", () => {
+    const genAtClose = senderHistoryGen;
+    queueMicrotask(() => {
+      if (senderHistoryGen !== genAtClose) return;
+      senderHistoryGen += 1;
+      senderHistoryView = null;
+    });
+  });
+  const more = $("sender-history-more");
+  if (more) more.addEventListener("click", () => { loadMoreSenderHistory(); });
+  if (api && typeof api.on === "function") {
+    api.on("reader:openFailed", (payload) => {
+      showStatus((payload && payload.message) || "That message could not be opened.", true);
+    });
+  }
+}
+
 function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
   wireComposeFormat();
@@ -18185,6 +18643,7 @@ function wire() {
   $("scheduled-undo").addEventListener("click", () => {
     undoCancelScheduled().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
   });
+  wireSenderHistory();
 }
 
 function watchNetwork() {
@@ -18200,6 +18659,10 @@ function watchNetwork() {
 async function boot() {
   if (isComposeWindow()) {
     await bootComposeWindow();
+    return;
+  }
+  if (isReaderWindow()) {
+    await bootReaderWindow();
     return;
   }
   if (!api) {

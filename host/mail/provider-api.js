@@ -1,5 +1,6 @@
 const crypto = require("node:crypto");
 const { apiJson, safeId, cleanName, idList, safeNext } = require("./provider-http");
+const senderHistory = require("../../shared/sender-history");
 
 const GMAIL_ROOT = "https://gmail.googleapis.com/gmail/v1/users/me";
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0/me";
@@ -790,6 +791,83 @@ async function searchGraph(accessToken, query, limit, fetchImpl) {
   return rows.map(graphHit).filter(Boolean).slice(0, searchCap(limit));
 }
 
+function graphFromAddressUrl(address, limit) {
+  const filter = senderHistory.graphFromFilter(address);
+  if (!filter) return "";
+  const url = new URL(`${GRAPH_ROOT}/messages`);
+  url.searchParams.set("$filter", filter);
+  url.searchParams.set("$orderby", "receivedDateTime desc");
+  url.searchParams.set("$top", String(searchCap(limit)));
+  url.searchParams.set("$select", "id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,body,internetMessageId,isRead,conversationId,hasAttachments");
+  return url.toString();
+}
+
+function graphSenderNext(link) {
+  const safe = safeNext(link, "graph.microsoft.com");
+  if (!safe) return "";
+  let url;
+  try { url = new URL(safe); } catch { return ""; }
+  if (!url.pathname.startsWith("/v1.0/me/messages")) return "";
+  return safe;
+}
+
+function graphFilterUnsupported(error) {
+  if (!error || error.status !== 400) return false;
+  const blob = `${error.providerCode || ""} ${error.providerDetail || ""}`;
+  return /unsupported|InefficientFilter|ErrorInvalidUrl|too complex|not support/i.test(blob);
+}
+
+async function gmailMetadata(accessToken, id, fetchImpl) {
+  const meta = new URL(`${GMAIL_ROOT}/messages/${encodeURIComponent(id)}`);
+  meta.searchParams.set("format", "metadata");
+  for (const name of ["Subject", "From", "To", "Cc", "Date", "Message-ID"]) {
+    meta.searchParams.append("metadataHeaders", name);
+  }
+  const json = await apiJson(meta.toString(), accessToken, { fetchImpl });
+  return gmailHit(json);
+}
+
+async function searchGmailPage(accessToken, query, limit, pageToken, fetchImpl) {
+  const cap = searchCap(limit);
+  const url = gmailSearchUrl(query, cap, pageToken || "");
+  if (!url) return { hits: [], nextPageToken: "", short: true };
+  const json = await apiJson(url, accessToken, { fetchImpl });
+  const rows = json && Array.isArray(json.messages) ? json.messages : [];
+  const ids = [];
+  for (const row of rows) {
+    const id = safeId(row && row.id);
+    if (!id || ids.includes(id)) continue;
+    ids.push(id);
+  }
+  const hits = [];
+  for (const id of ids) {
+    const hit = await gmailMetadata(accessToken, id, fetchImpl);
+    if (hit) hits.push(hit);
+  }
+  const next = nextPageToken(json && json.nextPageToken);
+  return { hits, nextPageToken: next, short: ids.length < cap };
+}
+
+async function searchGraphFromPage(accessToken, address, limit, nextLink, fetchImpl) {
+  const url = nextLink ? graphSenderNext(nextLink) : graphFromAddressUrl(address, limit);
+  if (!url) return { hits: [], nextLink: "", short: true };
+  try {
+    const json = await apiJson(url, accessToken, {
+      fetchImpl,
+      headers: { ConsistencyLevel: "eventual" },
+    });
+    const rows = json && Array.isArray(json.value) ? json.value : [];
+    const hits = rows.map(graphHit).filter(Boolean);
+    const raw = json && json["@odata.nextLink"] ? String(json["@odata.nextLink"]) : "";
+    const next = raw ? graphSenderNext(raw) : "";
+    const short = !raw || !next || rows.length < searchCap(limit);
+    return { hits, nextLink: next, short };
+  } catch (error) {
+    if (graphFilterUnsupported(error)) error.code = "filter_unsupported";
+    throw error;
+  }
+}
+
 module.exports = {
   GMAIL_ROOT,
   GRAPH_ROOT,
@@ -825,4 +903,8 @@ module.exports = {
   moveMessage,
   searchGmail,
   searchGraph,
+  graphFromAddressUrl,
+  graphSenderNext,
+  searchGmailPage,
+  searchGraphFromPage,
 };

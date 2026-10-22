@@ -25,6 +25,7 @@ const debugLog = require("../debug-log");
 const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
 const composePolicy = require("../../shared/compose-policy");
+const senderHistory = require("../../shared/sender-history");
 const { syncHorizonDays } = require("../settings");
 const { planBackgroundFolders } = require("./background-jobs");
 
@@ -1782,6 +1783,284 @@ async function searchRemote(params) {
   return rows.slice(0, limit);
 }
 
+const SENDER_EXACT = 50;
+const SENDER_REQUESTS = 4;
+
+function readSenderResume(raw) {
+  const resume = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const capList = (value) => (Array.isArray(value) ? value.slice(0, 5000).map((item) => String(item)) : []);
+  const buffers = {};
+  const source = resume.buffers && typeof resume.buffers === "object" && !Array.isArray(resume.buffers) ? resume.buffers : {};
+  for (const key of Object.keys(source).slice(0, 200)) {
+    const list = source[key];
+    if (!Array.isArray(list)) continue;
+    buffers[String(key)] = list.slice(0, 200).filter((row) => row && typeof row === "object");
+  }
+  return {
+    buffers,
+    seenIds: capList(resume.seenIds),
+    seenRfc: capList(resume.seenRfc),
+    cursors: resume.cursors && typeof resume.cursors === "object" && !Array.isArray(resume.cursors) ? resume.cursors : {},
+    exhausted: resume.exhausted && typeof resume.exhausted === "object" && !Array.isArray(resume.exhausted) ? resume.exhausted : {},
+    statuses: resume.statuses && typeof resume.statuses === "object" && !Array.isArray(resume.statuses) ? resume.statuses : {},
+  };
+}
+
+function senderAccountFields(view, order) {
+  return {
+    accountId: view.id,
+    email: view.email || "",
+    label: view.label || "",
+    name: view.name || "",
+    order,
+  };
+}
+
+function senderSummaries(rows, address, accountId) {
+  const out = [];
+  for (const row of rows || []) {
+    if (!row || !senderHistory.headerMatches(row.from, address)) continue;
+    out.push({
+      id: row.id,
+      accountId,
+      subject: row.subject || "",
+      date: row.date || "",
+      listSortTs: row.listSortTs,
+      unread: !!row.unread,
+      messageId: row.messageId || "",
+    });
+  }
+  return out;
+}
+
+function sortSenderHits(rows) {
+  return rows.slice().sort((a, b) => {
+    const ta = Number.isFinite(a.listSortTs) ? a.listSortTs : Date.parse(a.date);
+    const tb = Number.isFinite(b.listSortTs) ? b.listSortTs : Date.parse(b.date);
+    const fa = Number.isFinite(ta);
+    const fb = Number.isFinite(tb);
+    if (fa && fb && ta !== tb) return tb - ta;
+    if (fa && !fb) return -1;
+    if (!fa && fb) return 1;
+    return String(a.id).localeCompare(String(b.id));
+  });
+}
+
+function senderFailure(accountId, error) {
+  if (http.isRateLimit(error) || (error && error.code === "rate_limit")) {
+    noteRateLimit(accountId, error);
+    return { status: "rate_limit", message: "Paused for rate limit", exhausted: false, hits: [], cursor: null };
+  }
+  const code = error && error.code;
+  const status = error && error.status;
+  if (code === "auth" || code === "scope_missing" || status === 401 || status === 403) {
+    return { status: "auth", message: "Sign in again", exhausted: false, hits: [], cursor: null };
+  }
+  if (code === "search_unsupported" || code === "filter_unsupported") {
+    return { status: "unavailable", message: "Unavailable", exhausted: true, hits: [], cursor: null };
+  }
+  return { status: "error", message: remote.explain(error), exhausted: false, hits: [], cursor: null };
+}
+
+async function refillSenderApi(account, address, cursor, runPage) {
+  const exact = [];
+  let step = cursor || null;
+  let exhausted = false;
+  let nextCursor = null;
+  for (let round = 0; round < SENDER_REQUESTS && exact.length < SENDER_EXACT; round += 1) {
+    const page = await runPage(step, SENDER_EXACT - exact.length);
+    const stored = (page.hits || []).map((hit) => rememberApiHit(account, hit)).filter(Boolean);
+    exact.push(...senderSummaries(stored, address, account.id));
+    if (page.short || !page.cursor) {
+      exhausted = true;
+      nextCursor = null;
+      break;
+    }
+    nextCursor = page.cursor;
+    step = page.cursor;
+  }
+  if (!nextCursor) exhausted = true;
+  return { hits: exact, cursor: exhausted ? null : nextCursor, exhausted };
+}
+
+async function searchSenderGmailApi(account, address, cursor, token) {
+  let pageToken = cursor && cursor.pageToken ? String(cursor.pageToken) : "";
+  return refillSenderApi(account, address, pageToken ? { pageToken } : null, async (step, limit) => {
+    const page = await providerApi.searchGmailPage(token.accessToken, senderHistory.gmailFromQuery(address), limit, step && step.pageToken);
+    return {
+      hits: page.hits,
+      short: page.short,
+      cursor: page.nextPageToken ? { pageToken: page.nextPageToken } : null,
+    };
+  });
+}
+
+async function searchSenderGraph(account, address, cursor, token) {
+  if (cursor && cursor.nextLink && !providerApi.graphSenderNext(String(cursor.nextLink))) {
+    return { hits: [], cursor: null, exhausted: true };
+  }
+  return refillSenderApi(account, address, cursor && cursor.nextLink ? { nextLink: String(cursor.nextLink) } : null, async (step, limit) => {
+    const link = step && step.nextLink ? step.nextLink : "";
+    const page = await providerApi.searchGraphFromPage(token.accessToken, address, limit, link);
+    return {
+      hits: page.hits,
+      short: page.short,
+      cursor: page.nextLink ? { nextLink: page.nextLink } : null,
+    };
+  });
+}
+
+async function searchSenderImapGmail(account, address, cursor) {
+  const beforeUid = cursor && Number(cursor.beforeUid) > 0 ? Number(cursor.beforeUid) : 0;
+  const password = await secretFor(account);
+  return exclusive(account.id, () => remote.withClient(account, password, async (client) => {
+    let unsupported = null;
+    for (const box of GMAIL_ALL) {
+      try {
+        const found = await remote.findFrom(client, box, address, SENDER_EXACT, { gmail: true, beforeUid });
+        if (!found || !found.searched) continue;
+        const hits = sortSenderHits(senderSummaries(storeImapHits(account, box, found), address, account.id));
+        const more = found.more === true && found.lowestUid > 0;
+        return {
+          hits,
+          cursor: more ? { folderIndex: 0, beforeUid: found.lowestUid } : null,
+          exhausted: !more,
+        };
+      } catch (error) {
+        if (http.isRateLimit(error)) throw error;
+        if (error && error.code === "mailbox_missing") continue;
+        if (error && error.code === "search_unsupported") {
+          unsupported = error;
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (unsupported) throw unsupported;
+    throw new Error("Gmail All Mail is not available.");
+  }));
+}
+
+async function searchSenderImap(account, address, cursor) {
+  const folders = db.foldersFor(account.id);
+  let folderIndex = 0;
+  let beforeUid = null;
+  const rawIndex = cursor && cursor.folderIndex;
+  if (Number.isInteger(rawIndex) && rawIndex >= 0 && rawIndex < folders.length) {
+    folderIndex = rawIndex;
+    beforeUid = Number(cursor.beforeUid) > 0 ? Number(cursor.beforeUid) : null;
+  }
+  const password = await secretFor(account);
+  return exclusive(account.id, () => remote.withClient(account, password, async (client) => {
+    const hits = [];
+    let scanned = 0;
+    let nextCursor = null;
+    while (folderIndex < folders.length && scanned < SENDER_REQUESTS) {
+      const folder = folders[folderIndex];
+      scanned += 1;
+      let found = null;
+      try {
+        found = await remote.findFrom(client, folder.path, address, SENDER_EXACT, { beforeUid: beforeUid || 0 });
+      } catch (error) {
+        if (http.isRateLimit(error)) throw error;
+        if (error && error.code === "mailbox_missing") {
+          folderIndex += 1;
+          beforeUid = null;
+          continue;
+        }
+        throw error;
+      }
+      if (found && found.searched) {
+        hits.push(...senderSummaries(storeImapHits(account, folder.path, found), address, account.id));
+      }
+      if (found && found.more && found.lowestUid > 0) {
+        nextCursor = { folderIndex, beforeUid: found.lowestUid };
+        break;
+      }
+      folderIndex += 1;
+      beforeUid = null;
+    }
+    const exhausted = !nextCursor && folderIndex >= folders.length;
+    if (!nextCursor && folderIndex < folders.length) nextCursor = { folderIndex, beforeUid: null };
+    return { hits: sortSenderHits(hits), cursor: nextCursor, exhausted };
+  }));
+}
+
+async function searchSenderAccount(account, address, cursor) {
+  if (account.auth_error) {
+    return { status: "auth", message: "Sign in again", exhausted: false, hits: [], cursor: cursor || null };
+  }
+  if (!gateOpen(account.id)) {
+    return { status: "rate_limit", message: "Paused for rate limit", exhausted: false, hits: [], cursor: cursor || null };
+  }
+  if (account.profile === "gmail") {
+    const token = await sidecar.organizeToken(account);
+    if (token && token.provider === "google") {
+      const page = await searchSenderGmailApi(account, address, cursor, token);
+      return { status: "ok", message: "", ...page };
+    }
+  }
+  if (account.profile === "outlook") {
+    const token = await sidecar.organizeToken(account);
+    if (token && token.provider === "microsoft") {
+      const page = await searchSenderGraph(account, address, cursor, token);
+      return { status: "ok", message: "", ...page };
+    }
+  }
+  const page = account.profile === "gmail"
+    ? await searchSenderImapGmail(account, address, cursor)
+    : await searchSenderImap(account, address, cursor);
+  return { status: "ok", message: "", ...page };
+}
+
+async function senderTask(view, order, address, resume, retryAccountId) {
+  const base = senderAccountFields(view, order);
+  const id = view.id;
+  const prior = resume.statuses && resume.statuses[id] ? resume.statuses[id] : { status: "ok", message: "" };
+  const skip = (retryAccountId && retryAccountId !== id) || (!retryAccountId && resume.exhausted[id] === true);
+  if (skip) {
+    return {
+      ...base,
+      status: prior.status || "ok",
+      message: prior.message || "",
+      hits: [],
+      cursor: (resume.cursors && resume.cursors[id]) || null,
+      exhausted: resume.exhausted[id] === true,
+    };
+  }
+  const account = db.accountById(id);
+  if (!account) {
+    return { ...base, status: "error", message: "That account is not connected.", hits: [], cursor: null, exhausted: true };
+  }
+  try {
+    const result = await searchSenderAccount(account, address, (resume.cursors && resume.cursors[id]) || null);
+    return { ...base, ...result };
+  } catch (error) {
+    return { ...base, ...senderFailure(id, error) };
+  }
+}
+
+async function searchSender(params) {
+  const raw = String((params && params.address) || "").trim();
+  if (!senderHistory.isAddrSpec(raw)) return fail("invalid", "That sender has no email address.");
+  const address = raw.toLowerCase();
+  try {
+    const resume = readSenderResume(params && params.resume);
+    const retryAccountId = params && typeof params.retryAccountId === "string" ? params.retryAccountId : "";
+    const views = accountViews();
+    const accounts = await Promise.all(views.map((view, order) => senderTask(view, order, address, resume, retryAccountId)));
+    return ok(senderHistory.pageSenderHistory({
+      accounts,
+      preferAccountId: params && params.preferAccountId,
+      currentId: params && params.currentId,
+      currentMessageId: params && params.currentMessageId,
+      resume,
+    }));
+  } catch (error) {
+    return fail("search", remote.explain(error));
+  }
+}
+
 function saveUpload(params) {
   const bytes = params && params.fileBytes ? Buffer.from(params.fileBytes) : null;
   if (!bytes || !bytes.length) return fail("invalid", "That file is empty.");
@@ -2445,6 +2724,8 @@ function answer(channel, args) {
           return fail("search", remote.explain(error));
         }
       })();
+    case "mail:searchSender":
+      return searchSender(params || {});
     case "mail:openEmail":
       return (async () => {
         const row = await ensureBody(db.messageById(params && params.emailId));

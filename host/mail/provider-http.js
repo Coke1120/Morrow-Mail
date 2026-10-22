@@ -116,6 +116,9 @@ async function apiJson(url, accessToken, options = {}) {
     error.code = response.status === 429 ? "rate_limit" : (response.status === 401 || response.status === 403 ? "scope_missing" : "provider");
     error.status = response.status;
     error.retryable = response.status === 429;
+    const detail = json && json.error && typeof json.error === "object" ? json.error : null;
+    if (detail && detail.code) error.providerCode = String(detail.code);
+    if (detail && detail.message) error.providerDetail = String(detail.message);
     const wait = response.status === 429 ? retryAfterMs(response) : null;
     if (wait != null) error.retryAfterMs = wait;
     throw error;
