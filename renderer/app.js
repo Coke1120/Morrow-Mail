@@ -6385,6 +6385,8 @@ function previewMime(file, kind) {
 let attachmentPreviewToken = 0;
 let attachmentPreviewUrl = "";
 let attachmentPreviewEmailId = "";
+let attachmentPreviewAbort = null;
+let pdfPreviewLoader = null;
 
 function attachmentIcon(kind) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -6428,20 +6430,21 @@ function revokeAttachmentPreviewUrl() {
   attachmentPreviewUrl = "";
 }
 
-function resetPreviewFrame() {
-  const frame = $("attachment-preview-frame");
-  if (!frame || typeof frame.replaceWith !== "function" || typeof document.createElement !== "function") return;
-  const fresh = document.createElement("iframe");
-  fresh.id = "attachment-preview-frame";
-  fresh.hidden = true;
-  fresh.referrerPolicy = "no-referrer";
-  fresh.title = "PDF preview";
-  frame.replaceWith(fresh);
+function clearPdfPreviewPages() {
+  const pages = $("attachment-preview-pages");
+  if (!pages) return;
+  pages.replaceChildren();
+  pages.hidden = true;
+  pages.removeAttribute("aria-busy");
 }
 
 function clearAttachmentPreview() {
   attachmentPreviewToken += 1;
   attachmentPreviewEmailId = "";
+  if (attachmentPreviewAbort) {
+    attachmentPreviewAbort.abort();
+    attachmentPreviewAbort = null;
+  }
   const img = $("attachment-preview-image");
   if (img) {
     img.onload = null;
@@ -6450,7 +6453,7 @@ function clearAttachmentPreview() {
     img.alt = "";
     img.hidden = true;
   }
-  resetPreviewFrame();
+  clearPdfPreviewPages();
   revokeAttachmentPreviewUrl();
   const stage = $("attachment-preview-stage");
   if (stage) {
@@ -6484,7 +6487,6 @@ function showAttachmentPreviewShell(file, kind) {
   const status = $("attachment-preview-status");
   const stage = $("attachment-preview-stage");
   const img = $("attachment-preview-image");
-  const frame = $("attachment-preview-frame");
   const label = (file && file.filename) || "Attachment";
   if (title) title.textContent = label;
   if (status) {
@@ -6497,10 +6499,7 @@ function showAttachmentPreviewShell(file, kind) {
     img.removeAttribute("src");
     img.hidden = true;
   }
-  if (frame) {
-    frame.removeAttribute("src");
-    frame.hidden = true;
-  }
+  clearPdfPreviewPages();
   if (stage) {
     stage.classList.toggle("is-image", kind === "image");
     stage.classList.toggle("is-pdf", kind === "pdf");
@@ -6512,14 +6511,47 @@ function showAttachmentPreviewShell(file, kind) {
 
 function rememberPreviewUrl(url) {
   const previous = attachmentPreviewUrl;
-  attachmentPreviewUrl = url;
+  attachmentPreviewUrl = url || "";
   if (previous && previous !== url) URL.revokeObjectURL(previous);
+}
+
+function loadPdfPreview() {
+  if (window.morrowPdf && window.morrowPdf.render) return Promise.resolve(window.morrowPdf);
+  if (pdfPreviewLoader) return pdfPreviewLoader;
+  pdfPreviewLoader = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "./pdf-preview.bundle.js";
+    script.onload = () => {
+      if (window.morrowPdf && window.morrowPdf.render) resolve(window.morrowPdf);
+      else {
+        pdfPreviewLoader = null;
+        reject(new Error("PDF preview failed to load."));
+      }
+    };
+    script.onerror = () => {
+      pdfPreviewLoader = null;
+      reject(new Error("PDF preview failed to load."));
+    };
+    document.head.appendChild(script);
+  });
+  return pdfPreviewLoader;
+}
+
+function pdfPreviewError(error) {
+  const name = error && error.name;
+  if (name === "PasswordException") return "This PDF is password-protected. Save or Open it instead.";
+  if (name === "AbortError") return "";
+  return "This PDF could not be previewed. Save or Open it instead.";
 }
 
 async function previewAttachment(email, file) {
   const kind = attachmentPreviewKind(file);
   if (!kind || !file || !file.id) return;
   const gen = ++attachmentPreviewToken;
+  if (attachmentPreviewAbort) {
+    attachmentPreviewAbort.abort();
+    attachmentPreviewAbort = null;
+  }
   attachmentPreviewEmailId = email && email.id ? email.id : "";
   showAttachmentPreviewShell(file, kind);
   const label = file.filename || "attachment";
@@ -6552,10 +6584,13 @@ async function previewAttachment(email, file) {
     }
     return;
   }
-  const url = URL.createObjectURL(new Blob([bytes], { type: previewMime(file, kind) }));
-  rememberPreviewUrl(url);
-  if (gen !== attachmentPreviewToken) return;
   if (kind === "image") {
+    const url = URL.createObjectURL(new Blob([bytes], { type: previewMime(file, kind) }));
+    rememberPreviewUrl(url);
+    if (gen !== attachmentPreviewToken) {
+      if (attachmentPreviewUrl === url) revokeAttachmentPreviewUrl();
+      return;
+    }
     const img = $("attachment-preview-image");
     if (!img) return;
     img.alt = label;
@@ -6575,12 +6610,34 @@ async function previewAttachment(email, file) {
     img.src = url;
     return;
   }
-  const frame = $("attachment-preview-frame");
-  if (!frame) return;
-  frame.title = "PDF preview of " + label;
-  frame.hidden = false;
-  frame.src = url;
-  if (status) status.hidden = true;
+  if (gen !== attachmentPreviewToken) return;
+  rememberPreviewUrl("");
+  const pages = $("attachment-preview-pages");
+  const stage = $("attachment-preview-stage");
+  if (!pages || !stage) return;
+  pages.hidden = false;
+  const controller = new AbortController();
+  attachmentPreviewAbort = controller;
+  try {
+    const pdfApi = await loadPdfPreview();
+    if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
+    await pdfApi.render({
+      data: bytes,
+      pages,
+      stage,
+      signal: controller.signal,
+      onFirstPage() {
+        if (gen !== attachmentPreviewToken) return;
+        if (status) status.hidden = true;
+      },
+    });
+  } catch (error) {
+    if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
+    const message = pdfPreviewError(error);
+    if (!message || !status) return;
+    status.hidden = false;
+    status.textContent = message;
+  }
 }
 
 async function saveAttachmentsZip(email, files) {

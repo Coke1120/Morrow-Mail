@@ -64,6 +64,8 @@ const syntax = [
   "scripts/check-bot-bridge.js",
   "renderer/preload.js",
   "renderer/app.js",
+  "renderer/pdf-preview.js",
+  "scripts/bundle-pdf.js",
   "renderer/features-catalog.js",
   "renderer/motion-ui.js",
   "scripts/check-vacation.js",
@@ -807,9 +809,40 @@ assert.ok(html.includes("img-src 'self' data: blob: https: http:"));
 assert.ok(html.includes("frame-src blob: data:") && html.includes("object-src blob: data:"));
 assert.ok(html.includes("script-src 'self'") && html.includes("default-src 'none'"));
 assert.ok(html.includes("style-src 'self'"));
-assert.ok(!html.includes("unsafe-inline") && !html.includes("unsafe-hashes"));
+assert.ok(html.includes("connect-src 'self'"), "PDF preview cannot load local font and CMap files");
+assert.ok(!html.includes("unsafe-eval") && !html.includes("unsafe-inline") && !html.includes("unsafe-hashes"));
 assert.ok(!html.includes("img-src *"));
-assert.ok(html.includes('id="attachment-preview"') && html.includes('id="attachment-preview-frame"'));
+assert.ok(html.includes('id="attachment-preview"') && html.includes('id="attachment-preview-pages"'));
+assert.ok(!html.includes("attachment-preview-frame"), "PDF preview still embeds the Chromium viewer");
+assert.ok(css.includes(".attachment-preview-page") && css.includes("#attachment-preview-stage.is-pdf"));
+assert.ok(css.includes("#attachment-preview-stage.is-pdf::-webkit-scrollbar { width: 12px;"));
+const pdfPreviewSrc = fs.readFileSync(path.join(root, "renderer/pdf-preview.js"), "utf8");
+const pdfPreviewBitmap = extractFunction(pdfPreviewSrc, "pdfPreviewBitmap");
+const a4Width = 595 * 96 / 72;
+const a4Height = 842 * 96 / 72;
+const fitted = pdfPreviewBitmap(a4Width, a4Height, 880, 1);
+assert.strictEqual(fitted.bitmapWidth, 880);
+assert.ok(Math.abs(fitted.bitmapHeight / fitted.bitmapWidth - 842 / 595) < 0.02);
+const sharp = pdfPreviewBitmap(a4Width, a4Height, 880, 3);
+assert.strictEqual(sharp.bitmapWidth, 1760);
+assert.ok(sharp.bitmapHeight > fitted.bitmapHeight);
+const capped = pdfPreviewBitmap(100, 100, 10000, 2);
+assert.ok(capped.bitmapWidth <= 4096 && capped.bitmapHeight <= 4096);
+assert.strictEqual(pdfPreviewBitmap(0, 0, 0, Number.NaN).bitmapWidth, 1);
+assert.ok(pdfPreviewSrc.includes("disableFontFace: true") && pdfPreviewSrc.includes("isEvalSupported: false"));
+assert.ok(pdfPreviewSrc.includes("vendor/pdfjs/cmaps/") && pdfPreviewSrc.includes("vendor/pdfjs/standard_fonts/"));
+assert.ok(pdfPreviewSrc.includes("pdfjsWorker"));
+assert.ok(fs.existsSync(path.join(root, "renderer/pdf-preview.bundle.js")), "PDF preview bundle was not built");
+assert.ok(fs.readFileSync(path.join(root, "renderer/pdf-preview.bundle.js"), "utf8").includes("morrowPdf"));
+assert.ok(fs.existsSync(path.join(root, "renderer/vendor/pdfjs/cmaps/Adobe-CNS1-UCS2.bcmap")));
+assert.ok(fs.existsSync(path.join(root, "renderer/vendor/pdfjs/standard_fonts/LiberationSans-Regular.ttf")));
+const pdfPreviewError = extractFunction(appJs, "pdfPreviewError");
+assert.strictEqual(pdfPreviewError({ name: "PasswordException" }), "This PDF is password-protected. Save or Open it instead.");
+assert.strictEqual(pdfPreviewError(new Error("nope")), "This PDF could not be previewed. Save or Open it instead.");
+assert.strictEqual(pdfPreviewError({ name: "AbortError" }), "");
+assert.ok(functionSource(appJs, "loadPdfPreview").includes("./pdf-preview.bundle.js"));
+assert.ok(functionSource(appJs, "clearAttachmentPreview").includes("attachmentPreviewAbort"));
+assert.ok(!appJs.includes("attachment-preview-frame"));
 const attachmentPreviewKind = extractFunction(appJs, "attachmentPreviewKind");
 assert.strictEqual(attachmentPreviewKind({ mimeType: "image/png", filename: "a.png" }), "image");
 assert.strictEqual(attachmentPreviewKind({ mimeType: "image/jpeg", filename: "a.jpg" }), "image");
