@@ -40,7 +40,7 @@
   "build": {
     "appId": "com.coke1120.morrow-mail",
     "productName": "Morrow Mail",
-    "copyright": "Copyright © 2026 Leo Ho",
+    "copyright": "Copyright (c) 2026 Leo Ho / HWL-HK",
     "directories": {
       "output": "dist",
       "buildResources": "build"
