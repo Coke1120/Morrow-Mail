@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell, screen } = require("electron");
+const { app, BrowserWindow, dialog, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell, screen } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -9,6 +9,7 @@ const { complete, extractJson, modelIds, listModels } = require("./openai-client
 
 const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels"];
 const { init: initMail, startBackgroundSync } = require("./mail/engine");
+const { startupFailureDialog, startupStatusHtml } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
 
@@ -698,6 +699,75 @@ app.on("window-all-closed", () => {
   if (!quitScheduled.hidesWindowOnClose(process.platform)) app.quit();
 });
 
+let bootWindow = null;
+let bootFinished = false;
+let bootFailed = false;
+
+function mailboxFile() {
+  const override = (process.env.MORROW_MAIL_DIR || "").trim();
+  if (override) return path.join(override, "mail.sqlite");
+  try { return path.join(app.getPath("userData"), "mail.sqlite"); } catch { return ""; }
+}
+
+function dismissBootWindow() {
+  bootFinished = true;
+  process.off("unhandledRejection", onBootRejection);
+  const win = bootWindow;
+  bootWindow = null;
+  if (win && !win.isDestroyed()) win.close();
+}
+
+async function presentBootStatus() {
+  if (bootWindow && !bootWindow.isDestroyed()) return bootWindow;
+  const win = new BrowserWindow({
+    width: 480,
+    height: 220,
+    title: "Morrow Mail",
+    show: true,
+    autoHideMenuBar: true,
+    backgroundColor: "#e7f0e4",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  bootWindow = win;
+  win.on("closed", () => {
+    if (bootWindow === win) bootWindow = null;
+    if (!bootFinished && !bootFailed) app.quit();
+  });
+  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(startupStatusHtml())}`);
+  if (!win.isDestroyed()) win.show();
+  return win;
+}
+
+async function presentBootFailure(error) {
+  if (bootFailed) return;
+  bootFailed = true;
+  process.off("unhandledRejection", onBootRejection);
+  console.error(error instanceof Error ? error.stack || error.message : error);
+  const parent = bootWindow && !bootWindow.isDestroyed() ? bootWindow : undefined;
+  try {
+    const options = startupFailureDialog(error, mailboxFile());
+    if (parent) await dialog.showMessageBox(parent, options);
+    else await dialog.showMessageBox(options);
+  } catch (dialogError) {
+    console.error(dialogError instanceof Error ? dialogError.message : dialogError);
+  }
+  app.quit();
+}
+
+function onBootRejection(reason) {
+  if (bootFinished || bootFailed) return;
+  const shellUp = BrowserWindow.getAllWindows().some((win) => win !== bootWindow && !win.isDestroyed() && win.isVisible());
+  if (shellUp) return;
+  presentBootFailure(reason instanceof Error ? reason : new Error(String(reason))).catch((failure) => {
+    console.error(failure instanceof Error ? failure.message : failure);
+    app.exit(1);
+  });
+}
+
 app.whenReady().then(async () => {
   if (!singleInstance) {
     app.exit(0);
@@ -743,7 +813,22 @@ app.whenReady().then(async () => {
       argv: process.argv, target: path.resolve(process.resourcesPath, "..", ".."), version: app.getVersion(),
     });
   }
-  await initMail();
+  const interactiveBoot = process.env.MORROW_MAIL_SELFTEST !== "1" && process.env.MORROW_MAIL_LIVE !== "1";
+  if (interactiveBoot) {
+    process.on("unhandledRejection", onBootRejection);
+    try { await presentBootStatus(); } catch (error) { console.error(error instanceof Error ? error.message : error); }
+  }
+  try {
+    await initMail();
+  } catch (error) {
+    if (!interactiveBoot) {
+      console.error(error instanceof Error ? error.stack || error.message : error);
+      app.exit(1);
+      return;
+    }
+    await presentBootFailure(error);
+    return;
+  }
   if (process.env.MORROW_MAIL_SELFTEST === "1") {
     const code = await require("./mail/selftest").run();
     app.exit(code);
@@ -796,6 +881,7 @@ app.whenReady().then(async () => {
     attachIpc(preloadFile);
     const win = await openShellWindow();
     if (!win) throw new Error("Morrow Mail could not open its window.");
+    dismissBootWindow();
     if (process.platform === "darwin" && app.isPackaged) {
       await require("./update-launcher").acknowledge({
         argv: process.argv, target: path.resolve(process.resourcesPath, "..", ".."), version: app.getVersion(),
@@ -905,6 +991,10 @@ app.whenReady().then(async () => {
       }, 8000);
     }
   } catch (error) {
+    if (interactiveBoot) {
+      await presentBootFailure(error);
+      return;
+    }
     console.error(error instanceof Error ? error.message : error);
     app.exit(1);
   }

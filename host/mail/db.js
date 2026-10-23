@@ -581,9 +581,9 @@ function horizonWrite(report) {
   return { touch: 1, value: days };
 }
 
-// Local full-text index for synced mail. sql.js in this app has no FTS5 module,
-// so subject, from, and body are tokenized into message_fts. The list filter
-// stays a separate in-memory match and does not read this index.
+// Local full-text index for synced mail. Subject, from, and body are tokenized
+// into message_fts (not an FTS5 table). The list filter stays a separate
+// in-memory match and does not read this index.
 const SEARCH_INDEX_VERSION = "1";
 const SEARCH_BODY_CAP = 200000;
 const SEARCH_TERM_CAP = 4000;
