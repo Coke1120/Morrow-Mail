@@ -7,6 +7,7 @@ const db = require("./db");
 const actions = require("./actions");
 const virtuals = require("./virtual-folders");
 const presets = require("./presets");
+const discovery = require("./discovery");
 const remote = require("./remote");
 const zipBytes = require("./zip-bytes");
 
@@ -649,7 +650,7 @@ function explainSyncError(account, error, secret) {
   if (!hidden && account && account.id) {
     try { hidden = secrets.getPassword(account.id) || ""; } catch { hidden = ""; }
   }
-  return remote.explain(error, hidden);
+  return remote.explain(error, hidden, account);
 }
 
 // One schedule per failure. The folder catch sets syncReported before rethrowing
@@ -1416,19 +1417,28 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
   return ok({ ...accountView(current, 0), grantWarning, missingPermissions: missing });
 }
 
+async function discoverMail(params) {
+  const email = params && typeof params.email === "string" ? params.email : "";
+  try {
+    return ok(await discovery.discover(email));
+  } catch {
+    return ok(null);
+  }
+}
+
 async function connectAccount(params) {
   if (params.expectedAccountId) {
     const expected = db.accountById(params.expectedAccountId);
     if (!expected || expected.email.toLowerCase() !== String(params.email || "").trim().toLowerCase()) return fail("account_mismatch", "Reconnect must use the selected mailbox address. Cached work is unchanged.");
   }
-  const profile = params && params.profile ? String(params.profile) : "custom";
+  let profile = params && params.profile ? String(params.profile) : "custom";
   const email = params && typeof params.email === "string" ? params.email.trim() : "";
-  const username = params && typeof params.username === "string" && params.username.trim()
-    ? params.username.trim()
-    : email;
+  const typedUsername = params && typeof params.username === "string" ? params.username : "";
   const password = params && typeof params.password === "string" ? params.password : "";
   if (!email.includes("@")) return fail("invalid", "Enter the email address for this account.");
   if (!password) return fail("invalid", "Enter the password or app password.");
+  profile = discovery.chosenProfile(profile, email);
+  const username = discovery.loginName(profile, email, typedUsername);
   const endpoints = presets.endpointsFor(profile, params.custom);
   if (!endpoints) {
     return fail("invalid", profile === "custom"
@@ -1456,11 +1466,11 @@ async function connectAccount(params) {
     try {
       await remote.verifySmtp(draft, password);
     } catch (error) {
-      const message = remote.explain(error, password);
+      const message = remote.explain(error, password, draft);
       if (/rejected the password/i.test(message)) throw error;
     }
   } catch (error) {
-    return fail("auth", remote.explain(error, password));
+    return fail("auth", remote.explain(error, password, draft));
   }
   const existing = db.accountByEmail(email);
   const id = existing ? existing.id : draft.id;
@@ -1508,7 +1518,7 @@ async function connectAccount(params) {
     } catch (error) {
       if (http.isRateLimit(error)) noteRateLimit(id, error);
       else {
-        const message = remote.explain(error, password);
+        const message = remote.explain(error, password, account);
         db.setAuthError(id, message);
         syncRetryScheduler.clear(id);
         emitSync("error", { accountId: id, message, retrying: false });
@@ -2889,6 +2899,7 @@ function answer(channel, args) {
   if (sidecar.handles(channel)) return sidecar.answer(channel, args);
   const params = args && args.length ? args[0] : undefined;
   if (channel === "mail:listImapSmtpPresets") return ok(presets.CARDS);
+  if (channel === "mail:discoverMail") return discoverMail(params || {});
   if (channel === "mail:connectImapSmtp") return connectAccount(params || {});
   if (channel === "mail:uploadAttachment" || channel === "mail:uploadInlineImage" || channel === "mail:uploadAgentFile") {
     return saveUpload(params || {});

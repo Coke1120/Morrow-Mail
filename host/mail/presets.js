@@ -48,6 +48,14 @@ const HOSTS = {
     imap: { host: "imap.kakao.com", port: 993, tls: true },
     smtp: { host: "smtp.kakao.com", port: 465, tls: true },
   },
+  aol: {
+    imap: { host: "imap.aol.com", port: 993, tls: true },
+    smtp: { host: "smtp.aol.com", port: 465, tls: true },
+  },
+  zoho: {
+    imap: { host: "imap.zoho.com", port: 993, tls: true },
+    smtp: { host: "smtp.zoho.com", port: 465, tls: true },
+  },
 };
 
 const CARDS = [
@@ -62,6 +70,8 @@ const CARDS = [
   { profile: "daum", displayName: "Daum", credentialKind: "password" },
   { profile: "hanmail", displayName: "Hanmail", credentialKind: "password" },
   { profile: "kakao", displayName: "Kakao", credentialKind: "password" },
+  { profile: "aol", displayName: "AOL", credentialKind: "password" },
+  { profile: "zoho", displayName: "Zoho", credentialKind: "password" },
 ];
 
 function endpoint(raw, fallbackPort) {
