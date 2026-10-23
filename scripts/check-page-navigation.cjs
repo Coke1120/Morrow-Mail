@@ -525,7 +525,7 @@ app.whenReady().then(async () => {
   // Todos and Skills keep one outer scroller. Conversation scrolls the transcript and pins the composer.
   await run(`showPrimary('agent','agent-panel');
     for(const id of ['agent-home','agent-tools']){const p=document.createElement('p');p.textContent='Long fixture content '.repeat(1000);$(id).append(p);}
-    agentTurns=Array.from({length:50},(_,i)=>({role:'user',text:'Saved turn '+i}));paintThread();
+    agentTurns=Array.from({length:50},(_,i)=>({role:i%2?'agent':'user',text:'Saved turn '+i, ...(i?{at:new Date(Date.UTC(2026,9,23,12,0,i)).toISOString()}:{})}));paintThread();
     window.turn=$('agent-sections').firstElementChild;paintThread();`);
   assert.equal(await run(`turn.isConnected`), true, 'unchanged transcript retains DOM');
   for (const name of ['home', 'conversation', 'tools']) {
@@ -534,6 +534,9 @@ app.whenReady().then(async () => {
     const scrollers = await run(`[...$('agent-panel').querySelectorAll('*')].filter(n=>!n.closest('[hidden]')&&n.tagName!=='TEXTAREA'&&['auto','scroll'].includes(getComputedStyle(n).overflowY)&&n.scrollHeight>n.clientHeight+1).map(n=>n.id||n.className)`);
     if (name === 'conversation') {
       assert.deepEqual(scrollers, ['agent-sections'], 'conversation scrolls the transcript only');
+      assert.equal(await run(`(()=>{const n=$('agent-sections');return n.scrollHeight>n.clientHeight&&n.scrollTop>=n.scrollHeight-n.clientHeight-2;})()`), true, 'Conversation opens on the latest turn');
+      assert.equal(await run(`$('agent-sections').firstElementChild.querySelector('time')===null`), true, 'a turn without at hides the time');
+      assert.equal(await run(`(()=>{const time=$('agent-sections').lastElementChild.querySelector('time');return !!(time&&time.dateTime.startsWith('2026-10-23')&&time.textContent.trim());})()`), true, 'a saved turn shows its local time');
       assert.equal(await run(`(()=>{
         const panel=$('agent-panel').getBoundingClientRect();
         const before=$('agent-composer').getBoundingClientRect();
@@ -551,8 +554,33 @@ app.whenReady().then(async () => {
   assert.equal(await run(`getComputedStyle($('agent-panel')).overflowY`), 'auto');
   await run(`$('agent-tab-tools').focus();$('agent-tab-tools').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}))`);
   assert.equal(await run(`agentTab`), 'conversation');
+  assert.equal(await run(`(()=>{const n=$('agent-sections');return n.scrollTop>=n.scrollHeight-n.clientHeight-2;})()`), true, 'keyboard switch to Conversation shows the latest turn');
+  await run(`$('agent-sections').scrollTop=0;agentTurns=agentTurns.concat([{role:'agent',text:'Newest',at:'2026-10-23T18:30:00.000Z'}]);paintThread();`);
+  assert.equal(await run(`(()=>{const n=$('agent-sections');const time=n.lastElementChild.querySelector('time');return n.scrollTop>=n.scrollHeight-n.clientHeight-2&&time&&time.textContent.trim()&&n.lastElementChild.textContent.includes('Newest');})()`), true, 'a new turn while Conversation is open stays at the bottom');
   await run(`$('agent-sections').scrollTop=100;window.savedScroll=$('agent-sections').scrollTop;showAgentTab('conversation')`);
   assert.equal(await run(`$('agent-sections').scrollTop===savedScroll && savedScroll>0`),true,'staying in Conversation preserves reading position');
+  await run(`(async()=>{
+    showAgentTab('home');
+    const items=Array.from({length:10},(_,i)=>({messageId:'todo-'+i,accountId:state.accountId,from:'Ada <ada@example.test>',subject:'Todo '+i,summary:'Line '.repeat(20),unread:true,date:'2026-10-23T12:00:00.000Z'}));
+    paintAgent({sections:[{name:'Needs You',items}]},'');
+    $('shell').hidden=false;
+    $('shell').style.cssText='position:absolute;top:5000px;left:0;width:700px;height:800px';
+    state.email={id:'todo-4',accountId:state.accountId,unread:true,from:'Ada',subject:'Todo 4',folderId:state.folderId,snippet:'x',date:Date.now()};
+    state.emails=[state.email];
+    listOpenKey='';
+    const panel=$('agent-panel');
+    panel.scrollTop=180;
+    const before={panel:panel.scrollTop,doc:document.scrollingElement.scrollTop};
+    const card=panel.querySelector('[data-message-id="todo-4"]');
+    card.querySelector('[data-action="read"]').click();
+    await new Promise((resolve)=>setTimeout(resolve,80));
+    window.todoScroll={before,after:{panel:panel.scrollTop,doc:document.scrollingElement.scrollTop},status:$('status').textContent,unread:card.classList.contains('unread')};
+    $('shell').hidden=true;
+    $('shell').style.cssText='';
+  })()`);
+  assert.equal(await run(`todoScroll.after.panel===todoScroll.before.panel && todoScroll.after.doc===todoScroll.before.doc && todoScroll.before.panel>0`), true, 'Mark as read keeps the Todos scroll position');
+  assert.equal(await run(`todoScroll.unread`), false);
+  assert.match(await run(`todoScroll.status`), /Marked as read/);
   await shot('agent-composer-pinned');
   win.setSize(800,600);
   await run(`showAgentTab('tools')`);

@@ -5814,7 +5814,8 @@ function renderList() {
   const currentId = readerCurrentId();
   const currentRow = (state.emails || []).find((row) => row && row.id === currentId);
   const openKey = currentRow ? currentRow.accountId + "\0" + currentRow.id : "";
-  if (current && !filtering && openKey !== listOpenKey) current.scrollIntoView({ block: "nearest" });
+  // Revealing the open mail row scrolls the document. Skip it off the Mail page.
+  if (current && !filtering && openKey !== listOpenKey && state.view === "mail") current.scrollIntoView({ block: "nearest" });
   listOpenKey = openKey;
 }
 
@@ -14132,8 +14133,10 @@ function showAgentTab(name) {
   $("agent-skill-chips").hidden = name !== "home";
   // Switching sections should never scroll two competing containers.
   if (!changed) return;
-  if (name === "conversation") $("agent-sections").scrollTop = 0;
-  else panel.scrollTop = 0;
+  if (name === "conversation") {
+    const thread = $("agent-sections");
+    thread.scrollTop = thread.scrollHeight;
+  } else panel.scrollTop = 0;
 }
 
 function wireAgentTabs() {
@@ -16145,11 +16148,24 @@ function agentActionButton(action, label, run) {
   button.appendChild(text);
   button.addEventListener("click", () => {
     if (button.disabled) return;
+    const pinTodos = action === "read" && agentTab === "home";
+    const panel = pinTodos ? $("agent-panel") : null;
+    const page = pinTodos ? document.scrollingElement : null;
+    const panelTop = panel ? panel.scrollTop : 0;
+    const pageTop = page ? page.scrollTop : 0;
+    const keepTodos = () => {
+      if (!pinTodos || state.view !== "agent" || agentTab !== "home") return;
+      if (panel) panel.scrollTop = panelTop;
+      if (page) page.scrollTop = pageTop;
+    };
     button.disabled = true;
+    keepTodos();
     Promise.resolve().then(run).catch((error) => {
       showStatus(error instanceof Error ? error.message : String(error), true);
     }).finally(() => {
       button.disabled = false;
+      keepTodos();
+      if (pinTodos) afterPaint(keepTodos);
     });
   });
   return button;
@@ -17112,7 +17128,17 @@ function paintTurn(turn) {
   if (turn && turn.error) article.classList.add("is-error");
   const who = document.createElement("p");
   who.className = "agent-who";
-  who.textContent = turn && turn.role === "user" ? "You" : "Agent";
+  const name = document.createElement("span");
+  name.textContent = turn && turn.role === "user" ? "You" : "Agent";
+  who.appendChild(name);
+  const stamp = turn && turn.at ? formatBrainTime(turn.at) : "";
+  if (stamp) {
+    const time = document.createElement("time");
+    time.className = "agent-when";
+    time.dateTime = String(turn.at);
+    time.textContent = stamp;
+    who.appendChild(time);
+  }
   article.appendChild(who);
   const cueName = turn && turn.kind === "skill" ? String(turn.name || "").trim() : "";
   if (cueName) {
@@ -17160,12 +17186,16 @@ function paintTurn(turn) {
 }
 
 let agentThreadKey = "";
+let agentThreadTurns = "";
 function paintThread() {
   const root = $("agent-sections");
   if (!root) return;
-  const key = JSON.stringify([agentTurns, agentProposalIds]);
+  const turnsKey = JSON.stringify(agentTurns);
+  const key = turnsKey + "\n" + JSON.stringify(agentProposalIds);
   if (key === agentThreadKey) return;
+  const followEnd = turnsKey !== agentThreadTurns;
   agentThreadKey = key;
+  agentThreadTurns = turnsKey;
   root.replaceChildren();
   if (!agentTurns.length) {
     const empty = document.createElement("p");
@@ -17175,6 +17205,7 @@ function paintThread() {
     return;
   }
   for (const turn of agentTurns) root.appendChild(paintTurn(turn));
+  if (followEnd && agentTab === "conversation") root.scrollTop = root.scrollHeight;
 }
 
 function paintAgent(payload, errorText) {
