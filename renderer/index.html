@@ -232,8 +232,8 @@
       <div id="calendar-layout" class="motion-block" hidden>
         <aside id="calendar-side">
           <div id="calendar-mini" aria-label="Mini month"></div>
-          <h3>Calendars</h3>
-          <div id="calendar-list"></div>
+          <h3 id="calendar-list-label">Calendars</h3>
+          <div id="calendar-list" role="group" aria-labelledby="calendar-list-label"></div>
           <h3>Agenda</h3>
           <div id="calendar-agenda"></div>
         </aside>
@@ -346,14 +346,14 @@
         </div>
         <button type="button" class="ghost" id="brain-close">Mail</button>
       </div>
-      <p class="hint">Brain holds your learned profile, writing preferences, categories, skills, and inbox rules.</p>
+      <p class="hint">Brain holds your learned profile, writing preferences, categories, skills, and inbox automation rules.</p>
       <button type="button" class="ghost" id="brain-return-agent" hidden>Return to Agent</button>
       <div id="brain-setup" class="setup-state" hidden><p id="brain-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="brain-setup-ai">Set up AI</button><button type="button" class="ghost" id="brain-setup-connect">Connect an account</button></div></div>
       <div class="brain-tabs motion-block" id="brain-tabs" role="tablist" aria-label="Email Brain sections">
         <button type="button" class="brain-tab" role="tab" id="brain-tab-profile" aria-controls="brain-profile" aria-selected="true">Profile</button>
         <button type="button" class="brain-tab" role="tab" id="brain-tab-categories" aria-controls="brain-categories" aria-selected="false" tabindex="-1">Categories</button>
         <button type="button" class="brain-tab" role="tab" id="brain-tab-skills" aria-controls="brain-skills" aria-selected="false" tabindex="-1">Skills</button>
-        <button type="button" class="brain-tab" role="tab" id="brain-tab-rules" aria-controls="brain-rules" aria-selected="false" tabindex="-1">Rules</button>
+        <button type="button" class="brain-tab" role="tab" id="brain-tab-rules" aria-controls="brain-rules" aria-selected="false" tabindex="-1">Automation</button>
       </div>
       <section id="brain-profile" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-profile">
         <section class="brain-summary" aria-label="Profile summary">
@@ -435,7 +435,8 @@
         <div id="brain-library-skills" class="brain-skill-grid"><p class="hint">Loading skills…</p></div>
       </section>
       <section id="brain-rules" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-rules" hidden>
-        <h3 id="brain-rules-title">Inbox rules</h3>
+        <h3 id="brain-rules-title">Inbox Automation Rules</h3>
+        <p class="hint">Each row is one rule.</p>
         <label for="inbox-rules-account">Mailbox for these rules</label>
         <select id="inbox-rules-account"></select>
         <p id="inbox-rules-owner" class="hint"></p>
@@ -445,19 +446,19 @@
         <form id="inbox-rule-form">
           <div id="inbox-rule-name-field">
             <label for="inbox-rule-name">Name</label>
-            <input id="inbox-rule-name" type="text" maxlength="200" autocomplete="off" />
+            <input id="inbox-rule-name" type="text" maxlength="200" autocomplete="off" placeholder="File invoices" />
           </div>
           <div id="inbox-rule-enabled-field">
             <label class="check" for="inbox-rule-enabled"><input id="inbox-rule-enabled" type="checkbox" checked /> Enabled</label>
           </div>
           <label for="inbox-rule-from">From contains</label>
-          <input id="inbox-rule-from" type="text" maxlength="200" autocomplete="off" />
+          <input id="inbox-rule-from" type="text" maxlength="200" autocomplete="off" placeholder="newsletter@example.com" />
           <label for="inbox-rule-to">To contains</label>
-          <input id="inbox-rule-to" type="text" maxlength="200" autocomplete="off" />
+          <input id="inbox-rule-to" type="text" maxlength="200" autocomplete="off" placeholder="billing@example.com" />
           <label for="inbox-rule-subject">Subject contains</label>
-          <input id="inbox-rule-subject" type="text" maxlength="200" autocomplete="off" />
+          <input id="inbox-rule-subject" type="text" maxlength="200" autocomplete="off" placeholder="invoice" />
           <label for="inbox-rule-text">Text contains</label>
-          <input id="inbox-rule-text" type="text" maxlength="200" autocomplete="off" />
+          <input id="inbox-rule-text" type="text" maxlength="200" autocomplete="off" placeholder="amount due" />
           <label for="inbox-rule-attachment">Attachment</label>
           <select id="inbox-rule-attachment">
             <option value="">Any</option>
@@ -593,15 +594,16 @@
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
         <p id="connect-recovery-note" class="hint"></p>
-        <p class="hint">Google connects mail, calendar, organize, Out of Office, and inbox rules with one consent. Microsoft connects mail first, then checks those features for the same account. Approve any missing permissions; you can keep mail if you decline features.</p>
-        <div class="row">
+        <p class="hint">Google connects mail, calendar, organize, Out of Office, and inbox rules with one consent. Microsoft connects mail first, then checks those features for the same account. Approve any missing permissions; you can keep mail if you decline features. Yahoo Mail uses an app password.</p>
+        <div class="row" role="group" aria-label="Account providers">
           <button type="button" class="primary" id="oauth-google">Continue with Google</button>
           <button type="button" class="ghost" id="oauth-microsoft">Continue with Microsoft</button>
+          <button type="button" class="ghost" id="connect-yahoo">Yahoo Mail</button>
         </div>
         <p id="oauth-unavailable" class="hint"></p>
         <p id="connect-status" class="hint" role="status" aria-live="polite"></p>
-        <details><summary>Use IMAP / app password</summary>
-        <p class="hint">The password stays in this app's keychain.</p>
+        <details id="connect-imap"><summary>Other email provider</summary>
+        <p class="hint">The password stays in this app's keychain. A typed address fills the servers it can find.</p>
         <label for="profile">Provider</label>
         <select id="profile" name="profile"></select>
         <div id="custom-fields" hidden>
@@ -621,7 +623,8 @@
         <label for="username">Username <span class="optional">(optional)</span></label>
         <input id="username" name="username" autocomplete="off" spellcheck="false" />
         <label for="password">Password or app password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <input id="password" name="password" type="password" autocomplete="current-password" aria-describedby="password-hint" required />
+        <p id="password-hint" class="hint"></p>
         <div class="row">
           <button type="submit" class="primary" id="connect-submit">Connect</button>
         </div>
@@ -1078,7 +1081,7 @@
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
               </svg>
-              <span>Inbox rules</span>
+              <span>Inbox Automation</span>
             </button>
             <button type="button" class="ghost icon-label" id="signatures-open">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

@@ -585,17 +585,15 @@ async function listCalendar(params) {
   try {
     const token = await tokenFor(account, "calendar");
     const calendars = await calendar.listCalendars(gate.provider, token.accessToken);
-    const requested = params && params.calendarId ? String(params.calendarId) : "";
-    const calendarId = calendars.some((item) => item.id === requested)
-      ? requested
-      : calendar.preferredCalendarId(calendars);
-    if (!calendarId) {
+    const calendarIds = calendar.selectedCalendarIds(calendars, params);
+    if (!calendarIds.length) {
       return ok({
         api: true,
         reason: "",
         calendars,
         events: [],
         calendarId: "",
+        calendarIds: [],
         accountId: account.id,
         provider: gate.provider,
         timeMin: range.timeMin,
@@ -604,14 +602,15 @@ async function listCalendar(params) {
         truncated: false,
       });
     }
-    const listed = await calendar.listEvents(gate.provider, token.accessToken, calendarId, range);
+    const listed = await calendar.listEventsForIds(gate.provider, token.accessToken, calendarIds, range);
     return ok({
       api: true,
       reason: "",
       calendars,
       events: listed.events,
       truncated: listed.truncated === true,
-      calendarId,
+      calendarId: calendarIds[0],
+      calendarIds,
       accountId: account.id,
       provider: gate.provider,
       timeMin: range.timeMin,

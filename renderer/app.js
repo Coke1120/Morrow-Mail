@@ -73,6 +73,8 @@ const state = {
   calendarCursor: null,
   calendarAccountId: "",
   calendarId: "",
+  calendarIds: [],
+  calendarChecksAccountId: "",
   calendarEventId: "",
   calendarStatus: null,
   calendarPayload: null,
@@ -3733,8 +3735,93 @@ function fillPresets(cards) {
   syncCustomFields();
 }
 
+let discoverGen = 0;
+let discoverTimer = 0;
+let customHostsEdited = false;
+
+function yahooPasswordAccount(profile, email) {
+  if (profile === "yahoo" || profile === "yahoo_jp") return true;
+  const domain = String(email || "").trim().toLowerCase().split("@").pop() || "";
+  return domain === "ymail.com" || domain === "rocketmail.com" || domain === "myyahoo.com" || domain.startsWith("yahoo.");
+}
+
+function syncPasswordHint() {
+  const hint = $("password-hint");
+  if (!hint) return;
+  const on = yahooPasswordAccount($("profile") && $("profile").value, $("email") && $("email").value);
+  hint.hidden = !on;
+  hint.textContent = on
+    ? "Yahoo needs an app password. In Yahoo Account Security, choose Generate app password, then paste it here. The regular account password is rejected."
+    : "";
+}
+
 function syncCustomFields() {
-  $("custom-fields").hidden = $("profile").value !== "custom";
+  const custom = $("custom-fields");
+  const profile = $("profile");
+  if (custom && profile) custom.hidden = profile.value !== "custom";
+  syncPasswordHint();
+}
+
+function manualCustomHosts() {
+  return customHostsEdited && $("profile") && $("profile").value === "custom" && $("imap-host") && $("imap-host").value.trim() && $("smtp-host") && $("smtp-host").value.trim();
+}
+
+function applyDiscovery(found) {
+  if (!found || typeof found !== "object" || manualCustomHosts()) return;
+  const select = $("profile");
+  if (!select || !select.options) return;
+  const profile = String(found.profile || "");
+  const hasCard = profile && [...select.options].some((option) => option.value === profile);
+  if (hasCard && found.source !== "autoconfig" && found.source !== "srv") {
+    select.value = profile;
+    syncCustomFields();
+    return;
+  }
+  if (!found.imap && !found.smtp) return;
+  select.value = "custom";
+  if (found.imap && found.imap.host && $("imap-host")) {
+    $("imap-host").value = found.imap.host;
+    $("imap-port").value = String(found.imap.port || "");
+    $("imap-tls").checked = found.imap.tls !== false;
+  }
+  if (found.smtp && found.smtp.host && $("smtp-host")) {
+    $("smtp-host").value = found.smtp.host;
+    $("smtp-port").value = String(found.smtp.port || "");
+    $("smtp-tls").checked = found.smtp.tls !== false;
+  }
+  syncCustomFields();
+}
+
+function scheduleDiscover() {
+  syncPasswordHint();
+  const gen = ++discoverGen;
+  const email = $("email") && $("email").value.trim();
+  if (discoverTimer) clearTimeout(discoverTimer);
+  if (!email || !email.includes("@")) return;
+  discoverTimer = setTimeout(() => {
+    discoverTimer = 0;
+    call("mail:discoverMail", { email }).then((found) => {
+      if (gen !== discoverGen || !$("email") || $("email").value.trim() !== email) return;
+      applyDiscovery(found);
+    }).catch(() => {});
+  }, 300);
+}
+
+function openImapDetails() {
+  const details = $("connect-imap");
+  if (details) details.open = true;
+}
+
+function chooseYahoo() {
+  if (state.connectPending || state.oauthPending) return;
+  openImapDetails();
+  customHostsEdited = false;
+  const select = $("profile");
+  if (select && select.options && [...select.options].some((option) => option.value === "yahoo")) select.value = "yahoo";
+  syncCustomFields();
+  setConnectStatus("Yahoo Mail uses your full email address and an app password.");
+  const focus = $("email") && $("email").value.trim() ? $("password") : $("email");
+  if (focus && typeof focus.focus === "function") focus.focus();
 }
 
 function connectButton() {
@@ -5812,7 +5899,8 @@ function renderList() {
   const currentId = readerCurrentId();
   const currentRow = (state.emails || []).find((row) => row && row.id === currentId);
   const openKey = currentRow ? currentRow.accountId + "\0" + currentRow.id : "";
-  if (current && !filtering && openKey !== listOpenKey) current.scrollIntoView({ block: "nearest" });
+  // Revealing the open mail row scrolls the document. Skip it off the Mail page.
+  if (current && !filtering && openKey !== listOpenKey && state.view === "mail") current.scrollIntoView({ block: "nearest" });
   listOpenKey = openKey;
 }
 
@@ -9564,6 +9652,7 @@ function paintConnectPending() {
   const google = oauthButtonState(state.oauthStatus, "google");
   $("oauth-google").disabled = !!busy || google.disabled;
   $("oauth-microsoft").disabled = !!busy;
+  if ($("connect-yahoo")) $("connect-yahoo").disabled = !!busy;
   $("connect-submit").disabled = !!busy;
   $("connect-close").textContent = state.oauthPending ? "Cancel sign-in" : "Cancel";
   $("connect-form").setAttribute("aria-busy", busy ? "true" : "false");
@@ -9577,6 +9666,11 @@ async function connectImap() {
   paintConnectPending();
   setConnectStatus("Connecting…");
   try {
+    if (!manualCustomHosts()) {
+      try {
+        applyDiscovery(await call("mail:discoverMail", { email: $("email").value.trim() }));
+      } catch { /* the selected provider still connects */ }
+    }
     const view = await call("mail:connectImapSmtp", { ...connectPayload(), expectedAccountId: state.reconnectAccountId || undefined });
     $("password").value = "";
     closeDialog("connect");
@@ -14130,8 +14224,10 @@ function showAgentTab(name) {
   $("agent-skill-chips").hidden = name !== "home";
   // Switching sections should never scroll two competing containers.
   if (!changed) return;
-  if (name === "conversation") $("agent-sections").scrollTop = 0;
-  else panel.scrollTop = 0;
+  if (name === "conversation") {
+    const thread = $("agent-sections");
+    thread.scrollTop = thread.scrollHeight;
+  } else panel.scrollTop = 0;
 }
 
 function wireAgentTabs() {
@@ -14367,6 +14463,7 @@ function openConnectFor(account) {
   $("email").readOnly = !!account;
   $("username").value = account?.imapUsername || "";
   $("password").value = "";
+  customHostsEdited = !!(account && account.imapSmtpProfile === "custom");
   if (account) {
     $("profile").value = account.imapSmtpProfile || "custom";
     const custom = account.imapSmtpCustom;
@@ -14375,8 +14472,9 @@ function openConnectFor(account) {
       $(kind + "-port").value = custom[kind].port;
       $(kind + "-tls").checked = custom[kind].tls;
     }
+    openImapDetails();
     syncCustomFields();
-  }
+  } else syncPasswordHint();
   setConnectStatus("");
   paintConnectPending();
   openDialog("connect");
@@ -14698,8 +14796,8 @@ function paintInboxRules() {
   if (note && data.message) note.textContent = data.message;
   const dirty = inboxRuleBaseline && JSON.stringify(inboxRuleFieldsFromForm()) !== inboxRuleBaseline;
   if (!dirty) {
-    fillInboxRuleSelect("inbox-rule-move", data.destinations, "Do not move");
-    fillInboxRuleSelect("inbox-rule-label", data.destinations, "No extra label");
+    fillInboxRuleSelect("inbox-rule-move", data.destinations, "Pick a folder, or leave mail where it is");
+    fillInboxRuleSelect("inbox-rule-label", data.destinations, "Pick a label, or add none");
   }
   const root = $("inbox-rules-list");
   root.replaceChildren();
@@ -14707,7 +14805,7 @@ function paintInboxRules() {
   if (!rows.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = data.api ? "No inbox rules yet." : "";
+    empty.textContent = data.api ? "No inbox automation rules yet." : "";
     if (empty.textContent) root.append(empty);
   }
   for (const row of rows) {
@@ -14798,7 +14896,7 @@ async function loadInboxRules() {
   const account = state.accounts.find((row) => row.id === inboxRulesAccountId);
   const previous = inboxRulesState.accountId === (account && account.id) ? inboxRulesState : {};
   inboxRulesState = { backend: "", rules: [], destinations: [], ...previous, accountId: account && account.id, api: false,
-    message: account ? "Loading rules…" : "Connect an account to add inbox rules." };
+    message: account ? "Loading rules…" : "Connect an account to add an inbox automation rule." };
   paintInboxRules();
   if (!account) return;
   const data = await call("mail:listInboxRules", { accountId: account.id });
@@ -16143,11 +16241,24 @@ function agentActionButton(action, label, run) {
   button.appendChild(text);
   button.addEventListener("click", () => {
     if (button.disabled) return;
+    const pinTodos = action === "read" && agentTab === "home";
+    const panel = pinTodos ? $("agent-panel") : null;
+    const page = pinTodos ? document.scrollingElement : null;
+    const panelTop = panel ? panel.scrollTop : 0;
+    const pageTop = page ? page.scrollTop : 0;
+    const keepTodos = () => {
+      if (!pinTodos || state.view !== "agent" || agentTab !== "home") return;
+      if (panel) panel.scrollTop = panelTop;
+      if (page) page.scrollTop = pageTop;
+    };
     button.disabled = true;
+    keepTodos();
     Promise.resolve().then(run).catch((error) => {
       showStatus(error instanceof Error ? error.message : String(error), true);
     }).finally(() => {
       button.disabled = false;
+      keepTodos();
+      if (pinTodos) afterPaint(keepTodos);
     });
   });
   return button;
@@ -17110,7 +17221,17 @@ function paintTurn(turn) {
   if (turn && turn.error) article.classList.add("is-error");
   const who = document.createElement("p");
   who.className = "agent-who";
-  who.textContent = turn && turn.role === "user" ? "You" : "Agent";
+  const name = document.createElement("span");
+  name.textContent = turn && turn.role === "user" ? "You" : "Agent";
+  who.appendChild(name);
+  const stamp = turn && turn.at ? formatBrainTime(turn.at) : "";
+  if (stamp) {
+    const time = document.createElement("time");
+    time.className = "agent-when";
+    time.dateTime = String(turn.at);
+    time.textContent = stamp;
+    who.appendChild(time);
+  }
   article.appendChild(who);
   const cueName = turn && turn.kind === "skill" ? String(turn.name || "").trim() : "";
   if (cueName) {
@@ -17158,12 +17279,16 @@ function paintTurn(turn) {
 }
 
 let agentThreadKey = "";
+let agentThreadTurns = "";
 function paintThread() {
   const root = $("agent-sections");
   if (!root) return;
-  const key = JSON.stringify([agentTurns, agentProposalIds]);
+  const turnsKey = JSON.stringify(agentTurns);
+  const key = turnsKey + "\n" + JSON.stringify(agentProposalIds);
   if (key === agentThreadKey) return;
+  const followEnd = turnsKey !== agentThreadTurns;
   agentThreadKey = key;
+  agentThreadTurns = turnsKey;
   root.replaceChildren();
   if (!agentTurns.length) {
     const empty = document.createElement("p");
@@ -17173,6 +17298,7 @@ function paintThread() {
     return;
   }
   for (const turn of agentTurns) root.appendChild(paintTurn(turn));
+  if (followEnd && agentTab === "conversation") root.scrollTop = root.scrollHeight;
 }
 
 function paintAgent(payload, errorText) {
@@ -17588,13 +17714,26 @@ function fillCalendarPick(calendars) {
     select.value = keep;
     return;
   }
-  if (state.calendarId && calendars.some(calendar => calendar.id === state.calendarId)) select.value = state.calendarId;
+  const preferred = state.calendarId || state.calendarIds[0] || "";
+  if (preferred && calendars.some(calendar => calendar.id === preferred)) select.value = preferred;
   else if (select.value) state.calendarId = select.value;
+}
+
+function calendarEventKey(event) {
+  if (!event || !event.id) return "";
+  return JSON.stringify([String(event.calendarId || ""), String(event.id)]);
 }
 
 function selectedCalendarEvent(payload) {
   const events = payload && Array.isArray(payload.events) ? payload.events : [];
-  return events.find((event) => event && event.id === state.calendarEventId) || null;
+  return events.find((event) => calendarEventKey(event) === state.calendarEventId) || null;
+}
+
+function checkedCalendarEvents(events) {
+  const ids = state.calendarIds;
+  if (!ids.length) return Array.isArray(events) ? events : [];
+  const allowed = new Set(ids);
+  return (Array.isArray(events) ? events : []).filter((event) => !event || !event.calendarId || allowed.has(event.calendarId));
 }
 
 let calendarDetailKey = "";
@@ -17690,7 +17829,9 @@ function paintAgenda(events) {
     button.type = "button";
     button.className = "agenda-item";
     button.dataset.eventId = event.id;
-    if (event.id === state.calendarEventId) button.classList.add("is-selected");
+    button.dataset.eventKey = calendarEventKey(event);
+    button.style.setProperty("--event-color", calendarColor(event.calendarId));
+    if (button.dataset.eventKey === state.calendarEventId) button.classList.add("is-selected");
     button.textContent = agendaLine(event);
     button.addEventListener("click", () => selectCalendarEvent(event));
     button.addEventListener("dblclick", (click) => {
@@ -17703,13 +17844,13 @@ function paintAgenda(events) {
 }
 
 function selectCalendarEvent(event) {
-  state.calendarEventId = event && event.id ? event.id : "";
+  state.calendarEventId = calendarEventKey(event);
   if (state.calendarPayload) paintCalendarSelection(state.calendarPayload);
 }
 
 function paintCalendarSelection(payload) {
-  for (const node of $("calendar-layout").querySelectorAll("[data-event-id]")) {
-    const selected = node.dataset.eventId === state.calendarEventId;
+  for (const node of $("calendar-layout").querySelectorAll("[data-event-key]")) {
+    const selected = node.dataset.eventKey === state.calendarEventId;
     node.classList.toggle("is-selected", selected);
     node.setAttribute("aria-pressed", String(selected));
   }
@@ -17757,25 +17898,25 @@ function paintCalendar(payload) {
   paintCalendarList(view.calendars);
   paintMiniMonth(year, month);
   ensureCalendarGrid(year, month);
-  const eventsKey = JSON.stringify([account?.id, state.calendarId, view.events]);
+  const events = checkedCalendarEvents(view.events);
+  const eventsKey = JSON.stringify([account?.id, state.calendarIds, events]);
   const changed = eventsKey !== calendarEventsKey;
-  const color = calendarColor(state.calendarId);
   for (const cell of body.querySelectorAll("[data-day]")) {
     const day = Number(cell.dataset.day);
     const key = dayKey(year, month, day);
     if (!changed) continue;
     const bucket = cell.querySelector(".calendar-day-events") || cell;
     for (const item of bucket.querySelectorAll(".calendar-event")) item.remove();
-    const rows = eventsOnDay(view.events, key).slice().sort((left, right) => {
+    const rows = eventsOnDay(events, key).slice().sort((left, right) => {
       if (!!left.allDay !== !!right.allDay) return left.allDay ? -1 : 1;
       return String((left && left.start) || "").localeCompare(String((right && right.start) || ""));
     });
-    for (const event of rows) appendCalendarEvent(bucket, event, key, calendarColor(event.calendarId || state.calendarId) || color);
+    for (const event of rows) appendCalendarEvent(bucket, event, key, calendarColor(event.calendarId || state.calendarId));
   }
   paintCalendarFocus(year, month);
   if (changed) {
     calendarEventsKey = eventsKey;
-    paintAgenda(view.events);
+    paintAgenda(events);
   }
   paintCalendarSelection(payload);
 }
@@ -17785,6 +17926,7 @@ function appendCalendarEvent(parent, event, key, color) {
   item.type = "button";
   item.className = "calendar-event";
   item.dataset.eventId = event.id;
+  item.dataset.eventKey = calendarEventKey(event);
   item.style.setProperty("--event-color", color || calendarColor(event.calendarId));
   if (event.allDay) {
     item.classList.add("is-all-day");
@@ -17901,37 +18043,84 @@ function paintMiniMonth(year, month) {
   root.append(bar, grid);
 }
 
+function readCalendarCheckStore() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("morrow.calendarChecks") || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function readCalendarChecks(accountId) {
+  const rows = readCalendarCheckStore()[accountId];
+  if (!Array.isArray(rows)) return [];
+  const ids = [];
+  for (const row of rows) {
+    const id = String(row || "");
+    if (!id || ids.includes(id)) continue;
+    ids.push(id);
+  }
+  return ids.slice(0, 100); // shortcut: 100 ids, when calendarList pages past 100
+}
+
+function saveCalendarChecks(accountId, ids) {
+  if (!accountId) return;
+  try {
+    const store = readCalendarCheckStore();
+    store[accountId] = ids;
+    localStorage.setItem("morrow.calendarChecks", JSON.stringify(store));
+  } catch { /* the choice stays for this window */ }
+}
+
+function ensureCalendarChecks(account) {
+  if (!account || state.calendarChecksAccountId === account.id) return;
+  state.calendarChecksAccountId = account.id;
+  state.calendarId = "";
+  state.calendarEventId = "";
+  state.calendarIds = readCalendarChecks(account.id);
+}
+
+function toggleCalendarCheck(input, id) {
+  const next = state.calendarIds.filter((item) => item !== id);
+  if (input.checked) next.push(id);
+  if (!next.length) {
+    input.checked = true;
+    return;
+  }
+  state.calendarIds = next;
+  if (input.checked) state.calendarId = id;
+  else if (state.calendarId === id) state.calendarId = next[0];
+  state.calendarEventId = "";
+  saveCalendarChecks((calendarAccount() && calendarAccount().id) || "", next);
+  if (state.calendarPayload) paintCalendar(state.calendarPayload);
+  loadCalendar().catch((error) => showStatus(error.message, true));
+}
+
 function paintCalendarList(calendars) {
   const root = $("calendar-list");
   if (!root) return;
   const rows = Array.isArray(calendars) ? calendars : [];
-  const key = JSON.stringify([rows.map((row) => [row.id, row.name]), state.calendarId]);
-  if (root.dataset.key === key) return;
-  root.dataset.key = key;
-  root.replaceChildren();
-  for (const calendar of rows) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "calendar-source";
-    button.style.setProperty("--event-color", calendarColor(calendar.id));
-    button.setAttribute("aria-pressed", calendar.id === state.calendarId ? "true" : "false");
-    const mark = document.createElement("span");
-    mark.className = "calendar-source-mark";
-    mark.setAttribute("aria-hidden", "true");
-    const name = document.createElement("span");
-    name.textContent = calendar.name || calendar.id;
-    button.append(mark, name);
-    button.addEventListener("click", () => {
-      if (state.calendarId === calendar.id) return;
-      state.calendarId = calendar.id;
-      state.calendarEventId = "";
-      for (const item of root.querySelectorAll(".calendar-source")) {
-        item.setAttribute("aria-pressed", item === button ? "true" : "false");
-      }
-      loadCalendar().catch((error) => showStatus(error.message, true));
-    });
-    root.appendChild(button);
+  const key = JSON.stringify(rows.map((row) => [row.id, row.name]));
+  if (root.dataset.key !== key) {
+    root.dataset.key = key;
+    root.replaceChildren();
+    for (const calendar of rows) {
+      const label = document.createElement("label");
+      label.className = "calendar-source";
+      label.style.setProperty("--event-color", calendarColor(calendar.id));
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = calendar.id;
+      input.addEventListener("change", () => toggleCalendarCheck(input, calendar.id));
+      const name = document.createElement("span");
+      name.textContent = calendar.name || calendar.id;
+      label.append(input, name);
+      root.appendChild(label);
+    }
   }
+  for (const input of root.querySelectorAll("input")) input.checked = state.calendarIds.includes(input.value);
 }
 
 function syncAllDayInputs() {
@@ -17992,14 +18181,14 @@ function openCalendarEditor(event, dayStamp) {
   }
   syncAllDayInputs();
   const pick = $("calendar-pick");
-  const wanted = editing && event.calendarId ? event.calendarId : state.calendarId;
+  const wanted = editing && event.calendarId ? event.calendarId : (state.calendarId || state.calendarIds[0] || "");
   if (pick && wanted && Array.from(pick.options).some((item) => item.value === wanted)) pick.value = wanted;
   openDialog("calendar-event-dialog");
   if (title) title.focus();
 }
 
 async function deleteCalendarEvent(event) {
-  const id = (event && event.id) || calendarEditingId || state.calendarEventId;
+  const id = (event && event.id) || calendarEditingId;
   if (!id) return;
   const account = calendarAccount();
   const answer = await askConfirm({
@@ -18016,7 +18205,7 @@ async function deleteCalendarEvent(event) {
     eventId: id,
   });
   calendarEditingId = "";
-  if (state.calendarEventId === id) state.calendarEventId = "";
+  if (event && calendarEventKey(event) === state.calendarEventId) state.calendarEventId = "";
   closeDialog("calendar-event-dialog");
   showStatus("Event deleted.");
   calendarCache.clear();
@@ -18042,8 +18231,9 @@ const calendarCache = new Map();
 const calendarPending = new Map();
 let calendarStatusPending = null;
 let calendarPaintedAccountId = "";
-function calendarCacheKey(account, range, calendarId) {
-  return JSON.stringify([account?.id || "", range.timeMin, calendarId || ""]);
+function calendarCacheKey(account, range, calendarIds) {
+  const ids = Array.isArray(calendarIds) ? calendarIds : [];
+  return JSON.stringify([account?.id || "", range.timeMin, ids]);
 }
 function calendarMonthVisible() {
   const layout = $("calendar-layout");
@@ -18051,17 +18241,14 @@ function calendarMonthVisible() {
   return !!(layout && !layout.hidden && body && body.querySelector(".calendar-grid"));
 }
 function beginCalendarRequest(account) {
-  if (state.calendarAccountId !== account.id) {
-    state.calendarId = "";
-    state.calendarEventId = "";
-  }
+  ensureCalendarChecks(account);
   state.calendarAccountId = account.id;
   const cursor = state.calendarCursor || new Date();
   state.calendarCursor = cursor;
   const range = monthRange(cursor.getFullYear(), cursor.getMonth());
-  const requestedId = state.calendarId || "";
-  const key = calendarCacheKey(account, range, requestedId);
-  return { range, requestedId, key, cached: calendarCache.get(key) || null };
+  const requestedIds = state.calendarIds.slice();
+  const key = calendarCacheKey(account, range, requestedIds);
+  return { range, requestedIds, key, cached: calendarCache.get(key) || null };
 }
 function calendarKeepsMonth(cached) {
   if (cached && cached.payload && cached.payload.api === true) return true;
@@ -18156,9 +18343,26 @@ function rememberCalendar(key, payload) {
   calendarCache.set(key, { payload, at: Date.now() });
   while (calendarCache.size > 8) calendarCache.delete(calendarCache.keys().next().value);
 }
+function calendarIdsFromPayload(payload) {
+  const ids = [];
+  const rows = Array.isArray(payload && payload.calendarIds) ? payload.calendarIds : [];
+  for (const row of rows) {
+    const id = String(row || "");
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  if (ids.length) return ids;
+  const single = payload && payload.calendarId ? String(payload.calendarId) : "";
+  return single ? [single] : [];
+}
+
 function applyCalendarPayload(payload) {
-  if (payload?.calendarId) state.calendarId = payload.calendarId;
-  if (!(payload?.events || []).some(event => event?.id === state.calendarEventId)) state.calendarEventId = "";
+  const returned = calendarIdsFromPayload(payload);
+  if (returned.length) {
+    state.calendarIds = returned;
+    if (!returned.includes(state.calendarId)) state.calendarId = returned[0];
+    saveCalendarChecks((payload && payload.accountId) || state.calendarAccountId, returned);
+  }
+  if (!(payload?.events || []).some((event) => calendarEventKey(event) === state.calendarEventId)) state.calendarEventId = "";
   state.calendarPayload = payload;
   if (state.view === "calendar") paintCalendar(payload);
 }
@@ -18174,7 +18378,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
     return;
   }
   const plan = prepareCalendarLoad(account, preferCache);
-  const { range, requestedId, key, cached } = plan;
+  const { range, requestedIds, key, cached } = plan;
   if (cached) applyCalendarPayload(cached.payload);
   if (plan.freshHit) return;
   // Status does not gate the event list. Coalesce this account-wide read too.
@@ -18189,8 +18393,9 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
   }).catch(() => {});
   try {
     if (fresh || !calendarPending.has(key)) {
-      const pending = call("calendar:list", { accountId: account.id, timeMin: range.timeMin,
-        timeMax: range.timeMax, calendarId: requestedId || undefined }).finally(() => {
+      const body = { accountId: account.id, timeMin: range.timeMin, timeMax: range.timeMax };
+      if (requestedIds.length) body.calendarIds = requestedIds;
+      const pending = call("calendar:list", body).finally(() => {
         if (calendarPending.get(key) === pending) calendarPending.delete(key);
       });
       calendarPending.set(key, pending);
@@ -18199,7 +18404,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
     if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
     applyCalendarPayload(payload);
     rememberCalendar(key, payload);
-    rememberCalendar(calendarCacheKey(account, range, state.calendarId), payload);
+    rememberCalendar(calendarCacheKey(account, range, state.calendarIds), payload);
   } catch (error) {
     if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
     const message = error instanceof Error ? error.message : String(error);
@@ -18281,6 +18486,11 @@ async function submitCalendarEvent(event) {
   }
   if (editing) await call("calendar:updateEvent", draft);
   else await call("calendar:createEvent", draft);
+  if (draft.calendarId && !state.calendarIds.includes(draft.calendarId)) {
+    state.calendarIds = state.calendarIds.concat(draft.calendarId);
+    state.calendarId = draft.calendarId;
+    saveCalendarChecks(account && account.id, state.calendarIds);
+  }
   calendarEditingId = "";
   closeDialog("calendar-event-dialog");
   showStatus("Event saved on the calendar.");
@@ -19466,8 +19676,6 @@ function wire() {
     const dialog = $("calendar-event-dialog");
     if (dialog && dialog.open) return;
     state.calendarId = $("calendar-pick").value;
-    state.calendarEventId = "";
-    loadCalendar().catch((error) => showStatus(error.message, true));
   });
   $("provider-content").addEventListener("keydown", onProviderColumnKey);
   const folderNav = $("folders");
@@ -19488,7 +19696,18 @@ function wire() {
   wireQuoteSplit();
   $("undo").addEventListener("click", () => guard(undoRemoval));
   $("undo-send").addEventListener("click", cancelUndoSend);
-  $("profile").addEventListener("change", syncCustomFields);
+  $("profile").addEventListener("change", () => {
+    if ($("profile").value !== "custom") customHostsEdited = false;
+    syncCustomFields();
+  });
+  $("connect-yahoo").addEventListener("click", chooseYahoo);
+  $("email").addEventListener("input", scheduleDiscover);
+  for (const id of ["imap-host", "smtp-host", "imap-port", "smtp-port"]) {
+    $(id).addEventListener("input", () => { customHostsEdited = true; });
+  }
+  for (const id of ["imap-tls", "smtp-tls"]) {
+    $(id).addEventListener("change", () => { customHostsEdited = true; });
+  }
   $("search-form").addEventListener("submit", (event) => {
     event.preventDefault();
     applySearch();

@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.2.34": [
+      "Features lists off-hours body fill from midnight to 7:00 local time, and Inbox Automation Rules show example placeholders.",
+      "Check more than one calendar in the left list. Month and agenda combine those events and keep each calendar's color.",
+      "Conversation shows the local date and time on each turn and opens at the bottom. Mark as read on Todos keeps your place in the list.",
+      "Yahoo Mail connects beside Google and Microsoft with an app password, and Yahoo and AOL sign-in no longer stalls. Other addresses fill in from known hosts, mail servers, Thunderbird autoconfig, then SRV.",
+    ],
     "0.2.33": [
       "The folder list uses arrow keys, and Collapse All closes every open section.",
       "Opening your mailbox shows the Morrow Mail mark, then What's new after the mail list loads.",

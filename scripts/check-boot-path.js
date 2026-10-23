@@ -22,6 +22,7 @@ const syntax = [
   "shared/changelog.js",
   "scripts/check-changelog.js",
   "host/mail/remote.js",
+  "host/mail/discovery.js",
   "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
@@ -90,7 +91,7 @@ for (const file of syntax) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js"]) {
+for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js", "check-mail-discovery.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }
@@ -465,8 +466,12 @@ assert.ok(!css.includes("#410c42") && !css.includes("#572658") && !css.includes(
 assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell does not paint theme or accent");
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
+assert.ok(html.includes('id="connect-yahoo"') && html.includes(">Yahoo Mail<"), "Yahoo Mail is a provider button beside Google and Microsoft");
+assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app password"), "Yahoo password hint names Generate app password");
+assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
+assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.2.33");
+assert.strictEqual(pkg.version, "0.2.34");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -720,7 +725,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.2.33");
+assert.strictEqual(pkg.version, "0.2.34");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -3933,7 +3938,8 @@ const featureSeed = [
   ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
-  ["inbox-rules", "Inbox rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
+  ["overnight-body-fill", "Off-hours body fill", "Mail", "While Morrow is open, from 00:00–07:00 local time (07:00 is outside), a slow pass fills one missing body after folder work, the same way a cold open does. Newest indexed mail inside Settings → Mail & Sync is used; trash, spam, and drafts are skipped, and the page on screen still comes first."],
+  ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose drafts. It stays off until you turn it on. Opening a proposal does not send it."],
   ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page."],
@@ -7398,6 +7404,43 @@ async function checkProviderApi() {
       { id: "other" },
       { id: "primary", primary: true },
     ]), "primary");
+    assert.deepStrictEqual(calendarApi.selectedCalendarIds([
+      { id: "work" },
+      { id: "home", primary: true },
+    ], { calendarIds: ["missing", "work", "work", "home"] }), ["work", "home"]);
+    assert.deepStrictEqual(calendarApi.selectedCalendarIds([
+      { id: "work" },
+      { id: "home", primary: true },
+    ], { calendarId: "work" }), ["work"]);
+    assert.deepStrictEqual(calendarApi.selectedCalendarIds([
+      { id: "work" },
+      { id: "home", primary: true },
+    ], {}), ["home"]);
+    const merged = await calendarApi.listEventsForIds("google", "token", ["home", "work"], {
+      timeMin: "2026-10-01T00:00:00.000Z",
+      timeMax: "2026-11-01T00:00:00.000Z",
+    }, async (url) => {
+      const home = String(url).includes("/calendars/home/");
+      return jsonResponse({
+        items: [{
+          id: home ? "h" : "w",
+          summary: home ? "Home" : "Work",
+          start: { dateTime: "2026-10-02T10:00:00Z" },
+          end: { dateTime: "2026-10-02T11:00:00Z" },
+        }],
+      });
+    });
+    assert.deepStrictEqual(merged.calendarIds, ["home", "work"]);
+    assert.deepStrictEqual(merged.events.map((event) => event.calendarId), ["home", "work"]);
+    const rateSeen = [];
+    await assert.rejects(() => calendarApi.listEventsForIds("google", "token", ["a", "b"], {
+      timeMin: "2026-10-01T00:00:00.000Z",
+      timeMax: "2026-11-01T00:00:00.000Z",
+    }, async (url) => {
+      rateSeen.push(String(url));
+      return jsonResponse({}, 429);
+    }));
+    assert.deepStrictEqual(rateSeen.map((url) => url.includes("/calendars/b/")), [false]);
     assert.strictEqual(calendarApi.googleEventBody({
       title: "Standup",
       start: "2026-10-17T10:00:00.000Z",
@@ -7604,15 +7647,20 @@ async function checkProviderApi() {
         });
       }
       if (href.startsWith("https://graph.microsoft.com/v1.0/me/calendars") && !href.includes("/calendarView") && method === "GET") {
-        return jsonResponse({ value: [{ id: "cal-ms", name: "Grace", isDefaultCalendar: true }] });
+        return jsonResponse({ value: [
+          { id: "cal-ms", name: "Grace", isDefaultCalendar: true },
+          { id: "cal-home", name: "Home", isDefaultCalendar: false },
+        ] });
       }
       if (href.includes("/calendarView")) {
+        const calendarId = decodeURIComponent(href.split("/calendars/")[1].split("/")[0]);
+        const home = calendarId === "cal-home";
         return jsonResponse({
           value: [{
-            id: "evt-1",
-            subject: "Design review",
-            start: { dateTime: "2026-10-06T15:00:00Z" },
-            end: { dateTime: "2026-10-06T16:00:00Z" },
+            id: home ? "evt-home" : "evt-1",
+            subject: home ? "Home lunch" : "Design review",
+            start: { dateTime: home ? "2026-10-07T15:00:00Z" : "2026-10-06T15:00:00Z" },
+            end: { dateTime: home ? "2026-10-07T16:00:00Z" : "2026-10-06T16:00:00Z" },
             isAllDay: false,
           }],
         });
@@ -7865,6 +7913,28 @@ async function checkProviderApi() {
     assert.strictEqual(month.data.events[0].id, "evt-1");
     assert.strictEqual(month.data.events[0].title, "Design review");
     assert.strictEqual(month.data.calendars[0].id, "cal-ms");
+    assert.deepStrictEqual(month.data.calendarIds, ["cal-ms"]);
+    const both = await engine.answer("calendar:list", [{
+      accountId: "outlook-live",
+      timeMin: october.timeMin,
+      timeMax: october.timeMax,
+      calendarIds: ["cal-home", "cal-ms", "missing"],
+    }]);
+    assert.strictEqual(both.success, true);
+    assert.deepStrictEqual(both.data.calendarIds, ["cal-home", "cal-ms"]);
+    assert.strictEqual(both.data.calendarId, "cal-home");
+    assert.deepStrictEqual(both.data.events.map((event) => [event.id, event.calendarId]), [
+      ["evt-home", "cal-home"],
+      ["evt-1", "cal-ms"],
+    ]);
+    const fallbackIds = await engine.answer("calendar:list", [{
+      accountId: "outlook-live",
+      timeMin: october.timeMin,
+      timeMax: october.timeMax,
+      calendarIds: ["missing"],
+    }]);
+    assert.deepStrictEqual(fallbackIds.data.calendarIds, ["cal-ms"]);
+    assert.strictEqual(fallbackIds.data.events[0].id, "evt-1");
     const wide = await engine.answer("calendar:list", [{
       accountId: "outlook-live",
       timeMin: "2026-01-01T00:00:00.000Z",
@@ -9419,7 +9489,10 @@ async function checkInboxRules() {
     assert.ok(!packed.includes("refresh-rules"));
     assert.ok(!packed.includes("inbox-rules-secret"));
     assert.ok(fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8").includes("runImapPlan"));
-    assert.ok(html.includes('id="inbox-rules-open"') && html.includes("Inbox rules"));
+    assert.ok(html.includes('id="inbox-rules-open"') && html.includes(">Inbox Automation</span>"));
+    assert.ok(html.includes('id="brain-tab-rules"') && html.includes(">Automation</button>") && html.includes('id="brain-rules-title">Inbox Automation Rules</h3>'));
+    assert.ok(html.includes("Each row is one rule.") && html.includes('placeholder="File invoices"') && html.includes('placeholder="newsletter@example.com"') && html.includes('placeholder="billing@example.com"') && html.includes('placeholder="invoice"') && html.includes('placeholder="amount due"'));
+    assert.ok(appJs.includes("Pick a folder, or leave mail where it is") && appJs.includes("Pick a label, or add none"));
     assert.ok(html.includes('id="brain-tab-rules"') && appJs.includes("Grant Gmail filters"));
     assert.ok(oauthDoc.includes("https://www.googleapis.com/auth/gmail.settings.basic"));
     assert.ok(oauthDoc.includes("MailboxSettings.ReadWrite"));

@@ -9,10 +9,49 @@ const textEncoding = require("./text-encoding");
 const SOURCE_CAP = 96 * 1024;
 const FULL_CAP = 3 * 1024 * 1024;
 
-function explain(error, secret) {
-  let message = error instanceof Error ? error.message : String(error || "");
+function isYahooAuth(account) {
+  if (!account || typeof account !== "object") return false;
+  const profile = String(account.profile || "").toLowerCase();
+  if (profile === "yahoo" || profile === "yahoo_jp") return true;
+  const host = String(account.imap_host || account.imapHost || account.smtp_host || account.smtpHost || "").toLowerCase();
+  return host.endsWith(".yahoo.com") || host.endsWith(".yahoo.co.jp") || host.includes("imap.mail.yahoo") || host.includes("smtp.mail.yahoo");
+}
+
+// Yahoo and AOL advertise SASL-IR + AUTH=PLAIN, then answer a second empty
+// challenge when PLAIN is sent without the initial response. ImapFlow waits
+// on that challenge, so the login never finishes. LOGIN completes instead.
+function usesImapLogin(account) {
+  if (!account || account.auth_kind === "oauth2" || account.authKind === "oauth2") return false;
+  const profile = String(account.profile || "").toLowerCase();
+  if (profile === "yahoo" || profile === "yahoo_jp" || profile === "aol") return true;
+  const host = String(account.imap_host || account.imapHost || "").toLowerCase();
+  return host === "imap.aol.com" || host.endsWith(".yahoo.com") || host.endsWith(".yahoo.co.jp") || host.includes("imap.mail.yahoo");
+}
+
+function imapAuth(account, secret) {
+  if (account && (account.auth_kind === "oauth2" || account.authKind === "oauth2")) {
+    return { user: account.username, accessToken: secret };
+  }
+  const auth = { user: account && account.username, pass: secret };
+  if (usesImapLogin(account)) auth.loginMethod = "LOGIN";
+  return auth;
+}
+
+function explain(error, secret, account) {
+  const parts = [error instanceof Error ? error.message : String(error || "")];
+  if (error && typeof error === "object") {
+    if (error.responseText) parts.push(String(error.responseText));
+    if (error.response) parts.push(String(error.response));
+    if (error.serverResponseCode) parts.push(String(error.serverResponseCode));
+  }
+  let message = parts.filter(Boolean).join(" ");
   if (secret && message.includes(secret)) message = message.split(secret).join("");
-  if (/auth|invalid credentials|LOGIN failed|AUTHENTICATIONFAILED|535|Invalid login/i.test(message)) {
+  const authFailed = error && error.authenticationFailed === true
+    || /auth|invalid credentials|LOGIN failed|AUTHENTICATIONFAILED|535|Invalid login/i.test(message);
+  if (authFailed) {
+    if (isYahooAuth(account)) {
+      return "Yahoo rejected the password. Generate an app password in Yahoo Account Security (Generate app password) and paste it here. The regular account password is rejected.";
+    }
     return "The server rejected the credentials. Gmail/iCloud need an app password, or use Google/Microsoft OAuth. Outlook.com has mostly turned off password sign-in.";
   }
   if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(message)) return "The mail server address could not be found.";
@@ -25,9 +64,7 @@ function explain(error, secret) {
 function makeClient(account, secret, options) {
   const tls = account.imap_tls === 1;
   const secure = tls && account.imap_port !== 143;
-  const auth = account.auth_kind === "oauth2"
-    ? { user: account.username, accessToken: secret }
-    : { user: account.username, pass: secret };
+  const auth = imapAuth(account, secret);
   const extra = options || {};
   return new ImapFlow({
     host: account.imap_host,
@@ -704,6 +741,8 @@ module.exports = {
   isAllMail: mailboxRoles.isAllMail,
   allMailLabel: mailboxRoles.allMailLabel,
   explain,
+  imapAuth,
+  usesImapLogin,
   withClient,
   openIdleClient,
   verifySmtp,

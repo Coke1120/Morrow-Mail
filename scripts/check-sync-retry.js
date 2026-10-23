@@ -129,13 +129,22 @@ async function testStickyAuthDoesNotRetry() {
   assert.equal(expired.auth, true);
   const forbidden = retry.noteFailure("ada", "no", { error: { statusCode: 403 } });
   assert.equal(forbidden.auth, true);
-  const explain = loadFunctions(fs.readFileSync(path.join(__dirname, "../host/mail/remote.js"), "utf8"), ["explain"]).explain;
+  const explain = loadFunctions(fs.readFileSync(path.join(__dirname, "../host/mail/remote.js"), "utf8"), ["isYahooAuth", "explain"]).explain;
   const network = retry.noteFailure("ada", explain(new Error("ETIMEDOUT")));
   assert.equal(network.retry, true);
   assert.equal(network.delayMs, 5000);
   assert.equal(explain(new Error("ETIMEDOUT")), "Could not reach the mail server.");
   assert.equal(syncRetry.isStickyAuthSyncError(explain(Object.assign(new Error("AUTHENTICATIONFAILED"), { authenticationFailed: true }))), true);
   assert.match(explain(new Error("Invalid login")), /rejected the credentials/);
+  const yahooAuth = explain(Object.assign(new Error("Command failed"), {
+    authenticationFailed: true,
+    serverResponseCode: "AUTHENTICATIONFAILED",
+    responseText: "LOGIN Invalid credentials",
+  }), "secret", { profile: "yahoo", imap_host: "imap.mail.yahoo.com" });
+  assert.match(yahooAuth, /Generate app password/);
+  assert.match(yahooAuth, /app password/i);
+  assert.equal(syncRetry.isStickyAuthSyncError(yahooAuth), true);
+  assert.doesNotMatch(yahooAuth, /secret/);
   assert.equal(syncRetry.isStickyAuthSyncError("The provider rejected the request."), false);
   assert.equal(syncRetry.isStickyAuthSyncError("Paused for rate limit"), false);
   assert.equal(syncRetry.isStickyAuthSyncError("Could not reach the mail server."), false);

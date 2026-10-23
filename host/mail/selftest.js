@@ -16,6 +16,12 @@ async function run() {
     problem(problems, "preset card would be hidden or duplicated");
   }
   if (!presets.endpointsFor("gmail") || !presets.endpointsFor("icloud")) problem(problems, "known hosts missing");
+  const yahoo = presets.endpointsFor("yahoo");
+  if (!yahoo || yahoo.imap.host !== "imap.mail.yahoo.com" || yahoo.imap.port !== 993 || yahoo.imap.tls !== true) problem(problems, "yahoo imap preset");
+  if (!yahoo || yahoo.smtp.host !== "smtp.mail.yahoo.com" || yahoo.smtp.port !== 465 || yahoo.smtp.tls !== true) problem(problems, "yahoo smtp preset");
+  const discovery = require("./discovery");
+  if (discovery.profileForEmail("ada@yahoo.com.hk") !== "yahoo" || discovery.profileForEmail("ada@ymail.com") !== "yahoo") problem(problems, "yahoo domains");
+  if (discovery.chosenProfile("gmail", "ada@yahoo.com") !== "yahoo") problem(problems, "yahoo address should not stay on gmail");
   if (presets.endpointsFor("custom", {})) problem(problems, "custom without servers should fail");
 
   const missing = await answer("mail:connectImapSmtp", [{ profile: "custom", email: "ada@example.com", password: "secret" }]);
