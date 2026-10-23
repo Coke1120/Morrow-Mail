@@ -14698,8 +14698,8 @@ function paintInboxRules() {
   if (note && data.message) note.textContent = data.message;
   const dirty = inboxRuleBaseline && JSON.stringify(inboxRuleFieldsFromForm()) !== inboxRuleBaseline;
   if (!dirty) {
-    fillInboxRuleSelect("inbox-rule-move", data.destinations, "Do not move");
-    fillInboxRuleSelect("inbox-rule-label", data.destinations, "No extra label");
+    fillInboxRuleSelect("inbox-rule-move", data.destinations, "Pick a folder, or leave mail where it is");
+    fillInboxRuleSelect("inbox-rule-label", data.destinations, "Pick a label, or add none");
   }
   const root = $("inbox-rules-list");
   root.replaceChildren();
@@ -14707,7 +14707,7 @@ function paintInboxRules() {
   if (!rows.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = data.api ? "No inbox rules yet." : "";
+    empty.textContent = data.api ? "No inbox automation rules yet." : "";
     if (empty.textContent) root.append(empty);
   }
   for (const row of rows) {
@@ -14798,7 +14798,7 @@ async function loadInboxRules() {
   const account = state.accounts.find((row) => row.id === inboxRulesAccountId);
   const previous = inboxRulesState.accountId === (account && account.id) ? inboxRulesState : {};
   inboxRulesState = { backend: "", rules: [], destinations: [], ...previous, accountId: account && account.id, api: false,
-    message: account ? "Loading rules…" : "Connect an account to add inbox rules." };
+    message: account ? "Loading rules…" : "Connect an account to add an inbox automation rule." };
   paintInboxRules();
   if (!account) return;
   const data = await call("mail:listInboxRules", { accountId: account.id });
