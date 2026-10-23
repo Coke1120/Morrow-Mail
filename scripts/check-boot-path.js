@@ -875,13 +875,16 @@ assert.ok(html.includes('href="https://buymeacoffee.com/coke1120" target="_blank
   assert.ok(readme.includes(copyright));
   assert.ok(readme.includes("## Screenshots"));
   assert.ok(readme.includes("(docs/images/01-mailbox.png)"));
-  assert.ok(readme.includes("(docs/images/02-about.png)"));
-  assert.ok(readme.includes("(docs/images/03-shell-chrome.png)"));
+  assert.ok(readme.includes("(docs/images/02-reader.png)"));
+  assert.ok(readme.includes("(docs/images/03-about.png)"));
+  assert.ok(!readme.includes("03-shell-chrome.png"));
   assert.ok(!readme.includes("-raw.png"));
-  for (const name of ["01-mailbox.png", "02-about.png", "03-shell-chrome.png"]) {
+  for (const name of ["01-mailbox.png", "02-reader.png", "03-about.png"]) {
     const bytes = fs.readFileSync(path.join(root, "docs/images", name));
     assert.ok(bytes.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), name);
   }
+  assert.ok(!fs.existsSync(path.join(root, "docs/images/02-about.png")));
+  assert.ok(!fs.existsSync(path.join(root, "docs/images/03-shell-chrome.png")));
   assert.ok(readme.includes("https://github.com/sponsors/Coke1120"));
   assert.ok(readme.includes("https://buymeacoffee.com/coke1120"));
   assert.ok(readme.includes("Support: [GitHub Sponsors](https://github.com/sponsors/Coke1120)"));
