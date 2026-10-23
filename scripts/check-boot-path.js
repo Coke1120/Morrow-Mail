@@ -853,6 +853,12 @@ assert.match(aboutSummary[1], /IMAP or OAuth/);
 assert.match(aboutSummary[1], /GitHub Releases/);
 assert.match(aboutSummary[1], /MIT License/);
 assert.ok(!/SwiftUI|WinUI|native app/i.test(aboutSummary[1]));
+const copyright = "Copyright (c) 2026 Leo Ho / HWL-HK";
+assert.ok(html.includes(`id="about-copyright" class="hint">${copyright}</p>`));
+assert.ok(main.includes(`copyright: "${copyright}"`));
+assert.strictEqual(pkg.build.copyright, copyright);
+assert.ok(fs.readFileSync(path.join(root, "LICENSE"), "utf8").includes(copyright));
+assert.ok(!fs.readFileSync(path.join(root, "LICENSE"), "utf8").includes("Coke1120"));
 assert.ok(css.includes("#about-summary"));
 assert.ok(css.includes(".about-links"));
 assert.ok(html.includes('class="about-links"') && html.includes('aria-label="Morrow Mail links"'));
@@ -866,6 +872,7 @@ assert.ok(html.includes('href="https://buymeacoffee.com/coke1120" target="_blank
 {
   const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
   assert.ok(readme.includes("https://hwl-hk.com/en/morrow-mail"));
+  assert.ok(readme.includes(copyright));
   assert.ok(readme.includes("## Screenshots"));
   assert.ok(readme.includes("(docs/images/01-mailbox.png)"));
   assert.ok(readme.includes("(docs/images/02-about.png)"));
