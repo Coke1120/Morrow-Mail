@@ -1,6 +1,9 @@
 # Morrow Mail
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/Website-hwl--hk.com-193c34)](https://hwl-hk.com/en/morrow-mail)
+
+Website: [https://hwl-hk.com/en/morrow-mail](https://hwl-hk.com/en/morrow-mail)
 
 Morrow Mail is an open-source Electron mail client. You connect your own accounts, read and send mail, and install the desktop app from GitHub Releases.
 
