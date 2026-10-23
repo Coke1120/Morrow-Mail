@@ -150,9 +150,17 @@ const { verifyManifest } = require('../host/update-manifest');
   for (const checkout of [source, source.replace(/\n/g, '\r\n')]) {
   const workflow = checkout.replace(/\r\n/g, '\n');
   const windows = workflow.split('\n  windows:\n')[1].split('\n  macos:\n')[0];
+  const macos = workflow.split('\n  macos:\n')[1];
+  const macosSetuptools = 'python3 -m pip install --upgrade setuptools --break-system-packages';
   assert.ok(!windows.includes('MORROW_UPDATE_SIGNING_KEY:'));
   assert.ok(windows.includes("SIGNING_KEY_AVAILABLE: ${{ secrets.MORROW_UPDATE_SIGNING_KEY != '' }}"));
   assert.ok(windows.indexOf('release-preflight.js') < windows.indexOf('npm ci'));
+  assert.ok(windows.includes('python3 -m pip install --upgrade setuptools'));
+  assert.ok(!windows.includes('--break-system-packages'));
+  assert.ok(macos.includes(macosSetuptools));
+  assert.ok(macos.indexOf('release-preflight.js') < macos.indexOf(macosSetuptools));
+  assert.ok(macos.indexOf(macosSetuptools) < macos.indexOf('npm ci'));
+  assert.ok(workflow.indexOf('release-preflight.js') < workflow.indexOf('npm ci'));
   assert.ok(!workflow.includes('--publish always'));
   assert.equal((workflow.match(/runs-on:/g) || []).length, 2);
   assert.ok(workflow.includes('needs: windows'));
