@@ -44,6 +44,8 @@ const INVOKE = [
   "morrow:configSetDefaultScheduleDelayMinutes",
   "morrow:configGetLayoutPanes",
   "morrow:configSetLayoutPanes",
+  "morrow:configGetChangelogSeen",
+  "morrow:configSetChangelogSeen",
   "host:aiGetConfig",
   "host:aiSaveConfig",
   "host:aiTest",

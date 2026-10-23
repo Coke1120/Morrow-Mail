@@ -550,6 +550,14 @@
       <p id="about-update-quit" class="hint" hidden>This update will also install automatically when you quit Morrow. Restart and install closes the app now.</p>
       <div class="row"><button type="button" class="ghost" id="about-update-check">Check for updates</button><button type="button" class="primary" id="about-update-install" hidden>Restart and install</button><button type="button" class="ghost" id="about-update-manual" hidden>Show downloaded update</button></div>
     </div></dialog>
+    <dialog id="changelog" aria-labelledby="changelog-title">
+      <div class="dialog-body">
+        <div class="sheet-head"><h2 id="changelog-title">What's new</h2><button type="button" class="ghost" id="changelog-close">Close</button></div>
+        <p id="changelog-version" class="hint"></p>
+        <ul id="changelog-notes"></ul>
+        <div class="row"><button type="button" class="primary" id="changelog-ok">OK</button></div>
+      </div>
+    </dialog>
     <dialog id="support-dialog" aria-labelledby="support-title"><div class="dialog-body">
       <h2 id="support-title">Review support copy</h2><p class="hint">Known credential patterns are redacted. Addresses and diagnostic context may remain. Remove anything private before sharing.</p>
       <label for="support-preview">Redacted recent-session preview</label><textarea id="support-preview" rows="16" readonly></textarea>
@@ -1505,6 +1513,7 @@
     <script src="./features-catalog.js"></script>
     <script src="../shared/sender-history.js"></script>
     <script src="../shared/display-format.js"></script>
+    <script src="../shared/changelog.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

@@ -110,6 +110,8 @@ let layoutSaveTimer = null;
 let sendTimer = null;
 let sendGen = 0;
 let appVersion = "";
+let changelogSettled = false;
+let changelogPending = false;
 let updateGen = 0;
 let updateTimer = null;
 let brainSnapshot = null;
@@ -7523,6 +7525,76 @@ async function changeListPage(direction) {
   }
 }
 
+function changelogApi() {
+  return typeof morrowChangelog === "object" && morrowChangelog ? morrowChangelog : null;
+}
+
+function acknowledgeChangelog() {
+  const dialog = $("changelog");
+  const version = dialog && dialog.dataset.version;
+  if (!version || !api) return;
+  delete dialog.dataset.version;
+  api.invoke("morrow:configSetChangelogSeen", version).catch(() => {});
+}
+
+function paintChangelog(version, notes) {
+  const dialog = $("changelog");
+  const list = $("changelog-notes");
+  const label = $("changelog-version");
+  if (!dialog || !list || !label) return false;
+  label.textContent = "Morrow Mail " + version;
+  list.replaceChildren();
+  for (const line of notes) {
+    const item = document.createElement("li");
+    item.textContent = line;
+    list.appendChild(item);
+  }
+  dialog.dataset.version = version;
+  return true;
+}
+
+async function offerChangelog() {
+  if (changelogSettled || changelogPending || !api || !appVersion) return;
+  const notesApi = changelogApi();
+  if (!notesApi || typeof notesApi.shouldOffer !== "function" || typeof notesApi.notesFor !== "function") {
+    changelogSettled = true;
+    return;
+  }
+  if (document.querySelector("dialog[open]")) return;
+  changelogPending = true;
+  try {
+    const seen = await api.invoke("morrow:configGetChangelogSeen");
+    if (changelogSettled) return;
+    if (!notesApi.shouldOffer({ version: appVersion, seen: seen, listOk: true })) {
+      changelogSettled = true;
+      return;
+    }
+    const notes = notesApi.notesFor(appVersion);
+    if (!notes.length || !paintChangelog(appVersion, notes)) return;
+    if (document.querySelector("dialog[open]")) {
+      delete $("changelog").dataset.version;
+      return;
+    }
+    openDialog("changelog");
+    const dialog = $("changelog");
+    if (!dialog || !dialog.open) {
+      if (dialog) delete dialog.dataset.version;
+      return;
+    }
+    changelogSettled = true;
+  } catch {
+    // A failed settings read is not an acknowledgement.
+  } finally {
+    changelogPending = false;
+  }
+}
+
+function noteMailListLoaded(gen) {
+  // A thrown list load never reaches this. Failure must not cover the shell.
+  if (gen !== listGen) return;
+  offerChangelog().catch(() => {});
+}
+
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.accountId, state.folderId, state.query, state.searchAccountId]);
@@ -7539,12 +7611,14 @@ async function loadList(fromNetwork, requestedOffset) {
       if (gen !== listGen) return null;
       state.emails = takeEmails(Array.isArray(data) ? data : []);
       renderList();
+      noteMailListLoaded(gen);
       return null;
     }
     const account = selectedAccount();
     if (!state.allInbox && (!account || !state.folderId)) {
       state.emails = [];
       renderList();
+      noteMailListLoaded(gen);
       return null;
     }
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
@@ -7581,6 +7655,7 @@ async function loadList(fromNetwork, requestedOffset) {
     state.listSyncDone = data?.initialSyncDone !== false;
     if (!state.allInbox && data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
     renderList();
+    noteMailListLoaded(gen);
     return data;
   } finally {
     if (gen === listGen) { state.listLoading = false; paintListPaging(); }
@@ -19520,6 +19595,9 @@ function wire() {
   });
   $("settings-capabilities-refresh").addEventListener("click", loadSettingsCapabilities);
   $("about-close").addEventListener("click", () => closeDialog("about-dialog"));
+  $("changelog-close").addEventListener("click", () => closeDialog("changelog"));
+  $("changelog-ok").addEventListener("click", () => closeDialog("changelog"));
+  $("changelog").addEventListener("close", acknowledgeChangelog);
   $("about-update-check").addEventListener("click", checkForUpdates);
   $("about-update-install").addEventListener("click", installUpdate);
   $("about-update-manual").addEventListener("click", async () => {
