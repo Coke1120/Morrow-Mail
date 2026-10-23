@@ -65,6 +65,9 @@ window.morrow = {
       window.collapsedStore = payload;
       return payload;
     }
+    if (channel === "morrow:configSetSidebarGmailFoldersExpanded" || channel === "morrow:configSetSidebarOutlookFoldersExpanded") {
+      return payload === true;
+    }
     if (channel === "morrow:configGetSidebarCollapsedFolders") return window.collapsedStore;
     if (channel === "mail:listFromCache" || channel === "mail:listFromNetwork") {
       const boxes = payload && Array.isArray(payload.mailboxes) ? payload.mailboxes : null;
@@ -214,6 +217,10 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const image = await cdp("Page.captureScreenshot", params);
     fs.writeFileSync(path.join(output, name + ".png"), Buffer.from(image.data, "base64"));
   };
+  const pressKey = async (key, code, vk) => {
+    await cdp("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+  };
   const clickSelector = async (selector) => {
     const box = await evaluate(`(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
@@ -257,6 +264,22 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(await evaluate("window.folderShot().rows.find((row) => row.id==='AriesCPA.com').count"), "84");
   assert.equal(await evaluate("window.folderShot().twists[0].label"), "Collapse AriesCPA.com");
   assert.equal(await evaluate("window.folderShot().twists[0].expanded"), "true");
+  assert.equal(await evaluate("document.getElementById('folder-collapse-all').getAttribute('aria-label')"), "Collapse All");
+  assert.equal(await evaluate("document.querySelectorAll('#folders [data-nav-key][tabindex=\"0\"]').length"), 1);
+  await evaluate("document.getElementById('folder-filter').focus()");
+  await pressKey("ArrowDown", "ArrowDown", 40);
+  assert.equal(await evaluate("document.activeElement === document.getElementById('folder-filter')"), true);
+  await evaluate("document.querySelector('button.folder[data-account-id=\"leo\"][data-folder-id=\"AriesCPA.com\"]').focus()");
+  await pressKey("ArrowDown", "ArrowDown", 40);
+  assert.equal(await evaluate("document.activeElement && document.activeElement.dataset.folderId"), "AriesCPA.com/1 Internal");
+  await pressKey("ArrowUp", "ArrowUp", 38);
+  assert.equal(await evaluate("document.activeElement && document.activeElement.dataset.folderId"), "AriesCPA.com");
+  await pressKey("ArrowLeft", "ArrowLeft", 37);
+  await waitFor("window.folderShot().rows.some((row) => row.name==='1 Internal') === false", "left collapsed children");
+  assert.equal(await evaluate("document.activeElement && document.activeElement.dataset.folderId"), "AriesCPA.com");
+  await pressKey("ArrowRight", "ArrowRight", 39);
+  await waitFor("window.folderShot().rows.some((row) => row.name==='1 Internal')", "right expanded children");
+  assert.equal(await evaluate("document.activeElement && document.activeElement.dataset.folderId"), "AriesCPA.com");
   const allIndex = await evaluate("window.folderShot().rows.findIndex((row) => row.account==='gmail' && row.name==='All Mail')");
   const inboxIndex = await evaluate("window.folderShot().rows.findIndex((row) => row.account==='gmail' && row.name==='Inbox')");
   assert.ok(allIndex >= 0 && allIndex < inboxIndex, "All Mail is above Inbox");
@@ -310,6 +333,16 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(await evaluate("document.querySelector('button.all-inbox').getAttribute('aria-current')"), null);
   assert.equal(await evaluate("document.querySelector('.all-account-mail').classList.contains('is-current')"), false);
   await shot("folder-parent-expanded");
+  await clickSelector("#folder-collapse-all");
+  await waitFor("state.prefs.gmailOpen===false && window.folderShot().rows.some((row) => row.account==='gmail')===false && window.folderShot().rows.some((row) => row.name==='1 Internal')===false && window.folderShot().rows.some((row) => row.id==='AriesCPA.com')", "collapse all");
+  await shot("folder-collapse-all", await sideClip());
+  await evaluate(`(() => {
+    state.prefs.gmailOpen = true;
+    state.prefs.collapsedFolders = {};
+    window.collapsedStore = {};
+    renderAccounts();
+  })()`);
+  await waitFor("window.folderShot().rows.some((row) => row.name==='1 Internal') && window.folderShot().rows.some((row) => row.account==='gmail' && row.name==='All Mail')", "tree restored");
   await clickSelector('button.folder-twist[aria-label="Collapse AriesCPA.com"]');
   await waitFor("window.folderShot().twists[0] && window.folderShot().twists[0].expanded==='false'", "caret collapsed");
   assert.equal(await evaluate("window.folderShot().folderId"), "INBOX");
@@ -511,6 +544,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       "folder-tree-truncated.png",
       "mail-row-hover-actions.png",
       "folder-filter-and-hover.png",
+      "folder-collapse-all.png",
     ],
     errors,
   }, null, 2));

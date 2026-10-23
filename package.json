@@ -1,6 +1,6 @@
 {
   "name": "morrow-mail",
-  "version": "0.2.32",
+  "version": "0.2.33",
   "description": "Morrow Mail. Open-source Electron mail client for Windows and macOS. Connect your own accounts, read and send mail, and install from GitHub Releases.",
   "main": "host/main.js",
   "private": true,
@@ -40,7 +40,7 @@
   "build": {
     "appId": "com.coke1120.morrow-mail",
     "productName": "Morrow Mail",
-    "copyright": "Copyright © 2026 Leo Ho",
+    "copyright": "Copyright (c) 2026 Leo Ho / HWL-HK",
     "directories": {
       "output": "dist",
       "buildResources": "build"

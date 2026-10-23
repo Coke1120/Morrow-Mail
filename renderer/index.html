@@ -143,12 +143,17 @@
         <div id="side-mail" class="side-pane">
           <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled</button>
           <section id="mail-ooo" class="mail-ooo" aria-label="Mailbox automatic replies" hidden><p id="mail-ooo-status" class="hint" role="status"></p><div class="row"><button type="button" class="ghost" id="mail-ooo-manage">Manage / disable</button><button type="button" class="ghost" id="mail-ooo-refresh">Refresh status</button></div></section>
+          <div class="folder-tools">
           <div class="folder-filter">
             <label class="sr" for="folder-filter">Filter folders and labels</label>
             <input id="folder-filter" data-testid="folder-filter" type="search" placeholder="Filter folders" autocomplete="off" spellcheck="false" aria-controls="folders" aria-describedby="folder-filter-help" />
             <button type="button" class="folder-filter-clear" id="folder-filter-clear" hidden aria-label="Clear folder filter" title="Clear folder filter">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
             </button>
+          </div>
+          <button type="button" class="folder-collapse-all" id="folder-collapse-all" data-testid="folder-collapse-all" title="Collapse All" aria-label="Collapse All">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 11 12 6 7 11"></polyline><polyline points="17 18 12 13 7 18"></polyline></svg>
+          </button>
           </div>
           <p class="sr" id="folder-filter-help">Matches folder and label names in every mailbox. A match stays with its parent folders. Clear the field to show the full list.</p>
           <nav id="folders" aria-label="Folders"></nav>
@@ -541,10 +546,30 @@
       <div class="sheet-head"><h2 id="about-title">About &amp; updates</h2><button type="button" class="ghost" id="about-close">Close</button></div>
       <p id="product-name" class="product-name">Morrow Mail</p>
       <p id="about-summary">Morrow Mail is an open-source Electron mail client for Windows and macOS. You connect your own accounts over IMAP or OAuth, read and send mail, and keep mail synced on this computer. Installers come from GitHub Releases under the MIT License.</p>
+      <p id="about-copyright" class="hint">Copyright (c) 2026 Leo Ho / HWL-HK</p>
+      <nav class="about-links" aria-label="Morrow Mail links">
+        <a href="https://hwl-hk.com/en/morrow-mail/privacy" target="_blank" rel="noreferrer">Privacy Policy</a>
+        <a href="https://hwl-hk.com/en/morrow-mail/terms" target="_blank" rel="noreferrer">Terms of Service</a>
+        <a href="https://github.com/Coke1120/Morrow-Mail/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>
+        <a href="https://github.com/Coke1120/Morrow-Mail" target="_blank" rel="noreferrer">GitHub</a>
+      </nav>
+      <nav class="about-links" aria-label="Support">
+        <span class="hint">Support</span>
+        <a href="https://github.com/sponsors/Coke1120" target="_blank" rel="noreferrer">GitHub Sponsors</a>
+        <a href="https://buymeacoffee.com/coke1120" target="_blank" rel="noreferrer">Buy Me a Coffee</a>
+      </nav>
       <p id="about-version"></p><p id="about-update-status" role="status">Updates have not been checked yet.</p>
       <p id="about-update-quit" class="hint" hidden>This update will also install automatically when you quit Morrow. Restart and install closes the app now.</p>
       <div class="row"><button type="button" class="ghost" id="about-update-check">Check for updates</button><button type="button" class="primary" id="about-update-install" hidden>Restart and install</button><button type="button" class="ghost" id="about-update-manual" hidden>Show downloaded update</button></div>
     </div></dialog>
+    <dialog id="changelog" aria-labelledby="changelog-title">
+      <div class="dialog-body">
+        <div class="sheet-head"><h2 id="changelog-title">What's new</h2><button type="button" class="ghost" id="changelog-close">Close</button></div>
+        <p id="changelog-version" class="hint"></p>
+        <ul id="changelog-notes"></ul>
+        <div class="row"><button type="button" class="primary" id="changelog-ok">OK</button></div>
+      </div>
+    </dialog>
     <dialog id="support-dialog" aria-labelledby="support-title"><div class="dialog-body">
       <h2 id="support-title">Review support copy</h2><p class="hint">Known credential patterns are redacted. Addresses and diagnostic context may remain. Remove anything private before sharing.</p>
       <label for="support-preview">Redacted recent-session preview</label><textarea id="support-preview" rows="16" readonly></textarea>
@@ -1500,6 +1525,7 @@
     <script src="./features-catalog.js"></script>
     <script src="../shared/sender-history.js"></script>
     <script src="../shared/display-format.js"></script>
+    <script src="../shared/changelog.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

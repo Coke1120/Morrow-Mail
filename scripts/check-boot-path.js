@@ -19,6 +19,8 @@ const syntax = [
   "shared/sync-retry.js",
   "shared/primary-mailboxes.js",
   "shared/display-format.js",
+  "shared/changelog.js",
+  "scripts/check-changelog.js",
   "host/mail/remote.js",
   "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
@@ -88,7 +90,7 @@ for (const file of syntax) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js"]) {
+for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }
@@ -452,8 +454,10 @@ const quotingRule = css.slice(quotingAt, css.indexOf("}", quotingAt));
 assert.match(quotingRule, /height:\s*max-content/, "quoting dialog sizes to its content");
 assert.match(quotingRule, /max-height:\s*calc\(100vh - 32px\)/, "quoting dialog keeps a viewport ceiling");
 assert.ok(!/(^|[^-])height:\s*calc\(100vh - 32px\)/.test(quotingRule), "quoting dialog does not force the viewport height");
-assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker\s*\{[^}]*height:\s*max-content/, "compact dialogs hug their content");
-assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker\s*\{[^}]*margin:\s*auto/, "compact dialogs stay centered without a transform");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker,\s*#changelog\s*\{[^}]*height:\s*max-content/, "compact dialogs hug their content");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker,\s*#changelog\s*\{[^}]*bottom:\s*auto/, "compact dialogs do not stretch between block insets");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker,\s*#changelog\s*\{[^}]*margin:\s*auto/, "compact dialogs stay centered without a transform");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker,\s*#changelog\s*\{[^}]*translate:\s*0 -50%/, "compact dialogs center with translate, not transform");
 assert.ok(!css.includes("min(820px"), "quoting dialog no longer stops at 820px");
 assert.ok(css.includes('#compose[data-quote-collapsed="true"] .compose-quote-body'), "collapse hides the quote body");
 assert.ok(css.includes("#193c34") && css.includes("#102822") && css.includes("#b9d5ad") && css.includes("[data-theme=\"dark\"]"), "shell css missing logo green tokens");
@@ -462,7 +466,7 @@ assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell doe
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.2.32");
+assert.strictEqual(pkg.version, "0.2.33");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -716,7 +720,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.2.32");
+assert.strictEqual(pkg.version, "0.2.33");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -849,7 +853,40 @@ assert.match(aboutSummary[1], /IMAP or OAuth/);
 assert.match(aboutSummary[1], /GitHub Releases/);
 assert.match(aboutSummary[1], /MIT License/);
 assert.ok(!/SwiftUI|WinUI|native app/i.test(aboutSummary[1]));
+const copyright = "Copyright (c) 2026 Leo Ho / HWL-HK";
+assert.ok(html.includes(`id="about-copyright" class="hint">${copyright}</p>`));
+assert.ok(main.includes(`copyright: "${copyright}"`));
+assert.ok(main.includes("height: 420"));
+assert.strictEqual(pkg.build.copyright, copyright);
+assert.ok(fs.readFileSync(path.join(root, "LICENSE"), "utf8").includes(copyright));
+assert.ok(!fs.readFileSync(path.join(root, "LICENSE"), "utf8").includes("Coke1120"));
 assert.ok(css.includes("#about-summary"));
+assert.ok(css.includes(".about-links"));
+assert.ok(html.includes('class="about-links"') && html.includes('aria-label="Morrow Mail links"'));
+assert.ok(html.includes('href="https://hwl-hk.com/en/morrow-mail/privacy" target="_blank" rel="noreferrer">Privacy Policy</a>'));
+assert.ok(html.includes('href="https://hwl-hk.com/en/morrow-mail/terms" target="_blank" rel="noreferrer">Terms of Service</a>'));
+assert.ok(html.includes('href="https://github.com/Coke1120/Morrow-Mail/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>'));
+assert.ok(html.includes('href="https://github.com/Coke1120/Morrow-Mail" target="_blank" rel="noreferrer">GitHub</a>'));
+assert.ok(html.includes('aria-label="Support"'));
+assert.ok(html.includes('href="https://github.com/sponsors/Coke1120" target="_blank" rel="noreferrer">GitHub Sponsors</a>'));
+assert.ok(html.includes('href="https://buymeacoffee.com/coke1120" target="_blank" rel="noreferrer">Buy Me a Coffee</a>'));
+{
+  const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+  assert.ok(readme.includes("https://hwl-hk.com/en/morrow-mail"));
+  assert.ok(readme.includes(copyright));
+  assert.ok(readme.includes("## Screenshots"));
+  assert.ok(readme.includes("(docs/images/01-mailbox.png)"));
+  assert.ok(readme.includes("(docs/images/02-reader.png)"));
+  assert.ok(readme.includes("(docs/images/03-about.png)"));
+  assert.ok(!readme.includes("-raw.png"));
+  for (const name of ["01-mailbox.png", "02-reader.png", "03-about.png"]) {
+    const bytes = fs.readFileSync(path.join(root, "docs/images", name));
+    assert.ok(bytes.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), name);
+  }
+  assert.ok(readme.includes("https://github.com/sponsors/Coke1120"));
+  assert.ok(readme.includes("https://buymeacoffee.com/coke1120"));
+  assert.ok(readme.includes("Support: [GitHub Sponsors](https://github.com/sponsors/Coke1120)"));
+}
 assert.ok(html.includes('id="list-chips"') && html.includes('aria-label="Primary folders"'));
 assert.ok(html.includes('aria-label="Email Brain"') && html.includes('id="rail-brain"'));
 assert.ok(!html.includes('id="agent-open"') && !html.includes('id="brain-open"'));
@@ -3205,6 +3242,61 @@ assert.deepStrictEqual(sidebarFilter.sidebarRowsFor(filterTree, "leo", {}, "Arie
   "AriesCPA.com",
 ]);
 assert.deepStrictEqual(folderCollapse.toggle(folderCollapse.toggle({}, "leo", "AriesCPA.com"), "leo", "AriesCPA.com"), {});
+assert.deepStrictEqual(folderCollapse.collapseIds({ leo: ["AriesCPA.com"] }, "leo", ["AriesCPA.com", "AriesCPA.com/AsiaBs"]), {
+  leo: ["AriesCPA.com", "AriesCPA.com/AsiaBs"],
+});
+assert.deepStrictEqual(folderCollapse.collapseIds({}, "leo", []), {});
+assert.deepStrictEqual(folderCollapse.collapseIds({}, "", ["INBOX"]), {});
+const treeRows = [
+  { id: "account:leo", parentId: "", hasChild: true, expanded: true },
+  { id: "folder:leo:INBOX", parentId: "account:leo", hasChild: false, expanded: false },
+  { id: "folder:leo:A", parentId: "account:leo", hasChild: true, expanded: true },
+  { id: "folder:leo:A/1", parentId: "folder:leo:A", hasChild: false, expanded: false },
+  { id: "folder:leo:B", parentId: "account:leo", hasChild: true, expanded: false },
+];
+const treeKey = folderCollapse.folderTreeKey;
+assert.deepStrictEqual(treeKey(treeRows, 2, "ArrowDown"), { type: "move", index: 3 });
+assert.deepStrictEqual(treeKey(treeRows, 2, "ArrowUp"), { type: "move", index: 1 });
+assert.deepStrictEqual(treeKey(treeRows, 0, "ArrowUp"), { type: "none" });
+assert.deepStrictEqual(treeKey(treeRows, 4, "ArrowDown"), { type: "none" });
+assert.deepStrictEqual(treeKey(treeRows, 2, "ArrowLeft"), { type: "collapse", index: 2, id: "folder:leo:A" });
+assert.deepStrictEqual(treeKey(treeRows, 4, "ArrowLeft"), { type: "move", index: 0 });
+assert.deepStrictEqual(treeKey(treeRows, 1, "ArrowLeft"), { type: "move", index: 0 });
+assert.deepStrictEqual(treeKey(treeRows, 0, "ArrowLeft"), { type: "collapse", index: 0, id: "account:leo" });
+assert.deepStrictEqual(treeKey([{ id: "account:leo", parentId: "", hasChild: true, expanded: false }], 0, "ArrowLeft"), {
+  type: "parent", index: 0, id: "account:leo",
+});
+assert.deepStrictEqual(treeKey(treeRows, 4, "ArrowRight"), { type: "expand", index: 4, id: "folder:leo:B" });
+assert.deepStrictEqual(treeKey(treeRows, 2, "ArrowRight"), { type: "move", index: 3 });
+assert.deepStrictEqual(treeKey(treeRows, 1, "ArrowRight"), { type: "none" });
+assert.deepStrictEqual(treeKey(treeRows, 2, "Enter"), { type: "none" });
+assert.deepStrictEqual(treeKey([], 0, "ArrowDown"), { type: "none" });
+const lockedTree = [
+  { id: "A", parentId: "", hasChild: true, expanded: true, collapsible: false },
+  { id: "A/1", parentId: "A", hasChild: false, expanded: false },
+];
+assert.deepStrictEqual(treeKey(lockedTree, 0, "ArrowLeft"), { type: "parent", index: 0, id: "A" });
+assert.deepStrictEqual(treeKey(lockedTree, 0, "ArrowRight"), { type: "move", index: 1 });
+assert.deepStrictEqual(treeKey([{ id: "L1", parentId: "", hasChild: true, expanded: true }], 0, "ArrowLeft"), {
+  type: "collapse", index: 0, id: "L1",
+});
+assert.deepStrictEqual(treeKey([{ id: "L1", parentId: "", hasChild: true, expanded: true }], 0, "ArrowRight"), {
+  type: "child", index: 0, id: "L1",
+});
+assert.deepStrictEqual(treeKey([{ id: "L1", parentId: "", hasChild: true, expanded: false }], 0, "ArrowRight"), {
+  type: "expand", index: 0, id: "L1",
+});
+assert.deepStrictEqual(treeKey([{ id: "L1", parentId: "", hasChild: true, expanded: false }], 0, "ArrowLeft"), {
+  type: "parent", index: 0, id: "L1",
+});
+assert.ok(html.includes('id="folder-collapse-all"') && html.includes("Collapse All"));
+assert.ok(css.includes(".folder-collapse-all") && css.includes("#folders [data-nav-key]:focus-visible"));
+assert.ok(functionSource(appJs, "onFolderNavKey").includes("folderTreeKey"));
+assert.ok(functionSource(appJs, "onProviderColumnKey").includes("folderTreeKey"));
+assert.ok(functionSource(appJs, "onProviderColumnKey").includes("shellBlocked"));
+assert.ok(functionSource(appJs, "folderNavNode").includes("shellBlocked"));
+assert.ok(functionSource(appJs, "collapseAllFolders").includes("collapseIds"));
+assert.ok(parity.includes("Collapse All"));
 assert.deepStrictEqual(organizeUi.providerLabelTree([
   { id: "INBOX", name: "INBOX", editable: false },
   { id: "L1", name: "Work", editable: true },

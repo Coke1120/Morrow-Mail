@@ -110,6 +110,8 @@ let layoutSaveTimer = null;
 let sendTimer = null;
 let sendGen = 0;
 let appVersion = "";
+let changelogSettled = false;
+let changelogPending = false;
 let updateGen = 0;
 let updateTimer = null;
 let brainSnapshot = null;
@@ -143,6 +145,8 @@ let listMotionKey = "";
 let listOpenKey = "";
 let folderRenderKey = "";
 let folderCollapseGen = 0;
+let folderNavKey = "";
+let folderNavRestore = false;
 let chipRenderKey = "";
 let searchAccountKey = "";
 const messageRows = new Map();
@@ -3840,7 +3844,9 @@ function allAccountMailRow() {
   name.className = "name";
   name.textContent = allAccountMailLabel();
   button.appendChild(name);
+  markFolderNav(button, { key: "all", kind: "all", hasChild: false, expanded: false });
   button.addEventListener("click", () => {
+    folderNavKey = "all";
     const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "mail");
     selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
@@ -3942,6 +3948,7 @@ function folderTwist(folder, accountId, labelText) {
   twist.setAttribute("aria-expanded", open ? "true" : "false");
   twist.setAttribute("aria-label", (open ? "Collapse " : "Expand ") + label);
   twist.title = twist.getAttribute("aria-label");
+  twist.tabIndex = -1;
   twist.appendChild(strokeIcon([open ? MOVE_CHEVRON_DOWN : MOVE_CHEVRON_RIGHT], 12));
   twist.addEventListener("mousedown", (event) => {
     event.stopPropagation();
@@ -3949,9 +3956,99 @@ function folderTwist(folder, accountId, labelText) {
   twist.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    folderNavKey = "folder:" + accountId + ":" + folder.id;
+    folderNavRestore = true;
     toggleSidebarFolder(accountId, folder.id).catch((error) => showStatus(error.message, true));
   });
   return twist;
+}
+
+function markFolderNav(node, spec) {
+  const item = spec || {};
+  node.dataset.navKey = item.key || "";
+  node.dataset.navParent = item.parent || "";
+  node.dataset.navKind = item.kind || "";
+  node.dataset.navAccount = item.accountId || "";
+  node.dataset.navId = item.id || "";
+  node.dataset.navChild = item.hasChild ? "1" : "0";
+  node.dataset.navOpen = item.expanded ? "1" : "0";
+  if (item.lock) node.dataset.navLock = "1";
+  else delete node.dataset.navLock;
+  if (item.hasChild) node.setAttribute("aria-expanded", item.expanded ? "true" : "false");
+  node.tabIndex = -1;
+}
+
+function folderNavModel(node) {
+  return {
+    id: node.dataset.navKey || "",
+    parentId: node.dataset.navParent || "",
+    hasChild: node.dataset.navChild === "1",
+    expanded: node.dataset.navOpen === "1",
+    collapsible: node.dataset.navLock !== "1",
+  };
+}
+
+function folderNavNode(target, nav) {
+  if (!target || !target.closest || !nav || !nav.contains(target)) return null;
+  if (shellBlocked(target)) return null;
+  const direct = target.closest("[data-nav-key]");
+  if (direct && nav.contains(direct)) return direct;
+  const line = target.closest(".folder-line");
+  if (!line || !nav.contains(line)) return null;
+  return line.querySelector("[data-nav-key]");
+}
+
+function applyFolderNavFocus(nav) {
+  if (!nav) return;
+  const nodes = Array.from(nav.querySelectorAll("[data-nav-key]"));
+  if (!nodes.length) return;
+  let current = folderNavKey ? nodes.find((node) => node.dataset.navKey === folderNavKey) : null;
+  const found = !!current;
+  if (!current) current = nodes[0];
+  for (const node of nodes) node.tabIndex = node === current ? 0 : -1;
+  if (folderNavRestore && found) {
+    current.focus();
+    if (current.scrollIntoView) current.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function onFolderNavKey(event) {
+  if (!event || event.altKey || event.ctrlKey || event.metaKey) return;
+  const key = event.key;
+  if (key !== "ArrowUp" && key !== "ArrowDown" && key !== "ArrowLeft" && key !== "ArrowRight") return;
+  const nav = $("folders");
+  const node = folderNavNode(event.target, nav);
+  if (!node) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const tree = folderCollapse();
+  if (!tree || typeof tree.folderTreeKey !== "function") return;
+  const nodes = Array.from(nav.querySelectorAll("[data-nav-key]"));
+  const action = tree.folderTreeKey(nodes.map(folderNavModel), nodes.indexOf(node), key);
+  if (!action || action.type === "none" || action.type === "parent" || action.type === "child") return;
+  if (action.type === "move") {
+    const next = nodes[action.index];
+    if (!next) return;
+    folderNavKey = next.dataset.navKey || "";
+    for (const item of nodes) item.tabIndex = item === next ? 0 : -1;
+    next.focus();
+    if (next.scrollIntoView) next.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  folderNavKey = node.dataset.navKey || "";
+  folderNavRestore = true;
+  if (node.dataset.navKind === "account") {
+    const provider = node.dataset.navId || "";
+    if (provider === "gmail" || provider === "outlook") {
+      toggleProviderFolders(provider).catch((error) => showStatus(error.message, true));
+    } else folderNavRestore = false;
+    return;
+  }
+  if (node.dataset.navKind === "folder") {
+    toggleSidebarFolder(node.dataset.navAccount || "", node.dataset.navId || "").catch((error) => showStatus(error.message, true));
+    return;
+  }
+  folderNavRestore = false;
 }
 
 function renderAccounts() {
@@ -3984,6 +4081,7 @@ function renderAccounts() {
     empty.className = "empty";
     empty.textContent = "No accounts.";
     nav.append(empty, connectButton());
+    applyFolderNavFocus(nav);
     return;
   }
   const showAllAccountMail = allAccountMailMatches(folderQuery);
@@ -3993,7 +4091,7 @@ function renderAccounts() {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
     const expanded = filtering || providerExpanded(provider, state.prefs);
-    const tree = expanded ? folderTree(foldersOf(account), accountDelimiter(account)) : [];
+    const tree = folderTree(foldersOf(account), accountDelimiter(account));
     const rows = expanded ? sidebarFolderRows(tree, account.id) : [];
     if (filtering && !rows.length) continue;
     shownFolder = true;
@@ -4009,6 +4107,8 @@ function renderAccounts() {
       heading.append(mark, accountLabel(account));
       heading.title = accountLabel(account);
       heading.addEventListener("click", () => {
+        folderNavKey = "account:" + account.id;
+        folderNavRestore = true;
         toggleProviderFolders(provider).catch((error) => showStatus(error.message, true));
       });
     } else {
@@ -4016,6 +4116,15 @@ function renderAccounts() {
       heading.textContent = accountLabel(account);
       heading.title = accountLabel(account);
     }
+    markFolderNav(heading, {
+      key: "account:" + account.id,
+      kind: "account",
+      accountId: account.id,
+      id: provider || "",
+      hasChild: tree.length > 0,
+      expanded: !!(expanded && tree.length),
+      lock: !provider || filtering,
+    });
     heading.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -4092,7 +4201,18 @@ function renderAccounts() {
       } else {
         applyNestDrag(button, "imap", folder, account.id, baseTitle, baseLabel);
       }
+      markFolderNav(button, {
+        key: "folder:" + account.id + ":" + folder.id,
+        parent: folder.parentId ? "folder:" + account.id + ":" + folder.parentId : "account:" + account.id,
+        kind: "folder",
+        accountId: account.id,
+        id: String(folder.id),
+        hasChild: !!folder.hasChild,
+        expanded: !!(folder.hasChild && folder.expanded !== false),
+        lock: !!folder.filtering,
+      });
       button.addEventListener("click", () => {
+        folderNavKey = button.dataset.navKey || "";
         selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
       });
       if (folder.hasChild) {
@@ -4121,6 +4241,7 @@ function renderAccounts() {
     empty.textContent = "No matching folders.";
     nav.appendChild(empty);
   }
+  applyFolderNavFocus(nav);
 }
 
 function fillAccountOptions(select, rows, selected, emptyLabel = "No mailbox") {
@@ -4218,10 +4339,45 @@ function renderProviderColumns(block) {
     const motion = motionApi();
     if (motion) motion.rows(host.querySelectorAll(".provider-row"));
   }
-  if (restore && focusId) {
-    const row = Array.from(host.querySelectorAll(".provider-row")).find((node) => node.dataset.dropId === focusId && node.getAttribute("aria-selected") === "true");
-    if (row) row.focus();
+  if (restore) {
+    const wantId = host.dataset.restoreFocusId || focusId;
+    const wantCol = host.dataset.restoreColumn || "";
+    delete host.dataset.restoreFocusId;
+    delete host.dataset.restoreColumn;
+    const rows = Array.from(host.querySelectorAll(".provider-row"));
+    let row = rows.find((node) => node.dataset.dropId === wantId && (!wantCol || node.parentElement.dataset.column === wantCol));
+    if (!row && focusId) {
+      row = rows.find((node) => node.dataset.dropId === focusId && node.getAttribute("aria-selected") === "true");
+    }
+    if (row) focusProviderRow(row);
   }
+}
+
+function focusProviderRow(node) {
+  if (!node) return;
+  const column = node.parentElement;
+  if (column) {
+    for (const row of column.querySelectorAll(".provider-row")) row.tabIndex = row === node ? 0 : -1;
+  }
+  node.focus();
+  if (node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
+}
+
+function restoreProviderFocus(row, index) {
+  const host = row && row.closest ? row.closest(".provider-columns") : null;
+  if (host) {
+    host.dataset.restoreFocus = "1";
+    host.dataset.restoreFocusId = (row.dataset && row.dataset.dropId) || "";
+    host.dataset.restoreColumn = String(index);
+  }
+  const block = $("provider-folders");
+  if (block) renderProviderColumns(block);
+}
+
+function openProviderColumn(index, id) {
+  const path = state.providerColumnPath.slice(0, index);
+  if (id) path.push(id);
+  state.providerColumnPath = path;
 }
 
 function imapFolderForProvider(account, folder) {
@@ -4301,6 +4457,8 @@ function paintProviderActions(block, account, provider, tree, path) {
 }
 
 function onProviderColumnKey(event) {
+  if (!event || shellBlocked(event.target)) return;
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
   const row = event.target && event.target.closest ? event.target.closest(".provider-row") : null;
   const root = $("provider-content");
   if (!row || !root || !root.contains(row)) return;
@@ -4310,26 +4468,48 @@ function onProviderColumnKey(event) {
   const index = Number(column && column.dataset.column);
   if (!Number.isFinite(index)) return;
   event.preventDefault();
-  const rows = Array.from(column.querySelectorAll(".provider-row"));
-  const at = rows.indexOf(row);
-  if (key === "ArrowUp" || key === "ArrowDown") {
-    const next = rows[at + (key === "ArrowDown" ? 1 : -1)];
-    if (!next) return;
-    const path = state.providerColumnPath.slice(0, index);
-    path.push(next.dataset.dropId);
-    state.providerColumnPath = path;
-  } else if (key === "ArrowLeft") {
-    if (!index) return;
-    state.providerColumnPath = state.providerColumnPath.slice(0, index);
-  } else {
-    const path = state.providerColumnPath.slice(0, index);
-    path.push(row.dataset.dropId);
-    state.providerColumnPath = path;
+  event.stopPropagation();
+  if (key === "Enter") {
+    openProviderColumn(index, row.dataset.dropId);
+    restoreProviderFocus(row, index);
+    return;
+  }
+  const tree = folderCollapse();
+  if (!tree || typeof tree.folderTreeKey !== "function") return;
+  const nodes = Array.from(column.querySelectorAll(".provider-row"));
+  const rows = nodes.map((node) => ({
+    id: node.dataset.dropId || "",
+    parentId: "",
+    hasChild: !!node.querySelector(".provider-chevron"),
+    expanded: node.getAttribute("aria-expanded") === "true",
+    collapsible: true,
+  }));
+  const action = tree.folderTreeKey(rows, nodes.indexOf(row), key);
+  if (!action || action.type === "none") return;
+  if (action.type === "move") {
+    focusProviderRow(nodes[action.index]);
+    return;
+  }
+  if (action.type === "collapse") {
+    openProviderColumn(index, "");
+    restoreProviderFocus(row, index);
+    return;
+  }
+  if (action.type === "expand") {
+    openProviderColumn(index, row.dataset.dropId);
+    restoreProviderFocus(row, index);
+    return;
   }
   const host = row.closest(".provider-columns");
-  if (host) host.dataset.restoreFocus = "1";
-  const block = $("provider-folders");
-  if (block) renderProviderColumns(block);
+  if (action.type === "child") {
+    const next = host && host.querySelector('.provider-column[data-column="' + (index + 1) + '"] .provider-row');
+    if (next) focusProviderRow(next);
+    return;
+  }
+  if (action.type !== "parent" || !index || !host) return;
+  const prev = host.querySelector('.provider-column[data-column="' + (index - 1) + '"]');
+  const parent = prev && (prev.querySelector('.provider-row[aria-selected="true"]') || prev.querySelector(".provider-row"));
+  if (parent) focusProviderRow(parent);
 }
 
 function paintProviderPage() {
@@ -7345,6 +7525,76 @@ async function changeListPage(direction) {
   }
 }
 
+function changelogApi() {
+  return typeof morrowChangelog === "object" && morrowChangelog ? morrowChangelog : null;
+}
+
+function acknowledgeChangelog() {
+  const dialog = $("changelog");
+  const version = dialog && dialog.dataset.version;
+  if (!version || !api) return;
+  delete dialog.dataset.version;
+  api.invoke("morrow:configSetChangelogSeen", version).catch(() => {});
+}
+
+function paintChangelog(version, notes) {
+  const dialog = $("changelog");
+  const list = $("changelog-notes");
+  const label = $("changelog-version");
+  if (!dialog || !list || !label) return false;
+  label.textContent = "Morrow Mail " + version;
+  list.replaceChildren();
+  for (const line of notes) {
+    const item = document.createElement("li");
+    item.textContent = line;
+    list.appendChild(item);
+  }
+  dialog.dataset.version = version;
+  return true;
+}
+
+async function offerChangelog() {
+  if (changelogSettled || changelogPending || !api || !appVersion) return;
+  const notesApi = changelogApi();
+  if (!notesApi || typeof notesApi.shouldOffer !== "function" || typeof notesApi.notesFor !== "function") {
+    changelogSettled = true;
+    return;
+  }
+  if (document.querySelector("dialog[open]")) return;
+  changelogPending = true;
+  try {
+    const seen = await api.invoke("morrow:configGetChangelogSeen");
+    if (changelogSettled) return;
+    if (!notesApi.shouldOffer({ version: appVersion, seen: seen, listOk: true })) {
+      changelogSettled = true;
+      return;
+    }
+    const notes = notesApi.notesFor(appVersion);
+    if (!notes.length || !paintChangelog(appVersion, notes)) return;
+    if (document.querySelector("dialog[open]")) {
+      delete $("changelog").dataset.version;
+      return;
+    }
+    openDialog("changelog");
+    const dialog = $("changelog");
+    if (!dialog || !dialog.open) {
+      if (dialog) delete dialog.dataset.version;
+      return;
+    }
+    changelogSettled = true;
+  } catch {
+    // A failed settings read is not an acknowledgement.
+  } finally {
+    changelogPending = false;
+  }
+}
+
+function noteMailListLoaded(gen) {
+  // A thrown list load never reaches this. Failure must not cover the shell.
+  if (gen !== listGen) return;
+  offerChangelog().catch(() => {});
+}
+
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.accountId, state.folderId, state.query, state.searchAccountId]);
@@ -7361,12 +7611,14 @@ async function loadList(fromNetwork, requestedOffset) {
       if (gen !== listGen) return null;
       state.emails = takeEmails(Array.isArray(data) ? data : []);
       renderList();
+      noteMailListLoaded(gen);
       return null;
     }
     const account = selectedAccount();
     if (!state.allInbox && (!account || !state.folderId)) {
       state.emails = [];
       renderList();
+      noteMailListLoaded(gen);
       return null;
     }
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
@@ -7403,6 +7655,7 @@ async function loadList(fromNetwork, requestedOffset) {
     state.listSyncDone = data?.initialSyncDone !== false;
     if (!state.allInbox && data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
     renderList();
+    noteMailListLoaded(gen);
     return data;
   } finally {
     if (gen === listGen) { state.listLoading = false; paintListPaging(); }
@@ -13001,21 +13254,30 @@ async function toggleProviderFolders(provider) {
     ? ["gmailOpen", "morrow:configSetSidebarGmailFoldersExpanded"]
     : ["outlookOpen", "morrow:configSetSidebarOutlookFoldersExpanded"];
   const key = spec[0];
+  const gen = ++folderCollapseGen;
   const next = !state.prefs[key];
   state.prefs[key] = next;
   renderAccounts();
   try {
-    state.prefs[key] = (await api.invoke(spec[1], next)) === true;
+    const saved = (await api.invoke(spec[1], next)) === true;
+    if (gen !== folderCollapseGen) return;
+    state.prefs[key] = saved;
   } catch (error) {
+    if (gen !== folderCollapseGen) return;
     showStatus(error instanceof Error ? error.message : String(error), true);
     await loadShellPrefs();
   }
+  if (gen !== folderCollapseGen) return;
   renderAccounts();
+  folderNavRestore = false;
 }
 
 async function toggleSidebarFolder(accountId, folderId) {
   const collapse = folderCollapse();
-  if (!collapse) return;
+  if (!collapse) {
+    folderNavRestore = false;
+    return;
+  }
   const gen = ++folderCollapseGen;
   const next = collapse.toggle(state.prefs.collapsedFolders, accountId, folderId);
   state.prefs.collapsedFolders = next;
@@ -13024,6 +13286,50 @@ async function toggleSidebarFolder(accountId, folderId) {
     const saved = collapse.normalize(await api.invoke("morrow:configSetSidebarCollapsedFolders", next));
     if (gen !== folderCollapseGen) return;
     state.prefs.collapsedFolders = saved;
+  } catch (error) {
+    if (gen !== folderCollapseGen) return;
+    showStatus(error instanceof Error ? error.message : String(error), true);
+    await loadShellPrefs();
+  }
+  if (gen !== folderCollapseGen) return;
+  renderAccounts();
+  folderNavRestore = false;
+}
+
+async function collapseAllFolders() {
+  const collapse = folderCollapse();
+  if (!collapse) return;
+  folderNavRestore = false;
+  const gen = ++folderCollapseGen;
+  let next = collapse.normalize(state.prefs.collapsedFolders);
+  for (const account of state.accounts) {
+    const parents = [];
+    const seen = new Set();
+    for (const folder of folderTree(foldersOf(account), accountDelimiter(account))) {
+      const id = folder && folder.parentId ? String(folder.parentId) : "";
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      parents.push(id);
+    }
+    next = collapse.collapseIds(next, account.id, parents);
+  }
+  const closeGmail = state.prefs.gmailOpen !== false;
+  const closeOutlook = state.prefs.outlookOpen === true;
+  const changed = JSON.stringify(next) !== JSON.stringify(collapse.normalize(state.prefs.collapsedFolders));
+  if (!changed && !closeGmail && !closeOutlook) return;
+  state.prefs.collapsedFolders = next;
+  if (closeGmail) state.prefs.gmailOpen = false;
+  if (closeOutlook) state.prefs.outlookOpen = false;
+  renderAccounts();
+  try {
+    if (closeGmail && gen === folderCollapseGen) {
+      state.prefs.gmailOpen = (await api.invoke("morrow:configSetSidebarGmailFoldersExpanded", false)) === true;
+    }
+    if (closeOutlook && gen === folderCollapseGen) {
+      state.prefs.outlookOpen = (await api.invoke("morrow:configSetSidebarOutlookFoldersExpanded", false)) === true;
+    }
+    if (gen !== folderCollapseGen) return;
+    if (changed) state.prefs.collapsedFolders = collapse.normalize(await api.invoke("morrow:configSetSidebarCollapsedFolders", next));
   } catch (error) {
     if (gen !== folderCollapseGen) return;
     showStatus(error instanceof Error ? error.message : String(error), true);
@@ -19164,6 +19470,20 @@ function wire() {
     loadCalendar().catch((error) => showStatus(error.message, true));
   });
   $("provider-content").addEventListener("keydown", onProviderColumnKey);
+  const folderNav = $("folders");
+  if (folderNav) {
+    folderNav.addEventListener("keydown", onFolderNavKey);
+    folderNav.addEventListener("focusin", (event) => {
+      const node = folderNavNode(event.target, folderNav);
+      if (!node) return;
+      folderNavKey = node.dataset.navKey || "";
+      for (const item of folderNav.querySelectorAll("[data-nav-key]")) item.tabIndex = item === node ? 0 : -1;
+    });
+  }
+  const collapseAll = $("folder-collapse-all");
+  if (collapseAll) collapseAll.addEventListener("click", () => {
+    collapseAllFolders().catch((error) => showStatus(error.message, true));
+  });
   wireSplits();
   wireQuoteSplit();
   $("undo").addEventListener("click", () => guard(undoRemoval));
@@ -19275,6 +19595,9 @@ function wire() {
   });
   $("settings-capabilities-refresh").addEventListener("click", loadSettingsCapabilities);
   $("about-close").addEventListener("click", () => closeDialog("about-dialog"));
+  $("changelog-close").addEventListener("click", () => closeDialog("changelog"));
+  $("changelog-ok").addEventListener("click", () => closeDialog("changelog"));
+  $("changelog").addEventListener("close", acknowledgeChangelog);
   $("about-update-check").addEventListener("click", checkForUpdates);
   $("about-update-install").addEventListener("click", installUpdate);
   $("about-update-manual").addEventListener("click", async () => {
