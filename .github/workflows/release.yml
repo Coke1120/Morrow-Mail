@@ -30,6 +30,10 @@ jobs:
         env:
           SIGNING_KEY_AVAILABLE: ${{ secrets.MORROW_UPDATE_SIGNING_KEY != '' }}
         run: node scripts/release-preflight.js
+      # Python 3.12 dropped distutils. node-gyp 9 imports it when the
+      # better-sqlite3 Node 20 Windows prebuild is missing.
+      - name: Install setuptools for the native module compile
+        run: python3 -m pip install --upgrade setuptools
       - run: npm ci
       - run: npm run check
       - name: Bake Google Desktop OAuth client
