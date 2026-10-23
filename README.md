@@ -13,11 +13,11 @@ Morrow Mail is an open-source Electron mail client. You connect your own account
 
 ## Screenshots
 
-Demo-account PNGs are not in this tree yet. Commit them at the paths below and these links render on GitHub. Use a demo mailbox or chrome-only captures.
+![Morrow Mail mailbox](docs/images/01-mailbox.png)
 
-![Mailbox](docs/images/mailbox.png)
+![About Morrow Mail](docs/images/02-about.png)
 
-![About and updates](docs/images/about.png)
+![Morrow Mail navigation](docs/images/03-shell-chrome.png)
 
 The npm package is `morrow-mail`. Source: [Coke1120/Morrow-Mail](https://github.com/Coke1120/Morrow-Mail). Downloads: [Releases](https://github.com/Coke1120/Morrow-Mail/releases). License: [MIT](LICENSE). [Code signing policy](CODE_SIGNING_POLICY.md). [Code of Conduct](CODE_OF_CONDUCT.md).
 
