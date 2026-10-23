@@ -860,12 +860,18 @@ assert.ok(html.includes('href="https://hwl-hk.com/en/morrow-mail/privacy" target
 assert.ok(html.includes('href="https://hwl-hk.com/en/morrow-mail/terms" target="_blank" rel="noreferrer">Terms of Service</a>'));
 assert.ok(html.includes('href="https://github.com/Coke1120/Morrow-Mail/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>'));
 assert.ok(html.includes('href="https://github.com/Coke1120/Morrow-Mail" target="_blank" rel="noreferrer">GitHub</a>'));
+assert.ok(html.includes('aria-label="Support"'));
+assert.ok(html.includes('href="https://github.com/sponsors/Coke1120" target="_blank" rel="noreferrer">GitHub Sponsors</a>'));
+assert.ok(html.includes('href="https://buymeacoffee.com/coke1120" target="_blank" rel="noreferrer">Buy Me a Coffee</a>'));
 {
   const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
   assert.ok(readme.includes("https://hwl-hk.com/en/morrow-mail"));
   assert.ok(readme.includes("## Screenshots"));
   assert.ok(readme.includes("(docs/images/mailbox.png)"));
   assert.ok(readme.includes("(docs/images/about.png)"));
+  assert.ok(readme.includes("https://github.com/sponsors/Coke1120"));
+  assert.ok(readme.includes("https://buymeacoffee.com/coke1120"));
+  assert.ok(readme.includes("Support: [GitHub Sponsors](https://github.com/sponsors/Coke1120)"));
 }
 assert.ok(html.includes('id="list-chips"') && html.includes('aria-label="Primary folders"'));
 assert.ok(html.includes('aria-label="Email Brain"') && html.includes('id="rail-brain"'));
