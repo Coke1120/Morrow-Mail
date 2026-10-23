@@ -3933,7 +3933,8 @@ const featureSeed = [
   ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
-  ["inbox-rules", "Inbox rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
+  ["overnight-body-fill", "Off-hours body fill", "Mail", "While Morrow is open, from 00:00–07:00 local time (07:00 is outside), a slow pass fills one missing body after folder work, the same way a cold open does. Newest indexed mail inside Settings → Mail & Sync is used; trash, spam, and drafts are skipped, and the page on screen still comes first."],
+  ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose drafts. It stays off until you turn it on. Opening a proposal does not send it."],
   ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page."],
@@ -9419,7 +9420,10 @@ async function checkInboxRules() {
     assert.ok(!packed.includes("refresh-rules"));
     assert.ok(!packed.includes("inbox-rules-secret"));
     assert.ok(fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8").includes("runImapPlan"));
-    assert.ok(html.includes('id="inbox-rules-open"') && html.includes("Inbox rules"));
+    assert.ok(html.includes('id="inbox-rules-open"') && html.includes(">Inbox Automation</span>"));
+    assert.ok(html.includes('id="brain-tab-rules"') && html.includes(">Automation</button>") && html.includes('id="brain-rules-title">Inbox Automation Rules</h3>'));
+    assert.ok(html.includes("Each row is one rule.") && html.includes('placeholder="File invoices"') && html.includes('placeholder="newsletter@example.com"') && html.includes('placeholder="billing@example.com"') && html.includes('placeholder="invoice"') && html.includes('placeholder="amount due"'));
+    assert.ok(appJs.includes("Pick a folder, or leave mail where it is") && appJs.includes("Pick a label, or add none"));
     assert.ok(html.includes('id="brain-tab-rules"') && appJs.includes("Grant Gmail filters"));
     assert.ok(oauthDoc.includes("https://www.googleapis.com/auth/gmail.settings.basic"));
     assert.ok(oauthDoc.includes("MailboxSettings.ReadWrite"));

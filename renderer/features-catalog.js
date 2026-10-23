@@ -43,8 +43,14 @@
         blurb: "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself.",
       },
       {
+        id: "overnight-body-fill",
+        title: "Off-hours body fill",
+        category: "Mail",
+        blurb: "While Morrow is open, from 00:00–07:00 local time (07:00 is outside), a slow pass fills one missing body after folder work, the same way a cold open does. Newest indexed mail inside Settings → Mail & Sync is used; trash, spam, and drafts are skipped, and the page on screen still comes first.",
+      },
+      {
         id: "inbox-rules",
-        title: "Inbox rules",
+        title: "Inbox Automation Rules",
         category: "Mail",
         blurb: "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail.",
       },
