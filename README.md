@@ -7,6 +7,14 @@ Website: [https://hwl-hk.com/en/morrow-mail](https://hwl-hk.com/en/morrow-mail)
 
 Morrow Mail is an open-source Electron mail client. You connect your own accounts, read and send mail, and install the desktop app from GitHub Releases.
 
+## Screenshots
+
+Demo-account PNGs are not in this tree yet. Commit them at the paths below and these links render on GitHub. Use a demo mailbox or chrome-only captures.
+
+![Mailbox](docs/images/mailbox.png)
+
+![About and updates](docs/images/about.png)
+
 The npm package is `morrow-mail`. Source: [Coke1120/Morrow-Mail](https://github.com/Coke1120/Morrow-Mail). Downloads: [Releases](https://github.com/Coke1120/Morrow-Mail/releases). License: [MIT](LICENSE). [Code signing policy](CODE_SIGNING_POLICY.md). [Code of Conduct](CODE_OF_CONDUCT.md).
 
 The app in this tree is Electron (`host/`, `renderer/`, `shared/`). The old SwiftUI, WinUI, and Rust snapshot is archival only, in [`legacy.zip`](legacy.zip). Do not unzip it for feature work. See [LEGACY.md](LEGACY.md).

@@ -860,7 +860,13 @@ assert.ok(html.includes('href="https://hwl-hk.com/en/morrow-mail/privacy" target
 assert.ok(html.includes('href="https://hwl-hk.com/en/morrow-mail/terms" target="_blank" rel="noreferrer">Terms of Service</a>'));
 assert.ok(html.includes('href="https://github.com/Coke1120/Morrow-Mail/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>'));
 assert.ok(html.includes('href="https://github.com/Coke1120/Morrow-Mail" target="_blank" rel="noreferrer">GitHub</a>'));
-assert.ok(fs.readFileSync(path.join(root, "README.md"), "utf8").includes("https://hwl-hk.com/en/morrow-mail"));
+{
+  const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+  assert.ok(readme.includes("https://hwl-hk.com/en/morrow-mail"));
+  assert.ok(readme.includes("## Screenshots"));
+  assert.ok(readme.includes("(docs/images/mailbox.png)"));
+  assert.ok(readme.includes("(docs/images/about.png)"));
+}
 assert.ok(html.includes('id="list-chips"') && html.includes('aria-label="Primary folders"'));
 assert.ok(html.includes('aria-label="Email Brain"') && html.includes('id="rail-brain"'));
 assert.ok(!html.includes('id="agent-open"') && !html.includes('id="brain-open"'));
