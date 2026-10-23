@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.2.33": [
+      "The folder list uses arrow keys, and Collapse All closes every open section.",
+      "Opening your mailbox shows the Morrow Mail mark, then What's new after the mail list loads.",
+      "About shows the copyright line and links to Privacy, Terms, the license, the source, and support.",
+    ],
     "0.2.32": [
       "About & updates shows a red mark when an update is available or ready to install.",
       "Morrow checks for updates when you open it, and about once an hour while it stays open.",
