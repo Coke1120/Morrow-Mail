@@ -4306,7 +4306,10 @@ dialog > form,
 
 dialog::backdrop { background: rgba(16, 40, 34, 0.72); }
 
-/* Center without a transform so Motion can animate translate. max-content keeps the vertical insets from stretching a short dialog. */
+/* Center without the transform property so Motion can animate it.
+   A modal with both block insets stretches to the viewport (About was a
+   full-height sheet). bottom: auto drops that stretch. top + translate
+   centers the content-sized box. max-height is only the overflow ceiling. */
 #about-dialog,
 #confirm,
 #compose-close-review,
@@ -4314,9 +4317,12 @@ dialog::backdrop { background: rgba(16, 40, 34, 0.72); }
 #bot-secret,
 #move-picker {
   inset: 0;
-  margin: auto;
+  bottom: auto;
+  top: 50%;
   height: max-content;
   max-height: calc(100vh - 32px);
+  margin: auto;
+  translate: 0 -50%;
 }
 
 #calendar-event-dialog {

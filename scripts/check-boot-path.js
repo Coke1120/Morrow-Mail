@@ -455,7 +455,9 @@ assert.match(quotingRule, /height:\s*max-content/, "quoting dialog sizes to its 
 assert.match(quotingRule, /max-height:\s*calc\(100vh - 32px\)/, "quoting dialog keeps a viewport ceiling");
 assert.ok(!/(^|[^-])height:\s*calc\(100vh - 32px\)/.test(quotingRule), "quoting dialog does not force the viewport height");
 assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker\s*\{[^}]*height:\s*max-content/, "compact dialogs hug their content");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker\s*\{[^}]*bottom:\s*auto/, "compact dialogs do not stretch between block insets");
 assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker\s*\{[^}]*margin:\s*auto/, "compact dialogs stay centered without a transform");
+assert.match(css, /#about-dialog,\s*#confirm,\s*#compose-close-review,\s*#quit-scheduled,\s*#bot-secret,\s*#move-picker\s*\{[^}]*translate:\s*0 -50%/, "compact dialogs center with translate, not transform");
 assert.ok(!css.includes("min(820px"), "quoting dialog no longer stops at 820px");
 assert.ok(css.includes('#compose[data-quote-collapsed="true"] .compose-quote-body'), "collapse hides the quote body");
 assert.ok(css.includes("#193c34") && css.includes("#102822") && css.includes("#b9d5ad") && css.includes("[data-theme=\"dark\"]"), "shell css missing logo green tokens");
