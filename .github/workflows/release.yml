@@ -16,7 +16,7 @@ concurrency:
 jobs:
   windows:
     # windows-latest is Windows Server 2025 (VS 18). node-gyp 9.4.1 cannot
-    # detect that install, so better-sqlite3's source build fails npm ci.
+    # detect that install, so the better-sqlite3 source build fails.
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
