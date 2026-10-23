@@ -1,3 +1,6 @@
+const fs = require("fs");
+const path = require("path");
+
 // Shown when the mailbox cannot be opened. The Dock process must not stay up
 // with zero windows. Mail files are left where they are.
 
@@ -16,6 +19,17 @@ function startupFailureDialog(error, file) {
   };
 }
 
+// Mailbox-open splash only. The mark is the rail logo, renderer/morrow-icon.svg.
+function logoMarkup() {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, "..", "renderer", "morrow-icon.svg"), "utf8").trim();
+    return raw.replace("<svg ", '<svg class="logo" aria-hidden="true" focusable="false" ');
+  } catch {
+    // The open message still shows if the mark cannot be read.
+    return "";
+  }
+}
+
 function startupStatusHtml() {
   return `<!doctype html>
 <html lang="en">
@@ -23,22 +37,57 @@ function startupStatusHtml() {
 <meta charset="utf-8">
 <title>Morrow Mail</title>
 <style>
-  body { margin: 0; background: #e7f0e4; color: #102822; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  main { padding: 28px 32px; }
-  h1 { font-size: 20px; font-weight: 650; margin: 12px 0 8px; }
-  p { margin: 0; }
-  svg { display: block; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: #e7f0e4;
+    color: #102822;
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  main {
+    box-sizing: border-box;
+    min-height: 100%;
+    padding: 22px 28px 26px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+  .brand { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .logo { width: 56px; height: 56px; display: block; }
+  .brand-name { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+  .tagline { margin: 8px 0 0; max-width: 36em; color: #5d756c; font-size: 14px; }
+  .status { margin-top: 18px; display: flex; flex-direction: column; align-items: center; }
+  /* Same ring as renderer .page-busy-spin. This page is a data URL and cannot import app.css. */
+  .page-busy-spin {
+    width: 28px;
+    height: 28px;
+    border: 3px solid rgba(25, 60, 52, 0.18);
+    border-top-color: #193c34;
+    border-radius: 50%;
+    animation: page-busy-spin 0.8s linear infinite;
+  }
+  h1 { font-size: 18px; font-weight: 650; margin: 14px 0 6px; }
+  .status p { margin: 0; max-width: 28em; }
+  @keyframes page-busy-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .page-busy-spin { animation: none; }
+  }
 </style>
 </head>
 <body>
-<main>
-  <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <circle cx="12" cy="12" r="10"></circle>
-    <line x1="12" y1="16" x2="12" y2="12"></line>
-    <line x1="12" y1="8" x2="12.01" y2="8"></line>
-  </svg>
-  <h1>Opening your mailbox</h1>
-  <p>A large mailbox can take a moment. Your mail stays on this computer.</p>
+<main aria-busy="true">
+  <div class="brand">
+    ${logoMarkup()}
+    <p class="brand-name">Morrow Mail</p>
+  </div>
+  <p class="tagline">The Open Source Email Client with BYOK AI Assistant.</p>
+  <div class="status" role="status">
+    <span class="page-busy-spin" aria-hidden="true"></span>
+    <h1>Opening your mailbox</h1>
+    <p>A large mailbox can take a moment. Your mail stays on this computer.</p>
+  </div>
 </main>
 </body>
 </html>`;

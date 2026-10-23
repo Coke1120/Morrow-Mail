@@ -725,7 +725,7 @@ async function presentBootStatus() {
   if (bootWindow && !bootWindow.isDestroyed()) return bootWindow;
   const win = new BrowserWindow({
     width: 480,
-    height: 220,
+    height: 420,
     title: "Morrow Mail",
     show: true,
     autoHideMenuBar: true,
