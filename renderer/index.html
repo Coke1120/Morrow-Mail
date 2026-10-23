@@ -594,15 +594,16 @@
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
         <p id="connect-recovery-note" class="hint"></p>
-        <p class="hint">Google connects mail, calendar, organize, Out of Office, and inbox rules with one consent. Microsoft connects mail first, then checks those features for the same account. Approve any missing permissions; you can keep mail if you decline features.</p>
-        <div class="row">
+        <p class="hint">Google connects mail, calendar, organize, Out of Office, and inbox rules with one consent. Microsoft connects mail first, then checks those features for the same account. Approve any missing permissions; you can keep mail if you decline features. Yahoo Mail uses an app password.</p>
+        <div class="row" role="group" aria-label="Account providers">
           <button type="button" class="primary" id="oauth-google">Continue with Google</button>
           <button type="button" class="ghost" id="oauth-microsoft">Continue with Microsoft</button>
+          <button type="button" class="ghost" id="connect-yahoo">Yahoo Mail</button>
         </div>
         <p id="oauth-unavailable" class="hint"></p>
         <p id="connect-status" class="hint" role="status" aria-live="polite"></p>
-        <details><summary>Use IMAP / app password</summary>
-        <p class="hint">The password stays in this app's keychain.</p>
+        <details id="connect-imap"><summary>Other email provider</summary>
+        <p class="hint">The password stays in this app's keychain. A typed address fills the servers it can find.</p>
         <label for="profile">Provider</label>
         <select id="profile" name="profile"></select>
         <div id="custom-fields" hidden>
@@ -622,7 +623,8 @@
         <label for="username">Username <span class="optional">(optional)</span></label>
         <input id="username" name="username" autocomplete="off" spellcheck="false" />
         <label for="password">Password or app password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <input id="password" name="password" type="password" autocomplete="current-password" aria-describedby="password-hint" required />
+        <p id="password-hint" class="hint"></p>
         <div class="row">
           <button type="submit" class="primary" id="connect-submit">Connect</button>
         </div>

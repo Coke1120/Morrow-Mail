@@ -3735,8 +3735,93 @@ function fillPresets(cards) {
   syncCustomFields();
 }
 
+let discoverGen = 0;
+let discoverTimer = 0;
+let customHostsEdited = false;
+
+function yahooPasswordAccount(profile, email) {
+  if (profile === "yahoo" || profile === "yahoo_jp") return true;
+  const domain = String(email || "").trim().toLowerCase().split("@").pop() || "";
+  return domain === "ymail.com" || domain === "rocketmail.com" || domain === "myyahoo.com" || domain.startsWith("yahoo.");
+}
+
+function syncPasswordHint() {
+  const hint = $("password-hint");
+  if (!hint) return;
+  const on = yahooPasswordAccount($("profile") && $("profile").value, $("email") && $("email").value);
+  hint.hidden = !on;
+  hint.textContent = on
+    ? "Yahoo needs an app password. In Yahoo Account Security, choose Generate app password, then paste it here. The regular account password is rejected."
+    : "";
+}
+
 function syncCustomFields() {
-  $("custom-fields").hidden = $("profile").value !== "custom";
+  const custom = $("custom-fields");
+  const profile = $("profile");
+  if (custom && profile) custom.hidden = profile.value !== "custom";
+  syncPasswordHint();
+}
+
+function manualCustomHosts() {
+  return customHostsEdited && $("profile") && $("profile").value === "custom" && $("imap-host") && $("imap-host").value.trim() && $("smtp-host") && $("smtp-host").value.trim();
+}
+
+function applyDiscovery(found) {
+  if (!found || typeof found !== "object" || manualCustomHosts()) return;
+  const select = $("profile");
+  if (!select || !select.options) return;
+  const profile = String(found.profile || "");
+  const hasCard = profile && [...select.options].some((option) => option.value === profile);
+  if (hasCard && found.source !== "autoconfig" && found.source !== "srv") {
+    select.value = profile;
+    syncCustomFields();
+    return;
+  }
+  if (!found.imap && !found.smtp) return;
+  select.value = "custom";
+  if (found.imap && found.imap.host && $("imap-host")) {
+    $("imap-host").value = found.imap.host;
+    $("imap-port").value = String(found.imap.port || "");
+    $("imap-tls").checked = found.imap.tls !== false;
+  }
+  if (found.smtp && found.smtp.host && $("smtp-host")) {
+    $("smtp-host").value = found.smtp.host;
+    $("smtp-port").value = String(found.smtp.port || "");
+    $("smtp-tls").checked = found.smtp.tls !== false;
+  }
+  syncCustomFields();
+}
+
+function scheduleDiscover() {
+  syncPasswordHint();
+  const gen = ++discoverGen;
+  const email = $("email") && $("email").value.trim();
+  if (discoverTimer) clearTimeout(discoverTimer);
+  if (!email || !email.includes("@")) return;
+  discoverTimer = setTimeout(() => {
+    discoverTimer = 0;
+    call("mail:discoverMail", { email }).then((found) => {
+      if (gen !== discoverGen || !$("email") || $("email").value.trim() !== email) return;
+      applyDiscovery(found);
+    }).catch(() => {});
+  }, 300);
+}
+
+function openImapDetails() {
+  const details = $("connect-imap");
+  if (details) details.open = true;
+}
+
+function chooseYahoo() {
+  if (state.connectPending || state.oauthPending) return;
+  openImapDetails();
+  customHostsEdited = false;
+  const select = $("profile");
+  if (select && select.options && [...select.options].some((option) => option.value === "yahoo")) select.value = "yahoo";
+  syncCustomFields();
+  setConnectStatus("Yahoo Mail uses your full email address and an app password.");
+  const focus = $("email") && $("email").value.trim() ? $("password") : $("email");
+  if (focus && typeof focus.focus === "function") focus.focus();
 }
 
 function connectButton() {
@@ -9567,6 +9652,7 @@ function paintConnectPending() {
   const google = oauthButtonState(state.oauthStatus, "google");
   $("oauth-google").disabled = !!busy || google.disabled;
   $("oauth-microsoft").disabled = !!busy;
+  if ($("connect-yahoo")) $("connect-yahoo").disabled = !!busy;
   $("connect-submit").disabled = !!busy;
   $("connect-close").textContent = state.oauthPending ? "Cancel sign-in" : "Cancel";
   $("connect-form").setAttribute("aria-busy", busy ? "true" : "false");
@@ -9580,6 +9666,11 @@ async function connectImap() {
   paintConnectPending();
   setConnectStatus("Connecting…");
   try {
+    if (!manualCustomHosts()) {
+      try {
+        applyDiscovery(await call("mail:discoverMail", { email: $("email").value.trim() }));
+      } catch { /* the selected provider still connects */ }
+    }
     const view = await call("mail:connectImapSmtp", { ...connectPayload(), expectedAccountId: state.reconnectAccountId || undefined });
     $("password").value = "";
     closeDialog("connect");
@@ -14372,6 +14463,7 @@ function openConnectFor(account) {
   $("email").readOnly = !!account;
   $("username").value = account?.imapUsername || "";
   $("password").value = "";
+  customHostsEdited = !!(account && account.imapSmtpProfile === "custom");
   if (account) {
     $("profile").value = account.imapSmtpProfile || "custom";
     const custom = account.imapSmtpCustom;
@@ -14380,8 +14472,9 @@ function openConnectFor(account) {
       $(kind + "-port").value = custom[kind].port;
       $(kind + "-tls").checked = custom[kind].tls;
     }
+    openImapDetails();
     syncCustomFields();
-  }
+  } else syncPasswordHint();
   setConnectStatus("");
   paintConnectPending();
   openDialog("connect");
@@ -19603,7 +19696,18 @@ function wire() {
   wireQuoteSplit();
   $("undo").addEventListener("click", () => guard(undoRemoval));
   $("undo-send").addEventListener("click", cancelUndoSend);
-  $("profile").addEventListener("change", syncCustomFields);
+  $("profile").addEventListener("change", () => {
+    if ($("profile").value !== "custom") customHostsEdited = false;
+    syncCustomFields();
+  });
+  $("connect-yahoo").addEventListener("click", chooseYahoo);
+  $("email").addEventListener("input", scheduleDiscover);
+  for (const id of ["imap-host", "smtp-host", "imap-port", "smtp-port"]) {
+    $(id).addEventListener("input", () => { customHostsEdited = true; });
+  }
+  for (const id of ["imap-tls", "smtp-tls"]) {
+    $(id).addEventListener("change", () => { customHostsEdited = true; });
+  }
   $("search-form").addEventListener("submit", (event) => {
     event.preventDefault();
     applySearch();

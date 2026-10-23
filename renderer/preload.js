@@ -55,6 +55,7 @@ const INVOKE = [
   "emailBrain:getComposeSettings",
   "emailBrain:saveComposeSettings",
   "mail:listImapSmtpPresets",
+  "mail:discoverMail",
   "mail:connectImapSmtp",
   "mail:addAccount",
   "mail:cancelOAuth",

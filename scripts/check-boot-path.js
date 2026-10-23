@@ -22,6 +22,7 @@ const syntax = [
   "shared/changelog.js",
   "scripts/check-changelog.js",
   "host/mail/remote.js",
+  "host/mail/discovery.js",
   "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
@@ -90,7 +91,7 @@ for (const file of syntax) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js"]) {
+for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js", "check-mail-discovery.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }
@@ -465,6 +466,10 @@ assert.ok(!css.includes("#410c42") && !css.includes("#572658") && !css.includes(
 assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell does not paint theme or accent");
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
+assert.ok(html.includes('id="connect-yahoo"') && html.includes(">Yahoo Mail<"), "Yahoo Mail is a provider button beside Google and Microsoft");
+assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app password"), "Yahoo password hint names Generate app password");
+assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
+assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
 assert.strictEqual(pkg.version, "0.2.33");
 const composeHost = require("../host/compose-window");
