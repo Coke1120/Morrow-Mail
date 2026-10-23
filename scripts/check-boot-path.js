@@ -3205,6 +3205,61 @@ assert.deepStrictEqual(sidebarFilter.sidebarRowsFor(filterTree, "leo", {}, "Arie
   "AriesCPA.com",
 ]);
 assert.deepStrictEqual(folderCollapse.toggle(folderCollapse.toggle({}, "leo", "AriesCPA.com"), "leo", "AriesCPA.com"), {});
+assert.deepStrictEqual(folderCollapse.collapseIds({ leo: ["AriesCPA.com"] }, "leo", ["AriesCPA.com", "AriesCPA.com/AsiaBs"]), {
+  leo: ["AriesCPA.com", "AriesCPA.com/AsiaBs"],
+});
+assert.deepStrictEqual(folderCollapse.collapseIds({}, "leo", []), {});
+assert.deepStrictEqual(folderCollapse.collapseIds({}, "", ["INBOX"]), {});
+const treeRows = [
+  { id: "account:leo", parentId: "", hasChild: true, expanded: true },
+  { id: "folder:leo:INBOX", parentId: "account:leo", hasChild: false, expanded: false },
+  { id: "folder:leo:A", parentId: "account:leo", hasChild: true, expanded: true },
+  { id: "folder:leo:A/1", parentId: "folder:leo:A", hasChild: false, expanded: false },
+  { id: "folder:leo:B", parentId: "account:leo", hasChild: true, expanded: false },
+];
+const treeKey = folderCollapse.folderTreeKey;
+assert.deepStrictEqual(treeKey(treeRows, 2, "ArrowDown"), { type: "move", index: 3 });
+assert.deepStrictEqual(treeKey(treeRows, 2, "ArrowUp"), { type: "move", index: 1 });
+assert.deepStrictEqual(treeKey(treeRows, 0, "ArrowUp"), { type: "none" });
+assert.deepStrictEqual(treeKey(treeRows, 4, "ArrowDown"), { type: "none" });
+assert.deepStrictEqual(treeKey(treeRows, 2, "ArrowLeft"), { type: "collapse", index: 2, id: "folder:leo:A" });
+assert.deepStrictEqual(treeKey(treeRows, 4, "ArrowLeft"), { type: "move", index: 0 });
+assert.deepStrictEqual(treeKey(treeRows, 1, "ArrowLeft"), { type: "move", index: 0 });
+assert.deepStrictEqual(treeKey(treeRows, 0, "ArrowLeft"), { type: "collapse", index: 0, id: "account:leo" });
+assert.deepStrictEqual(treeKey([{ id: "account:leo", parentId: "", hasChild: true, expanded: false }], 0, "ArrowLeft"), {
+  type: "parent", index: 0, id: "account:leo",
+});
+assert.deepStrictEqual(treeKey(treeRows, 4, "ArrowRight"), { type: "expand", index: 4, id: "folder:leo:B" });
+assert.deepStrictEqual(treeKey(treeRows, 2, "ArrowRight"), { type: "move", index: 3 });
+assert.deepStrictEqual(treeKey(treeRows, 1, "ArrowRight"), { type: "none" });
+assert.deepStrictEqual(treeKey(treeRows, 2, "Enter"), { type: "none" });
+assert.deepStrictEqual(treeKey([], 0, "ArrowDown"), { type: "none" });
+const lockedTree = [
+  { id: "A", parentId: "", hasChild: true, expanded: true, collapsible: false },
+  { id: "A/1", parentId: "A", hasChild: false, expanded: false },
+];
+assert.deepStrictEqual(treeKey(lockedTree, 0, "ArrowLeft"), { type: "parent", index: 0, id: "A" });
+assert.deepStrictEqual(treeKey(lockedTree, 0, "ArrowRight"), { type: "move", index: 1 });
+assert.deepStrictEqual(treeKey([{ id: "L1", parentId: "", hasChild: true, expanded: true }], 0, "ArrowLeft"), {
+  type: "collapse", index: 0, id: "L1",
+});
+assert.deepStrictEqual(treeKey([{ id: "L1", parentId: "", hasChild: true, expanded: true }], 0, "ArrowRight"), {
+  type: "child", index: 0, id: "L1",
+});
+assert.deepStrictEqual(treeKey([{ id: "L1", parentId: "", hasChild: true, expanded: false }], 0, "ArrowRight"), {
+  type: "expand", index: 0, id: "L1",
+});
+assert.deepStrictEqual(treeKey([{ id: "L1", parentId: "", hasChild: true, expanded: false }], 0, "ArrowLeft"), {
+  type: "parent", index: 0, id: "L1",
+});
+assert.ok(html.includes('id="folder-collapse-all"') && html.includes("Collapse All"));
+assert.ok(css.includes(".folder-collapse-all") && css.includes("#folders [data-nav-key]:focus-visible"));
+assert.ok(functionSource(appJs, "onFolderNavKey").includes("folderTreeKey"));
+assert.ok(functionSource(appJs, "onProviderColumnKey").includes("folderTreeKey"));
+assert.ok(functionSource(appJs, "onProviderColumnKey").includes("shellBlocked"));
+assert.ok(functionSource(appJs, "folderNavNode").includes("shellBlocked"));
+assert.ok(functionSource(appJs, "collapseAllFolders").includes("collapseIds"));
+assert.ok(parity.includes("Collapse All"));
 assert.deepStrictEqual(organizeUi.providerLabelTree([
   { id: "INBOX", name: "INBOX", editable: false },
   { id: "L1", name: "Work", editable: true },
