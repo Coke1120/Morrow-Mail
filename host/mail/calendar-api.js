@@ -272,6 +272,20 @@ async function listEvents(provider, accessToken, calendarId, range, fetchImpl) {
   return { events: [], truncated: false };
 }
 
+// Sequential so a rate limit stops the rest. Each calendar keeps listEvents' MAX_EVENTS cap.
+async function listEventsForIds(provider, accessToken, calendarIds, range, fetchImpl) {
+  const events = [];
+  let truncated = false;
+  const fetched = [];
+  for (const calendarId of Array.isArray(calendarIds) ? calendarIds : []) {
+    const listed = await listEvents(provider, accessToken, calendarId, range, fetchImpl);
+    fetched.push(calendarId);
+    if (listed.events.length) events.push(...listed.events);
+    if (listed.truncated) truncated = true;
+  }
+  return { events, truncated, calendarIds: fetched };
+}
+
 function invalidEvent(message) {
   const error = new Error(message);
   error.code = "invalid";
@@ -374,6 +388,25 @@ function preferredCalendarId(calendars) {
   return first ? first.id : "";
 }
 
+function selectedCalendarIds(calendars, params) {
+  const known = new Set();
+  for (const calendar of Array.isArray(calendars) ? calendars : []) {
+    if (calendar && calendar.id) known.add(calendar.id);
+  }
+  const picked = [];
+  const raw = params && Array.isArray(params.calendarIds) ? params.calendarIds : [];
+  for (const item of raw) {
+    const id = String(item || "");
+    if (!known.has(id) || picked.includes(id)) continue;
+    picked.push(id);
+  }
+  if (picked.length) return picked;
+  const single = params && params.calendarId ? String(params.calendarId) : "";
+  if (known.has(single)) return [single];
+  const preferred = preferredCalendarId(calendars);
+  return preferred ? [preferred] : [];
+}
+
 module.exports = {
   GOOGLE_ROOT,
   normalizeGoogleCalendar,
@@ -385,11 +418,13 @@ module.exports = {
   calendarPath,
   listCalendars,
   listEvents,
+  listEventsForIds,
   createEvent,
   updateEvent,
   deleteEvent,
   plainDescription,
   writeEvent,
   preferredCalendarId,
+  selectedCalendarIds,
   pageToken,
 };

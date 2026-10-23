@@ -408,6 +408,80 @@ app.whenReady().then(async () => {
   await waitFor(`$('calendar-agenda').textContent.includes('Remaining account')`);
   statusRequests.forEach(resolve => resolve(ok({ google: true, accounts: accounts.map(row => ({ id: row.id, calendar: true })) })));
 
+  const multiAt = count('calendar:list');
+  await run(`localStorage.setItem('morrow.calendarChecks', JSON.stringify({'box-0':['work','home']}));
+    state.calendarChecksAccountId=''; loadCalendar({fresh:true});`);
+  await waitCalls('calendar:list', multiAt + 1);
+  const multi = calendarRequests[multiAt];
+  assert.deepEqual(multi.payload.calendarIds, ['work', 'home']);
+  assert.equal(multi.payload.calendarId, undefined);
+  const multiStart = multi.payload.timeMin;
+  const multiDay = await run(`(() => { const date = new Date(${JSON.stringify(multiStart)});
+    return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0'); })()`);
+  multi.resolve(ok({
+    api: true,
+    accountId: 'box-0',
+    calendarId: 'work',
+    calendarIds: ['work', 'home'],
+    calendars: [{ id: 'work', name: 'Work', primary: true }, { id: 'home', name: 'Home' }],
+    events: [
+      { id: 'work-evt', title: 'Standup', start: multiStart, end: new Date(Date.parse(multiStart) + 3600000).toISOString(), calendarId: 'work' },
+      { id: 'home-evt', title: 'Dentist', allDay: true, start: multiDay, end: multiDay, calendarId: 'home' },
+    ],
+  }));
+  await waitFor(`$('calendar-agenda').textContent.includes('Standup') && $('calendar-agenda').textContent.includes('Dentist')`);
+  assert.equal(await run(`document.querySelectorAll('#calendar-list input:checked').length`), 2);
+  assert.equal(await run(`document.querySelector('#calendar-list input[value="work"]').checked && document.querySelector('#calendar-list input[value="home"]').checked`), true);
+  const multiColors = await run(`JSON.stringify(['work-evt','home-evt'].map(id => document.querySelector('[data-event-id="'+id+'"]').style.getPropertyValue('--event-color')))`);
+  assert.equal(JSON.parse(multiColors).length, 2);
+  assert.notEqual(JSON.parse(multiColors)[0], JSON.parse(multiColors)[1]);
+  await shot('calendar-multi-checked');
+  await run(`document.querySelector('#calendar-list input[value="home"]').click()`);
+  await waitFor(`!$('calendar-agenda').textContent.includes('Dentist') && $('calendar-agenda').textContent.includes('Standup')`);
+  await waitCalls('calendar:list', multiAt + 2);
+  assert.deepEqual(calendarRequests[multiAt + 1].payload.calendarIds, ['work']);
+  calendarRequests[multiAt + 1].resolve(ok({
+    api: true,
+    accountId: 'box-0',
+    calendarId: 'work',
+    calendarIds: ['work'],
+    calendars: [{ id: 'work', name: 'Work', primary: true }, { id: 'home', name: 'Home' }],
+    events: [{ id: 'work-evt', title: 'Standup', start: multiStart, end: new Date(Date.parse(multiStart) + 3600000).toISOString(), calendarId: 'work' }],
+  }));
+  await waitFor(`!$('calendar-panel').hasAttribute('aria-busy')`);
+  const beforeLast = count('calendar:list');
+  await run(`document.querySelector('#calendar-list input[value="work"]').click()`);
+  await sleep(80);
+  assert.equal(count('calendar:list'), beforeLast, 'the last checked calendar stays checked');
+  assert.equal(await run(`document.querySelector('#calendar-list input[value="work"]').checked`), true);
+  await run(`document.querySelector('#calendar-list input[value="home"]').click()`);
+  await waitCalls('calendar:list', beforeLast + 1);
+  assert.deepEqual(calendarRequests[beforeLast].payload.calendarIds, ['work', 'home']);
+  calendarRequests[beforeLast].resolve(ok({
+    api: true,
+    accountId: 'box-0',
+    calendarId: 'work',
+    calendarIds: ['work', 'home'],
+    calendars: [{ id: 'work', name: 'Work', primary: true }, { id: 'home', name: 'Home' }],
+    events: [
+      { id: 'work-evt', title: 'Standup', start: multiStart, end: new Date(Date.parse(multiStart) + 3600000).toISOString(), calendarId: 'work' },
+      { id: 'home-evt', title: 'Dentist', allDay: true, start: multiDay, end: multiDay, calendarId: 'home' },
+    ],
+  }));
+  await waitFor(`$('calendar-agenda').textContent.includes('Dentist')`);
+  assert.equal(await run(`state.calendarId`), 'home', 'the calendar last checked on is the create target');
+  await run(`$('calendar-add').click()`);
+  await waitFor(`$('calendar-event-dialog').open`);
+  assert.equal(await run(`$('calendar-pick').value`), 'home');
+  await run(`$('calendar-cancel').click()`);
+  await waitFor(`!$('calendar-event-dialog').open`);
+  await run(`document.querySelector('[data-event-id="work-evt"]').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`);
+  await waitFor(`$('calendar-event-dialog').open`);
+  assert.equal(await run(`$('calendar-pick').value`), 'work', 'edit uses the event calendar');
+  await run(`$('calendar-cancel').click()`);
+  await waitFor(`!$('calendar-event-dialog').open`);
+  assert.deepEqual(await run(`JSON.parse(localStorage.getItem('morrow.calendarChecks'))['box-0']`), ['work', 'home']);
+
   // Cached bodies stay quiet. An incomplete body shows a reader spinner and leaves the list mounted.
   await run(`$('settings').close();showMail();`);
   const cachedBody = { id: 'cached-body', accountId: 'box-0', folderId: 'Inbox', subject: 'Cached body', from: 'ada@example.test', date: '2026-10-20T12:00:00.000Z', unread: false, bodyComplete: true, snippet: 'Ready' };

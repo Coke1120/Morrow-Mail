@@ -2468,29 +2468,34 @@ button.agent-action:disabled { opacity: 0.55; }
 
 .mini-day.is-focus { box-shadow: inset 0 0 0 1px #1a73e8; }
 
-button.calendar-source {
+label.calendar-source {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
   margin: 0;
   padding: 4px 2px;
-  border: 0;
-  background: transparent;
   color: var(--ink);
   text-align: left;
   font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
 }
 
-.calendar-source-mark {
+label.calendar-source input {
+  appearance: none;
+  box-sizing: border-box;
   width: 14px;
   height: 14px;
+  margin: 0;
+  padding: 0;
   border-radius: 3px;
   border: 2px solid var(--event-color, #1a73e8);
+  background: transparent;
   flex: none;
 }
 
-button.calendar-source[aria-pressed="true"] .calendar-source-mark {
+label.calendar-source input:checked {
   background: var(--event-color, #1a73e8);
 }
 
@@ -2560,6 +2565,7 @@ button.agenda-item {
   background: var(--hover);
   margin-top: 4px;
   padding: 6px 8px;
+  border-left: 3px solid var(--event-color, var(--line));
   white-space: normal;
 }
 

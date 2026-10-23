@@ -73,6 +73,8 @@ const state = {
   calendarCursor: null,
   calendarAccountId: "",
   calendarId: "",
+  calendarIds: [],
+  calendarChecksAccountId: "",
   calendarEventId: "",
   calendarStatus: null,
   calendarPayload: null,
@@ -17588,13 +17590,26 @@ function fillCalendarPick(calendars) {
     select.value = keep;
     return;
   }
-  if (state.calendarId && calendars.some(calendar => calendar.id === state.calendarId)) select.value = state.calendarId;
+  const preferred = state.calendarId || state.calendarIds[0] || "";
+  if (preferred && calendars.some(calendar => calendar.id === preferred)) select.value = preferred;
   else if (select.value) state.calendarId = select.value;
+}
+
+function calendarEventKey(event) {
+  if (!event || !event.id) return "";
+  return JSON.stringify([String(event.calendarId || ""), String(event.id)]);
 }
 
 function selectedCalendarEvent(payload) {
   const events = payload && Array.isArray(payload.events) ? payload.events : [];
-  return events.find((event) => event && event.id === state.calendarEventId) || null;
+  return events.find((event) => calendarEventKey(event) === state.calendarEventId) || null;
+}
+
+function checkedCalendarEvents(events) {
+  const ids = state.calendarIds;
+  if (!ids.length) return Array.isArray(events) ? events : [];
+  const allowed = new Set(ids);
+  return (Array.isArray(events) ? events : []).filter((event) => !event || !event.calendarId || allowed.has(event.calendarId));
 }
 
 let calendarDetailKey = "";
@@ -17690,7 +17705,9 @@ function paintAgenda(events) {
     button.type = "button";
     button.className = "agenda-item";
     button.dataset.eventId = event.id;
-    if (event.id === state.calendarEventId) button.classList.add("is-selected");
+    button.dataset.eventKey = calendarEventKey(event);
+    button.style.setProperty("--event-color", calendarColor(event.calendarId));
+    if (button.dataset.eventKey === state.calendarEventId) button.classList.add("is-selected");
     button.textContent = agendaLine(event);
     button.addEventListener("click", () => selectCalendarEvent(event));
     button.addEventListener("dblclick", (click) => {
@@ -17703,13 +17720,13 @@ function paintAgenda(events) {
 }
 
 function selectCalendarEvent(event) {
-  state.calendarEventId = event && event.id ? event.id : "";
+  state.calendarEventId = calendarEventKey(event);
   if (state.calendarPayload) paintCalendarSelection(state.calendarPayload);
 }
 
 function paintCalendarSelection(payload) {
-  for (const node of $("calendar-layout").querySelectorAll("[data-event-id]")) {
-    const selected = node.dataset.eventId === state.calendarEventId;
+  for (const node of $("calendar-layout").querySelectorAll("[data-event-key]")) {
+    const selected = node.dataset.eventKey === state.calendarEventId;
     node.classList.toggle("is-selected", selected);
     node.setAttribute("aria-pressed", String(selected));
   }
@@ -17757,25 +17774,25 @@ function paintCalendar(payload) {
   paintCalendarList(view.calendars);
   paintMiniMonth(year, month);
   ensureCalendarGrid(year, month);
-  const eventsKey = JSON.stringify([account?.id, state.calendarId, view.events]);
+  const events = checkedCalendarEvents(view.events);
+  const eventsKey = JSON.stringify([account?.id, state.calendarIds, events]);
   const changed = eventsKey !== calendarEventsKey;
-  const color = calendarColor(state.calendarId);
   for (const cell of body.querySelectorAll("[data-day]")) {
     const day = Number(cell.dataset.day);
     const key = dayKey(year, month, day);
     if (!changed) continue;
     const bucket = cell.querySelector(".calendar-day-events") || cell;
     for (const item of bucket.querySelectorAll(".calendar-event")) item.remove();
-    const rows = eventsOnDay(view.events, key).slice().sort((left, right) => {
+    const rows = eventsOnDay(events, key).slice().sort((left, right) => {
       if (!!left.allDay !== !!right.allDay) return left.allDay ? -1 : 1;
       return String((left && left.start) || "").localeCompare(String((right && right.start) || ""));
     });
-    for (const event of rows) appendCalendarEvent(bucket, event, key, calendarColor(event.calendarId || state.calendarId) || color);
+    for (const event of rows) appendCalendarEvent(bucket, event, key, calendarColor(event.calendarId || state.calendarId));
   }
   paintCalendarFocus(year, month);
   if (changed) {
     calendarEventsKey = eventsKey;
-    paintAgenda(view.events);
+    paintAgenda(events);
   }
   paintCalendarSelection(payload);
 }
@@ -17785,6 +17802,7 @@ function appendCalendarEvent(parent, event, key, color) {
   item.type = "button";
   item.className = "calendar-event";
   item.dataset.eventId = event.id;
+  item.dataset.eventKey = calendarEventKey(event);
   item.style.setProperty("--event-color", color || calendarColor(event.calendarId));
   if (event.allDay) {
     item.classList.add("is-all-day");
@@ -17901,37 +17919,84 @@ function paintMiniMonth(year, month) {
   root.append(bar, grid);
 }
 
+function readCalendarCheckStore() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("morrow.calendarChecks") || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function readCalendarChecks(accountId) {
+  const rows = readCalendarCheckStore()[accountId];
+  if (!Array.isArray(rows)) return [];
+  const ids = [];
+  for (const row of rows) {
+    const id = String(row || "");
+    if (!id || ids.includes(id)) continue;
+    ids.push(id);
+  }
+  return ids.slice(0, 100); // shortcut: 100 ids, when calendarList pages past 100
+}
+
+function saveCalendarChecks(accountId, ids) {
+  if (!accountId) return;
+  try {
+    const store = readCalendarCheckStore();
+    store[accountId] = ids;
+    localStorage.setItem("morrow.calendarChecks", JSON.stringify(store));
+  } catch { /* the choice stays for this window */ }
+}
+
+function ensureCalendarChecks(account) {
+  if (!account || state.calendarChecksAccountId === account.id) return;
+  state.calendarChecksAccountId = account.id;
+  state.calendarId = "";
+  state.calendarEventId = "";
+  state.calendarIds = readCalendarChecks(account.id);
+}
+
+function toggleCalendarCheck(input, id) {
+  const next = state.calendarIds.filter((item) => item !== id);
+  if (input.checked) next.push(id);
+  if (!next.length) {
+    input.checked = true;
+    return;
+  }
+  state.calendarIds = next;
+  if (input.checked) state.calendarId = id;
+  else if (state.calendarId === id) state.calendarId = next[0];
+  state.calendarEventId = "";
+  saveCalendarChecks((calendarAccount() && calendarAccount().id) || "", next);
+  if (state.calendarPayload) paintCalendar(state.calendarPayload);
+  loadCalendar().catch((error) => showStatus(error.message, true));
+}
+
 function paintCalendarList(calendars) {
   const root = $("calendar-list");
   if (!root) return;
   const rows = Array.isArray(calendars) ? calendars : [];
-  const key = JSON.stringify([rows.map((row) => [row.id, row.name]), state.calendarId]);
-  if (root.dataset.key === key) return;
-  root.dataset.key = key;
-  root.replaceChildren();
-  for (const calendar of rows) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "calendar-source";
-    button.style.setProperty("--event-color", calendarColor(calendar.id));
-    button.setAttribute("aria-pressed", calendar.id === state.calendarId ? "true" : "false");
-    const mark = document.createElement("span");
-    mark.className = "calendar-source-mark";
-    mark.setAttribute("aria-hidden", "true");
-    const name = document.createElement("span");
-    name.textContent = calendar.name || calendar.id;
-    button.append(mark, name);
-    button.addEventListener("click", () => {
-      if (state.calendarId === calendar.id) return;
-      state.calendarId = calendar.id;
-      state.calendarEventId = "";
-      for (const item of root.querySelectorAll(".calendar-source")) {
-        item.setAttribute("aria-pressed", item === button ? "true" : "false");
-      }
-      loadCalendar().catch((error) => showStatus(error.message, true));
-    });
-    root.appendChild(button);
+  const key = JSON.stringify(rows.map((row) => [row.id, row.name]));
+  if (root.dataset.key !== key) {
+    root.dataset.key = key;
+    root.replaceChildren();
+    for (const calendar of rows) {
+      const label = document.createElement("label");
+      label.className = "calendar-source";
+      label.style.setProperty("--event-color", calendarColor(calendar.id));
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = calendar.id;
+      input.addEventListener("change", () => toggleCalendarCheck(input, calendar.id));
+      const name = document.createElement("span");
+      name.textContent = calendar.name || calendar.id;
+      label.append(input, name);
+      root.appendChild(label);
+    }
   }
+  for (const input of root.querySelectorAll("input")) input.checked = state.calendarIds.includes(input.value);
 }
 
 function syncAllDayInputs() {
@@ -17992,14 +18057,14 @@ function openCalendarEditor(event, dayStamp) {
   }
   syncAllDayInputs();
   const pick = $("calendar-pick");
-  const wanted = editing && event.calendarId ? event.calendarId : state.calendarId;
+  const wanted = editing && event.calendarId ? event.calendarId : (state.calendarId || state.calendarIds[0] || "");
   if (pick && wanted && Array.from(pick.options).some((item) => item.value === wanted)) pick.value = wanted;
   openDialog("calendar-event-dialog");
   if (title) title.focus();
 }
 
 async function deleteCalendarEvent(event) {
-  const id = (event && event.id) || calendarEditingId || state.calendarEventId;
+  const id = (event && event.id) || calendarEditingId;
   if (!id) return;
   const account = calendarAccount();
   const answer = await askConfirm({
@@ -18016,7 +18081,7 @@ async function deleteCalendarEvent(event) {
     eventId: id,
   });
   calendarEditingId = "";
-  if (state.calendarEventId === id) state.calendarEventId = "";
+  if (event && calendarEventKey(event) === state.calendarEventId) state.calendarEventId = "";
   closeDialog("calendar-event-dialog");
   showStatus("Event deleted.");
   calendarCache.clear();
@@ -18042,8 +18107,9 @@ const calendarCache = new Map();
 const calendarPending = new Map();
 let calendarStatusPending = null;
 let calendarPaintedAccountId = "";
-function calendarCacheKey(account, range, calendarId) {
-  return JSON.stringify([account?.id || "", range.timeMin, calendarId || ""]);
+function calendarCacheKey(account, range, calendarIds) {
+  const ids = Array.isArray(calendarIds) ? calendarIds : [];
+  return JSON.stringify([account?.id || "", range.timeMin, ids]);
 }
 function calendarMonthVisible() {
   const layout = $("calendar-layout");
@@ -18051,17 +18117,14 @@ function calendarMonthVisible() {
   return !!(layout && !layout.hidden && body && body.querySelector(".calendar-grid"));
 }
 function beginCalendarRequest(account) {
-  if (state.calendarAccountId !== account.id) {
-    state.calendarId = "";
-    state.calendarEventId = "";
-  }
+  ensureCalendarChecks(account);
   state.calendarAccountId = account.id;
   const cursor = state.calendarCursor || new Date();
   state.calendarCursor = cursor;
   const range = monthRange(cursor.getFullYear(), cursor.getMonth());
-  const requestedId = state.calendarId || "";
-  const key = calendarCacheKey(account, range, requestedId);
-  return { range, requestedId, key, cached: calendarCache.get(key) || null };
+  const requestedIds = state.calendarIds.slice();
+  const key = calendarCacheKey(account, range, requestedIds);
+  return { range, requestedIds, key, cached: calendarCache.get(key) || null };
 }
 function calendarKeepsMonth(cached) {
   if (cached && cached.payload && cached.payload.api === true) return true;
@@ -18156,9 +18219,26 @@ function rememberCalendar(key, payload) {
   calendarCache.set(key, { payload, at: Date.now() });
   while (calendarCache.size > 8) calendarCache.delete(calendarCache.keys().next().value);
 }
+function calendarIdsFromPayload(payload) {
+  const ids = [];
+  const rows = Array.isArray(payload && payload.calendarIds) ? payload.calendarIds : [];
+  for (const row of rows) {
+    const id = String(row || "");
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  if (ids.length) return ids;
+  const single = payload && payload.calendarId ? String(payload.calendarId) : "";
+  return single ? [single] : [];
+}
+
 function applyCalendarPayload(payload) {
-  if (payload?.calendarId) state.calendarId = payload.calendarId;
-  if (!(payload?.events || []).some(event => event?.id === state.calendarEventId)) state.calendarEventId = "";
+  const returned = calendarIdsFromPayload(payload);
+  if (returned.length) {
+    state.calendarIds = returned;
+    if (!returned.includes(state.calendarId)) state.calendarId = returned[0];
+    saveCalendarChecks((payload && payload.accountId) || state.calendarAccountId, returned);
+  }
+  if (!(payload?.events || []).some((event) => calendarEventKey(event) === state.calendarEventId)) state.calendarEventId = "";
   state.calendarPayload = payload;
   if (state.view === "calendar") paintCalendar(payload);
 }
@@ -18174,7 +18254,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
     return;
   }
   const plan = prepareCalendarLoad(account, preferCache);
-  const { range, requestedId, key, cached } = plan;
+  const { range, requestedIds, key, cached } = plan;
   if (cached) applyCalendarPayload(cached.payload);
   if (plan.freshHit) return;
   // Status does not gate the event list. Coalesce this account-wide read too.
@@ -18189,8 +18269,9 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
   }).catch(() => {});
   try {
     if (fresh || !calendarPending.has(key)) {
-      const pending = call("calendar:list", { accountId: account.id, timeMin: range.timeMin,
-        timeMax: range.timeMax, calendarId: requestedId || undefined }).finally(() => {
+      const body = { accountId: account.id, timeMin: range.timeMin, timeMax: range.timeMax };
+      if (requestedIds.length) body.calendarIds = requestedIds;
+      const pending = call("calendar:list", body).finally(() => {
         if (calendarPending.get(key) === pending) calendarPending.delete(key);
       });
       calendarPending.set(key, pending);
@@ -18199,7 +18280,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
     if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
     applyCalendarPayload(payload);
     rememberCalendar(key, payload);
-    rememberCalendar(calendarCacheKey(account, range, state.calendarId), payload);
+    rememberCalendar(calendarCacheKey(account, range, state.calendarIds), payload);
   } catch (error) {
     if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
     const message = error instanceof Error ? error.message : String(error);
@@ -18281,6 +18362,11 @@ async function submitCalendarEvent(event) {
   }
   if (editing) await call("calendar:updateEvent", draft);
   else await call("calendar:createEvent", draft);
+  if (draft.calendarId && !state.calendarIds.includes(draft.calendarId)) {
+    state.calendarIds = state.calendarIds.concat(draft.calendarId);
+    state.calendarId = draft.calendarId;
+    saveCalendarChecks(account && account.id, state.calendarIds);
+  }
   calendarEditingId = "";
   closeDialog("calendar-event-dialog");
   showStatus("Event saved on the calendar.");
@@ -19466,8 +19552,6 @@ function wire() {
     const dialog = $("calendar-event-dialog");
     if (dialog && dialog.open) return;
     state.calendarId = $("calendar-pick").value;
-    state.calendarEventId = "";
-    loadCalendar().catch((error) => showStatus(error.message, true));
   });
   $("provider-content").addEventListener("keydown", onProviderColumnKey);
   const folderNav = $("folders");

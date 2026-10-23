@@ -7398,6 +7398,43 @@ async function checkProviderApi() {
       { id: "other" },
       { id: "primary", primary: true },
     ]), "primary");
+    assert.deepStrictEqual(calendarApi.selectedCalendarIds([
+      { id: "work" },
+      { id: "home", primary: true },
+    ], { calendarIds: ["missing", "work", "work", "home"] }), ["work", "home"]);
+    assert.deepStrictEqual(calendarApi.selectedCalendarIds([
+      { id: "work" },
+      { id: "home", primary: true },
+    ], { calendarId: "work" }), ["work"]);
+    assert.deepStrictEqual(calendarApi.selectedCalendarIds([
+      { id: "work" },
+      { id: "home", primary: true },
+    ], {}), ["home"]);
+    const merged = await calendarApi.listEventsForIds("google", "token", ["home", "work"], {
+      timeMin: "2026-10-01T00:00:00.000Z",
+      timeMax: "2026-11-01T00:00:00.000Z",
+    }, async (url) => {
+      const home = String(url).includes("/calendars/home/");
+      return jsonResponse({
+        items: [{
+          id: home ? "h" : "w",
+          summary: home ? "Home" : "Work",
+          start: { dateTime: "2026-10-02T10:00:00Z" },
+          end: { dateTime: "2026-10-02T11:00:00Z" },
+        }],
+      });
+    });
+    assert.deepStrictEqual(merged.calendarIds, ["home", "work"]);
+    assert.deepStrictEqual(merged.events.map((event) => event.calendarId), ["home", "work"]);
+    const rateSeen = [];
+    await assert.rejects(() => calendarApi.listEventsForIds("google", "token", ["a", "b"], {
+      timeMin: "2026-10-01T00:00:00.000Z",
+      timeMax: "2026-11-01T00:00:00.000Z",
+    }, async (url) => {
+      rateSeen.push(String(url));
+      return jsonResponse({}, 429);
+    }));
+    assert.deepStrictEqual(rateSeen.map((url) => url.includes("/calendars/b/")), [false]);
     assert.strictEqual(calendarApi.googleEventBody({
       title: "Standup",
       start: "2026-10-17T10:00:00.000Z",
@@ -7604,15 +7641,20 @@ async function checkProviderApi() {
         });
       }
       if (href.startsWith("https://graph.microsoft.com/v1.0/me/calendars") && !href.includes("/calendarView") && method === "GET") {
-        return jsonResponse({ value: [{ id: "cal-ms", name: "Grace", isDefaultCalendar: true }] });
+        return jsonResponse({ value: [
+          { id: "cal-ms", name: "Grace", isDefaultCalendar: true },
+          { id: "cal-home", name: "Home", isDefaultCalendar: false },
+        ] });
       }
       if (href.includes("/calendarView")) {
+        const calendarId = decodeURIComponent(href.split("/calendars/")[1].split("/")[0]);
+        const home = calendarId === "cal-home";
         return jsonResponse({
           value: [{
-            id: "evt-1",
-            subject: "Design review",
-            start: { dateTime: "2026-10-06T15:00:00Z" },
-            end: { dateTime: "2026-10-06T16:00:00Z" },
+            id: home ? "evt-home" : "evt-1",
+            subject: home ? "Home lunch" : "Design review",
+            start: { dateTime: home ? "2026-10-07T15:00:00Z" : "2026-10-06T15:00:00Z" },
+            end: { dateTime: home ? "2026-10-07T16:00:00Z" : "2026-10-06T16:00:00Z" },
             isAllDay: false,
           }],
         });
@@ -7865,6 +7907,28 @@ async function checkProviderApi() {
     assert.strictEqual(month.data.events[0].id, "evt-1");
     assert.strictEqual(month.data.events[0].title, "Design review");
     assert.strictEqual(month.data.calendars[0].id, "cal-ms");
+    assert.deepStrictEqual(month.data.calendarIds, ["cal-ms"]);
+    const both = await engine.answer("calendar:list", [{
+      accountId: "outlook-live",
+      timeMin: october.timeMin,
+      timeMax: october.timeMax,
+      calendarIds: ["cal-home", "cal-ms", "missing"],
+    }]);
+    assert.strictEqual(both.success, true);
+    assert.deepStrictEqual(both.data.calendarIds, ["cal-home", "cal-ms"]);
+    assert.strictEqual(both.data.calendarId, "cal-home");
+    assert.deepStrictEqual(both.data.events.map((event) => [event.id, event.calendarId]), [
+      ["evt-home", "cal-home"],
+      ["evt-1", "cal-ms"],
+    ]);
+    const fallbackIds = await engine.answer("calendar:list", [{
+      accountId: "outlook-live",
+      timeMin: october.timeMin,
+      timeMax: october.timeMax,
+      calendarIds: ["missing"],
+    }]);
+    assert.deepStrictEqual(fallbackIds.data.calendarIds, ["cal-ms"]);
+    assert.strictEqual(fallbackIds.data.events[0].id, "evt-1");
     const wide = await engine.answer("calendar:list", [{
       accountId: "outlook-live",
       timeMin: "2026-01-01T00:00:00.000Z",
