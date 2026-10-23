@@ -19,6 +19,8 @@ const syntax = [
   "shared/sync-retry.js",
   "shared/primary-mailboxes.js",
   "shared/display-format.js",
+  "shared/changelog.js",
+  "scripts/check-changelog.js",
   "host/mail/remote.js",
   "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
@@ -88,7 +90,7 @@ for (const file of syntax) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js"]) {
+for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }

@@ -26,6 +26,7 @@ const DEFAULTS = {
   compactMessageList: true,
   defaultScheduleDelayMinutes: 0, // 0 sends immediately. Otherwise Send schedules this far ahead.
   layoutPanes: { folders: 260, list: 360, reading: 0 },
+  changelogSeen: "",
 };
 
 const GET = {
@@ -49,6 +50,7 @@ const GET = {
   "morrow:configGetCompactMessageList": "compactMessageList",
   "morrow:configGetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
   "morrow:configGetLayoutPanes": "layoutPanes",
+  "morrow:configGetChangelogSeen": "changelogSeen",
 };
 
 const SET = {
@@ -72,6 +74,7 @@ const SET = {
   "morrow:configSetCompactMessageList": "compactMessageList",
   "morrow:configSetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
   "morrow:configSetLayoutPanes": "layoutPanes",
+  "morrow:configSetChangelogSeen": "changelogSeen",
 };
 
 const BOOLS = new Set([
@@ -100,6 +103,7 @@ function reject(key) {
   if (key === "syncHorizonDays") throw new Error("Sync history must be 180 days, 365 days, or All");
   if (key === "defaultScheduleDelayMinutes") throw new Error("Default schedule delay must be 0 to 10080 minutes");
   if (key === "layoutPanes") throw new Error("Layout panes must be folder, list, and reading widths");
+  if (key === "changelogSeen") throw new Error("Changelog version must look like 1.2.3");
   throw new Error("Expected on or off");
 }
 
@@ -120,7 +124,15 @@ function castLayoutPanes(value, loose) {
   return { folders, list, reading };
 }
 
+function castChangelogSeen(value, loose) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (text.length <= 32 && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(text)) return text;
+  if (loose) return "";
+  reject("changelogSeen");
+}
+
 function cast(key, value, loose) {
+  if (key === "changelogSeen") return castChangelogSeen(value, loose);
   if (key === "sidebarCollapsedFolders") {
     if (loose) return folderCollapse.normalize(value);
     return folderCollapse.cast(value);

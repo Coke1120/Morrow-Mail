@@ -4286,6 +4286,16 @@ dialog h2 {
 
 #confirm { width: min(440px, calc(100vw - 24px)); }
 
+#changelog {
+  inset: 0;
+  margin: auto;
+  width: min(440px, calc(100vw - 24px));
+  height: max-content;
+  max-height: calc(100vh - 32px);
+}
+#changelog-notes { margin: 8px 0 16px; padding-left: 1.15em; }
+#changelog-notes li + li { margin-top: 6px; }
+
 #compose-preview { width: min(640px, calc(100vw - 24px)); }
 
 .preview-meta { margin: 8px 0 0; }
