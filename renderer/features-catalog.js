@@ -70,7 +70,7 @@
         id: "in-app-updater",
         title: "In-app updates",
         category: "Updates",
-        blurb: "About & updates checks for a release. Restart and install applies a downloaded update once every compose window is closed.",
+        blurb: "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed.",
       },
     ],
   };

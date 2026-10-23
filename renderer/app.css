@@ -263,6 +263,34 @@ html[data-nav="expanded"] .nav-toggle .chev-left { display: block; }
 
 .rail-btn[aria-current="page"]:hover { background: #fff; }
 
+.update-attention {
+  position: absolute;
+  top: 2px;
+  left: 22px;
+  z-index: 2;
+  min-width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #e10600;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--rail);
+  pointer-events: none;
+}
+
+.update-attention[hidden] { display: none !important; }
+
+html[data-nav="collapsed"] #rail-about .update-attention {
+  top: 1px;
+  right: 1px;
+  left: auto;
+}
+
 .stage {
   flex: 1 1 auto;
   min-height: 0;

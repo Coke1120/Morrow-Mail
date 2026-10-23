@@ -8,7 +8,23 @@ Windows keeps its existing updater.
 
 `Coke1120/Morrow-Mail` is public. The packaged app checks the prerelease feed with no GitHub token. `allowPrerelease` is on, so alpha prereleases count. `GH_TOKEN`, `GITHUB_TOKEN`, and legacy userData `github-update.json` are ignored by the app updater. A token in the feed configuration selects the private provider in electron-updater even with `private: false`; the public feed therefore never includes one. Publishing from CI still uses its build token.
 
-`host:updateGetState`, `host:updateCheck`, and `host:updateInstall` are the shell channels.
+`host:updateGetState`, `host:updateCheck`, and `host:updateInstall` are the shell channels. `host:updateState` pushes the same snapshot to the open windows.
+
+## Attention badge and hourly check
+
+The red ! sits on About & updates in the rail (`#update-attention`). It is shown when an update is available, downloading, ready to install, or needs a manual install. It stays hidden while Morrow is up to date, while a check has not found anything yet, and when a check fails.
+
+The hourly timer starts from `updater.init()` after the app is ready and is cleared on `will-quit`. Each tick calls the same path as Check for updates. A tick does nothing when a check promise, a download, or an install is already running. Check still runs again after a finished attempt, even if `checking` was left set. This does not enable install-on-quit or a silent install. On a packaged app, Check already downloads when it finds a release; the hourly tick uses that same path.
+
+`node scripts/check-update-schedule.js` covers the timer, the overlap skip, and the badge rules with fakes. A packaged check still needs a real feed:
+
+1. Install a packaged Windows or macOS build that is older than the public release.
+2. Leave About closed. After the startup check, the rail shows a red ! on About & updates.
+3. Open About. The status names the release, and Check and Restart and install still work.
+4. A current build, a check still running with nothing ready, and a failed check show no red !.
+5. Leave Morrow open for about an hour. It checks again on its own. Quit clears the timer; a cancelled quit keeps it.
+
+GitHub's anonymous rate limit still applies. A 429 stays the existing "try again later" error and does not show the badge. One check can call the feed more than once. Hourly checks from many machines on one network can still be limited.
 
 ## Windows
 

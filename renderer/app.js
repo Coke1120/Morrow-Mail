@@ -12664,7 +12664,22 @@ function updateView(snapshot, version) {
   } else if (snap.enabled === false) {
     status = "Updater is off until the app is packaged.";
   }
-  return { version: current, status: status, error: error, install: install, busy: busy, manual: !!snap.manualAvailable, downloaded: !!snap.downloaded, explicitInstall: !!snap.requiresExplicitInstall, lastCheckedAt: snap.lastCheckedAt || null };
+  const pending = !!(snap.available || snap.downloaded || snap.downloading);
+  const attention = !!snap.manualRequired || (!error && pending);
+  return { version: current, status: status, error: error, install: install, busy: busy, manual: !!snap.manualAvailable, downloaded: !!snap.downloaded, explicitInstall: !!snap.requiresExplicitInstall, lastCheckedAt: snap.lastCheckedAt || null, attention: attention };
+}
+
+function paintUpdateAttention(view) {
+  const badge = $("update-attention");
+  const about = $("rail-about");
+  if (!badge || !about) return;
+  const attention = !!view.attention;
+  badge.hidden = !attention;
+  about.classList.toggle("has-update", attention);
+  const label = attention ? "About & updates, update available" : "About & updates";
+  about.setAttribute("aria-label", label);
+  about.setAttribute("title", label);
+  about.setAttribute("data-label", label);
 }
 
 function paintUpdate(view) {
@@ -12683,11 +12698,19 @@ function paintUpdate(view) {
   manual.hidden = !view.manual;
   manual.disabled = !!view.busy;
   manual.textContent = view.downloaded ? "Show downloaded update" : "Open official releases";
+  paintUpdateAttention(view);
 }
 
 function openAbout() {
   openDialog("about-dialog");
-  api.invoke("host:updateGetState").then(bumpUpdate).catch(error => bumpUpdate({ error: error.message }));
+  const serial = updateGen;
+  api.invoke("host:updateGetState").then((next) => {
+    if (serial !== updateGen) return;
+    bumpUpdate(next);
+  }).catch((error) => {
+    if (serial !== updateGen) return;
+    bumpUpdate({ error: error.message });
+  });
 }
 
 function showUpdate(snapshot) {
@@ -12714,18 +12737,26 @@ function bumpUpdate(snapshot) {
 
 async function checkForUpdates() {
   $("about-update-check").disabled = true;
+  const serial = updateGen;
   try {
-    bumpUpdate(await api.invoke("host:updateCheck"));
+    const next = await api.invoke("host:updateCheck");
+    if (serial !== updateGen) return;
+    bumpUpdate(next);
   } catch (error) {
+    if (serial !== updateGen) return;
     bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
 }
 
 async function installUpdate() {
   $("about-update-install").disabled = true;
+  const serial = updateGen;
   try {
-    bumpUpdate(await api.invoke("host:updateInstall"));
+    const next = await api.invoke("host:updateInstall");
+    if (serial !== updateGen) return;
+    bumpUpdate(next);
   } catch (error) {
+    if (serial !== updateGen) return;
     bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
 }
@@ -19247,8 +19278,15 @@ function wire() {
   $("about-update-check").addEventListener("click", checkForUpdates);
   $("about-update-install").addEventListener("click", installUpdate);
   $("about-update-manual").addEventListener("click", async () => {
-    try { bumpUpdate(await api.invoke("host:updateManual")); }
-    catch (error) { bumpUpdate({ error: error.message }); }
+    const serial = updateGen;
+    try {
+      const next = await api.invoke("host:updateManual");
+      if (serial !== updateGen) return;
+      bumpUpdate(next);
+    } catch (error) {
+      if (serial !== updateGen) return;
+      bumpUpdate({ error: error.message });
+    }
   });
   $("log-source").addEventListener("change", filterSupportLog);
   $("log-preview").addEventListener("click", previewSupportLog);
@@ -19769,6 +19807,10 @@ async function boot() {
   api.on("host:menuAction", onMenuAction);
   api.on("host:updatePrepareForInstall", prepareUpdateRestart);
   api.on("host:updateResume", resumeAfterUpdate);
+  api.on("host:updateState", (snapshot) => {
+    if (!snapshot || typeof snapshot !== "object") return;
+    bumpUpdate(snapshot);
+  });
   api.on("app:confirmQuitScheduled", acceptQuitScheduled);
   api.on("app:dismissQuitScheduled", dismissQuitScheduled);
   wire();
@@ -19796,10 +19838,12 @@ async function boot() {
   } catch {
     appVersion = "";
   }
+  const updateSerial = updateGen;
   try {
-    bumpUpdate(await api.invoke("host:updateGetState"));
+    const next = await api.invoke("host:updateGetState");
+    if (updateSerial === updateGen) bumpUpdate(next);
   } catch (error) {
-    bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
+    if (updateSerial === updateGen) bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
   await loadLook();
   try {
