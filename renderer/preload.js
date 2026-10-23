@@ -187,6 +187,7 @@ const INVOKE = [
 const EVENTS = [
   "host:updatePrepareForInstall",
   "host:updateResume",
+  "host:updateState",
   "mail:accountsUpdated",
   "mail:emailsUpdated",
   "mail:bodyUpdated",

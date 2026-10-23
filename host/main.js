@@ -693,6 +693,10 @@ app.on("before-quit", (event) => {
   quitController.onBeforeQuit(event);
 });
 
+app.on("will-quit", () => {
+  try { updater.stopPeriodicCheck(); } catch { /* updater timers are already cleared */ }
+});
+
 // Subscribing replaces Electron's default, which quits on every platform when
 // the last window closes. macOS stays running; Windows and Linux still quit.
 app.on("window-all-closed", () => {
