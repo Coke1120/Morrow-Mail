@@ -88,7 +88,7 @@ for (const file of syntax) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-release-preflight.js", "check-release-publication.js"]) {
+for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }
@@ -1496,26 +1496,36 @@ assert.strictEqual(idle.status, "Updates have not been checked yet.");
 assert.strictEqual(idle.error, "");
 assert.strictEqual(idle.install, false);
 assert.strictEqual(idle.busy, false);
+assert.strictEqual(idle.attention, false);
 assert.strictEqual(updateView({ enabled: false }, "0.1.0").status, "Updater is off until the app is packaged.");
 const failed = updateView({ error: "network", downloaded: true }, "");
 assert.strictEqual(failed.status, "Update failed.");
 assert.strictEqual(failed.error, "network");
 assert.strictEqual(failed.install, false);
+assert.strictEqual(failed.attention, false, "a failed check stays quiet even if a download flag is still set");
 assert.strictEqual(updateView({ downloaded: true, version: "0.2.0" }, "0.1.0").status, "Update 0.2.0 ready.");
 assert.strictEqual(updateView({ downloaded: true, version: "0.2.0" }, "0.1.0").install, true);
+assert.strictEqual(updateView({ downloaded: true, version: "0.2.0" }, "0.1.0").attention, true);
 assert.strictEqual(updateView({ downloaded: true }, "").status, "Update ready.");
 const downloading = updateView({ downloading: true, progress: 42.2 }, "");
 assert.strictEqual(downloading.status, "Downloading 42%…");
 assert.strictEqual(downloading.busy, true);
 assert.strictEqual(downloading.install, false);
+assert.strictEqual(downloading.attention, true);
 assert.strictEqual(updateView({ checking: true }, "").status, "Checking for updates…");
 assert.strictEqual(updateView({ checking: true }, "").busy, true);
+assert.strictEqual(updateView({ checking: true }, "").attention, false);
+assert.strictEqual(updateView({ checking: true, available: true }, "").attention, true);
 const installing = updateView({ installing: true, downloaded: true, version: "0.2.0" }, "");
 assert.strictEqual(installing.status, "Installing…");
 assert.strictEqual(installing.install, false);
 assert.strictEqual(installing.busy, true);
+assert.strictEqual(installing.attention, true);
 assert.strictEqual(updateView({ available: true, version: "0.2.0" }, "").status, "Update 0.2.0 available.");
 assert.strictEqual(updateView({ available: true }, "").status, "Update available.");
+assert.strictEqual(updateView({ available: true }, "").attention, true);
+assert.strictEqual(updateView({ manualRequired: true }, "").attention, true);
+assert.strictEqual(updateView({ lastCheckedAt: "2026-10-18T08:00:00Z" }, "").attention, false);
 const needsToken = updateView({
   needsToken: true,
   available: true,
@@ -1524,6 +1534,7 @@ const needsToken = updateView({
 assert.strictEqual(needsToken.status, "Update failed.");
 assert.ok(!needsToken.status.includes("available"));
 assert.ok(!needsToken.status.includes("Private"));
+assert.strictEqual(needsToken.attention, false);
 const rejectedToken = updateView({
   needsToken: true,
   available: true,
@@ -1922,11 +1933,11 @@ for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateIn
   assert.ok(count >= 2, channel + " must be registered and listed");
 }
 assert.ok(!html.includes('id="updates"') && !html.includes('id="update-check"'));
-assert.ok(html.includes('id="rail-about"') && html.includes('id="about-update-install"'));
+assert.ok(html.includes('id="rail-about"') && html.includes('id="about-update-install"') && html.includes('id="update-attention"'));
 assert.ok(html.includes('id="rail-folders"') && html.includes('id="provider-panel"'));
 assert.ok(html.includes("Check for updates") && html.includes("Restart and install"));
 assert.ok(html.includes('id="settings"') && html.includes('id="prefs"') && html.includes("AI Setup"));
-assert.ok(css.includes("#about-version") && css.includes("#prefs") && css.includes("#settings-status"));
+assert.ok(css.includes("#about-version") && css.includes("#prefs") && css.includes("#settings-status") && css.includes(".update-attention"));
 
 const timing = loadFunctions(appJs, ["snoozeUntil", "scheduleAt"]);
 const laterAfternoon = new Date("2026-10-16T15:00:00");
@@ -3834,7 +3845,7 @@ const featureSeed = [
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose drafts. It stays off until you turn it on. Opening a proposal does not send it."],
   ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page."],
-  ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release. Restart and install applies a downloaded update once every compose window is closed."],
+  ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed."],
 ];
 assert.deepStrictEqual(featureCatalog.items.map((row) => [row.id, row.title, row.category, row.blurb]), featureSeed);
 const featureUi = loadFunctions(appJs, ["normalizeFeatureCatalog", "groupFeatureCatalog"]);

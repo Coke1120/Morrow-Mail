@@ -1,6 +1,10 @@
-const { app, ipcMain } = require("electron");
+const { app, ipcMain, BrowserWindow } = require("electron");
 const auth = require("./update-auth");
 const { platform } = require("node:process");
+
+// Hourly discovery uses the same check as the About button. It does not install.
+const CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const STARTUP_CHECK_DELAY_MS = 4000;
 
 const state = {
   platform,
@@ -26,6 +30,10 @@ let installLifecycle = null;
 let installing = null;
 let resumeInstall = null;
 let installTimer = null;
+let hourlyTimer = null;
+let startupTimer = null;
+let checkFlight = null;
+let progressTimer = null;
 function resumeAfterFailedInstall() {
   if (installTimer) clearTimeout(installTimer);
   installTimer = null;
@@ -51,6 +59,30 @@ function snapshot() {
   return { ...state };
 }
 
+function publish() {
+  if (!BrowserWindow || typeof BrowserWindow.getAllWindows !== "function") return;
+  const snap = snapshot();
+  let windows = [];
+  try { windows = BrowserWindow.getAllWindows(); } catch { return; }
+  for (const win of windows) {
+    try {
+      if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) continue;
+      const contents = win.webContents;
+      if (!contents || (typeof contents.isDestroyed === "function" && contents.isDestroyed())) continue;
+      contents.send("host:updateState", snap);
+    } catch { /* the page is already gone */ }
+  }
+}
+
+function publishProgress() {
+  if (progressTimer || typeof setTimeout !== "function") return;
+  progressTimer = setTimeout(() => {
+    progressTimer = null;
+    publish();
+  }, 1000);
+  if (progressTimer && typeof progressTimer.unref === "function") progressTimer.unref();
+}
+
 function setError(err) {
   resumeAfterFailedInstall();
   state.error = auth.explainUpdateError(err);
@@ -59,6 +91,7 @@ function setError(err) {
   state.installing = false;
   if (!state.downloaded) state.available = false;
   state.needsToken = false;
+  publish();
 }
 
 function applyFeed(updater) {
@@ -90,6 +123,7 @@ function bind(updater) {
     state.lastAttemptAt = new Date().toISOString();
     state.error = null;
     state.needsToken = false;
+    publish();
   });
   updater.on("update-available", (info) => {
     state.lastCheckedAt = new Date().toISOString();
@@ -97,23 +131,94 @@ function bind(updater) {
     state.available = true;
     state.needsToken = false;
     state.version = info && info.version ? info.version : null;
+    publish();
   });
   updater.on("update-not-available", () => {
     state.lastCheckedAt = new Date().toISOString();
     state.checking = false;
     state.available = false;
     state.needsToken = false;
+    publish();
   });
   updater.on("download-progress", (p) => {
     state.downloading = true;
     state.progress = p && typeof p.percent === "number" ? p.percent : state.progress;
+    publishProgress();
   });
   updater.on("update-downloaded", (info) => {
     state.downloading = false;
     state.downloaded = true;
     state.version = info && info.version ? info.version : state.version;
+    publish();
   });
   updater.on("error", (err) => setError(err));
+}
+
+function clearHourlyTimer() {
+  if (hourlyTimer && typeof clearInterval === "function") clearInterval(hourlyTimer);
+  hourlyTimer = null;
+}
+
+function stopPeriodicCheck() {
+  clearHourlyTimer();
+  if (startupTimer && typeof clearTimeout === "function") clearTimeout(startupTimer);
+  startupTimer = null;
+  if (progressTimer && typeof clearTimeout === "function") clearTimeout(progressTimer);
+  progressTimer = null;
+}
+
+function scheduleStartupCheck() {
+  if (typeof setTimeout !== "function") return;
+  if (startupTimer && typeof clearTimeout === "function") clearTimeout(startupTimer);
+  startupTimer = setTimeout(() => {
+    startupTimer = null;
+    requestCheck().catch(() => {});
+  }, STARTUP_CHECK_DELAY_MS);
+  if (startupTimer && typeof startupTimer.unref === "function") startupTimer.unref();
+}
+
+function startPeriodicCheck() {
+  clearHourlyTimer();
+  if (typeof setInterval !== "function") return;
+  hourlyTimer = setInterval(() => {
+    requestCheck({ periodic: true }).catch(() => {});
+  }, CHECK_INTERVAL_MS);
+  if (hourlyTimer && typeof hourlyTimer.unref === "function") hourlyTimer.unref();
+}
+
+async function runCheck() {
+  if (platform === "darwin") return signedMacUpdater().check();
+  const updater = prepareUpdater();
+  state.checking = true;
+  state.error = null;
+  publish();
+  await updater.checkForUpdates();
+  return snapshot();
+}
+
+// One check at a time. A download or install already running is left alone.
+// state.checking alone does not block: a finished check can leave that flag set
+// until the provider emits a terminal event, and Check must still run again.
+function requestCheck(options) {
+  if (!app.isPackaged) return Promise.resolve(snapshot());
+  if (checkFlight) return checkFlight;
+  if (state.downloading || state.installing) return Promise.resolve(snapshot());
+  if (options && options.periodic && state.enabled === false) return Promise.resolve(snapshot());
+  let settle;
+  const flight = new Promise((resolve) => { settle = resolve; });
+  checkFlight = flight;
+  runCheck().then(
+    (snap) => {
+      if (checkFlight === flight) checkFlight = null;
+      settle(snap || snapshot());
+    },
+    (err) => {
+      setError(err);
+      if (checkFlight === flight) checkFlight = null;
+      settle(snapshot());
+    },
+  ).finally(() => { publish(); });
+  return flight;
 }
 
 function init() {
@@ -121,43 +226,30 @@ function init() {
   if (!app.isPackaged) {
     state.enabled = false;
     state.needsToken = false;
+    stopPeriodicCheck();
     return snapshot();
   }
   if (platform === "darwin") {
     const mac = signedMacUpdater();
     const initial = mac.init();
-    if (initial.enabled) setTimeout(() => { mac.check(); }, 4000);
+    if (initial.enabled) scheduleStartupCheck();
+    startPeriodicCheck();
     return initial;
   }
   try {
-    const updater = prepareUpdater();
-    if (!updater) return snapshot();
-    setTimeout(() => {
-      updater.checkForUpdates().catch((err) => setError(err));
-    }, 4000);
+    prepareUpdater();
+    scheduleStartupCheck();
   } catch (err) {
     setError(err);
     state.enabled = false;
   }
+  startPeriodicCheck();
   return snapshot();
 }
 
 function registerIpc() {
   ipcMain.handle("host:updateGetState", () => platform === "darwin" && app.isPackaged ? signedMacUpdater().refreshStatus() : snapshot());
-  ipcMain.handle("host:updateCheck", async () => {
-    if (!app.isPackaged) return snapshot();
-    if (platform === "darwin") return signedMacUpdater().check();
-    try {
-      const updater = prepareUpdater();
-      if (!updater) return snapshot();
-      state.checking = true;
-      state.error = null;
-      await updater.checkForUpdates();
-    } catch (err) {
-      setError(err);
-    }
-    return snapshot();
-  });
+  ipcMain.handle("host:updateCheck", () => requestCheck());
   ipcMain.handle("host:updateManual", (event) => {
     if (platform !== "darwin") return snapshot();
     authorizeInstall(event);
@@ -190,4 +282,7 @@ function registerIpc() {
 
 const CHANNELS = ["host:updateGetState", "host:updateCheck", "host:updateInstall", "host:updateManual"];
 
-module.exports = { init, registerIpc, snapshot, state, CHANNELS, configureInstall };
+module.exports = {
+  init, registerIpc, snapshot, state, CHANNELS, configureInstall,
+  startPeriodicCheck, stopPeriodicCheck, requestCheck, CHECK_INTERVAL_MS,
+};

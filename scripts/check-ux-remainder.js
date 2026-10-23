@@ -39,8 +39,16 @@ async function run() {
   await ui.run(`confirmProposal({id:'p',accountId:'b',messageId:'source',labelName:'Archive'})`);
   assert.equal(ui.run(`calls.filter(row=>row.channel!=='mail:openEmail').length`),0,'canceled proposal confirmation makes no provider call');
   assert.equal(ui.run('updateView({}).status'),'Updates have not been checked yet.');
+  assert.equal(ui.run('updateView({}).attention'),false);
   assert.equal(ui.run(`updateView({lastCheckedAt:'2026-10-18T08:00:00Z'}).status`),'Up to date.');
+  assert.equal(ui.run(`updateView({lastCheckedAt:'2026-10-18T08:00:00Z'}).attention`),false);
   assert.equal(ui.run('updateView({downloaded:true}).install'),true);
+  assert.equal(ui.run('updateView({downloaded:true}).attention'),true);
+  assert.equal(ui.run('updateView({available:true,version:"9.9.9"}).attention'),true);
+  assert.equal(ui.run('updateView({checking:true}).attention'),false);
+  assert.equal(ui.run('updateView({checking:true,downloaded:true}).attention'),true);
+  assert.equal(ui.run('updateView({error:"offline",downloaded:true}).attention'),false);
+  assert.equal(ui.run('updateView({manualRequired:true}).attention'),true);
   assert.match(ui.run('updateView({downloaded:true,requiresExplicitInstall:true,platform:"darwin"}).status'),/macOS may require manual approval/);
   assert.equal(ui.run('updateView({downloaded:true,requiresExplicitInstall:true,platform:"win32"}).explicitInstall'),true);
   assert.doesNotMatch(ui.run('updateView({downloaded:true,requiresExplicitInstall:true,platform:"win32"}).status'),/macOS/);
