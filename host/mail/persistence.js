@@ -1,15 +1,26 @@
-// sql.js keeps its database in memory. Commit small, replayable SQL transactions
-// to disk; build full SQLite checkpoints in a worker, never on the flag/sync path.
+// The published checkpoint stays a normal SQLite file. Opening it used to read
+// the whole file into sql.js (a WASM heap plus a JavaScript Uint8Array). At
+// about 1.8 GiB that allocation throws RangeError before any window exists.
+// better-sqlite3 reads pages from a working copy instead. Small commits still
+// append the journal and do not rewrite the checkpoint.
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { Worker, isMainThread, parentPort, workerData } = require("node:worker_threads");
+const Database = require("better-sqlite3");
 
 const MAGIC = Buffer.from("MORROWJ1");
 const HEADER_SIZE = 80;
 const CHECKPOINT_BYTES = 8 * 1024 * 1024;
 const CHECKPOINT_TRANSACTIONS = 256;
 const CHECKPOINT_TIMEOUT_MS = 60000;
+
+// shortcut: checkpoint wait is 60s plus 30s per 256 MiB, raise it when a healthy copy of a large mailbox is still killed
+function checkpointTimeout(file) {
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch { size = 0; }
+  return CHECKPOINT_TIMEOUT_MS + Math.ceil(size / (256 * 1024 * 1024)) * 30000;
+}
 
 function syncDirectory(file) {
   // Node cannot open directory handles for FlushFileBuffers on Windows. File
@@ -32,25 +43,149 @@ function writeAll(fd, data, position = null) {
   }
 }
 
-function snapshot(database, file) {
-  const data = database.export();
+function bindValue(value) {
+  if (value instanceof Uint8Array && !Buffer.isBuffer(value)) return Buffer.from(value);
+  return value;
+}
+
+function jsValue(value) {
+  if (Buffer.isBuffer(value)) return new Uint8Array(value);
+  return value;
+}
+
+function removeWorkingCopy(file) {
+  const live = `${file}.live`;
+  for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+    try { fs.rmSync(live + suffix, { force: true }); } catch { /* still open or absent */ }
+  }
+}
+
+function dropSidecars(file) {
+  for (const suffix of ["-journal", "-wal", "-shm"]) {
+    try { fs.rmSync(file + suffix, { force: true }); } catch { /* absent */ }
+  }
+}
+
+function adapt(raw, file) {
+  const database = {
+    raw,
+    file,
+    closed: false,
+    lastChanges: 0,
+    exec(sql) {
+      const stmt = raw.prepare(sql);
+      if (!stmt.reader) {
+        database.lastChanges = stmt.run().changes || 0;
+        return [];
+      }
+      const columns = stmt.columns().map((column) => column.name);
+      const values = stmt.all().map((row) => columns.map((name) => jsValue(row[name])));
+      return values.length ? [{ columns, values }] : [];
+    },
+    run(sql, params) {
+      const stmt = raw.prepare(sql);
+      const info = params && params.length ? stmt.run(params.map(bindValue)) : stmt.run();
+      database.lastChanges = info.changes || 0;
+      return database;
+    },
+    prepare(sql) {
+      const stmt = raw.prepare(sql);
+      let params = [];
+      let rows = null;
+      let index = 0;
+      return {
+        bind(next) { params = next || []; rows = null; index = 0; },
+        step() {
+          if (!rows) rows = stmt.all(params.map(bindValue)).map((row) => {
+            const out = {};
+            for (const key of Object.keys(row)) out[key] = jsValue(row[key]);
+            return out;
+          });
+          if (index >= rows.length) return false;
+          this.current = rows[index];
+          index += 1;
+          return true;
+        },
+        getAsObject() { return this.current; },
+        run(next) {
+          const bound = next && next.length ? next.map(bindValue) : [];
+          database.lastChanges = (bound.length ? stmt.run(bound) : stmt.run()).changes || 0;
+        },
+        free() { rows = null; },
+      };
+    },
+    getRowsModified() { return database.lastChanges; },
+    close() {
+      if (database.closed) return;
+      database.closed = true;
+      raw.close();
+    },
+  };
+  return database;
+}
+
+function openAdapted(file) {
+  const raw = new Database(file);
+  raw.pragma("journal_mode = DELETE");
+  try { fs.chmodSync(file, 0o600); } catch { /* Windows may ignore mode */ }
+  return adapt(raw, file);
+}
+
+function publishCopy(database, file) {
   const tmp = `${file}.tmp`;
-  const fd = fs.openSync(tmp, "w", 0o600);
+  const probe = fs.openSync(tmp, "w", 0o600);
+  fs.closeSync(probe);
+  fs.unlinkSync(tmp);
+  dropSidecars(tmp);
+  database.raw.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+  const fd = fs.openSync(tmp, "r+");
   try {
-    fs.fchmodSync(fd, 0o600);
-    writeAll(fd, Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+    try { fs.fchmodSync(fd, 0o600); } catch { /* Windows may ignore mode */ }
     fs.fsyncSync(fd);
   } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
   syncDirectory(file);
-  return data.byteLength;
+  try { fs.chmodSync(file, 0o600); } catch { /* Windows may ignore mode */ }
+  return fs.statSync(file).size;
 }
 
+function snapshot(database, file) {
+  const tmp = `${file}.tmp`;
+  if (database.file !== tmp) return publishCopy(database, file);
+  database.close();
+  const fd = fs.openSync(tmp, "r+");
+  try {
+    try { fs.fchmodSync(fd, 0o600); } catch { /* Windows may ignore mode */ }
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+  fs.renameSync(tmp, file);
+  syncDirectory(file);
+  try { fs.chmodSync(file, 0o600); } catch { /* Windows may ignore mode */ }
+  return fs.statSync(file).size;
+}
+
+// Working copy only. Recovery is still the checkpoint plus the journals.
 async function loadDatabase(file) {
-  const init = require("sql.js");
-  const wasmDir = path.dirname(require.resolve("sql.js"));
-  const SQL = await init({ locateFile: (name) => path.join(wasmDir, name) });
-  return fs.existsSync(file) ? new SQL.Database(fs.readFileSync(file)) : new SQL.Database();
+  removeWorkingCopy(file);
+  const live = `${file}.live`;
+  try {
+    if (fs.existsSync(file) && fs.statSync(file).size > 0) await fs.promises.copyFile(file, live);
+    return openAdapted(live);
+  } catch (error) {
+    removeWorkingCopy(file);
+    throw error;
+  }
+}
+
+// Independent copy so a checkpoint cannot mutate the published file or the open mailbox.
+function loadCheckpointCopy(file) {
+  const tmp = `${file}.tmp`;
+  const probe = fs.openSync(tmp, "w", 0o600);
+  fs.closeSync(probe);
+  fs.unlinkSync(tmp);
+  dropSidecars(tmp);
+  if (fs.existsSync(file) && fs.statSync(file).size > 0) fs.copyFileSync(file, tmp);
+  return openAdapted(tmp);
 }
 
 function state(database) {
@@ -346,7 +481,7 @@ class Persistence {
       this.job = { resolve, reject, timeout: setTimeout(() => {
         this.job.failure = new Error("Mail checkpoint timed out; durable journal retained.");
         worker.terminate();
-      }, CHECKPOINT_TIMEOUT_MS) };
+      }, checkpointTimeout(this.file)) };
       worker.ref();
       try {
         worker.postMessage({ file: this.file, pending: this.pending });
@@ -376,25 +511,26 @@ class Persistence {
         this.worker.unref();
         this.worker = null;
       }
+      removeWorkingCopy(this.file);
     });
   }
 }
 
 if (!isMainThread && workerData && workerData.morrowCheckpointWorker) {
-  parentPort.on("message", async ({ file, pending }) => {
+  parentPort.on("message", ({ file, pending }) => {
     let database;
     try {
-      database = await loadDatabase(file);
+      database = loadCheckpointCopy(file);
       replay(database, pending);
+      const current = state(database);
       const bytes = snapshot(database, file);
-      const report = { bytes, sequence: state(database).sequence };
-      database.close();
+      if (database && !database.closed) database.close();
       database = null;
       // All disk and DB work is complete before acknowledging. Reuse this worker
-      // for later checkpoints instead of repeatedly starting/tearing down WASM.
-      parentPort.postMessage({ report });
+      // for later checkpoints. The copy is paged from disk, not a WASM snapshot.
+      parentPort.postMessage({ report: { bytes, sequence: current.sequence } });
     } catch (error) {
-      try { if (database) database.close(); } catch { /* report the original failure */ }
+      try { if (database && !database.closed) database.close(); } catch { /* report the original failure */ }
       parentPort.postMessage({ error: { message: error.message, code: error.code } });
     }
   });

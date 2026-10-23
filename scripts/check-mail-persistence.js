@@ -292,13 +292,95 @@ async function checkCrashes(dir) {
   await assert.rejects(db.open(file), /transaction gap/);
 }
 
+async function checkLargeFile(file) {
+  await db.close();
+  const Database = require("better-sqlite3");
+  const payload = Buffer.alloc(8 * 1024 * 1024, 7);
+  const raw = new Database(file);
+  raw.exec(`CREATE TABLE morrow_storage (
+      id INTEGER PRIMARY KEY CHECK (id = 1), generation TEXT NOT NULL, sequence INTEGER NOT NULL);
+    INSERT INTO morrow_storage VALUES (1, 'gen-large', 0);
+    CREATE TABLE blobs (
+      id TEXT PRIMARY KEY, filename TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL);`);
+  raw.prepare("INSERT INTO blobs VALUES (?, ?, ?, ?)").run("big", "big.bin", "application/octet-stream", payload);
+  raw.close();
+  const before = fs.readFileSync(file);
+  const readFileSync = fs.readFileSync;
+  const readFile = fs.promises.readFile;
+  const sqlite = path.resolve(file);
+  fs.readFileSync = function (target, ...args) {
+    if (path.resolve(String(target)) === sqlite) throw new Error("mail open slurped the sqlite file");
+    return readFileSync.call(this, target, ...args);
+  };
+  fs.promises.readFile = async function (target, ...args) {
+    if (path.resolve(String(target)) === sqlite) throw new Error("mail open slurped the sqlite file");
+    return readFile.call(this, target, ...args);
+  };
+  try {
+    await db.open(file);
+  } finally {
+    fs.readFileSync = readFileSync;
+    fs.promises.readFile = readFile;
+  }
+  assert.deepEqual(fs.readFileSync(file), before, "opening must not rewrite the checkpoint");
+  const blob = db.readBlob("big");
+  assert.equal(blob.data.length, payload.length);
+  assert.equal(Buffer.compare(Buffer.from(blob.data), payload), 0);
+  await db.checkpoint();
+  await db.close();
+  await db.open(file);
+  assert.equal(Buffer.compare(Buffer.from(db.readBlob("big").data), payload), 0);
+  await db.close();
+  console.log("mail-persistence-large-file-ok");
+}
+
+async function checkCopyFailure(file) {
+  await db.close();
+  await seed(file);
+  await db.checkpoint();
+  const before = fs.readFileSync(file);
+  await db.close();
+  const copy = fs.promises.copyFile;
+  fs.promises.copyFile = async () => { throw new Error("Fixture copy failed"); };
+  try {
+    await assert.rejects(() => db.open(file), /copy failed/);
+  } finally {
+    fs.promises.copyFile = copy;
+  }
+  assert.equal(db.isReady(), false);
+  assert.deepEqual(fs.readFileSync(file), before, "a failed open must leave the checkpoint bytes in place");
+  console.log("mail-persistence-copy-failure-ok");
+}
+
+function checkStartupFailure() {
+  const { startupFailureDialog, startupStatusHtml } = require("../host/startup-error");
+  const options = startupFailureDialog(new Error("Array buffer allocation failed"), "/tmp/mail.sqlite");
+  assert.equal(options.type, "error");
+  assert.deepEqual(options.buttons, ["Quit"]);
+  assert.match(options.message, /could not finish opening/);
+  assert.match(options.detail, /Array buffer allocation failed/);
+  assert.match(options.detail, /not deleted/);
+  assert.match(options.detail, /\/tmp\/mail\.sqlite/);
+  const status = startupStatusHtml();
+  assert.match(status, /Opening your mailbox/);
+  assert.match(status, /aria-hidden="true"/);
+  const main = fs.readFileSync(path.join(__dirname, "../host/main.js"), "utf8");
+  assert.match(main, /try \{\s*await initMail\(\);[\s\S]*?presentBootFailure\(error\)/);
+  assert.match(main, /presentBootStatus/);
+  assert.match(main, /process\.off\("unhandledRejection", onBootRejection\)/);
+  console.log("mail-startup-failure-ok");
+}
+
 async function run() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-persistence-"));
   try {
+    checkStartupFailure();
     await checkHotPaths(path.join(dir, "hot"));
     await checkTransactions(path.join(dir, "transactions.sqlite"));
     await checkCheckpoint(path.join(dir, "checkpoint.sqlite"));
     await checkCrashes(dir);
+    await checkLargeFile(path.join(dir, "large.sqlite"));
+    await checkCopyFailure(path.join(dir, "copy-fail.sqlite"));
     console.log("mail-persistence-recovery-ok");
   } finally {
     await db.close();
