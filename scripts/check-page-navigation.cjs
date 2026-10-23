@@ -410,7 +410,7 @@ app.whenReady().then(async () => {
 
   const multiAt = count('calendar:list');
   await run(`localStorage.setItem('morrow.calendarChecks', JSON.stringify({'box-0':['work','home']}));
-    state.calendarChecksAccountId=''; loadCalendar({fresh:true});`);
+    state.calendarChecksAccountId=''; void loadCalendar({fresh:true});`);
   await waitCalls('calendar:list', multiAt + 1);
   const multi = calendarRequests[multiAt];
   assert.deepEqual(multi.payload.calendarIds, ['work', 'home']);
