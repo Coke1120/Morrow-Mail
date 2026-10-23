@@ -203,13 +203,25 @@ async function checkCheckpoint(file) {
   await db.close();
   await db.open(file);
   assert.equal(db.messageById("p-3").starred, 1);
+  // 300 commits cross the 256-transaction threshold. The one-second timer can
+  // seal that journal while later commits are still fsyncing, which is common
+  // on Windows. Those later commits stay in the new journal. Success is a
+  // published checkpoint, not an empty active journal.
+  const published = fs.statSync(file);
   for (let i = 0; i < 300; i += 1) db.updateMessage("p-1", { starred: i % 2 });
-  assert.ok(fs.statSync(`${file}.journal`).size > 0);
   const deadline = Date.now() + 15000;
-  while (fs.statSync(`${file}.journal`).size || fs.existsSync(`${file}.journal.pending`)) {
-    assert.ok(Date.now() < deadline, "background checkpoint must compact an accumulated journal");
+  let compacted = false;
+  while (Date.now() < deadline) {
+    let now = null;
+    try { now = fs.statSync(file); } catch { /* atomic replace in progress */ }
+    const advanced = !!now && (now.mtimeMs !== published.mtimeMs || now.size !== published.size);
+    if (advanced && !fs.existsSync(`${file}.journal.pending`)) {
+      compacted = true;
+      break;
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  assert.ok(compacted, "background checkpoint must compact an accumulated journal");
   await db.close();
 }
 
