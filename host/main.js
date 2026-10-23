@@ -71,7 +71,7 @@ if (process.platform === "win32") app.setAppUserModelId("com.coke1120.morrow-mai
 app.setAboutPanelOptions({
   applicationName: "Morrow Mail",
   applicationVersion: app.getVersion(),
-  copyright: "Copyright © 2026 Leo Ho",
+  copyright: "Copyright (c) 2026 Leo Ho / HWL-HK",
   iconPath: APP_ICON,
 });
 
@@ -725,7 +725,7 @@ async function presentBootStatus() {
   if (bootWindow && !bootWindow.isDestroyed()) return bootWindow;
   const win = new BrowserWindow({
     width: 480,
-    height: 220,
+    height: 420,
     title: "Morrow Mail",
     show: true,
     autoHideMenuBar: true,

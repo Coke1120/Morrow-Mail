@@ -1,10 +1,25 @@
 # Morrow Mail
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/Website-hwl--hk.com-193c34)](https://hwl-hk.com/en/morrow-mail)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsors-Coke1120-ea4aaa)](https://github.com/sponsors/Coke1120)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-coke1120-FFDD00)](https://buymeacoffee.com/coke1120)
+
+Website: [https://hwl-hk.com/en/morrow-mail](https://hwl-hk.com/en/morrow-mail)
+
+Support: [GitHub Sponsors](https://github.com/sponsors/Coke1120) · [Buy Me a Coffee](https://buymeacoffee.com/coke1120)
 
 Morrow Mail is an open-source Electron mail client. You connect your own accounts, read and send mail, and install the desktop app from GitHub Releases.
 
-The npm package is `morrow-mail`. Source: [Coke1120/Morrow-Mail](https://github.com/Coke1120/Morrow-Mail). Downloads: [Releases](https://github.com/Coke1120/Morrow-Mail/releases). License: [MIT](LICENSE). [Code signing policy](CODE_SIGNING_POLICY.md). [Code of Conduct](CODE_OF_CONDUCT.md).
+## Screenshots
+
+![Morrow Mail demo inbox](docs/images/01-mailbox.png)
+
+![Welcome message](docs/images/02-reader.png)
+
+![About and updates](docs/images/03-about.png)
+
+The npm package is `morrow-mail`. Source: [Coke1120/Morrow-Mail](https://github.com/Coke1120/Morrow-Mail). Downloads: [Releases](https://github.com/Coke1120/Morrow-Mail/releases). License: [MIT](LICENSE). Copyright (c) 2026 Leo Ho / HWL-HK. [Code signing policy](CODE_SIGNING_POLICY.md). [Code of Conduct](CODE_OF_CONDUCT.md).
 
 The app in this tree is Electron (`host/`, `renderer/`, `shared/`). The old SwiftUI, WinUI, and Rust snapshot is archival only, in [`legacy.zip`](legacy.zip). Do not unzip it for feature work. See [LEGACY.md](LEGACY.md).
 

@@ -374,9 +374,20 @@ function checkStartupFailure() {
   assert.match(options.detail, /not deleted/);
   assert.match(options.detail, /\/tmp\/mail\.sqlite/);
   const status = startupStatusHtml();
+  const logo = fs.readFileSync(path.join(__dirname, "../renderer/morrow-icon.svg"), "utf8").trim()
+    .replace("<svg ", '<svg class="logo" aria-hidden="true" focusable="false" ');
   assert.match(status, /Opening your mailbox/);
+  assert.match(status, /Your mail stays on this computer/);
+  assert.match(status, /The Open Source Email Client with BYOK AI Assistant\./);
+  assert.ok(status.includes(logo));
   assert.match(status, /aria-hidden="true"/);
+  assert.match(status, /aria-busy="true"/);
+  assert.match(status, /role="status"/);
+  assert.match(status, /page-busy-spin/);
+  assert.match(status, /prefers-reduced-motion:\s*reduce/);
+  assert.doesNotMatch(status, /circle cx="12" cy="12" r="10"/);
   const main = fs.readFileSync(path.join(__dirname, "../host/main.js"), "utf8");
+  assert.match(main, /height:\s*420/);
   assert.match(main, /try \{\s*await initMail\(\);[\s\S]*?presentBootFailure\(error\)/);
   assert.match(main, /presentBootStatus/);
   assert.match(main, /process\.off\("unhandledRejection", onBootRejection\)/);
