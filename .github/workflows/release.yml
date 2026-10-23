@@ -69,6 +69,11 @@ jobs:
         env:
           SIGNING_KEY_AVAILABLE: ${{ secrets.MORROW_UPDATE_SIGNING_KEY != '' }}
         run: node scripts/release-preflight.js
+      # Homebrew Python 3.15 has no distutils. node-gyp 9 imports it when the
+      # better-sqlite3 Node 20 darwin prebuild is missing. That interpreter is
+      # externally managed, so pip needs the system-packages override.
+      - name: Install setuptools for the native module compile
+        run: python3 -m pip install --upgrade setuptools --break-system-packages
       - run: npm ci
       - run: npm run check
       - name: Bake Google Desktop OAuth client
