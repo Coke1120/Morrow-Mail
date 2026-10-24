@@ -19,6 +19,8 @@ const state = {
   query: "",
   searchAccountId: "",
   draftId: null,
+  draftRevision: null,
+  composeSession: 0,
   composeAttachments: [],
   composeSuggestions: null,
   composeMeta: null,
@@ -10143,6 +10145,7 @@ function composePayload(account) {
     fromAddress: meta.fromAddress || account.preferredFromAddress || account.email,
     draftId: state.draftId || undefined,
     emailId: state.draftId || undefined,
+    draftRevision: state.draftRevision || undefined,
   };
   const cc = $("compose-cc").value.trim();
   const bcc = $("compose-bcc").value.trim();
@@ -11344,7 +11347,7 @@ async function initializeComposeIdentity(fields) {
     $("compose-to").value = parties.to;
     $("compose-cc").value = parties.cc;
   }
-  const savedRecipients = !!fields.draftId || !!fields.botDraft;
+  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt;
   state.composeIdentity = { ...context, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
   applyComposeRecipients();
@@ -11704,6 +11707,7 @@ async function openCompose(seed) {
   }
   if ($("compose").open && !(await requestComposeClose())) return;
   const fields = seed || {};
+  state.composeSession = (state.composeSession || 0) + 1;
   state.composeInitializing = true;
   state.composeIdentityError = false;
   state.composeIdentity = null;
@@ -11712,6 +11716,7 @@ async function openCompose(seed) {
   resetDraftWrite();
   closeComposeAi();
   state.draftId = fields.draftId || null;
+  state.draftRevision = fields.draftRevision || null;
   state.composeQueued = false;
   state.composePartialReceipt = false;
   state.signatureText = "";
@@ -11764,8 +11769,19 @@ async function openCompose(seed) {
     setComposeStatus("From address could not be loaded. Your text is retained.", true);
   }
   const initial = composeSnapshot();
-  await Promise.all([fillSignatures(!!fields.draftId), loadScheduled()]);
+  await Promise.all([fields.partialReceipt ? Promise.resolve() : fillSignatures(!!fields.draftId), loadScheduled()]);
   state.composeInitializing = false;
+  if (fields.partialReceipt) {
+    state.composeQueued = true;
+    state.composePartialReceipt = true;
+    state.draftId = null;
+    state.draftRevision = null;
+    state.composeBaseline = composeSnapshot();
+    syncCompose();
+    setComposeStatus(fields.partialReceipt, true);
+    finishComposeOpen(fields);
+    return;
+  }
   // A supplied proposal is unsaved work; an untouched new message is not.
   const baseline = JSON.parse(initial);
   baseline.body = fields.draftId ? baseline.body : applySignature(baseline.body, "", state.signatureText);
@@ -11833,12 +11849,14 @@ async function resumeDraft(email, extra) {
   const draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
   await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
+    draftRevision: draft.draftRevision,
     fromAddress: draft.from,
     to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
     body: readable(draft),
     htmlBody: typeof draft.htmlBody === "string" ? draft.htmlBody : "",
     attachments: draft.attachments,
     inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "",
+    ...(draft.draftPending ? { status: "Local changes are protected and waiting for upload. Save draft to retry; nothing sends automatically." } : {}),
     ...(extra || {}) });
 }
 
@@ -12248,9 +12266,10 @@ async function saveDraft() {
     const snapshot = composeSnapshot();
     const saved = await call("mail:upsertDraft", composePayload(account));
     state.draftId = (saved && (saved.emailId || saved.draftId)) || state.draftId;
+    state.draftRevision = saved?.draftRevision || null;
     if (!state.draftId) throw new Error("Draft could not be saved. Your text is still here.");
     state.composeBaseline = snapshot;
-    setComposeStatus(saved && saved.remoteSaved === false ? "Draft saved on this computer. " + (saved.warning || "Server copy could not be updated.") : "Draft saved.");
+    setComposeStatus(saved && saved.remoteSaved === false ? "Draft saved on this computer. " + (saved.warning || "Server copy could not be updated.") : "Draft saved." + (saved?.warning ? " " + saved.warning : ""));
   });
 }
 
@@ -12273,38 +12292,69 @@ function cancelUndoSend() {
   return true;
 }
 
-async function deliverMail(payload) {
-  state.composePending = true;
-  syncCompose();
-  setComposeStatus("Sending…");
+async function separatePartialReceipt(payload, message) {
+  const shown = value => Array.isArray(value) ? value.join(", ") : value || "";
+  const seed = { title: "Partial delivery receipt", accountId: payload.accountId, fromAddress: payload.fromAddress,
+    to: shown(payload.to), cc: shown(payload.cc), bcc: shown(payload.bcc), subject: payload.subject || "",
+    body: plainFromMailHtml(payload.body || ""), htmlBody: payload.body || "", attachments: payload.attachments,
+    partialReceipt: message };
+  if (api && typeof api.openComposeWindow === "function") {
+    try { await api.openComposeWindow(seed); return; } catch { /* retain an inspectable receipt in this window */ }
+  }
+  // Older preload/modal environments still need a receipt without replacing a
+  // newer composition. Text nodes and a readonly field never execute mail HTML.
+  const dialog = document.createElement("dialog");
+  dialog.className = "delivery-receipt";
+  const heading = document.createElement("h2"); heading.textContent = seed.title;
+  const notice = document.createElement("p"); notice.textContent = message;
+  const content = document.createElement("textarea"); content.readOnly = true;
+  content.setAttribute("aria-label", "Partial delivery content");
+  content.value = `To: ${seed.to}\nCc: ${seed.cc}\nBcc: ${seed.bcc}\nSubject: ${seed.subject}\n\n${seed.body}`;
+  const close = document.createElement("button"); close.type = "button"; close.className = "ghost"; close.textContent = "Close receipt";
+  close.onclick = () => dialog.close(); dialog.onclose = () => dialog.remove();
+  dialog.append(heading, notice, content, close); document.body.appendChild(dialog); dialog.showModal();
+}
+
+async function deliverMail(payload, session = state.composeSession) {
+  const ownsCompose = () => session === state.composeSession;
+  if (ownsCompose()) { state.composePending = true; syncCompose(); setComposeStatus("Sending…"); }
   showStatus("Sending…");
   try {
     const result = await call("mail:send", payload);
     if (result?.partial) {
+      const message = result.warning || "Partly sent. Review rejected recipients in Scheduled delivery review; accepted recipients will not be resent automatically.";
+      if (!ownsCompose()) {
+        await separatePartialReceipt(payload, message);
+        showStatus(message, true);
+        loadScheduled().catch(() => {});
+        return;
+      }
       state.composeQueued = true;
       state.composePartialReceipt = true;
       state.draftId = null;
+      state.draftRevision = null;
       state.composeBaseline = composeSnapshot();
       $("compose-title").textContent = "Partial delivery receipt";
       if (typeof publishComposeTitle === "function") publishComposeTitle("Partial delivery receipt");
-      const message = result.warning || "Partly sent. Review rejected recipients in Scheduled delivery review; accepted recipients will not be resent automatically.";
+      openDialog("compose");
+      scheduleComposeLayout();
       setComposeStatus(message, true);
       showStatus(message, true);
       loadScheduled().catch(() => {});
       return;
     }
+    if (!ownsCompose()) { showStatus(result?.warning || "Sent.", !!result?.warning); return; }
     state.draftId = null;
+    state.draftRevision = null;
     state.composeBaseline = composeSnapshot();
     await closeDialog("compose");
     showStatus(result?.warning || "Sent.", !!result?.warning);
   } catch (error) {
-    openDialog("compose");
-    scheduleComposeLayout();
     const message = "Delivery was not confirmed. Your draft is ready to edit. Check Sent before retrying. " + (error.message || String(error));
-    setComposeStatus(message, true);
+    if (ownsCompose()) { openDialog("compose"); scheduleComposeLayout(); setComposeStatus(message, true); }
     showStatus(message, true);
     return;
-  } finally { state.composePending = false; syncCompose(); }
+  } finally { if (ownsCompose()) { state.composePending = false; syncCompose(); } }
   if (isComposeWindow()) {
     if (api && typeof api.allowComposeClose === "function") api.allowComposeClose();
     return;
@@ -12322,8 +12372,9 @@ async function sendMail() {
     return;
   }
   const payload = composePayload(account);
+  const session = state.composeSession;
   const delay = sendDelayMs(state.prefs.undoSend);
-  if (!delay) { await deliverMail(payload); return; }
+  if (!delay) { await deliverMail(payload, session); return; }
   state.composePending = true;
   syncCompose();
   await closeDialog("compose");
@@ -12336,7 +12387,7 @@ async function sendMail() {
     sendTimer = null;
     $("undo-send").hidden = true;
     if (gen !== sendGen) return;
-    deliverMail(payload).catch((error) => showStatus(error.message, true));
+    deliverMail(payload, session).catch((error) => showStatus(error.message, true));
   }, delay);
 }
 

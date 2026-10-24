@@ -1,4 +1,5 @@
 const { Persistence } = require("./persistence");
+const crypto = require("crypto");
 const primaryFolderLib = require("../../shared/primary-mailboxes");
 
 let db = null;
@@ -167,6 +168,9 @@ function migrate() {
   run(`CREATE INDEX IF NOT EXISTS messages_uid ON messages(account_id, folder_path, uid_validity, uid)`);
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "recipient_headers_json")) {
     run("ALTER TABLE messages ADD COLUMN recipient_headers_json TEXT");
+  }
+  if (!all("PRAGMA table_info(messages)").some((row) => row.name === "draft_pending")) {
+    run("ALTER TABLE messages ADD COLUMN draft_pending INTEGER NOT NULL DEFAULT 0");
   }
   if (!all("PRAGMA table_info(accounts)").some((row) => row.name === "send_as_json")) {
     run("ALTER TABLE accounts ADD COLUMN send_as_json TEXT");
@@ -827,8 +831,9 @@ function applyFolderSync(accountId, folderPath, report) {
       [accountId, folderPath]
     );
     if (previous && previous.uid_validity && report.validity && previous.uid_validity !== report.validity) {
-      forgetIds(all("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0", [accountId, folderPath]));
-      run("DELETE FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0", [accountId, folderPath]);
+      forgetIds(all("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0 AND draft_pending = 0", [accountId, folderPath]));
+      run("DELETE FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0 AND draft_pending = 0", [accountId, folderPath]);
+      run("UPDATE messages SET uid = 0, uid_validity = 0 WHERE account_id = ? AND folder_path = ? AND draft_pending = 1", [accountId, folderPath]);
       run(
         "UPDATE folders SET uid_cursor = 0, window_done = 0, sync_horizon_days = NULL WHERE account_id = ? AND path = ?",
         [accountId, folderPath]
@@ -837,12 +842,12 @@ function applyFolderSync(accountId, folderPath, report) {
     if (Array.isArray(report.uids) && !report.keepOthers) {
       const keep = new Set(report.uids.map((uid) => Number(uid)));
       const stored = all(
-        "SELECT id, uid, list_sort_ts FROM messages WHERE account_id = ? AND folder_path = ?",
+        "SELECT id, uid, list_sort_ts, draft_pending FROM messages WHERE account_id = ? AND folder_path = ?",
         [accountId, folderPath]
       );
       for (const row of stored) {
         // uid <= 0 is a local-only copy (a send or draft not yet given a server uid).
-        if (Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
+        if (row.draft_pending || Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
         if (report.retainOlderThan && Number(row.list_sort_ts) < report.retainOlderThan) continue;
         if (messageHeld(row.id)) continue;
         forgetIndex(row.id);
@@ -851,18 +856,20 @@ function applyFolderSync(accountId, folderPath, report) {
     }
     for (const message of report.messages) {
       let found = get(
-        `SELECT id FROM messages
+        `SELECT id, draft_pending FROM messages
          WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?`,
         [accountId, folderPath, message.uid, report.validity]
       );
       if (!found && message.rfcMessageId) {
         const candidates = all(
           `SELECT id FROM messages
-           WHERE account_id = ? AND folder_path = ? AND rfc_message_id = ? AND uid <= 0`,
+           WHERE account_id = ? AND folder_path = ? AND rfc_message_id = ? AND uid <= 0 AND draft_pending = 0`,
           [accountId, folderPath, message.rfcMessageId]
         );
         if (candidates.length === 1) found = candidates[0];
       }
+      // An old server revision cannot overwrite an unuploaded local edit.
+      if (found?.draft_pending) continue;
       const id = found ? found.id : (message.id || newMessageId());
       let unreadBit = message.unread ? 1 : 0;
       let starredBit = message.starred ? 1 : 0;
@@ -1002,11 +1009,11 @@ function pruneMissing(accountId, folderPath, liveUids, retainOlderThan) {
   const keep = new Set((liveUids || []).map((uid) => Number(uid)));
   transaction(() => {
     const stored = all(
-      "SELECT id, uid, list_sort_ts FROM messages WHERE account_id = ? AND folder_path = ?",
+      "SELECT id, uid, list_sort_ts, draft_pending FROM messages WHERE account_id = ? AND folder_path = ?",
       [accountId, folderPath]
     );
     for (const row of stored) {
-      if (Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
+      if (row.draft_pending || Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
       if (retainOlderThan && Number(row.list_sort_ts) < retainOlderThan) continue;
       if (messageHeld(row.id)) continue;
       forgetIndex(row.id);
@@ -1032,8 +1039,8 @@ function insertMessageRecord(row) {
       `INSERT INTO messages (
         id, account_id, folder_path, uid, uid_validity, thread_id, rfc_message_id, in_reply_to,
         subject, snippet, from_addr, to_json, cc_json, bcc_json, date_iso, list_sort_ts,
-        unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete, recipient_headers_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete, recipient_headers_json, draft_pending
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id, row.accountId, row.folderPath, row.uid || 0, row.uidValidity || 0,
         row.threadId || row.id, row.rfcMessageId || null, row.inReplyTo || null,
@@ -1042,7 +1049,7 @@ function insertMessageRecord(row) {
         row.date, row.listSortTs, row.unread ? 1 : 0, row.starred ? 1 : 0, row.isDraft ? 1 : 0,
         row.hasAttachments ? 1 : 0, row.htmlBody || null, row.textBody || null,
         JSON.stringify(row.attachments || []), row.bodyComplete ? 1 : 0,
-        JSON.stringify(row.recipientHeaders || {}),
+        JSON.stringify(row.recipientHeaders || {}), row.draftPending ? 1 : 0,
       ]
     );
     indexText(row.id);
@@ -1051,6 +1058,17 @@ function insertMessageRecord(row) {
 function messageById(id) {
   if (!id) return null;
   return get("SELECT * FROM messages WHERE id = ?", [id]);
+}
+
+// Revision proof for compose/scheduled cleanup. UID/flags may change without
+// changing submitted content; every local save gets a fresh RFC Message-ID.
+function draftRevision(row) {
+  if (!row || !row.is_draft) return "";
+  return crypto.createHash("sha256").update(JSON.stringify([
+    row.id, row.account_id, row.folder_path, row.rfc_message_id, row.thread_id,
+    row.in_reply_to, row.subject, row.from_addr, row.to_json, row.cc_json, row.bcc_json,
+    row.html_body, row.text_body, row.attachments_json, row.date_iso,
+  ])).digest("hex");
 }
 
 function saveSendAs(accountId, value) {
@@ -1639,6 +1657,10 @@ function setScheduledSendAt(id, sendAt) {
   transaction(() => run("UPDATE scheduled_sends SET send_at = ?, status = 'pending', error = NULL WHERE id = ? AND status IN ('pending', 'failed')", [sendAt, id]));
 }
 
+function noteScheduledWarning(id, message) {
+  transaction(() => run("UPDATE scheduled_sends SET error = ? WHERE id = ? AND status IN ('sent', 'partial')", [String(message), id]));
+}
+
 function planImapPathMove(folders, sourcePath, destinationParent, delimiter) {
   const sep = delimiter || "/";
   const rows = (Array.isArray(folders) ? folders : []).filter((row) => row && row.path);
@@ -1794,6 +1816,7 @@ module.exports = {
   selectBotHeaders,
   messageStats,
   messageById,
+  draftRevision,
   messagesByThread,
   updateMessage,
   deleteMessage,
@@ -1842,6 +1865,7 @@ module.exports = {
   deleteScheduled,
   markScheduledFailed,
   setScheduledSendAt,
+  noteScheduledWarning,
   jsonList,
   newMessageId,
   newInboxRuleId,

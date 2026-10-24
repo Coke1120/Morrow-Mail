@@ -293,6 +293,7 @@ function detailOf(row) {
     subject: presented.subject,
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
+    ...(row.is_draft ? { draftRevision: db.draftRevision(row), draftPending: !!row.draft_pending } : {}),
   };
 }
 
@@ -1746,7 +1747,7 @@ function usableStoredBody(row) {
 }
 
 function rowNeedsBody(row) {
-  return !!(row && Number(row.uid) > 0 && row.body_complete !== 1);
+  return !!(row && !row.draft_pending && Number(row.uid) > 0 && row.body_complete !== 1);
 }
 
 // Visible-list prefetch only. Older mail waits for the off-hours fill.
@@ -1925,7 +1926,7 @@ async function ensureBody(row, options) {
   };
   // Full RFC822 via fetchSource. A text/html part fetch needs stored structure
   // so attachments and recipient headers stay intact.
-  if (!row || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
+  if (!row || row.draft_pending || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
   const account = db.accountById(row.account_id);
   if (!account) return row;
   if (background && priorityWaiting(account.id)) {
@@ -1940,13 +1941,14 @@ async function ensureBody(row, options) {
     }
     // Another open may have filled the cache while this request queued.
     row = db.messageById(row.id);
-    if (!row || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
+    if (!row || row.draft_pending || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
     actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
     const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity));
     // A FETCH row for another UID must not be written onto this message.
     if (!fetched || Number(fetched.uid) !== Number(row.uid)) return row;
     const current = db.messageById(row.id);
+    if (current?.draft_pending) return current;
     actions.assertIdentityReady(row.id);
     if (!current || current.folder_path !== row.folder_path || current.uid !== row.uid || current.uid_validity !== row.uid_validity) {
       const error = new Error("This message moved while it was being read. Reopen it after the move is confirmed.");
@@ -2625,6 +2627,7 @@ function scheduleSend(params) {
   };
   if (input.draftId) payload.draftId = input.draftId;
   if (input.emailId) payload.emailId = input.emailId;
+  if (typeof input.draftRevision === "string") payload.draftRevision = input.draftRevision;
   if (input.inReplyTo) payload.inReplyTo = input.inReplyTo;
   if (input.threadId) payload.threadId = input.threadId;
   if (Array.isArray(input.references)) payload.references = input.references;
@@ -2867,9 +2870,37 @@ async function submitSmtp(input) {
   }
 }
 
+async function cleanupSubmittedDraft(account, proof) {
+  if (!proof) return false; // Legacy snapshots have no evidence of a revision.
+  return exclusive(account.id, async () => {
+    const matches = row => row?.account_id === account.id && db.draftRevision(row) === proof.revision;
+    let current = db.messageById(proof.id);
+    if (!current) return true;
+    if (!matches(current)) return false;
+    if (current.uid > 0) {
+      const password = await secretFor(account);
+      actions.assertIdentityReady(proof.id);
+      current = db.messageById(proof.id);
+      if (!matches(current)) return false;
+      await remote.withClient(account, password, async client => {
+        // Connecting can await I/O while another window saves locally.
+        if (!matches(db.messageById(proof.id))) return;
+        await remote.removeUid(client, current.folder_path, current.uid, current.uid_validity);
+      });
+    }
+    // A save can also arrive while the server deletion is in flight.
+    if (!matches(db.messageById(proof.id))) return false;
+    db.deleteMessage(proof.id);
+    return true;
+  });
+}
+
 async function deliver(params, lifecycle) {
   let account = db.accountById(params && params.accountId);
   if (!account) return fail("not-found", "Choose an account before sending.");
+  const draftId = params && (params.draftId || params.emailId);
+  const proof = draftId && /^[a-f0-9]{64}$/.test(params.draftRevision || "")
+    ? { id: draftId, revision: params.draftRevision } : null;
   try { params = { ...params, fromAddress: await composeIdentity.sendingFrom(account, params.fromAddress) }; }
   catch (error) { return fail("invalid_from", error.message); }
   account = db.accountById(account.id);
@@ -2923,20 +2954,10 @@ async function deliver(params, lifecycle) {
       if (!recoveryId) warning += " The recovery record could not be saved. Keep or copy this message and the rejected addresses before closing; do not resend to accepted recipients.";
     }
     try {
-      const draftId = params && (params.draftId || params.emailId);
-      const draft = draftId ? db.messageById(draftId) : null;
-      if (draft && draft.is_draft === 1 && (!partial || lifecycle || recoveryId)) {
-        try {
-          if (draft.uid) {
-            await exclusive(account.id, async () => {
-              const password = await secretFor(account);
-              actions.assertIdentityReady(draft.id);
-              const current = db.messageById(draft.id);
-              if (current) await remote.withClient(account, password, (client) => remote.removeUid(client, current.folder_path, current.uid, current.uid_validity));
-            });
-          }
-        } catch { /* local removal still happens */ }
-        db.deleteMessage(draft.id);
+      if (draftId && (!partial || lifecycle || recoveryId)) {
+        if (!(await cleanupSubmittedDraft(account, proof))) {
+          warning += " The source draft was kept because its submitted revision could not be verified or has changed.";
+        }
       }
     } catch (error) {
       warning += " SMTP accepted the submission, but local cleanup could not finish. Check Sent before any retry.";
@@ -2994,7 +3015,12 @@ async function pumpScheduledAdmitted() {
       try {
         const status = db.scheduledById(row.id)?.status;
         if (status === "sent") {
-          if (result && result.success) db.deleteScheduled(row.id);
+          if (result && result.success) {
+            if (result.data?.warning) db.noteScheduledWarning(row.id, result.data.warning);
+            else db.deleteScheduled(row.id);
+          }
+        } else if (status === "partial" && result?.data?.warning) {
+          db.noteScheduledWarning(row.id, result.data.warning);
         } else if (status !== "partial") {
           db.failScheduled(row.id, result?.error?.message || result?.data?.warning, result?.error?.delivery === "unknown", result?.data?.receipt);
         }
@@ -3365,6 +3391,9 @@ function answer(channel, args) {
         const emailId = (params && params.emailId) || db.newMessageId();
         const existing = db.messageById(emailId);
         if (existing && (existing.account_id !== account.id || !existing.is_draft)) return fail("invalid", "That draft does not belong to this mailbox.");
+        if (existing && params.draftRevision && params.draftRevision !== db.draftRevision(existing)) {
+          return fail("draft_conflict", "This draft changed in another window. Your text is still here; keep a copy before reopening the saved draft.");
+        }
         const resolved = resolveAttachments(params && params.attachments, account);
         if (resolved.error) return fail(resolved.error.code, resolved.error.message);
         const files = resolved.files;
@@ -3374,7 +3403,9 @@ function answer(channel, args) {
         });
         const html = presented.htmlBody || "";
         const when = new Date();
-        const messageId = (existing && existing.rfc_message_id) || rfcMessageId(account.email);
+        // A distinct RFC identity prevents an older server copy from adopting a
+        // newer local revision, including after an interrupted APPEND.
+        const messageId = rfcMessageId(account.email);
         const record = {
           id: emailId,
           accountId: account.id,
@@ -3398,6 +3429,7 @@ function answer(channel, args) {
           htmlBody: html,
           textBody: presented.textBody || plainFromHtml(html),
           bodyComplete: true,
+          draftPending: true,
           inReplyTo: params.inReplyTo || null,
         };
         if (existing) {
@@ -3419,6 +3451,7 @@ function answer(channel, args) {
             html_body: html,
             text_body: record.textBody,
             body_complete: 1,
+            draft_pending: 1,
             in_reply_to: record.inReplyTo,
           });
         } else {
@@ -3426,43 +3459,48 @@ function answer(channel, args) {
         }
         let remoteSaved = false;
         let warning = "";
+        const revision = db.draftRevision(db.messageById(emailId));
         try {
           await exclusive(account.id, async () => {
+            const matches = () => db.draftRevision(db.messageById(emailId)) === revision;
+            if (!matches()) { warning = "A newer draft revision was saved. This upload was skipped."; return; }
             const password = await secretFor(account);
             const raw = await remote.buildRaw({
               ...mimeOptions(account, { ...params, subject: presented.subject, body: html }, files),
               messageId,
             });
-            const appended = await remote.withClient(account, password, async (client) => {
-              if (existing && existing.uid) {
-                actions.assertIdentityReady(existing.id);
-                const current = db.messageById(existing.id);
-                if (!current || current.folder_path !== existing.folder_path || current.uid !== existing.uid || current.uid_validity !== existing.uid_validity) {
-                  const error = new Error("This draft moved while it was being saved. Reopen its confirmed server copy before retrying.");
-                  error.code = "message_moving";
-                  throw error;
-                }
-                try { await remote.removeUid(client, existing.folder_path, existing.uid, existing.uid_validity); }
-                catch (error) { if (error?.code === "uid_validity_changed") throw error; /* replaced below */ }
-              }
-              return remote.appendRaw(client, drafts.path, raw, ["\\Draft", "\\Seen"]);
-            });
-            if (appended && appended.uid) {
+            await remote.withClient(account, password, async (client) => {
+              if (!matches()) { warning = "A newer draft revision was saved. This upload was skipped."; return; }
+              actions.assertIdentityReady(emailId);
+              const prior = db.messageById(emailId);
+              if (prior.uid > 0 && prior.uid_validity > 0) await remote.checkUidValidity(client, prior.folder_path, prior.uid_validity);
+              if (!matches()) { warning = "A newer draft revision was saved. This upload was skipped."; return; }
+              // Keep the old remote copy until the replacement is confirmed and
+              // the matching local revision has been durably updated.
+              const appended = await remote.appendRaw(client, drafts.path, raw, ["\\Draft", "\\Seen"]);
+              if (!appended) throw new Error("The server did not confirm the draft upload.");
+              if (!matches()) { warning = "A newer draft revision was saved and kept. An older server copy may remain."; return; }
+              const confirmed = Number(appended.uid) > 0 && Number(appended.uidValidity) > 0;
               db.updateMessage(emailId, {
-                uid: Number(appended.uid),
-                uid_validity: Number(appended.uidValidity) || (existing && existing.uid_validity) || 0,
+                uid: confirmed ? Number(appended.uid) : 0,
+                uid_validity: confirmed ? Number(appended.uidValidity) : 0,
+                draft_pending: 0,
               });
-            } else {
-              db.updateMessage(emailId, { uid: 0 });
-            }
-            remoteSaved = true;
+              remoteSaved = true;
+              if (prior.uid > 0) {
+                if (confirmed && prior.uid_validity === Number(appended.uidValidity) && prior.uid !== Number(appended.uid)) {
+                  try { await remote.removeUid(client, prior.folder_path, prior.uid, prior.uid_validity); }
+                  catch { warning = "The new draft is saved. An older server copy could not be removed and may remain."; }
+                } else warning = "The new draft is saved. An older server copy was retained because its replacement identity could not be verified.";
+              }
+            });
           });
         } catch (error) {
-          // The draft remains in the local cache when the server append fails.
-          if (error?.code === "uid_validity_changed" || error?.code === "message_moving") warning = error.message;
+          warning = error?.code === "uid_validity_changed" || error?.code === "message_moving" ? error.message
+            : "Local changes are protected. The server copy could not be updated; Save draft to retry.";
         }
         emitAccounts();
-        return ok({ emailId, draftId: emailId, remoteSaved, warning });
+        return ok({ emailId, draftId: emailId, draftRevision: revision, remoteSaved, warning });
       })();
     case "mail:deleteDraft":
       return (async () => {
