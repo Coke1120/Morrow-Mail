@@ -66,7 +66,7 @@ function priorOf(row) {
 }
 
 function sourceOf(row) {
-  return { folderPath: row.folder_path, uid: Number(row.uid) || 0, uidValidity: Number(row.uid_validity) || 0 };
+  return { folderPath: row.folder_path, uid: Number(row.uid) || 0, uidValidity: Number(row.uid_validity) || 0, confirmed: true };
 }
 
 function displayOf(row) {
@@ -81,6 +81,7 @@ function displayOf(row) {
 
 function outcomeOf(action, status, error, opId) {
   const row = db.messageById(action.message_id);
+  const intent = parse(action.intent_json, {});
   return {
     id: action.message_id,
     actionId: action.id,
@@ -89,6 +90,8 @@ function outcomeOf(action, status, error, opId) {
     kind: parse(action.intent_json, {}).kind || "",
     error: error || undefined,
     opId: opId || undefined,
+    retryOpId: intent.kind === "undo" && (status === "failed" || status === "not_attempted")
+      && db.readOp(intent.opId)?.moves?.length ? intent.opId : undefined,
     projection: displayOf(row),
   };
 }
@@ -122,12 +125,15 @@ function writePrior(action) {
     return;
   }
   if (!prior || intent.kind === "undo") return;
+  if (intent.kind === "read" || intent.kind === "star") {
+    const key = intent.kind === "read" ? "unread" : "starred";
+    db.updateMessage(action.message_id, { [key]: prior[key] });
+    return;
+  }
   db.updateMessage(action.message_id, {
     folder_path: prior.folderPath,
     uid: prior.uid,
     uid_validity: prior.uidValidity,
-    unread: prior.unread,
-    starred: prior.starred,
     is_draft: prior.isDraft,
   });
 }
@@ -181,12 +187,32 @@ function rememberMove(action, dest) {
 }
 
 function newerPending(action) {
+  const kind = parse(action.intent_json, {}).kind;
+  if (kind !== "read" && kind !== "star") return false;
   return db.mailActionsForMessage(action.message_id).some((row) =>
-    row.id !== action.id && row.generation > action.generation && (row.phase === "accepted" || row.phase === "publishing"));
+    row.id !== action.id && row.generation > action.generation && parse(row.intent_json, {}).kind === kind
+      && (row.phase === "accepted" || row.phase === "publishing"));
+}
+
+function assertIdentityReady(messageId) {
+  const pending = db.mailActionsForMessage(messageId).find((row) => {
+    const kind = parse(row.intent_json, {}).kind;
+    return (kind === "remove" || kind === "undo") &&
+      (row.phase === "accepted" || row.phase === "publishing" || row.receipt === "unknown" || row.receipt === "superseded");
+  });
+  if (!pending) return;
+  const error = new Error(pending.phase === "closed"
+    ? "The previous move or delete was not confirmed. Refresh the source and destination folders and select a confirmed server copy before acting again."
+    : "This message is moving or being deleted. Wait for server confirmation, then try again.");
+  error.code = "message_moving";
+  error.operationIssued = false;
+  throw error;
 }
 
 function applyClose(action, receipt, error, dest, skipWrite) {
   const intent = parse(action.intent_json, {});
+  // A definitely unissued Undo can be retried; completed/uncertain Undo cannot.
+  if (intent.kind === "undo" && (receipt === "completed" || receipt === "unknown")) db.saveOp(intent.opId, { moves: [] });
   let opId = null;
   if (!skipWrite && (receipt === "failed" || receipt === "not_attempted")) {
     if (intent.kind !== "undo") writePrior(action);
@@ -222,7 +248,7 @@ function applyClose(action, receipt, error, dest, skipWrite) {
 function emit(outcomes) {
   if (!outcomes.length) return;
   settledLog.push(...outcomes);
-  const opIds = outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId);
+  const opIds = [...new Set(outcomes.flatMap((row) => row.retryOpId ? [row.retryOpId] : row.status === "completed" && row.opId ? [row.opId] : []))];
   hooks.emitAccounts();
   hooks.broadcast("mail:actionsSettled", { outcomes, opIds });
 }
@@ -383,6 +409,13 @@ function acceptOne(command, batchId, stopped) {
     stopped.batch = true;
     return { outcome: { id: command.messageId, status: "failed", error: "Message or account is no longer available.", kind: command.intent.kind } };
   }
+  // folder_path is an optimistic display projection while a structural write
+  // is unsettled. Do not accept another operation using that predicted UID pair.
+  try { assertIdentityReady(command.messageId); }
+  catch (error) {
+    return { outcome: { id: command.messageId, status: "failed", kind: command.intent.kind, error: error.message,
+      projection: displayOf(row), generation: db.maxActionGeneration(command.messageId) } };
+  }
   const open = db.openMailAction(command.messageId);
   if (open && open.phase === "accepted") {
     const openIntent = parse(open.intent_json, {});
@@ -479,6 +512,10 @@ function removeCommand(messageId, well, targetPath, permanent) {
     return { messageId, error: { message: "Message or account is no longer available.", stop: true }, intent: { kind: "remove" }, stopBatch: true };
   }
   if (permanent) {
+    const source = db.folderByPath(row.account_id, row.folder_path);
+    if (!source || !["deleteditems", "trash"].includes(source.well_known)) {
+      return { messageId, error: { message: "This message is no longer in Trash. Refresh before deleting permanently." }, intent: { kind: "remove" }, stopBatch: true };
+    }
     return { messageId, accountId: row.account_id, intent: { kind: "remove", permanent: true, destPath: row.folder_path }, stopBatch: true };
   }
   const folder = targetPath ? db.folderByPath(row.account_id, targetPath) : db.folderByWellKnown(row.account_id, well);
@@ -497,7 +534,6 @@ function undoCommands(opIds) {
   const commands = [];
   for (const opId of opIds) {
     const saved = db.readOp(opId);
-    db.saveOp(opId, { moves: [] });
     if (!saved || !saved.moves || !saved.moves.length) {
       commands.push({ opId, error: { message: "This Undo is no longer available." }, intent: { kind: "undo" } });
       continue;
@@ -517,7 +553,7 @@ function undoCommands(opIds) {
       commands.push({
         messageId: row.id,
         accountId: row.account_id,
-        source: { folderPath: dest.folderPath, uid: dest.uid, uidValidity: dest.uidValidity },
+        source: { folderPath: dest.folderPath, uid: dest.uid, uidValidity: dest.uidValidity, confirmed: true },
         intent: {
           kind: "undo",
           opId,
@@ -604,6 +640,14 @@ function resume() {
     const hint = HINTS[intent.kind] || HINTS.remove;
     unknown.push(applyClose(row, "unknown", `The mailbox did not confirm this change. ${hint}`, null));
   }
+  // Older versions could persist a dependent action with a predicted folder/UID
+  // pair. Such queued identities cannot be replayed safely after an upgrade.
+  for (const accountId of db.acceptedAccountIds()) {
+    for (const row of db.acceptedMailActions(accountId)) {
+      if (parse(row.source_json, {}).confirmed === true) continue;
+      unknown.push(applyClose(row, "unknown", "This saved operation has no confirmed server identity. Refresh the folders and select a confirmed server copy before retrying.", null));
+    }
+  }
   if (unknown.length) emit(unknown);
   for (const accountId of db.acceptedAccountIds()) schedule(accountId);
 }
@@ -633,7 +677,7 @@ function takeSettled() {
   settledCursor = settledLog.length;
   return {
     outcomes,
-    opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId),
+    opIds: [...new Set(outcomes.flatMap((row) => row.retryOpId ? [row.retryOpId] : row.status === "completed" && row.opId ? [row.opId] : []))],
   };
 }
 
@@ -649,4 +693,5 @@ module.exports = {
   settleAccount,
   generationOf,
   resetForTests,
+  assertIdentityReady,
 };
