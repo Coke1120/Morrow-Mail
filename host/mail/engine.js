@@ -97,6 +97,7 @@ function dataFile() {
 
 async function init() {
   await db.open(dataFile());
+  db.recoverScheduled();
   ready = true;
   markMissingOAuthSecrets();
   actions.resume();
@@ -2580,6 +2581,7 @@ function publicScheduled(row) {
     subject: payload.subject || "",
     sendAt: new Date(row.send_at).toISOString(),
     status: scheduledDelivering.has(row.id) ? "sending" : (row.status || "pending"),
+    messageId: row.message_id || undefined,
   };
   const cc = displayAddress(payload.cc);
   const bcc = displayAddress(payload.bcc);
@@ -2645,7 +2647,8 @@ function scheduledSnapshot(row) {
     accountId: row.account_id,
     payloadJson: row.payload_json,
     sendAt: row.send_at,
-    status: row.status === "failed" ? "failed" : "pending",
+    status: ["failed", "unknown", "sent"].includes(row.status) ? row.status : row.status === "sending" ? "unknown" : "pending",
+    messageId: row.message_id || null,
     error: row.error || "",
     createdAt: row.created_at,
   };
@@ -2677,7 +2680,7 @@ function restoreScheduled(params) {
   if (!hasRecipient(payload.to, payload.cc, payload.bcc)) return fail("invalid", "That scheduled send cannot be restored.");
   const when = Number(snap.sendAt);
   if (!Number.isFinite(when)) return fail("invalid", "That scheduled send cannot be restored.");
-  const status = snap.status === "failed" ? "failed" : "pending";
+  const status = ["failed", "unknown", "sent"].includes(snap.status) ? snap.status : snap.status === "sending" ? "unknown" : "pending";
   const saved = db.insertScheduled({
     id,
     accountId: account.id,
@@ -2685,7 +2688,8 @@ function restoreScheduled(params) {
     sendAt: when,
     createdAt: Number(snap.createdAt) || Date.now(),
     status,
-    error: status === "failed" ? String(snap.error || "Send failed.") : null,
+    error: status !== "pending" ? String(snap.error || "Check Sent before recovering this delivery.") : null,
+    messageId: typeof snap.messageId === "string" ? snap.messageId : null,
   });
   return ok(publicScheduled(saved));
 }
@@ -2695,6 +2699,9 @@ function editScheduled(params) {
   if (scheduledDelivering.has(id)) return fail("sending", "Delivery has started. It can no longer be canceled or edited. Check Sent before retrying.");
   const row = db.scheduledById(id);
   if (!row) return fail("not-found", "That scheduled send is gone. Refresh the queue and check Sent.");
+  if (row.status === "sending") return fail("sending", "Delivery has started. Check Sent before retrying.");
+  const needsReview = row.status === "unknown" || row.status === "sent";
+  if (needsReview && params.acknowledgeDelivery !== true) return fail("delivery_review", "Check Sent first. Recovering this copy and sending it may duplicate an earlier delivery.");
   const account = db.accountById(row.account_id);
   const drafts = account && db.folderByWellKnown(account.id, "drafts");
   if (!drafts) return fail("not-found", "This mailbox has no Drafts folder. The queued message is unchanged.");
@@ -2722,7 +2729,8 @@ function editScheduled(params) {
     snippet: plainFromHtml(html).slice(0, 180), bodyComplete: true,
   });
   emitAccounts();
-  return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString() });
+  return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString(),
+    warning: needsReview ? "This message may already have been delivered. Check Sent before explicitly sending or scheduling this recovered draft." : "" });
 }
 
 const PRE_ACCEPT_CODES = new Set(["EENVELOPE", "ENOTFOUND", "ECONNREFUSED", "EAI_AGAIN"]);
@@ -2813,6 +2821,7 @@ async function submitSmtp(input) {
   const options = input && input.options;
   const messageId = input && input.messageId;
   if (!account || !options || !messageId) return { kind: "rejected", refusal: "Missing message id." };
+  let accepted = false;
   try {
     const sentResult = await exclusive(account.id, async () => {
       let info;
@@ -2822,6 +2831,9 @@ async function submitSmtp(input) {
         password = await secretFor(account);
         info = await remote.sendSmtp(account, password, { ...options, messageId });
       }
+      accepted = true;
+      // Persist acceptance before any best-effort Sent filing can await I/O.
+      if (input.onAccepted) input.onAccepted({ messageId: (info && info.messageId) || messageId });
       try {
         return await fileSentMessage(account, password, options, info, messageId, input);
       } catch {
@@ -2830,13 +2842,13 @@ async function submitSmtp(input) {
     });
     return { kind: "accepted", messageId: sentResult.messageId, emailId: sentResult.emailId };
   } catch (error) {
-    const refusal = provedRefusal(error);
+    const refusal = accepted ? "" : provedRefusal(error);
     if (refusal) return { kind: "rejected", refusal };
     return { kind: "unknown", detail: remote.explain(error, "") };
   }
 }
 
-async function deliver(params) {
+async function deliver(params, lifecycle) {
   let account = db.accountById(params && params.accountId);
   if (!account) return fail("not-found", "Choose an account before sending.");
   try { params = { ...params, fromAddress: await composeIdentity.sendingFrom(account, params.fromAddress) }; }
@@ -2853,7 +2865,8 @@ async function deliver(params) {
   const submitted = await submitSmtp({
     account,
     options,
-    messageId: rfcMessageId(account.email),
+    messageId: lifecycle?.messageId || rfcMessageId(account.email),
+    onAccepted: lifecycle?.onAccepted,
     threadId: (params && params.threadId) || null,
     inReplyTo: (params && params.inReplyTo) || null,
     files,
@@ -2863,7 +2876,9 @@ async function deliver(params) {
     const message = submitted.kind === "rejected" && submitted.refusal
       ? submitted.refusal
       : (submitted.detail || "The mail server did not confirm this message.");
-    return fail("send", message);
+    const result = fail("send", message);
+    result.error.delivery = submitted.kind === "rejected" ? "not_sent" : "unknown";
+    return result;
   }
   try {
     const draftId = params && (params.draftId || params.emailId);
@@ -2899,8 +2914,13 @@ async function pumpScheduledAdmitted() {
     const due = db.dueScheduled(Date.now());
     for (const candidate of due) {
       // Another queued item may have been canceled/edited while delivery awaited I/O.
-      const row = db.scheduledById(candidate.id);
-      if (!row || row.status !== "pending") continue;
+      const current = db.scheduledById(candidate.id);
+      if (!current || current.status !== "pending") continue;
+      // The claim is durable before validation/submission, not just an in-memory
+      // spinner. A crash from here onward requires review, never automatic replay.
+      const account = db.accountById(current.account_id);
+      const row = db.claimScheduled(current.id, rfcMessageId(account?.email || "morrow.local"));
+      if (!row) continue;
       scheduledDelivering.add(row.id);
       let payload = {};
       try { payload = JSON.parse(row.payload_json) || {}; } catch { payload = {}; }
@@ -2915,13 +2935,23 @@ async function pumpScheduledAdmitted() {
           accountId: row.account_id,
           subject: presented.subject,
           body: presented.htmlBody || "",
-        });
+        }, { messageId: row.message_id, onAccepted(receipt) {
+          if (!db.acceptScheduled(row.id, receipt.messageId)) throw new Error("The delivery receipt could not be saved. Check Sent before retrying.");
+        } });
       } catch (error) {
         result = fail("send", error instanceof Error ? error.message : String(error));
+        result.error.delivery = "unknown";
       }
-      scheduledDelivering.delete(row.id);
-      if (result && result.success) db.deleteScheduled(row.id);
-      else db.markScheduledFailed(row.id, (result && result.error && result.error.message) || "Send failed.");
+      try {
+        if (db.scheduledById(row.id)?.status === "sent") {
+          if (result && result.success) db.deleteScheduled(row.id);
+        } else {
+          db.failScheduled(row.id, result?.error?.message, result?.error?.delivery === "unknown");
+        }
+      } finally {
+        scheduledDelivering.delete(row.id);
+        emitAccounts({ scheduledUpdated: true });
+      }
     }
   } finally {
     pumping = false;

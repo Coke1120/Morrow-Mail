@@ -233,8 +233,16 @@ function migrate() {
     send_at INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     error TEXT,
+    message_id TEXT,
     created_at INTEGER NOT NULL
   )`);
+  if (!all("PRAGMA table_info(scheduled_sends)").some(row => row.name === "message_id")) {
+    run("ALTER TABLE scheduled_sends ADD COLUMN message_id TEXT");
+    // Legacy pending/failed rows have no durable proof that submission never
+    // started. Preserve their payload but require review after this upgrade.
+    run("UPDATE scheduled_sends SET status = 'unknown', error = ? WHERE status IN ('pending', 'failed')",
+      ["This saved delivery needs review after the safety upgrade. Check Sent before recovering a copy; it will not send automatically."]);
+  }
   run(`CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_sends(status, send_at)`);
   run(`CREATE TABLE IF NOT EXISTS inbox_rules (
     account_id TEXT NOT NULL,
@@ -815,8 +823,8 @@ function applyFolderSync(accountId, folderPath, report) {
       [accountId, folderPath]
     );
     if (previous && previous.uid_validity && report.validity && previous.uid_validity !== report.validity) {
-      forgetIds(all("SELECT id FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]));
-      run("DELETE FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]);
+      forgetIds(all("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0", [accountId, folderPath]));
+      run("DELETE FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0", [accountId, folderPath]);
       run(
         "UPDATE folders SET uid_cursor = 0, window_done = 0, sync_horizon_days = NULL WHERE account_id = ? AND path = ?",
         [accountId, folderPath]
@@ -1532,13 +1540,13 @@ function deleteSignature(id) {
 }
 
 function insertScheduled(row) {
-  const status = row.status === "failed" ? "failed" : "pending";
-  const error = status === "failed" ? String(row.error || "Send failed.") : null;
+  const status = ["failed", "unknown", "sent"].includes(row.status) ? row.status : "pending";
+  const error = status !== "pending" ? String(row.error || "Check this delivery before retrying.") : null;
   transaction(() => {
     run(
-      `INSERT INTO scheduled_sends (id, account_id, payload_json, send_at, status, error, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [row.id, row.accountId, row.payloadJson, row.sendAt, status, error, row.createdAt]
+      `INSERT INTO scheduled_sends (id, account_id, payload_json, send_at, status, error, message_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [row.id, row.accountId, row.payloadJson, row.sendAt, status, error, row.messageId || null, row.createdAt]
     );
   });
   return get("SELECT * FROM scheduled_sends WHERE id = ?", [row.id]);
@@ -1549,14 +1557,14 @@ function listScheduled(accountId) {
   if (accountId) {
     return all(
       `SELECT * FROM scheduled_sends
-       WHERE account_id = ? AND status IN ('pending', 'failed')
+       WHERE account_id = ? AND status IN ('pending', 'sending', 'failed', 'unknown', 'sent')
        ORDER BY send_at ASC, created_at ASC`,
       [accountId]
     );
   }
   return all(
     `SELECT * FROM scheduled_sends
-     WHERE status IN ('pending', 'failed')
+     WHERE status IN ('pending', 'sending', 'failed', 'unknown', 'sent')
      ORDER BY send_at ASC, created_at ASC`
   );
 }
@@ -1575,10 +1583,39 @@ function scheduledById(id) {
   return get("SELECT * FROM scheduled_sends WHERE id = ?", [id]);
 }
 
+function claimScheduled(id, messageId) {
+  return transaction(() => {
+    run("UPDATE scheduled_sends SET status = 'sending', message_id = COALESCE(message_id, ?), error = NULL WHERE id = ? AND status = 'pending'", [messageId, id]);
+    return db.getRowsModified() ? scheduledById(id) : null;
+  });
+}
+
+function acceptScheduled(id, messageId) {
+  return transaction(() => {
+    run("UPDATE scheduled_sends SET status = 'sent', message_id = ?, error = ? WHERE id = ? AND status = 'sending'",
+      [messageId, "SMTP accepted this message. If filing was interrupted, check Sent before recovering a copy. It will not send again automatically.", id]);
+    if (db.getRowsModified()) return true;
+    return scheduledById(id)?.status === "sent";
+  });
+}
+
+function failScheduled(id, message, uncertain) {
+  transaction(() => run("UPDATE scheduled_sends SET status = ?, error = ? WHERE id = ? AND status = 'sending'",
+    [uncertain ? "unknown" : "failed", uncertain
+      ? `Delivery could not be confirmed. Check Sent before recovering a copy; it will not resend automatically. ${message || ""}`
+      : `Not sent. ${message || "The send was refused."}`, id]));
+}
+
+function recoverScheduled() {
+  transaction(() => run("UPDATE scheduled_sends SET status = 'unknown', error = ? WHERE status = 'sending'",
+    ["Delivery was interrupted and may have reached the recipient. Check Sent before recovering a copy; it will not resend automatically."]));
+}
+
 function scheduledToDraft(id, record) {
   return transaction(() => {
     const queued = scheduledById(id);
     if (!queued || queued.account_id !== record.accountId) throw new Error("That scheduled send is gone.");
+    if (queued.status === "sending") throw new Error("Delivery has started. Check Sent before retrying.");
     insertMessageRecord(record);
     run("DELETE FROM scheduled_sends WHERE id = ?", [id]);
     return record.id;
@@ -1587,18 +1624,20 @@ function scheduledToDraft(id, record) {
 
 function deleteScheduled(id) {
   if (!db || !id || !get("SELECT id FROM scheduled_sends WHERE id = ?", [id])) return false;
-  transaction(() => run("DELETE FROM scheduled_sends WHERE id = ?", [id]));
-  return true;
+  return transaction(() => {
+    run("DELETE FROM scheduled_sends WHERE id = ? AND status <> 'sending'", [id]);
+    return db.getRowsModified() > 0;
+  });
 }
 
 function markScheduledFailed(id, message) {
   transaction(() => {
-    run("UPDATE scheduled_sends SET status = 'failed', error = ? WHERE id = ?", [String(message || "Send failed."), id]);
+    run("UPDATE scheduled_sends SET status = 'failed', error = ? WHERE id = ? AND status IN ('pending', 'failed')", [String(message || "Send failed."), id]);
   });
 }
 
 function setScheduledSendAt(id, sendAt) {
-  transaction(() => run("UPDATE scheduled_sends SET send_at = ?, status = 'pending', error = NULL WHERE id = ?", [sendAt, id]));
+  transaction(() => run("UPDATE scheduled_sends SET send_at = ?, status = 'pending', error = NULL WHERE id = ? AND status IN ('pending', 'failed')", [sendAt, id]));
 }
 
 function planImapPathMove(folders, sourcePath, destinationParent, delimiter) {
@@ -1793,6 +1832,10 @@ module.exports = {
   saveSignature,
   deleteSignature,
   scheduledById,
+  claimScheduled,
+  acceptScheduled,
+  failScheduled,
+  recoverScheduled,
   scheduledToDraft,
   insertScheduled,
   listScheduled,
