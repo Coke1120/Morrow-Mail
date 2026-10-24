@@ -56,7 +56,13 @@ contextBridge.exposeInMainWorld('morrow',{
    draft={...draft,accountId:payload.accountId,to:payload.to,subject:payload.subject,textBody:'Recovered draft'};
    return ok({draftId:'saved-draft'});
  }
- if(channel==='mail:send')return {success:false,error:{message:'Fixture delivery failed'}};
+ if(channel==='mail:send'){
+   if(payload.subject==='Partial fixture'){
+     queue.push({id:'partial-fixture',accountId:payload.accountId,subject:payload.subject,status:'partial',error:'Partly sent. SMTP accepted ok@example.test; rejected bad@example.test (550).'});
+     return ok({partial:true,recoverySaved:true,recoveryId:'partial-fixture',warning:'Partly sent. SMTP accepted ok@example.test; rejected bad@example.test (550). Recover only rejected recipients from Scheduled.'});
+   }
+   return {success:false,error:{message:'Fixture delivery failed'}};
+ }
  if(channel==='mail:scheduleSend'){queue.push({id:'scheduled-fixture',...payload,status:'pending'});return ok({id:'scheduled-fixture'});}
  if(channel==='mail:archiveBatch')return ok({outcomes:[{id:'one',status:'completed',opId:'fixture-op'},{id:'two',status:'unknown',error:'Fixture second remote operation failed'}],opIds:['fixture-op']});
  if(channel==='mail:undoRemoval')return ok({outcomes:[{id:'one',status:'unknown',error:'Fixture reverse move failed'}],opIds:[]});
@@ -438,6 +444,17 @@ app.whenReady().then(async()=>{
  await waitFor("document.getElementById('sender-history-body').textContent.includes('No earlier mail from empty@example.test.')");
  await run("openSenderHistory('fail@example.test')");
  await waitFor("document.getElementById('sender-history-body').textContent.includes('Older') && document.getElementById('sender-history-chips').textContent.includes('Mailbox refused')");
+ await run(`(async()=>{for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();await openCompose({accountId:'a',to:'ok@example.test, bad@example.test',subject:'Partial fixture',body:'Preserved partial message'});})()`);
+ await waitFor(`$('compose').open && !state.composeInitializing`);
+ await run(`deliverMail(composePayload(composeAccount()))`);
+ assert.equal(await run(`$('compose').open`),true,'a partial delivery stays visible as a receipt');
+ assert.equal(await run(`$('compose-send').disabled`),true);
+ assert.equal(await run(`$('compose-to').readOnly`),true);
+ assert.equal(await run(`$('compose-to').disabled`),false,'receipt addresses remain selectable for copying');
+ assert.match(await run(`$('compose-status').textContent`),/Partly sent.*bad@example.test.*550/);
+ const partialCalls=await run(`uxFixture.counts()['mail:send']`);
+ await run(`sendMail()`);assert.equal(await run(`uxFixture.counts()['mail:send']`),partialCalls,'the original accepted recipients cannot be submitted again from this receipt');
+ await shot('partial-delivery-receipt');
  const counts=await run('uxFixture.counts()');
  const result={result:'UX_FIXTURE_OK',network:'blocked',mailSendCalls:counts['mail:send'],explicitScheduleCalls:counts['mail:scheduleSend'],liveProviderCalls:0};
  if(out)fs.writeFileSync(path.join(out,'checks.json'),JSON.stringify(result,null,2)+'\n');
