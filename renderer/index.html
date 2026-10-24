@@ -253,7 +253,8 @@
         <label for="calendar-location">Location <span class="optional">(optional)</span></label>
         <input id="calendar-location" type="text" maxlength="200" />
         <label for="calendar-description">Description <span class="optional">(optional)</span></label>
-        <textarea id="calendar-description" maxlength="8000" rows="4"></textarea>
+        <textarea id="calendar-description" maxlength="8000" rows="4" aria-describedby="calendar-description-note"></textarea>
+        <p id="calendar-description-note" class="hint" hidden>This description is longer than this editor can display. Edit it in Google Calendar; other fields can still be saved here.</p>
         <label class="calendar-all-day-label" for="calendar-all-day"><input id="calendar-all-day" type="checkbox" /> All day</label>
         <label for="calendar-start">Start</label>
         <input id="calendar-start" type="datetime-local" />

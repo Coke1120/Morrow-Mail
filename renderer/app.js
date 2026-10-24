@@ -18311,13 +18311,16 @@ function openCalendarEditor(event, dayStamp) {
   const editing = !!(event && event.id);
   calendarEditingId = editing ? String(event.id) : "";
   calendarEditingIdentity = editing ? { accountId: account?.id, calendarId: event.calendarId || state.calendarId,
-    id: calendarEditingId, description: String(event.description || ""), location: String(event.location || "") } : null;
+    id: calendarEditingId, description: String(event.description || ""), descriptionTruncated: !!event.descriptionTruncated, location: String(event.location || "") } : null;
   if (dialogTitle) dialogTitle.textContent = editing ? "Edit event" : "Add event";
   if (save) save.textContent = editing ? "Save" : "Add event";
   if (remove) remove.hidden = !editing;
   if (title) title.value = editing ? (event.title || "") : "";
   if (location) location.value = editing ? (event.location || "") : "";
   if (description) description.value = editing ? (event.description || "") : "";
+  if (description) description.readOnly = !!(editing && event.descriptionTruncated);
+  const descriptionNote = $("calendar-description-note");
+  if (descriptionNote) descriptionNote.hidden = !(editing && event.descriptionTruncated);
   if (allDay) allDay.checked = editing ? !!event.allDay : false;
   if (editing && event.allDay) {
     start.value = String(event.start || "").slice(0, 10);
@@ -18644,7 +18647,10 @@ async function submitCalendarEvent(event) {
   });
   if (editing) {
     if (draft.description === identity.description.trim()) delete draft.description;
-    else draft.descriptionBase = identity.description;
+    else {
+      if (identity.descriptionTruncated) throw new Error("This description is incomplete. Leave it unchanged or edit it in Google Calendar.");
+      draft.descriptionBase = identity.description;
+    }
     if (draft.location === identity.location.trim()) delete draft.location;
   }
   const status = $("calendar-form-status");

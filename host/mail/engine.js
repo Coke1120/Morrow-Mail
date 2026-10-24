@@ -73,6 +73,29 @@ let ready = false;
 // prefetch still wants the connection.
 const lanes = new Map();
 const flagCursors = new Map();
+const accountEpochs = new Map();
+const ACCOUNT_EPOCH = Symbol("accountEpoch");
+
+function removedAccountError() {
+  const error = new Error("This mailbox connection changed or was removed. Refresh before continuing.");
+  error.code = "account_removed";
+  error.operationIssued = false;
+  error.syncReported = true;
+  return error;
+}
+
+function assertAccountCurrent(account) {
+  const current = account && db.accountById(account.id);
+  if (!current || current.created_at !== account.created_at
+      || (account[ACCOUNT_EPOCH] != null && account[ACCOUNT_EPOCH] !== (accountEpochs.get(account.id) || 0))) throw removedAccountError();
+}
+
+function bindAccount(account) {
+  if (!account) throw removedAccountError();
+  const bound = account[ACCOUNT_EPOCH] == null ? { ...account, [ACCOUNT_EPOCH]: accountEpochs.get(account.id) || 0 } : account;
+  assertAccountCurrent(bound);
+  return bound;
+}
 
 function ok(data) {
   return { success: true, data };
@@ -146,7 +169,11 @@ function exclusive(accountId, fn, options) {
     settle = resolve;
     fail = reject;
   });
-  const job = { fn, settle, fail };
+  const epoch = accountEpochs.get(accountId) || 0;
+  const job = { fn() {
+    if (epoch !== (accountEpochs.get(accountId) || 0)) throw removedAccountError();
+    return fn();
+  }, settle, fail };
   if (options && options.background) lane.background.push(job);
   else lane.user.push(job);
   drainLane(accountId);
@@ -737,8 +764,10 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
   const deadline = limits && Number.isFinite(limits.deadline) ? limits.deadline : started + tickMs();
   let pages = 0;
   while (pages < pageCap) {
+    assertAccountCurrent(account);
     if (pages > 0 && Date.now() >= deadline) break;
     const found = await remote.searchUids(client, folderPath, criteria);
+    assertAccountCurrent(account);
     const folder = db.folderByPath(account.id, folderPath);
     if (folder && folder.uid_validity && found.validity && folder.uid_validity !== found.validity) {
       resetWindow(account.id, folderPath, found);
@@ -763,8 +792,10 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
       return { paused: false, bootstrapped: true };
     }
     if (pages > 0) await sleep(pageDelayMs());
+    assertAccountCurrent(account);
     const page = missing.slice(0, size);
     const fetched = await remote.fetchMessages(client, folderPath, page);
+    assertAccountCurrent(account);
     if (fetched.validity && found.validity && fetched.validity !== found.validity) {
       resetWindow(account.id, folderPath, fetched);
       noteStorm(account.id);
@@ -799,8 +830,10 @@ async function warmFolder(client, account, folder, started, days, limits) {
   const deadline = limits && Number.isFinite(limits.deadline) ? limits.deadline : started + tickMs();
   let backlog = false;
   for (let index = 0; index < pageCap; index += 1) {
+    assertAccountCurrent(account);
     if (index > 0 && Date.now() >= deadline) break;
     const found = await remote.searchUids(client, folder.path, { uid: `${next + 1}:*`, ...criteria });
+    assertAccountCurrent(account);
     if (folder.uid_validity && found.validity && folder.uid_validity !== found.validity) {
       resetWindow(account.id, folder.path, found);
       noteStorm(account.id);
@@ -809,8 +842,10 @@ async function warmFolder(client, account, folder, started, days, limits) {
     const fresh = found.uids.filter((uid) => uid > next).sort((a, b) => a - b);
     if (!fresh.length) break;
     if (index > 0) await sleep(pageDelayMs());
+    assertAccountCurrent(account);
     const page = fresh.slice(0, REFRESH_PAGES[index]);
     const fetched = await remote.fetchMessages(client, folder.path, page);
+    assertAccountCurrent(account);
     next = Math.max(next, ...page);
     db.applyFolderSync(account.id, folder.path, {
       messages: fetched.messages,
@@ -852,6 +887,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
   let flagUids = db.flagUidsFor(account.id, folder.path, folder.uid_validity, beforeUid);
   if (!flagUids.length && beforeUid) flagUids = db.flagUidsFor(account.id, folder.path, folder.uid_validity);
   const live = await remote.searchUids(client, folder.path, criteria, { uids: flagUids, validity: folder.uid_validity });
+  assertAccountCurrent(account);
   if (folder.uid_validity && live.validity && folder.uid_validity !== live.validity) {
     resetWindow(account.id, folder.path, live);
     noteStorm(account.id);
@@ -905,6 +941,8 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
     if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
   } catch (error) {
+    assertAccountCurrent(account);
+    if (error?.code === "account_removed") throw error;
     const plan = reportSyncFailure(account, error, { folderId: folderPath, emitAuth: true });
     if (plan.kind === "rate") return { paused: true, bootstrapped: false };
     emitFolderSync(account.id, folderPath, false);
@@ -919,13 +957,19 @@ function finishSync(jobs, paused, allDone, accountId) {
 }
 
 async function syncFolderPath(account, folderPath) {
-  return updateGate.run(() => syncFolderPathAdmitted(account, folderPath));
+  account = bindAccount(account);
+  return updateGate.run(() => syncFolderPathAdmitted(account, folderPath)).catch(error => {
+    assertAccountCurrent(account);
+    throw error;
+  });
 }
 
 async function syncFolderPathAdmitted(account, folderPath) {
   return exclusive(account.id, async () => {
+    assertAccountCurrent(account);
     const password = await secretFor(account);
     const result = await remote.withClient(account, password, (client) => syncFolderPolicy(client, account, folderPath));
+    assertAccountCurrent(account);
     finishSync([folderPath], result && result.paused, result && result.bootstrapped, account.id);
     return result;
   });
@@ -951,10 +995,15 @@ function jobFolders(folders, options) {
 }
 
 async function syncAccount(account, options) {
-  return updateGate.run(() => syncAccountAdmitted(account, options));
+  account = bindAccount(account);
+  return updateGate.run(() => syncAccountAdmitted(account, options)).catch(error => {
+    assertAccountCurrent(account);
+    throw error;
+  });
 }
 
 async function syncAccountAdmitted(account, options) {
+  assertAccountCurrent(account);
   if (!gateOpen(account.id)) {
     emitSync("paused", { accountId: account.id, message: "Paused for rate limit" });
     return;
@@ -973,6 +1022,7 @@ async function syncAccountAdmitted(account, options) {
   while (true) {
     let yielded = false;
     await exclusive(account.id, async () => {
+      assertAccountCurrent(account);
       if (!gateOpen(account.id)) {
         emitSync("paused", { accountId: account.id, message: "Paused for rate limit" });
         paused = true;
@@ -990,6 +1040,7 @@ async function syncAccountAdmitted(account, options) {
         if (!jobs) {
           emitSync("syncing", { accountId: account.id, phase: "listing" });
           const listed = await remote.listFolderRecords(client);
+          assertAccountCurrent(account);
           db.replaceFolders(account.id, listed.folders, listed.delimiter);
           const folders = db.foldersFor(account.id);
           if (background) {
@@ -1025,6 +1076,7 @@ async function syncAccountAdmitted(account, options) {
         }
       });
       const passDone = !!(jobs && jobs.length && visited.size === jobs.length && !incomplete);
+      assertAccountCurrent(account);
       finishSync(jobs || [], paused, passDone, account.id);
       if (!paused) {
         db.clearAuthError(account.id);
@@ -1557,15 +1609,13 @@ async function connectAccount(params) {
 async function removeAccount(params) {
   const id = params && (params.accountId || params.id);
   if (!id || !db.accountById(id)) return undefined;
+  accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
   secrets.deletePassword(id);
   secrets.deletePassword(`${id}:organize`);
   secrets.deletePassword(`${id}:calendar`);
   secrets.deletePassword(`${id}:rules`);
   secrets.deletePassword(`${id}:vacation`);
   secrets.deletePassword(`${id}:bundle`);
-  if (idleController) {
-    try { await idleController.forget(id); } catch { /* the connection is already gone */ }
-  }
   idleSafetyAt.delete(id);
   idleReported.delete(id);
   backgroundCursor.delete(id);
@@ -1576,6 +1626,9 @@ async function removeAccount(params) {
   syncRetryScheduler.clear(id);
   db.removeAccount(id);
   emitAccounts();
+  if (idleController) {
+    try { await idleController.forget(id); } catch { /* the connection is already gone */ }
+  }
   return ok(true);
 }
 
@@ -1992,6 +2045,7 @@ function pushRows(into, rows, limit) {
 }
 
 function storeImapHits(account, folderPath, found) {
+  assertAccountCurrent(account);
   const messages = found && Array.isArray(found.messages) ? found.messages : [];
   if (!messages.length) return [];
   db.applyFolderSync(account.id, folderPath, {
@@ -2008,6 +2062,7 @@ function storeImapHits(account, folderPath, found) {
 }
 
 function rememberApiHit(account, hit) {
+  assertAccountCurrent(account);
   const rfc = hit && hit.rfcMessageId ? String(hit.rfcMessageId).trim() : "";
   if (rfc) {
     const existing = db.messageByRfc(account.id, rfc);
@@ -2078,6 +2133,7 @@ async function searchImap(account, text, limit) {
 }
 
 async function searchAccount(account, text, limit) {
+  account = bindAccount(account);
   if (account.profile === "outlook") {
     const token = await sidecar.organizeToken(account);
     if (token && token.provider === "microsoft") {
@@ -2336,6 +2392,7 @@ async function searchSenderImap(account, address, cursor) {
 }
 
 async function searchSenderAccount(account, address, cursor) {
+  account = bindAccount(account);
   if (account.auth_error) {
     return { status: "auth", message: "Sign in again", exhausted: false, hits: [], cursor: cursor || null };
   }
@@ -2427,58 +2484,69 @@ async function bytesFor(params) {
   const row = db.messageById(params && (params.messageId || params.emailId));
   if (!row) return null;
   const attachments = db.jsonList(row.attachments_json);
-  const wanted = attachments.find((item) => item.id === params.attachmentId) || attachments[0];
+  const explicit = params && params.attachmentId != null;
+  const matches = explicit ? attachments.filter(item => String(item.id) === String(params.attachmentId)) : [];
+  const wanted = explicit ? (matches.length === 1 ? matches[0] : null) : attachments[0];
   if (!wanted) return null;
-  const storage = typeof wanted.storageUrl === "string" ? wanted.storageUrl : "";
-  if (storage.startsWith("local:")) {
-    const blob = db.readBlob(storage.slice("local:".length));
-    if (blob && blob.data) {
-      return { filename: params.filename || wanted.filename || blob.filename || "attachment", data: Buffer.from(blob.data) };
-    }
-  }
-  if (!row.uid) return null;
-  const account = db.accountById(row.account_id);
-  const data = await exclusive(account.id, async () => {
-    const current = db.messageById(row.id);
-    if (!current) throw new Error("That message is no longer available.");
-    actions.assertIdentityReady(row.id);
-    const password = await secretFor(account);
-    return remote.withClient(account, password, (client) => remote.readPart(client, current.folder_path, current.uid, wanted.id, current.uid_validity));
-  });
-  return { filename: params.filename || wanted.filename || "attachment", data };
+  const files = await attachmentParts(row, [wanted]);
+  return { filename: params.filename || files[0].name, data: files[0].data };
 }
 
 function selectableAttachments(attachments, ids) {
   const files = (Array.isArray(attachments) ? attachments : []).filter((item) => item && item.id);
-  if (!Array.isArray(ids) || !ids.length) return files;
-  const wanted = new Set(ids.map((id) => String(id)));
-  return files.filter((item) => wanted.has(String(item.id)));
+  if (ids == null) return files;
+  if (!Array.isArray(ids) || !ids.length) return [];
+  const wanted = [...new Set(ids.map(id => String(id)))];
+  const picked = wanted.map(id => { const matches = files.filter(item => String(item.id) === id); return matches.length === 1 ? matches[0] : null; });
+  if (picked.some(item => !item)) throw new Error("An attachment changed or is no longer available. Reopen the message before saving its files.");
+  return picked;
+}
+
+async function attachmentParts(row, files) {
+  const account = bindAccount(db.accountById(row.account_id));
+  const local = new Map();
+  const names = new Map();
+  for (const item of files) {
+    if (!String(item.storageUrl || "").startsWith("local:")) continue;
+    const blob = db.readBlob(item.storageUrl.slice(6));
+    if (!blob?.data) throw new Error("That local attachment is no longer available. Attach the file again.");
+    local.set(item, Buffer.from(blob.data));
+    names.set(item, blob.filename);
+  }
+  const pack = item => ({ name: item.filename || names.get(item) || "attachment", data: local.get(item) });
+  if (local.size === files.length) return files.map(pack);
+  if (!(row.uid > 0)) throw new Error("That remote attachment is not available on this computer.");
+  const assertSnapshot = () => {
+    assertAccountCurrent(account);
+    const current = db.messageById(row.id);
+    if (!current || ["account_id", "folder_path", "uid", "uid_validity", "rfc_message_id", "attachments_json"].some(key => current[key] !== row[key])) {
+      throw new Error("The message or its attachments changed. Reopen it before saving its files.");
+    }
+    actions.assertIdentityReady(row.id);
+  };
+  return exclusive(account.id, async () => {
+    assertSnapshot();
+    const password = await secretFor(account);
+    assertSnapshot();
+    return remote.withClient(account, password, async client => {
+      const parts = [];
+      for (const item of files) {
+        assertSnapshot();
+        const data = local.has(item) ? local.get(item) : await remote.readPart(client, row.folder_path, row.uid, item.id, row.uid_validity);
+        assertSnapshot();
+        parts.push({ name: item.filename || names.get(item) || "attachment", data: Buffer.from(data || []) });
+      }
+      return parts;
+    });
+  });
 }
 
 async function attachmentZip(params) {
   const row = db.messageById(params && (params.messageId || params.emailId));
-  if (!row || !row.uid) return null;
-  const account = db.accountById(row.account_id);
-  if (!account) return null;
+  if (!row) return null;
   const files = selectableAttachments(db.jsonList(row.attachments_json), params && params.attachmentIds);
   if (!files.length) return null;
-  const parts = await exclusive(account.id, async () => {
-    const current = db.messageById(row.id);
-    if (!current) throw new Error("That message is no longer available.");
-    actions.assertIdentityReady(row.id);
-    const password = await secretFor(account);
-    return remote.withClient(account, password, async (client) => {
-      const out = [];
-      for (const item of files) {
-        const data = await remote.readPart(client, current.folder_path, current.uid, item.id, current.uid_validity);
-        out.push({
-          name: item.filename || "attachment",
-          data: Buffer.isBuffer(data) ? data : Buffer.from(data || []),
-        });
-      }
-      return out;
-    });
-  });
+  const parts = await attachmentParts(row, files);
   return {
     filename: zipBytes.zipDownloadName(textEncoding.repairMojibake(row.subject || "")),
     data: zipBytes.zipFiles(parts),
