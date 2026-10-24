@@ -9704,6 +9704,9 @@ function paintConnectPending() {
 
 async function connectImap() {
   if (state.connectPending || state.oauthPending) return;
+  // Dialog close clears selection while discovery may still be pending. Keep
+  // the request's original identity so it cannot turn into a fresh account add.
+  const expectedAccountId = state.reconnectAccountId || undefined;
   state.connectPending = true;
   paintConnectPending();
   setConnectStatus("Connecting…");
@@ -9720,7 +9723,7 @@ async function connectImap() {
       if (gen !== discoverGen) throw new Error("The account details changed. Review the servers and choose Connect again.");
       applyDiscovery(found);
     }
-    const view = await call("mail:connectImapSmtp", { ...connectPayload(), expectedAccountId: state.reconnectAccountId || undefined });
+    const view = await call("mail:connectImapSmtp", { ...connectPayload(), expectedAccountId });
     $("password").value = "";
     closeDialog("connect");
     showStatus(view && view.email ? `Connected ${view.email}. Downloading recent Inbox mail…` : "Connected.");
@@ -14588,7 +14591,7 @@ function openConnectFor(account) {
   if (state.oauthPending || state.connectPending) return;
   state.reconnectAccountId = account?.id || null;
   $("connect-title").textContent = account ? "Reconnect " + account.email : "Connect account";
-  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
+  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
   $("email").value = account?.email || "";
   $("email").readOnly = !!account;
   $("username").value = account?.imapUsername || "";

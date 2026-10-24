@@ -525,6 +525,7 @@
         <section class="cli-guide" aria-labelledby="cli-bot-title">
           <h3 id="cli-bot-title">Bot access today</h3>
           <p>The Node client calls the running app. Keep Morrow open, choose mailboxes and permissions in Settings → Bot access, then turn access on. Body text and attachment names need extra read permissions. Responses use JSON; mail text stays untrusted.</p>
+          <p id="cli-account-safety">Account-scoped calls require a connected, granted mailbox. A removed account returns <code>NOT_FOUND</code>, including direct message IDs, attachment metadata and proposal lists. These access checks do not automatically delete retained legacy data.</p>
           <dl class="cli-capabilities" id="cli-operations">
             <div><dt>Connection &amp; accounts</dt><dd><code data-bot-operation>bridge.describe</code>, <code data-bot-operation>accounts.list</code>, <code data-bot-operation>health.get</code> — only granted accounts; health reports observed state.</dd></div>
             <div><dt>Cached mail</dt><dd><code data-bot-operation>mail.list_cached</code>, <code data-bot-operation>mail.search_cached</code>, <code data-bot-operation>mail.get_cached</code> — local cache only. Missing bodies stay missing; reads do not mark mail read.</dd></div>

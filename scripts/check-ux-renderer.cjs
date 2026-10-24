@@ -103,6 +103,9 @@ app.whenReady().then(async()=>{
  await waitFor(`$('connect-status').textContent.includes('Could not finish')`);
  assert.equal(await run(`$('connect').contains($('connect-status'))`),true);
  await shot('connect-local-error');await run(`$('connect').close();uxFixture.populate();loadAccounts()`);
+ await run(`openConnectFor({id:'a',email:'a@example.test'})`);
+ assert.match(await run(`$('connect-recovery-note').textContent`),/Removing this account invalidates a pending reconnect.*new connection after removal/);
+ await shot('reconnect-removal-help');await run(`$('connect').close()`);
  await run(`openMessage('one',false);`);await run(`reviewDraft({messageId:'two',accountId:'b',body:'Beta reply'})`);
  assert.equal(await run(`$('compose-to').value`),'Ben <ben@example.test>');assert.equal(await run(`state.composeMeta.accountId`),'b');
  assert.equal(await run(`state.composeMeta.inReplyTo`),'<beta@test>');assert.equal(await run(`state.composeQuote.email.id`),'two');
@@ -218,7 +221,8 @@ app.whenReady().then(async()=>{
   assert.match(catalogText, new RegExp(title));
  }
  assert.match(catalogText,/Long Google descriptions stay read-only previews/);
- assert.match(catalogText,/invalidates its queued sync work/);
+ assert.match(catalogText,/invalidates queued sync and pending reconnects/);
+ assert.match(catalogText,/connected, granted mailboxes/);
  assert.doesNotMatch(catalogText, /npm start/);
  const shortcutSize = win.getContentSize();
  win.setContentSize(1180, 1400);
@@ -248,6 +252,9 @@ app.whenReady().then(async()=>{
  assert.match(await run(`document.title`),/Morrow Mail/);
  assert.deepEqual((await run(`[...document.querySelectorAll('[data-bot-operation]')].map(node=>node.textContent).sort()`)),require('../host/bot/catalog').operations().sort());
  assert.match(await run(`$('cli-unavailable').textContent`),/attachment upload\/attach\/download.*mailbox draft create\/edit\/delete.*calendar/);
+ assert.match(await run(`$('cli-account-safety').textContent`),/connected, granted mailbox.*NOT_FOUND.*do not automatically delete retained legacy data/s);
+ await run(`$('features-panel').scrollTop=0`);
+ await shot('cli-account-safety');
  await run(`document.querySelector('#cli-connection summary').focus()`);
  assert.equal(await run(`document.activeElement===document.querySelector('#cli-connection summary')`),true);
  await run(`document.querySelector('#cli-connection summary').click()`);

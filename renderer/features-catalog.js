@@ -64,13 +64,13 @@
         id: "multi-account",
         title: "Multiple mailboxes",
         category: "Accounts",
-        blurb: "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account. Disconnect removes the local account and invalidates its queued sync work; server mail stays.",
+        blurb: "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add the mailbox again.",
       },
       {
         id: "bot-bridge",
         title: "Bot bridge",
         category: "Accounts",
-        blurb: "An optional loopback API lets a bot read cached mail and propose inert drafts. A separate send permission allows immediate plain-text mail. Access starts off; see CLI for capabilities, Tailscale setup, and revocation limits.",
+        blurb: "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; see CLI for capabilities, Tailscale setup, and revocation limits.",
       },
       {
         id: "calendar",
