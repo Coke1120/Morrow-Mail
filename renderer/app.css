@@ -687,6 +687,7 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 
 #features-panel {
   overflow: auto;
+  scroll-padding-top: 56px;
   padding: 20px 24px 28px;
 }
 
@@ -789,6 +790,29 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 }
 
 .cli-list { max-width: 960px; }
+
+.cli-guide {
+  max-width: 960px;
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink-mid);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.cli-guide h3 { margin: 0 0 8px; color: var(--ink); }
+.cli-guide p { margin: 8px 0; }
+.cli-guide summary { cursor: pointer; color: var(--ink); font-weight: 650; }
+.cli-guide summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.cli-guide code { overflow-wrap: anywhere; color: var(--ink); }
+.cli-guide pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; background: var(--hover); border-radius: 8px; }
+.cli-guide ol { padding-left: 20px; }
+.cli-guide li + li { margin-top: 8px; }
+.cli-capabilities { margin: 8px 0 12px; }
+.cli-capabilities > div { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.cli-capabilities dt { font-weight: 650; color: var(--ink); }
+.cli-capabilities dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 
 #cli-copy-status:empty { display: none; }
 

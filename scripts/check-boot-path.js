@@ -81,6 +81,7 @@ const syntax = [
   "scripts/windows-icon.js",
   "scripts/check-bot-bridge.js",
   "scripts/check-bot-send-authorization.js",
+  "scripts/check-cli-capabilities.js",
   "renderer/preload.js",
   "renderer/app.js",
   "renderer/pdf-preview.js",
@@ -3911,7 +3912,7 @@ assert.ok(cliRows.some((row) => row.command === "npm install" && row.group === "
 assert.ok(cliRows.some((row) => row.command === "npm start"));
 assert.ok(cliRows.some((row) => row.command === "npm run check"));
 assert.ok(cliRows.some((row) => row.command.includes("--operation bridge.describe")));
-assert.ok(cliRows.some((row) => row.command.includes("--operation mail.send") && row.command.includes("--request-id <uuid>")));
+assert.ok(cliRows.some((row) => row.command.includes("--operation mail.send") && row.command.includes("--request-id '<uuid>'")));
 assert.ok(cliRows.some((row) => row.command === "tailscale serve status --json"));
 assert.doesNotMatch(functionSource(appJs, "paintShortcuts"), /paintCli\(\)/);
 const showFeaturesSource = functionSource(appJs, "showFeatures");
@@ -3949,7 +3950,7 @@ const featureSeed = [
   ["overnight-body-fill", "Off-hours body fill", "Mail", "While Morrow is open, from 00:00–07:00 local time (07:00 is outside), a slow pass fills one missing body after folder work, the same way a cold open does. Newest indexed mail inside Settings → Mail & Sync is used; trash, spam, and drafts are skipped, and the page on screen still comes first."],
   ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account."],
-  ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose drafts. It stays off until you turn it on. Opening a proposal does not send it."],
+  ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose inert drafts. A separate send permission allows immediate plain-text mail. Access starts off; see CLI for capabilities, Tailscale setup, and revocation limits."],
   ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page."],
   ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed."],
 ];
@@ -9766,6 +9767,7 @@ checkGoogleOauthAlias();
 require("./check-bake-google-oauth").run();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
+require("./check-cli-capabilities").run();
 require("./check-bot-setup-ux").run();
 
 checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-sync-retry").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-bot-send-authorization").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
