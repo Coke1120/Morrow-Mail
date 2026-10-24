@@ -141,7 +141,7 @@
     <div class="shell" id="shell">
       <div class="side">
         <div id="side-mail" class="side-pane">
-          <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled</button>
+          <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled<span id="scheduled-review-count" hidden></span></button>
           <section id="mail-ooo" class="mail-ooo" aria-label="Mailbox automatic replies" hidden><p id="mail-ooo-status" class="hint" role="status"></p><div class="row"><button type="button" class="ghost" id="mail-ooo-manage">Manage / disable</button><button type="button" class="ghost" id="mail-ooo-refresh">Refresh status</button></div></section>
           <div class="folder-tools">
           <div class="folder-filter">
@@ -579,7 +579,7 @@
     <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>
-        <p class="hint">Messages send while Morrow is open. A missed time sends on the next launch. This list includes every account, whichever mailbox is selected. Edit/reschedule removes the queued delivery and saves a local draft; scheduling again requires your explicit action. Cancel asks twice, then Undo restores that queued send for a few seconds.</p>
+        <p class="hint">Pending messages send while Morrow is open; a missed time sends on the next launch. Uncertain or SMTP-accepted deliveries never resend automatically: check Sent before recovering a draft copy. This list includes every account, whichever mailbox is selected. Edit/reschedule saves a local draft and requires an explicit new schedule. Cancel or dismiss asks twice; Undo restores the record with its existing delivery status.</p>
         <p id="scheduled-summary" class="hint"></p>
         <p id="scheduled-status" role="status"></p>
         <div class="row">

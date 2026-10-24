@@ -32,6 +32,7 @@ const syntax = [
   "scripts/check-mail-review-regressions.js",
   "scripts/check-confirmed-identity.js",
   "scripts/check-move-calendar-patches.js",
+  "scripts/check-draft-scheduled-recovery.js",
   "host/update-auth.js",
   "host/updater.js",
   "host/mail/secrets.js",
@@ -2149,7 +2150,7 @@ for (const channel of ["mail:scheduleSend", "mail:listScheduled", "mail:cancelSc
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
-assert.ok(appJs.includes("No pending or failed scheduled mail on this computer."));
+assert.ok(appJs.includes("No scheduled mail or delivery records on this computer."));
 assert.ok(html.includes('id="schedule-preset"') && html.includes('id="schedule-at"') && html.includes('id="compose-schedule"') && html.includes('id="scheduled"'));
 assert.ok(html.includes("Schedule send") && html.includes("In 1 hour") && html.includes("Pick a time") && html.includes("Tomorrow morning"));
 assert.ok(css.includes("#scheduled") && css.includes("#compose textarea") && css.includes("max-height: calc(100vh - 32px)"));
@@ -5883,7 +5884,7 @@ async function checkSignaturesAndSchedule(engine, db) {
   db.setScheduledSendAt(doomed.data.id, Date.now() - 1000);
   await engine.pumpScheduled();
   const failed = engine.answer("mail:listScheduled", [{ accountId: "imap-test" }]).data.find((row) => row.id === doomed.data.id);
-  assert.strictEqual(failed.status, "failed");
+  assert.strictEqual(failed.status, "unknown", "an unclassified transport failure must not claim the message was definitely unsent");
   assert.match(failed.error, /smtp down/);
   await engine.pumpScheduled();
   assert.strictEqual(engine.answer("mail:listScheduled", [{ accountId: "imap-test" }]).data.filter((row) => row.id === doomed.data.id).length, 1);
@@ -9765,7 +9766,7 @@ require("./check-bot-setup-ux").run();
 
 checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-sync-retry").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
-}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => require("./check-overnight-bodies").run()).then(() => require("./check-mail-review-regressions").run()).then(() => require("./check-confirmed-identity").run()).then(() => require("./check-move-calendar-patches").run()).then(() => checkTranslateBatches()).then(() => {
+}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => require("./check-overnight-bodies").run()).then(() => require("./check-mail-review-regressions").run()).then(() => require("./check-confirmed-identity").run()).then(() => require("./check-move-calendar-patches").run()).then(() => require("./check-draft-scheduled-recovery").run()).then(() => checkTranslateBatches()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);
