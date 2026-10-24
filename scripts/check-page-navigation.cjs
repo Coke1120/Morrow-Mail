@@ -295,6 +295,27 @@ app.whenReady().then(async () => {
   await run(`$('bot-review').open=false;`);
   await run(`$('settings').close();`);
 
+  // Discovery owns only fields that have not been deliberately edited.
+  routes.set('mail:discoverMail', ({email}) => {
+    const domain = email.split('@')[1];
+    return ok({source:'srv', imap:{host:'imap.'+domain,port:993,tls:true},
+      smtp:domain==='second.test'?null:{host:'smtp.'+domain,port:465,tls:true}});
+  });
+  await run(`openConnectFor(null);$('email').value='user@first.test';$('email').dispatchEvent(new Event('input'));`);
+  await waitFor(`$('smtp-host').value==='smtp.first.test'`);
+  await run(`$('email').value='user@second.test';$('email').dispatchEvent(new Event('input'));`);
+  assert.equal(await run(`$('smtp-host').value`), '', 'address changes clear auto-filled SMTP immediately');
+  await waitFor(`$('imap-host').value==='imap.second.test'`);
+  assert.equal(await run(`$('smtp-host').value`), '', 'partial discovery keeps the missing server empty');
+  await run(`$('imap-host').value='imap.manual.test';$('imap-host').dispatchEvent(new Event('input'));
+    $('email').value='user@third.test';$('email').dispatchEvent(new Event('input'));`);
+  await waitFor(`$('smtp-host').value==='smtp.third.test'`);
+  assert.equal(await run(`$('imap-host').value`), 'imap.manual.test', 'manual IMAP is pinned independently');
+  await run(`$('connect').close();openConnectFor(null);`);
+  assert.equal(await run(`$('imap-host').value+$('smtp-host').value`), '', 'new dialog clears both prior endpoints');
+  await run(`$('connect').close();`);
+  routes.delete('mail:discoverMail');
+
   // Provider management lives on its own primary page, including drag listeners.
   calls.length = 0;
   await run(`$('rail-folders').click()`);

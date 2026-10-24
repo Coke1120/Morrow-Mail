@@ -71,6 +71,7 @@ let ready = false;
 // finishes; the next one waits. Overnight fill does not start while a visible
 // prefetch still wants the connection.
 const lanes = new Map();
+const flagCursors = new Map();
 
 function ok(data) {
   return { success: true, data };
@@ -711,6 +712,7 @@ function localInboxRules(account) {
 }
 
 function resetWindow(accountId, folderPath, found) {
+  flagCursors.delete(JSON.stringify([accountId, folderPath]));
   const folder = db.folderByPath(accountId, folderPath);
   db.applyFolderSync(accountId, folderPath, {
     messages: [],
@@ -841,16 +843,22 @@ async function warmFolder(client, account, folder, started, days, limits) {
   // so the next folder can run inside this tick. A caught-up folder still
   // reconciles so deletes and counts stay current.
   if (backlog && limits && limits.oneBatch) return { paused: false, bootstrapped: true };
-  const live = await remote.searchUids(client, folder.path, criteria);
+  const flagKey = JSON.stringify([account.id, folder.path]);
+  const priorFlags = flagCursors.get(flagKey);
+  const beforeUid = priorFlags && priorFlags.validity === folder.uid_validity ? priorFlags.uid : 0;
+  let flagUids = db.flagUidsFor(account.id, folder.path, folder.uid_validity, beforeUid);
+  if (!flagUids.length && beforeUid) flagUids = db.flagUidsFor(account.id, folder.path, folder.uid_validity);
+  const live = await remote.searchUids(client, folder.path, criteria, { uids: flagUids, validity: folder.uid_validity });
   if (folder.uid_validity && live.validity && folder.uid_validity !== live.validity) {
     resetWindow(account.id, folder.path, live);
     noteStorm(account.id);
     return { paused: true, bootstrapped: false };
   }
   // applyFolderSync prunes and updates the cursor/counts in one transaction.
-  db.applyFolderSync(account.id, folder.path, {
+  const flagsChanged = db.applyFolderSync(account.id, folder.path, {
     messages: [],
     validity: live.validity,
+    flags: live.flags,
     exists: live.exists,
     unseen: live.unseen,
     uids: live.uids,
@@ -859,6 +867,10 @@ async function warmFolder(client, account, folder, started, days, limits) {
     horizonDays: days,
     uidCursor: next,
   });
+  if (flagUids.length && Array.isArray(live.flags)) {
+    flagCursors.set(flagKey, { validity: live.validity, uid: flagUids[flagUids.length - 1] });
+  }
+  if (flagsChanged) broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
   return { paused: false, bootstrapped: true };
 }
 
@@ -1554,6 +1566,7 @@ async function removeAccount(params) {
   idleSafetyAt.delete(id);
   idleReported.delete(id);
   backgroundCursor.delete(id);
+  for (const key of flagCursors.keys()) if (JSON.parse(key)[0] === id) flagCursors.delete(key);
   activeFolder.delete(id);
   const lane = lanes.get(id);
   if (lane && !lane.active && !lane.user.length && !lane.background.length) lanes.delete(id);
@@ -2841,7 +2854,7 @@ async function deliver(params) {
         if (draft.uid) {
           await exclusive(account.id, async () => {
             const password = await secretFor(account);
-            await remote.withClient(account, password, (client) => remote.removeUid(client, draft.folder_path, draft.uid));
+            await remote.withClient(account, password, (client) => remote.removeUid(client, draft.folder_path, draft.uid, draft.uid_validity));
           });
         }
       } catch { /* local removal still happens */ }
@@ -3307,6 +3320,7 @@ function answer(channel, args) {
           db.insertMessage(record);
         }
         let remoteSaved = false;
+        let warning = "";
         try {
           await exclusive(account.id, async () => {
             const password = await secretFor(account);
@@ -3316,7 +3330,8 @@ function answer(channel, args) {
             });
             const appended = await remote.withClient(account, password, async (client) => {
               if (existing && existing.uid) {
-                try { await remote.removeUid(client, existing.folder_path, existing.uid); } catch { /* replaced below */ }
+                try { await remote.removeUid(client, existing.folder_path, existing.uid, existing.uid_validity); }
+                catch (error) { if (error?.code === "uid_validity_changed") throw error; /* replaced below */ }
               }
               return remote.appendRaw(client, drafts.path, raw, ["\\Draft", "\\Seen"]);
             });
@@ -3330,11 +3345,12 @@ function answer(channel, args) {
             }
             remoteSaved = true;
           });
-        } catch {
+        } catch (error) {
           // The draft remains in the local cache when the server append fails.
+          if (error?.code === "uid_validity_changed") warning = error.message;
         }
         emitAccounts();
-        return ok({ emailId, draftId: emailId, remoteSaved });
+        return ok({ emailId, draftId: emailId, remoteSaved, warning });
       })();
     case "mail:deleteDraft":
       return (async () => {
@@ -3345,10 +3361,11 @@ function answer(channel, args) {
             if (account && row.uid) {
               await exclusive(account.id, async () => {
                 const password = await secretFor(account);
-                await remote.withClient(account, password, (client) => remote.removeUid(client, row.folder_path, row.uid));
+                await remote.withClient(account, password, (client) => remote.removeUid(client, row.folder_path, row.uid, row.uid_validity));
               });
             }
-          } catch {
+          } catch (error) {
+            if (error?.code === "uid_validity_changed") return fail(error.code, error.message);
             // Drop the local row even if the server delete fails.
           }
           db.deleteMessage(row.id);

@@ -6,7 +6,7 @@ const remote = require("./remote");
 const virtuals = require("./virtual-folders");
 
 // A thrown command that already entered STORE or MOVE may have landed.
-// Revert only when issued is still false. Sync does not rewrite stored flags.
+// Revert only when issued is still false. Flag sync preserves pending/unknown writes.
 const HINTS = {
   star: "The star stays on this device. Click the star again to retry.",
   read: "The read state stays on this device. Set it again to retry.",
@@ -304,19 +304,19 @@ async function runRemote(action) {
     const value = await remote.withClient(account, password, async (client) => {
       entered = true;
       if (intent.kind === "star") {
-        await remote.changeFlags(client, source.folderPath, source.uid, intent.starred ? ["\\Flagged"] : [], intent.starred ? [] : ["\\Flagged"]);
+        await remote.changeFlags(client, source.folderPath, source.uid, intent.starred ? ["\\Flagged"] : [], intent.starred ? [] : ["\\Flagged"], source.uidValidity);
         return { dest: null };
       }
       if (intent.kind === "read") {
-        await remote.changeFlags(client, source.folderPath, source.uid, intent.unread ? [] : ["\\Seen"], intent.unread ? ["\\Seen"] : []);
+        await remote.changeFlags(client, source.folderPath, source.uid, intent.unread ? [] : ["\\Seen"], intent.unread ? ["\\Seen"] : [], source.uidValidity);
         return { dest: null };
       }
       if (intent.kind === "remove" && intent.permanent) {
-        await remote.removeUid(client, source.folderPath, source.uid);
+        await remote.removeUid(client, source.folderPath, source.uid, source.uidValidity);
         return { dest: null };
       }
       const destination = intent.kind === "undo" ? intent.restore.folderPath : intent.destPath;
-      const next = await remote.moveUid(client, source.folderPath, source.uid, destination);
+      const next = await remote.moveUid(client, source.folderPath, source.uid, destination, source.uidValidity);
       return {
         dest: {
           folderPath: destination,
@@ -328,7 +328,7 @@ async function runRemote(action) {
     });
     return { issued: true, value };
   } catch (error) {
-    return { issued: entered, error: remote.explain(error) };
+    return { issued: entered && error?.operationIssued !== false, error: remote.explain(error) };
   }
 }
 
