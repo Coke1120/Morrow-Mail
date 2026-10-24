@@ -51,6 +51,11 @@ function accountParam(params) {
 
 function requireAccount(grant, accountId) {
   if (!grant.accountIds.includes(accountId)) throw coded("FORBIDDEN");
+  const db = require("../mail/db");
+  if (!db.isReady()) throw coded("HOST_NOT_READY");
+  // A retained grant and known message/proposal ID do not authorize access to
+  // orphaned legacy cache after its account has been disconnected.
+  if (!db.accountById(accountId)) throw coded("NOT_FOUND");
 }
 
 function metaFor(fresh, warnings, extra) {

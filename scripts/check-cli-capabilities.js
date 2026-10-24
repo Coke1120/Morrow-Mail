@@ -22,6 +22,8 @@ function run() {
   assert.deepEqual(operations.slice().sort(), Object.keys(contract.operations).sort());
   const unavailable = text(byId("cli-unavailable"));
   for (const phrase of ["attachment upload/attach/download", "mailbox draft create/edit/delete", "full thread", "reply-all/forward", "read/unread", "move/archive/delete", "calendar"]) assert.ok(unavailable.includes(phrase), phrase);
+  const accountSafety = text(byId("cli-account-safety"));
+  for (const phrase of ["connected, granted mailbox", "NOT_FOUND", "direct message IDs", "proposal lists", "do not automatically delete retained legacy data"]) assert.ok(accountSafety.includes(phrase), phrase);
   const connection = text(byId("cli-connection"));
   assert.ok(connection.includes(constants.SERVE_CAPABILITY));
   assert.ok(connection.includes(`${constants.HOST}:${constants.PORT}`));
@@ -67,6 +69,10 @@ function run() {
   const card = require("../renderer/features-catalog").items.find(row => row.id === "bot-bridge");
   assert.match(card.blurb, /separate send permission/i);
   assert.match(card.blurb, /inert drafts/);
+  assert.match(card.blurb, /connected, granted mailboxes/);
+  const accounts = require("../renderer/features-catalog").items.find(row => row.id === "multi-account");
+  assert.match(accounts.blurb, /pending reconnects/);
+  assert.match(accounts.blurb, /new connection after removal/);
   console.log(`cli-capabilities-ok: ${operations.length} host operations; ${checked} intercepted command examples`);
 }
 
