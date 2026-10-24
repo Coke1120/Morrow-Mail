@@ -508,6 +508,8 @@ app.whenReady().then(async () => {
   const updated = calls.filter(row => row.channel==='calendar:updateEvent').at(-1);
   assert.equal(updated.payload.calendarId, 'work', 'even programmatic picker changes cannot retarget the write');
   assert.equal(updated.payload.eventId, 'work-evt');
+  assert.equal(Object.hasOwn(updated.payload, 'description'), false, 'unchanged preview must never replace the provider body');
+  assert.equal(Object.hasOwn(updated.payload, 'location'), false, 'unchanged location is omitted');
   await run(`$('calendar-add').click()`);
   await waitFor(`$('calendar-event-dialog').open`);
   assert.equal(await run(`$('calendar-pick').disabled`), false, 'new events keep the destination picker');

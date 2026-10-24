@@ -561,16 +561,14 @@ async function moveUid(client, folderPath, uid, destination, expectedValidity) {
   try {
     assertUidValidity(client, expectedValidity);
     const moved = await client.messageMove(String(uid), destination, { uid: true });
-    const next = moved && moved.uidMap && moved.uidMap.get(Number(uid));
-    let validity = null;
-    try {
-      const status = await client.status(destination, { uidValidity: true });
-      validity = status && status.uidValidity ? Number(status.uidValidity) : null;
-    } catch {
-      validity = null;
+    const next = Number(moved && moved.uidMap && moved.uidMap.get(Number(uid)));
+    // COPYUID binds these two values to the same destination generation. A
+    // later STATUS could refer to a recreated mailbox and cannot supply it.
+    const validity = Number(moved && moved.uidValidity);
+    if (!Number.isSafeInteger(next) || next <= 0 || !Number.isSafeInteger(validity) || validity <= 0) {
+      throw new Error("Move outcome is unknown: the server did not confirm the destination identity. Refresh before acting again.");
     }
-    if (!next || !validity) throw new Error("Move outcome is unknown: the server did not confirm the destination identity. Refresh before acting again.");
-    return { uid: Number(next), uidValidity: validity };
+    return { uid: next, uidValidity: validity };
   } finally {
     lock.release();
   }
