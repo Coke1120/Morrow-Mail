@@ -294,6 +294,7 @@ async function publishOne(row) {
   db.updateMailAction(row.id, { phase: "publishing" });
   const fresh = db.mailActionById(row.id);
   const attempt = await runRemote(fresh);
+  if (!db.mailActionById(fresh.id)) return null; // Account removal invalidated this result.
   if (newerPending(fresh)) return applyClose(fresh, "superseded", null, null, true);
   if (attempt.issued && !attempt.error) {
     return applyClose(fresh, "completed", null, attempt.value && attempt.value.dest);

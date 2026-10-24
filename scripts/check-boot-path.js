@@ -35,6 +35,7 @@ const syntax = [
   "scripts/check-draft-scheduled-recovery.js",
   "scripts/check-draft-partial-delivery.js",
   "scripts/check-draft-revisions.js",
+  "scripts/check-account-calendar-attachments.js",
   "host/mail/delivery-receipt.js",
   "host/update-auth.js",
   "host/updater.js",
@@ -7520,7 +7521,10 @@ async function checkProviderApi() {
       start: "2026-10-17T10:00:00.000Z",
       end: "2026-10-17T11:00:00.000Z",
       description: "Agenda",
+      descriptionBase: "",
     }, async (url, init) => {
+      if (init.method === "GET") return jsonResponse({ id: "evt-new", description: "", etag: '"calendar-revision"' });
+      assert.strictEqual(init.headers["if-match"], '"calendar-revision"');
       patched = { url: String(url), method: init.method, body: JSON.parse(init.body) };
       return jsonResponse({
         id: "evt-new",
@@ -9769,7 +9773,12 @@ require("./check-bot-setup-ux").run();
 
 checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-sync-retry").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
-}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => require("./check-overnight-bodies").run()).then(() => require("./check-mail-review-regressions").run()).then(() => require("./check-confirmed-identity").run()).then(() => require("./check-move-calendar-patches").run()).then(() => require("./check-draft-scheduled-recovery").run()).then(() => require("./check-draft-partial-delivery").run()).then(() => require("./check-draft-revisions").run()).then(() => checkTranslateBatches()).then(() => {
+}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => require("./check-overnight-bodies").run()).then(() => require("./check-mail-review-regressions").run()).then(() => require("./check-confirmed-identity").run()).then(() => require("./check-move-calendar-patches").run()).then(() => require("./check-draft-scheduled-recovery").run()).then(() => require("./check-draft-partial-delivery").run()).then(() => require("./check-draft-revisions").run()).then(() => {
+  // This fixture supplies its own Electron file dialogs; isolate it from the
+  // earlier suites' VM-loaded host and native-window mocks.
+  const result = spawnSync(process.execPath, [path.join(root, "scripts/check-account-calendar-attachments.js")], { stdio: "inherit", timeout: 30000 });
+  assert.strictEqual(result.status, 0, "Account/calendar/attachment fixture failed");
+}).then(() => checkTranslateBatches()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);
