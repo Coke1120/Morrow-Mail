@@ -62,6 +62,7 @@ function normalizeGoogleEvent(item, calendarId) {
   const end = item.end && (item.end.dateTime || item.end.date) || "";
   if (!start) return null;
   const allDay = !!(item.start && item.start.date && !item.start.dateTime);
+  const fullDescription = plainDescription(item.description, 0);
   return {
     id: safeId(item.id),
     calendarId: safeId(calendarId) || "",
@@ -70,7 +71,8 @@ function normalizeGoogleEvent(item, calendarId) {
     end: end ? (allDay ? String(end).slice(0, 10) : end) : "",
     allDay,
     location: cleanName(item.location) || "",
-    description: plainDescription(item.description),
+    description: fullDescription.slice(0, 8000),
+    ...(fullDescription.length > 8000 ? { descriptionTruncated: true } : {}),
   };
 }
 
@@ -297,7 +299,10 @@ function writeEvent(draft) {
   if (!title) throw invalidEvent("Add a title.");
   const location = cleanName(draft && draft.location);
   const optional = {};
-  if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) optional.description = plainDescription(draft.description);
+  if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) {
+    optional.description = plainDescription(draft.description, 0);
+    if (optional.description.length > 8000) throw invalidEvent("This description is too long for this editor. Leave it unchanged or edit it with the calendar provider.");
+  }
   if (draft && Object.prototype.hasOwnProperty.call(draft, "location")) optional.location = location;
   if (draft && draft.allDay === true) {
     const start = String(draft.start || "").slice(0, 10);
@@ -363,20 +368,23 @@ async function updateEvent(provider, accessToken, calendarId, eventId, draft, fe
   const suffix = "/events/" + encodeURIComponent(id);
   const url = provider === "google" || provider === "microsoft" ? calendarPath(provider, calendarId, suffix) : "";
   let headers;
-  if (provider === "microsoft" && Object.prototype.hasOwnProperty.call(body, "description")) {
-    // The list contains bodyPreview. Never replace a full/meeting body using
-    // that preview, or overwrite a body changed since this editor was opened.
+  const providerName = provider === "google" ? "Google Calendar" : "Outlook";
+  if (["google", "microsoft"].includes(provider) && Object.prototype.hasOwnProperty.call(body, "description")) {
+    // A list description can be a preview. Validate the complete baseline and
+    // condition the replacement on its revision, for both providers.
     const current = await apiJson(url, accessToken, { fetchImpl });
-    const full = current.body && typeof current.body.content === "string" ? plainDescription(current.body.content, 0) : null;
-    if (safeId(current.id) !== id || full == null || full.length > 8000 || current.isOnlineMeeting === true
+    const full = provider === "google"
+      ? (current.description == null ? "" : typeof current.description === "string" ? plainDescription(current.description, 0) : null)
+      : current.body && typeof current.body.content === "string" ? plainDescription(current.body.content, 0) : null;
+    if (safeId(current.id) !== id || full == null || full.length > 8000 || provider === "microsoft" && current.isOnlineMeeting === true
         || typeof draft.descriptionBase !== "string" || full !== draft.descriptionBase.trim()) {
-      const error = new Error("The full Outlook description cannot be safely replaced from this preview. Edit the description in Outlook, or leave it unchanged to save other fields.");
+      const error = new Error(`The full ${providerName} description cannot be safely replaced from this preview. Edit it with the calendar provider, or leave it unchanged to save other fields.`);
       error.code = "conflict";
       throw error;
     }
-    const revision = current["@odata.etag"];
+    const revision = provider === "google" ? current.etag : current["@odata.etag"];
     if (typeof revision !== "string" || !revision || revision.length > 1024 || /[\r\n]/.test(revision)) {
-      const error = new Error("Outlook did not confirm the event revision. Refresh the calendar before changing its description.");
+      const error = new Error(`${providerName} did not confirm the event revision. Refresh the calendar before changing its description.`);
       error.code = "conflict";
       throw error;
     }
@@ -387,7 +395,7 @@ async function updateEvent(provider, accessToken, calendarId, eventId, draft, fe
   } catch (error) {
     if (error.status === 412) {
       error.code = "conflict";
-      error.message = "This event changed in Outlook. Refresh the calendar and review the description before saving again.";
+      error.message = `This event changed in ${providerName}. Refresh the calendar and review the description before saving again.`;
     }
     throw error;
   }

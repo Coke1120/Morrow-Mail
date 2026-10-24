@@ -22,6 +22,14 @@ function get(sql, params = []) {
   return all(sql, params)[0] || null;
 }
 
+function assertAccountPresent(id) {
+  if (accountById(id)) return;
+  const error = new Error("This mailbox was removed. Refresh before continuing.");
+  error.code = "account_removed";
+  error.operationIssued = false;
+  throw error;
+}
+
 function run(sql, params = []) {
   if (!writes) throw new Error("Mail writes require a transaction.");
   db.run(sql, params);
@@ -374,12 +382,14 @@ function removeAccount(id) {
     run("DELETE FROM signatures WHERE account_id = ?", [id]);
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
+    run("DELETE FROM mail_actions WHERE account_id = ?", [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
 
 function replaceFolders(accountId, folders, delimiter) {
   transaction(() => {
+    assertAccountPresent(accountId);
     if (delimiter) updateChanged("accounts", { delimiter }, "id = ?", [accountId]);
     const existing = new Set(all("SELECT path FROM folders WHERE account_id = ?", [accountId]).map((row) => row.path));
     const next = new Set(folders.map((folder) => folder.path));
@@ -805,7 +815,7 @@ function searchMessages(options) {
   }
   params.push(searchResultLimit(query.limit));
   return all(
-    `SELECT m.* FROM messages m
+    `SELECT m.* FROM messages m JOIN accounts connected ON connected.id = m.account_id
      ${joins.join("\n")}
      ${where}
      ORDER BY (${rank}) DESC, m.list_sort_ts DESC, m.id DESC
@@ -825,6 +835,7 @@ function localOutgoingAttachments(json) {
 function applyFolderSync(accountId, folderPath, report) {
   let flagsChanged = false;
   const result = transaction(() => {
+    assertAccountPresent(accountId);
     const before = changeStamp();
     const previous = get(
       "SELECT uid_validity FROM folders WHERE account_id = ? AND path = ?",
@@ -1035,6 +1046,7 @@ function insertMessage(row) {
 }
 
 function insertMessageRecord(row) {
+    assertAccountPresent(row.accountId);
     run(
       `INSERT INTO messages (
         id, account_id, folder_path, uid, uid_validity, thread_id, rfc_message_id, in_reply_to,
@@ -1432,8 +1444,9 @@ function readOp(id) {
 
 function recentForAi(limit) {
   return all(
-    `SELECT from_addr, subject, snippet FROM messages
-     ORDER BY list_sort_ts DESC LIMIT ?`,
+    `SELECT m.from_addr, m.subject, m.snippet FROM messages m
+     JOIN accounts connected ON connected.id = m.account_id
+     ORDER BY m.list_sort_ts DESC LIMIT ?`,
     [limit]
   ).map((row) => ({
     from: row.from_addr,
@@ -1557,6 +1570,7 @@ function insertScheduled(row) {
   const status = ["failed", "unknown", "sent", "partial"].includes(row.status) ? row.status : "pending";
   const error = status !== "pending" ? String(row.error || "Check this delivery before retrying.") : null;
   transaction(() => {
+    assertAccountPresent(row.accountId);
     run(
       `INSERT INTO scheduled_sends (id, account_id, payload_json, send_at, status, error, message_id, receipt_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
