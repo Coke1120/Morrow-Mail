@@ -7,6 +7,13 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.2.35": [
+      "Mail changes use confirmed message identities. Interrupted or partial deliveries retain drafts and delivery records for review instead of resending automatically.",
+      "Removing a mailbox invalidates pending sync and reconnect work. Bot access also refuses disconnected-account cache and proposals.",
+      "Calendar edits preserve long descriptions and reject stale event revisions.",
+      "Attachment downloads use exact file selections, include cached draft files in ZIPs, and stop when a selected file changes or is missing.",
+      "Features → CLI explains supported bot actions, Tailscale setup, and the send authorization and revocation boundary.",
+    ],
     "0.2.34": [
       "Features lists off-hours body fill from midnight to 7:00 local time, and Inbox Automation Rules show example placeholders.",
       "Check more than one calendar in the left list. Month and agenda combine those events and keep each calendar's color.",
