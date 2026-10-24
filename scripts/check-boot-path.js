@@ -33,6 +33,8 @@ const syntax = [
   "scripts/check-confirmed-identity.js",
   "scripts/check-move-calendar-patches.js",
   "scripts/check-draft-scheduled-recovery.js",
+  "scripts/check-draft-partial-delivery.js",
+  "host/mail/delivery-receipt.js",
   "host/update-auth.js",
   "host/updater.js",
   "host/mail/secrets.js",
@@ -9766,7 +9768,7 @@ require("./check-bot-setup-ux").run();
 
 checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-sync-retry").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
-}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => require("./check-overnight-bodies").run()).then(() => require("./check-mail-review-regressions").run()).then(() => require("./check-confirmed-identity").run()).then(() => require("./check-move-calendar-patches").run()).then(() => require("./check-draft-scheduled-recovery").run()).then(() => checkTranslateBatches()).then(() => {
+}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => require("./check-overnight-bodies").run()).then(() => require("./check-mail-review-regressions").run()).then(() => require("./check-confirmed-identity").run()).then(() => require("./check-move-calendar-patches").run()).then(() => require("./check-draft-scheduled-recovery").run()).then(() => require("./check-draft-partial-delivery").run()).then(() => checkTranslateBatches()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);
