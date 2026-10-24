@@ -17790,6 +17790,9 @@ function checkedCalendarEvents(events) {
 
 let calendarDetailKey = "";
 let calendarEditingId = "";
+let calendarEditingIdentity = null;
+let calendarEditorGeneration = 0;
+let calendarWritePending = false;
 
 function calendarDetailLine(paths, label, value, empty) {
   const line = document.createElement("p");
@@ -18196,6 +18199,12 @@ function syncAllDayInputs() {
 }
 
 function openCalendarEditor(event, dayStamp) {
+  const account = calendarAccount();
+  if (event?.id && state.calendarPayload?.accountId && state.calendarPayload.accountId !== account?.id) {
+    showStatus("Wait for this mailbox's calendar to finish loading before editing an event.", true);
+    return;
+  }
+  calendarEditorGeneration += 1;
   const dialogTitle = $("calendar-dialog-title");
   const save = $("calendar-save");
   const remove = $("calendar-delete");
@@ -18212,6 +18221,7 @@ function openCalendarEditor(event, dayStamp) {
   }
   const editing = !!(event && event.id);
   calendarEditingId = editing ? String(event.id) : "";
+  calendarEditingIdentity = editing ? { accountId: account?.id, calendarId: event.calendarId || state.calendarId, id: calendarEditingId } : null;
   if (dialogTitle) dialogTitle.textContent = editing ? "Edit event" : "Add event";
   if (save) save.textContent = editing ? "Save" : "Add event";
   if (remove) remove.hidden = !editing;
@@ -18233,6 +18243,7 @@ function openCalendarEditor(event, dayStamp) {
   }
   syncAllDayInputs();
   const pick = $("calendar-pick");
+  if (pick) pick.disabled = editing;
   const wanted = editing && event.calendarId ? event.calendarId : (state.calendarId || state.calendarIds[0] || "");
   if (pick && wanted && Array.from(pick.options).some((item) => item.value === wanted)) pick.value = wanted;
   openDialog("calendar-event-dialog");
@@ -18240,28 +18251,39 @@ function openCalendarEditor(event, dayStamp) {
 }
 
 async function deleteCalendarEvent(event) {
-  const id = (event && event.id) || calendarEditingId;
+  const identity = event?.id ? event : calendarEditingIdentity;
+  const id = identity?.id;
   if (!id) return;
   const account = calendarAccount();
-  const answer = await askConfirm({
-    title: "Delete event",
-    body: "Delete this event from the calendar? This removes it from Google Calendar or Outlook.",
-    confirm: "Delete",
-    cancel: "Cancel",
-    needsName: false,
-  });
-  if (!answer || !answer.ok) return;
-  await call("calendar:deleteEvent", {
-    accountId: account && account.id,
-    calendarId: (event && event.calendarId) || state.calendarId || ($("calendar-pick") && $("calendar-pick").value),
-    eventId: id,
-  });
-  calendarEditingId = "";
-  if (event && calendarEventKey(event) === state.calendarEventId) state.calendarEventId = "";
-  closeDialog("calendar-event-dialog");
-  showStatus("Event deleted.");
-  calendarCache.clear();
-  await loadCalendar({ fresh: true });
+  const ownerId = identity.accountId || state.calendarPayload?.accountId || account?.id;
+  if (ownerId !== account?.id) throw new Error("The calendar account changed. Reopen the event before deleting it.");
+  if (calendarWritePending) throw new Error("A calendar change is still being confirmed.");
+  const generation = calendarEditorGeneration;
+  calendarWritePending = true;
+  try {
+    const answer = await askConfirm({
+      title: "Delete event",
+      body: "Delete this event from the calendar? This removes it from Google Calendar or Outlook.",
+      confirm: "Delete",
+      cancel: "Cancel",
+      needsName: false,
+    });
+    if (!answer || !answer.ok) return;
+    if (calendarAccount()?.id !== ownerId) throw new Error("The calendar account changed. Reopen the event before deleting it.");
+    await call("calendar:deleteEvent", {
+      accountId: ownerId,
+      calendarId: identity.calendarId,
+      eventId: id,
+    });
+    if (generation !== calendarEditorGeneration || calendarAccount()?.id !== ownerId) return;
+    calendarEditingId = "";
+    calendarEditingIdentity = null;
+    if (event && calendarEventKey(event) === state.calendarEventId) state.calendarEventId = "";
+    closeDialog("calendar-event-dialog");
+    showStatus("Event deleted.");
+    calendarCache.clear();
+    await loadCalendar({ fresh: true });
+  } finally { calendarWritePending = false; }
 }
 
 function syncCalendarNav(view) {
@@ -18511,11 +18533,17 @@ async function grantCalendar() {
 
 async function submitCalendarEvent(event) {
   event.preventDefault();
+  if (calendarWritePending) throw new Error("A calendar change is still being confirmed.");
   const account = calendarAccount();
   const editing = calendarEditingId;
+  const identity = calendarEditingIdentity;
+  const generation = calendarEditorGeneration;
+  if (editing && (!identity || identity.id !== editing || identity.accountId !== account?.id)) {
+    throw new Error("The calendar account changed. Reopen the event before saving it.");
+  }
   const draft = calendarDraft({
     accountId: account && account.id,
-    calendarId: ($("calendar-pick") && $("calendar-pick").value) || state.calendarId,
+    calendarId: editing ? identity.calendarId : ($("calendar-pick") && $("calendar-pick").value) || state.calendarId,
     title: $("calendar-event-title").value,
     location: $("calendar-location").value,
     description: $("calendar-description") ? $("calendar-description").value : "",
@@ -18536,14 +18564,19 @@ async function submitCalendarEvent(event) {
     status.textContent = "";
     status.classList.remove("error");
   }
-  if (editing) await call("calendar:updateEvent", draft);
-  else await call("calendar:createEvent", draft);
+  calendarWritePending = true;
+  try {
+    if (editing) await call("calendar:updateEvent", draft);
+    else await call("calendar:createEvent", draft);
+  } finally { calendarWritePending = false; }
+  if (generation !== calendarEditorGeneration || calendarAccount()?.id !== account?.id) return;
   if (draft.calendarId && !state.calendarIds.includes(draft.calendarId)) {
     state.calendarIds = state.calendarIds.concat(draft.calendarId);
     state.calendarId = draft.calendarId;
     saveCalendarChecks(account && account.id, state.calendarIds);
   }
   calendarEditingId = "";
+  calendarEditingIdentity = null;
   closeDialog("calendar-event-dialog");
   showStatus("Event saved on the calendar.");
   calendarCache.clear();
@@ -19706,16 +19739,17 @@ function wire() {
   $("calendar-add").addEventListener("click", () => openCalendarEditor(null, state.calendarFocusDay));
   $("calendar-create").addEventListener("submit", (event) => guard(() => submitCalendarEvent(event)));
   $("calendar-all-day").addEventListener("change", syncAllDayInputs);
-  $("calendar-delete").addEventListener("click", () => guard(() => deleteCalendarEvent({
-    id: calendarEditingId,
-    calendarId: ($("calendar-pick") && $("calendar-pick").value) || state.calendarId,
-  })));
+  $("calendar-delete").addEventListener("click", () => guard(() => deleteCalendarEvent(calendarEditingIdentity)));
   $("calendar-cancel").addEventListener("click", () => {
     calendarEditingId = "";
+    calendarEditingIdentity = null;
     closeDialog("calendar-event-dialog");
   });
   $("calendar-event-dialog").addEventListener("close", () => {
+    if ($("calendar-event-dialog").open) return; // ignore a queued close from a previous editor
     calendarEditingId = "";
+    calendarEditingIdentity = null;
+    calendarEditorGeneration += 1;
   });
   $("calendar-account").addEventListener("change", () => {
     state.calendarAccountId = $("calendar-account").value;

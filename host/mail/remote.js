@@ -505,9 +505,10 @@ async function syncFolder(client, folderPath, options) {
   }
 }
 
-async function fetchSource(client, folderPath, uid) {
+async function fetchSource(client, folderPath, uid, expectedValidity) {
   const lock = await client.getMailboxLock(folderPath);
   try {
+    assertUidValidity(client, expectedValidity);
     // Untagged FETCH rows for other messages, or a flags-only row, can arrive
     // before the requested source. Taking the first row stores the wrong mail
     // (ImapFlow fetchOne, issue #426).
@@ -532,9 +533,10 @@ async function fetchSource(client, folderPath, uid) {
   }
 }
 
-async function readPart(client, folderPath, uid, part) {
+async function readPart(client, folderPath, uid, part, expectedValidity) {
   const lock = await client.getMailboxLock(folderPath);
   try {
+    assertUidValidity(client, expectedValidity);
     const downloaded = await client.download(String(uid), part || "1", { uid: true });
     if (!downloaded || !downloaded.content) return Buffer.alloc(0);
     const chunks = [];
