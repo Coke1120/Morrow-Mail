@@ -618,9 +618,9 @@ async function runImapStep(ctx, step) {
   const add = [];
   if (step.markRead) add.push("\\Seen");
   if (step.star) add.push("\\Flagged");
-  if (add.length) await ctx.remote.changeFlags(ctx.client, inboxPath, step.uid, add, []);
+  if (add.length) await ctx.remote.changeFlags(ctx.client, inboxPath, step.uid, add, [], ctx.validity);
   let next = null;
-  if (dest) next = await ctx.remote.moveUid(ctx.client, inboxPath, step.uid, dest);
+  if (dest) next = await ctx.remote.moveUid(ctx.client, inboxPath, step.uid, dest, ctx.validity);
   const row = ctx.validity ? ctx.db.messageByUid(account.id, inboxPath, step.uid, ctx.validity) : null;
   if (!row) return;
   const patch = {};
