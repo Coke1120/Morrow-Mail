@@ -52,13 +52,18 @@ async function run() {
     assert.equal(hits.length, 3, 'unknown Undo must not replay the remote operation');
     const missing = await engine.answer('mail:moveToFolder', [{emailId:'receipt-2',targetFolderId:'gone'}]);
     assert.equal(missing.data.outcomes[0].status, 'failed');
-    remote.changeFlags = async (_c,_f,uid) => { if (uid === 2) throw new Error('Fixture flag failure'); };
-    const flags = await engine.answer('mail:markReadBatch', [{isRead:true,items:[1,2,3].map(i=>({emailId:`receipt-${i}`}))}]);
-    assert.equal(db.messageById('receipt-2').unread, 0);
+    const blocked = await engine.answer('mail:markRead', [{emailId:'receipt-2',isRead:true}]);
+    assert.equal(blocked.data.outcomes[0].status, 'failed', 'unknown move cannot authorize flags on a predicted identity');
+    assert.equal(db.messageById('receipt-2').unread, 1);
+    // Retain the independent partial-flag batch coverage on confirmed identities.
+    for (let i=4;i<=6;i++) db.insertMessage({id:`receipt-${i}`,accountId:'receipt',folderPath:'INBOX',uid:i,uidValidity:1,date:new Date().toISOString(),listSortTs:Date.now(),unread:true});
+    remote.changeFlags = async (_c,_f,uid) => { if (uid === 5) throw new Error('Fixture flag failure'); };
+    const flags = await engine.answer('mail:markReadBatch', [{isRead:true,items:[4,5,6].map(i=>({emailId:`receipt-${i}`}))}]);
+    assert.equal(db.messageById('receipt-5').unread, 0);
     const flagged = await engine.settleActions();
     assert.deepEqual(flagged.outcomes.map(row=>row.status), ['completed','unknown','not_attempted']);
-    assert.equal(db.messageById('receipt-2').unread, 0);
-    assert.equal(db.messageById('receipt-3').unread, 1);
+    assert.equal(db.messageById('receipt-5').unread, 0);
+    assert.equal(db.messageById('receipt-6').unread, 1);
   } finally {
     Object.assign(remote, saved);
     secrets.deletePassword('receipt');

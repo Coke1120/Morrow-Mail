@@ -181,7 +181,7 @@ async function hostRoundTrips() {
     const rawSource = Buffer.from("From: client@client.example\r\nTo: Leo <leo@hkbscl.com>\r\nDelivered-To: leo@gmail.com\r\nX-Original-To: leo@hkbscl.com\r\nSubject: Alias\r\n\r\nHello");
     const fetched = await remote.fetchSource({ getMailboxLock: async () => ({ release() {} }), mailbox: { uidValidity: 1 },
       fetch: async function* () { yield { uid: 1, source: rawSource, envelope: { from: [{ address: "client@client.example" }], to: [{ address: "leo@hkbscl.com" }] } }; }
-    }, "INBOX", 1);
+    }, "INBOX", 1, 1);
     assert.deepEqual(fetched.recipientHeaders.originalTo, ["leo@hkbscl.com"]);
     db.applyFolderSync(account.id, "INBOX", { validity: 1, messages: [{ ...fetched, id: "alias-message" }], keepOthers: true });
     db.applyFolderSync(account.id, "INBOX", { validity: 1, messages: [fetched], keepOthers: true });

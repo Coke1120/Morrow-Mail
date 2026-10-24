@@ -499,8 +499,21 @@ app.whenReady().then(async () => {
   await run(`document.querySelector('[data-event-id="work-evt"]').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`);
   await waitFor(`$('calendar-event-dialog').open`);
   assert.equal(await run(`$('calendar-pick').value`), 'work', 'edit uses the event calendar');
+  assert.equal(await run(`$('calendar-pick').disabled`), true, 'existing event cannot be reassigned with its old ID');
+  const editPayload = await run(`state.calendarPayload`);
+  routes.set('calendar:updateEvent', payload => ok({id:payload.eventId,calendarId:payload.calendarId}));
+  routes.set('calendar:list', () => ok(editPayload));
+  await run(`$('calendar-pick').value='home';$('calendar-save').click()`);
+  await waitFor(`!$('calendar-event-dialog').open && !calendarWritePending`);
+  const updated = calls.filter(row => row.channel==='calendar:updateEvent').at(-1);
+  assert.equal(updated.payload.calendarId, 'work', 'even programmatic picker changes cannot retarget the write');
+  assert.equal(updated.payload.eventId, 'work-evt');
+  await run(`$('calendar-add').click()`);
+  await waitFor(`$('calendar-event-dialog').open`);
+  assert.equal(await run(`$('calendar-pick').disabled`), false, 'new events keep the destination picker');
   await run(`$('calendar-cancel').click()`);
   await waitFor(`!$('calendar-event-dialog').open`);
+  routes.delete('calendar:updateEvent');routes.delete('calendar:list');
   assert.deepEqual(await run(`JSON.parse(localStorage.getItem('morrow.calendarChecks'))['box-0']`), ['work', 'home']);
 
   // Cached bodies stay quiet. An incomplete body shows a reader spinner and leaves the list mounted.

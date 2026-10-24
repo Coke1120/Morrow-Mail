@@ -1939,10 +1939,18 @@ async function ensureBody(row, options) {
     // Another open may have filled the cache while this request queued.
     row = db.messageById(row.id);
     if (!row || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
+    actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
-    const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid));
+    const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity));
     // A FETCH row for another UID must not be written onto this message.
     if (!fetched || Number(fetched.uid) !== Number(row.uid)) return row;
+    const current = db.messageById(row.id);
+    actions.assertIdentityReady(row.id);
+    if (!current || current.folder_path !== row.folder_path || current.uid !== row.uid || current.uid_validity !== row.uid_validity) {
+      const error = new Error("This message moved while it was being read. Reopen it after the move is confirmed.");
+      error.code = "message_moving";
+      throw error;
+    }
     db.updateMessage(row.id, {
       html_body: fetched.htmlBody,
       text_body: fetched.textBody,
@@ -1956,6 +1964,11 @@ async function ensureBody(row, options) {
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
   } catch (error) {
+    if (error?.code === "uid_validity_changed" || error?.code === "message_moving") {
+      if (!background) throw error;
+      if (error.code === "uid_validity_changed") emitSync("error", { accountId: account.id, folderId: row.folder_path, message: error.message });
+      return db.messageById(row.id) || row;
+    }
     if (background && account && http.isRateLimit(error)) {
       noteRateLimit(account.id, error);
       if (outcome) outcome.rateLimited = true;
@@ -2422,8 +2435,11 @@ async function bytesFor(params) {
   if (!row.uid) return null;
   const account = db.accountById(row.account_id);
   const data = await exclusive(account.id, async () => {
+    const current = db.messageById(row.id);
+    if (!current) throw new Error("That message is no longer available.");
+    actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
-    return remote.withClient(account, password, (client) => remote.readPart(client, row.folder_path, row.uid, wanted.id));
+    return remote.withClient(account, password, (client) => remote.readPart(client, current.folder_path, current.uid, wanted.id, current.uid_validity));
   });
   return { filename: params.filename || wanted.filename || "attachment", data };
 }
@@ -2443,11 +2459,14 @@ async function attachmentZip(params) {
   const files = selectableAttachments(db.jsonList(row.attachments_json), params && params.attachmentIds);
   if (!files.length) return null;
   const parts = await exclusive(account.id, async () => {
+    const current = db.messageById(row.id);
+    if (!current) throw new Error("That message is no longer available.");
+    actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
     return remote.withClient(account, password, async (client) => {
       const out = [];
       for (const item of files) {
-        const data = await remote.readPart(client, row.folder_path, row.uid, item.id);
+        const data = await remote.readPart(client, current.folder_path, current.uid, item.id, current.uid_validity);
         out.push({
           name: item.filename || "attachment",
           data: Buffer.isBuffer(data) ? data : Buffer.from(data || []),
@@ -2854,7 +2873,9 @@ async function deliver(params) {
         if (draft.uid) {
           await exclusive(account.id, async () => {
             const password = await secretFor(account);
-            await remote.withClient(account, password, (client) => remote.removeUid(client, draft.folder_path, draft.uid, draft.uid_validity));
+            actions.assertIdentityReady(draft.id);
+            const current = db.messageById(draft.id);
+            if (current) await remote.withClient(account, password, (client) => remote.removeUid(client, current.folder_path, current.uid, current.uid_validity));
           });
         }
       } catch { /* local removal still happens */ }
@@ -3066,7 +3087,9 @@ function answer(channel, args) {
         const paintFirst = !(params && params.full === true)
           && stored.body_complete !== 1
           && usableStoredBody(stored);
-        const row = paintFirst ? stored : await ensureBody(stored);
+        let row;
+        try { row = paintFirst ? stored : await ensureBody(stored); }
+        catch (error) { return fail(error.code || "read", error.message); }
         if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
         if (paintFirst) queueOpenFill(stored);
         const members = db.messagesByThread(row.account_id, row.thread_id).map(listRow);
@@ -3078,7 +3101,9 @@ function answer(channel, args) {
       })();
     case "mail:readEmail":
       return (async () => {
-        const row = await ensureBody(db.messageById(params && params.emailId));
+        let row;
+        try { row = await ensureBody(db.messageById(params && params.emailId)); }
+        catch (error) { return fail(error.code || "read", error.message); }
         if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
         return ok(detailOf(row));
       })();
@@ -3330,6 +3355,13 @@ function answer(channel, args) {
             });
             const appended = await remote.withClient(account, password, async (client) => {
               if (existing && existing.uid) {
+                actions.assertIdentityReady(existing.id);
+                const current = db.messageById(existing.id);
+                if (!current || current.folder_path !== existing.folder_path || current.uid !== existing.uid || current.uid_validity !== existing.uid_validity) {
+                  const error = new Error("This draft moved while it was being saved. Reopen its confirmed server copy before retrying.");
+                  error.code = "message_moving";
+                  throw error;
+                }
                 try { await remote.removeUid(client, existing.folder_path, existing.uid, existing.uid_validity); }
                 catch (error) { if (error?.code === "uid_validity_changed") throw error; /* replaced below */ }
               }
@@ -3347,7 +3379,7 @@ function answer(channel, args) {
           });
         } catch (error) {
           // The draft remains in the local cache when the server append fails.
-          if (error?.code === "uid_validity_changed") warning = error.message;
+          if (error?.code === "uid_validity_changed" || error?.code === "message_moving") warning = error.message;
         }
         emitAccounts();
         return ok({ emailId, draftId: emailId, remoteSaved, warning });
@@ -3357,15 +3389,18 @@ function answer(channel, args) {
         const row = db.messageById(params && params.emailId);
         if (row) {
           try {
+            actions.assertIdentityReady(row.id);
             const account = db.accountById(row.account_id);
             if (account && row.uid) {
               await exclusive(account.id, async () => {
                 const password = await secretFor(account);
-                await remote.withClient(account, password, (client) => remote.removeUid(client, row.folder_path, row.uid, row.uid_validity));
+                actions.assertIdentityReady(row.id);
+                const current = db.messageById(row.id);
+                if (current) await remote.withClient(account, password, (client) => remote.removeUid(client, current.folder_path, current.uid, current.uid_validity));
               });
             }
           } catch (error) {
-            if (error?.code === "uid_validity_changed") return fail(error.code, error.message);
+            if (error?.code === "uid_validity_changed" || error?.code === "message_moving") return fail(error.code, error.message);
             // Drop the local row even if the server delete fails.
           }
           db.deleteMessage(row.id);

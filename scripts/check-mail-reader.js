@@ -231,14 +231,14 @@ async function assertDownloadedBodyStaysOnTheRequestedUid() {
   const remote = require('../host/mail/remote');
   const other = { uid: 2, envelope: { subject: 'Other' }, source: source('Other', 'Other body'), flags: new Set() };
   const chosen = { uid: 9, envelope: { subject: 'Chosen' }, source: source('Chosen', 'Chosen body'), flags: new Set(['\\Seen']) };
-  const fetched = await remote.fetchSource(fakeImap([other, chosen]), 'INBOX', 9);
+  const fetched = await remote.fetchSource(fakeImap([other, chosen]), 'INBOX', 9, 4);
   assert.equal(fetched && fetched.uid, 9);
   assert.match(fetched.textBody || '', /Chosen body/);
   assert.doesNotMatch(fetched.textBody || '', /Other body/);
-  assert.equal(await remote.fetchSource(fakeImap([other]), 'INBOX', 9), null);
+  assert.equal(await remote.fetchSource(fakeImap([other]), 'INBOX', 9, 4), null);
   const flagsOnly = { uid: 9, envelope: { subject: 'Chosen' }, flags: new Set() };
   const withBody = { uid: 9, envelope: { subject: 'Chosen' }, source: source('Chosen', 'Chosen body'), flags: new Set(['\\Seen']) };
-  const merged = await remote.fetchSource(fakeImap([flagsOnly, withBody]), 'INBOX', 9);
+  const merged = await remote.fetchSource(fakeImap([flagsOnly, withBody]), 'INBOX', 9, 4);
   assert.match(merged.textBody || '', /Chosen body/);
 
   const stored = new Map();
@@ -254,6 +254,7 @@ async function assertDownloadedBodyStaysOnTheRequestedUid() {
     },
     exclusive: async (_id, fn) => fn(),
     priorityWaiting: () => false,
+    actions: { assertIdentityReady() {} },
     secretFor: async () => 'secret',
     remote: {
       withClient: async (_account, _password, fn) => fn({}),
