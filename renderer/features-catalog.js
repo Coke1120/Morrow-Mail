@@ -64,7 +64,7 @@
         id: "bot-bridge",
         title: "Bot bridge",
         category: "Accounts",
-        blurb: "An optional loopback API lets a bot read cached mail and propose drafts. It stays off until you turn it on. Opening a proposal does not send it.",
+        blurb: "An optional loopback API lets a bot read cached mail and propose inert drafts. A separate send permission allows immediate plain-text mail. Access starts off; see CLI for capabilities, Tailscale setup, and revocation limits.",
       },
       {
         id: "calendar",

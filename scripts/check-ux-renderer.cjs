@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('morrow',{
 });
 contextBridge.exposeInMainWorld('uxFixture',{queueWorks(){queueReady=true;queue.push({id:'failed-fixture',accountId:'a',subject:'Failed queued mail',to:'recipient@example.test',sendAt:'2026-10-18T08:00:00Z',status:'failed',error:'Fixture failure'});},readyUpdate(){update={enabled:true,downloaded:true,version:'9.9.9-fixture',lastCheckedAt:'2026-10-18T08:00:00Z'};},failRead(){failRead=true;messages[0].unread=true;},populate(){populated=true;},saveWorks(){failSave=false;},counts(){return calls.reduce((out,row)=>(out[row.channel]=(out[row.channel]||0)+1,out),{});},last(channel){for(let i=calls.length-1;i>=0;i-=1)if(calls[i].channel===channel)return calls[i].payload;return null;},emit(channel,payload){if(listeners[channel])listeners[channel](payload);},rejectReader(){rejectReader=true;}});
 `);
+const rendererErrors=[];
 let win;const run=async code=>{try{return await win.webContents.executeJavaScript(code,true);}catch(error){throw new Error('Fixture step failed: '+code.slice(0,100)+' '+error.message);}};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function shot(name){if(!out)return;fs.mkdirSync(out,{recursive:true});await sleep(300);fs.writeFileSync(path.join(out,name+'.png'),(await win.webContents.capturePage()).toPNG());}
@@ -90,7 +91,7 @@ async function waitFor(code){for(let i=0;i<60;i++){if(await run(code))return;awa
 app.whenReady().then(async()=>{
  session.defaultSession.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']},(_d,cb)=>cb({cancel:true}));
  win=new BrowserWindow({width:1180,height:820,show:true,webPreferences:{preload,contextIsolation:true,nodeIntegration:false,sandbox:true}});
- win.webContents.on('console-message',(_event,level,message)=>{if(level>=2)console.error('Renderer:',message);});
+ win.webContents.on('console-message',(_event,level,message)=>{if(level>=3)rendererErrors.push(message);if(level>=2)console.error('Renderer:',message);});
  await win.loadFile(path.join(root,'renderer/index.html'));
  await waitFor(`$('reader').textContent.includes('No mailbox yet')`);
  assert.equal(await run(`document.documentElement.dataset.nav`),'expanded');
@@ -231,6 +232,9 @@ app.whenReady().then(async()=>{
  assert.doesNotMatch(await run(`$('shortcuts-list').textContent`), /npm start/);
  await run(`$('features-panel').scrollTop = 0`);
  await shot('shortcuts');
+ const beforeCliCalls=await run('uxFixture.counts()');
+ const beforeCliErrors=rendererErrors.length;
+ win.setContentSize(1180,900);await sleep(100);
  await run(`$('features-tab-cli').click()`);
  await waitFor(`$('features-tab-cli').getAttribute('aria-selected')==='true' && !$('features-pane-cli').hidden`);
  assert.match(await run(`$('cli-title').textContent`), /^CLI$/);
@@ -239,10 +243,28 @@ app.whenReady().then(async()=>{
  assert.match(await run(`$('cli-list').textContent`), /npm start/);
  assert.match(await run(`$('cli-list').textContent`), /npm run check/);
  assert.match(await run(`$('cli-list').textContent`), /node scripts\/morrow-bot-call\.js/);
+ assert.match(await run(`document.title`),/Morrow Mail/);
+ assert.deepEqual((await run(`[...document.querySelectorAll('[data-bot-operation]')].map(node=>node.textContent).sort()`)),require('../host/bot/catalog').operations().sort());
+ assert.match(await run(`$('cli-unavailable').textContent`),/attachment upload\/attach\/download.*mailbox draft create\/edit\/delete.*calendar/);
+ await run(`document.querySelector('#cli-connection summary').focus()`);
+ assert.equal(await run(`document.activeElement===document.querySelector('#cli-connection summary')`),true);
+ await run(`document.querySelector('#cli-connection summary').click()`);
+ assert.equal(await run(`$('cli-connection').open`),true);
+ assert.match(await run(`$('cli-connection').textContent`),/v1.92\+.*readBridge: true.*0600.*Joining Tailscale alone/s);
+ await run(`$('cli-connection').scrollIntoView({block:'start'})`);
+ assert.equal(await run(`$('cli-connection').getBoundingClientRect().top >= $('features-tabs').getBoundingClientRect().bottom`),true,'sticky tabs must not cover scrolled help');
+ await shot('cli-tailscale');
+ await run(`document.querySelector('#cli-send-safety summary').click();$('cli-send-safety').scrollIntoView({block:'start'})`);
+ assert.match(await run(`$('cli-send-safety').textContent`),/before SMTP submission.*cannot be recalled.*same ID and content/s);
+ await shot('cli-send-boundary');
+ await run(`document.querySelector('#cli-json-examples summary').click()`);
+ assert.equal(await run(`JSON.parse(document.querySelector('[data-cli-json="send.json"]').textContent).bodyText`),'Plain text');
+ await run(`$('cli-connection').open=false;$('cli-send-safety').open=false;$('cli-json-examples').open=false`);
  await run(`document.querySelector('#cli-list [data-cli-copy="npm start"]').click()`);
  await waitFor(`$('cli-copy-status').textContent.length > 0`);
  assert.match(await run(`$('cli-copy-status').textContent`), /Command copied\. Morrow did not run it\.|Could not copy\. Select the command and copy it\./);
  await run(`$('cli-title').scrollIntoView({block:'start'})`);
+ assert.equal(await run(`$('cli-title').getBoundingClientRect().top >= $('features-tabs').getBoundingClientRect().bottom`),true,'sticky tabs must not cover the CLI heading');
  await shot('shortcuts-cli');
  await run(`([...document.querySelectorAll('#cli-list .shortcut-group')].find((node) => node.textContent === 'Bot bridge') || $('cli-title')).scrollIntoView({block:'start'})`);
  await shot('shortcuts-cli-bot');
@@ -254,7 +276,11 @@ app.whenReady().then(async()=>{
  await run(`$('features-tab-shortcuts').click(); $('features-panel').scrollTop = 0`);
  await shot('shortcuts-narrow');
  await run(`$('features-tab-cli').click(); $('cli-title').scrollIntoView({block:'start'})`);
+ assert.equal(await run(`$('features-pane-cli').scrollWidth <= $('features-pane-cli').clientWidth+1`),true,'CLI guide must wrap at the narrow viewport');
  await shot('shortcuts-cli-narrow');
+ const afterCliCalls=await run('uxFixture.counts()');
+ assert.deepEqual(afterCliCalls,beforeCliCalls,'reading CLI help and copying examples must not invoke host operations');
+ assert.deepEqual(rendererErrors.slice(beforeCliErrors),[],'CLI target flow must have no renderer errors');
  win.setContentSize(shortcutSize[0], shortcutSize[1]);
  await sleep(100);
  await run(`
@@ -471,7 +497,7 @@ app.whenReady().then(async()=>{
  await shot('partial-receipt-newer-compose');
  await run(`document.querySelector('dialog.delivery-receipt').close()`);
  const counts=await run('uxFixture.counts()');
- const result={result:'UX_FIXTURE_OK',network:'blocked',mailSendCalls:counts['mail:send'],explicitScheduleCalls:counts['mail:scheduleSend'],liveProviderCalls:0,delayedPartialReceipt:true,stalePartialPreserved:true};
+ const result={result:'UX_FIXTURE_OK',network:'blocked',mailSendCalls:counts['mail:send'],explicitScheduleCalls:counts['mail:scheduleSend'],liveProviderCalls:0,delayedPartialReceipt:true,stalePartialPreserved:true,featuresCli:{operations:11,detailsAndCopy:true,noHostCalls:true,noRendererErrors:true,viewports:['1180x900','720x900']}};
  if(out)fs.writeFileSync(path.join(out,'checks.json'),JSON.stringify(result,null,2)+'\n');
  console.log('UX_FIXTURE_OK');win.destroy();app.quit();
 }).catch(error=>{console.error(error);app.exit(1);}).finally(()=>fs.rmSync(temp,{recursive:true,force:true}));

@@ -449,12 +449,15 @@ function authenticate(header) {
   };
 }
 
-function recheck(ctx) {
+function recheck(ctx, scope) {
   if (!ctx) return false;
   const loaded = load();
   if (!loaded.ok || !loaded.store || !loaded.store.enabled) return false;
+  if (loaded.store.installationId !== ctx.installationId) return false;
   const grant = loaded.store.grants.find((item) => item.clientId === ctx.clientId && item.keyId === ctx.keyId);
   if (!grantUsable(grant, Date.now()) || grant.revision !== ctx.revision) return false;
+  if (scope && scope.accountId && !grant.accountIds.includes(scope.accountId)) return false;
+  if (scope && scope.capability && !grant.capabilities.includes(scope.capability)) return false;
   const verifier = Buffer.from(grant.verifier, "hex");
   if (verifier.length !== ctx.digest.length) return false;
   return crypto.timingSafeEqual(verifier, ctx.digest);

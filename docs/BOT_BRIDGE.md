@@ -35,7 +35,7 @@ On the Mac running Morrow, after the secret is in a file (the default endpoint i
 ```bash
 node scripts/morrow-bot-call.js \
   --token-file /path/to/morrow-bot-token \
-  --installation <installation-id-from-settings> \
+  --installation '<installation-id-from-settings>' \
   --operation bridge.describe \
   --params-file ./params.json
 ```
@@ -48,7 +48,7 @@ From the shared box, first configure and qualify Serve below, save its exact hos
 node scripts/morrow-bot-call.js \
   --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call \
   --token-file /path/to/morrow-bot-token \
-  --installation <installation-id-from-settings> \
+  --installation '<installation-id-from-settings>' \
   --operation bridge.describe \
   --params-file ./params.json
 ```
@@ -60,10 +60,26 @@ The client verifies TLS normally, rejects redirects and non-loopback plain HTTP,
 ```bash
 node scripts/morrow-bot-call.js \
   --token-file /path/to/morrow-bot-token \
-  --installation <installation-id-from-settings> \
+  --installation '<installation-id-from-settings>' \
   --operation mail.send \
-  --request-id <uuid> \
+  --request-id '<uuid>' \
   --params-file ./send.json
+```
+
+Replace the quoted installation ID and UUID placeholders. `send.json` contains:
+
+```json
+{"accountId":"ACCOUNT_ID","to":["recipient@example.test"],"subject":"Example","bodyText":"Plain text"}
+```
+
+Use an account ID from `accounts.list`. For a cached inbox list, `list.json` contains `{"accountId":"ACCOUNT_ID","folder":"inbox","limit":20}`:
+
+```bash
+node scripts/morrow-bot-call.js \
+  --token-file /path/to/morrow-bot-token \
+  --installation '<installation-id-from-settings>' \
+  --operation mail.list_cached \
+  --params-file ./list.json
 ```
 
 The published params are in `shared/bot-contract-v1.json`. Operations:
@@ -86,9 +102,17 @@ Cached reads do not mark mail read and do not download a missing body. `mail.att
 
 SMTP may accept some recipients and reject others. That receipt is persisted before Sent filing. A partial result keeps state `submitted` and adds `partial`, `acceptedRecipients`, `rejectedRecipients` and a `PARTIAL_DELIVERY` warning. Matching request-id replays retain those details without submitting again. Do not retry the whole original recipient list; review the rejected addresses separately. Settings Activity also shows the partial-delivery warning.
 
+Pending bot sends revalidate the current installation, grant revision/expiry, listener enabled flag, mailbox scope, `mail.send` capability and connected account after From resolution and before claiming the request. They revalidate again inside the mailbox queue, after any credential refresh, immediately before invoking the SMTP transport. A pre-submit authorization denial returns `UNAUTHENTICATED`; if a durable claim already exists it is finalized as `rejected`, and matching replays never submit it again. If that final receipt cannot be persisted, the original claim remains conservative and reports `SEND_OUTCOME_UNKNOWN`.
+
+The cancellation boundary is the SMTP transport invocation. Once submission has begun, revoke/disable cannot recall it: Morrow still persists an acceptance or uncertain outcome, and an HTTP response may be withheld after access changes. Check the receipt in Settings Activity and retain the original request id; never infer that no mail was sent from a disconnected or unauthorized response. The ordinary compose/scheduled send path does not use the bot authorization gate.
+
+Separately proposed CLI work remains draft CRUD with revision checks and scoped attachment handles/downloads, followed by CLI packaging/help. Those operations and scopes are not added by this authorization fix.
+
 ## Tailscale Serve
 
 These notes are for a later operator session on the Mac. This repository change does not install Tailscale, does not change a live tailnet, and does not enable Funnel.
+
+Use Tailscale v1.92+ for app-capability forwarding. Both devices need tailnet access, HTTPS must be enabled, and the tailnet policy must permit the chosen host/port and grant `com.coke1120.morrow-mail/bot-access` with `readBridge: true`. The app's bearer, mailbox scopes and installation pairing are still required. See the [Tailscale Serve documentation](https://tailscale.com/docs/features/tailscale-serve).
 
 Serve should reverse-proxy to the loopback listener:
 

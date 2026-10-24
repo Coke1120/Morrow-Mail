@@ -13,6 +13,8 @@ function invoke(endpoint, scenario = {}) {
   const script = path.join(__dirname, "morrow-bot-call.js");
   const token = "synthetic-client-token";
   const result = { status: null, stdout: "", stderr: "", requests: [], tokenReads: 0 };
+  const argv = scenario.argv || ["--endpoint", endpoint, "--token-file", "/synthetic-token",
+    "--installation", "synthetic-installation", "--operation", "bridge.describe"];
   const exited = {};
   let deadline;
   function transport(protocol) {
@@ -28,6 +30,7 @@ function invoke(endpoint, scenario = {}) {
             return;
           }
           const request = JSON.parse(body);
+          result.requests.at(-1).body = request;
           assert.strictEqual(options.headers.authorization, `Bearer ${token}`);
           const res = new EventEmitter();
           res.statusCode = scenario.status || 200;
@@ -49,7 +52,7 @@ function invoke(endpoint, scenario = {}) {
   const context = {
     Buffer, URL,
     setTimeout(fn, ms) {
-      assert.strictEqual(ms, 5000);
+      assert.strictEqual(ms, argv[argv.indexOf("--operation") + 1] === "mail.send" ? 30000 : 5000);
       deadline = fn;
       return { unref() {} };
     },
@@ -58,6 +61,7 @@ function invoke(endpoint, scenario = {}) {
       if (id === "http" || id === "https") return transport(id);
       if (id === "fs") return {
         readFileSync(file) {
+          if (file === "/synthetic-params") return JSON.stringify(scenario.params || {});
           assert.strictEqual(file, "/synthetic-token");
           result.tokenReads += 1;
           return `${token}\n`;
@@ -66,8 +70,7 @@ function invoke(endpoint, scenario = {}) {
       return require(id);
     },
     process: {
-      argv: ["node", script, "--endpoint", endpoint, "--token-file", "/synthetic-token",
-        "--installation", "synthetic-installation", "--operation", "bridge.describe"],
+      argv: ["node", script, ...argv],
       stdout: { write(text) { result.stdout += text; } },
       stderr: { write(text) { result.stderr += text; } },
       exit(status) { result.status = status; throw exited; },
@@ -114,4 +117,4 @@ function run() {
   console.log("bot-client-ok");
 }
 
-module.exports = { run };
+module.exports = { run, invoke };
