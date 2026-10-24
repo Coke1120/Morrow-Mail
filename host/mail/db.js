@@ -164,6 +164,7 @@ function migrate() {
   } catch { /* fresh table already has the columns */ }
 
   run(`CREATE INDEX IF NOT EXISTS messages_folder ON messages(account_id, folder_path, list_sort_ts)`);
+  run(`CREATE INDEX IF NOT EXISTS messages_uid ON messages(account_id, folder_path, uid_validity, uid)`);
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "recipient_headers_json")) {
     run("ALTER TABLE messages ADD COLUMN recipient_headers_json TEXT");
   }
@@ -806,6 +807,7 @@ function localOutgoingAttachments(json) {
 }
 
 function applyFolderSync(accountId, folderPath, report) {
+  let flagsChanged = false;
   const result = transaction(() => {
     const before = changeStamp();
     const previous = get(
@@ -913,6 +915,15 @@ function applyFolderSync(accountId, folderPath, report) {
       }
       indexText(id);
     }
+    for (const flags of Array.isArray(report.flags) ? report.flags : []) {
+      const row = get("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
+        [accountId, folderPath, Number(flags.uid), report.validity]);
+      if (!row || messageHeld(row.id)) continue;
+      const patch = {};
+      if (typeof flags.unread === "boolean" && !flagHeld(row.id, "read")) patch.unread = flags.unread ? 1 : 0;
+      if (typeof flags.starred === "boolean" && !flagHeld(row.id, "star")) patch.starred = flags.starred ? 1 : 0;
+      if (updateChanged("messages", patch, "id = ?", [row.id])) flagsChanged = true;
+    }
     const cursor = report.uidCursor == null ? null : Number(report.uidCursor);
     const done = report.windowDone === true ? 1 : (report.windowDone === false ? 0 : null);
     const horizon = horizonWrite(report);
@@ -950,7 +961,7 @@ function applyFolderSync(accountId, folderPath, report) {
   // Observation-only freshness is session state, like engine syncScopes. It must
   // not make an otherwise unchanged mailbox dirty on every background poll.
   if (!report.keepOthers) observedSync.set(JSON.stringify([accountId, folderPath, report.validity || null]), Date.now());
-  return result;
+  return result || flagsChanged;
 }
 
 function uidsFor(accountId, folderPath) {
@@ -958,6 +969,14 @@ function uidsFor(accountId, folderPath) {
     "SELECT uid FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0",
     [accountId, folderPath]
   ).map((row) => Number(row.uid));
+}
+
+// Index-backed rotating flag pages, newest first. No bodies or full UID list.
+function flagUidsFor(accountId, folderPath, validity, beforeUid = 0) {
+  return all(`SELECT DISTINCT uid FROM messages
+    WHERE account_id = ? AND folder_path = ? AND uid_validity = ? AND uid > 0
+    ${beforeUid > 0 ? "AND uid < ?" : ""} ORDER BY uid DESC LIMIT 200`,
+  [accountId, folderPath, validity, ...(beforeUid > 0 ? [beforeUid] : [])]).map((row) => Number(row.uid));
 }
 
 function messageByUid(accountId, folderPath, uid, validity) {
@@ -1362,7 +1381,7 @@ function maxActionGeneration(messageId) {
 }
 
 function messageHeld(id) {
-  const rows = mailActionsForMessage(id);
+  const rows = all("SELECT phase, receipt, intent_json FROM mail_actions WHERE message_id = ?", [id]);
   return rows.some((row) => {
     let intent = {};
     try { intent = JSON.parse(row.intent_json); } catch { intent = {}; }
@@ -1370,6 +1389,17 @@ function messageHeld(id) {
     if (row.phase === "accepted" || row.phase === "publishing") return true;
     return row.phase === "closed" && row.receipt === "unknown";
   });
+}
+
+function flagHeld(id, kind) {
+  const rows = all("SELECT phase, receipt, intent_json FROM mail_actions WHERE message_id = ? ORDER BY generation DESC", [id]);
+  for (const row of rows) {
+    let intent;
+    try { intent = JSON.parse(row.intent_json); } catch { continue; }
+    if (!intent || intent.kind !== kind || row.receipt === "superseded") continue;
+    return row.phase === "accepted" || row.phase === "publishing" || row.receipt === "unknown";
+  }
+  return false;
 }
 
 function readOp(id) {
@@ -1716,6 +1746,7 @@ module.exports = {
   primaryMailboxes,
   applyFolderSync,
   uidsFor,
+  flagUidsFor,
   messageByUid,
   messageByRfc,
   pruneMissing,

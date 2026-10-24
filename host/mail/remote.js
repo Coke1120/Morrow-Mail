@@ -391,7 +391,7 @@ const FETCH_FIELDS = {
   source: { maxLength: SOURCE_CAP },
 };
 
-async function searchUids(client, folderPath, query) {
+async function searchUids(client, folderPath, query, flagPage) {
   const lock = await client.getMailboxLock(folderPath);
   try {
     const box = client.mailbox || {};
@@ -404,9 +404,23 @@ async function searchUids(client, folderPath, query) {
       throwRate(error);
       throw error;
     }
+    const flags = [];
+    // Share the selection/lock with UID reconciliation. Never fetch bodies for
+    // this rotating page, or apply flags from a different mailbox generation.
+    if (flagPage && validity === Number(flagPage.validity) && validity > 0) {
+      const wanted = new Set((flagPage.uids || []).filter((uid) => Number.isSafeInteger(uid) && uid > 0).slice(0, 200));
+      if (wanted.size) {
+        for await (const message of client.fetch([...wanted].join(","), { uid: true, flags: true }, { uid: true })) {
+          const uid = Number(message.uid);
+          if (!wanted.has(uid) || !(message.flags instanceof Set)) continue;
+          flags.push({ uid, unread: !message.flags.has("\\Seen"), starred: message.flags.has("\\Flagged") });
+        }
+      }
+    }
     return {
       uids: (uids || []).map(Number).filter((uid) => uid > 0),
       validity,
+      flags,
       exists: Number(box.exists) || 0,
       unseen: typeof box.unseen === "number" ? box.unseen : null,
     };
@@ -531,9 +545,19 @@ async function readPart(client, folderPath, uid, part) {
   }
 }
 
-async function moveUid(client, folderPath, uid, destination) {
+function assertUidValidity(client, expected) {
+  const actual = Number(client.mailbox && client.mailbox.uidValidity);
+  if (Number.isSafeInteger(Number(expected)) && Number(expected) > 0 && actual === Number(expected)) return;
+  const error = new Error("This folder changed on the server. No message was changed. Sync the folder and try again.");
+  error.code = "uid_validity_changed";
+  error.operationIssued = false;
+  throw error;
+}
+
+async function moveUid(client, folderPath, uid, destination, expectedValidity) {
   const lock = await client.getMailboxLock(folderPath);
   try {
+    assertUidValidity(client, expectedValidity);
     const moved = await client.messageMove(String(uid), destination, { uid: true });
     const next = moved && moved.uidMap && moved.uidMap.get(Number(uid));
     let validity = null;
@@ -550,9 +574,10 @@ async function moveUid(client, folderPath, uid, destination) {
   }
 }
 
-async function changeFlags(client, folderPath, uid, add, remove) {
+async function changeFlags(client, folderPath, uid, add, remove, expectedValidity) {
   const lock = await client.getMailboxLock(folderPath);
   try {
+    assertUidValidity(client, expectedValidity);
     if (add.length) await client.messageFlagsAdd(String(uid), add, { uid: true });
     if (remove.length) await client.messageFlagsRemove(String(uid), remove, { uid: true });
   } finally {
@@ -560,9 +585,10 @@ async function changeFlags(client, folderPath, uid, add, remove) {
   }
 }
 
-async function removeUid(client, folderPath, uid) {
+async function removeUid(client, folderPath, uid, expectedValidity) {
   const lock = await client.getMailboxLock(folderPath);
   try {
+    assertUidValidity(client, expectedValidity);
     await client.messageDelete(String(uid), { uid: true });
   } finally {
     lock.release();

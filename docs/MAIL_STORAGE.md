@@ -81,6 +81,13 @@ to update `synced_at`. After a restart, freshness falls back to the last durable
 sync change until a new observation arrives. New mail, deletions, UIDVALIDITY
 resets, search index changes, counts, cursors, and real auth changes remain durable.
 
+Completed folders also reconcile external read/star changes with one indexed page
+of up to 200 cached UIDs per pass, using flags-only FETCH. Pages rotate from newer
+to older UIDs and wrap; their cursor stays in session memory. Pending or unknown
+local flag writes retain their affected field until resolved. Unchanged flag
+pages do not append a journal record. See
+[mail identity and flag reconciliation](adr/2026-10-24-mail-identity-flags-discovery.md).
+
 ## Maintenance and limits
 
 - Back up the SQLite file **and both journal files together**, with the app

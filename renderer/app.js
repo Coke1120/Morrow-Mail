@@ -3737,7 +3737,36 @@ function fillPresets(cards) {
 
 let discoverGen = 0;
 let discoverTimer = 0;
-let customHostsEdited = false;
+const customEndpointEdits = new Set();
+let discoveryEmail = "";
+let discoveredProfile = "";
+
+function clearDiscoveredEndpoints() {
+  for (const kind of ["imap", "smtp"]) {
+    if (customEndpointEdits.has(kind)) continue;
+    $(kind + "-host").value = "";
+    $(kind + "-port").value = kind === "imap" ? "993" : "465";
+    $(kind + "-tls").checked = true;
+  }
+}
+
+function prepareDiscoveryAddress() {
+  const email = $("email").value.trim();
+  if (email.toLowerCase() !== discoveryEmail) {
+    clearDiscoveredEndpoints();
+    if (discoveredProfile && $("profile").value === discoveredProfile) $("profile").value = "custom";
+    discoveredProfile = "";
+    discoveryEmail = email.toLowerCase();
+    syncCustomFields();
+  }
+  return email;
+}
+
+function cancelDiscovery() {
+  discoverGen += 1;
+  if (discoverTimer) clearTimeout(discoverTimer);
+  discoverTimer = 0;
+}
 
 function yahooPasswordAccount(profile, email) {
   if (profile === "yahoo" || profile === "yahoo_jp") return true;
@@ -3763,7 +3792,7 @@ function syncCustomFields() {
 }
 
 function manualCustomHosts() {
-  return customHostsEdited && $("profile") && $("profile").value === "custom" && $("imap-host") && $("imap-host").value.trim() && $("smtp-host") && $("smtp-host").value.trim();
+  return customEndpointEdits.has("imap") && customEndpointEdits.has("smtp") && $("profile").value === "custom" && $("imap-host").value.trim() && $("smtp-host").value.trim();
 }
 
 function applyDiscovery(found) {
@@ -3772,19 +3801,21 @@ function applyDiscovery(found) {
   if (!select || !select.options) return;
   const profile = String(found.profile || "");
   const hasCard = profile && [...select.options].some((option) => option.value === profile);
-  if (hasCard && found.source !== "autoconfig" && found.source !== "srv") {
+  if (hasCard && !customEndpointEdits.size && found.source !== "autoconfig" && found.source !== "srv") {
     select.value = profile;
+    discoveredProfile = profile;
     syncCustomFields();
     return;
   }
-  if (!found.imap && !found.smtp) return;
+  clearDiscoveredEndpoints();
   select.value = "custom";
-  if (found.imap && found.imap.host && $("imap-host")) {
+  discoveredProfile = "";
+  if (!customEndpointEdits.has("imap") && found.imap && found.imap.host && $("imap-host")) {
     $("imap-host").value = found.imap.host;
     $("imap-port").value = String(found.imap.port || "");
     $("imap-tls").checked = found.imap.tls !== false;
   }
-  if (found.smtp && found.smtp.host && $("smtp-host")) {
+  if (!customEndpointEdits.has("smtp") && found.smtp && found.smtp.host && $("smtp-host")) {
     $("smtp-host").value = found.smtp.host;
     $("smtp-port").value = String(found.smtp.port || "");
     $("smtp-tls").checked = found.smtp.tls !== false;
@@ -3795,7 +3826,7 @@ function applyDiscovery(found) {
 function scheduleDiscover() {
   syncPasswordHint();
   const gen = ++discoverGen;
-  const email = $("email") && $("email").value.trim();
+  const email = prepareDiscoveryAddress();
   if (discoverTimer) clearTimeout(discoverTimer);
   if (!email || !email.includes("@")) return;
   discoverTimer = setTimeout(() => {
@@ -3815,7 +3846,10 @@ function openImapDetails() {
 function chooseYahoo() {
   if (state.connectPending || state.oauthPending) return;
   openImapDetails();
-  customHostsEdited = false;
+  cancelDiscovery();
+  customEndpointEdits.clear();
+  clearDiscoveredEndpoints();
+  discoveredProfile = "";
   const select = $("profile");
   if (select && select.options && [...select.options].some((option) => option.value === "yahoo")) select.value = "yahoo";
   syncCustomFields();
@@ -9666,10 +9700,17 @@ async function connectImap() {
   paintConnectPending();
   setConnectStatus("Connecting…");
   try {
+    cancelDiscovery();
+    const gen = discoverGen;
+    const email = prepareDiscoveryAddress();
     if (!manualCustomHosts()) {
+      let found;
       try {
-        applyDiscovery(await call("mail:discoverMail", { email: $("email").value.trim() }));
+        found = await call("mail:discoverMail", { email });
       } catch { /* the selected provider still connects */ }
+      if ($("email").value.trim() !== email) throw new Error("The email address changed. Review the servers and choose Connect again.");
+      if (gen !== discoverGen) throw new Error("The account details changed. Review the servers and choose Connect again.");
+      applyDiscovery(found);
     }
     const view = await call("mail:connectImapSmtp", { ...connectPayload(), expectedAccountId: state.reconnectAccountId || undefined });
     $("password").value = "";
@@ -12184,7 +12225,7 @@ async function saveDraft() {
     state.draftId = (saved && (saved.emailId || saved.draftId)) || state.draftId;
     if (!state.draftId) throw new Error("Draft could not be saved. Your text is still here.");
     state.composeBaseline = snapshot;
-    setComposeStatus(saved && saved.remoteSaved === false ? "Draft saved on this computer. Server copy could not be updated." : "Draft saved.");
+    setComposeStatus(saved && saved.remoteSaved === false ? "Draft saved on this computer. " + (saved.warning || "Server copy could not be updated.") : "Draft saved.");
   });
 }
 
@@ -14463,7 +14504,15 @@ function openConnectFor(account) {
   $("email").readOnly = !!account;
   $("username").value = account?.imapUsername || "";
   $("password").value = "";
-  customHostsEdited = !!(account && account.imapSmtpProfile === "custom");
+  cancelDiscovery();
+  customEndpointEdits.clear();
+  discoveredProfile = "";
+  discoveryEmail = String(account?.email || "").trim().toLowerCase();
+  clearDiscoveredEndpoints();
+  if (account && account.imapSmtpProfile === "custom") {
+    customEndpointEdits.add("imap");
+    customEndpointEdits.add("smtp");
+  }
   if (account) {
     $("profile").value = account.imapSmtpProfile || "custom";
     const custom = account.imapSmtpCustom;
@@ -14474,7 +14523,10 @@ function openConnectFor(account) {
     }
     openImapDetails();
     syncCustomFields();
-  } else syncPasswordHint();
+  } else {
+    $("profile").value = "custom";
+    syncCustomFields();
+  }
   setConnectStatus("");
   paintConnectPending();
   openDialog("connect");
@@ -19697,16 +19749,21 @@ function wire() {
   $("undo").addEventListener("click", () => guard(undoRemoval));
   $("undo-send").addEventListener("click", cancelUndoSend);
   $("profile").addEventListener("change", () => {
-    if ($("profile").value !== "custom") customHostsEdited = false;
+    cancelDiscovery();
+    discoveredProfile = "";
+    if ($("profile").value !== "custom") {
+      customEndpointEdits.clear();
+      clearDiscoveredEndpoints();
+    }
     syncCustomFields();
   });
   $("connect-yahoo").addEventListener("click", chooseYahoo);
   $("email").addEventListener("input", scheduleDiscover);
   for (const id of ["imap-host", "smtp-host", "imap-port", "smtp-port"]) {
-    $(id).addEventListener("input", () => { customHostsEdited = true; });
+    $(id).addEventListener("input", () => { customEndpointEdits.add(id.split("-")[0]); });
   }
   for (const id of ["imap-tls", "smtp-tls"]) {
-    $(id).addEventListener("change", () => { customHostsEdited = true; });
+    $(id).addEventListener("change", () => { customEndpointEdits.add(id.split("-")[0]); });
   }
   $("search-form").addEventListener("submit", (event) => {
     event.preventDefault();
