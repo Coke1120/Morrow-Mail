@@ -39,6 +39,12 @@ The first-party shell in `renderer/` is still vanilla DOM. Use icons and motion 
 - When React lands in this shell, use **react-icons** and **motion.dev** (`motion/react`) heavily for icons, hover, and panel transitions.
 - Do not strip the existing Motion usage. `renderer/motion-ui.js` imports `motion`. `renderer/motion.bundle.js` exposes `window.morrowMotion`. `renderer/app.js` calls it for rows, panels, dialogs, and chrome press/hover. Keep `prefers-reduced-motion: reduce`.
 
+## Keep Features and help current
+
+- Every feature addition, change, or removal must update its corresponding **Features page/tab** in the same change. Update the hand-maintained catalog (`renderer/features-catalog.js`) and relevant tabs in `renderer/index.html` / `renderer/app.js`, including **CLI** for bot/API/command changes.
+- Keep capability/status descriptions, supported and unsupported operations, permissions/prerequisites, cancellation limits, command examples, and usage/help consistent with the implementation. Describe planned work as unavailable; do not present it as shipped.
+- Review those claims against the actual handlers/catalog/contract. Add or update consistency/regression checks and validate the affected rendered tab with synthetic data. Reviewers must check this synchronization before approving a feature change; passing host tests alone does not verify UI/help claims.
+
 ## OAuth consent
 
 Google connects mail, calendar, organize, Out of Office, and rules in one full consent. Microsoft uses two dialogs maximum: Outlook IMAP/SMTP only, then one Graph bundle for all API features. Never mix Outlook and Graph on an authorize URL, code exchange, or refresh. Reuse saved grants, request missing permissions incrementally, and preserve existing tokens after partial consent. Bot bridge stays separate. See `docs/OAUTH.md`.

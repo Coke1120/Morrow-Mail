@@ -1352,9 +1352,15 @@ async function settleOAuthMailbox(id) {
 
 async function connectOAuthAccount(providerInput, expectedAccountId) {
   const gen = ++oauthGeneration;
+  // OAuth reveals the email only after sign-in. Pin every currently connected
+  // incarnation so an implicit same-email reconnect cannot become a fresh add
+  // if that mailbox is removed while the browser is open.
+  const reconnects = db.listAccountRows().map(bindAccount);
+  const expected = expectedAccountId ? reconnects.find(row => row.id === expectedAccountId) : null;
+  if (expectedAccountId && !expected) return fail("account_mismatch", "Sign in with the mailbox named in Reconnect. Existing accounts and credentials are unchanged.");
   let signed;
   try {
-    signed = await oauth.signIn(providerInput, oauthConfig.providerKey(providerInput) === "google" ? "bundle" : "imap", { expectedEmail: expectedAccountId ? db.accountById(expectedAccountId)?.email : undefined });
+    signed = await oauth.signIn(providerInput, oauthConfig.providerKey(providerInput) === "google" ? "bundle" : "imap", { expectedEmail: expected?.email });
   } catch (error) {
     if (error && error.code === "oauth_cancelled") return fail("oauth_cancelled", "Sign-in canceled.");
     return fail("oauth", error instanceof Error ? error.message : String(error));
@@ -1364,11 +1370,17 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
     return fail("oauth_cancelled", "Sign-in canceled.");
   }
   if (expectedAccountId) {
-    const expected = db.accountById(expectedAccountId);
-    if (!expected || expected.email.toLowerCase() !== String(signed.email).toLowerCase()) {
+    if (expected.email.toLowerCase() !== String(signed.email).toLowerCase()) {
       finishOAuthPage(signed, false, "Sign-in did not match the mailbox being reconnected.");
       return fail("account_mismatch", "Sign in with the mailbox named in Reconnect. Existing accounts and credentials are unchanged.");
     }
+  }
+  const reconnect = expected || reconnects.find(row => row.email.toLowerCase() === String(signed.email).toLowerCase());
+  try {
+    if (reconnect) assertAccountCurrent(reconnect);
+  } catch (error) {
+    finishOAuthPage(signed, false, error.message);
+    return fail("account_removed", error.message);
   }
   try {
     oauth.requirePurposeScopes(signed, signed.provider, "imap");
@@ -1494,12 +1506,13 @@ async function discoverMail(params) {
 }
 
 async function connectAccount(params) {
-  if (params.expectedAccountId) {
-    const expected = db.accountById(params.expectedAccountId);
-    if (!expected || expected.email.toLowerCase() !== String(params.email || "").trim().toLowerCase()) return fail("account_mismatch", "Reconnect must use the selected mailbox address. Cached work is unchanged.");
-  }
-  let profile = params && params.profile ? String(params.profile) : "custom";
   const email = params && typeof params.email === "string" ? params.email.trim() : "";
+  const selected = params.expectedAccountId ? db.accountById(params.expectedAccountId) : db.accountByEmail(email);
+  if (params.expectedAccountId) {
+    if (!selected || selected.email.toLowerCase() !== email.toLowerCase()) return fail("account_mismatch", "Reconnect must use the selected mailbox address. Cached work is unchanged.");
+  }
+  const reconnect = selected ? bindAccount(selected) : null;
+  let profile = params && params.profile ? String(params.profile) : "custom";
   const typedUsername = params && typeof params.username === "string" ? params.username : "";
   const password = params && typeof params.password === "string" ? params.password : "";
   if (!email.includes("@")) return fail("invalid", "Enter the email address for this account.");
@@ -1530,14 +1543,17 @@ async function connectAccount(params) {
       draft.folders = listed.folders;
       draft.delimiter = listed.delimiter;
     });
+    if (reconnect) assertAccountCurrent(reconnect);
     try {
       await remote.verifySmtp(draft, password);
     } catch (error) {
       const message = remote.explain(error, password, draft);
       if (/rejected the password/i.test(message)) throw error;
     }
+    // No await between this check and the account/credential commits below.
+    if (reconnect) assertAccountCurrent(reconnect);
   } catch (error) {
-    return fail("auth", remote.explain(error, password, draft));
+    return fail(error?.code === "account_removed" ? "account_removed" : "auth", remote.explain(error, password, draft));
   }
   const existing = db.accountByEmail(email);
   const id = existing ? existing.id : draft.id;
@@ -2911,15 +2927,19 @@ async function submitSmtp(input) {
   if (!account || !options || !messageId) return { kind: "rejected", refusal: "Missing message id." };
   let accepted = false;
   let receipt;
+  let authorizationError;
   try {
     const sentResult = await exclusive(account.id, async () => {
       let info;
       let password = "";
-      if (smtpSenderForTest) info = await smtpSenderForTest({ account, options, messageId });
-      else {
-        password = await secretFor(account);
-        info = await remote.sendSmtp(account, password, { ...options, messageId });
+      if (!smtpSenderForTest) password = await secretFor(account);
+      // Keep this gate synchronous and adjacent to the transport invocation:
+      // mailbox queueing and OAuth refresh may both outlive a bot grant.
+      if (input.beforeSubmit) {
+        try { input.beforeSubmit(); } catch (error) { authorizationError = error; throw error; }
       }
+      if (smtpSenderForTest) info = await smtpSenderForTest({ account, options, messageId });
+      else info = await remote.sendSmtp(account, password, { ...options, messageId });
       accepted = true;
       receipt = deliveryReceipt.fromSmtp(info, messageId);
       // Persist acceptance before any best-effort Sent filing can await I/O.
@@ -2932,6 +2952,7 @@ async function submitSmtp(input) {
     });
     return { kind: "accepted", messageId: sentResult.messageId, emailId: sentResult.emailId, receipt };
   } catch (error) {
+    if (authorizationError) return { kind: "not_submitted" };
     const refusal = accepted ? "" : provedRefusal(error);
     if (refusal) return { kind: "rejected", refusal };
     return { kind: "unknown", detail: remote.explain(error, ""), receipt };

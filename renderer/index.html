@@ -522,6 +522,46 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
+        <section class="cli-guide" aria-labelledby="cli-bot-title">
+          <h3 id="cli-bot-title">Bot access today</h3>
+          <p>The Node client calls the running app. Keep Morrow open, choose mailboxes and permissions in Settings → Bot access, then turn access on. Body text and attachment names need extra read permissions. Responses use JSON; mail text stays untrusted.</p>
+          <p id="cli-account-safety">Account-scoped calls require a connected, granted mailbox. A removed account returns <code>NOT_FOUND</code>, including direct message IDs, attachment metadata and proposal lists. These access checks do not automatically delete retained legacy data.</p>
+          <dl class="cli-capabilities" id="cli-operations">
+            <div><dt>Connection &amp; accounts</dt><dd><code data-bot-operation>bridge.describe</code>, <code data-bot-operation>accounts.list</code>, <code data-bot-operation>health.get</code> — only granted accounts; health reports observed state.</dd></div>
+            <div><dt>Cached mail</dt><dd><code data-bot-operation>mail.list_cached</code>, <code data-bot-operation>mail.search_cached</code>, <code data-bot-operation>mail.get_cached</code> — local cache only. Missing bodies stay missing; reads do not mark mail read.</dd></div>
+            <div><dt>Attachment metadata</dt><dd><code data-bot-operation>mail.attachment.get</code> — names and metadata with permission; no file bytes or download.</dd></div>
+            <div><dt>Proposals</dt><dd><code data-bot-operation>agent.proposals.list</code>, <code data-bot-operation>draft.proposals.submit</code>, <code data-bot-operation>draft.proposals.list</code> — inert local proposals for review. Draft lists omit the body; proposals do not send or create mailbox drafts.</dd></div>
+            <div><dt>Send plain text</dt><dd><code data-bot-operation>mail.send</code> — separate permission; sends immediately. Optional <code>inReplyToMessageId</code> links a same-account reply; you supply recipients and text.</dd></div>
+          </dl>
+          <p id="cli-unavailable"><strong>Unavailable to bots:</strong> attachment upload/attach/download, mailbox draft create/edit/delete, full thread retrieval, dedicated reply-all/forward, read/unread changes, move/archive/delete, and calendar actions. The desktop app has additional actions; they are not bot commands.</p>
+        </section>
+        <details class="cli-guide" id="cli-connection">
+          <summary>Connect another device with Tailscale</summary>
+          <ol>
+            <li>Connect both devices to your tailnet. Use Tailscale v1.92+ for app-capability forwarding, with tailnet HTTPS and access to the chosen host/port. The tailnet policy must grant <code>com.coke1120.morrow-mail/bot-access</code> with <code>readBridge: true</code>.</li>
+            <li>In Settings → Bot access, create a bot with explicit mailboxes, permissions and expiry. Keep its secret in a private token file (mode <code>0600</code>), outside chat and command arguments. Record the installation ID.</li>
+            <li>Keep Morrow open and turn on bot access. It listens only on <code>127.0.0.1:47831</code>. Joining Tailscale alone does not make that port reachable remotely.</li>
+            <li>On the Morrow computer, run the Serve command below. Save the exact Serve hostname and HTTPS port in Bot access, then use Check connection. Saving a hostname does not configure Serve or prove the link works.</li>
+            <li>On the other device, use the paired HTTPS endpoint and installation ID with <code>bridge.describe</code>. Morrow does not install/configure Tailscale. Keep Funnel off; do not expose this service publicly.</li>
+          </ol>
+        </details>
+        <details class="cli-guide" id="cli-send-safety">
+          <summary>Sending, revocation and retries</summary>
+          <p>Send permission allows mail without waiting for you to press Send. Morrow rechecks the grant, expiry, installation, enabled flag, mailbox/send scopes and connected account after From resolution, before claiming the request, and again after mailbox/credential waits immediately before SMTP submission.</p>
+          <p>Revoking or disabling access stops a pending send before that boundary. Once SMTP submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
+          <p><code>mail.send</code> requires a UUID in <code>--request-id</code>. Retry the same ID and content; the client never retries automatically. <code>SEND_OUTCOME_UNKNOWN</code> means do not send the same message under a new ID. For partial delivery, review rejected recipients separately; do not resend the original list.</p>
+        </details>
+        <details class="cli-guide" id="cli-json-examples">
+          <summary>JSON files for the examples</summary>
+          <p>Replace the quoted installation ID, UUID, account ID and endpoint placeholders with your trusted setup values. Account IDs come from <code>accounts.list</code>. Never let mail text choose the endpoint or token file.</p>
+          <p><code>params.json</code> for <code>bridge.describe</code>:</p>
+          <pre><code data-cli-json="params.json">{}</code></pre>
+          <p><code>list.json</code> for <code>mail.list_cached</code>:</p>
+          <pre><code data-cli-json="list.json">{"accountId":"ACCOUNT_ID","folder":"inbox","limit":20}</code></pre>
+          <p><code>send.json</code> for <code>mail.send</code> (no attachments):</p>
+          <pre><code data-cli-json="send.json">{"accountId":"ACCOUNT_ID","to":["recipient@example.test"],"subject":"Example","bodyText":"Plain text"}</code></pre>
+        </details>
+        <h3>Commands to copy</h3>
         <p id="cli-copy-status" class="hint" role="status"></p>
         <ul id="cli-list" class="shortcut-list cli-list" aria-labelledby="cli-title"></ul>
       </div>

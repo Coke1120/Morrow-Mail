@@ -9704,6 +9704,9 @@ function paintConnectPending() {
 
 async function connectImap() {
   if (state.connectPending || state.oauthPending) return;
+  // Dialog close clears selection while discovery may still be pending. Keep
+  // the request's original identity so it cannot turn into a fresh account add.
+  const expectedAccountId = state.reconnectAccountId || undefined;
   state.connectPending = true;
   paintConnectPending();
   setConnectStatus("Connecting…");
@@ -9720,7 +9723,7 @@ async function connectImap() {
       if (gen !== discoverGen) throw new Error("The account details changed. Review the servers and choose Connect again.");
       applyDiscovery(found);
     }
-    const view = await call("mail:connectImapSmtp", { ...connectPayload(), expectedAccountId: state.reconnectAccountId || undefined });
+    const view = await call("mail:connectImapSmtp", { ...connectPayload(), expectedAccountId });
     $("password").value = "";
     closeDialog("connect");
     showStatus(view && view.email ? `Connected ${view.email}. Downloading recent Inbox mail…` : "Connected.");
@@ -12529,7 +12532,7 @@ function shortcutCatalog(platform) {
 // Checkout commands already printed in README.md, package.json scripts,
 // docs/INDEPENDENT_UI.md, docs/PACKAGING.md, docs/UPDATER_TEST.md, and docs/BOT_BRIDGE.md.
 function cliNote() {
-  return "Shell commands for a checkout of this repo. There is no morrow command. Copy does not run the command.";
+  return "Shell commands for a checkout of this repo. There is no morrow command. The bot client needs Node and the matching checkout files; it has no --help command. Copy does not run the command.";
 }
 
 function cliCatalog() {
@@ -12551,10 +12554,10 @@ function cliCatalog() {
     { group: "Verify", command: "node scripts/check-windows-icon.js \"path/to/Morrow Mail.exe\"", action: "On Windows, check the installed executable icon and version strings. This does not clear the system icon cache." },
     { group: "Verify", command: "codesign --verify --deep --strict --verbose=2 \"dist/mac-arm64/Morrow Mail.app\"", action: "After a local ARM64 pack, this has to succeed. Ad hoc signing is not Developer ID or notarization." },
     { group: "Verify", command: "codesign -dv --verbose=4 \"dist/mac-arm64/Morrow Mail.app\"", action: "Print the signature. Expect Signature=adhoc and no Developer ID or TeamIdentifier." },
-    { group: "Bot bridge", command: "npm run bot:call", action: "Runs node scripts/morrow-bot-call.js. The script requires --token-file, --installation, and --operation. Pass the secret with --token-file, not --token." },
-    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation <installation-id-from-settings> --operation bridge.describe --params-file ./params.json", action: "Call the loopback bridge while Morrow is open and bot access is on. params.json for bridge.describe is an empty JSON object. Do not pass --token." },
-    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation <installation-id-from-settings> --operation bridge.describe --params-file ./params.json", action: "Same client against the saved HTTPS Serve address. The client rejects redirects and plain HTTP that is not 127.0.0.1." },
-    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation <installation-id-from-settings> --operation mail.send --request-id <uuid> --params-file ./send.json", action: "Sends only when that bot's access includes mail.send. --request-id must be a UUID. Retry that same id. The client does not retry on its own." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "Call the loopback bridge while Morrow is open and bot access is on. params.json is {}. Replace placeholders; use --token-file, never --token." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "After the Tailscale steps, use the exact paired HTTPS endpoint. TLS is verified; redirects and non-loopback plain HTTP are rejected." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.list_cached --params-file ./list.json", action: "List the granted account's cached inbox with the list.json example above. This does not fetch new mail or mark it read." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Already submitted SMTP cannot be recalled." },
     { group: "Tailscale Serve", command: "tailscale serve --bg --https=8443 --accept-app-caps=com.coke1120.morrow-mail/bot-access http://127.0.0.1:47831", action: "Run this on the computer where Morrow is open. Morrow does not run it. Settings copies the same command. The port stays 8443 until you save another HTTPS port. Do not run tailscale funnel." },
     { group: "Tailscale Serve", command: "tailscale serve status --json", action: "Show Serve status as JSON. Morrow does not run this." },
     { group: "Tailscale Serve", command: "tailscale funnel status --json", action: "Confirm Funnel is not serving this port. Do not run tailscale funnel." },
@@ -14588,7 +14591,7 @@ function openConnectFor(account) {
   if (state.oauthPending || state.connectPending) return;
   state.reconnectAccountId = account?.id || null;
   $("connect-title").textContent = account ? "Reconnect " + account.email : "Connect account";
-  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
+  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
   $("email").value = account?.email || "";
   $("email").readOnly = !!account;
   $("username").value = account?.imapUsername || "";
