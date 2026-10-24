@@ -234,6 +234,7 @@ function migrate() {
     status TEXT NOT NULL DEFAULT 'pending',
     error TEXT,
     message_id TEXT,
+    receipt_json TEXT,
     created_at INTEGER NOT NULL
   )`);
   if (!all("PRAGMA table_info(scheduled_sends)").some(row => row.name === "message_id")) {
@@ -242,6 +243,9 @@ function migrate() {
     // started. Preserve their payload but require review after this upgrade.
     run("UPDATE scheduled_sends SET status = 'unknown', error = ? WHERE status IN ('pending', 'failed')",
       ["This saved delivery needs review after the safety upgrade. Check Sent before recovering a copy; it will not send automatically."]);
+  }
+  if (!all("PRAGMA table_info(scheduled_sends)").some(row => row.name === "receipt_json")) {
+    run("ALTER TABLE scheduled_sends ADD COLUMN receipt_json TEXT");
   }
   run(`CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_sends(status, send_at)`);
   run(`CREATE TABLE IF NOT EXISTS inbox_rules (
@@ -852,20 +856,12 @@ function applyFolderSync(accountId, folderPath, report) {
         [accountId, folderPath, message.uid, report.validity]
       );
       if (!found && message.rfcMessageId) {
-        found = get(
+        const candidates = all(
           `SELECT id FROM messages
            WHERE account_id = ? AND folder_path = ? AND rfc_message_id = ? AND uid <= 0`,
           [accountId, folderPath, message.rfcMessageId]
         );
-      }
-      if (!found && message.subject) {
-        found = get(
-          `SELECT id FROM messages
-           WHERE account_id = ? AND folder_path = ? AND uid <= 0 AND subject = ?
-             AND abs(list_sort_ts - ?) < 120000
-           LIMIT 1`,
-          [accountId, folderPath, message.subject, message.listSortTs || 0]
-        );
+        if (candidates.length === 1) found = candidates[0];
       }
       const id = found ? found.id : (message.id || newMessageId());
       let unreadBit = message.unread ? 1 : 0;
@@ -1540,13 +1536,13 @@ function deleteSignature(id) {
 }
 
 function insertScheduled(row) {
-  const status = ["failed", "unknown", "sent"].includes(row.status) ? row.status : "pending";
+  const status = ["failed", "unknown", "sent", "partial"].includes(row.status) ? row.status : "pending";
   const error = status !== "pending" ? String(row.error || "Check this delivery before retrying.") : null;
   transaction(() => {
     run(
-      `INSERT INTO scheduled_sends (id, account_id, payload_json, send_at, status, error, message_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [row.id, row.accountId, row.payloadJson, row.sendAt, status, error, row.messageId || null, row.createdAt]
+      `INSERT INTO scheduled_sends (id, account_id, payload_json, send_at, status, error, message_id, receipt_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [row.id, row.accountId, row.payloadJson, row.sendAt, status, error, row.messageId || null, row.receiptJson || null, row.createdAt]
     );
   });
   return get("SELECT * FROM scheduled_sends WHERE id = ?", [row.id]);
@@ -1557,14 +1553,14 @@ function listScheduled(accountId) {
   if (accountId) {
     return all(
       `SELECT * FROM scheduled_sends
-       WHERE account_id = ? AND status IN ('pending', 'sending', 'failed', 'unknown', 'sent')
+       WHERE account_id = ? AND status IN ('pending', 'sending', 'failed', 'unknown', 'sent', 'partial')
        ORDER BY send_at ASC, created_at ASC`,
       [accountId]
     );
   }
   return all(
     `SELECT * FROM scheduled_sends
-     WHERE status IN ('pending', 'sending', 'failed', 'unknown', 'sent')
+     WHERE status IN ('pending', 'sending', 'failed', 'unknown', 'sent', 'partial')
      ORDER BY send_at ASC, created_at ASC`
   );
 }
@@ -1590,18 +1586,21 @@ function claimScheduled(id, messageId) {
   });
 }
 
-function acceptScheduled(id, messageId) {
+function acceptScheduled(id, messageId, receipt) {
+  const partial = !!receipt?.rejected?.length;
   return transaction(() => {
-    run("UPDATE scheduled_sends SET status = 'sent', message_id = ?, error = ? WHERE id = ? AND status = 'sending'",
-      [messageId, "SMTP accepted this message. If filing was interrupted, check Sent before recovering a copy. It will not send again automatically.", id]);
+    run("UPDATE scheduled_sends SET status = ?, message_id = ?, receipt_json = ?, error = ? WHERE id = ? AND status = 'sending'",
+      [partial ? "partial" : "sent", messageId, receipt ? JSON.stringify(receipt) : null,
+        partial ? require("./delivery-receipt").summary(receipt) : "SMTP accepted this message. If filing was interrupted, check Sent before recovering a copy. It will not send again automatically.", id]);
     if (db.getRowsModified()) return true;
-    return scheduledById(id)?.status === "sent";
+    return ["sent", "partial"].includes(scheduledById(id)?.status);
   });
 }
 
-function failScheduled(id, message, uncertain) {
-  transaction(() => run("UPDATE scheduled_sends SET status = ?, error = ? WHERE id = ? AND status = 'sending'",
-    [uncertain ? "unknown" : "failed", uncertain
+function failScheduled(id, message, uncertain, receipt) {
+  const partial = !!receipt?.rejected?.length;
+  transaction(() => run("UPDATE scheduled_sends SET status = ?, receipt_json = ?, error = ? WHERE id = ? AND status = 'sending'",
+    [partial ? "partial" : uncertain ? "unknown" : "failed", receipt ? JSON.stringify(receipt) : null, partial ? require("./delivery-receipt").summary(receipt) : uncertain
       ? `Delivery could not be confirmed. Check Sent before recovering a copy; it will not resend automatically. ${message || ""}`
       : `Not sent. ${message || "The send was refused."}`, id]));
 }

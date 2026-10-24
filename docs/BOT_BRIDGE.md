@@ -84,6 +84,8 @@ Cached reads do not mark mail read and do not download a missing body. `mail.att
 
 `mail.send` checks From against the same identities as compose before it writes a receipt. Recipients, subject, and body are untrusted. The body is plain text, and Morrow escapes it into the HTML part. A send is allowed only after a durable claim for that request id. One grant may send once per UTC minute and 10 times per UTC day. The installation may send 20 times per UTC day. A matching replay returns the same audit id and does not send again. There is no Tailscale Funnel path.
 
+SMTP may accept some recipients and reject others. That receipt is persisted before Sent filing. A partial result keeps state `submitted` and adds `partial`, `acceptedRecipients`, `rejectedRecipients` and a `PARTIAL_DELIVERY` warning. Matching request-id replays retain those details without submitting again. Do not retry the whole original recipient list; review the rejected addresses separately. Settings Activity also shows the partial-delivery warning.
+
 ## Tailscale Serve
 
 These notes are for a later operator session on the Mac. This repository change does not install Tailscale, does not change a live tailnet, and does not enable Funnel.

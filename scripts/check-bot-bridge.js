@@ -713,11 +713,11 @@ async function run() {
     let smtpCalls = 0;
     sendApi.setSmtpForTest(async () => {
       smtpCalls += 1;
-      return { messageId: "<smtp-stub@example.test>" };
+      return { messageId: "<smtp-stub@example.test>", accepted: ["ada@example.test"], rejected: ["bad@example.test"] };
     });
     const sendParams = {
       accountId: "acct-a",
-      to: ["ada@example.test"],
+      to: ["ada@example.test", "bad@example.test"],
       subject: "Hello",
       bodyText: "Plain body",
     };
@@ -742,6 +742,9 @@ async function run() {
     assert.strictEqual(smtpCalls, 1);
     assert.strictEqual(sent.json.data.idempotentReplay, false);
     assert.strictEqual(sent.json.data.state, "submitted");
+    assert.strictEqual(sent.json.data.partial, true);
+    assert.deepStrictEqual(sent.json.data.rejectedRecipients, ["bad@example.test"]);
+    assert.strictEqual(sent.json.meta.warnings[0].code, "PARTIAL_DELIVERY");
     assert.strictEqual(sent.json.data.messageId, "<smtp-stub@example.test>");
     assert.strictEqual(sent.json.meta.contentTrust, "untrusted_mail_data");
     const sendReplay = await callBridge({
@@ -755,6 +758,8 @@ async function run() {
     assert.strictEqual(smtpCalls, 1);
     assert.strictEqual(sendReplay.json.data.auditId, sent.json.data.auditId);
     assert.strictEqual(sendReplay.json.data.idempotentReplay, true);
+    assert.strictEqual(sendReplay.json.data.partial, true);
+    assert.deepStrictEqual(sendReplay.json.data.acceptedRecipients, ["ada@example.test"]);
     const mismatched = await callBridge({
       token: sender.secret,
       installationId,

@@ -1,5 +1,6 @@
 const { gate: updateGate } = require("../update-quiescence");
 const crypto = require("crypto");
+const deliveryReceipt = require("./delivery-receipt");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -2574,6 +2575,8 @@ const scheduledDelivering = new Set();
 function publicScheduled(row) {
   let payload = {};
   try { payload = JSON.parse(row.payload_json) || {}; } catch { payload = {}; }
+  let receipt = {};
+  try { receipt = JSON.parse(row.receipt_json) || {}; } catch { receipt = {}; }
   const out = {
     id: row.id,
     accountId: row.account_id,
@@ -2582,6 +2585,8 @@ function publicScheduled(row) {
     sendAt: new Date(row.send_at).toISOString(),
     status: scheduledDelivering.has(row.id) ? "sending" : (row.status || "pending"),
     messageId: row.message_id || undefined,
+    acceptedRecipients: deliveryReceipt.addresses(receipt.accepted),
+    rejectedRecipients: deliveryReceipt.addresses(receipt.rejected),
   };
   const cc = displayAddress(payload.cc);
   const bcc = displayAddress(payload.bcc);
@@ -2647,8 +2652,9 @@ function scheduledSnapshot(row) {
     accountId: row.account_id,
     payloadJson: row.payload_json,
     sendAt: row.send_at,
-    status: ["failed", "unknown", "sent"].includes(row.status) ? row.status : row.status === "sending" ? "unknown" : "pending",
+    status: ["failed", "unknown", "sent", "partial"].includes(row.status) ? row.status : row.status === "sending" ? "unknown" : "pending",
     messageId: row.message_id || null,
+    receiptJson: row.receipt_json || null,
     error: row.error || "",
     createdAt: row.created_at,
   };
@@ -2680,7 +2686,7 @@ function restoreScheduled(params) {
   if (!hasRecipient(payload.to, payload.cc, payload.bcc)) return fail("invalid", "That scheduled send cannot be restored.");
   const when = Number(snap.sendAt);
   if (!Number.isFinite(when)) return fail("invalid", "That scheduled send cannot be restored.");
-  const status = ["failed", "unknown", "sent"].includes(snap.status) ? snap.status : snap.status === "sending" ? "unknown" : "pending";
+  const status = ["failed", "unknown", "sent", "partial"].includes(snap.status) ? snap.status : snap.status === "sending" ? "unknown" : "pending";
   const saved = db.insertScheduled({
     id,
     accountId: account.id,
@@ -2690,6 +2696,7 @@ function restoreScheduled(params) {
     status,
     error: status !== "pending" ? String(snap.error || "Check Sent before recovering this delivery.") : null,
     messageId: typeof snap.messageId === "string" ? snap.messageId : null,
+    receiptJson: typeof snap.receiptJson === "string" ? snap.receiptJson : null,
   });
   return ok(publicScheduled(saved));
 }
@@ -2700,13 +2707,23 @@ function editScheduled(params) {
   const row = db.scheduledById(id);
   if (!row) return fail("not-found", "That scheduled send is gone. Refresh the queue and check Sent.");
   if (row.status === "sending") return fail("sending", "Delivery has started. Check Sent before retrying.");
-  const needsReview = row.status === "unknown" || row.status === "sent";
+  const needsReview = ["unknown", "sent", "partial"].includes(row.status);
   if (needsReview && params.acknowledgeDelivery !== true) return fail("delivery_review", "Check Sent first. Recovering this copy and sending it may duplicate an earlier delivery.");
   const account = db.accountById(row.account_id);
   const drafts = account && db.folderByWellKnown(account.id, "drafts");
   if (!drafts) return fail("not-found", "This mailbox has no Drafts folder. The queued message is unchanged.");
   let payload;
   try { payload = JSON.parse(row.payload_json); } catch { return fail("invalid", "The queued content cannot be read. It has not been changed."); }
+  let partialWarning = "";
+  if (row.status === "partial") {
+    let receipt = {};
+    try { receipt = JSON.parse(row.receipt_json) || {}; } catch { /* an unverified receipt yields no recipients */ }
+    const retry = deliveryReceipt.retryRecipients(payload, receipt);
+    payload = { ...payload, to: retry.to, cc: retry.cc, bcc: retry.bcc };
+    partialWarning = "This draft includes only verified rejected recipients; accepted recipients were removed. Review before explicitly sending."
+      + (retry.unresolved.length || !retry.to.length && !retry.cc.length && !retry.bcc.length
+        ? " Some recipient details could not be safely matched. Add only failed addresses after reviewing the receipt." : "");
+  }
   const resolved = resolveAttachments(payload.attachments, account);
   if (resolved.error) return fail(resolved.error.code, resolved.error.message);
   const presented = textEncoding.presentMessage({
@@ -2730,7 +2747,7 @@ function editScheduled(params) {
   });
   emitAccounts();
   return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString(),
-    warning: needsReview ? "This message may already have been delivered. Check Sent before explicitly sending or scheduling this recovered draft." : "" });
+    warning: partialWarning || (needsReview ? "This message may already have been delivered. Check Sent before explicitly sending or scheduling this recovered draft." : "") });
 }
 
 const PRE_ACCEPT_CODES = new Set(["EENVELOPE", "ENOTFOUND", "ECONNREFUSED", "EAI_AGAIN"]);
@@ -2822,6 +2839,7 @@ async function submitSmtp(input) {
   const messageId = input && input.messageId;
   if (!account || !options || !messageId) return { kind: "rejected", refusal: "Missing message id." };
   let accepted = false;
+  let receipt;
   try {
     const sentResult = await exclusive(account.id, async () => {
       let info;
@@ -2832,19 +2850,20 @@ async function submitSmtp(input) {
         info = await remote.sendSmtp(account, password, { ...options, messageId });
       }
       accepted = true;
+      receipt = deliveryReceipt.fromSmtp(info, messageId);
       // Persist acceptance before any best-effort Sent filing can await I/O.
-      if (input.onAccepted) input.onAccepted({ messageId: (info && info.messageId) || messageId });
+      if (input.onAccepted) await input.onAccepted(receipt);
       try {
         return await fileSentMessage(account, password, options, info, messageId, input);
       } catch {
         return { emailId: null, messageId: (info && info.messageId) || messageId };
       }
     });
-    return { kind: "accepted", messageId: sentResult.messageId, emailId: sentResult.emailId };
+    return { kind: "accepted", messageId: sentResult.messageId, emailId: sentResult.emailId, receipt };
   } catch (error) {
     const refusal = accepted ? "" : provedRefusal(error);
     if (refusal) return { kind: "rejected", refusal };
-    return { kind: "unknown", detail: remote.explain(error, "") };
+    return { kind: "unknown", detail: remote.explain(error, ""), receipt };
   }
 }
 
@@ -2862,44 +2881,74 @@ async function deliver(params, lifecycle) {
   if (!options.to.length && !options.cc.length && !options.bcc.length) {
     return fail("invalid", "Add a recipient.");
   }
-  const submitted = await submitSmtp({
-    account,
-    options,
-    messageId: lifecycle?.messageId || rfcMessageId(account.email),
-    onAccepted: lifecycle?.onAccepted,
-    threadId: (params && params.threadId) || null,
-    inReplyTo: (params && params.inReplyTo) || null,
-    files,
-    meta: resolved.meta,
-  });
-  if (submitted.kind !== "accepted") {
-    const message = submitted.kind === "rejected" && submitted.refusal
-      ? submitted.refusal
-      : (submitted.detail || "The mail server did not confirm this message.");
-    const result = fail("send", message);
-    result.error.delivery = submitted.kind === "rejected" ? "not_sent" : "unknown";
-    return result;
-  }
+  const candidateId = `delivery-${crypto.randomBytes(8).toString("hex")}`;
+  let recoveryId = null;
+  let receipt;
   try {
-    const draftId = params && (params.draftId || params.emailId);
-    const draft = draftId ? db.messageById(draftId) : null;
-    if (draft && draft.is_draft === 1) {
-      try {
-        if (draft.uid) {
-          await exclusive(account.id, async () => {
-            const password = await secretFor(account);
-            actions.assertIdentityReady(draft.id);
-            const current = db.messageById(draft.id);
-            if (current) await remote.withClient(account, password, (client) => remote.removeUid(client, current.folder_path, current.uid, current.uid_validity));
-          });
-        }
-      } catch { /* local removal still happens */ }
-      db.deleteMessage(draft.id);
+    const submitted = await submitSmtp({
+      account,
+      options,
+      messageId: lifecycle?.messageId || rfcMessageId(account.email),
+      onAccepted(next) {
+        receipt = next;
+        if (lifecycle?.onAccepted) return lifecycle.onAccepted(next);
+        if (!next.rejected.length) return;
+        db.insertScheduled({ id: candidateId, accountId: account.id, status: "partial", sendAt: Date.now(), createdAt: Date.now(),
+          messageId: next.messageId, receiptJson: JSON.stringify(next), error: deliveryReceipt.summary(next),
+          payloadJson: JSON.stringify({ to: params.to, cc: params.cc, bcc: params.bcc, subject: options.subject, body: options.html,
+            fromAddress: params.fromAddress, attachments: resolved.meta, inReplyTo: params.inReplyTo, threadId: params.threadId, references: params.references }) });
+        recoveryId = candidateId;
+        scheduledDelivering.add(candidateId);
+      },
+      threadId: (params && params.threadId) || null,
+      inReplyTo: (params && params.inReplyTo) || null,
+      files,
+      meta: resolved.meta,
+    });
+    receipt = submitted.receipt || receipt;
+    const partial = !!receipt?.rejected?.length;
+    if (submitted.kind !== "accepted" && !partial) {
+      const message = submitted.kind === "rejected" && submitted.refusal
+        ? submitted.refusal
+        : (submitted.detail || "The mail server did not confirm this message.");
+      const result = fail("send", message);
+      result.error.delivery = submitted.kind === "rejected" ? "not_sent" : "unknown";
+      return result;
     }
-    emitAccounts();
-    return ok({ emailId: submitted.emailId, messageId: submitted.messageId, platform: "imap" });
-  } catch (error) {
-    return fail("send", remote.explain(error, ""));
+    let warning = partial ? deliveryReceipt.summary(receipt) : "";
+    if (partial && !lifecycle && !recoveryId) {
+      // Check a possibly committed outcome; never repeat submission to repair it.
+      try { if (db.scheduledById(candidateId)?.status === "partial") recoveryId = candidateId; } catch { /* storage may be unavailable */ }
+      if (recoveryId) scheduledDelivering.add(recoveryId);
+      if (!recoveryId) warning += " The recovery record could not be saved. Keep or copy this message and the rejected addresses before closing; do not resend to accepted recipients.";
+    }
+    try {
+      const draftId = params && (params.draftId || params.emailId);
+      const draft = draftId ? db.messageById(draftId) : null;
+      if (draft && draft.is_draft === 1 && (!partial || lifecycle || recoveryId)) {
+        try {
+          if (draft.uid) {
+            await exclusive(account.id, async () => {
+              const password = await secretFor(account);
+              actions.assertIdentityReady(draft.id);
+              const current = db.messageById(draft.id);
+              if (current) await remote.withClient(account, password, (client) => remote.removeUid(client, current.folder_path, current.uid, current.uid_validity));
+            });
+          }
+        } catch { /* local removal still happens */ }
+        db.deleteMessage(draft.id);
+      }
+    } catch (error) {
+      warning += " SMTP accepted the submission, but local cleanup could not finish. Check Sent before any retry.";
+    }
+    try { emitAccounts(); } catch { warning += " Saved mail could not be refreshed. Keep this receipt and check storage before closing."; }
+    return ok({ emailId: submitted.emailId, messageId: receipt?.messageId || submitted.messageId, platform: "imap",
+      ...(warning ? { warning } : {}), ...(partial ? { partial: true, receipt, recoveryId, recoverySaved: !!recoveryId || !!lifecycle } : {}) });
+  } finally {
+    if (recoveryId) scheduledDelivering.delete(recoveryId);
+    if (receipt?.rejected?.length && !lifecycle) {
+      try { emitAccounts({ scheduledUpdated: true }); } catch { /* return the known partial outcome even if storage is unavailable */ }
+    }
   }
 }
 
@@ -2936,17 +2985,18 @@ async function pumpScheduledAdmitted() {
           subject: presented.subject,
           body: presented.htmlBody || "",
         }, { messageId: row.message_id, onAccepted(receipt) {
-          if (!db.acceptScheduled(row.id, receipt.messageId)) throw new Error("The delivery receipt could not be saved. Check Sent before retrying.");
+          if (!db.acceptScheduled(row.id, receipt.messageId, receipt)) throw new Error("The delivery receipt could not be saved. Check Sent before retrying.");
         } });
       } catch (error) {
         result = fail("send", error instanceof Error ? error.message : String(error));
         result.error.delivery = "unknown";
       }
       try {
-        if (db.scheduledById(row.id)?.status === "sent") {
+        const status = db.scheduledById(row.id)?.status;
+        if (status === "sent") {
           if (result && result.success) db.deleteScheduled(row.id);
-        } else {
-          db.failScheduled(row.id, result?.error?.message, result?.error?.delivery === "unknown");
+        } else if (status !== "partial") {
+          db.failScheduled(row.id, result?.error?.message || result?.data?.warning, result?.error?.delivery === "unknown", result?.data?.receipt);
         }
       } finally {
         scheduledDelivering.delete(row.id);

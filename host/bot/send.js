@@ -116,13 +116,15 @@ function success(receipt, replay) {
       messageId: receipt.messageId,
       recipientSummary: receipt.recipients || { to: [], cc: [], bcc: [] },
       idempotentReplay: replay,
+      ...(receipt.smtpReceipt?.rejected?.length ? { partial: true, acceptedRecipients: receipt.smtpReceipt.accepted,
+        rejectedRecipients: receipt.smtpReceipt.rejected } : {}),
     },
     meta: {
       observedAt: new Date().toISOString(),
       source: "host",
       stale: null,
       offline: null,
-      warnings: [],
+      warnings: receipt.smtpReceipt?.rejected?.length ? [{ code: "PARTIAL_DELIVERY", message: require("../mail/delivery-receipt").summary(receipt.smtpReceipt) }] : [],
       contentTrust: catalog.CONTENT_TRUST,
     },
   };
@@ -137,6 +139,7 @@ function publicReceipt(row) {
     subject: row.subject,
     claimedAt: row.claimedAt,
     finishedAt: row.finishedAt || null,
+    ...(row.smtpReceipt?.rejected?.length ? { partial: true, warning: require("../mail/delivery-receipt").summary(row.smtpReceipt) } : {}),
   };
 }
 
@@ -284,6 +287,7 @@ function replaceReceipt(next) {
 }
 
 async function finishSend(prepared, receipt) {
+  let persisted;
   const smtp = await engine.submitSmtp({
     account: prepared.account,
     options: prepared.options,
@@ -291,16 +295,23 @@ async function finishSend(prepared, receipt) {
     threadId: null,
     inReplyTo: prepared.inReplyToHeader || null,
     files: [],
+    async onAccepted(smtpReceipt) {
+      const next = { ...receipt, state: "submitted", messageId: smtpReceipt.messageId || receipt.messageId,
+        smtpReceipt, finishedAt: new Date().toISOString() };
+      await enqueue(() => replaceReceipt(next));
+      persisted = next;
+    },
   });
   if (smtp.kind === "accepted") {
-    const next = {
+    const next = persisted || {
       ...receipt,
       state: "submitted",
       messageId: smtp.messageId || receipt.messageId,
       finishedAt: new Date().toISOString(),
+      smtpReceipt: smtp.receipt,
     };
     try {
-      await enqueue(() => replaceReceipt(next));
+      if (!persisted) await enqueue(() => replaceReceipt(next));
     } catch {
       throw coded("SEND_OUTCOME_UNKNOWN", {
         auditId: receipt.auditId,
