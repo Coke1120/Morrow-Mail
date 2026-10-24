@@ -2546,7 +2546,7 @@ function scheduledRows(data) {
 }
 
 function scheduledEmptyCopy() {
-  return "No pending or failed scheduled mail on this computer.";
+  return "No scheduled mail or delivery records on this computer.";
 }
 
 function scheduledSummary(rows) {
@@ -2568,9 +2568,12 @@ function scheduledLine(row, accounts = []) {
       ? displayStamp(when, "dateTime", { withZone: true })
       : when.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")")
     : "Unknown time";
-  const failed = row && row.status === "failed" ? (String(row.error || "").trim() || "Send failed.") : "";
+  const detail = String(row && row.error || "").trim();
   const account = accounts.find(item => item.id === row.accountId);
-  return [account ? account.email : (row && row.accountId), subject, to, time, row.status === "failed" ? "Failed — check Sent before retrying" : row.status === "sending" ? "Sending" : "Pending", failed].filter(Boolean).join(" · ");
+  const label = row.status === "unknown" ? "Delivery uncertain — check Sent; no automatic resend"
+    : row.status === "sent" ? "SMTP accepted — check Sent; no automatic resend"
+    : row.status === "failed" ? "Failed — not sent; edit to retry" : row.status === "sending" ? "Sending" : "Pending";
+  return [account ? account.email : (row && row.accountId), subject, to, time, label, detail].filter(Boolean).join(" · ");
 }
 
 function removalPayload(email, threaded) {
@@ -7791,6 +7794,7 @@ async function loadAccounts(preferredId) {
   state.accounts = Array.isArray(data) ? data : [];
   rememberSelection(preferredId);
   renderAccounts();
+  loadScheduled().catch(() => {});
   if (state.view === "calendar" && (calendarAccount()?.id || "") !== calendarPaintedAccountId) {
     loadCalendar({ preferCache: true }).catch(error => showStatus(error.message, true));
   }
@@ -9648,6 +9652,7 @@ function onAccountsUpdated(payload) {
     }
   }
   scheduleReload(preferred, true);
+  if (payload?.scheduledUpdated || $("scheduled-dialog")?.open) loadScheduled().catch(() => {});
 }
 
 function connectPayload() {
@@ -10496,6 +10501,11 @@ function syncScheduleFields() {
 function renderScheduled(rows) {
   const list = $("scheduled");
   const summary = $("scheduled-summary");
+  const reviewCount = rows.filter(row => row.status === "unknown" || row.status === "sent").length;
+  const attention = $("scheduled-review-count");
+  if (attention) { attention.textContent = reviewCount ? ` (${reviewCount} need review)` : ""; attention.hidden = !reviewCount; }
+  const open = $("scheduled-open");
+  if (open) open.title = reviewCount ? "Check Sent and review saved delivery records. These messages will not resend automatically." : "Scheduled mail";
   if (summary) summary.textContent = scheduledSummary(rows);
   list.replaceChildren();
   if (!rows.length) {
@@ -10511,9 +10521,10 @@ function renderScheduled(rows) {
     const cancel = document.createElement("button");
     cancel.type = "button";
     cancel.className = "ghost";
-    cancel.textContent = "Cancel";
+    const review = row.status === "unknown" || row.status === "sent";
+    cancel.textContent = review ? "Dismiss record" : "Cancel";
     const subject = String((row && row.subject) || "").trim() || "(no subject)";
-    cancel.setAttribute("aria-label", `Cancel scheduled send ${subject}`);
+    cancel.setAttribute("aria-label", `${review ? "Dismiss delivery record" : "Cancel scheduled send"} ${subject}`);
     cancel.addEventListener("click", () => {
       requestCancelScheduled(row).catch((error) => {
         $("scheduled-status").textContent = error.message || String(error);
@@ -10523,7 +10534,7 @@ function renderScheduled(rows) {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "ghost";
-    edit.textContent = "Edit/reschedule…";
+    edit.textContent = review ? "Recover draft…" : "Edit/reschedule…";
     edit.disabled = row.status === "sending";
     edit.onclick = () => editScheduledMail(row).catch(error => { $("scheduled-status").textContent = error.message; });
     item.append(text, cancel, edit);
@@ -11881,8 +11892,11 @@ async function commitCancelScheduled(row) {
   const status = $("scheduled-status");
   if (snapshot) {
     armScheduleUndo(snapshot);
-    if (status) status.textContent = "Scheduled delivery canceled. Undo is available for a few seconds.";
-    showStatus("Scheduled send canceled. Undo is available for a few seconds.");
+    const message = ["unknown", "sent"].includes(snapshot.status)
+      ? "Delivery record dismissed. This does not recall any delivered mail. Undo is available for a few seconds."
+      : "Scheduled delivery canceled. Undo is available for a few seconds.";
+    if (status) status.textContent = message;
+    showStatus(message);
   } else if (status) {
     status.textContent = "Scheduled delivery canceled.";
   }
@@ -11892,18 +11906,19 @@ async function commitCancelScheduled(row) {
 async function requestCancelScheduled(row) {
   if (!row || !row.id || row.status === "sending") return;
   const line = scheduledLine(row, state.accounts);
+  const review = row.status === "unknown" || row.status === "sent";
   const first = await askConfirm({
-    title: "Cancel scheduled send?",
-    body: line + "\nNothing is canceled yet. You will be asked to confirm again.",
+    title: review ? "Dismiss delivery record?" : "Cancel scheduled send?",
+    body: line + (review ? "\nThis only removes the saved recovery copy. It does not recall delivered mail. Check Sent or recover a draft first. You will be asked to confirm again." : "\nNothing is canceled yet. You will be asked to confirm again."),
     confirm: "Continue",
     cancel: "Keep scheduled",
   });
   if (!first || !first.ok) return;
   await confirmSettled();
   const second = await askConfirm({
-    title: "Confirm cancel?",
-    body: line + "\nCancel this scheduled send? You can undo for a few seconds.",
-    confirm: "Cancel send",
+    title: review ? "Confirm dismiss?" : "Confirm cancel?",
+    body: line + (review ? "\nRemove this delivery record and recovery copy? You can undo for a few seconds." : "\nCancel this scheduled send? You can undo for a few seconds."),
+    confirm: review ? "Dismiss record" : "Cancel send",
     cancel: "Keep scheduled",
   });
   if (!second || !second.ok) return;
@@ -12040,16 +12055,19 @@ function dismissQuitScheduled(payload) {
 }
 
 async function editScheduledMail(row) {
-  const answer = await askConfirm({ title: "Remove from queue and edit?", body: scheduledLine(row, state.accounts) + "\nThe queued delivery will be removed and saved as a local draft. Review it, then explicitly Schedule send again. A failed delivery may already have reached the recipient; check Sent before retrying.", confirm: "Remove and edit", cancel: "Keep queued" });
+  const review = row.status === "unknown" || row.status === "sent";
+  const answer = await askConfirm({ title: review ? "Recover an unsent draft copy?" : "Remove from queue and edit?", body: scheduledLine(row, state.accounts)
+    + (review ? "\nCheck Sent first: this message may already have reached the recipient. The saved content will become an unsent local draft. Sending it again may create a duplicate; nothing is sent automatically."
+      : "\nThe queued delivery will be removed and saved as a local draft. Review it, then explicitly Schedule send again."), confirm: review ? "Recover draft" : "Remove and edit", cancel: "Keep queued" });
   if (!answer || !answer.ok) return;
-  const draft = await call("mail:editScheduled", { id: row.id });
+  const draft = await call("mail:editScheduled", { id: row.id, acknowledgeDelivery: review });
   $("scheduled-status").textContent = "Removed from queue. A local draft is saved in Drafts.";
   await loadScheduled();
   await closeDialog("scheduled-dialog");
   const handoff = {
     schedulePreset: "custom",
     scheduleAt: vacationLocalValue(draft.sendAt),
-    status: "Removed from queue; local draft saved. Review and choose a future time, then Schedule send.",
+    status: draft.warning || "Removed from queue; local draft saved. Review and choose a future time, then Schedule send.",
   };
   try {
     await resumeDraft({ id: draft.emailId, accountId: draft.accountId }, handoff);
