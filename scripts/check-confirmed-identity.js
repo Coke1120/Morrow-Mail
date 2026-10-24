@@ -34,7 +34,7 @@ async function mailChecks(engine, db, remote, secrets) {
         const value=server[folder].get(Number(uid));assert(value,"moving a known message");
         server[folder].delete(Number(uid));const to=++next;server[destination].set(to,value);
         if(this.loseMoveReply)throw new Error("Fixture response lost after MOVE");
-        return {uidMap:new Map([[Number(uid),to]])};
+        return {uidValidity:BigInt(this.validity),uidMap:new Map([[Number(uid),to]])};
       },
       async messageDelete(uid) { assert(this.locked);this.calls.push({kind:"delete",folder:this.mailbox.path,uid:Number(uid),victim:server[this.mailbox.path].get(Number(uid))});server[this.mailbox.path].delete(Number(uid)); },
       async messageFlagsAdd(uid, flags) { if(this.onFlags)await this.onFlags();this.calls.push({kind:"flags",folder:this.mailbox.path,uid:Number(uid),flags}); },
@@ -148,16 +148,21 @@ async function calendarChecks() {
   const declarations=source.slice(source.indexOf('let calendarDetailKey ='),source.indexOf('function calendarDetailLine('));
   vm.runInContext(declarations+["localDateStamp","plusDays","toDateTimeLocal","calendarDraft","syncAllDayInputs","openCalendarEditor","submitCalendarEvent","deleteCalendarEvent"].map(extract).join("\n"),context);
   const run=code=>vm.runInContext(code,context);
-  context.event={id:"abcde12345",calendarId:"a",title:"Original A",start:"2026-10-24T09:00:00Z",end:"2026-10-24T10:00:00Z"};
+  context.event={id:"abcde12345",calendarId:"a",title:"Original A",description:"Preview only",location:"Old room",start:"2026-10-24T09:00:00Z",end:"2026-10-24T10:00:00Z"};
   run("openCalendarEditor(event)");assert.equal(fields["calendar-pick"].disabled,true);
   fields["calendar-pick"].value="b";pending=latch();const first=run("submitCalendarEvent({preventDefault(){}})");
   await assert.rejects(()=>run("submitCalendarEvent({preventDefault(){}})"),/still being confirmed/);
   assert.equal(calls.length,1);assert.equal(calls[0].payload.calendarId,"a");
+  assert(!Object.hasOwn(calls[0].payload,"description"),"an unchanged preview never becomes a body replacement");
+  assert(!Object.hasOwn(calls[0].payload,"location"),"unchanged fields remain absent from PATCH");
   context.eventB={...context.event,calendarId:"b",id:"bbcde12345"};run("openCalendarEditor(eventB)");
   pending.resolve();await first;pending=null;assert.equal(closeCount,0,"an older reply cannot close a newly opened editor");
   assert.equal(run("calendarEditingIdentity.id"),"bbcde12345");
   fields["calendar-pick"].value="a";await run("submitCalendarEvent({preventDefault(){}})");
   assert.equal(calls[1].payload.calendarId,"b");assert.equal(calls[1].payload.eventId,"bbcde12345");
+  run("openCalendarEditor(event)");fields["calendar-location"].value="";fields["calendar-description"].value="Changed notes";
+  await run("submitCalendarEvent({preventDefault(){}})");
+  assert.equal(calls.at(-1).payload.location,"");assert.equal(calls.at(-1).payload.descriptionBase,"Preview only");
   run("openCalendarEditor(event)");fields["calendar-pick"].value="b";await run("deleteCalendarEvent()");
   assert.equal(calls.at(-1).payload.calendarId,"a");assert.equal(calls.at(-1).payload.eventId,"abcde12345");
   run("openCalendarEditor(event)");owner="mail-b";const before=calls.length;

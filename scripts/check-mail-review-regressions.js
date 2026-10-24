@@ -17,7 +17,7 @@ function fakeClient(validity = 100) {
     async messageFlagsAdd(uid, flags) { assert(this.locked); calls.push(["add", uid, flags]); },
     async messageFlagsRemove(uid, flags) { assert(this.locked); calls.push(["remove", uid, flags]); },
     async messageDelete(uid) { assert(this.locked); calls.push(["delete", uid]); },
-    async messageMove(uid, dest) { assert(this.locked); calls.push(["move", uid, dest]); return { uidMap: new Map([[Number(uid), 84]]) }; },
+    async messageMove(uid, dest) { assert(this.locked); calls.push(["move", uid, dest]); return { uidValidity: this.mailbox.uidValidity, uidMap: new Map([[Number(uid), 84]]) }; },
     async status() { return { uidValidity: 300n }; },
   };
 }

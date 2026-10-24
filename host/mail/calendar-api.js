@@ -37,7 +37,7 @@ function normalizeGraphCalendar(item) {
   };
 }
 
-function plainDescription(value) {
+function plainDescription(value, limit = 8000) {
   const stripped = String(value || "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n")
@@ -53,7 +53,7 @@ function plainDescription(value) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   if (!stripped) return "";
-  return stripped.length > 8000 ? stripped.slice(0, 8000) : stripped;
+  return limit > 0 && stripped.length > limit ? stripped.slice(0, limit) : stripped;
 }
 
 function normalizeGoogleEvent(item, calendarId) {
@@ -114,7 +114,7 @@ function googleEventBody(draft) {
     body.end = { dateTime: draft.end, timeZone: "UTC" };
   }
   const location = cleanName(draft && draft.location);
-  if (location) body.location = location;
+  if (draft && Object.prototype.hasOwnProperty.call(draft, "location")) body.location = location;
   if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) {
     body.description = String(draft.description || "");
   }
@@ -132,7 +132,7 @@ function graphEventBody(draft) {
     body.end = { dateTime: draft.end, timeZone: "UTC" };
   }
   const location = cleanName(draft && draft.location);
-  if (location) body.location = { displayName: location };
+  if (draft && Object.prototype.hasOwnProperty.call(draft, "location")) body.location = { displayName: location };
   if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) {
     body.body = { contentType: "Text", content: String(draft.description || "") };
   }
@@ -295,17 +295,17 @@ function invalidEvent(message) {
 function writeEvent(draft) {
   const title = cleanName(draft && draft.title);
   if (!title) throw invalidEvent("Add a title.");
-  const description = plainDescription(draft && draft.description);
   const location = cleanName(draft && draft.location);
+  const optional = {};
+  if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) optional.description = plainDescription(draft.description);
+  if (draft && Object.prototype.hasOwnProperty.call(draft, "location")) optional.location = location;
   if (draft && draft.allDay === true) {
     const start = String(draft.start || "").slice(0, 10);
     const end = String(draft.end || "").slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end <= start) {
       throw invalidEvent("Pick a start date and a later end date.");
     }
-    const body = { title, start, end, allDay: true, description };
-    if (location) body.location = location;
-    return body;
+    return { title, start, end, allDay: true, ...optional };
   }
   const startMs = Date.parse(draft && draft.start);
   const endMs = Date.parse(draft && draft.end);
@@ -317,16 +317,15 @@ function writeEvent(draft) {
     start: new Date(startMs).toISOString(),
     end: new Date(endMs).toISOString(),
     allDay: false,
-    description,
+    ...optional,
   };
-  if (location) body.location = location;
   return body;
 }
 
-async function sendEvent(provider, accessToken, calendarId, url, body, method, fetchImpl) {
+async function sendEvent(provider, accessToken, calendarId, url, body, method, fetchImpl, headers) {
   if (!url) throw invalidEvent("Choose a calendar.");
   if (provider === "google") {
-    const json = await apiJson(url, accessToken, { method, fetchImpl, body: googleEventBody(body) });
+    const json = await apiJson(url, accessToken, { method, fetchImpl, headers, body: googleEventBody(body) });
     const event = normalizeGoogleEvent(json, calendarId);
     if (!event) {
       const error = new Error(method === "POST" ? "Google Calendar did not return the new event." : "Google Calendar did not return the event.");
@@ -336,7 +335,7 @@ async function sendEvent(provider, accessToken, calendarId, url, body, method, f
     return event;
   }
   if (provider === "microsoft") {
-    const json = await apiJson(url, accessToken, { method, fetchImpl, body: graphEventBody(body) });
+    const json = await apiJson(url, accessToken, { method, fetchImpl, headers, body: graphEventBody(body) });
     const event = normalizeGraphEvent(json, calendarId);
     if (!event) {
       const error = new Error(method === "POST" ? "Outlook did not return the new event." : "Outlook did not return the event.");
@@ -363,7 +362,35 @@ async function updateEvent(provider, accessToken, calendarId, eventId, draft, fe
   const body = writeEvent(draft);
   const suffix = "/events/" + encodeURIComponent(id);
   const url = provider === "google" || provider === "microsoft" ? calendarPath(provider, calendarId, suffix) : "";
-  return sendEvent(provider, accessToken, calendarId, url, body, "PATCH", fetchImpl);
+  let headers;
+  if (provider === "microsoft" && Object.prototype.hasOwnProperty.call(body, "description")) {
+    // The list contains bodyPreview. Never replace a full/meeting body using
+    // that preview, or overwrite a body changed since this editor was opened.
+    const current = await apiJson(url, accessToken, { fetchImpl });
+    const full = current.body && typeof current.body.content === "string" ? plainDescription(current.body.content, 0) : null;
+    if (safeId(current.id) !== id || full == null || full.length > 8000 || current.isOnlineMeeting === true
+        || typeof draft.descriptionBase !== "string" || full !== draft.descriptionBase.trim()) {
+      const error = new Error("The full Outlook description cannot be safely replaced from this preview. Edit the description in Outlook, or leave it unchanged to save other fields.");
+      error.code = "conflict";
+      throw error;
+    }
+    const revision = current["@odata.etag"];
+    if (typeof revision !== "string" || !revision || revision.length > 1024 || /[\r\n]/.test(revision)) {
+      const error = new Error("Outlook did not confirm the event revision. Refresh the calendar before changing its description.");
+      error.code = "conflict";
+      throw error;
+    }
+    headers = { "if-match": revision };
+  }
+  try {
+    return await sendEvent(provider, accessToken, calendarId, url, body, "PATCH", fetchImpl, headers);
+  } catch (error) {
+    if (error.status === 412) {
+      error.code = "conflict";
+      error.message = "This event changed in Outlook. Refresh the calendar and review the description before saving again.";
+    }
+    throw error;
+  }
 }
 
 async function deleteEvent(provider, accessToken, calendarId, eventId, fetchImpl) {
