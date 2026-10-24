@@ -164,6 +164,7 @@ function restoreRow(row) {
     textBody: row.text_body,
     attachments: parse(row.attachments_json, []),
     bodyComplete: row.body_complete === 1,
+    draftPending: row.draft_pending === 1,
     recipientHeaders: parse(row.recipient_headers_json, {}),
   });
 }

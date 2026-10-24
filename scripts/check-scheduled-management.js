@@ -98,9 +98,11 @@ async function run() {
     assert.match(db.messageById(draftedFile.data.emailId).attachments_json, /local:/, 'folder sync keeps local draft files');
     const listedDrafts = engine.answer('mail:listFromCache', [{ accountId: 'queue', folderId: 'Drafts', limit: 50 }]);
     const draftCopies = (listedDrafts.data.emails || []).filter((row) => row.subject === 'Draft file');
-    assert.equal(draftCopies.length, 1);
-    assert.equal(draftCopies[0].id, draftedFile.data.emailId);
-    assert.equal(draftCopies[0].hasAttachments, true);
+    assert.equal(draftCopies.length, 2, 'an unconfirmed upload cannot adopt conflicting server text');
+    const protectedDraft = draftCopies.find(row => row.id === draftedFile.data.emailId);
+    assert.equal(protectedDraft.hasAttachments, true);
+    assert.equal(db.messageById(draftedFile.data.emailId).html_body, '<p>Notes</p>');
+    assert.equal(db.messageById(draftedFile.data.emailId).draft_pending, 1);
     const clearedFile = await engine.answer('mail:upsertDraft', [{
       accountId: 'queue', emailId: draftedFile.data.emailId, to: 'recipient@example.invalid',
       subject: 'Draft file', body: '<p>Notes</p>', attachments: [],

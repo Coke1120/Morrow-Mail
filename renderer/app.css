@@ -5266,6 +5266,9 @@ textarea { min-height: 140px; resize: vertical; }
   #folders { overflow-x: hidden; overflow-y: visible; }
 }
 
+.delivery-receipt { width: min(760px, 90vw); padding: 24px; max-height: 85vh; overflow: auto; }
+.delivery-receipt textarea { display: block; width: 100%; min-height: 240px; margin: 16px 0; }
+
 html[data-window="compose"] .rail,
 html[data-window="compose"] .workspace > header,
 html[data-window="compose"] .stage { display: none !important; }

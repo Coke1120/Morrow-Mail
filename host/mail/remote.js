@@ -595,6 +595,12 @@ async function removeUid(client, folderPath, uid, expectedValidity) {
   }
 }
 
+async function checkUidValidity(client, folderPath, expectedValidity) {
+  const lock = await client.getMailboxLock(folderPath);
+  try { assertUidValidity(client, expectedValidity); }
+  finally { lock.release(); }
+}
+
 async function createBox(client, folderPath) {
   await client.mailboxCreate(folderPath);
 }
@@ -781,6 +787,7 @@ module.exports = {
   moveUid,
   changeFlags,
   removeUid,
+  checkUidValidity,
   createBox,
   renameBox,
   appendRaw,

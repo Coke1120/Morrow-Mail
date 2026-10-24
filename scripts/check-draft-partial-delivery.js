@@ -146,11 +146,13 @@ async function uiChecks() {
   const status = [], nodes = { "compose-title": {} }; let calls = 0, closes = 0;
   const context = vm.createContext({ state: { composeQueued: false }, $: id => nodes[id] || (nodes[id] = {}), syncCompose() {},
     setComposeStatus: message => status.push(message), showStatus() {}, call: async () => { calls++; return { partial: true, warning: "Partly sent: bad@example.test rejected (550)" }; },
-    composeSnapshot: () => "receipt", closeDialog: async () => { closes++; }, loadScheduled: async () => {}, isComposeWindow: () => false,
+    composeSnapshot: () => "receipt", openDialog: id => { nodes[id] = { open: true }; }, scheduleComposeLayout() {},
+    closeDialog: async () => { closes++; }, loadScheduled: async () => {}, isComposeWindow: () => false,
     composeAccount: () => ({ id: "a" }), isLive: () => true });
   vm.runInContext(source.slice(start, end), context);
   await vm.runInContext("deliverMail({})", context);
   assert.equal(closes, 0); assert.equal(context.state.composeQueued, true); assert.equal(context.state.composePartialReceipt, true);
+  assert.equal(nodes.compose.open, true, "a partial result also reopens a composer closed by Undo send");
   assert.match(status.at(-1), /bad@example.test.*550/);
   const sendStart = source.indexOf("async function sendMail("), sendEnd = source.indexOf("\nasync function removeAccount", sendStart);
   vm.runInContext(source.slice(sendStart, sendEnd), context); await vm.runInContext("sendMail()", context); assert.equal(calls, 1, "the partial receipt cannot submit the original recipients again");
