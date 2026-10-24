@@ -18221,7 +18221,8 @@ function openCalendarEditor(event, dayStamp) {
   }
   const editing = !!(event && event.id);
   calendarEditingId = editing ? String(event.id) : "";
-  calendarEditingIdentity = editing ? { accountId: account?.id, calendarId: event.calendarId || state.calendarId, id: calendarEditingId } : null;
+  calendarEditingIdentity = editing ? { accountId: account?.id, calendarId: event.calendarId || state.calendarId,
+    id: calendarEditingId, description: String(event.description || ""), location: String(event.location || "") } : null;
   if (dialogTitle) dialogTitle.textContent = editing ? "Edit event" : "Add event";
   if (save) save.textContent = editing ? "Save" : "Add event";
   if (remove) remove.hidden = !editing;
@@ -18552,6 +18553,11 @@ async function submitCalendarEvent(event) {
     end: $("calendar-end").value,
     eventId: editing,
   });
+  if (editing) {
+    if (draft.description === identity.description.trim()) delete draft.description;
+    else draft.descriptionBase = identity.description;
+    if (draft.location === identity.location.trim()) delete draft.location;
+  }
   const status = $("calendar-form-status");
   if (draft.error) {
     if (status) {
