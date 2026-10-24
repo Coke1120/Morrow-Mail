@@ -86,6 +86,12 @@ Cached reads do not mark mail read and do not download a missing body. `mail.att
 
 SMTP may accept some recipients and reject others. That receipt is persisted before Sent filing. A partial result keeps state `submitted` and adds `partial`, `acceptedRecipients`, `rejectedRecipients` and a `PARTIAL_DELIVERY` warning. Matching request-id replays retain those details without submitting again. Do not retry the whole original recipient list; review the rejected addresses separately. Settings Activity also shows the partial-delivery warning.
 
+Pending bot sends revalidate the current installation, grant revision/expiry, listener enabled flag, mailbox scope, `mail.send` capability and connected account after From resolution and before claiming the request. They revalidate again inside the mailbox queue, after any credential refresh, immediately before invoking the SMTP transport. A pre-submit authorization denial returns `UNAUTHENTICATED`; if a durable claim already exists it is finalized as `rejected`, and matching replays never submit it again. If that final receipt cannot be persisted, the original claim remains conservative and reports `SEND_OUTCOME_UNKNOWN`.
+
+The cancellation boundary is the SMTP transport invocation. Once submission has begun, revoke/disable cannot recall it: Morrow still persists an acceptance or uncertain outcome, and an HTTP response may be withheld after access changes. Check the receipt in Settings Activity and retain the original request id; never infer that no mail was sent from a disconnected or unauthorized response. The ordinary compose/scheduled send path does not use the bot authorization gate.
+
+Separately proposed CLI work remains draft CRUD with revision checks and scoped attachment handles/downloads, followed by CLI packaging/help. Those operations and scopes are not added by this authorization fix.
+
 ## Tailscale Serve
 
 These notes are for a later operator session on the Mac. This repository change does not install Tailscale, does not change a live tailnet, and does not enable Funnel.

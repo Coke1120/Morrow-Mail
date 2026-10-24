@@ -2843,15 +2843,19 @@ async function submitSmtp(input) {
   if (!account || !options || !messageId) return { kind: "rejected", refusal: "Missing message id." };
   let accepted = false;
   let receipt;
+  let authorizationError;
   try {
     const sentResult = await exclusive(account.id, async () => {
       let info;
       let password = "";
-      if (smtpSenderForTest) info = await smtpSenderForTest({ account, options, messageId });
-      else {
-        password = await secretFor(account);
-        info = await remote.sendSmtp(account, password, { ...options, messageId });
+      if (!smtpSenderForTest) password = await secretFor(account);
+      // Keep this gate synchronous and adjacent to the transport invocation:
+      // mailbox queueing and OAuth refresh may both outlive a bot grant.
+      if (input.beforeSubmit) {
+        try { input.beforeSubmit(); } catch (error) { authorizationError = error; throw error; }
       }
+      if (smtpSenderForTest) info = await smtpSenderForTest({ account, options, messageId });
+      else info = await remote.sendSmtp(account, password, { ...options, messageId });
       accepted = true;
       receipt = deliveryReceipt.fromSmtp(info, messageId);
       // Persist acceptance before any best-effort Sent filing can await I/O.
@@ -2864,6 +2868,7 @@ async function submitSmtp(input) {
     });
     return { kind: "accepted", messageId: sentResult.messageId, emailId: sentResult.emailId, receipt };
   } catch (error) {
+    if (authorizationError) return { kind: "not_submitted" };
     const refusal = accepted ? "" : provedRefusal(error);
     if (refusal) return { kind: "rejected", refusal };
     return { kind: "unknown", detail: remote.explain(error, ""), receipt };

@@ -5,6 +5,7 @@ const fs = require("fs");
 const composeIdentity = require("../mail/compose-identity");
 const db = require("../mail/db");
 const engine = require("../mail/engine");
+const auth = require("./auth");
 const catalog = require("./catalog");
 const { addressList } = require("./text");
 const { sendReceiptPath, writeDurable } = require("./store");
@@ -158,6 +159,12 @@ function decideReplay(receipt, payloadHash) {
   return { effect: "reject_request", code: "INVALID_REQUEST" };
 }
 
+function assertAuthorized(grant, accountId) {
+  if (!auth.recheck(grant, { accountId, capability: "mail.send" }) || !db.accountById(accountId)) {
+    throw coded("UNAUTHENTICATED");
+  }
+}
+
 async function prepare(ctx) {
   if (!ctx || typeof ctx.requestId !== "string" || !UUID.test(ctx.requestId)) {
     throw coded("INVALID_REQUEST");
@@ -181,6 +188,7 @@ async function prepare(ctx) {
   } catch {
     throw coded("INVALID_REQUEST");
   }
+  assertAuthorized(ctx.grant, params.accountId);
   const fresh = db.accountById(account.id);
   if (!fresh) throw coded("NOT_FOUND");
   const to = addressList(params.to, false);
@@ -219,6 +227,7 @@ async function prepare(ctx) {
     hash: hashPayload(normalized),
     requestId: ctx.requestId,
     clientId: ctx.grant.clientId,
+    grant: ctx.grant,
     account: fresh,
     inReplyToHeader,
     options: {
@@ -235,6 +244,7 @@ async function prepare(ctx) {
 }
 
 function claimOrReplay(prepared) {
+  assertAuthorized(prepared.grant, prepared.accountId);
   const rows = loadReceipts();
   const existing = rows.find((row) => row.clientId === prepared.clientId && row.requestId === prepared.requestId);
   const decision = decideReplay(existing, prepared.hash);
@@ -295,6 +305,11 @@ async function finishSend(prepared, receipt) {
     threadId: null,
     inReplyTo: prepared.inReplyToHeader || null,
     files: [],
+    // Synchronous: the engine calls this after its mailbox/credential awaits,
+    // immediately before invoking the SMTP transport.
+    beforeSubmit() {
+      assertAuthorized(prepared.grant, prepared.accountId);
+    },
     async onAccepted(smtpReceipt) {
       const next = { ...receipt, state: "submitted", messageId: smtpReceipt.messageId || receipt.messageId,
         smtpReceipt, finishedAt: new Date().toISOString() };
@@ -333,8 +348,9 @@ async function finishSend(prepared, receipt) {
     });
     return success(next, false);
   }
-  if (smtp.kind === "rejected") {
-    const next = { ...receipt, state: "rejected", finishedAt: new Date().toISOString(), refusal: smtp.refusal || "" };
+  if (smtp.kind === "rejected" || smtp.kind === "not_submitted") {
+    const next = { ...receipt, state: "rejected", finishedAt: new Date().toISOString(),
+      refusal: smtp.kind === "not_submitted" ? "Bot access changed before SMTP submission." : smtp.refusal || "" };
     try {
       await enqueue(() => replaceReceipt(next));
     } catch {
@@ -344,7 +360,7 @@ async function finishSend(prepared, receipt) {
         messageId: receipt.messageId,
       });
     }
-    throw coded("SEND_REJECTED", {
+    throw coded(smtp.kind === "not_submitted" ? "UNAUTHENTICATED" : "SEND_REJECTED", {
       auditId: receipt.auditId,
       state: "rejected",
       messageId: receipt.messageId,
