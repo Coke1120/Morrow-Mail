@@ -7,6 +7,15 @@ const root = path.join(__dirname, "..");
 
 const syntax = [
   "host/main.js",
+  "host/chatgpt-auth.js",
+  "host/chatgpt-store.js",
+  "host/chatgpt-responses.js",
+  "host/chatgpt-errors.js",
+  "host/ai-context.js",
+  "host/ai-setup.js",
+  "host/setup-preload.js",
+  "renderer/chatgpt-settings.js",
+  "renderer/ai-provider-indicator.js",
   "host/window-state.js",
   "host/asar.js",
   "host/ipc.js",
@@ -1679,7 +1688,7 @@ assert.ok(functionSource(appJs, "fetchAiModels").includes("applyFetchedModels"))
 assert.ok(functionSource(appJs, "fetchAiModels").includes("host:aiListModels"));
 assert.ok(!appJs.includes("ai-model-list"));
 assert.ok(settingsHtml.includes("Save AI") && settingsHtml.includes("Fetch models") && settingsHtml.includes("Test connection"));
-assert.ok(settingsHtml.includes("Test connection and Fetch models use the values in this form"));
+assert.ok(settingsHtml.includes("Test connection sends a short model request") && settingsHtml.includes("Fetch models only reads the selected provider"));
 // #158: remote-image privacy, visible fold loading, and field-level errors.
 assert.match(settingsHtml, /id="pref-images"[^>]*aria-describedby="pref-images-help"/);
 const remoteImagesHelp = settingsHtml.slice(settingsHtml.indexOf('id="pref-images-help"')).split("</p>")[0];
@@ -3954,6 +3963,7 @@ assert.ok(html.includes('id="features-title"') && html.includes('id="features-ca
 assert.ok(html.indexOf('src="./features-catalog.js"') < html.indexOf('src="./app.js"'));
 const featureCatalog = require("../renderer/features-catalog.js");
 const featureSeed = [
+  ["ai-connection", "ChatGPT or API key", "Agent", "AI settings preserve API keys and custom endpoints, and add Continue with ChatGPT for eligible plans. Browser sign-in uses Morrow Mail's own registered client, automatic loopback and optional one-time paste-back. Cancel, timeout, account selection, reauthorization and sign-out are available. Fetch account-specific models before choosing one. Responses stream with server storage off. Background profile refresh, automatic triage and scheduled skills need explicit account opt-in. Plan, app and workspace limits apply; Manage usage opens ChatGPT settings. No automatic billing fallback, provider switching, extra allowance, hosted tools or general proxy. Credentials stay encrypted on this computer; unlocked OS secure storage is required. Native and live sign-in validation remains pending."],
   ["email-brain", "Email Brain", "Agent", "Profile, categories, skills, and inbox rules built from your mail. Skills can draft a reply or propose a move. You still press Send."],
   ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. Reply opens a compose window. Done and Dismiss stay on this computer."],
   ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send."],
@@ -9799,7 +9809,7 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
   assert.strictEqual(result.status, 0, "Account/calendar/attachment fixture failed");
   const liveness = spawnSync(process.execPath, [path.join(root, "scripts/check-account-liveness.js")], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(liveness.status, 0, "Account liveness fixture failed");
-  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js"]) {
+  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js"]) {
     const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
     assert.strictEqual(fixture.status, 0, name + " failed");
   }

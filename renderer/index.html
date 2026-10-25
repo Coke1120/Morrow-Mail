@@ -303,6 +303,7 @@
       <section id="agent-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden>
         <div id="agent-sections" class="agent-thread" role="log" aria-live="polite"></div>
       <form id="agent-composer" class="agent-composer">
+        <p class="hint" data-ai-provider hidden>Using ChatGPT plan · <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">Manage usage</a></p>
         <label class="sr" for="agent-input">Message the agent</label>
         <textarea id="agent-input" rows="2" maxlength="2000" placeholder="Ask Morrow Mail…"></textarea>
         <button type="submit" class="primary" id="agent-send">Ask</button>
@@ -524,6 +525,7 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
+        <p class="hint" id="cli-ai-connection">AI authentication is configured in desktop Settings → AI or Morrow Mail → AI Setup. ChatGPT sign-in, callback paste-back and credentials are not exposed through the CLI or bot bridge. The existing API key/custom endpoint choice remains available. ChatGPT adds no general-purpose model proxy.</p>
         <section class="cli-guide" aria-labelledby="cli-bot-title">
           <h3 id="cli-bot-title">Bot access today</h3>
           <p>The Node client calls the running app. Keep Morrow open, choose mailboxes and permissions in Settings → Bot access, then turn access on. Body text and attachment names need extra read permissions. Responses use JSON; mail text stays untrusted.</p>
@@ -791,6 +793,7 @@
           </button>
         </div>
         <div id="compose-ai-popover" class="ai-write compose-ai-popover" role="dialog" aria-modal="false" aria-label="Write with AI" hidden>
+          <p class="hint" data-ai-provider hidden>Using ChatGPT plan · <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">Manage usage</a></p>
           <input id="ai-mode" type="hidden" value="rewrite" />
           <div id="compose-ai-modes" class="compose-ai-modes" role="radiogroup" aria-label="AI write mode">
             <button type="button" role="radio" data-ai-mode="rewrite" aria-checked="true" tabindex="0">Rewrite</button>
@@ -1080,12 +1083,13 @@
         <section class="fold" id="settings-ai" data-fold="ai" role="tabpanel" aria-labelledby="settings-tab-ai" tabindex="0" hidden>
           <div class="fold-panel" id="settings-ai-panel" hidden>
           <h3 id="settings-ai-title">AI connection</h3>
+          <div id="ai-account-settings" class="ai-account-settings"></div>
           <div id="ai-fields" class="settings-field-grid">
-            <div class="field">
+            <div class="field" id="ai-api-base-field">
             <label for="ai-base">Base URL</label>
             <input id="ai-base" type="text" spellcheck="false" autocomplete="off" />
             </div>
-            <div class="field">
+            <div class="field" id="ai-api-model-field">
             <label for="ai-model">Model</label>
             <input id="ai-model" type="text" spellcheck="false" autocomplete="off" aria-describedby="ai-model-help" />
             <div id="ai-model-chooser" class="ai-model-chooser" hidden>
@@ -1094,7 +1098,7 @@
             </div>
             <p class="hint" id="ai-model-help">Type a model id, or fetch models and click one in the list.</p>
             </div>
-            <div class="field settings-full-width">
+            <div class="field settings-full-width" id="ai-api-key-field">
             <label for="ai-key">API key</label>
             <input id="ai-key" type="password" spellcheck="false" autocomplete="off" aria-describedby="ai-key-help" />
             <p class="hint" id="ai-key-help">Leave blank to keep the saved key.</p>
@@ -1106,10 +1110,10 @@
             </div>
             <p id="ai-dirty" class="hint settings-dirty settings-full-width" role="status" hidden></p>
             <p id="ai-status" class="settings-full-width" role="status"></p>
-            <p class="hint settings-full-width">Save AI to keep changes. Test connection and Fetch models use the values in this form; a blank API key uses the saved key.</p>
+            <p class="hint settings-full-width">Save AI to apply the selected mode. Test connection sends a short model request and uses plan usage in ChatGPT mode. Fetch models only reads the selected provider's model catalog. API mode keeps the saved key when its field is blank.</p>
           </div>
           <details class="settings-disclosure"><summary>Connection details</summary>
-            <p class="hint">The key is saved on this computer and shared with Morrow Mail → AI Setup. Fetch models uses the form above and the saved key when the key field is blank.</p>
+            <p class="hint">API settings are preserved when choosing ChatGPT. ChatGPT credentials are encrypted by operating system secure storage, controlled by the main process, and separate from mailbox OAuth. Paste-back is optional; cancellation and timeout require a fresh sign-in. See the AI connection feature for supported requests and limits.</p>
           </details>
           <div class="settings-group">
             <h4>Writing</h4>
@@ -1574,6 +1578,8 @@
     <script src="../shared/sender-history.js"></script>
     <script src="../shared/display-format.js"></script>
     <script src="../shared/changelog.js"></script>
+    <script src="./chatgpt-settings.js"></script>
+    <script src="./ai-provider-indicator.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

@@ -51,3 +51,7 @@ Not in this slice:
 
 - Visual gaps still listed in [PARITY_SHELL.md](PARITY_SHELL.md): category chips, toolbar mail actions, the mail-only rail, and the settings dialog
 - Host preferences still unread in [PARITY_SHELL.md](PARITY_SHELL.md)
+
+## AI authentication
+
+Settings → AI and Morrow Mail → AI Setup now share an explicit API key/custom endpoint or ChatGPT account choice. Existing API values are retained. ChatGPT uses the official open-source registration flow, browser loopback with optional one-time paste-back, account-specific model choices, and a separate Responses adapter. Background use requires express account consent; no API/provider fallback is automatic. Tokens stay in a main-process encrypted record, and the CLI/bot does not expose them. See [the design and synthetic/live validation boundary](adr/2026-10-25-chatgpt-model-provider.md).

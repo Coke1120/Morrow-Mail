@@ -26,6 +26,8 @@ function readFileConfig() {
       baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl.trim() : "",
       model: typeof parsed.model === "string" ? parsed.model.trim() : "",
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : "",
+      authMode: parsed.authMode === "chatgpt" ? "chatgpt" : "api_key",
+      chatgptModel: typeof parsed.chatgptModel === "string" ? parsed.chatgptModel.trim() : "",
     };
   } catch {
     return {};
@@ -47,6 +49,8 @@ function loadConfig() {
     baseUrl: env.baseUrl || file.baseUrl || DEFAULTS.baseUrl,
     model: env.model || file.model || DEFAULTS.model,
     apiKey: env.apiKey || file.apiKey || "",
+    authMode: file.authMode || "api_key",
+    chatgptModel: file.chatgptModel || "",
   };
 }
 
@@ -58,10 +62,13 @@ function publicConfig() {
     model: cfg.model,
     hasKey: key.length > 0,
     keyHint: key.length > 4 ? `••••${key.slice(-4)}` : key ? "••••" : "",
+    authMode: cfg.authMode,
+    chatgptModel: cfg.chatgptModel,
   };
 }
 
 function saveConfig(input) {
+  if (input?.authMode !== undefined && !["api_key", "chatgpt"].includes(input.authMode)) throw new Error("Choose API key or ChatGPT authentication.");
   const current = readFileConfig();
   const next = {
     baseUrl: (input && input.baseUrl ? String(input.baseUrl) : current.baseUrl || DEFAULTS.baseUrl).trim(),
@@ -69,6 +76,8 @@ function saveConfig(input) {
     apiKey: input && typeof input.apiKey === "string" && input.apiKey.trim()
       ? input.apiKey.trim()
       : current.apiKey || "",
+    authMode: input?.authMode || current.authMode || "api_key",
+    chatgptModel: typeof input?.chatgptModel === "string" ? input.chatgptModel.trim() : current.chatgptModel || "",
   };
   if (!next.baseUrl) throw new Error("Base URL is required");
   if (!next.model) throw new Error("Model id is required");
@@ -80,6 +89,9 @@ function saveConfig(input) {
     fs.chmodSync(dest, 0o600);
   } catch {
     // Some volumes ignore chmod. The file is still outside the renderer.
+  }
+  if (next.authMode !== (current.authMode || "api_key") || next.chatgptModel !== (current.chatgptModel || "")) {
+    require("./chatgpt-auth").getAuth().invalidateRequests();
   }
   return publicConfig();
 }

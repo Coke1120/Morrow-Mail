@@ -13293,6 +13293,7 @@ function updateRestartBlocked() {
   if (oooDirty()) return true;
   if (inboxRuleBaseline && JSON.stringify(inboxRuleFieldsFromForm()) !== inboxRuleBaseline) return true;
   if ($("ai-key")?.value) return true;
+  if (aiDirty()) return true;
   if (updateAiBaseline !== null && JSON.stringify([$("ai-base")?.value, $("ai-model")?.value]) !== updateAiBaseline) return true;
   if (JSON.stringify(brainCategories) !== updateCategoriesBaseline) return true;
   if ($("agent-memory") && $("agent-memory").value !== updateMemoryBaseline) return true;
@@ -14051,11 +14052,26 @@ function aiKeyPlaceholder(cfg) {
 }
 
 let aiBaseline = "";
+let chatgptSettings = null;
+function aiAuthDraft() { return chatgptSettings ? chatgptSettings.draft() : {}; }
+function mountChatgptSettings() {
+  const container = $("ai-account-settings");
+  if (!chatgptSettings && container && window.morrowChatgptSettings) {
+    chatgptSettings = window.morrowChatgptSettings.mount({
+      container, invoke: (channel, input) => api.invoke(channel, input), onChange: paintAiDirty,
+      onMode: (chatgpt) => {
+        for (const id of ["ai-api-base-field", "ai-api-model-field", "ai-api-key-field"]) if ($(id)) $(id).hidden = chatgpt;
+      },
+    });
+  }
+  return chatgptSettings;
+}
 function aiFormState() {
   return JSON.stringify([
     String(($("ai-base") && $("ai-base").value) || "").trim(),
     String(($("ai-model") && $("ai-model").value) || "").trim(),
     String(($("ai-key") && $("ai-key").value) || "").length > 0,
+    aiAuthDraft(),
   ]);
 }
 function aiDirty() {
@@ -14137,6 +14153,8 @@ async function loadAiSettings() {
     $("ai-base").value = cfg && cfg.baseUrl ? cfg.baseUrl : "";
     $("ai-model").value = cfg && cfg.model ? cfg.model : "";
     $("ai-key").placeholder = aiKeyPlaceholder(cfg);
+    const accountSettings = mountChatgptSettings();
+    if (accountSettings) await accountSettings.load(cfg || {});
     updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
     aiBaseline = aiFormState();
     paintAiDirty();
@@ -14152,7 +14170,9 @@ async function saveAiSettings() {
       baseUrl: $("ai-base").value,
       model: $("ai-model").value,
       apiKey: $("ai-key").value,
+      ...aiAuthDraft(),
     });
+    if (window.morrowAiIndicator) window.morrowAiIndicator.paint(saved);
     $("ai-key").value = "";
     $("ai-base").value = saved && saved.baseUrl ? saved.baseUrl : $("ai-base").value;
     $("ai-model").value = saved && saved.model ? saved.model : $("ai-model").value;
@@ -14169,9 +14189,15 @@ async function saveAiSettings() {
 async function fetchAiModels() {
   setAiStatus(aiDirty() ? "Fetching models with the unsaved values in this form…" : "Fetching models…", false);
   try {
+    if (aiAuthDraft().authMode === "chatgpt") {
+      const count = await chatgptSettings.fetchModels();
+      setAiStatus(count ? `Fetched ${count} ChatGPT models. Choose one, then Save AI.` : "No ChatGPT models are available for this account.", false);
+      return;
+    }
     const result = await api.invoke("host:aiListModels", {
       baseUrl: $("ai-base").value,
       apiKey: $("ai-key").value,
+      authMode: "api_key",
     });
     if (!result || result.ok !== true) {
       setAiStatus((result && result.message) || "Could not list models.", true);
@@ -14194,6 +14220,7 @@ async function testAiConnection() {
       baseUrl: $("ai-base").value,
       model: $("ai-model").value,
       apiKey: $("ai-key").value,
+      ...aiAuthDraft(),
     });
     if (result && result.ok) setAiStatus("Connected. " + (result.preview || ""), false);
     else setAiStatus((result && result.message) || "Connection failed.", true);
@@ -17767,7 +17794,7 @@ async function loadAgent(options) {
     const reason = triage && triage.reason;
     if (!(triage && triage.stale) || reason === "needs_key" || reason === "needs_mailbox") return;
     hold(true);
-    const fresh = await call("nativeAgent:triage");
+    const fresh = await call("nativeAgent:triage", { source: "open" });
     if (gen !== agentGen || state.view !== "agent") return;
     paintAgent(Object.assign({}, fresh, { runs }), "");
   } finally {
@@ -20230,6 +20257,7 @@ function wire() {
     guardOoo(() => saveVacation("disable"));
   });
   $("settings").addEventListener("close", () => {
+    if (chatgptSettings) chatgptSettings.dispose();
     clearBotSecret();
     loadShellPrefs().then(() => {
       paintPrefs();
