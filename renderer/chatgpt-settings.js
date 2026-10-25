@@ -17,6 +17,7 @@
         <button id="chatgpt-login" type="button" class="primary">Continue with ChatGPT</button>
         <button id="chatgpt-select" type="button" class="ghost">Use selected account</button>
         <button id="chatgpt-signout" type="button" class="ghost">Sign out active account</button>
+        <button id="chatgpt-refresh" type="button" class="ghost">Refresh connection status</button>
         <button id="chatgpt-cancel" type="button" class="ghost" hidden>Cancel sign-in</button>
       </div>
       <p id="chatgpt-status" role="status" aria-live="polite"></p>
@@ -32,7 +33,7 @@
       <p class="hint">Only models returned for this account are offered. Use Fetch models below. Save AI applies the authentication choice and model.</p>
       <label class="check" for="chatgpt-background"><input id="chatgpt-background" type="checkbox" /> I allow automatic profile refresh, automatic triage and scheduled AI skills to send required mail context to OpenAI using this ChatGPT account while Morrow Mail is open.</label>
       <p class="hint">Background AI is off until you opt in here. This account permission is saved immediately. Other AI requests follow your actions. No automatic API billing fallback or account rotation.</p>
-      <p><a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">Manage usage in ChatGPT</a></p>
+      <p><a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage in ChatGPT</a></p>
       <button id="chatgpt-resume" type="button" class="ghost" hidden>Retry after checking usage</button>
       <dialog id="chatgpt-welcome" aria-label="You're using your ChatGPT plan" hidden>
         <strong>You're using your ChatGPT plan</strong>
@@ -137,6 +138,7 @@
     action("host:chatgptCallback", url);
   });
   $("chatgpt-signout").addEventListener("click", () => action("host:chatgptSignOut", snapshot.activeId));
+  $("chatgpt-refresh").addEventListener("click", () => action("host:chatgptStatus"));
   $("chatgpt-select").addEventListener("click", async () => {
     await action("host:chatgptSelect", $("chatgpt-account").value);
     choices([]); // an account's catalog never carries over to another registration

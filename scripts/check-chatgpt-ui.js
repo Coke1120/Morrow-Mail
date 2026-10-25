@@ -85,6 +85,13 @@ async function run() {
   assert.equal($("ai-api-key-field").hidden, true);
   assert.equal($("chatgpt-background").checked, false);
   assert.equal(ui.run("aiDirty()"), true);
+  snapshot = { ...snapshot, available: false, message: "Synthetic secure storage locked" };
+  await $("chatgpt-refresh").fire("click");
+  assert.equal($("chatgpt-login").disabled, true);
+  assert.match($("chatgpt-status").textContent, /storage locked/);
+  snapshot = { ...snapshot, available: true };
+  await $("chatgpt-refresh").fire("click");
+  assert.equal($("chatgpt-login").disabled, false, "refresh permits retry after secure storage is unlocked");
   await $("chatgpt-login").fire("click");
   assert.equal($("chatgpt-cancel").hidden, false);
   assert.equal($("chatgpt-login").disabled, true);
