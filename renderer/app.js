@@ -1793,7 +1793,7 @@ function vacationConfirm(kind, owner, options) {
   };
 }
 
-function calendarDraft(input) {
+function calendarDraft(input, omitTitle = false) {
   const title = String((input && input.title) || "").trim();
   const startRaw = String((input && input.start) || "").trim();
   const endRaw = String((input && input.end) || "").trim();
@@ -1801,7 +1801,8 @@ function calendarDraft(input) {
   const accountId = String((input && input.accountId) || "").trim();
   if (!accountId) return { error: "Connect a Google or Microsoft mailbox first." };
   if (!calendarId) return { error: "Choose a calendar." };
-  if (!title) return { error: "Add a title." };
+  if (!omitTitle && !title) return { error: "Add a title." };
+  if (!omitTitle && (title.length > 200 || /[\u0000-\u001f\u007f]/.test(title))) return { error: "Use a title of at most 200 characters without control characters." };
   const location = String((input && input.location) || "").trim();
   const description = String((input && input.description) || "").trim();
   const allDay = !!(input && input.allDay);
@@ -1816,7 +1817,7 @@ function calendarDraft(input) {
       error: "",
       accountId: accountId,
       calendarId: calendarId,
-      title: title,
+      ...(omitTitle ? {} : { title }),
       location: location,
       description: description,
       allDay: true,
@@ -1833,7 +1834,7 @@ function calendarDraft(input) {
     error: "",
     accountId: accountId,
     calendarId: calendarId,
-    title: title,
+    ...(omitTitle ? {} : { title }),
     location: location,
     description: description,
     allDay: false,
@@ -14591,7 +14592,7 @@ function openConnectFor(account) {
   if (state.oauthPending || state.connectPending) return;
   state.reconnectAccountId = account?.id || null;
   $("connect-title").textContent = account ? "Reconnect " + account.email : "Connect account";
-  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
+  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Password reconnects update the login type and servers only after saving credentials; a failure attempts to restore the prior credentials. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
   $("email").value = account?.email || "";
   $("email").readOnly = !!account;
   $("username").value = account?.imapUsername || "";
@@ -18314,11 +18315,16 @@ function openCalendarEditor(event, dayStamp) {
   const editing = !!(event && event.id);
   calendarEditingId = editing ? String(event.id) : "";
   calendarEditingIdentity = editing ? { accountId: account?.id, calendarId: event.calendarId || state.calendarId,
-    id: calendarEditingId, description: String(event.description || ""), descriptionTruncated: !!event.descriptionTruncated, location: String(event.location || "") } : null;
+    id: calendarEditingId, title: String(event.title || ""), titleTruncated: !!event.titleTruncated,
+    description: String(event.description || ""), descriptionTruncated: !!event.descriptionTruncated, location: String(event.location || "") } : null;
   if (dialogTitle) dialogTitle.textContent = editing ? "Edit event" : "Add event";
   if (save) save.textContent = editing ? "Save" : "Add event";
   if (remove) remove.hidden = !editing;
   if (title) title.value = editing ? (event.title || "") : "";
+  if (title) title.readOnly = !!(editing && event.titleTruncated);
+  if (title && editing) calendarEditingIdentity.title = title.value;
+  const titleNote = $("calendar-title-note");
+  if (titleNote) titleNote.hidden = !(editing && event.titleTruncated);
   if (location) location.value = editing ? (event.location || "") : "";
   if (description) description.value = editing ? (event.description || "") : "";
   if (description) description.readOnly = !!(editing && event.descriptionTruncated);
@@ -18637,17 +18643,21 @@ async function submitCalendarEvent(event) {
   if (editing && (!identity || identity.id !== editing || identity.accountId !== account?.id)) {
     throw new Error("The calendar account changed. Reopen the event before saving it.");
   }
+  const title = $("calendar-event-title").value;
+  if (editing && identity.titleTruncated && title !== identity.title) {
+    throw new Error("This title is incomplete. Leave it unchanged or edit it with the calendar provider.");
+  }
   const draft = calendarDraft({
     accountId: account && account.id,
     calendarId: editing ? identity.calendarId : ($("calendar-pick") && $("calendar-pick").value) || state.calendarId,
-    title: $("calendar-event-title").value,
+    title,
     location: $("calendar-location").value,
     description: $("calendar-description") ? $("calendar-description").value : "",
     allDay: !!($("calendar-all-day") && $("calendar-all-day").checked),
     start: $("calendar-start").value,
     end: $("calendar-end").value,
     eventId: editing,
-  });
+  }, !!editing && title === identity.title);
   if (editing) {
     if (draft.description === identity.description.trim()) delete draft.description;
     else {
