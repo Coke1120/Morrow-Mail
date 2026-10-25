@@ -7,7 +7,7 @@ const { complete, extractJson } = require("./openai-client");
 const { writingBrief, identityBrief, taxonomy } = require("./brain");
 const { triageSystemPrompt } = require("./brain-persona");
 
-const KEY_ERROR = "Add an API key in Morrow Mail → AI Setup.";
+const KEY_ERROR = "Choose ChatGPT or add an API key in Morrow Mail → AI Setup.";
 const MAIL_ERROR = "Connect a mailbox. Sample mail is not used.";
 const PERSON_ERROR = "Select a message or pass a contact email.";
 const CAL_NOTE = "No calendar grant. This plan uses mail only.";
@@ -762,7 +762,7 @@ function remember(entry) {
 }
 
 function hasKey() {
-  return !!loadConfig().apiKey;
+  return loadConfig().authMode === "chatgpt" || !!loadConfig().apiKey;
 }
 
 function gate() {
@@ -857,6 +857,9 @@ function contextForSkill(skill, params) {
 }
 
 async function runSkill(params) {
+  if (params?.source === "schedule" && !require("./ai-context").isBackground()) {
+    return require("./ai-context").background(() => runSkill(params));
+  }
   const skillId = params && typeof params.skillId === "string" ? params.skillId.trim() : "";
   if (!skillId) return fail(new Error("A skill id is required."));
   const skill = skillById(skillId);
@@ -2284,7 +2287,7 @@ function answer(channel, args) {
     case "nativeAgent:home:todoUpdate":
       return setTodo(params);
     case "nativeAgent:triage":
-      return triage();
+      return params?.source === "open" ? require("./ai-context").background(() => triage()) : triage();
     case "nativeAgent:history":
       return history();
     case "nativeAgent:chat":

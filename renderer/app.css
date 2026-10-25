@@ -5529,3 +5529,13 @@ html[data-window="translate"] #reader .translate-column h2 {
   word-break: break-word;
   font: inherit;
 }
+/* Account OAuth controls share the settings surface and respect its theme. */
+.ai-account-settings { margin-bottom: 18px; }
+.ai-account-settings > label, #chatgpt-panel > label:not(.check) { display: block; margin: 12px 0 6px; font-weight: 600; }
+.ai-account-settings select, #chatgpt-callback { width: 100%; max-width: 100%; }
+#chatgpt-panel { padding: 12px 0; }
+#chatgpt-panel .row { flex-wrap: wrap; }
+#chatgpt-panel .check { align-items: start; margin-top: 14px; }
+#chatgpt-panel a { color: var(--accent, currentColor); text-decoration: underline; }
+#chatgpt-manual { margin: 12px 0; }
+#chatgpt-welcome { margin: 12px 0; padding: 12px; border: 1px solid currentColor; border-radius: 8px; }

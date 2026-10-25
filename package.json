@@ -24,6 +24,7 @@
     "better-sqlite3": "^12.11.1",
     "electron-updater": "^6.3.9",
     "imapflow": "^2.5.0",
+    "jose": "^6.2.13",
     "mailparser": "^3.9.39",
     "motion": "^14.3.0",
     "nodemailer": "^10.1.1",

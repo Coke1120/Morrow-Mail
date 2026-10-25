@@ -1,6 +1,6 @@
 # Brain skills and Agent triage
 
-Morrow Mail runs these on the mailbox cache and your OpenAI-compatible key (`Morrow Mail → AI Setup`). The host has no sample mailbox.
+Morrow Mail runs these on the mailbox cache and the AI mode chosen in `Morrow Mail → AI Setup`: your OpenAI-compatible API key/custom endpoint, or an eligible ChatGPT account. ChatGPT background profile refresh, automatic triage and scheduled skills require a separate explicit account opt-in in AI settings. Manual runs use the selected provider; errors never switch billing paths. The host has no sample mailbox.
 
 ## Skills
 

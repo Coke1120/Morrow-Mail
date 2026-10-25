@@ -34,7 +34,10 @@ npm start
 
 Optional: set `MORROW_ASAR` to an `app.asar` path to load that external UI instead. Leave the variable unset for the first-party shell. See [docs/INDEPENDENT_UI.md](docs/INDEPENDENT_UI.md).
 
-Secrets: macOS Keychain service `morrow-mail`, or Windows DPAPI under `%LOCALAPPDATA%\morrow-mail`. Env `MORROW_AI_API_KEY` / `XAI_API_KEY` overrides the AI key. OAuth: see [docs/OAUTH.md](docs/OAUTH.md). Packaging and the app id: [docs/PACKAGING.md](docs/PACKAGING.md).
+Secrets: macOS Keychain service `morrow-mail`, or Windows DPAPI under `%LOCALAPPDATA%\morrow-mail`. Env `MORROW_AI_API_KEY` / `XAI_API_KEY` overrides the AI key in API mode. Mailbox OAuth: see [docs/OAUTH.md](docs/OAUTH.md). Packaging and the app id: [docs/PACKAGING.md](docs/PACKAGING.md).
+
+AI settings also offer **Continue with ChatGPT** for eligible ChatGPT plans, alongside the existing API key/custom endpoint option. Sign in in your system browser, use the optional one-time callback paste-back if needed, fetch your account's models, choose one, then Save AI. Credentials stay encrypted through OS secure storage on this computer. Automatic profile refresh, automatic triage and scheduled AI skills need a separate account opt-in. Manage usage opens ChatGPT settings; limits apply and there is no automatic API fallback. Native/live sign-in testing is pending; see the [provider design and validation boundary](docs/adr/2026-10-25-chatgpt-model-provider.md).
+
 
 ## Status
 

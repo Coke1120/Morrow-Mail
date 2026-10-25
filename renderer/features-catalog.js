@@ -7,6 +7,12 @@
   return {
     items: [
       {
+        id: "ai-connection",
+        title: "ChatGPT or API key",
+        category: "Agent",
+        blurb: "AI settings preserve API keys and custom endpoints, and add Continue with ChatGPT for eligible plans. Browser sign-in uses Morrow Mail's own registered client, automatic loopback and optional one-time paste-back. Cancel, timeout, account selection, reauthorization and sign-out are available. Fetch account-specific models before choosing one. Responses stream with server storage off. Background profile refresh, automatic triage and scheduled skills need explicit account opt-in. Plan, app and workspace limits apply; Manage usage opens ChatGPT settings. No automatic billing fallback, provider switching, extra allowance, hosted tools or general proxy. Credentials stay encrypted on this computer; unlocked OS secure storage is required. Native and live sign-in validation remains pending.",
+      },
+      {
         id: "email-brain",
         title: "Email Brain",
         category: "Agent",
