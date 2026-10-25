@@ -1,0 +1,43 @@
+# AI data use and permission
+
+This describes the proposed consent branch, not a released build or a deployed public policy. Review [the decision](adr/2026-10-25-ai-data-permission.md) and the separate [Gmail migration plan](GMAIL_LEAST_PRIVILEGE_PLAN.md).
+
+## Before using AI
+
+Settings → AI and Morrow Mail → AI Setup share **AI data permission**. Save the provider/endpoint and model, then review the saved destination, account (for ChatGPT), locality, data categories, purposes and background disclosure. Tick the initially empty explicit-action checkbox and choose **Allow selected AI data use**. The second, initially empty checkbox separately allows background work. Saving a key, choosing a model, fetching a model catalog or ChatGPT sign-in grants no AI data permission.
+
+Existing configurations, environment-provided keys and legacy ChatGPT background preferences start blocked without this version of the disclosure. Cached mail, local search, ordinary mail/calendar operations and local Brain edits remain available. A blocked AI action explains how to review permission; it does not open sign-in, switch providers or send the prompt. Test connection also requires permission for the saved destination/model; it sends a fixed greeting prompt, without mailbox context. Fetch models is an explicit metadata read that sends credentials, without mail/calendar context.
+
+The permission covers the saved endpoint, authentication mode, model and ChatGPT registration or API credential. Changing these retires the permission, including switching back to an earlier provider. A material change to data categories or purpose must increment `VERSION` in `host/ai-consent.js`; an earlier version cannot authorize the new disclosure. Unsaved tests cannot use a different unapproved configuration. Settings save/test/sign-in result ownership from PR #296 remains in place.
+
+**Cancel / revoke AI data permission** clears both permissions and aborts in-flight AI requests. Deferred operations retain the consent context they started with; reapproving later does not revive them. A failed persistence write still disables AI in the running process and reports the error. Cancellation/revocation cannot recall data already delivered to a provider. Use that provider's account controls for its retained data. API/custom endpoint settings and ChatGPT credentials remain available for reconnection; this control is not a mailbox-account removal or credential deletion action.
+
+## Actual outbound paths
+
+All production AI prompt sends in this repository call `host/openai-client.js` (`complete` or `stream`). The consent lease is checked before the API request or ChatGPT adapter, before each stream/fallback send and before accepting returned output. API requests reject redirects. The ChatGPT adapter also rejects redirects and honors the combined cancellation signal. It sends to `https://api.openai.com/v1/responses`, after its account model catalog check. API mode sends to the configured completions destination. A loopback destination is identified as a service on this computer, which may forward data according to its own configuration; it is not a promise of local-only inference.
+
+| Feature and source | Context actually sent | Trigger |
+| --- | --- | --- |
+| Translation (`host/translate.js`) | Text nodes from the visible message, including quoted history; node ids; target language. Long text is split into batches. | Explicit Translate; Cancel aborts pending batches. |
+| AI Write (`host/draft-write.js`) | Instructions, selected text, draft content (which may include a signature), cursor context, subject, recent supplied writing history; source sender/subject/snippet or reply source text; Brain writing rules. | Explicit writing action. |
+| Reply suggestions (`host/draft-write.js`) | Sender, subject and snippet/text body supplied by the reader/composition. | Explicit Suggest, or separately classified background suggestions when reply composition opens. |
+| Brain refresh/rebuild (`host/brain.js`, `agent.profileSample`) | Sent/inbox message ids, senders, subjects, dates, folder and snippets (280 characters); refresh also includes the previous generated profile/voice/identity. Account identity is collected locally after distillation. | Explicit Refresh/Rebuild; separately permitted stale profile refresh on Brain open and hourly refresh. |
+| Brain category/profile correction | Category prompt/id, or supplied row/identity correction parameters. | Explicit Add with AI/Fix. |
+| Catalog/custom skills (`host/agent.js`) | Up to 24 recent inbox message records or person-scoped cached mail; ids/account/folder/thread identifiers, senders, subjects, snippets, dates, read/star/attachment-presence flags; categories, writing rules, Agent notes, person address and skill instructions. Calendar-enabled skills add up to 20 event titles/start/end/location from the coming week when an existing calendar grant permits a read. | Explicit Run/chat-routed skill; saved schedules require background permission. |
+| Agent triage | Recent inbox metadata/snippets, categories, writing rules, Agent notes and available Brain identity brief. | Explicit triage or separately permitted stale triage on Agent open. |
+| Agent draft reply | Selected source metadata/snippet, four inbox metadata/snippets and writing rules. | Explicit chat request; output is a reviewable draft. |
+| Other Agent questions | User question, up to eight inbox sender/subject/snippet/date records, recent conversation turns, standing notes and available calendar titles/times/locations. | Explicit question. Some inventory/filter/page routes answer locally. |
+
+These paths do not send attachment file bytes. Mail metadata can reveal that attachments exist. They do not hand mailbox passwords or mail OAuth tokens to the model. AI API credentials or the separate ChatGPT access token authenticate the selected AI service.
+
+Morrow stores its mail cache and AI profile/chat/notes on this computer. The ChatGPT adapter sets `store: false`; this describes a request parameter, not verified retention, training, human-access or deletion terms. API/custom endpoint provider practices and downstream forwarding are not verified by this code. No assertion that a provider never retains/trains on Google data is made. Provider contractual suitability and Google's review of the real data flow remain release/verification evidence gaps; user consent alone does not waive Google's Limited Use restrictions.
+
+## Validation and policy coordination
+
+`scripts/check-ai-consent.js` uses synthetic messages/providers and temporary files to exercise the real entrypoints, migration default, separate background gate, target changes, stale approval, abort, queued-work revocation and fallback prevention. Shared Settings and AI Setup DOM/VM fixtures cover affirmative controls, stale reads, duplicate submissions, revoke/late-grant ordering and disposal. These are logic checks, not rendered/native validation.
+
+Public disclosure task `01a17414-44de-7281-9133-577f18efe0f2` must distinguish current released behavior from this proposed branch: existing remote AI paths can transfer the context above; this draft adds an explicit universal gate and a separate background gate. The reported current public policy's no-Google-data-third-party-sharing statement must not be repeated as a description of those paths. This PR does not deploy that policy, terms, a domain or a Google Console configuration. Coordinate release timing and public text through the parent task.
+
+The browser `file:` page navigation previously returned `ERR_BLOCKED_BY_ADMINISTRATOR`, and `/tmp/codex-daemon-1000` access previously returned Permission denied. Neither action is retried or routed around here. Rendered/native validation remains pending. The web reader could read the sources linked below, but could not read the requested `13807382` (500 redirect to Google's inaccessible sorry page), `13805798` (inaccessible), or the public Morrow privacy URL (inaccessible). Those exact URLs were not retried by another route.
+
+Sources checked 2026-10-25: [Google app privacy policy guidance](https://support.google.com/cloud/answer/13806988), [minimum scopes](https://support.google.com/cloud/answer/13807380), [Workspace user data policy](https://developers.google.com/workspace/workspace-api-user-data-developer-policy), [verification FAQ](https://support.google.com/cloud/answer/13463817?hl=en). Outstanding requested sources: [13807382](https://support.google.com/cloud/answer/13807382), [13805798](https://support.google.com/cloud/answer/13805798). No Console, OAuth grant/login, mailbox data, model request or public-policy deployment was used for this work.

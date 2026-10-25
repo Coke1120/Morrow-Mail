@@ -122,6 +122,7 @@ async function runDraft(reqId, body, signal) {
 }
 
 async function suggestions(params) {
+  if (params?.source === "compose-open" && !require("./ai-context").isBackground()) return require("./ai-context").background(() => suggestions(params));
   try {
     const email = params && params.email ? params.email : {};
     const text = await complete([
@@ -164,4 +165,4 @@ function answer(channel, args) {
   }
 }
 
-module.exports = { answer, escapeHtml, draftRequest };
+module.exports = { answer: (...args) => require("./ai-context").operation(() => answer(...args)), escapeHtml, draftRequest };

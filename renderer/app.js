@@ -10594,7 +10594,7 @@ async function showComposeSuggestions(fields) {
   paintComposeSuggestions();
   let next;
   try {
-    const data = await call("aiDraftWrite:replySuggestions", { email: suggestionEmail(email) });
+    const data = await call("aiDraftWrite:replySuggestions", { email: suggestionEmail(email), source: "compose-open" });
     next = { items: suggestionItems(data), error: "", pending: false };
   } catch (error) {
     next = {
@@ -14289,6 +14289,7 @@ async function saveAiSettings() {
     $("ai-key").placeholder = aiKeyPlaceholder(saved);
     updateAiBaseline = JSON.stringify([saved.baseUrl, saved.model]);
     aiBaseline = aiFormState(saved);
+    chatgptSettings?.refreshConsent();
     paintAiDirty(true);
     if (operation === aiOperation) setAiStatus(aiDirty() ? "Earlier settings saved. Your newer changes are not saved." : "Saved.", false);
   } catch (error) {

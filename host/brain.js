@@ -285,7 +285,7 @@ async function runPersona(mode, sample, prior) {
 }
 
 async function analyzeMail(mode) {
-  return updateGate.run(() => analyzeMailAdmitted(mode));
+  return require("./ai-context").operation(() => updateGate.run(() => analyzeMailAdmitted(mode)));
 }
 
 async function analyzeMailAdmitted(mode) {
@@ -614,4 +614,4 @@ async function fixItem(params) {
   }
 }
 
-module.exports = { answer, emit, personaFrom, writingBrief, identityBrief, taxonomy, scheduleLivingRefresh, refreshFromMail, rebuildFromMail };
+module.exports = { answer: (...args) => require("./ai-context").operation(() => answer(...args)), emit, personaFrom, writingBrief, identityBrief, taxonomy, scheduleLivingRefresh, refreshFromMail, rebuildFromMail };

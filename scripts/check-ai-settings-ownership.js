@@ -23,6 +23,8 @@ async function fixture(kind) {
   const document = documentFor(html), $ = id => document.getElementById(id);
   const calls = [], queues = new Map(), events = {};
   let config = initialConfig(), status = initialStatus();
+  let permission = { ready: true, token: "fixture-consent", label: "Synthetic provider", destination: "https://synthetic.invalid/v1/chat/completions", model: "api-original", manual: false, background: false,
+    disclosure: "Synthetic mail and calendar context", backgroundDisclosure: "Synthetic background tasks" };
   function wait(channel) {
     const request = deferred();
     if (!queues.has(channel)) queues.set(channel, []);
@@ -37,6 +39,9 @@ async function fixture(kind) {
   const invoke = async (channel, input) => {
     calls.push({ channel, input });
     if (queues.get(channel)?.length) return queues.get(channel).shift().promise;
+    if (channel === "host:aiConsentStatus") return structuredClone(permission);
+    if (channel === "host:aiConsentGrant") { permission = { ...permission, ...input, token: permission.token + "1" }; return structuredClone(permission); }
+    if (channel === "host:aiConsentRevoke") { permission = { ...permission, manual: false, background: false, token: permission.token + "1" }; return structuredClone(permission); }
     if (channel === "host:aiGetConfig") return structuredClone(config);
     if (channel === "host:aiSaveConfig") return saveResult(input);
     if (channel === "host:aiTest") return { ok: true, preview: "Synthetic success" };
@@ -47,6 +52,7 @@ async function fixture(kind) {
   let context, run;
   if (native) {
     const bridge = { get: () => invoke("host:aiGetConfig"), save: input => invoke("host:aiSaveConfig", input), test: input => invoke("host:aiTest", input), listModels: input => invoke("host:aiListModels", input) };
+    for (const name of ["Status", "Grant", "Revoke"]) bridge[`consent${name}`] = input => invoke(`host:aiConsent${name}`, input);
     for (const name of ["Status", "Start", "Callback", "Cancel", "SignOut", "Select", "Preferences", "ResumeUsage"]) bridge[`chatgpt${name}`] = input => invoke(`host:chatgpt${name}`, input);
     context = vm.createContext({ document, window: { aiSetup: bridge, addEventListener: (name, handler) => { events[name] = handler; } }, setTimeout: () => 1, clearTimeout() {} });
     run = code => vm.runInContext(code, context);
@@ -76,10 +82,43 @@ async function fixture(kind) {
     settings: () => run(native ? "accountSettings" : "chatgptSettings"),
     close: () => native ? events.pagehide() : run("aiViewRevision++; aiOperation++; chatgptSettings.dispose()"),
     setStatus(value) { status = value; },
+    setPermission(value) { permission = { ...permission, ...value }; },
   };
 }
 
 for (const kind of ["settings", "setup"]) {
+  test(`${kind}: data consent is affirmative, background is separate, revoke wins over late grants and reads`, async () => {
+    const f = await fixture(kind);
+    assert.equal(f.$("ai-consent-manual").checked, false);
+    assert.equal(f.$("ai-consent-background").checked, false);
+    assert.equal(f.$("ai-consent-allow").disabled, true);
+    await f.save();
+    assert.equal(f.calls.filter(row => row.channel === "host:aiConsentGrant").length, 0, "save/key entry is not consent");
+    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
+    await f.$("ai-consent-allow").fire("click");
+    assert.equal(f.calls.find(row => row.channel === "host:aiConsentGrant").input.background, false);
+    assert.match(f.$("ai-consent-status").textContent, /Background AI off/);
+    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
+    f.$("ai-consent-background").checked = true;
+    const grant = f.wait("host:aiConsentGrant"), allowing = f.$("ai-consent-allow").fire("click");
+    await f.$("ai-consent-allow").fire("click");
+    assert.equal(f.calls.filter(row => row.channel === "host:aiConsentGrant").length, 2, "duplicate grants are serialized");
+    await f.$("ai-consent-revoke").fire("click");
+    grant.resolve({ ready: true, manual: true, background: true, token: "obsolete-grant" }); await allowing;
+    assert.match(f.$("ai-consent-status").textContent, /AI data use is off/);
+    assert.equal(f.$("ai-consent-manual").checked, false);
+    const read = f.wait("host:aiConsentStatus"), reading = f.settings().refreshConsent();
+    f.setPermission({ token: "new-provider", label: "New synthetic provider" });
+    await f.settings().refreshConsent();
+    read.resolve({ ready: true, token: "old-provider", label: "Old provider" }); await reading;
+    assert.match(f.$("ai-consent-destination").textContent, /New synthetic provider/);
+    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
+    const closing = f.wait("host:aiConsentGrant"), pending = f.$("ai-consent-allow").fire("click");
+    f.close(); const before = f.$("ai-consent-status").textContent;
+    closing.resolve({ ready: true, manual: true, token: "closed-success" }); await pending;
+    assert.equal(f.$("ai-consent-status").textContent, before);
+  });
+
   test(`${kind}: save keeps later mode, endpoint, model and key edits dirty; repeated save is serialized`, async () => {
     const f = await fixture(kind);
     await f.mode("chatgpt");

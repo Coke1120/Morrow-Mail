@@ -36,13 +36,32 @@ function deltaText(delta) {
   return typeof delta.text === "string" ? delta.text : "";
 }
 
-async function complete(messages, options = {}) {
+async function withConsent(options, work) {
+  const cfg = options.config || requireConfig();
+  const context = require("./ai-context");
+  const background = options.background === true || context.isBackground();
+  const lease = require("./ai-consent").getConsent().acquire(cfg, { signal: options.signal, background, stamp: context.stamp() });
+  try {
+    lease.check();
+    const result = await work({ ...options, config: cfg, background, signal: lease.signal, check: lease.check });
+    lease.check();
+    return result;
+  } finally { lease.release(); }
+}
+
+function complete(messages, options = {}) {
+  return withConsent(options, admitted => completeAdmitted(messages, admitted));
+}
+
+async function completeAdmitted(messages, options) {
   const cfg = options.config || requireConfig();
   if (cfg.authMode === "chatgpt") return require("./chatgpt-responses").getResponses().complete(messages, {
     ...options, model: cfg.chatgptModel, background: options.background === true || require("./ai-context").isBackground(),
   });
+  options.check();
   const response = await fetch(completionsUrl(cfg.baseUrl), {
     method: "POST",
+    redirect: "error",
     headers: {
       authorization: `Bearer ${cfg.apiKey}`,
       "content-type": "application/json",
@@ -56,6 +75,7 @@ async function complete(messages, options = {}) {
     }),
     signal: options.signal,
   });
+  options.check();
   if (!response.ok) {
     throw new Error(await readError(response));
   }
@@ -66,8 +86,10 @@ async function complete(messages, options = {}) {
 
 async function readSse(messages, onChunk, options) {
   const cfg = options.config || requireConfig();
+  options.check();
   const response = await fetch(completionsUrl(cfg.baseUrl), {
     method: "POST",
+    redirect: "error",
     headers: {
       authorization: `Bearer ${cfg.apiKey}`,
       "content-type": "application/json",
@@ -80,6 +102,7 @@ async function readSse(messages, onChunk, options) {
     }),
     signal: options.signal,
   });
+  options.check();
   if (!response.ok) {
     throw new Error(await readError(response));
   }
@@ -89,6 +112,7 @@ async function readSse(messages, onChunk, options) {
   let buffer = "";
   while (true) {
     const step = await reader.read();
+    options.check();
     if (step.done) break;
     buffer += decoder.decode(step.value, { stream: true });
     const lines = buffer.split("\n");
@@ -111,9 +135,13 @@ async function readSse(messages, onChunk, options) {
   }
 }
 
-async function stream(messages, onChunk, options = {}) {
+function stream(messages, onChunk, options = {}) {
+  return withConsent(options, admitted => streamAdmitted(messages, onChunk, admitted));
+}
+
+async function streamAdmitted(messages, onChunk, options) {
   const cfg = options.config || requireConfig();
-  if (cfg.authMode === "chatgpt") return require("./chatgpt-responses").getResponses().stream(messages, onChunk, {
+  if (cfg.authMode === "chatgpt") return require("./chatgpt-responses").getResponses().stream(messages, piece => { options.check(); onChunk(piece); }, {
     ...options, model: cfg.chatgptModel, background: options.background === true || require("./ai-context").isBackground(),
   });
   options = { ...options, config: cfg }; // pin the existing API path across retries and mode changes
@@ -128,11 +156,13 @@ async function stream(messages, onChunk, options = {}) {
     if (options.signal && options.signal.aborted) throw error;
     if (count > 0) throw error;
     const text = await complete(messages, options);
+    options.check();
     if (text) onChunk(text);
     return;
   }
   if (count === 0 && !(options.signal && options.signal.aborted)) {
     const text = await complete(messages, options);
+    options.check();
     if (text) onChunk(text);
   }
 }
