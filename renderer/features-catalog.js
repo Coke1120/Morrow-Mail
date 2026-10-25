@@ -64,7 +64,7 @@
         id: "multi-account",
         title: "Multiple mailboxes",
         category: "Accounts",
-        blurb: "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add the mailbox again.",
+        blurb: "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again.",
       },
       {
         id: "bot-bridge",
@@ -76,7 +76,7 @@
         id: "calendar",
         title: "Calendar",
         category: "Calendar",
-        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page. Long Google descriptions stay read-only previews; other field edits preserve the complete description.",
+        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events.",
       },
       {
         id: "in-app-updater",

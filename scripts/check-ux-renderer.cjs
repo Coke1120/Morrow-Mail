@@ -220,7 +220,9 @@ app.whenReady().then(async()=>{
  for (const title of ['Email Brain', 'Agent triage', 'Compose in its own window', 'Attachment downloads', 'Bot bridge', 'In-app updates', 'IPC diagnostics']) {
   assert.match(catalogText, new RegExp(title));
  }
- assert.match(catalogText,/Long Google descriptions stay read-only previews/);
+ assert.match(catalogText,/Titles over 200 characters and long Google descriptions stay read-only previews/);
+ assert.match(catalogText,/Password reconnects save the matching login type and servers after credentials are saved/);
+ assert.match(catalogText,/Unchanged titles are kept, including untitled events/);
  assert.match(catalogText,/invalidates queued sync and pending reconnects/);
  assert.match(catalogText,/connected, granted mailboxes/);
  assert.match(catalogText,/Request values, renderer text and URLs are omitted/);
@@ -231,6 +233,8 @@ app.whenReady().then(async()=>{
  await sleep(200);
  await run(`$('features-panel').scrollTop = 0`);
  await shot('features-catalog');
+ await run(`[...document.querySelectorAll('.feature-card')].find(card=>card.querySelector('h4').textContent==='Multiple mailboxes').scrollIntoView({block:'center'})`);
+ await shot('features-account-calendar-preservation');
  await run(`[...document.querySelectorAll('.feature-card')].find(card=>card.querySelector('h4').textContent==='IPC diagnostics').scrollIntoView({block:'center'})`);
  await shot('features-ipc-diagnostics');
  await run(`$('features-panel').scrollTop=0`);
@@ -529,8 +533,33 @@ app.whenReady().then(async()=>{
  assert.equal(await run(`Object.prototype.hasOwnProperty.call(uxFixture.last('calendar:updateEvent'),'description')`),false);
  await run(`openCalendarEditor(null)`);
  assert.equal(await run(`$('calendar-description').readOnly || !$('calendar-description-note').hidden`),false);
+ const calendarApi=require('../host/mail/calendar-api');
+ for(const provider of ['google','microsoft'])for(const length of [0,200,201,220]){
+  await sleep(250);
+  const fullTitle='T'.repeat(length),dates={start:{dateTime:'2026-10-25T09:00:00Z',timeZone:'UTC'},end:{dateTime:'2026-10-25T10:00:00Z',timeZone:'UTC'}};
+  const event=provider==='google'?calendarApi.normalizeGoogleEvent({id:'title-'+length,summary:fullTitle,...dates},'primary')
+   :calendarApi.normalizeGraphEvent({id:'title-'+length,subject:fullTitle,...dates},'primary');
+  await run(`openCalendarEditor(${JSON.stringify(event)})`);
+  assert.equal(await run(`$('calendar-event-title').value`),fullTitle.slice(0,200));
+  assert.equal(await run(`$('calendar-event-title').readOnly`),length>200);
+  assert.equal(await run(`$('calendar-title-note').hidden`),length<=200);
+  assert.equal(await run(`$('calendar-event-title').getAttribute('aria-describedby')`),'calendar-title-note');
+  if(length>200){
+   const prior=(await run('uxFixture.counts()'))['calendar:updateEvent']||0;
+   await run(`$('calendar-event-title').value='Attempted preview replacement'`);
+   await assert.rejects(run(`submitCalendarEvent({preventDefault(){}})`),/title is incomplete/);
+   assert.equal((await run('uxFixture.counts()'))['calendar:updateEvent']||0,prior);
+   await run(`$('calendar-event-title').value=${JSON.stringify(fullTitle.slice(0,200))}`);
+   if(provider==='google'&&length===220)await shot('calendar-long-title');
+  }
+  await run(`$('calendar-end').value=toDateTimeLocal('2026-10-25T11:00:00Z');submitCalendarEvent({preventDefault(){}})`);
+  assert.equal(await run(`Object.prototype.hasOwnProperty.call(uxFixture.last('calendar:updateEvent'),'title')`),false);
+ }
+ await sleep(250);
+ await run(`openCalendarEditor(null)`);
+ assert.equal(await run(`$('calendar-event-title').readOnly || !$('calendar-title-note').hidden`),false);
  const counts=await run('uxFixture.counts()');
- const result={result:'UX_FIXTURE_OK',network:'blocked',mailSendCalls:counts['mail:send'],explicitScheduleCalls:counts['mail:scheduleSend'],liveProviderCalls:0,delayedPartialReceipt:true,stalePartialPreserved:true,calendarTruncationGuard:true,featuresCli:{operations:11,detailsAndCopy:true,noHostCalls:true,noRendererErrors:true,viewports:['1180x900','720x900']}};
+ const result={result:'UX_FIXTURE_OK',network:'blocked',mailSendCalls:counts['mail:send'],explicitScheduleCalls:counts['mail:scheduleSend'],liveProviderCalls:0,delayedPartialReceipt:true,stalePartialPreserved:true,calendarTruncationGuard:true,calendarTitlePreservation:{providers:2,lengths:[0,200,201,220],readOnlyAndOmission:true},featuresCli:{operations:11,detailsAndCopy:true,noHostCalls:true,noRendererErrors:true,viewports:['1180x900','720x900']}};
  if(out)fs.writeFileSync(path.join(out,'checks.json'),JSON.stringify(result,null,2)+'\n');
  console.log('UX_FIXTURE_OK');win.destroy();app.quit();
-}).catch(error=>{console.error(error);app.exit(1);}).finally(()=>fs.rmSync(temp,{recursive:true,force:true}));
+}).catch(error=>{console.error(error);app.exit(1);}).finally(()=>fs.rmSync(temp,{recursive:true,force:true,maxRetries:3,retryDelay:50}));
