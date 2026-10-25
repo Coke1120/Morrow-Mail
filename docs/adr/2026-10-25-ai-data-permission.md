@@ -12,4 +12,6 @@ Keep the existing API/custom endpoint and ChatGPT account choices. Do not infer 
 
 Base `6217cfe` includes merged settings-race PR #296 (`a600c6c`, original head `f105f0e`). This change extends its shared settings component and adds post-save consent refresh; its save/test/sign-in ownership logic is retained and regression-tested. No duplicate patch or rebase of that PR is needed. The timeout/Bodies/release branches are not modified. Gmail transport/scopes are handled in a separate draft; no Gmail transport or OAuth scopes change in this PR.
 
+The consent branch was safely rebased onto dev `09081ae` after PR #296 had merged, retaining both the IMAP timeout fixture and consent fixture in the full-check list. This updates the review base after the independent release work; it does not add compliance work to that release.
+
 See [AI data use](../AI_DATA_USE.md) for actual payloads, permission management, policy coordination and synthetic/native evidence limits.
