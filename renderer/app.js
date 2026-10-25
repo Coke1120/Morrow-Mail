@@ -105,6 +105,9 @@ let signatureGen = 0;
 let signatureEditId = "";
 let signatureEditorAccountId = "";
 let signatureEditorPack = null;
+let signatureEditorGeneration = 0;
+let signatureListGen = 0;
+let signatureSavePending = null;
 let scheduledGen = 0;
 let scheduleUndo = null;
 let scheduleUndoTimer = null;
@@ -1523,6 +1526,18 @@ function eventCoversDay(event, key) {
   if (event && event.allDay) {
     const end = String(event.end || "").slice(0, 10);
     if (/^\d{4}-\d{2}-\d{2}$/.test(end) && end > startKey) return key >= startKey && key < end;
+  } else {
+    const start = Date.parse(event.start);
+    const end = Date.parse(event.end);
+    if (Number.isFinite(end) && end > start) {
+      const dayStart = new Date(key + "T00:00:00");
+      if (dayKey(dayStart.getFullYear(), dayStart.getMonth(), dayStart.getDate()) !== key) return false;
+      const dayEnd = new Date(dayStart);
+      // Advance the local date, since a day can have 23 or 25 hours.
+      dayEnd.setDate(dayEnd.getDate() + 1);
+      dayEnd.setHours(0, 0, 0, 0);
+      return start < dayEnd.getTime() && end > dayStart.getTime();
+    }
   }
   return startKey === key;
 }
@@ -1793,7 +1808,7 @@ function vacationConfirm(kind, owner, options) {
   };
 }
 
-function calendarDraft(input) {
+function calendarDraft(input, omitTitle = false) {
   const title = String((input && input.title) || "").trim();
   const startRaw = String((input && input.start) || "").trim();
   const endRaw = String((input && input.end) || "").trim();
@@ -1801,7 +1816,8 @@ function calendarDraft(input) {
   const accountId = String((input && input.accountId) || "").trim();
   if (!accountId) return { error: "Connect a Google or Microsoft mailbox first." };
   if (!calendarId) return { error: "Choose a calendar." };
-  if (!title) return { error: "Add a title." };
+  if (!omitTitle && !title) return { error: "Add a title." };
+  if (!omitTitle && (title.length > 200 || /[\u0000-\u001f\u007f]/.test(title))) return { error: "Use a title of at most 200 characters without control characters." };
   const location = String((input && input.location) || "").trim();
   const description = String((input && input.description) || "").trim();
   const allDay = !!(input && input.allDay);
@@ -1816,7 +1832,7 @@ function calendarDraft(input) {
       error: "",
       accountId: accountId,
       calendarId: calendarId,
-      title: title,
+      ...(omitTitle ? {} : { title }),
       location: location,
       description: description,
       allDay: true,
@@ -1833,7 +1849,7 @@ function calendarDraft(input) {
     error: "",
     accountId: accountId,
     calendarId: calendarId,
-    title: title,
+    ...(omitTitle ? {} : { title }),
     location: location,
     description: description,
     allDay: false,
@@ -10672,15 +10688,24 @@ function onSignatureHtmlToggle() {
 }
 
 function clearSignatureForm() {
+  signatureEditorGeneration += 1;
   signatureEditId = "";
   $("signature-name").value = "";
   $("signature-body").value = "";
   $("signature-html").checked = true;
   $("signature-default").checked = false;
   $("signature-domains").value = "";
-  $("signature-save").textContent = "Add";
+  syncSignatureSave();
   $("signature-cancel").hidden = true;
+  showSignatureStatus("");
   showSignatureEditor("", true);
+}
+
+function syncSignatureSave() {
+  const pending = signatureSavePending === signatureEditorGeneration;
+  $("signature-save").disabled = pending;
+  $("signature-save").textContent = pending ? "Saving…" : signatureEditId ? "Save" : "Add";
+  $("signature-form").setAttribute("aria-busy", String(pending));
 }
 
 function signatureDomainField(pack, accountId, signatureId) {
@@ -10727,11 +10752,12 @@ function paintSignatures(pack) {
     line.append(text, edit, del);
     root.appendChild(line);
   }
-  $("signature-save").textContent = signatureEditId ? "Save" : "Add";
+  syncSignatureSave();
   $("signature-cancel").hidden = !signatureEditId;
 }
 
 function startSignatureEdit(row, isDefault) {
+  signatureEditorGeneration += 1;
   const fields = signatureFields(row, isDefault);
   signatureEditId = fields.id;
   $("signature-name").value = fields.name;
@@ -10739,16 +10765,20 @@ function startSignatureEdit(row, isDefault) {
   $("signature-html").checked = fields.html;
   $("signature-default").checked = fields.isDefault;
   $("signature-domains").value = signatureDomainField(signatureEditorPack, signatureAccount()?.id, fields.id);
-  $("signature-save").textContent = "Save";
+  syncSignatureSave();
   $("signature-cancel").hidden = false;
+  showSignatureStatus("");
   showSignatureEditor(fields.body, fields.html);
   $("signature-name").focus();
 }
 
 async function loadSignatureEditor() {
+  const gen = ++signatureListGen;
+  const generation = signatureEditorGeneration;
   const accountId = signatureAccount()?.id;
   const pack = await call("mail:listSignatures", accountId ? { accountId } : {});
-  if ($("signatures").open && signatureAccount()?.id === accountId) paintSignatures(pack);
+  if (gen === signatureListGen && generation === signatureEditorGeneration
+      && $("signatures").open && signatureAccount()?.id === accountId) paintSignatures(pack);
   return pack;
 }
 
@@ -10778,6 +10808,8 @@ async function refreshComposeSignatures() {
 
 async function submitSignature(event) {
   event.preventDefault();
+  const generation = signatureEditorGeneration;
+  if (signatureSavePending === generation) return;
   if ($("signature-html") && $("signature-html").checked) syncSignatureSource();
   const draft = signatureDraft({
     id: signatureEditId,
@@ -10801,14 +10833,24 @@ async function submitSignature(event) {
     return;
   }
   draft.accountId = account.id;
+  const ownsEditor = () => generation === signatureEditorGeneration
+    && signatureAccount()?.id === account.id && $("signatures").open;
+  signatureSavePending = generation;
+  syncSignatureSave();
+  showSignatureStatus("Saving…");
   try {
     const saved = await call("mail:upsertSignature", draft);
+    if (!ownsEditor()) return;
     signatureEditId = saved && saved.id ? String(saved.id) : "";
     showSignatureStatus("Saved.");
     await loadSignatureEditor();
+    if (!ownsEditor()) return;
     await refreshComposeSignatures();
   } catch (error) {
-    showSignatureStatus(error instanceof Error ? error.message : String(error), true);
+    if (ownsEditor()) showSignatureStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    if (signatureSavePending === generation) signatureSavePending = null;
+    if (ownsEditor()) syncSignatureSave();
   }
 }
 
@@ -12505,7 +12547,7 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
@@ -12997,11 +13039,13 @@ function paintShortcuts() {
 }
 
 function onShellKey(event) {
-  if (state.view === "features") return;
+  if (state.view !== "mail") return;
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
   if (shellBlocked(event.target)) return;
   if (event.target.closest && event.target.closest(".row-actions")) return;
+  const control = event.target.closest && event.target.closest("button, a[href], summary, [role='button'], [role='link']");
+  if (control && !messageButtons().includes(control)) return;
   if (event.key === "Enter") {
     const buttons = messageButtons();
     if (buttons.includes(document.activeElement)) return;
@@ -14591,7 +14635,7 @@ function openConnectFor(account) {
   if (state.oauthPending || state.connectPending) return;
   state.reconnectAccountId = account?.id || null;
   $("connect-title").textContent = account ? "Reconnect " + account.email : "Connect account";
-  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
+  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Password reconnects update the login type and servers only after saving credentials; a failure attempts to restore the prior credentials. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
   $("email").value = account?.email || "";
   $("email").readOnly = !!account;
   $("username").value = account?.imapUsername || "";
@@ -18314,11 +18358,16 @@ function openCalendarEditor(event, dayStamp) {
   const editing = !!(event && event.id);
   calendarEditingId = editing ? String(event.id) : "";
   calendarEditingIdentity = editing ? { accountId: account?.id, calendarId: event.calendarId || state.calendarId,
-    id: calendarEditingId, description: String(event.description || ""), descriptionTruncated: !!event.descriptionTruncated, location: String(event.location || "") } : null;
+    id: calendarEditingId, title: String(event.title || ""), titleTruncated: !!event.titleTruncated,
+    description: String(event.description || ""), descriptionTruncated: !!event.descriptionTruncated, location: String(event.location || "") } : null;
   if (dialogTitle) dialogTitle.textContent = editing ? "Edit event" : "Add event";
   if (save) save.textContent = editing ? "Save" : "Add event";
   if (remove) remove.hidden = !editing;
   if (title) title.value = editing ? (event.title || "") : "";
+  if (title) title.readOnly = !!(editing && event.titleTruncated);
+  if (title && editing) calendarEditingIdentity.title = title.value;
+  const titleNote = $("calendar-title-note");
+  if (titleNote) titleNote.hidden = !(editing && event.titleTruncated);
   if (location) location.value = editing ? (event.location || "") : "";
   if (description) description.value = editing ? (event.description || "") : "";
   if (description) description.readOnly = !!(editing && event.descriptionTruncated);
@@ -18399,8 +18448,17 @@ function syncCalendarNav(view) {
 
 const calendarCache = new Map();
 const calendarPending = new Map();
+const calendarRevisions = new Map();
 let calendarStatusPending = null;
 let calendarPaintedAccountId = "";
+function invalidateCalendarAccount(accountId) {
+  // An edit can affect multiple months and checked-calendar combinations.
+  calendarRevisions.set(accountId, (calendarRevisions.get(accountId) || 0) + 1);
+  const prefix = JSON.stringify([accountId]).slice(0, -1) + ",";
+  for (const entries of [calendarCache, calendarPending]) {
+    for (const key of entries.keys()) if (key.startsWith(prefix)) entries.delete(key);
+  }
+}
 function calendarCacheKey(account, range, calendarIds) {
   const ids = Array.isArray(calendarIds) ? calendarIds : [];
   return JSON.stringify([account?.id || "", range.timeMin, ids]);
@@ -18547,6 +18605,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
     applyCalendarPayload({ api: false, reason: "no_account", events: [], calendars: [] });
     return;
   }
+  const revision = calendarRevisions.get(account.id) || 0;
   const plan = prepareCalendarLoad(account, preferCache);
   const { range, requestedIds, key, cached } = plan;
   if (cached) applyCalendarPayload(cached.payload);
@@ -18571,12 +18630,12 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
       calendarPending.set(key, pending);
     }
     const payload = await calendarPending.get(key);
-    if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
+    if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
     applyCalendarPayload(payload);
     rememberCalendar(key, payload);
     rememberCalendar(calendarCacheKey(account, range, state.calendarIds), payload);
   } catch (error) {
-    if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
+    if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
     const message = error instanceof Error ? error.message : String(error);
     if (cached?.payload?.api) {
       $("calendar-status").textContent = "Could not refresh. Showing the saved month. " + message;
@@ -18627,6 +18686,24 @@ async function grantCalendar() {
   }
 }
 
+async function submitCalendarForm(event) {
+  event.preventDefault();
+  const generation = calendarEditorGeneration;
+  const accountId = calendarAccount()?.id;
+  return guard(async () => {
+    try {
+      await submitCalendarEvent(event);
+    } catch (error) {
+      if (generation !== calendarEditorGeneration || calendarAccount()?.id !== accountId
+          || !$("calendar-event-dialog").open) return;
+      const status = $("calendar-form-status");
+      status.textContent = (error instanceof Error ? error.message : String(error)) + " Your changes are still here.";
+      status.classList.add("error");
+      status.focus();
+    }
+  });
+}
+
 async function submitCalendarEvent(event) {
   event.preventDefault();
   if (calendarWritePending) throw new Error("A calendar change is still being confirmed.");
@@ -18637,25 +18714,21 @@ async function submitCalendarEvent(event) {
   if (editing && (!identity || identity.id !== editing || identity.accountId !== account?.id)) {
     throw new Error("The calendar account changed. Reopen the event before saving it.");
   }
+  const title = $("calendar-event-title").value;
+  if (editing && identity.titleTruncated && title !== identity.title) {
+    throw new Error("This title is incomplete. Leave it unchanged or edit it with the calendar provider.");
+  }
   const draft = calendarDraft({
     accountId: account && account.id,
     calendarId: editing ? identity.calendarId : ($("calendar-pick") && $("calendar-pick").value) || state.calendarId,
-    title: $("calendar-event-title").value,
+    title,
     location: $("calendar-location").value,
     description: $("calendar-description") ? $("calendar-description").value : "",
     allDay: !!($("calendar-all-day") && $("calendar-all-day").checked),
     start: $("calendar-start").value,
     end: $("calendar-end").value,
     eventId: editing,
-  });
-  if (editing) {
-    if (draft.description === identity.description.trim()) delete draft.description;
-    else {
-      if (identity.descriptionTruncated) throw new Error("This description is incomplete. Leave it unchanged or edit it in Google Calendar.");
-      draft.descriptionBase = identity.description;
-    }
-    if (draft.location === identity.location.trim()) delete draft.location;
-  }
+  }, !!editing && title === identity.title);
   const status = $("calendar-form-status");
   if (draft.error) {
     if (status) {
@@ -18663,6 +18736,14 @@ async function submitCalendarEvent(event) {
       status.classList.add("error");
     }
     throw new Error(draft.error);
+  }
+  if (editing) {
+    if (draft.description === identity.description.trim()) delete draft.description;
+    else {
+      if (identity.descriptionTruncated) throw new Error("This description is incomplete. Leave it unchanged or edit it in Google Calendar.");
+      draft.descriptionBase = identity.description;
+    }
+    if (draft.location === identity.location.trim()) delete draft.location;
   }
   if (status) {
     status.textContent = "";
@@ -18673,7 +18754,13 @@ async function submitCalendarEvent(event) {
     if (editing) await call("calendar:updateEvent", draft);
     else await call("calendar:createEvent", draft);
   } finally { calendarWritePending = false; }
-  if (generation !== calendarEditorGeneration || calendarAccount()?.id !== account?.id) return;
+  invalidateCalendarAccount(account.id);
+  if (generation !== calendarEditorGeneration || calendarAccount()?.id !== account.id) {
+    if (state.view === "calendar" && calendarAccount()?.id === account.id && !$("calendar-event-dialog").open) {
+      await loadCalendar({ fresh: true });
+    }
+    return;
+  }
   if (draft.calendarId && !state.calendarIds.includes(draft.calendarId)) {
     state.calendarIds = state.calendarIds.concat(draft.calendarId);
     state.calendarId = draft.calendarId;
@@ -18683,7 +18770,6 @@ async function submitCalendarEvent(event) {
   calendarEditingIdentity = null;
   closeDialog("calendar-event-dialog");
   showStatus("Event saved on the calendar.");
-  calendarCache.clear();
   await loadCalendar({ fresh: true });
 }
 
@@ -19841,7 +19927,7 @@ function wire() {
   $("calendar-today").addEventListener("click", showCalendarToday);
   $("calendar-grant").addEventListener("click", () => guard(grantCalendar));
   $("calendar-add").addEventListener("click", () => openCalendarEditor(null, state.calendarFocusDay));
-  $("calendar-create").addEventListener("submit", (event) => guard(() => submitCalendarEvent(event)));
+  $("calendar-create").addEventListener("submit", submitCalendarForm);
   $("calendar-all-day").addEventListener("change", syncAllDayInputs);
   $("calendar-delete").addEventListener("click", () => guard(() => deleteCalendarEvent(calendarEditingIdentity)));
   $("calendar-cancel").addEventListener("click", () => {
@@ -20180,6 +20266,8 @@ function wire() {
   $("signatures-open").addEventListener("click", openSignatures);
   $("signatures-close").addEventListener("click", () => closeDialog("signatures"));
   $("signatures").addEventListener("close", () => {
+    if ($("signatures").open) return; // ignore a queued close from a previous editor
+    signatureEditorGeneration += 1;
     signatureEditId = "";
     signatureEditorAccountId = "";
   });

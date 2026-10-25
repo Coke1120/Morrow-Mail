@@ -56,6 +56,13 @@ function plainDescription(value, limit = 8000) {
   return limit > 0 && stripped.length > limit ? stripped.slice(0, limit) : stripped;
 }
 
+function eventTitle(value) {
+  const title = String(value || "");
+  // Read previews are not replacement values. Keep a bounded preview and let
+  // the editor omit unchanged titles, including untitled and longer events.
+  return { title: title.slice(0, 200), ...(title.length > 200 ? { titleTruncated: true } : {}) };
+}
+
 function normalizeGoogleEvent(item, calendarId) {
   if (!item || !safeId(item.id) || item.status === "cancelled") return null;
   const start = item.start && (item.start.dateTime || item.start.date) || "";
@@ -66,7 +73,7 @@ function normalizeGoogleEvent(item, calendarId) {
   return {
     id: safeId(item.id),
     calendarId: safeId(calendarId) || "",
-    title: cleanName(item.summary) || "(no title)",
+    ...eventTitle(item.summary),
     start: allDay ? String(start).slice(0, 10) : start,
     end: end ? (allDay ? String(end).slice(0, 10) : end) : "",
     allDay,
@@ -96,7 +103,7 @@ function normalizeGraphEvent(item, calendarId) {
   return {
     id: safeId(item.id),
     calendarId: safeId(calendarId) || "",
-    title: cleanName(item.subject) || "(no title)",
+    ...eventTitle(item.subject),
     start: zonedDateTime(rawStart, startZone, allDay),
     end: rawEnd ? zonedDateTime(rawEnd, endZone, allDay) : "",
     allDay,
@@ -107,7 +114,8 @@ function normalizeGraphEvent(item, calendarId) {
 
 function googleEventBody(draft) {
   const allDay = !!(draft && draft.allDay);
-  const body = { summary: draft.title };
+  const body = {};
+  if (Object.prototype.hasOwnProperty.call(draft, "title")) body.summary = draft.title;
   if (allDay) {
     body.start = { date: String(draft.start).slice(0, 10) };
     body.end = { date: String(draft.end).slice(0, 10) };
@@ -125,7 +133,8 @@ function googleEventBody(draft) {
 
 function graphEventBody(draft) {
   const allDay = !!(draft && draft.allDay);
-  const body = { subject: draft.title, isAllDay: allDay };
+  const body = { isAllDay: allDay };
+  if (Object.prototype.hasOwnProperty.call(draft, "title")) body.subject = draft.title;
   if (allDay) {
     body.start = { dateTime: String(draft.start).slice(0, 10) + "T00:00:00", timeZone: "UTC" };
     body.end = { dateTime: String(draft.end).slice(0, 10) + "T00:00:00", timeZone: "UTC" };
@@ -294,11 +303,12 @@ function invalidEvent(message) {
   return error;
 }
 
-function writeEvent(draft) {
+function writeEvent(draft, updating = false) {
   const title = cleanName(draft && draft.title);
-  if (!title) throw invalidEvent("Add a title.");
+  const hasTitle = !!draft && Object.prototype.hasOwnProperty.call(draft, "title");
+  if ((!updating || hasTitle) && !title) throw invalidEvent("Add a title of at most 200 characters.");
   const location = cleanName(draft && draft.location);
-  const optional = {};
+  const optional = hasTitle ? { title } : {};
   if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) {
     optional.description = plainDescription(draft.description, 0);
     if (optional.description.length > 8000) throw invalidEvent("This description is too long for this editor. Leave it unchanged or edit it with the calendar provider.");
@@ -310,7 +320,7 @@ function writeEvent(draft) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end <= start) {
       throw invalidEvent("Pick a start date and a later end date.");
     }
-    return { title, start, end, allDay: true, ...optional };
+    return { start, end, allDay: true, ...optional };
   }
   const startMs = Date.parse(draft && draft.start);
   const endMs = Date.parse(draft && draft.end);
@@ -318,7 +328,6 @@ function writeEvent(draft) {
     throw invalidEvent("Pick a start and a later end.");
   }
   const body = {
-    title,
     start: new Date(startMs).toISOString(),
     end: new Date(endMs).toISOString(),
     allDay: false,
@@ -364,7 +373,7 @@ async function createEvent(provider, accessToken, calendarId, draft, fetchImpl) 
 async function updateEvent(provider, accessToken, calendarId, eventId, draft, fetchImpl) {
   const id = safeId(eventId);
   if (!id) throw invalidEvent("Choose an event.");
-  const body = writeEvent(draft);
+  const body = writeEvent(draft, true);
   const suffix = "/events/" + encodeURIComponent(id);
   const url = provider === "google" || provider === "microsoft" ? calendarPath(provider, calendarId, suffix) : "";
   let headers;

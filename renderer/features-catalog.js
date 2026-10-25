@@ -25,6 +25,18 @@
         blurb: "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send.",
       },
       {
+        id: "signatures",
+        title: "Signatures",
+        category: "Mail",
+        blurb: "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target.",
+      },
+      {
+        id: "mail-keyboard",
+        title: "Mail list keyboard navigation",
+        category: "Mail",
+        blurb: "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus.",
+      },
+      {
         id: "attachment-downloads",
         title: "Attachment downloads",
         category: "Mail",
@@ -64,7 +76,7 @@
         id: "multi-account",
         title: "Multiple mailboxes",
         category: "Accounts",
-        blurb: "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add the mailbox again.",
+        blurb: "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again.",
       },
       {
         id: "bot-bridge",
@@ -76,7 +88,7 @@
         id: "calendar",
         title: "Calendar",
         category: "Calendar",
-        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page. Long Google descriptions stay read-only previews; other field edits preserve the complete description.",
+        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions.",
       },
       {
         id: "in-app-updater",
