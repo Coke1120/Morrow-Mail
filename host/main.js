@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { openAsar, readFile } = require("./asar");
 const { createIpc } = require("./ipc");
+const { createDiagnostics, attachRendererDiagnostics } = require("./ipc-diagnostics");
 const { loadConfig, publicConfig, saveConfig, completionsUrl, modelsUrl, DEFAULTS } = require("./ai-config");
 const { complete, extractJson, modelIds, listModels } = require("./openai-client");
 
@@ -163,7 +164,7 @@ function attachIpc(preloadFile) {
     throw new Error(`Renderer preload missing at ${preloadFile}`);
   }
   const bus = createIpc(LOG);
-  fs.writeFileSync(LOG, "");
+  fs.writeFileSync(LOG, "", { mode: 0o600 });
   const src = fs.readFileSync(preloadFile, "utf8");
   const channels = new Set();
   for (const match of src.matchAll(/"([a-zA-Z][\w-]*:[^"\n]{1,180})"/g)) {
@@ -533,19 +534,7 @@ async function createWindow(preloadFile, mode) {
     }
     return { action: "deny" };
   });
-  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    const text = `[console ${level}] ${message} (${sourceId}:${line})`;
-    fs.appendFileSync(LOG, text + "\n");
-    if (level >= 2) {
-      console.error(text);
-      try { require("./debug-log").note("console", message); } catch { /* the file log already has the line */ }
-    }
-  });
-  win.webContents.on("did-fail-load", (_e, code, desc, url) => {
-    const text = `[fail-load] ${code} ${desc} ${url}`;
-    fs.appendFileSync(LOG, text + "\n");
-    console.error(text);
-  });
+  attachRendererDiagnostics(win.webContents, createDiagnostics(LOG));
   win.on("close", (event) => {
     const action = quitController.onClose(event);
     if (action === "hide") {

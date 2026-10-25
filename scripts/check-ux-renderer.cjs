@@ -217,18 +217,23 @@ app.whenReady().then(async()=>{
  await shot('about-updates');await run(`$('about-dialog').close();$('rail-shortcuts').click()`);
  await waitFor(`state.view==='features' && !$('features-panel').hidden && $('log-panel').hidden && $('features-tab-catalog').getAttribute('aria-selected')==='true' && $('features-pane-shortcuts').hidden && $('features-pane-cli').hidden`);
  const catalogText = await run(`$('features-pane-catalog').textContent`);
- for (const title of ['Email Brain', 'Agent triage', 'Compose in its own window', 'Attachment downloads', 'Bot bridge', 'In-app updates']) {
+ for (const title of ['Email Brain', 'Agent triage', 'Compose in its own window', 'Attachment downloads', 'Bot bridge', 'In-app updates', 'IPC diagnostics']) {
   assert.match(catalogText, new RegExp(title));
  }
  assert.match(catalogText,/Long Google descriptions stay read-only previews/);
  assert.match(catalogText,/invalidates queued sync and pending reconnects/);
  assert.match(catalogText,/connected, granted mailboxes/);
+ assert.match(catalogText,/Request values, renderer text and URLs are omitted/);
+ assert.match(catalogText,/Other Debug entries may retain account\/folder context/);
  assert.doesNotMatch(catalogText, /npm start/);
  const shortcutSize = win.getContentSize();
  win.setContentSize(1180, 1400);
  await sleep(200);
  await run(`$('features-panel').scrollTop = 0`);
  await shot('features-catalog');
+ await run(`[...document.querySelectorAll('.feature-card')].find(card=>card.querySelector('h4').textContent==='IPC diagnostics').scrollIntoView({block:'center'})`);
+ await shot('features-ipc-diagnostics');
+ await run(`$('features-panel').scrollTop=0`);
  await run(`$('features-tab-shortcuts').click()`);
  await waitFor(`$('features-tab-shortcuts').getAttribute('aria-selected')==='true' && !$('features-pane-shortcuts').hidden`);
  assert.match(await run(`$('shortcuts-note').textContent`), /Reload/);
@@ -253,6 +258,9 @@ app.whenReady().then(async()=>{
  assert.deepEqual((await run(`[...document.querySelectorAll('[data-bot-operation]')].map(node=>node.textContent).sort()`)),require('../host/bot/catalog').operations().sort());
  assert.match(await run(`$('cli-unavailable').textContent`),/attachment upload\/attach\/download.*mailbox draft create\/edit\/delete.*calendar/);
  assert.match(await run(`$('cli-account-safety').textContent`),/connected, granted mailbox.*NOT_FOUND.*do not automatically delete retained legacy data/s);
+ assert.match(await run(`$('cli-provider-semantics').textContent`),/may contact providers.*providerCalls.*true when.*mail.send.*not a per-request network count.*replay\/join.*OAuth refresh.*not absence of provider traffic/s);
+ await run(`$('cli-provider-semantics').scrollIntoView({block:'center'})`);
+ await shot('cli-provider-semantics');
  await run(`$('features-panel').scrollTop=0`);
  await shot('cli-account-safety');
  await run(`document.querySelector('#cli-connection summary').focus()`);
@@ -319,6 +327,8 @@ app.whenReady().then(async()=>{
  assert.match(await run(`$('shortcuts-list').textContent`), /New Mail/);
  await run(`window.morrowFeaturesCatalog = window.__savedFeatures; paintFeatureCatalog();`);
  await run(`$('rail-log').click()`);await waitFor(`state.view==='log'`);
+ assert.match(await run(`$('ipc-diagnostics-note').textContent`),/Request values, renderer text and URLs are omitted.*Other Debug entries/s);
+ await shot('ipc-diagnostics-help');
  await run(`refreshLog();`);await run(`$('log-preview').click()`);
  const support=await run(`$('support-preview').value`);assert.doesNotMatch(support,/fixture-private-value/);assert.match(support,/addresses.*may remain/);assert.match(support,/2026/);assert.match(support,/address@example.test/);
  await shot('support-preview');await run(`$('support-dialog').close();showMail();uxFixture.failRead();openMessage('one',false)`);
