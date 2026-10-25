@@ -141,14 +141,18 @@ async function run() {
   assert.equal(config.authMode, "api_key");
   const feature = require("../renderer/features-catalog").items.find(row => row.id === "ai-connection");
   assert.ok(feature);
-  for (const claim of ["Continue with ChatGPT", "Cancel", "paste-back", "explicit account opt-in", "Native and live"]) assert.ok(feature.blurb.includes(claim), claim);
+  for (const claim of ["Continue with ChatGPT", "Cancel", "paste-back", "explicit account opt-in", "Native and live", "newer edits unsaved", "fresh retry", "current settings"]) assert.ok(feature.blurb.includes(claim), claim);
   for (const claim of ["ChatGPT", "credentials are not exposed", "API key/custom endpoint", "no general-purpose"]) assert.ok($("cli-ai-connection").textContent.includes(claim), claim);
   ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
   ui.run("paintFeatureCatalog()");
   assert.match($("features-catalog").textContent, /ChatGPT or API key/);
   assert.match($("features-catalog").textContent, /Background profile refresh/);
+  assert.match($("features-catalog").textContent, /Save keeps newer edits unsaved/);
+  assert.match($("chatgpt-manual").textContent, /fresh attempt immediately/);
+  assert.match($("ai-fields").textContent, /edits made while saving remain unsaved/);
   for (const source of [html, setup]) assert.ok(source.includes("chatgpt-settings.js"));
   assert.ok(setup.includes('id="ai-account-settings"'));
+  assert.ok(setup.includes("Results from older tests or changed settings are ignored."));
   assert.ok(!/localStorage|sessionStorage|console\./.test(component));
   // Execute the actual native Setup controller with the same shared component.
   // This checks its renderer logic; it does not instantiate an Electron window.
