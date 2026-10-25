@@ -105,6 +105,9 @@ let signatureGen = 0;
 let signatureEditId = "";
 let signatureEditorAccountId = "";
 let signatureEditorPack = null;
+let signatureEditorGeneration = 0;
+let signatureListGen = 0;
+let signatureSavePending = null;
 let scheduledGen = 0;
 let scheduleUndo = null;
 let scheduleUndoTimer = null;
@@ -10673,15 +10676,24 @@ function onSignatureHtmlToggle() {
 }
 
 function clearSignatureForm() {
+  signatureEditorGeneration += 1;
   signatureEditId = "";
   $("signature-name").value = "";
   $("signature-body").value = "";
   $("signature-html").checked = true;
   $("signature-default").checked = false;
   $("signature-domains").value = "";
-  $("signature-save").textContent = "Add";
+  syncSignatureSave();
   $("signature-cancel").hidden = true;
+  showSignatureStatus("");
   showSignatureEditor("", true);
+}
+
+function syncSignatureSave() {
+  const pending = signatureSavePending === signatureEditorGeneration;
+  $("signature-save").disabled = pending;
+  $("signature-save").textContent = pending ? "Saving…" : signatureEditId ? "Save" : "Add";
+  $("signature-form").setAttribute("aria-busy", String(pending));
 }
 
 function signatureDomainField(pack, accountId, signatureId) {
@@ -10728,11 +10740,12 @@ function paintSignatures(pack) {
     line.append(text, edit, del);
     root.appendChild(line);
   }
-  $("signature-save").textContent = signatureEditId ? "Save" : "Add";
+  syncSignatureSave();
   $("signature-cancel").hidden = !signatureEditId;
 }
 
 function startSignatureEdit(row, isDefault) {
+  signatureEditorGeneration += 1;
   const fields = signatureFields(row, isDefault);
   signatureEditId = fields.id;
   $("signature-name").value = fields.name;
@@ -10740,16 +10753,20 @@ function startSignatureEdit(row, isDefault) {
   $("signature-html").checked = fields.html;
   $("signature-default").checked = fields.isDefault;
   $("signature-domains").value = signatureDomainField(signatureEditorPack, signatureAccount()?.id, fields.id);
-  $("signature-save").textContent = "Save";
+  syncSignatureSave();
   $("signature-cancel").hidden = false;
+  showSignatureStatus("");
   showSignatureEditor(fields.body, fields.html);
   $("signature-name").focus();
 }
 
 async function loadSignatureEditor() {
+  const gen = ++signatureListGen;
+  const generation = signatureEditorGeneration;
   const accountId = signatureAccount()?.id;
   const pack = await call("mail:listSignatures", accountId ? { accountId } : {});
-  if ($("signatures").open && signatureAccount()?.id === accountId) paintSignatures(pack);
+  if (gen === signatureListGen && generation === signatureEditorGeneration
+      && $("signatures").open && signatureAccount()?.id === accountId) paintSignatures(pack);
   return pack;
 }
 
@@ -10779,6 +10796,8 @@ async function refreshComposeSignatures() {
 
 async function submitSignature(event) {
   event.preventDefault();
+  const generation = signatureEditorGeneration;
+  if (signatureSavePending === generation) return;
   if ($("signature-html") && $("signature-html").checked) syncSignatureSource();
   const draft = signatureDraft({
     id: signatureEditId,
@@ -10802,14 +10821,24 @@ async function submitSignature(event) {
     return;
   }
   draft.accountId = account.id;
+  const ownsEditor = () => generation === signatureEditorGeneration
+    && signatureAccount()?.id === account.id && $("signatures").open;
+  signatureSavePending = generation;
+  syncSignatureSave();
+  showSignatureStatus("Saving…");
   try {
     const saved = await call("mail:upsertSignature", draft);
+    if (!ownsEditor()) return;
     signatureEditId = saved && saved.id ? String(saved.id) : "";
     showSignatureStatus("Saved.");
     await loadSignatureEditor();
+    if (!ownsEditor()) return;
     await refreshComposeSignatures();
   } catch (error) {
-    showSignatureStatus(error instanceof Error ? error.message : String(error), true);
+    if (ownsEditor()) showSignatureStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    if (signatureSavePending === generation) signatureSavePending = null;
+    if (ownsEditor()) syncSignatureSave();
   }
 }
 
@@ -12506,7 +12535,7 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
@@ -12998,7 +13027,7 @@ function paintShortcuts() {
 }
 
 function onShellKey(event) {
-  if (state.view === "features") return;
+  if (state.view !== "mail") return;
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
   if (shellBlocked(event.target)) return;
@@ -18633,6 +18662,24 @@ async function grantCalendar() {
   }
 }
 
+async function submitCalendarForm(event) {
+  event.preventDefault();
+  const generation = calendarEditorGeneration;
+  const accountId = calendarAccount()?.id;
+  return guard(async () => {
+    try {
+      await submitCalendarEvent(event);
+    } catch (error) {
+      if (generation !== calendarEditorGeneration || calendarAccount()?.id !== accountId
+          || !$("calendar-event-dialog").open) return;
+      const status = $("calendar-form-status");
+      status.textContent = (error instanceof Error ? error.message : String(error)) + " Your changes are still here.";
+      status.classList.add("error");
+      status.focus();
+    }
+  });
+}
+
 async function submitCalendarEvent(event) {
   event.preventDefault();
   if (calendarWritePending) throw new Error("A calendar change is still being confirmed.");
@@ -19851,7 +19898,7 @@ function wire() {
   $("calendar-today").addEventListener("click", showCalendarToday);
   $("calendar-grant").addEventListener("click", () => guard(grantCalendar));
   $("calendar-add").addEventListener("click", () => openCalendarEditor(null, state.calendarFocusDay));
-  $("calendar-create").addEventListener("submit", (event) => guard(() => submitCalendarEvent(event)));
+  $("calendar-create").addEventListener("submit", submitCalendarForm);
   $("calendar-all-day").addEventListener("change", syncAllDayInputs);
   $("calendar-delete").addEventListener("click", () => guard(() => deleteCalendarEvent(calendarEditingIdentity)));
   $("calendar-cancel").addEventListener("click", () => {
@@ -20190,6 +20237,8 @@ function wire() {
   $("signatures-open").addEventListener("click", openSignatures);
   $("signatures-close").addEventListener("click", () => closeDialog("signatures"));
   $("signatures").addEventListener("close", () => {
+    if ($("signatures").open) return; // ignore a queued close from a previous editor
+    signatureEditorGeneration += 1;
     signatureEditId = "";
     signatureEditorAccountId = "";
   });

@@ -25,6 +25,18 @@
         blurb: "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send.",
       },
       {
+        id: "signatures",
+        title: "Signatures",
+        category: "Mail",
+        blurb: "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target.",
+      },
+      {
+        id: "mail-keyboard",
+        title: "Mail list keyboard navigation",
+        category: "Mail",
+        blurb: "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. These list keys leave other pages in control of their own focus.",
+      },
+      {
         id: "attachment-downloads",
         title: "Attachment downloads",
         category: "Mail",
@@ -76,7 +88,7 @@
         id: "calendar",
         title: "Calendar",
         category: "Calendar",
-        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events.",
+        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input.",
       },
       {
         id: "in-app-updater",
