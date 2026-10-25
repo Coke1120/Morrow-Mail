@@ -7,6 +7,10 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.2.36": [
+      "Routine IPC diagnostics omit mail arguments, renderer text and URLs, keeping channel, count and error metadata. Other Debug entries can still contain account or folder context.",
+      "Bot capability descriptions correctly report when send permission may contact providers. Features → CLI explains that receipts describe SMTP outcomes rather than network-call counts.",
+    ],
     "0.2.35": [
       "Mail changes use confirmed message identities. Interrupted or partial deliveries retain drafts and delivery records for review instead of resending automatically.",
       "Removing a mailbox invalidates pending sync and reconnect work. Bot access also refuses disconnected-account cache and proposals.",
