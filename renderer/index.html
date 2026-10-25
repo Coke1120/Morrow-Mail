@@ -168,6 +168,17 @@
             <div id="list-refresh-slot"></div>
           </div>
           <p id="list-coverage" class="list-filter-note" role="status"></p>
+          <details id="body-sync" class="body-sync" hidden>
+            <summary aria-controls="body-sync-details">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5" /></svg>
+              <span id="body-sync-label" role="status" aria-live="polite">Bodies · Checking activity…</span>
+            </summary>
+            <div id="body-sync-details">
+              <p class="hint">All mailboxes · full message bodies, separate from list sync.</p>
+              <ul id="body-sync-accounts" aria-label="Body download activity by mailbox"></ul>
+              <p id="body-sync-help" class="hint"></p>
+            </div>
+          </details>
           <div id="search-scope" hidden>
             <label class="sr" for="search-account">Search account</label>
             <select id="search-account" aria-label="Search account"></select>

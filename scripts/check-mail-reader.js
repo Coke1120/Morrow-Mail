@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { createBodyProgress } = require('../host/mail/body-progress');
 const { parseDocument } = require('htmlparser2');
 const app = fs.readFileSync(require.resolve('../renderer/app.js'), 'utf8');
 const engine = fs.readFileSync(require.resolve('../host/mail/engine.js'), 'utf8');
@@ -201,7 +202,7 @@ async function main() {
   // A completed queued fetch must reuse fresh body, without another network call.
   const row = { id: 'a:1', account_id: 'a', uid: 1, body_complete: 0 };
   let fetched = 0;
-  const bodyCtx = vm.createContext({ db: { accountById: () => ({ id: 'a' }), messageById: () => ({ ...row, body_complete: 1, recipient_headers_json: '{}', html_body: '<p>Complete</p>' }) }, exclusive: async (_id, fn) => fn(), priorityWaiting: () => false, secretFor: () => { fetched++; throw Error('should not fetch'); } });
+  const bodyCtx = vm.createContext({ bodyProgress: createBodyProgress(), accountEpochs: new Map(), db: { accountById: () => ({ id: 'a' }), messageById: () => ({ ...row, body_complete: 1, recipient_headers_json: '{}', html_body: '<p>Complete</p>' }) }, exclusive: async (_id, fn) => fn(), priorityWaiting: () => false, secretFor: () => { fetched++; throw Error('should not fetch'); } });
   vm.runInContext(between(engine, 'async function ensureBody', 'function pushRows'), bodyCtx);
   assert.equal((await bodyCtx.ensureBody(row)).html_body, '<p>Complete</p>');
   assert.equal(fetched, 0);
@@ -247,6 +248,7 @@ async function assertDownloadedBodyStaysOnTheRequestedUid() {
     body_complete: 0, subject: 'Alpha', html_body: null, text_body: null, recipient_headers_json: null,
   });
   const mismatch = vm.createContext({
+    bodyProgress: createBodyProgress(), accountEpochs: new Map(),
     db: {
       accountById: () => ({ id: 'acct' }),
       messageById: (id) => stored.get(id) || null,

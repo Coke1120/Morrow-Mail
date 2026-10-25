@@ -68,6 +68,8 @@ const state = {
   selectionAnchor: "",
   sync: null,
   syncScopes: new Map(),
+  bodySync: null,
+  bodySyncUnavailable: false,
   oauthStatus: null,
   oauthPending: false,
   view: "mail",
@@ -5351,6 +5353,94 @@ function currentFolderSync() {
   return folder || null;
 }
 
+let bodySyncEvents = 0;
+let bodySyncPaintTimer = null;
+let bodySyncRead = null;
+
+function rememberBodySync(snapshot) {
+  if (!snapshot || typeof snapshot.session !== "string" || !Number.isFinite(snapshot.sequence) || !Array.isArray(snapshot.accounts)) return false;
+  const previous = state.bodySync;
+  if (previous && (previous.session === snapshot.session ? snapshot.sequence < previous.sequence : snapshot.startedAt < previous.startedAt)) return false;
+  state.bodySync = snapshot;
+  state.bodySyncUnavailable = false;
+  return true;
+}
+
+function bodySyncCopy(row) {
+  const sources = { open: "Message request", visible: "Message list", overnight: "Overnight fill" };
+  const reasons = {
+    "mail-work": "Waiting for other mail work", turn: "Waiting for its turn",
+    "rate-limit": "Paused for mailbox rate limit", connection: "Check the mailbox connection",
+    offline: "Network reports offline; existing requests may still finish",
+    sleeping: "Waiting for the computer to wake",
+    incomplete: "Body remains incomplete; large messages may exceed the 3 MiB source limit",
+    "message-changed": "Message changed; refresh the folder or reopen it",
+    "download-failed": "Body download did not finish; normal mail activity can retry",
+  };
+  const labels = { running: "Downloading", queued: "Waiting", paused: "Paused", error: "Needs attention", idle: "Idle" };
+  const label = labels[row?.state] || "Checking activity…";
+  const detail = row?.reason === "rate-limit" && row.state === "error" ? "Last attempt hit a mailbox rate limit"
+    : reasons[row?.reason] || (row?.state === "idle" && row.lastResult === "done" ? "Last body download finished" : sources[row?.source] || "Downloads as needed");
+  return { label, detail };
+}
+
+function bodySyncView(snapshot, accounts, unavailable = false) {
+  const rows = accounts.map(account => {
+    const activity = !unavailable && snapshot?.accounts.find(row => row.accountId === account.id);
+    return { account, ...(activity || { state: "unknown" }), copy: unavailable ? { label: "Status unavailable", detail: "Waiting for a fresh activity update" } : bodySyncCopy(activity) };
+  });
+  const priority = ["running", "queued", "paused", "error", "idle"];
+  const active = priority.find(kind => rows.some(row => row.state === kind)) || "unknown";
+  const label = unavailable ? "Status unavailable" : bodySyncCopy({ state: active }).label;
+  const horizon = snapshot?.horizonDays === 0 ? "All history" : [180,365].includes(snapshot?.horizonDays) ? snapshot.horizonDays + " days" : "Mail & Sync history";
+  const help = (snapshot?.night ? "Overnight window active. " : "Overnight: 00:00–07:00 local while the app is awake and open. ")
+    + horizon + ". One indexed body per background pass; attachments on demand. Activity only, with no whole-mailbox completion estimate.";
+  return { rows, state: active, label: "Bodies · " + label, help };
+}
+
+function paintBodySyncStatus() {
+  const root = $("body-sync"), label = $("body-sync-label"), list = $("body-sync-accounts");
+  if (!root || !label || !list) return;
+  root.hidden = state.view !== "mail" || !state.accounts.length;
+  if (root.hidden) return;
+  const view = bodySyncView(state.bodySync, state.accounts, state.bodySyncUnavailable);
+  if (label.textContent !== view.label) label.textContent = view.label;
+  root.setAttribute?.("data-state", view.state);
+  $("body-sync-help").textContent = view.help;
+  if (!state.bodySync && !state.bodySyncUnavailable) return;
+  list.replaceChildren(...view.rows.map(row => {
+    const item = document.createElement("li"), name = document.createElement("strong"), detail = document.createElement("span");
+    name.textContent = accountLabel(row.account);
+    detail.textContent = " · " + row.copy.label + " — " + row.copy.detail;
+    item.append(name, detail);
+    return item;
+  }));
+}
+
+function acceptBodySync(snapshot) {
+  if (!rememberBodySync(snapshot)) return;
+  bodySyncEvents++;
+  if (!bodySyncPaintTimer) bodySyncPaintTimer = setTimeout(() => {
+    bodySyncPaintTimer = null; paintBodySyncStatus();
+  }, 100);
+}
+
+async function refreshBodySyncStatus() {
+  if (bodySyncRead) return bodySyncRead;
+  const events = bodySyncEvents;
+  bodySyncRead = (async () => {
+    try {
+      const snapshot = await call("mail:getBodySyncStatus");
+      if (events !== bodySyncEvents) return;
+      if (!rememberBodySync(snapshot)) state.bodySyncUnavailable = true;
+    } catch {
+      if (events === bodySyncEvents) state.bodySyncUnavailable = true;
+    }
+    paintBodySyncStatus();
+  })().finally(() => { bodySyncRead = null; });
+  return bodySyncRead;
+}
+
 let syncDetailTimer = null;
 function paintSyncControl() {
   clearTimeout(syncDetailTimer);
@@ -7813,6 +7903,7 @@ async function loadAccounts(preferredId) {
   state.accounts = Array.isArray(data) ? data : [];
   rememberSelection(preferredId);
   renderAccounts();
+  paintBodySyncStatus();
   loadScheduled().catch(() => {});
   if (state.view === "calendar" && (calendarAccount()?.id || "") !== calendarPaintedAccountId) {
     loadCalendar({ preferCache: true }).catch(error => showStatus(error.message, true));
@@ -17895,6 +17986,7 @@ function showPrimary(view, id) {
   const swap = state.view !== view;
   if (view !== "agent") stopAgentPoll();
   markRail(view);
+  paintBodySyncStatus();
   for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "features-panel"]) {
     if (pane === id) continue;
     hidePane(pane);
@@ -20707,6 +20799,7 @@ async function boot() {
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:bodyUpdated", applyBodyUpdate);
+  api.on("mail:bodySyncStatus", acceptBodySync);
   api.on("mail:actionsSettled", applyActionSettlement);
   api.on("mail:syncStatus", (payload) => {
     rememberSyncStatus(payload);
@@ -20734,6 +20827,8 @@ async function boot() {
     if (updateSerial === updateGen) bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
   await loadLook();
+  await refreshBodySyncStatus();
+  window.addEventListener("focus", () => { refreshBodySyncStatus().catch(() => {}); });
   try {
     rememberSyncStatus(await call("mail:getSyncStatus"));
     paintSyncControl();

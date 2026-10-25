@@ -23,6 +23,7 @@ const http = require("./provider-http");
 const providerApi = require("./provider-api");
 const idle = require("./idle");
 const overnight = require("./overnight");
+const { createBodyProgress } = require("./body-progress");
 const syncRetry = require("../../shared/sync-retry");
 const debugLog = require("../debug-log");
 const composeIdentity = require("./compose-identity");
@@ -1187,18 +1188,26 @@ function watchIdle() {
 }
 
 function idleSleep() {
+  bodySleeping = true;
+  bodyProgress.changed();
   if (idleController) idleController.sleep();
 }
 
 function idleWake() {
+  bodySleeping = false;
+  bodyProgress.changed();
   if (idleController && idleController.wake) idleController.wake();
 }
 
 function idleOffline() {
+  bodyOnline = false;
+  bodyProgress.changed();
   if (idleController) idleController.offline();
 }
 
 function idleOnline() {
+  bodyOnline = true;
+  bodyProgress.changed();
   if (idleController && idleController.online) idleController.online();
 }
 
@@ -1274,6 +1283,7 @@ function startBackgroundSync() {
     syncing = true;
     syncAll({ background: true }).catch(() => {}).finally(() => {
       syncing = false;
+      bodyProgress.changed();
     });
   };
   setTimeout(tick, 400);
@@ -1833,6 +1843,24 @@ let fillQueue = [];
 let fillGen = 0;
 let fillKey = null;
 let fillRunning = false;
+let bodyOnline = true;
+let bodySleeping = false;
+const bodyProgress = createBodyProgress({ onChange() {
+  if (ready) broadcast("mail:bodySyncStatus", bodySyncSnapshot());
+} });
+
+function bodySyncSnapshot() {
+  return bodyProgress.snapshot({
+    accounts: db.listAccountRows().map(account => ({ id: account.id,
+      generation: accountEpochs.get(account.id) || 0,
+      needsConnection: !!account.auth_error,
+      pausedUntil: syncGates.get(account.id)?.until || 0,
+      busy: !!lanes.get(account.id)?.active })),
+    queued: fillQueue.map(item => ({ accountId: item.accountId, generation: item.generation, source: item.kind === "open" ? "open" : "visible" })),
+    online: bodyOnline, sleeping: bodySleeping,
+    night: overnight.inOvernightWindow(overnightNow(), overnightZone()), horizonDays: syncHorizonDays(),
+  });
+}
 
 function scheduleVisibleBodyPrefetch(emails) {
   const page = Array.isArray(emails) ? emails.slice(0, BODY_PREFETCH_LIMIT) : [];
@@ -1849,8 +1877,10 @@ function scheduleVisibleBodyPrefetch(emails) {
   fillQueue = fillQueue.filter((item) => item.kind === "open");
   for (const id of ids) {
     if (bodyJobs.has(id) || fillQueue.some((item) => item.id === id)) continue;
-    fillQueue.push({ id, gen, kind: "prefetch" });
+    const accountId = db.messageById(id)?.account_id;
+    fillQueue.push({ id, gen, kind: "prefetch", accountId, generation: accountEpochs.get(accountId) || 0 });
   }
+  bodyProgress.changed();
   pumpBodyFills();
 }
 
@@ -1859,11 +1889,12 @@ function queueOpenFill(row) {
   const id = String(row.id);
   if (bodyJobs.has(id)) return;
   fillQueue = fillQueue.filter((item) => item.id !== id);
-  fillQueue.unshift({ id, gen: fillGen, kind: "open" });
+  fillQueue.unshift({ id, gen: fillGen, kind: "open", accountId: row.account_id, generation: accountEpochs.get(row.account_id) || 0 });
+  bodyProgress.changed();
   pumpBodyFills();
 }
 
-function fillBodyInBackground(row, outcome) {
+function fillBodyInBackground(row, outcome, bodySource = "visible") {
   if (!row || row.id == null) return Promise.resolve(row);
   const id = String(row.id);
   if (bodyJobs.has(id) || !rowNeedsBody(row)) return Promise.resolve(row);
@@ -1871,7 +1902,7 @@ function fillBodyInBackground(row, outcome) {
   const beforeHtml = row.html_body;
   const beforeText = row.text_body;
   const beforeComplete = row.body_complete;
-  return ensureBody(row, { background: true, outcome }).then((fresh) => {
+  return ensureBody(row, { background: true, outcome, bodySource }).then((fresh) => {
     const next = fresh || row;
     if (outcome && outcome.skipped) return next;
     if (next.html_body !== beforeHtml || next.text_body !== beforeText || next.body_complete !== beforeComplete) {
@@ -1901,7 +1932,7 @@ async function pumpBodyFills() {
       if (priorityWaiting(row.account_id)) return;
       const outcome = { skipped: false };
       fillQueue.shift();
-      await fillBodyInBackground(row, outcome);
+      await fillBodyInBackground(row, outcome, item.kind === "open" ? "open" : "visible");
       if (outcome.skipped) {
         if (!fillQueue.some((queued) => queued.id === item.id)) fillQueue.unshift(item);
         return;
@@ -1909,6 +1940,7 @@ async function pumpBodyFills() {
     }
   } finally {
     fillRunning = false;
+    bodyProgress.changed();
     const next = fillQueue[0];
     const pending = next && db.messageById(next.id);
     if (next && (!pending || !priorityWaiting(pending.account_id))) pumpBodyFills();
@@ -1976,7 +2008,7 @@ async function fillOvernightBodies() {
   overnightTried.add(String(row.id));
   const outcome = { skipped: false, rateLimited: false };
   try {
-    await fillBodyInBackground(row, outcome);
+    await fillBodyInBackground(row, outcome, "overnight");
   } finally {
     overnightRunning = false;
     fillRunning = false;
@@ -2009,6 +2041,8 @@ async function ensureBody(row, options) {
     markSkip();
     return row;
   }
+  const bodyTask = row.body_complete !== 1 ? bodyProgress.queue(account.id, options?.bodySource || "open", accountEpochs.get(account.id) || 0) : null;
+  let bodyResult;
   try {
     return await exclusive(account.id, async () => {
     if (background && priorityWaiting(account.id)) {
@@ -2020,7 +2054,9 @@ async function ensureBody(row, options) {
     if (!row || row.draft_pending || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
     actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
+    bodyProgress.start(bodyTask);
     const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity));
+    bodyResult = "incomplete";
     // A FETCH row for another UID must not be written onto this message.
     if (!fetched || Number(fetched.uid) !== Number(row.uid)) return row;
     const current = db.messageById(row.id);
@@ -2041,9 +2077,12 @@ async function ensureBody(row, options) {
       subject: fetched.subject || row.subject,
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
     });
+    bodyResult = fetched.bodyComplete ? "done" : "incomplete";
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
   } catch (error) {
+    bodyResult = http.isRateLimit(error) ? "rate-limit"
+      : ["uid_validity_changed", "message_moving"].includes(error?.code) ? "message-changed" : "download-failed";
     if (error?.code === "uid_validity_changed" || error?.code === "message_moving") {
       if (!background) throw error;
       if (error.code === "uid_validity_changed") emitSync("error", { accountId: account.id, folderId: row.folder_path, message: error.message });
@@ -2054,6 +2093,8 @@ async function ensureBody(row, options) {
       if (outcome) outcome.rateLimited = true;
     }
     return row;
+  } finally {
+    bodyProgress.finish(bodyTask, bodyResult);
   }
 }
 
@@ -3210,6 +3251,8 @@ function answer(channel, args) {
       return ok(cachedList(params));
     case "mail:getSyncStatus":
       return ok(publicSync(params));
+    case "mail:getBodySyncStatus":
+      return ok(bodySyncSnapshot());
     case "mail:listFromNetwork":
       return (async () => {
         const query = params || {};

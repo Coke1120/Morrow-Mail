@@ -196,6 +196,9 @@ async function checkEngine() {
     arm();
     const openPromise = engine.answer("mail:openEmail", [{ emailId: "night-open-target" }]);
     await started;
+    const opening = engine.answer("mail:getBodySyncStatus", [{}]).data;
+    assert.equal(opening.accounts.find(a => a.accountId === "night-open").state, "running");
+    assert.equal(opening.accounts.find(a => a.accountId === "night-open").source, "open");
     const nightPromise = engine.fillOvernightBodies();
     await tick();
     assert.deepEqual(events, [9], "overnight does not fetch while an open holds the connection");
@@ -208,6 +211,10 @@ async function checkEngine() {
     release();
     const opened = await openPromise;
     const night = await nightPromise;
+    const completed = engine.answer("mail:getBodySyncStatus", [{}]).data;
+    assert.equal(completed.accounts.find(a => a.accountId === "night-open").state, "idle");
+    assert.equal(completed.accounts.find(a => a.accountId === "night-open").lastResult, "done");
+    assert.doesNotMatch(JSON.stringify(completed), /open@example|Full 9|Need body|htmlBody|subject/);
     assert.equal(opened.success, true);
     assert.match(opened.data.email.htmlBody, /Full 9/);
     assert.equal(night.fetched, 1);
@@ -266,6 +273,9 @@ async function checkEngine() {
     assert.equal(limited.fetched, 0);
     assert.deepEqual(events, [30]);
     assert.ok(engine.syncGates.get("night-rate").until > Date.now(), "a 429 pauses that account");
+    const activity = engine.answer("mail:getBodySyncStatus", [{}]).data;
+    assert.equal(activity.accounts.find(a => a.accountId === "night-rate").reason, "rate-limit");
+    assert.doesNotMatch(JSON.stringify(activity), /slow down/);
     const paused = await engine.fillOvernightBodies();
     assert.equal(paused.fetched, 0);
     assert.deepEqual(events, [30], "a paused account is not fetched again on the next pass");

@@ -24,6 +24,7 @@ const syntax = [
   "scripts/check-bot-provider-metadata.js",
   "host/mail/engine.js",
   "host/mail/overnight.js",
+  "host/mail/body-progress.js",
   "host/mail/background-jobs.js",
   "host/mail/text-encoding.js",
   "host/mail/actions.js",
@@ -104,6 +105,7 @@ const syntax = [
   "renderer/features-catalog.js",
   "scripts/check-ui-editor-feedback.js",
   "scripts/check-calendar-keyboard-followup.js",
+  "scripts/check-body-sync-status.js",
   "scripts/check-ai-settings-ownership.js",
   "renderer/motion-ui.js",
   "scripts/check-vacation.js",
@@ -122,6 +124,8 @@ const uiEditorFeedback = spawnSync(process.execPath, [path.join(__dirname, "chec
 if (uiEditorFeedback.status !== 0) process.exit(uiEditorFeedback.status || 1);
 const calendarKeyboardFollowup = spawnSync(process.execPath, [path.join(__dirname, "check-calendar-keyboard-followup.js")], { stdio: "inherit", timeout: 15000 });
 if (calendarKeyboardFollowup.status !== 0) process.exit(calendarKeyboardFollowup.status || 1);
+const bodySyncStatus = spawnSync(process.execPath, [path.join(__dirname, "check-body-sync-status.js")], { stdio: "inherit", timeout: 15000 });
+if (bodySyncStatus.status !== 0) process.exit(bodySyncStatus.status || 1);
 
 for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js", "check-mail-discovery.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
@@ -3974,7 +3978,7 @@ const featureSeed = [
   ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
-  ["overnight-body-fill", "Off-hours body fill", "Mail", "While Morrow is open, from 00:00–07:00 local time (07:00 is outside), a slow pass fills one missing body after folder work, the same way a cold open does. Newest indexed mail inside Settings → Mail & Sync is used; trash, spam, and drafts are skipped, and the page on screen still comes first."],
+  ["overnight-body-fill", "Full message bodies", "Mail", "Mail → Bodies shows per-mailbox body activity separately from list sync. Message requests and the listed page download as needed. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Activity has no whole-mailbox total or percentage. Large messages can remain incomplete at the 3 MiB source limit; attachment files stay on demand."],
   ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; CLI explains capabilities, possible provider calls, Tailscale setup, and revocation limits."],
