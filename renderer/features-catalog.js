@@ -67,6 +67,12 @@
         blurb: "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself.",
       },
       {
+        id: "imap-recovery",
+        title: "IMAP connection recovery",
+        category: "Mail",
+        blurb: "Connection timeouts during IMAP sync use the usual connection-error and retry status. Inbox push falls back to polling and reconnects with backoff.",
+      },
+      {
         id: "overnight-body-fill",
         title: "Off-hours body fill",
         category: "Mail",
