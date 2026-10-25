@@ -1557,41 +1557,48 @@ async function connectAccount(params) {
   }
   const existing = db.accountByEmail(email);
   const id = existing ? existing.id : draft.id;
-  if (existing) {
-    db.updateAccountLogin(id, {
-      username,
-      profile,
-      imapHost: draft.imap_host,
-      imapPort: draft.imap_port,
-      imapTls: draft.imap_tls === 1,
-      smtpHost: draft.smtp_host,
-      smtpPort: draft.smtp_port,
-      smtpTls: draft.smtp_tls === 1,
-    });
-    syncRetryScheduler.clear(id);
-  } else {
-    db.insertAccount({
-      id,
-      email,
-      username,
-      profile,
-      imapHost: draft.imap_host,
-      imapPort: draft.imap_port,
-      imapTls: draft.imap_tls === 1,
-      smtpHost: draft.smtp_host,
-      smtpPort: draft.smtp_port,
-      smtpTls: draft.smtp_tls === 1,
-      delimiter: draft.delimiter || "/",
-      createdAt: Date.now(),
-    });
-  }
+  const login = {
+    username, profile, authKind: "password",
+    imapHost: draft.imap_host,
+    imapPort: draft.imap_port,
+    imapTls: draft.imap_tls === 1,
+    smtpHost: draft.smtp_host,
+    smtpPort: draft.smtp_port,
+    smtpTls: draft.smtp_tls === 1,
+  };
+  let previous;
+  let attempted = false;
+  let stage = "keychain";
+  // Credential storage and SQLite cannot share a transaction. Keep this block
+  // synchronous so compensation cannot undo a later reconnect/refresh, and
+  // commit the login kind, servers and folder changes together only after save.
   try {
+    previous = secrets.getPassword(id);
+    attempted = true; // A backend may write successfully before throwing.
     secrets.setPassword(id, password);
+    stage = "storage";
+    db.transaction(() => {
+      if (existing) db.updateAccountLogin(id, login);
+      else db.insertAccount({ id, email, ...login, delimiter: draft.delimiter || "/", createdAt: Date.now() });
+      db.replaceFolders(id, draft.folders || [], draft.delimiter || "/");
+    });
   } catch (error) {
-    if (!existing) db.removeAccount(id);
-    return fail("keychain", error instanceof Error ? error.message : "Could not save the password to the keychain.");
+    let restored = true;
+    if (attempted) {
+      try {
+        if (previous == null) secrets.deletePassword(id);
+        else secrets.setPassword(id, previous);
+      } catch { restored = false; }
+    }
+    const message = error?.storageUncertain
+      ? "Account storage could not be confirmed. Restart Morrow Mail and reconnect the mailbox."
+      : !restored ? "Could not restore credentials after a storage failure. Reconnect the mailbox."
+        : !attempted ? "Could not read saved credentials. This account was not changed."
+          : stage === "keychain" ? "Could not save credentials. Previous account settings and credentials were retained."
+            : "Could not save this account. Previous account settings and credentials were restored.";
+    return fail(stage, message);
   }
-  db.replaceFolders(id, draft.folders || [], draft.delimiter || "/");
+  syncRetryScheduler.clear(id);
   const account = db.accountById(id);
   const inbox = db.folderByWellKnown(id, "inbox");
   if (inbox) {

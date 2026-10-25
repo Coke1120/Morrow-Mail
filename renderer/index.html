@@ -247,7 +247,8 @@
       <form id="calendar-create">
         <h2 id="calendar-dialog-title">Add event</h2>
         <label for="calendar-event-title">Title</label>
-        <input id="calendar-event-title" type="text" maxlength="200" />
+        <input id="calendar-event-title" type="text" maxlength="200" aria-describedby="calendar-title-note" />
+        <p id="calendar-title-note" class="hint" hidden>This title is longer than this editor supports. Edit it with the calendar provider; other field edits preserve the complete title.</p>
         <label for="calendar-pick">Calendar</label>
         <select id="calendar-pick"></select>
         <label for="calendar-location">Location <span class="optional">(optional)</span></label>
