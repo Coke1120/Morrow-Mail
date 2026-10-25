@@ -3,7 +3,7 @@
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory;
   else root.morrowChatgptSettings = { mount: factory };
-})(typeof window === "object" ? window : globalThis, function mount({ container, invoke, onChange = () => {}, onMode = () => {} }) {
+})(typeof window === "object" ? window : globalThis, function mount({ container, invoke, onChange = () => {}, onMode = () => {}, onContext = () => {} }) {
   container.innerHTML = `
     <label for="ai-auth-mode">AI authentication</label>
     <select id="ai-auth-mode"><option value="api_key">API key / custom endpoint</option><option value="chatgpt">ChatGPT account</option></select>
@@ -22,7 +22,7 @@
       </div>
       <p id="chatgpt-status" role="status" aria-live="polite"></p>
       <details id="chatgpt-manual"><summary>Browser callback did not return to Morrow Mail?</summary>
-        <p class="hint">After browser approval, copy the complete 127.0.0.1 callback URL from its address bar and paste it here while this attempt is waiting. Do not share that URL. Retry Continue with ChatGPT after cancellation or timeout.</p>
+        <p class="hint">After browser approval, copy the complete 127.0.0.1 callback URL from its address bar and paste it here while this attempt is waiting. Do not share that URL. After cancellation finishes, Continue with ChatGPT starts a fresh attempt immediately; an earlier attempt cannot change it.</p>
         <label for="chatgpt-callback">Callback URL (one-time use)</label>
         <input id="chatgpt-callback" type="password" autocomplete="off" spellcheck="false" />
         <button id="chatgpt-submit" type="button" class="ghost">Complete sign-in</button>
@@ -46,11 +46,16 @@
   let snapshot = {};
   let selectedModel = "";
   let busy = false;
+  let actionRevision = 0;
+  let statusRevision = 0;
+  let disposed = false;
+  let cancelling = false;
   let modelRevision = 0;
+  const context = () => JSON.stringify([snapshot.activeId, snapshot.connected, snapshot.planEnabled]);
   const message = text => { $("chatgpt-status").textContent = text || ""; };
   function welcome() {
     const dialog = $("chatgpt-welcome");
-    const show = snapshot.welcome === true && $("ai-auth-mode").value === "chatgpt";
+    const show = !disposed && snapshot.welcome === true && $("ai-auth-mode").value === "chatgpt";
     dialog.hidden = !show;
     if (show && !dialog.open && typeof dialog.showModal === "function") dialog.showModal();
     if (!show && dialog.open && typeof dialog.close === "function") dialog.close();
@@ -63,7 +68,9 @@
     welcome();
   }
   function paint(status) {
+    if (disposed) return;
     const previous = snapshot.activeId;
+    const previousContext = context();
     snapshot = status || {};
     const select = $("chatgpt-account");
     const chosen = select.value;
@@ -87,29 +94,55 @@
     $("chatgpt-signout").disabled = !snapshot.connected || busy;
     $("chatgpt-select").disabled = !snapshot.accounts?.some(row => row.connected) || busy;
     $("chatgpt-cancel").hidden = !snapshot.pending;
+    $("chatgpt-cancel").disabled = cancelling;
     $("chatgpt-submit").disabled = !snapshot.pending || snapshot.phase !== "waiting";
     $("chatgpt-enable").hidden = !snapshot.connected || snapshot.planEnabled;
     $("chatgpt-resume").hidden = !snapshot.usagePaused;
     welcome();
     message(snapshot.available === false ? snapshot.message || "Unlock operating system secure storage to sign in." : snapshot.message);
-    if (previous && previous !== snapshot.activeId) { modelRevision++; choices([]); }
+    if (previousContext !== context()) {
+      modelRevision++;
+      if (previous && previous !== snapshot.activeId) choices([]);
+      onContext();
+    }
     if (!snapshot.pending) $("chatgpt-callback").value = "";
     clearTimeout(timer);
-    if (snapshot.pending) timer = setTimeout(() => refresh().catch(error => message(error.message)), 750);
+    if (snapshot.pending) timer = setTimeout(() => refresh(), 750);
   }
-  async function refresh() { paint(await invoke("host:chatgptStatus")); }
+  async function refresh(owner = actionRevision) {
+    const revision = ++statusRevision;
+    try {
+      const result = await invoke("host:chatgptStatus");
+      if (!disposed && owner === actionRevision && revision === statusRevision) paint(result);
+    } catch (error) {
+      if (!disposed && owner === actionRevision && revision === statusRevision) message(error.message || "Could not refresh ChatGPT status.");
+    }
+  }
   async function action(channel, input) {
-    if (busy) return;
+    if (busy || disposed) return false;
+    const revision = ++actionRevision;
+    statusRevision++;
     busy = true;
     $("chatgpt-login").disabled = true;
     if (channel === "host:chatgptStart") paint({ ...snapshot, pending: true, phase: "starting", message: "Opening ChatGPT sign-in…" });
     let failure = "";
-    try { paint(await invoke(channel, input)); }
-    catch (error) {
-      failure = error.message || "ChatGPT action failed. Retry when ready.";
-      try { await refresh(); } catch { /* preserve last known status */ }
+    try {
+      const result = await invoke(channel, input);
+      if (disposed || revision !== actionRevision) return false;
+      paint(result);
+      return true;
     }
-    finally { busy = false; paint(snapshot); if (failure) message(failure); }
+    catch (error) {
+      if (disposed || revision !== actionRevision) return false;
+      failure = error.message || "ChatGPT action failed. Retry when ready.";
+      await refresh(revision);
+      return false;
+    }
+    finally {
+      if (!disposed && revision === actionRevision) {
+        busy = false; paint(snapshot); if (failure) message(failure);
+      }
+    }
   }
   function choices(rows) {
     const select = $("chatgpt-model");
@@ -129,8 +162,26 @@
   $("chatgpt-login").addEventListener("click", () => action("host:chatgptStart", { accountId: $("chatgpt-account").value || undefined }));
   // Cancellation must remain usable while start or token exchange is awaiting IPC.
   $("chatgpt-cancel").addEventListener("click", async () => {
-    try { paint(await invoke("host:chatgptCancel")); }
-    catch (error) { message(error.message || "ChatGPT cancellation failed."); }
+    if (cancelling || disposed) return;
+    const revision = ++actionRevision; // retire the old start/exchange before awaiting Cancel
+    statusRevision++;
+    cancelling = true;
+    busy = true;
+    paint({ ...snapshot, pending: true, phase: "cancelling", message: "Cancelling ChatGPT sign-in…" });
+    let failure = "";
+    try {
+      const result = await invoke("host:chatgptCancel");
+      if (!disposed && revision === actionRevision) paint(result);
+    } catch (error) {
+      if (!disposed && revision === actionRevision) {
+        failure = error.message || "ChatGPT cancellation failed.";
+        await refresh(revision);
+      }
+    } finally {
+      if (!disposed && revision === actionRevision) {
+        cancelling = false; busy = false; paint(snapshot); if (failure) message(failure);
+      }
+    }
   });
   $("chatgpt-submit").addEventListener("click", () => {
     const url = $("chatgpt-callback").value;
@@ -140,8 +191,7 @@
   $("chatgpt-signout").addEventListener("click", () => action("host:chatgptSignOut", snapshot.activeId));
   $("chatgpt-refresh").addEventListener("click", () => action("host:chatgptStatus"));
   $("chatgpt-select").addEventListener("click", async () => {
-    await action("host:chatgptSelect", $("chatgpt-account").value);
-    choices([]); // an account's catalog never carries over to another registration
+    if (await action("host:chatgptSelect", $("chatgpt-account").value)) choices([]);
   });
   $("chatgpt-enable").addEventListener("click", () => action("host:chatgptStart", { accountId: snapshot.activeId, enablePlan: true }));
   $("chatgpt-background").addEventListener("change", () => action("host:chatgptPreferences", { backgroundConsent: $("chatgpt-background").checked }));
@@ -150,6 +200,10 @@
   $("chatgpt-welcome").addEventListener("cancel", () => action("host:chatgptPreferences", { welcomeSeen: true }));
   return {
     async load(config) {
+      disposed = false;
+      actionRevision++; statusRevision++; modelRevision++;
+      busy = false; cancelling = false;
+      clearTimeout(timer);
       $("ai-auth-mode").value = config.authMode || "api_key";
       selectedModel = config.chatgptModel || "";
       const option = document.createElement("option"); option.value = selectedModel; option.textContent = selectedModel || "Fetch models and choose one";
@@ -158,6 +212,7 @@
       await refresh();
     },
     draft: () => ({ authMode: $("ai-auth-mode").value, chatgptModel: $("chatgpt-model").value }),
+    context,
     refresh,
     async fetchModels() {
       const revision = ++modelRevision;
@@ -169,6 +224,9 @@
       return result.models.length;
     },
     dispose: () => {
+      disposed = true;
+      actionRevision++; statusRevision++; modelRevision++;
+      busy = false; cancelling = false;
       clearTimeout(timer); $("chatgpt-callback").value = "";
       const dialog = $("chatgpt-welcome");
       if (dialog.open && typeof dialog.close === "function") dialog.close();

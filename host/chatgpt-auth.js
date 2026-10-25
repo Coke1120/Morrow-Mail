@@ -36,11 +36,12 @@ function createAuth({ store = createStore(), fetcher = (...args) => fetch(...arg
     } catch { throw new Error("ChatGPT could not be reached. Check your connection and retry."); }
   }
 
-  async function metadata() {
+  async function metadata(signal) {
     if (!discovery) {
-      const response = await request(`${ISSUER}/.well-known/openid-configuration`);
+      const response = await request(`${ISSUER}/.well-known/openid-configuration`, { signal });
       if (!response.ok) throw new Error("ChatGPT identity discovery is unavailable. Retry later.");
       const data = await response.json();
+      if (signal?.aborted) throw abortError();
       const trusted = url => {
         try { const parsed = new URL(url); return parsed.origin === ISSUER && !parsed.username && !parsed.password && !parsed.hash && !parsed.search; }
         catch { return false; }
@@ -208,7 +209,7 @@ function createAuth({ store = createStore(), fetcher = (...args) => fetch(...arg
     pending = attempt;
     lastLogin = { phase: "starting", message: "Opening ChatGPT sign-in in your browser…" };
     try {
-      await metadata();
+      await metadata(attempt.abort.signal);
       if (pending !== attempt) throw abortError();
       const server = http.createServer((req, res) => {
         res.setHeader("Cache-Control", "no-store");
