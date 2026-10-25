@@ -19,7 +19,7 @@ function createResponses({ auth = getAuth(), fetcher = (...args) => fetch(...arg
     if (!response.ok) {
       let payload;
       try { payload = await response.json(); } catch { payload = null; }
-      const error = providerError(payload, response.status, response.headers.get("x-request-id"));
+      const error = providerError(payload, response.status, response.headers.get("openai-request-id") || response.headers.get("x-request-id"));
       if (error.code === "subscription_sharing_usage_limit_exceeded") lease.pause();
       throw error;
     }
@@ -80,7 +80,7 @@ function createResponses({ auth = getAuth(), fetcher = (...args) => fetch(...arg
         try { payload = JSON.parse(data); } catch { throw new Error("ChatGPT returned a malformed stream event."); }
         lease.check();
         if (payload.type === "response.failed" || payload.type === "error") {
-          const error = providerError(payload.response || payload, response.status, response.headers.get("x-request-id"));
+          const error = providerError(payload.response || payload, response.status, response.headers.get("openai-request-id") || response.headers.get("x-request-id"));
           if (error.code === "subscription_sharing_usage_limit_exceeded") lease.pause();
           throw error;
         }

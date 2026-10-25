@@ -59,6 +59,7 @@ async function fixture(t, options = {}) {
     }
     if (control.tokenEntered) control.tokenEntered.resolve();
     if (control.tokenWait) await control.tokenWait.promise;
+    if (control.tokenTransportFail) throw new Error("synthetic token response lost");
     if (control.tokenError) return json({ error: control.tokenError }, 400);
     const clientId = form.get("client_id");
     const nonce = requestNonce;
@@ -309,6 +310,22 @@ test("reauthorization supersedes an older refresh without overwriting its new cr
   refreshWait.resolve();
   await assert.rejects(renewing, /cancelled/);
   assert.equal(f.record().registrations[0].accessToken, fresh);
+});
+
+test("logout discloses uncertain revocation when a racing refresh response is lost", async t => {
+  const f = await fixture(t); await f.login(); f.advance(3570000);
+  f.control.tokenEntered = deferred(); f.control.tokenWait = deferred();
+  f.control.tokenTransportFail = true;
+  const renewing = f.auth.lease();
+  await f.control.tokenEntered.promise;
+  const logout = f.auth.signOut();
+  f.control.tokenWait.resolve();
+  await assert.rejects(renewing, /could not be reached/);
+  const result = await logout;
+  assert.equal(result.connected, false);
+  assert.equal(result.revocationConfirmed, false, "revoking an old token cannot confirm an unknown rotated session");
+  assert.match(result.message, /not confirmed/);
+  assert.equal(f.record().registrations[0].refreshToken, undefined);
 });
 
 test("explicit background opt-in, withdrawal, mode invalidation and sign-out storage failures fail closed", async t => {

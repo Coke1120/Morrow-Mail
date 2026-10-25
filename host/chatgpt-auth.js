@@ -88,7 +88,7 @@ function createAuth({ store = createStore(), fetcher = (...args) => fetch(...arg
     let data;
     try { data = await response.json(); } catch { throw new Error("ChatGPT returned an invalid token response. Sign in again."); }
     if (signal?.aborted) throw abortError();
-    if (!response.ok) throw providerError(data, response.status, response.headers.get("x-request-id"));
+    if (!response.ok) throw providerError(data, response.status, response.headers.get("openai-request-id") || response.headers.get("x-request-id"));
     if (typeof data.scope !== "string") {
       throw new Error("ChatGPT returned incomplete credentials. Sign in again.");
     }
@@ -290,7 +290,9 @@ function createAuth({ store = createStore(), fetcher = (...args) => fetch(...arg
     invalidateRequests();
     const job = (async () => {
       let latest = record;
-      try { latest = await refreshing.get(id) || record; } catch { /* revoke saved token if renewal failed */ }
+      let uncertainRefresh = false;
+      try { latest = await refreshing.get(id) || record; }
+      catch { uncertainRefresh = true; /* a failed response may hide server-side rotation */ }
       let revoked = !latest.refreshToken;
       if (latest.refreshToken) {
         try {
@@ -305,6 +307,7 @@ function createAuth({ store = createStore(), fetcher = (...args) => fetch(...arg
           }
         } catch { /* local logout still clears all tokens */ }
       }
+      if (uncertainRefresh) revoked = false;
       clearTokens(id);
       lastLogin = { phase: "signed_out", message: revoked ? "Signed out of ChatGPT." : "Signed out locally. Remote revocation was not confirmed; disconnect Morrow Mail in ChatGPT settings." };
       return { ...status(), revocationConfirmed: revoked };
