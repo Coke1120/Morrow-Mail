@@ -7,6 +7,15 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.2.37": [
+      "Password reconnects keep saved login settings consistent and report recovery failures.",
+      "Signature saves show progress, ignore repeated submits, and keep the correct editing target when responses arrive late.",
+      "Mail list shortcuts stay on Mail and preserve focused pagination, Sync, Scheduled, and other controls.",
+      "Calendar time edits preserve long or untitled event titles and read-only description previews.",
+      "Closing a calendar editor does not cancel a submitted save. Confirmed saves refresh month data while preserving newer edits.",
+      "Events spanning midnight appear on each overlapping local date, including daylight-saving changes.",
+      "Calendar validation and save errors appear in the dialog, retain your input, and correctly identify invalid date ranges.",
+    ],
     "0.2.36": [
       "Routine IPC diagnostics omit mail arguments, renderer text and URLs, keeping channel, count and error metadata. Other Debug entries can still contain account or folder context.",
       "Bot capability descriptions correctly report when send permission may contact providers. Features → CLI explains that receipts describe SMTP outcomes rather than network-call counts.",
