@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.2.38": [
+      "AI settings offer ChatGPT account sign-in alongside API keys and custom endpoints, with account-specific models and explicit background-use consent.",
+      "AI saves preserve newer edits, tests ignore outdated responses, and cancelling sign-in allows a fresh attempt after cancellation finishes.",
+      "Mail's Bodies disclosure shows current body downloads and queue, pause, error and last-result details for each mailbox separately from list sync.",
+      "IMAP socket timeouts use normal connection-error and retry handling instead of an uncaught-exception dialog; existing retry delays stay the same.",
+    ],
     "0.2.37": [
       "Password reconnects keep saved login settings consistent and report recovery failures.",
       "Signature saves show progress, ignore repeated submits, and keep the correct editing target when responses arrive late.",
