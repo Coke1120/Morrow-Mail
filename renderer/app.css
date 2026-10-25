@@ -679,6 +679,17 @@ button.icon-label svg { display: block; flex: none; }
   white-space: nowrap;
 }
 
+.body-sync { margin: 2px 0 4px; color: var(--muted); font-size: 11px; }
+.body-sync summary { display: list-item; list-style-position: inside; width: fit-content; max-width: 100%; padding: 4px 0; cursor: pointer; }
+.body-sync summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; border-radius: 4px; }
+.body-sync summary svg { vertical-align: -2px; margin-right: 4px; }
+.body-sync[data-state="running"] summary { color: var(--accent-ink); }
+.body-sync > div { max-height: 180px; overflow: auto; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; }
+.body-sync ul { display: grid; gap: 5px; list-style: none; margin: 6px 0; padding: 0; }
+.body-sync li { overflow-wrap: anywhere; }
+.body-sync strong { color: var(--ink); font-weight: 600; }
+.body-sync .hint { margin: 4px 0; font-size: inherit; }
+
 @keyframes sync-spin {
   to { transform: rotate(360deg); }
 }

@@ -68,6 +68,8 @@ const state = {
   selectionAnchor: "",
   sync: null,
   syncScopes: new Map(),
+  bodySync: null,
+  bodySyncUnavailable: false,
   oauthStatus: null,
   oauthPending: false,
   view: "mail",
@@ -5351,6 +5353,94 @@ function currentFolderSync() {
   return folder || null;
 }
 
+let bodySyncEvents = 0;
+let bodySyncPaintTimer = null;
+let bodySyncRead = null;
+
+function rememberBodySync(snapshot) {
+  if (!snapshot || typeof snapshot.session !== "string" || !Number.isFinite(snapshot.sequence) || !Array.isArray(snapshot.accounts)) return false;
+  const previous = state.bodySync;
+  if (previous && (previous.session === snapshot.session ? snapshot.sequence < previous.sequence : snapshot.startedAt < previous.startedAt)) return false;
+  state.bodySync = snapshot;
+  state.bodySyncUnavailable = false;
+  return true;
+}
+
+function bodySyncCopy(row) {
+  const sources = { open: "Message request", visible: "Message list", overnight: "Overnight fill" };
+  const reasons = {
+    "mail-work": "Waiting for other mail work", turn: "Waiting for its turn",
+    "rate-limit": "Paused for mailbox rate limit", connection: "Check the mailbox connection",
+    offline: "Network reports offline; existing requests may still finish",
+    sleeping: "Waiting for the computer to wake",
+    incomplete: "Body remains incomplete; large messages may exceed the 3 MiB source limit",
+    "message-changed": "Message changed; refresh the folder or reopen it",
+    "download-failed": "Body download did not finish; normal mail activity can retry",
+  };
+  const labels = { running: "Downloading", queued: "Waiting", paused: "Paused", error: "Needs attention", idle: "Idle" };
+  const label = labels[row?.state] || "Checking activity…";
+  const detail = row?.reason === "rate-limit" && row.state === "error" ? "Last attempt hit a mailbox rate limit"
+    : reasons[row?.reason] || (row?.state === "idle" && row.lastResult === "done" ? "Last body download finished" : sources[row?.source] || "Downloads as needed");
+  return { label, detail };
+}
+
+function bodySyncView(snapshot, accounts, unavailable = false) {
+  const rows = accounts.map(account => {
+    const activity = !unavailable && snapshot?.accounts.find(row => row.accountId === account.id);
+    return { account, ...(activity || { state: "unknown" }), copy: unavailable ? { label: "Status unavailable", detail: "Waiting for a fresh activity update" } : bodySyncCopy(activity) };
+  });
+  const priority = ["running", "queued", "paused", "error", "idle"];
+  const active = priority.find(kind => rows.some(row => row.state === kind)) || "unknown";
+  const label = unavailable ? "Status unavailable" : bodySyncCopy({ state: active }).label;
+  const horizon = snapshot?.horizonDays === 0 ? "All history" : [180,365].includes(snapshot?.horizonDays) ? snapshot.horizonDays + " days" : "Mail & Sync history";
+  const help = (snapshot?.night ? "Overnight window active. " : "Overnight: 00:00–07:00 local while the app is awake and open. ")
+    + horizon + ". One indexed body per background pass; attachments on demand. Activity only, with no whole-mailbox completion estimate.";
+  return { rows, state: active, label: "Bodies · " + label, help };
+}
+
+function paintBodySyncStatus() {
+  const root = $("body-sync"), label = $("body-sync-label"), list = $("body-sync-accounts");
+  if (!root || !label || !list) return;
+  root.hidden = state.view !== "mail" || !state.accounts.length;
+  if (root.hidden) return;
+  const view = bodySyncView(state.bodySync, state.accounts, state.bodySyncUnavailable);
+  if (label.textContent !== view.label) label.textContent = view.label;
+  root.setAttribute?.("data-state", view.state);
+  $("body-sync-help").textContent = view.help;
+  if (!state.bodySync && !state.bodySyncUnavailable) return;
+  list.replaceChildren(...view.rows.map(row => {
+    const item = document.createElement("li"), name = document.createElement("strong"), detail = document.createElement("span");
+    name.textContent = accountLabel(row.account);
+    detail.textContent = " · " + row.copy.label + " — " + row.copy.detail;
+    item.append(name, detail);
+    return item;
+  }));
+}
+
+function acceptBodySync(snapshot) {
+  if (!rememberBodySync(snapshot)) return;
+  bodySyncEvents++;
+  if (!bodySyncPaintTimer) bodySyncPaintTimer = setTimeout(() => {
+    bodySyncPaintTimer = null; paintBodySyncStatus();
+  }, 100);
+}
+
+async function refreshBodySyncStatus() {
+  if (bodySyncRead) return bodySyncRead;
+  const events = bodySyncEvents;
+  bodySyncRead = (async () => {
+    try {
+      const snapshot = await call("mail:getBodySyncStatus");
+      if (events !== bodySyncEvents) return;
+      if (!rememberBodySync(snapshot)) state.bodySyncUnavailable = true;
+    } catch {
+      if (events === bodySyncEvents) state.bodySyncUnavailable = true;
+    }
+    paintBodySyncStatus();
+  })().finally(() => { bodySyncRead = null; });
+  return bodySyncRead;
+}
+
 let syncDetailTimer = null;
 function paintSyncControl() {
   clearTimeout(syncDetailTimer);
@@ -7813,6 +7903,7 @@ async function loadAccounts(preferredId) {
   state.accounts = Array.isArray(data) ? data : [];
   rememberSelection(preferredId);
   renderAccounts();
+  paintBodySyncStatus();
   loadScheduled().catch(() => {});
   if (state.view === "calendar" && (calendarAccount()?.id || "") !== calendarPaintedAccountId) {
     loadCalendar({ preferCache: true }).catch(error => showStatus(error.message, true));
@@ -14053,12 +14144,16 @@ function aiKeyPlaceholder(cfg) {
 
 let aiBaseline = "";
 let chatgptSettings = null;
+let aiOperation = 0;
+let aiViewRevision = 0;
+let aiSaveBusy = false;
 function aiAuthDraft() { return chatgptSettings ? chatgptSettings.draft() : {}; }
 function mountChatgptSettings() {
   const container = $("ai-account-settings");
   if (!chatgptSettings && container && window.morrowChatgptSettings) {
     chatgptSettings = window.morrowChatgptSettings.mount({
       container, invoke: (channel, input) => api.invoke(channel, input), onChange: paintAiDirty,
+      onContext: () => { aiOperation++; setAiStatus("", false); },
       onMode: (chatgpt) => {
         for (const id of ["ai-api-base-field", "ai-api-model-field", "ai-api-key-field"]) if ($(id)) $(id).hidden = chatgpt;
       },
@@ -14066,24 +14161,32 @@ function mountChatgptSettings() {
   }
   return chatgptSettings;
 }
-function aiFormState() {
+function aiSettingsDraft() {
+  return { baseUrl: $("ai-base").value, model: $("ai-model").value, apiKey: $("ai-key").value, ...aiAuthDraft() };
+}
+function aiFormState(input = aiSettingsDraft()) {
   return JSON.stringify([
-    String(($("ai-base") && $("ai-base").value) || "").trim(),
-    String(($("ai-model") && $("ai-model").value) || "").trim(),
-    String(($("ai-key") && $("ai-key").value) || "").length > 0,
-    aiAuthDraft(),
+    String(input.baseUrl || "").trim(), String(input.model || "").trim(),
+    !!input.apiKey,
+    { authMode: input.authMode || "api_key", chatgptModel: String(input.chatgptModel || "").trim() },
   ]);
+}
+function aiRequestCurrent(operation, view, input, context) {
+  return operation === aiOperation && view === aiViewRevision
+    && JSON.stringify(input) === JSON.stringify(aiSettingsDraft())
+    && context === chatgptSettings?.context?.();
 }
 function aiDirty() {
   return !!aiBaseline && aiFormState() !== aiBaseline;
 }
-function paintAiDirty() {
+function paintAiDirty(preserveStatus = false) {
   const note = $("ai-dirty");
   if (!note) return;
   const dirty = aiDirty();
   note.hidden = !dirty;
   note.textContent = dirty ? "Unsaved changes. Save AI to apply them." : "";
-  if (dirty && $("ai-status") && $("ai-status").textContent === "Saved.") setAiStatus("", false);
+  const status = $("ai-status")?.textContent || "";
+  if ((dirty && status === "Saved.") || (preserveStatus !== true && status.startsWith("Connected."))) setAiStatus("", false);
 }
 
 function clearAiModelChoices() {
@@ -14145,53 +14248,69 @@ function chooseFetchedModel() {
 }
 
 async function loadAiSettings() {
+  const view = ++aiViewRevision;
+  aiOperation++;
   setAiStatus("", false);
   $("ai-key").value = "";
   clearAiModelChoices();
   try {
     const cfg = await api.invoke("host:aiGetConfig");
+    if (view !== aiViewRevision) return;
     $("ai-base").value = cfg && cfg.baseUrl ? cfg.baseUrl : "";
     $("ai-model").value = cfg && cfg.model ? cfg.model : "";
     $("ai-key").placeholder = aiKeyPlaceholder(cfg);
     const accountSettings = mountChatgptSettings();
     if (accountSettings) await accountSettings.load(cfg || {});
+    if (view !== aiViewRevision) return;
     updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
     aiBaseline = aiFormState();
     paintAiDirty();
   } catch (error) {
-    setAiStatus(error instanceof Error ? error.message : String(error), true);
+    if (view === aiViewRevision) setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
 }
 
 async function saveAiSettings() {
+  if (aiSaveBusy) return;
+  const input = aiSettingsDraft();
+  const operation = ++aiOperation;
+  const view = aiViewRevision;
+  aiSaveBusy = true;
+  $("ai-save").disabled = true;
   setAiStatus("Saving…", false);
   try {
-    const saved = await api.invoke("host:aiSaveConfig", {
-      baseUrl: $("ai-base").value,
-      model: $("ai-model").value,
-      apiKey: $("ai-key").value,
-      ...aiAuthDraft(),
-    });
+    const saved = await api.invoke("host:aiSaveConfig", input);
     if (window.morrowAiIndicator) window.morrowAiIndicator.paint(saved);
-    $("ai-key").value = "";
-    $("ai-base").value = saved && saved.baseUrl ? saved.baseUrl : $("ai-base").value;
-    $("ai-model").value = saved && saved.model ? saved.model : $("ai-model").value;
+    if (view !== aiViewRevision) return;
+    // Only reconcile fields still owned by this save. New edits stay in the form.
+    if ($("ai-key").value === input.apiKey) $("ai-key").value = "";
+    if ($("ai-base").value === input.baseUrl) $("ai-base").value = saved.baseUrl;
+    if ($("ai-model").value === input.model) $("ai-model").value = saved.model;
     $("ai-key").placeholder = aiKeyPlaceholder(saved);
-    updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
-    aiBaseline = aiFormState();
-    paintAiDirty();
-    setAiStatus("Saved.", false);
+    updateAiBaseline = JSON.stringify([saved.baseUrl, saved.model]);
+    aiBaseline = aiFormState(saved);
+    paintAiDirty(true);
+    if (operation === aiOperation) setAiStatus(aiDirty() ? "Earlier settings saved. Your newer changes are not saved." : "Saved.", false);
   } catch (error) {
-    setAiStatus(error instanceof Error ? error.message : String(error), true);
+    if (operation === aiOperation && view === aiViewRevision) setAiStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    aiSaveBusy = false;
+    $("ai-save").disabled = false;
   }
 }
 
 async function fetchAiModels() {
+  const operation = ++aiOperation;
+  const view = aiViewRevision;
+  const input = aiSettingsDraft();
+  const context = chatgptSettings?.context?.();
   setAiStatus(aiDirty() ? "Fetching models with the unsaved values in this form…" : "Fetching models…", false);
   try {
     if (aiAuthDraft().authMode === "chatgpt") {
       const count = await chatgptSettings.fetchModels();
-      setAiStatus(count ? `Fetched ${count} ChatGPT models. Choose one, then Save AI.` : "No ChatGPT models are available for this account.", false);
+      if (operation === aiOperation && view === aiViewRevision && aiAuthDraft().authMode === "chatgpt" && context === chatgptSettings?.context?.()) {
+        setAiStatus(count ? `Fetched ${count} ChatGPT models. Choose one, then Save AI.` : "No ChatGPT models are available for this account.", false);
+      }
       return;
     }
     const result = await api.invoke("host:aiListModels", {
@@ -14199,6 +14318,7 @@ async function fetchAiModels() {
       apiKey: $("ai-key").value,
       authMode: "api_key",
     });
+    if (!aiRequestCurrent(operation, view, input, context)) return;
     if (!result || result.ok !== true) {
       setAiStatus((result && result.message) || "Could not list models.", true);
       return;
@@ -14207,25 +14327,29 @@ async function fetchAiModels() {
     const count = applyFetchedModels(ids);
     setAiStatus(count ? "Fetched " + count + " models. Pick one or type an id." : "No models returned. Type a model id.", false);
   } catch (error) {
-    setAiStatus(error instanceof Error ? error.message : String(error), true);
+    if (aiRequestCurrent(operation, view, input, context)) setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
 }
 
 async function testAiConnection() {
+  const operation = ++aiOperation;
+  const view = aiViewRevision;
+  const input = aiSettingsDraft();
+  const context = chatgptSettings?.context?.();
   // Test what the form shows, including unsaved edits. A blank key still falls
   // back to the saved key on the host, matching Save and Fetch models.
   setAiStatus(aiDirty() ? "Testing the unsaved values in this form…" : "Contacting the model…", false);
   try {
-    const result = await api.invoke("host:aiTest", {
-      baseUrl: $("ai-base").value,
-      model: $("ai-model").value,
-      apiKey: $("ai-key").value,
-      ...aiAuthDraft(),
-    });
+    const result = await api.invoke("host:aiTest", input);
+    if (!aiRequestCurrent(operation, view, input, context)) {
+      if (operation === aiOperation && view === aiViewRevision) setAiStatus("Settings changed. Test the current settings again.", false);
+      return;
+    }
     if (result && result.ok) setAiStatus("Connected. " + (result.preview || ""), false);
     else setAiStatus((result && result.message) || "Connection failed.", true);
   } catch (error) {
-    setAiStatus(error instanceof Error ? error.message : String(error), true);
+    if (aiRequestCurrent(operation, view, input, context)) setAiStatus(error instanceof Error ? error.message : String(error), true);
+    else if (operation === aiOperation && view === aiViewRevision) setAiStatus("Settings changed. Test the current settings again.", false);
   }
 }
 
@@ -17862,6 +17986,7 @@ function showPrimary(view, id) {
   const swap = state.view !== view;
   if (view !== "agent") stopAgentPoll();
   markRail(view);
+  paintBodySyncStatus();
   for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "features-panel"]) {
     if (pane === id) continue;
     hidePane(pane);
@@ -20257,6 +20382,8 @@ function wire() {
     guardOoo(() => saveVacation("disable"));
   });
   $("settings").addEventListener("close", () => {
+    aiViewRevision++;
+    aiOperation++;
     if (chatgptSettings) chatgptSettings.dispose();
     clearBotSecret();
     loadShellPrefs().then(() => {
@@ -20672,6 +20799,7 @@ async function boot() {
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:bodyUpdated", applyBodyUpdate);
+  api.on("mail:bodySyncStatus", acceptBodySync);
   api.on("mail:actionsSettled", applyActionSettlement);
   api.on("mail:syncStatus", (payload) => {
     rememberSyncStatus(payload);
@@ -20699,6 +20827,8 @@ async function boot() {
     if (updateSerial === updateGen) bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
   await loadLook();
+  await refreshBodySyncStatus();
+  window.addEventListener("focus", () => { refreshBodySyncStatus().catch(() => {}); });
   try {
     rememberSyncStatus(await call("mail:getSyncStatus"));
     paintSyncControl();
