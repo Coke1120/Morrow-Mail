@@ -24,6 +24,10 @@ function run() {
   for (const phrase of ["attachment upload/attach/download", "mailbox draft create/edit/delete", "full thread", "reply-all/forward", "read/unread", "move/archive/delete", "calendar"]) assert.ok(unavailable.includes(phrase), phrase);
   const accountSafety = text(byId("cli-account-safety"));
   for (const phrase of ["connected, granted mailbox", "NOT_FOUND", "direct message IDs", "proposal lists", "do not automatically delete retained legacy data"]) assert.ok(accountSafety.includes(phrase), phrase);
+  const providerSemantics = text(byId("cli-provider-semantics"));
+  for (const phrase of ["may contact providers", "providerCalls", "true when mail.send", "Cached reads stay local", "not a per-request network count", "replay/join", "OAuth refresh", "not absence of provider traffic"]) assert.ok(providerSemantics.includes(phrase), phrase);
+  const diagnostics = text(byId("ipc-diagnostics-note"));
+  for (const phrase of ["known channel names/counts", "Request values, renderer text and URLs are omitted", "Other Debug entries"]) assert.ok(diagnostics.includes(phrase), phrase);
   const connection = text(byId("cli-connection"));
   assert.ok(connection.includes(constants.SERVE_CAPABILITY));
   assert.ok(connection.includes(`${constants.HOST}:${constants.PORT}`));
@@ -73,6 +77,9 @@ function run() {
   const accounts = require("../renderer/features-catalog").items.find(row => row.id === "multi-account");
   assert.match(accounts.blurb, /pending reconnects/);
   assert.match(accounts.blurb, /new connection after removal/);
+  const trace = require("../renderer/features-catalog").items.find(row => row.id === "ipc-diagnostics");
+  assert.match(trace.blurb, /Request values, renderer text and URLs are omitted/);
+  assert.match(trace.blurb, /Other Debug entries/);
   console.log(`cli-capabilities-ok: ${operations.length} host operations; ${checked} intercepted command examples`);
 }
 

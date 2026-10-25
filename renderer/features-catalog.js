@@ -70,7 +70,7 @@
         id: "bot-bridge",
         title: "Bot bridge",
         category: "Accounts",
-        blurb: "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; see CLI for capabilities, Tailscale setup, and revocation limits.",
+        blurb: "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; CLI explains capabilities, possible provider calls, Tailscale setup, and revocation limits.",
       },
       {
         id: "calendar",
@@ -83,6 +83,12 @@
         title: "In-app updates",
         category: "Updates",
         blurb: "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed.",
+      },
+      {
+        id: "ipc-diagnostics",
+        title: "IPC diagnostics",
+        category: "Support",
+        blurb: "IPC trace records known channels and argument counts, plus renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries may retain account/folder context.",
       },
     ],
   };

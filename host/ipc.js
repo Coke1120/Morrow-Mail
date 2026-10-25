@@ -1,5 +1,4 @@
-const fs = require("fs");
-const path = require("path");
+const { createDiagnostics } = require("./ipc-diagnostics");
 const { answer: liveAnswer } = require("./mail/engine");
 const { answer: draftAnswer } = require("./draft-write");
 const { answer: brainAnswer } = require("./brain");
@@ -122,17 +121,6 @@ function mailEnvelope(data) {
   return { success: true, data };
 }
 
-function redact(value) {
-  try {
-    return JSON.stringify(value, (key, item) => {
-      if (/password|secret|apiKey|fileBytes|authorization/i.test(key)) return "[redacted]";
-      return item;
-    }).slice(0, 400);
-  } catch {
-    return "[unserializable]";
-  }
-}
-
 function fallback(channel, args) {
   if (channel === "update:getState" || channel === "app:getVersion") {
     try {
@@ -183,27 +171,17 @@ function fallback(channel, args) {
 }
 
 function createIpc(logPath) {
-  const seen = new Set();
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  function note(kind, channel) {
-    const key = `${kind} ${channel}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    fs.appendFileSync(logPath, `${key}\n`);
-  }
+  const diagnostics = createDiagnostics(logPath);
   return {
     handle(event, channel, ...args) {
-      note("invoke", channel);
+      diagnostics.ipc("invoke", channel, args.length);
       if (typeof channel === "string" && channel.startsWith("bot:")) {
         return require("./bot/manage").answer(channel, args && args[0], event);
       }
-      if (args.length && channel.startsWith("mail:")) {
-        fs.appendFileSync(logPath, `  args ${channel} ${redact(args)}\n`);
-      }
       return fallback(channel, args);
     },
-    send(_event, channel) {
-      note("send", channel);
+    send(_event, channel, ...args) {
+      diagnostics.ipc("send", channel, args.length);
     },
   };
 }
