@@ -8,7 +8,7 @@ const { createDiagnostics, attachRendererDiagnostics } = require("./ipc-diagnost
 const { loadConfig, publicConfig, saveConfig, completionsUrl, modelsUrl, DEFAULTS } = require("./ai-config");
 const { complete, extractJson, modelIds, listModels } = require("./openai-client");
 
-const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels"];
+const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels", "host:chatgptStatus", "host:chatgptStart", "host:chatgptCallback", "host:chatgptCancel", "host:chatgptSignOut", "host:chatgptSelect", "host:chatgptPreferences", "host:chatgptResumeUsage"];
 const { init: initMail, startBackgroundSync } = require("./mail/engine");
 const { startupFailureDialog, startupStatusHtml } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
@@ -202,10 +202,10 @@ function openAiSetup() {
   }
   setupWindow = new BrowserWindow({
     width: 560,
-    height: 520,
+    height: 760,
     title: "AI Setup — Morrow Mail",
     icon: APP_ICON,
-    resizable: false,
+    resizable: true,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
@@ -218,6 +218,13 @@ function openAiSetup() {
   });
   setupWindow.on("closed", () => {
     setupWindow = null;
+  });
+  setupWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const target = new URL(url);
+      if (target.protocol === "https:" && ["openai.com", "chatgpt.com"].includes(target.hostname)) shell.openExternal(url).catch(() => {});
+    } catch { /* ignore malformed links */ }
+    return { action: "deny" };
   });
   setupWindow.loadFile(path.join(__dirname, "ai-setup.html")).then(() => {
     if (setupWindow && !setupWindow.isDestroyed()) setupWindow.setTitle("AI Setup — Morrow Mail");
@@ -366,6 +373,15 @@ function trackWindow(win, savedZoom) {
 }
 
 function registerHostAi() {
+  const auth = () => require("./chatgpt-auth").getAuth();
+  ipcMain.handle("host:chatgptStatus", () => auth().status());
+  ipcMain.handle("host:chatgptStart", (_event, input) => updateGate.run(() => auth().start(input)));
+  ipcMain.handle("host:chatgptCallback", (_event, input) => updateGate.run(() => auth().callback(input)));
+  ipcMain.handle("host:chatgptCancel", () => { auth().cancel(); return auth().status(); });
+  ipcMain.handle("host:chatgptSignOut", (_event, id) => updateGate.run(() => auth().signOut(id)));
+  ipcMain.handle("host:chatgptSelect", (_event, id) => updateGate.run(() => auth().select(id)));
+  ipcMain.handle("host:chatgptPreferences", (_event, input) => updateGate.run(() => auth().preferences(input)));
+  ipcMain.handle("host:chatgptResumeUsage", () => auth().resumeUsage());
   ipcMain.handle("host:aiGetConfig", () => publicConfig());
   ipcMain.handle("host:aiSaveConfig", (_event, input) => updateGate.run(() => saveConfig(input)));
   ipcMain.handle("host:aiTest", async (_event, input) => {
@@ -375,11 +391,13 @@ function registerHostAi() {
       const saved = loadConfig();
       const draft = input && typeof input === "object" ? input : {};
       const cfg = {
+        authMode: draft.authMode === "api_key" || draft.authMode === "chatgpt" ? draft.authMode : saved.authMode,
+        chatgptModel: typeof draft.chatgptModel === "string" ? draft.chatgptModel.trim() : saved.chatgptModel,
         baseUrl: typeof draft.baseUrl === "string" && draft.baseUrl.trim() ? draft.baseUrl.trim() : saved.baseUrl,
         model: typeof draft.model === "string" && draft.model.trim() ? draft.model.trim() : saved.model,
         apiKey: typeof draft.apiKey === "string" && draft.apiKey.trim() ? draft.apiKey.trim() : saved.apiKey,
       };
-      if (!cfg.apiKey) throw new Error("Add an API key in Morrow Mail → AI Setup.");
+      if (cfg.authMode !== "chatgpt" && !cfg.apiKey) throw new Error("Add an API key in Morrow Mail → AI Setup.");
       const text = await complete([
         { role: "system", content: "Reply with one short sentence and nothing else." },
         { role: "user", content: "Say hello in five words or fewer." },
@@ -683,6 +701,7 @@ app.on("before-quit", (event) => {
 });
 
 app.on("will-quit", () => {
+  try { require("./chatgpt-auth").getAuth().dispose(); } catch { /* no active AI connection */ }
   try { updater.stopPeriodicCheck(); } catch { /* updater timers are already cleared */ }
 });
 

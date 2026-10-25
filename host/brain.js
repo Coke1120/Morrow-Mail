@@ -119,14 +119,14 @@ function personaFrom(store) {
       rows: quotes.map((value, index) => row("voice", index, { value, source: "auto" })),
     });
   }
-  if (!cfg.apiKey) {
+  if (cfg.authMode !== "chatgpt" && !cfg.apiKey) {
     sections.push({
       id: "ai-setup",
       title: "AI endpoint",
       kind: "rows",
       rows: [row("ai-setup", 0, {
         label: "Not configured",
-        value: "Open Morrow Mail → AI Setup and enter an OpenAI-compatible base URL, API key, and model id.",
+        value: "Open Morrow Mail → AI Setup and choose ChatGPT or an OpenAI-compatible base URL, API key, and model id.",
         source: "auto",
       })],
     });
@@ -325,8 +325,8 @@ async function analyzeMailAdmitted(mode) {
   }
 }
 
-function refreshFromMail() {
-  return analyzeMail("refresh");
+function refreshFromMail(background = true) {
+  return background ? require("./ai-context").background(() => analyzeMail("refresh")) : analyzeMail("refresh");
 }
 
 function rebuildFromMail() {
@@ -336,7 +336,8 @@ function rebuildFromMail() {
 function scheduleLivingRefresh() {
   if (livingTimer) return;
   livingTimer = setInterval(() => {
-    if (!loadConfig().apiKey) return;
+    const cfg = loadConfig();
+    if (cfg.authMode === "chatgpt" ? !require("./chatgpt-auth").getAuth().backgroundAllowed() : !cfg.apiKey) return;
     if (generatedIsFresh(readStore())) return;
     refreshFromMail().catch(() => {});
   }, 60 * 60 * 1000);
@@ -370,7 +371,7 @@ function answer(channel, args) {
     case "emailBrain:getCached":
       return ok(snapshot());
     case "emailBrain:refresh":
-      if (!loadConfig().apiKey) {
+      if (loadConfig().authMode !== "chatgpt" && !loadConfig().apiKey) {
         emit("emailBrain:refreshState", { refreshing: false, error: null });
         return ok({ accepted: false, mode: "refresh" });
       }
@@ -379,11 +380,11 @@ function answer(channel, args) {
         return ok({ accepted: true, mode: "refresh", cached: true });
       }
       updateGate.run(() => new Promise(resolve => {
-        setImmediate(() => { refreshFromMail().catch(() => {}).finally(resolve); });
+        setImmediate(() => { refreshFromMail((params && params.source) !== "manual").catch(() => {}).finally(resolve); });
       })).catch(() => {});
       return ok({ accepted: true, mode: "refresh" });
     case "emailBrain:rebuild":
-      if (!loadConfig().apiKey) {
+      if (loadConfig().authMode !== "chatgpt" && !loadConfig().apiKey) {
         emit("emailBrain:rebuildState", { rebuilding: false, phase: "ready", percent: null, error: null });
         return ok({ accepted: false, mode: "rebuild" });
       }

@@ -65,7 +65,7 @@ async function main() {
   const context = vm.createContext({
     document: { body: { inert: false }, querySelectorAll: () => dialogs },
     $: id => nodes[id], api: { replyUpdatePreparation: p => replies.push(p) },
-    oooDirty: () => false, inboxRuleBaseline: "", updateAiBaseline: null,
+    oooDirty: () => false, aiDirty: () => false, inboxRuleBaseline: "", updateAiBaseline: null,
     state: {}, sendTimer: null, agentChatBusy: false, brainSkillBusy: false,
     brainFixBusy: false, brainCategoryBusy: false, brainView: {},
     brainCategories: [], updateCategoriesBaseline: "[]", updateMemoryBaseline: "",
@@ -73,6 +73,9 @@ async function main() {
   });
   vm.runInContext(guards, context);
   assert.equal(context.updateRestartBlocked(), false);
+  context.aiDirty = () => true;
+  assert.equal(context.updateRestartBlocked(), true, "unsaved AI authentication/model changes block restart");
+  context.aiDirty = () => false;
   dialogs = [{ id: "compose" }];
   context.prepareUpdateRestart({ nonce: "draft" });
   assert.equal(replies.at(-1).ok, false);

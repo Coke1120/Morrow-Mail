@@ -2,7 +2,7 @@ const { loadConfig, completionsUrl, modelsUrl } = require("./ai-config");
 
 function requireConfig() {
   const cfg = loadConfig();
-  if (!cfg.apiKey) {
+  if (cfg.authMode !== "chatgpt" && !cfg.apiKey) {
     const error = new Error("Add an API key in Morrow Mail → AI Setup.");
     error.code = "ai-unconfigured";
     throw error;
@@ -38,6 +38,9 @@ function deltaText(delta) {
 
 async function complete(messages, options = {}) {
   const cfg = options.config || requireConfig();
+  if (cfg.authMode === "chatgpt") return require("./chatgpt-responses").getResponses().complete(messages, {
+    ...options, model: cfg.chatgptModel, background: options.background === true || require("./ai-context").isBackground(),
+  });
   const response = await fetch(completionsUrl(cfg.baseUrl), {
     method: "POST",
     headers: {
@@ -62,7 +65,7 @@ async function complete(messages, options = {}) {
 }
 
 async function readSse(messages, onChunk, options) {
-  const cfg = requireConfig();
+  const cfg = options.config || requireConfig();
   const response = await fetch(completionsUrl(cfg.baseUrl), {
     method: "POST",
     headers: {
@@ -109,6 +112,11 @@ async function readSse(messages, onChunk, options) {
 }
 
 async function stream(messages, onChunk, options = {}) {
+  const cfg = options.config || requireConfig();
+  if (cfg.authMode === "chatgpt") return require("./chatgpt-responses").getResponses().stream(messages, onChunk, {
+    ...options, model: cfg.chatgptModel, background: options.background === true || require("./ai-context").isBackground(),
+  });
+  options = { ...options, config: cfg }; // pin the existing API path across retries and mode changes
   let count = 0;
   const forward = (piece) => {
     count += 1;
@@ -143,6 +151,7 @@ function modelIds(payload) {
 async function listModels(input) {
   const saved = loadConfig();
   const draft = input && typeof input === "object" ? input : {};
+  if ((draft.authMode || saved.authMode) === "chatgpt") return require("./chatgpt-responses").getResponses().listModels();
   const baseUrl = typeof draft.baseUrl === "string" && draft.baseUrl.trim()
     ? draft.baseUrl.trim()
     : saved.baseUrl;

@@ -7,6 +7,12 @@
   return {
     items: [
       {
+        id: "ai-connection",
+        title: "ChatGPT or API key",
+        category: "Agent",
+        blurb: "AI settings preserve API keys and custom endpoints, and add Continue with ChatGPT for eligible plans. Browser sign-in uses Morrow Mail's own registered client, automatic loopback and optional one-time paste-back. Cancel, timeout, account selection, reauthorization and sign-out are available. Cancellation permits a fresh retry without waiting for an old discovery response; obsolete attempts cannot change the new one. Save keeps newer edits unsaved, and connection test results apply only to the current settings. Fetch account-specific models before choosing one. Responses stream with server storage off. Background profile refresh, automatic triage and scheduled skills need explicit account opt-in. Plan, app and workspace limits apply; Manage usage opens ChatGPT settings. No automatic billing fallback, provider switching, extra allowance, hosted tools or general proxy. Credentials stay encrypted on this computer; unlocked OS secure storage is required. Native and live sign-in validation remains pending.",
+      },
+      {
         id: "email-brain",
         title: "Email Brain",
         category: "Agent",
@@ -61,10 +67,16 @@
         blurb: "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself.",
       },
       {
-        id: "overnight-body-fill",
-        title: "Off-hours body fill",
+        id: "imap-recovery",
+        title: "IMAP connection recovery",
         category: "Mail",
-        blurb: "While Morrow is open, from 00:00–07:00 local time (07:00 is outside), a slow pass fills one missing body after folder work, the same way a cold open does. Newest indexed mail inside Settings → Mail & Sync is used; trash, spam, and drafts are skipped, and the page on screen still comes first.",
+        blurb: "Connection timeouts during IMAP sync use the usual connection-error and retry status. Inbox push falls back to polling and reconnects with backoff.",
+      },
+      {
+        id: "overnight-body-fill",
+        title: "Full message bodies",
+        category: "Mail",
+        blurb: "Mail → Bodies shows per-mailbox body activity separately from list sync. Message requests and the listed page download as needed. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Activity has no whole-mailbox total or percentage. Large messages can remain incomplete at the 3 MiB source limit; attachment files stay on demand.",
       },
       {
         id: "inbox-rules",

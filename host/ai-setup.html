@@ -10,11 +10,14 @@
       .kicker { margin: 0 0 4px; color: #193c34; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
       p { margin: 0 0 16px; color: #5d756c; }
       label { display: block; font-weight: 600; margin: 14px 0 6px; }
-      input { width: 100%; box-sizing: border-box; border: 1px solid #d7e6dc; border-radius: 8px; padding: 8px 10px; font: inherit; }
-      .row { display: flex; gap: 8px; margin-top: 18px; }
+      input:not([type="checkbox"]), select { width: 100%; box-sizing: border-box; border: 1px solid #d7e6dc; border-radius: 8px; padding: 8px 10px; font: inherit; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
       button { border: 0; border-radius: 999px; padding: 8px 14px; font: inherit; cursor: pointer; }
       button.primary { background: #193c34; color: white; }
       button.ghost { background: white; color: #193c34; border: 1px solid #d7e6dc; }
+      [hidden] { display: none !important; }
+      input[type="checkbox"] { width: auto; }
+      .hint { margin: 10px 0; font-size: 12px; }
       #status { min-height: 1.4em; margin-top: 12px; }
     </style>
   </head>
@@ -22,55 +25,25 @@
     <main>
       <p class="kicker">Morrow Mail</p>
       <h1>AI Setup</h1>
-      <p>Morrow Mail uses this OpenAI-compatible endpoint for Email Brain, AI Write, reply suggestions, and translate. The key stays in this app's local config and is not sent to the mail window.</p>
+      <p>Choose ChatGPT or keep your API key and custom endpoint for Email Brain, AI Write, reply suggestions and translation.</p>
+      <div id="ai-account-settings"></div>
+      <div id="api-fields">
       <label for="baseUrl">Base URL</label>
       <input id="baseUrl" spellcheck="false" placeholder="https://api.x.ai/v1" />
       <label for="model">Model id</label>
       <input id="model" spellcheck="false" placeholder="grok-4.7" />
       <label for="apiKey">API key</label>
       <input id="apiKey" type="password" spellcheck="false" autocomplete="off" />
+      </div>
       <div class="row">
         <button class="primary" id="save" type="button">Save</button>
+        <button class="ghost" id="fetch" type="button">Fetch models</button>
         <button class="ghost" id="test" type="button">Test connection</button>
       </div>
+      <p class="hint">Save applies the submitted settings; edits made while saving remain unsaved. Test connection sends a short AI request and uses the selected provider's usage. Results from older tests or changed settings are ignored. API settings remain saved when choosing ChatGPT.</p>
       <div id="status"></div>
     </main>
-    <script>
-      const status = document.getElementById("status");
-      const baseUrl = document.getElementById("baseUrl");
-      const model = document.getElementById("model");
-      const apiKey = document.getElementById("apiKey");
-      window.aiSetup.get().then((cfg) => {
-        baseUrl.value = cfg.baseUrl || "";
-        model.value = cfg.model || "";
-        apiKey.placeholder = cfg.hasKey ? `Saved ${cfg.keyHint}. Leave blank to keep it.` : "sk-…";
-      }).catch((error) => {
-        status.textContent = error.message || String(error);
-      });
-      document.getElementById("save").onclick = async () => {
-        status.textContent = "Saving…";
-        try {
-          const saved = await window.aiSetup.save({
-            baseUrl: baseUrl.value,
-            model: model.value,
-            apiKey: apiKey.value,
-          });
-          apiKey.value = "";
-          apiKey.placeholder = saved.hasKey ? `Saved ${saved.keyHint}. Leave blank to keep it.` : "sk-…";
-          status.textContent = "Saved.";
-        } catch (error) {
-          status.textContent = error.message || String(error);
-        }
-      };
-      document.getElementById("test").onclick = async () => {
-        status.textContent = "Contacting the model…";
-        try {
-          const result = await window.aiSetup.test();
-          status.textContent = result.ok ? `Connected. ${result.preview}` : result.message;
-        } catch (error) {
-          status.textContent = error.message || String(error);
-        }
-      };
-    </script>
+    <script src="../renderer/chatgpt-settings.js"></script>
+    <script src="./ai-setup.js"></script>
   </body>
 </html>

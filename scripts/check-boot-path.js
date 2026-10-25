@@ -7,6 +7,15 @@ const root = path.join(__dirname, "..");
 
 const syntax = [
   "host/main.js",
+  "host/chatgpt-auth.js",
+  "host/chatgpt-store.js",
+  "host/chatgpt-responses.js",
+  "host/chatgpt-errors.js",
+  "host/ai-context.js",
+  "host/ai-setup.js",
+  "host/setup-preload.js",
+  "renderer/chatgpt-settings.js",
+  "renderer/ai-provider-indicator.js",
   "host/window-state.js",
   "host/asar.js",
   "host/ipc.js",
@@ -15,6 +24,7 @@ const syntax = [
   "scripts/check-bot-provider-metadata.js",
   "host/mail/engine.js",
   "host/mail/overnight.js",
+  "host/mail/body-progress.js",
   "host/mail/background-jobs.js",
   "host/mail/text-encoding.js",
   "host/mail/actions.js",
@@ -25,6 +35,7 @@ const syntax = [
   "shared/changelog.js",
   "scripts/check-changelog.js",
   "host/mail/remote.js",
+  "scripts/check-imap-client-errors.js",
   "host/mail/discovery.js",
   "host/mail/zip-bytes.js",
   "host/mail/oauth.js",
@@ -95,6 +106,8 @@ const syntax = [
   "renderer/features-catalog.js",
   "scripts/check-ui-editor-feedback.js",
   "scripts/check-calendar-keyboard-followup.js",
+  "scripts/check-body-sync-status.js",
+  "scripts/check-ai-settings-ownership.js",
   "renderer/motion-ui.js",
   "scripts/check-vacation.js",
   "scripts/check-sync-retry.js",
@@ -112,6 +125,8 @@ const uiEditorFeedback = spawnSync(process.execPath, [path.join(__dirname, "chec
 if (uiEditorFeedback.status !== 0) process.exit(uiEditorFeedback.status || 1);
 const calendarKeyboardFollowup = spawnSync(process.execPath, [path.join(__dirname, "check-calendar-keyboard-followup.js")], { stdio: "inherit", timeout: 15000 });
 if (calendarKeyboardFollowup.status !== 0) process.exit(calendarKeyboardFollowup.status || 1);
+const bodySyncStatus = spawnSync(process.execPath, [path.join(__dirname, "check-body-sync-status.js")], { stdio: "inherit", timeout: 15000 });
+if (bodySyncStatus.status !== 0) process.exit(bodySyncStatus.status || 1);
 
 for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js", "check-mail-discovery.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
@@ -493,7 +508,7 @@ assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app pa
 assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
 assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.2.37");
+assert.strictEqual(pkg.version, "0.2.38");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -747,7 +762,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.2.37");
+assert.strictEqual(pkg.version, "0.2.38");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -1679,7 +1694,7 @@ assert.ok(functionSource(appJs, "fetchAiModels").includes("applyFetchedModels"))
 assert.ok(functionSource(appJs, "fetchAiModels").includes("host:aiListModels"));
 assert.ok(!appJs.includes("ai-model-list"));
 assert.ok(settingsHtml.includes("Save AI") && settingsHtml.includes("Fetch models") && settingsHtml.includes("Test connection"));
-assert.ok(settingsHtml.includes("Test connection and Fetch models use the values in this form"));
+assert.ok(settingsHtml.includes("Test connection sends a short model request") && settingsHtml.includes("Fetch models only reads the selected provider"));
 // #158: remote-image privacy, visible fold loading, and field-level errors.
 assert.match(settingsHtml, /id="pref-images"[^>]*aria-describedby="pref-images-help"/);
 const remoteImagesHelp = settingsHtml.slice(settingsHtml.indexOf('id="pref-images-help"')).split("</p>")[0];
@@ -3954,6 +3969,7 @@ assert.ok(html.includes('id="features-title"') && html.includes('id="features-ca
 assert.ok(html.indexOf('src="./features-catalog.js"') < html.indexOf('src="./app.js"'));
 const featureCatalog = require("../renderer/features-catalog.js");
 const featureSeed = [
+  ["ai-connection", "ChatGPT or API key", "Agent", "AI settings preserve API keys and custom endpoints, and add Continue with ChatGPT for eligible plans. Browser sign-in uses Morrow Mail's own registered client, automatic loopback and optional one-time paste-back. Cancel, timeout, account selection, reauthorization and sign-out are available. Cancellation permits a fresh retry without waiting for an old discovery response; obsolete attempts cannot change the new one. Save keeps newer edits unsaved, and connection test results apply only to the current settings. Fetch account-specific models before choosing one. Responses stream with server storage off. Background profile refresh, automatic triage and scheduled skills need explicit account opt-in. Plan, app and workspace limits apply; Manage usage opens ChatGPT settings. No automatic billing fallback, provider switching, extra allowance, hosted tools or general proxy. Credentials stay encrypted on this computer; unlocked OS secure storage is required. Native and live sign-in validation remains pending."],
   ["email-brain", "Email Brain", "Agent", "Profile, categories, skills, and inbox rules built from your mail. Skills can draft a reply or propose a move. You still press Send."],
   ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. Reply opens a compose window. Done and Dismiss stay on this computer."],
   ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send."],
@@ -3963,7 +3979,8 @@ const featureSeed = [
   ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
-  ["overnight-body-fill", "Off-hours body fill", "Mail", "While Morrow is open, from 00:00–07:00 local time (07:00 is outside), a slow pass fills one missing body after folder work, the same way a cold open does. Newest indexed mail inside Settings → Mail & Sync is used; trash, spam, and drafts are skipped, and the page on screen still comes first."],
+  ["imap-recovery", "IMAP connection recovery", "Mail", "Connection timeouts during IMAP sync use the usual connection-error and retry status. Inbox push falls back to polling and reconnects with backoff."],
+  ["overnight-body-fill", "Full message bodies", "Mail", "Mail → Bodies shows per-mailbox body activity separately from list sync. Message requests and the listed page download as needed. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Activity has no whole-mailbox total or percentage. Large messages can remain incomplete at the 3 MiB source limit; attachment files stay on demand."],
   ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; CLI explains capabilities, possible provider calls, Tailscale setup, and revocation limits."],
@@ -9799,7 +9816,7 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
   assert.strictEqual(result.status, 0, "Account/calendar/attachment fixture failed");
   const liveness = spawnSync(process.execPath, [path.join(root, "scripts/check-account-liveness.js")], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(liveness.status, 0, "Account liveness fixture failed");
-  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js"]) {
+  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js"]) {
     const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
     assert.strictEqual(fixture.status, 0, name + " failed");
   }

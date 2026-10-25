@@ -679,6 +679,17 @@ button.icon-label svg { display: block; flex: none; }
   white-space: nowrap;
 }
 
+.body-sync { margin: 2px 0 4px; color: var(--muted); font-size: 11px; }
+.body-sync summary { display: list-item; list-style-position: inside; width: fit-content; max-width: 100%; padding: 4px 0; cursor: pointer; }
+.body-sync summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; border-radius: 4px; }
+.body-sync summary svg { vertical-align: -2px; margin-right: 4px; }
+.body-sync[data-state="running"] summary { color: var(--accent-ink); }
+.body-sync > div { max-height: 180px; overflow: auto; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; }
+.body-sync ul { display: grid; gap: 5px; list-style: none; margin: 6px 0; padding: 0; }
+.body-sync li { overflow-wrap: anywhere; }
+.body-sync strong { color: var(--ink); font-weight: 600; }
+.body-sync .hint { margin: 4px 0; font-size: inherit; }
+
 @keyframes sync-spin {
   to { transform: rotate(360deg); }
 }
@@ -5529,3 +5540,13 @@ html[data-window="translate"] #reader .translate-column h2 {
   word-break: break-word;
   font: inherit;
 }
+/* Account OAuth controls share the settings surface and respect its theme. */
+.ai-account-settings { margin-bottom: 18px; }
+.ai-account-settings > label, #chatgpt-panel > label:not(.check) { display: block; margin: 12px 0 6px; font-weight: 600; }
+.ai-account-settings select, #chatgpt-callback { width: 100%; max-width: 100%; }
+#chatgpt-panel { padding: 12px 0; }
+#chatgpt-panel .row { flex-wrap: wrap; }
+#chatgpt-panel .check { align-items: start; margin-top: 14px; }
+#chatgpt-panel a { color: var(--accent, currentColor); text-decoration: underline; }
+#chatgpt-manual { margin: 12px 0; }
+#chatgpt-welcome { margin: 12px 0; padding: 12px; border: 1px solid currentColor; border-radius: 8px; }
