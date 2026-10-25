@@ -1526,6 +1526,18 @@ function eventCoversDay(event, key) {
   if (event && event.allDay) {
     const end = String(event.end || "").slice(0, 10);
     if (/^\d{4}-\d{2}-\d{2}$/.test(end) && end > startKey) return key >= startKey && key < end;
+  } else {
+    const start = Date.parse(event.start);
+    const end = Date.parse(event.end);
+    if (Number.isFinite(end) && end > start) {
+      const dayStart = new Date(key + "T00:00:00");
+      if (dayKey(dayStart.getFullYear(), dayStart.getMonth(), dayStart.getDate()) !== key) return false;
+      const dayEnd = new Date(dayStart);
+      // Advance the local date, since a day can have 23 or 25 hours.
+      dayEnd.setDate(dayEnd.getDate() + 1);
+      dayEnd.setHours(0, 0, 0, 0);
+      return start < dayEnd.getTime() && end > dayStart.getTime();
+    }
   }
   return startKey === key;
 }
@@ -12535,7 +12547,7 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
@@ -13032,6 +13044,8 @@ function onShellKey(event) {
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
   if (shellBlocked(event.target)) return;
   if (event.target.closest && event.target.closest(".row-actions")) return;
+  const control = event.target.closest && event.target.closest("button, a[href], summary, [role='button'], [role='link']");
+  if (control && !messageButtons().includes(control)) return;
   if (event.key === "Enter") {
     const buttons = messageButtons();
     if (buttons.includes(document.activeElement)) return;
@@ -18434,8 +18448,17 @@ function syncCalendarNav(view) {
 
 const calendarCache = new Map();
 const calendarPending = new Map();
+const calendarRevisions = new Map();
 let calendarStatusPending = null;
 let calendarPaintedAccountId = "";
+function invalidateCalendarAccount(accountId) {
+  // An edit can affect multiple months and checked-calendar combinations.
+  calendarRevisions.set(accountId, (calendarRevisions.get(accountId) || 0) + 1);
+  const prefix = JSON.stringify([accountId]).slice(0, -1) + ",";
+  for (const entries of [calendarCache, calendarPending]) {
+    for (const key of entries.keys()) if (key.startsWith(prefix)) entries.delete(key);
+  }
+}
 function calendarCacheKey(account, range, calendarIds) {
   const ids = Array.isArray(calendarIds) ? calendarIds : [];
   return JSON.stringify([account?.id || "", range.timeMin, ids]);
@@ -18582,6 +18605,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
     applyCalendarPayload({ api: false, reason: "no_account", events: [], calendars: [] });
     return;
   }
+  const revision = calendarRevisions.get(account.id) || 0;
   const plan = prepareCalendarLoad(account, preferCache);
   const { range, requestedIds, key, cached } = plan;
   if (cached) applyCalendarPayload(cached.payload);
@@ -18606,12 +18630,12 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
       calendarPending.set(key, pending);
     }
     const payload = await calendarPending.get(key);
-    if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
+    if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
     applyCalendarPayload(payload);
     rememberCalendar(key, payload);
     rememberCalendar(calendarCacheKey(account, range, state.calendarIds), payload);
   } catch (error) {
-    if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
+    if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
     const message = error instanceof Error ? error.message : String(error);
     if (cached?.payload?.api) {
       $("calendar-status").textContent = "Could not refresh. Showing the saved month. " + message;
@@ -18705,14 +18729,6 @@ async function submitCalendarEvent(event) {
     end: $("calendar-end").value,
     eventId: editing,
   }, !!editing && title === identity.title);
-  if (editing) {
-    if (draft.description === identity.description.trim()) delete draft.description;
-    else {
-      if (identity.descriptionTruncated) throw new Error("This description is incomplete. Leave it unchanged or edit it in Google Calendar.");
-      draft.descriptionBase = identity.description;
-    }
-    if (draft.location === identity.location.trim()) delete draft.location;
-  }
   const status = $("calendar-form-status");
   if (draft.error) {
     if (status) {
@@ -18720,6 +18736,14 @@ async function submitCalendarEvent(event) {
       status.classList.add("error");
     }
     throw new Error(draft.error);
+  }
+  if (editing) {
+    if (draft.description === identity.description.trim()) delete draft.description;
+    else {
+      if (identity.descriptionTruncated) throw new Error("This description is incomplete. Leave it unchanged or edit it in Google Calendar.");
+      draft.descriptionBase = identity.description;
+    }
+    if (draft.location === identity.location.trim()) delete draft.location;
   }
   if (status) {
     status.textContent = "";
@@ -18730,7 +18754,13 @@ async function submitCalendarEvent(event) {
     if (editing) await call("calendar:updateEvent", draft);
     else await call("calendar:createEvent", draft);
   } finally { calendarWritePending = false; }
-  if (generation !== calendarEditorGeneration || calendarAccount()?.id !== account?.id) return;
+  invalidateCalendarAccount(account.id);
+  if (generation !== calendarEditorGeneration || calendarAccount()?.id !== account.id) {
+    if (state.view === "calendar" && calendarAccount()?.id === account.id && !$("calendar-event-dialog").open) {
+      await loadCalendar({ fresh: true });
+    }
+    return;
+  }
   if (draft.calendarId && !state.calendarIds.includes(draft.calendarId)) {
     state.calendarIds = state.calendarIds.concat(draft.calendarId);
     state.calendarId = draft.calendarId;
@@ -18740,7 +18770,6 @@ async function submitCalendarEvent(event) {
   calendarEditingIdentity = null;
   closeDialog("calendar-event-dialog");
   showStatus("Event saved on the calendar.");
-  calendarCache.clear();
   await loadCalendar({ fresh: true });
 }
 

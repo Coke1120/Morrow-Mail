@@ -276,7 +276,13 @@ function help() {
   assert.match(text(node("features-catalog")), /Signatures.*Saving…/);
   assert.match(text(node("features-catalog")), /Save errors appear in the event dialog/);
   assert.match(text(node("features-catalog")), /On the Mail page/);
+  assert.match(text(node("features-catalog")), /Timed events appear on each local date they overlap/);
+  assert.match(text(node("features-catalog")), /Closing a pending save does not cancel it/);
+  assert.match(text(node("features-catalog")), /Invalid dates are reported before description preview restrictions/);
   assert.match(node("shortcuts-note").textContent, /list.*Mail page/i);
+  assert.match(node("shortcuts-note").textContent, /Focused buttons and links keep their own keys/);
+  assert.match(html, /<form id="calendar-create" aria-describedby="calendar-save-note">/);
+  assert.match(html, /id="calendar-save-note"[^>]*>Cancel closes this editor\. A save already in progress can still finish/);
 }
 
 async function run() {

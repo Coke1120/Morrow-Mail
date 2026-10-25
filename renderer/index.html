@@ -244,7 +244,7 @@
       <div id="calendar-detail" hidden></div>
     </section>
     <dialog id="calendar-event-dialog" aria-labelledby="calendar-dialog-title">
-      <form id="calendar-create">
+      <form id="calendar-create" aria-describedby="calendar-save-note">
         <h2 id="calendar-dialog-title">Add event</h2>
         <label for="calendar-event-title">Title</label>
         <input id="calendar-event-title" type="text" maxlength="200" aria-describedby="calendar-title-note" />
@@ -262,6 +262,7 @@
         <label for="calendar-end">End</label>
         <input id="calendar-end" type="datetime-local" />
         <p id="calendar-form-status" role="alert" tabindex="-1"></p>
+        <p id="calendar-save-note" class="hint">Cancel closes this editor. A save already in progress can still finish; confirmed changes appear when the calendar refreshes.</p>
         <div class="row">
           <button type="submit" class="primary" id="calendar-save">Add event</button>
           <button type="button" class="ghost" id="calendar-delete" hidden>Delete</button>
