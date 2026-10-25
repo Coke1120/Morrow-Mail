@@ -4,6 +4,8 @@ Morrow Mail keeps **IMAP XOAUTH2 as the mail baseline**. Google uses **one full 
 
 ## Consent and token scopes
 
+The separate Gmail API draft adds tested transport primitives and Gmail Trash protections, but does **not** activate an API mail provider or change the scope bundle below. Continue with Google remains OAuth. Narrower mail requests and separately requested Calendar access are unavailable until cache identity, all engine paths and reviewed reauthorization are integrated. Existing granted scopes remain actual broad grants; a smaller future request alone cannot revoke them. See [exact implementation coverage and remaining gates](GMAIL_API_MIGRATION.md).
+
 | Connection | Requested scopes | Redirect path |
 |------------|------------------|---------------|
 | Google full bundle | `openid email https://mail.google.com/ https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels` | `/api/oauth/google/callback` |

@@ -5,6 +5,8 @@ const { simpleParser } = require("mailparser");
 const { isRateLimit } = require("./provider-http");
 const mailboxRoles = require("../../shared/mailbox-roles");
 const textEncoding = require("./text-encoding");
+const { isGmail } = require("./gmail-policy");
+const clientAccounts = new WeakMap();
 
 const SOURCE_CAP = 96 * 1024;
 const FULL_CAP = 3 * 1024 * 1024;
@@ -88,6 +90,7 @@ function makeClient(account, secret, options) {
     socketTimeout: extra.socketTimeout || 45000,
     tls: { rejectUnauthorized: true },
   });
+  clientAccounts.set(client, account);
   // Socket events run outside our awaited commands. ImapFlow schedules close
   // and rejects those commands itself, but its error event still needs a
   // synchronous, nonthrowing owner, including between IDLE calls and at logout.
@@ -605,6 +608,16 @@ async function changeFlags(client, folderPath, uid, add, remove, expectedValidit
 }
 
 async function removeUid(client, folderPath, uid, expectedValidity) {
+  if (isGmail(clientAccounts.get(client))) {
+    let listing;
+    try { listing = await listFolderRecords(client); }
+    catch (error) { error.operationIssued = false; throw error; }
+    const trash = listing.folders.find(folder => folder.wellKnown === "deleteditems");
+    if (!trash) throw Object.assign(new Error("Gmail Trash is unavailable. Refresh folders; no message was permanently deleted."), { operationIssued: false });
+    if (folderPath === trash.path) return;
+    await moveUid(client, folderPath, uid, trash.path, expectedValidity);
+    return;
+  }
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);
