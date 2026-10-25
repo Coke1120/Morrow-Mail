@@ -34,7 +34,7 @@
         id: "mail-keyboard",
         title: "Mail list keyboard navigation",
         category: "Mail",
-        blurb: "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. These list keys leave other pages in control of their own focus.",
+        blurb: "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus.",
       },
       {
         id: "attachment-downloads",
@@ -88,7 +88,7 @@
         id: "calendar",
         title: "Calendar",
         category: "Calendar",
-        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input.",
+        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions.",
       },
       {
         id: "in-app-updater",
