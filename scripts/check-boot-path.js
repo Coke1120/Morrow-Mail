@@ -92,6 +92,7 @@ const syntax = [
   "renderer/pdf-preview.js",
   "scripts/bundle-pdf.js",
   "renderer/features-catalog.js",
+  "scripts/check-ui-editor-feedback.js",
   "renderer/motion-ui.js",
   "scripts/check-vacation.js",
   "scripts/check-sync-retry.js",
@@ -104,6 +105,9 @@ for (const file of syntax) {
   const result = spawnSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }
+
+const uiEditorFeedback = spawnSync(process.execPath, [path.join(__dirname, "check-ui-editor-feedback.js")], { stdio: "inherit", timeout: 15000 });
+if (uiEditorFeedback.status !== 0) process.exit(uiEditorFeedback.status || 1);
 
 for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js", "check-mail-discovery.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
@@ -3929,7 +3933,7 @@ const showPrimarySource = functionSource(appJs, "showPrimary");
 assert.match(showPrimarySource, /view === "shortcuts"/);
 assert.match(showPrimarySource, /id === "shortcuts-panel"/);
 assert.match(showPrimarySource, /"features-panel"/);
-assert.match(functionSource(appJs, "onShellKey"), /state\.view === "features"/);
+assert.match(functionSource(appJs, "onShellKey"), /state\.view !== "mail"/);
 assert.ok(html.includes('id="cli-list"') && html.includes('id="cli-note"') && html.includes('id="cli-title"') && html.includes('id="cli-copy-status"'));
 assert.ok(html.indexOf('id="shortcuts-list"') < html.indexOf('id="cli-list"'));
 assert.ok(html.indexOf('id="cli-list"') < html.indexOf('id="log-panel"'));
@@ -3949,6 +3953,8 @@ const featureSeed = [
   ["email-brain", "Email Brain", "Agent", "Profile, categories, skills, and inbox rules built from your mail. Skills can draft a reply or propose a move. You still press Send."],
   ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. Reply opens a compose window. Done and Dismiss stay on this computer."],
   ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send."],
+  ["signatures", "Signatures", "Mail", "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target."],
+  ["mail-keyboard", "Mail list keyboard navigation", "Mail", "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. These list keys leave other pages in control of their own focus."],
   ["attachment-downloads", "Attachment downloads", "Mail", "Save or open the selected file, or save all as ZIP, including cached draft attachments. Stale IDs, missing files, or a changed message stop the download. Bot access still exposes metadata only."],
   ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
@@ -3957,7 +3963,7 @@ const featureSeed = [
   ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add the mailbox again."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; CLI explains capabilities, possible provider calls, Tailscale setup, and revocation limits."],
-  ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page. Long Google descriptions stay read-only previews; other field edits preserve the complete description."],
+  ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page. Long Google descriptions stay read-only previews; other field edits preserve the complete description. Save errors appear in the event dialog and keep your input."],
   ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed."],
   ["ipc-diagnostics", "IPC diagnostics", "Support", "IPC trace records known channels and argument counts, plus renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries may retain account/folder context."],
 ];
