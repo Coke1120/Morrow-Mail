@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const db = require("./db");
 const remote = require("./remote");
 const virtuals = require("./virtual-folders");
+const { isGmail } = require("./gmail-policy");
 
 // A thrown command that already entered STORE or MOVE may have landed.
 // Revert only when issued is still false. Flag sync preserves pending/unknown writes.
@@ -313,13 +314,14 @@ async function publishOne(row) {
 async function runRemote(action) {
   const intent = parse(action.intent_json, {});
   const source = parse(action.source_json, {});
+  const account = db.accountById(action.account_id);
+  if (isGmail(account) && intent.kind === "remove" && intent.permanent) return { issued: false, error: "Permanent Gmail deletion is unavailable. Use Move to Trash; mail already in Trash stays there." };
   if (!source.uid) {
     if (intent.kind === "undo") {
       return { issued: true, value: { dest: { ...intent.restore, uid: intent.restore.uid || 0, uidValidity: intent.restore.uidValidity || 0 } } };
     }
     return { issued: true, value: { dest: intent.kind === "remove" ? { folderPath: intent.destPath, uid: 0, uidValidity: source.uidValidity } : null } };
   }
-  const account = db.accountById(action.account_id);
   if (!account) return { issued: false, error: "That account is no longer connected." };
   let password;
   try {
@@ -512,6 +514,10 @@ function removeCommand(messageId, well, targetPath, permanent) {
   const row = db.messageById(messageId);
   if (!row || !db.accountById(row.account_id)) {
     return { messageId, error: { message: "Message or account is no longer available.", stop: true }, intent: { kind: "remove" }, stopBatch: true };
+  }
+  if (permanent && isGmail(db.accountById(row.account_id))) {
+    permanent = false;
+    well = "deleteditems";
   }
   if (permanent) {
     const source = db.folderByPath(row.account_id, row.folder_path);
