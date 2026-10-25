@@ -10,6 +10,9 @@ const syntax = [
   "host/window-state.js",
   "host/asar.js",
   "host/ipc.js",
+  "host/ipc-diagnostics.js",
+  "scripts/check-ipc-diagnostics.js",
+  "scripts/check-bot-provider-metadata.js",
   "host/mail/engine.js",
   "host/mail/overnight.js",
   "host/mail/background-jobs.js",
@@ -3953,9 +3956,10 @@ const featureSeed = [
   ["overnight-body-fill", "Off-hours body fill", "Mail", "While Morrow is open, from 00:00–07:00 local time (07:00 is outside), a slow pass fills one missing body after folder work, the same way a cold open does. Newest indexed mail inside Settings → Mail & Sync is used; trash, spam, and drafts are skipped, and the page on screen still comes first."],
   ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes and switch among them. All Account Mail lists downloaded primary mail: Gmail All Mail, or Inbox for every other account. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add the mailbox again."],
-  ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; see CLI for capabilities, Tailscale setup, and revocation limits."],
+  ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; CLI explains capabilities, possible provider calls, Tailscale setup, and revocation limits."],
   ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events on that page. Long Google descriptions stay read-only previews; other field edits preserve the complete description."],
   ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed."],
+  ["ipc-diagnostics", "IPC diagnostics", "Support", "IPC trace records known channels and argument counts, plus renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries may retain account/folder context."],
 ];
 assert.deepStrictEqual(featureCatalog.items.map((row) => [row.id, row.title, row.category, row.blurb]), featureSeed);
 const featureUi = loadFunctions(appJs, ["normalizeFeatureCatalog", "groupFeatureCatalog"]);
@@ -9785,6 +9789,10 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
   assert.strictEqual(result.status, 0, "Account/calendar/attachment fixture failed");
   const liveness = spawnSync(process.execPath, [path.join(root, "scripts/check-account-liveness.js")], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(liveness.status, 0, "Account liveness fixture failed");
+  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js"]) {
+    const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
+    assert.strictEqual(fixture.status, 0, name + " failed");
+  }
 }).then(() => checkTranslateBatches()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {

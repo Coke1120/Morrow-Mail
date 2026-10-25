@@ -133,7 +133,7 @@ function describe(ctx) {
         cacheOnlyReads: true,
         sending: ctx.grant.capabilities.includes("mail.send"),
         attachmentBytes: false,
-        providerCalls: false,
+        providerCalls: allowed.includes("mail.send"),
         draftProposals: ctx.grant.capabilities.includes("draft.proposals.create"),
         draftProposalsSend: false,
       },

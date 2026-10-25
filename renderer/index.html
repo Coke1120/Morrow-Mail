@@ -534,6 +534,7 @@
             <div><dt>Send plain text</dt><dd><code data-bot-operation>mail.send</code> — separate permission; sends immediately. Optional <code>inReplyToMessageId</code> links a same-account reply; you supply recipients and text.</dd></div>
           </dl>
           <p id="cli-unavailable"><strong>Unavailable to bots:</strong> attachment upload/attach/download, mailbox draft create/edit/delete, full thread retrieval, dedicated reply-all/forward, read/unread changes, move/archive/delete, and calendar actions. The desktop app has additional actions; they are not bot commands.</p>
+          <p id="cli-provider-semantics"><code>bridge.describe</code> reports whether granted operations may contact providers: <code>providerCalls</code> is true when <code>mail.send</code> is available. Cached reads stay local. This is not a per-request network count: send replay/join or pre-submit denial may still involve From lookup or OAuth refresh. Receipts describe SMTP outcomes and replay status, not absence of provider traffic.</p>
         </section>
         <details class="cli-guide" id="cli-connection">
           <summary>Connect another device with Tailscale</summary>
@@ -574,6 +575,7 @@
         </div>
         <button type="button" class="ghost" id="log-refresh">Refresh</button>
       </div>
+      <p class="hint" id="ipc-diagnostics-note">IPC diagnostics keep known channel names/counts and renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries can still contain account/folder context.</p>
       <p class="hint">Known credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. This is a limited recent-session history, not a complete activity record.</p>
       <div class="row"><label for="log-source">Source</label><select id="log-source"><option value="">All sources</option></select><button type="button" class="ghost" id="log-preview">Preview support copy…</button></div>
       <p id="log-status" role="status"></p>
