@@ -1057,8 +1057,9 @@
             <div class="checks">
               <label class="check" for="pref-compact-list"><input id="pref-compact-list" type="checkbox" checked /> Compact message list <span class="hint">· one line per message</span></label>
             </div>
-            <details class="settings-disclosure"><summary>How history downloads</summary>
+            <details class="settings-disclosure" id="pref-sync-details"><summary>How history downloads</summary>
               <p class="hint">Every listed folder downloads in the background while Morrow Mail is open. You do not need to open a folder first. Folders take turns, so one large folder does not block the others. All history with many folders takes longer the first time and uses more disk. Browse downloaded mail with Previous and Next, 200 messages at a time.</p>
+              <p class="hint">An IMAP timeout reports a connection error. Sync uses its normal retry status; Inbox push falls back to polling and reconnects with backoff.</p>
             </details>
             <div class="settings-group">
               <h4>Reading &amp; sending</h4>

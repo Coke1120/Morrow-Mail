@@ -8,6 +8,14 @@ const textEncoding = require("./text-encoding");
 
 const SOURCE_CAP = 96 * 1024;
 const FULL_CAP = 3 * 1024 * 1024;
+const clientErrors = new WeakMap();
+
+function connectionError(client, error) {
+  // ImapFlow closes after emitting an error, rejecting pending commands with
+  // NoConnection. Keep the cause for normal operation reporting and retries.
+  return error && error.code === "NoConnection" && clientErrors.has(client)
+    ? clientErrors.get(client) : error;
+}
 
 function isYahooAuth(account) {
   if (!account || typeof account !== "object") return false;
@@ -66,7 +74,7 @@ function makeClient(account, secret, options) {
   const secure = tls && account.imap_port !== 143;
   const auth = imapAuth(account, secret);
   const extra = options || {};
-  return new ImapFlow({
+  const client = new ImapFlow({
     host: account.imap_host,
     port: account.imap_port,
     secure,
@@ -80,6 +88,14 @@ function makeClient(account, secret, options) {
     socketTimeout: extra.socketTimeout || 45000,
     tls: { rejectUnauthorized: true },
   });
+  // Socket events run outside our awaited commands. ImapFlow schedules close
+  // and rejects those commands itself, but its error event still needs a
+  // synchronous, nonthrowing owner, including between IDLE calls and at logout.
+  // Retain this listener through close; a late event must not become uncaught.
+  client.on("error", (error) => {
+    if (error && !clientErrors.has(client)) clientErrors.set(client, error);
+  });
+  return client;
 }
 
 async function withClient(account, password, fn) {
@@ -87,6 +103,8 @@ async function withClient(account, password, fn) {
   try {
     await client.connect();
     return await fn(client);
+  } catch (error) {
+    throw connectionError(client, error);
   } finally {
     try { await client.logout(); } catch { client.close(); }
   }
@@ -121,14 +139,15 @@ async function openIdleClient(account, secret) {
     await client.connect();
   } catch (error) {
     try { client.close(); } catch { /* already closed */ }
-    throw error;
+    throw connectionError(client, error);
   }
   return {
     capabilities() {
       return client.capabilities;
     },
     async select(path) {
-      await client.mailboxOpen(path);
+      try { await client.mailboxOpen(path); }
+      catch (error) { throw connectionError(client, error); }
     },
     idle() {
       return new Promise((resolve, reject) => {
@@ -136,7 +155,7 @@ async function openIdleClient(account, secret) {
         client.idle().then((value) => {
           if (value === false) finish(reject, Object.assign(new Error("IDLE failed"), { code: "idle_failed" }));
           else finish(resolve, "done");
-        }).catch((error) => finish(reject, error));
+        }).catch((error) => finish(reject, connectionError(client, error)));
       });
     },
     async done() {
