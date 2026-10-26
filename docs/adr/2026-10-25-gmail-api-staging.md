@@ -1,6 +1,6 @@
 # Gmail API before narrower mail requests
 
-Status: implemented in draft PR #305, pending review/release. Supersedes the initial primitive-only staging boundary.
+Status: implemented through PR #305 and included in the v0.2.39 release scope after bounded functional recheck. Supersedes the initial primitive-only staging boundary. Native/live and actual project/verification evidence remain pending.
 
 The user approved separate Gmail migration implementation because Morrow does not need bypass-Trash permanent deletion. Removing full-mail scopes while Gmail still used IMAP/SMTP would break normal mail. This draft therefore introduces stable provider-id/cache mapping and a complete API engine route before requesting gmail.modify + gmail.settings.basic for new/migrated OAuth mail. Google OAuth login stays; Calendar is separate. Microsoft and password transports remain compatible.
 
@@ -12,4 +12,4 @@ Functional review confirmed that cache copies must not become separate provider 
 
 The recovery paths use the same identity rules: opening complete legacy mail refreshes attachment metadata without replacing cached body text, and a unique provider match reconciles every legacy label copy before obsolete memberships are pruned. Duplicate same-folder candidates refuse binding atomically; pending drafts and unrelated messages remain intact. End-to-end fixtures use the real open/cache/network-list handlers in addition to cache helpers.
 
-Consent PR #302 is already integrated; this draft preserves it and the original published Gmail history with a non-force merge. This Gmail task does not merge/release #305 or modify the policy site. The policy owner separately published hwl-hk #21/#22 at `179adf38a1d6f0b52472c8420e89a9b6427df26d`; those disclosures describe released v0.2.38, not unreleased #305. Native/live grant/registration/demo and Google verification/CASA evidence remain review gates. No Console/live mailbox/model action or retry/bypass of blocked browser/daemon access occurred.
+Consent PR #302 is already integrated; this implementation preserves it and the original published Gmail history with a non-force merge. The original implementation task did not merge/release #305 or modify the policy site; subsequent versioned release scope is recorded in [v0.2.39 notes](../releases/v0.2.39.md). The policy owner separately published hwl-hk #21/#22 at `179adf38a1d6f0b52472c8420e89a9b6427df26d`; those disclosures were confirmed against v0.2.38 and do not establish alignment for the v0.2.39 Gmail/consent app changes. Native/live grant/registration/demo and Google verification/CASA evidence remain review gates. No Console/live mailbox/model action or retry/bypass of blocked browser/daemon access occurred.

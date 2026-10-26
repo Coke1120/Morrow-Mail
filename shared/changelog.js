@@ -7,6 +7,16 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.2.39": [
+      "Google mail can use Gmail API with narrower requested mail permissions. Google Calendar asks for its own optional grant.",
+      "Existing Google OAuth IMAP accounts keep their connection until you review Migrate Gmail to Gmail API in Accounts. Cached mail and local drafts stay.",
+      "Requesting fewer Google permissions does not automatically revoke old broad grants. Accounts shows requested and actual saved permissions separately.",
+      "Gmail Delete and old draft cleanup keep mail in Trash, including repeated Delete from Trash. Gmail's own Trash retention still applies.",
+      "Repeated message opens keep the correct Gmail attachments; Trash/Undo, Archive and draft updates retain the correct mail copies.",
+      "AI data permission now requires disclosure and explicit approval for the saved destination, model and account. Background AI has a separate choice; saving a key or signing in is not consent.",
+      "Revoking AI data permission stops queued and active requests. Data already delivered to a provider cannot be recalled.",
+      "Google project and verification prerequisites still apply. Native and live Google migration, refresh and Calendar coexistence remain unverified; see the release notes.",
+    ],
     "0.2.38": [
       "AI settings offer ChatGPT account sign-in alongside API keys and custom endpoints, with account-specific models and explicit background-use consent.",
       "AI saves preserve newer edits, tests ignore outdated responses, and cancelling sign-in allows a fresh attempt after cancellation finishes.",
