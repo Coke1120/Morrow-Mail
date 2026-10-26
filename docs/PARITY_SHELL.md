@@ -1,5 +1,7 @@
 # Shell parity
 
+Draft hydration and scheduled recovery preserve a separate bare sender address, including display names with angle brackets or Unicode/quotes. Unchanged legacy source drafts still clean up after queued delivery when a provider refresh only enriches equivalent name metadata; genuine edits retain their protection.
+
 Sender identities are edited in Settings → Compose. Gmail's discovered Send mail as names are defaults; exact per-account/address Morrow overrides survive refresh and do not update Gmail. Primary, verified send-as, Gmail default and selected new-mail From are distinct states; manually configured aliases are not presented as verified. Clear a name for address-only sending or reset it to inherit the default. Recipient-visible previews and structured MIME use the selected name/address. Draft and scheduled snapshots preserve names across Settings changes and recovery; explicitly changing From adopts that identity's current name. Bot `mail.send` resolves these local defaults without a new parameter or permission. No OAuth scope change or Gmail-wide name write is involved. Native/live delivery validation remains pending.
 
 First-party `renderer/` chrome for the three-pane mail shell. Layout follows the host IPC already in this repo. The look follows the Morrow Mail logo: forest-green rail and canvas (`#102822` / `#193c34`), white floating list and reading cards. An external `app.asar` is not vendored and was not required to boot.

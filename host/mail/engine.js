@@ -282,6 +282,9 @@ function publicAttachment(item) {
 
 function listRow(row) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
+  const sender = row.from_address || row.from_addr || "";
+  const parsedAddress = composePolicy.address(sender);
+  const bareSender = parsedAddress && parsedAddress === sender.trim().toLowerCase() ? parsedAddress : "";
   return {
     id: row.id,
     accountId: row.account_id,
@@ -291,8 +294,7 @@ function listRow(row) {
     folders: [row.folder_path],
     subject: textEncoding.repairMojibake(row.subject || ""),
     snippet: textEncoding.repairMojibake(row.snippet || ""),
-    from: row.from_display_name ? composePolicy.senderPreview(
-      composePolicy.address(row.from_addr) || row.from_addr, row.from_display_name) : row.from_addr || "",
+    from: row.from_display_name && bareSender ? composePolicy.senderPreview(bareSender, row.from_display_name) : row.from_addr || "",
     to: db.jsonList(row.to_json),
     cc: db.jsonList(row.cc_json),
     bcc: db.jsonList(row.bcc_json),
@@ -327,6 +329,7 @@ function detailOf(row) {
     subject: presented.subject,
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
+    fromAddress: composeIdentity.savedAddress(row),
     ...(row.is_draft ? { draftRevision: db.draftRevision(row), draftPending: !!row.draft_pending,
       fromDisplayName: composeIdentity.savedName(row) } : {}),
   };
@@ -2139,6 +2142,7 @@ async function ensureBody(row, options) {
       has_attachments: localFiles.length > 0 || fetched.hasAttachments ? 1 : 0,
       subject: fetched.subject || row.subject,
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
+      from_address: fetched.fromAddress || row.from_address || null,
     });
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : "incomplete";
     return db.messageById(row.id);
@@ -3784,6 +3788,7 @@ function answer(channel, args, event) {
             subject: record.subject,
             snippet: record.snippet,
             from_addr: record.from,
+            from_address: record.from,
             from_display_name: record.fromDisplayName,
             rfc_message_id: messageId,
             to_json: JSON.stringify(record.to),

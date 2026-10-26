@@ -3,6 +3,7 @@ const settings = require("../settings");
 const policy = require("../../shared/compose-policy");
 const sidecar = require("./sidecar");
 const provider = require("./provider-api");
+const senderHeader = require("./sender-header");
 const lookups = new Map();
 
 function preferences() { return settings.answer("emailBrain:getComposeSettings", []); }
@@ -90,8 +91,7 @@ function savedName(row) {
     try { return policy.displayName(row.from_display_name); } catch { return ""; }
   }
   // Legacy/provider drafts retain their original header, not today's Settings.
-  const parsed = require("nodemailer/lib/addressparser")(row.from_addr || "");
-  try { return policy.displayName(parsed[0]?.name || ""); } catch { return ""; }
+  try { return policy.displayName(senderHeader.headerParts(row.from_addr).name); } catch { return ""; }
 }
 
 async function sendingFrom(account, input) {
@@ -111,4 +111,5 @@ async function sendingFrom(account, input) {
 }
 
 module.exports = { preferences, accountIdentity, context, outgoingFrom, outgoingIdentity, mimeFrom, savedName, sendingFrom,
+  savedAddress: senderHeader.savedAddress,
   invalidate: id => lookups.delete(id) };

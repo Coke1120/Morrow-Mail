@@ -42,3 +42,13 @@ snapshots, address restrictions and idempotent replay. Full checks run through
 also runs the dependency-free DOM/policy/SQL and attachment/Gmail fixtures;
 its full suite stops on missing native/parser dependencies. No native window,
 OAuth grant, live Gmail/SMTP delivery or recipient-contact behavior was tested.
+
+Independent review found two functional regressions in the initial head: draft
+hydration reparsed the preview label, and equivalent legacy name metadata changed
+queued revision proofs. The correction persists a separate nullable bare
+`from_address` from provider parsing through drafts, Sent and recovery, exposes
+`fromAddress` to hydration, and uses the MIME library for legacy header fallback.
+An unresolved sender keeps the draft rather than choosing primary. Revision
+proofs ignore equivalent metadata enrichment while retaining genuine name/content
+changes. Regressions exercise actual resume-to-MIME and provider-search-to-queued
+cleanup flows, plus a subsequent real edit. Recheck and final-head CI remain gates.

@@ -275,6 +275,42 @@ async function hostRoundTrips() {
     db.insertMessage({ id: "legacy-named", accountId: account.id, folderPath: "Drafts", isDraft: true,
       from: '"Legacy, Name" <leo@hkbscl.com>', bodyComplete: true, textBody: "Legacy", date: new Date().toISOString(), listSortTs: Date.now() });
     assert.equal((await request("mail:openEmail", { emailId: "legacy-named", full: true })).email.fromDisplayName, "Legacy, Name");
+    // Exercise actual draft hydration -> renderer payload -> transport MIME.
+    // A primary default ensures reparsing the display label cannot accidentally
+    // pass by falling back to the same alias under test.
+    namedPrefs.accounts.aliases.preferredFromAddress = account.email;
+    settings.answer("emailBrain:saveComposeSettings", [namedPrefs]);
+    const { ui, get } = composeUi();
+    ui.context.connectedAccounts = engine.accountViews(); ui.context.hostRequest = request;
+    ui.run(`
+      state.accounts=connectedAccounts; state.accountId='aliases';
+      resetDraftWrite=()=>{}; syncScheduleFields=()=>{}; paintComposeChrome=()=>{};
+      paintQuoteBody=()=>{}; scheduleComposeLayout=()=>{};
+      fillSignatures=async()=>{}; loadScheduled=async()=>{}; showComposeSuggestions=async()=>{};
+      call=async(channel,params)=>hostRequest(channel,params);
+    `);
+    for (const displayName of ['Operations <West>', '陳美玲, "Ops <香港>"']) {
+      const outgoing = { ...payload, fromDisplayName: displayName };
+      const savedAlias = await request("mail:upsertDraft", outgoing);
+      const queuedAlias = await request("mail:scheduleSend", { ...outgoing, sendAt: new Date(Date.now() + 60000).toISOString() });
+      const recoveredAlias = await request("mail:editScheduled", { id: queuedAlias.id });
+      for (const id of [savedAlias.emailId, recoveredAlias.emailId]) {
+        const hydrated = (await request("mail:openEmail", { emailId: id, full: true })).email;
+        assert.equal(hydrated.fromAddress, payload.fromAddress);
+        assert.equal(hydrated.fromDisplayName, displayName);
+        assert.match(hydrated.from, /<West>|<香港>/);
+        ui.context.toResume = { id, accountId: account.id };
+        await ui.run("resumeDraft(toResume)");
+        const resumed = ui.run("composePayload(composeAccount())");
+        assert.equal(resumed.fromAddress, payload.fromAddress, "display-name brackets must never select the primary account");
+        assert.equal(resumed.fromDisplayName, displayName);
+        await request("mail:send", resumed);
+        const parsed = await simpleParser(await remote.buildRaw(sent.at(-1)));
+        assert.equal(parsed.from.value[0].address, payload.fromAddress);
+        assert.equal(parsed.from.value[0].name, displayName);
+        ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
+      }
+    }
     console.log("sender-names-host-ok: MIME Unicode/quotes, draft resume/edit, scheduled snapshots/recovery, Sent and injection gates");
   } finally {
     Object.assign(remote, saved); sidecar.gmailSendAsToken = savedToken; provider.listSendAs = savedList;
@@ -284,7 +320,7 @@ async function hostRoundTrips() {
   }
 }
 
-async function rendererFlows() {
+function composeUi() {
   const { renderer } = require("./check-ux-workflows");
   const nodes = new Map();
   const get = (id) => {
@@ -294,6 +330,11 @@ async function rendererFlows() {
     return nodes.get(id);
   };
   const ui = renderer({ document: { getElementById: get, querySelector: () => null, createElement: () => ({}) } });
+  return { ui, get };
+}
+
+async function rendererFlows() {
+  const { ui, get } = composeUi();
   ui.context.fixtureAccount = account; ui.context.fixturePrefs = prefs;
   ui.run(`
     state.accounts = [{...fixtureAccount, platform:'imap'}]; state.accountId='aliases'; state.prefs.undoSend=0;
@@ -402,6 +443,21 @@ async function rendererFlows() {
   assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Saved draft name");
   assert.match(get("compose-from-note").textContent, /Recipients see: Saved draft name <leo@hkbscl.com>/);
   ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
+  ui.run(`
+    const priorCall=call;
+    call=async(channel,params)=>channel==='mail:openEmail' ? {email:restoredDraft} : priorCall(channel,params);
+    askConfirm=async()=>({ok:true});
+  `);
+  for (const displayName of ['Operations <West>', '陳美玲, "Ops <香港>"']) {
+    ui.context.restoredDraft = { id: "restored", isDraft: true, accountId: "aliases", fromAddress: "leo@hkbscl.com",
+      fromDisplayName: displayName, from: displayName + " <leo@hkbscl.com>", to: ["client@client.example"], textBody: "Restored text" };
+    await ui.run("resumeDraft({id:'restored',accountId:'aliases'})");
+    assert.equal(ui.run("composePayload(composeAccount()).fromAddress"), "leo@hkbscl.com");
+    assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), displayName);
+    ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
+  }
+  ui.context.restoredDraft = { id: "missing-sender", isDraft: true, accountId: "aliases", from: "Ambiguous <West>" };
+  await assert.rejects(ui.run("resumeDraft({id:'missing-sender',accountId:'aliases'})"), /sender address.*saved draft was retained/);
   ui.run("failed=true");
   await ui.run("openCompose()"); get("compose-to").value = "client@client.example";
   const count = ui.run("calls.length"); await ui.run("saveDraft(); scheduleMail(); sendMail()");

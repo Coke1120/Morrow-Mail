@@ -169,7 +169,7 @@
       ...addresses(message && message.to), ...addresses(message && message.cc), ...addresses(message && message.bcc),
     ]).filter((email) => mine.has(email));
     const received = candidates.find((email) => email !== primary) || candidates[0] || "";
-    const ownFrom = addresses(message && message.from).find((email) => mine.has(email));
+    const ownFrom = addresses(message && (message.fromAddress || message.from)).find((email) => mine.has(email));
     const fromAddress = address(explicitFrom) || received || ownFrom || preferredFrom(account, settings);
     const defaults = recipientDefaults(fromAddress, account, settings, kind);
     return { fromAddress, fromDisplayName: rows.find((row) => row.email === fromAddress)?.displayName || "", receivedAddress: received, domain: defaults.ccDomain, policyDomain: defaults.policyDomain,

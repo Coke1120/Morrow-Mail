@@ -134,6 +134,41 @@ async function cleanupChecks(engine, db, remote) {
   assert.equal(db.messageById("untouched"), null); assert(removals.includes(22), "a verified unchanged source still cleans up");
   db.insertMessage(row("legacy-source", 23, 101)); due(engine, db, "legacy-source", false); await engine.pumpScheduled();
   assert(db.messageById("legacy-source")); assert(!removals.includes(23), "legacy snapshots cannot guess a revision");
+  // Real provider search enriches only the legacy sender metadata after the
+  // scheduled snapshot's proof has already been recorded.
+  const findText = remote.findText;
+  try {
+    for (const [index, name, edit] of [[0, "", false], [1, "Operations <West>", false], [2, "", true]]) {
+      const id = "legacy-metadata-" + index;
+      const original = { ...row(id, 31 + index, 101), from: name ? '"Operations <West>" <author@example.test>' : "author@example.test",
+        fromAddress: "author@example.test" };
+      db.insertMessage(original);
+      const before = db.messageById(id), proof = db.draftRevision(before), queued = due(engine, db, id);
+      remote.findText = async (_client, folder) => ({ searched: true, validity: 101,
+        messages: folder === "Drafts" ? [{ ...original, fromDisplayName: name }] : [] });
+      const refreshed = await engine.answer("mail:search", [{ accountId: "revisions", query: "sender metadata" }]);
+      assert.equal(refreshed.success, true, JSON.stringify(refreshed));
+      assert.equal(db.messageById(id).from_display_name, name);
+      assert.equal(db.draftRevision(db.messageById(id)), proof, "equivalent name enrichment preserves a preexisting queued proof");
+      if (edit) {
+        const edited = await engine.answer("mail:upsertDraft", [{ accountId: "revisions", emailId: id, draftRevision: proof,
+          fromAddress: "author@example.test", fromDisplayName: "Actually edited name", to: original.to,
+          subject: original.subject, body: original.htmlBody }]);
+        assert.equal(edited.success, true); assert.equal(edited.data.remoteSaved, true);
+        assert.notEqual(db.draftRevision(db.messageById(id)), proof);
+      }
+      await engine.pumpScheduled();
+      assert.equal(db.scheduledById(queued).status, "sent");
+      if (edit) {
+        assert.equal(db.messageById(id).from_display_name, "Actually edited name");
+        assert.match(db.scheduledById(queued).error, /source draft was kept/);
+      } else {
+        assert.equal(db.messageById(id), null, "an unchanged legacy draft is removed after its queued message is accepted");
+        assert.ok(removals.includes(31 + index));
+      }
+    }
+  } finally { remote.findText = findText; }
+  console.log("legacy-sender-proof-ok: provider search enrichment, queued cleanup and a subsequent real name edit");
   // Save another revision during the submitted version's remote deletion.
   db.insertMessage(row("during-cleanup", 24, 101)); const revision = db.draftRevision(db.messageById("during-cleanup"));
   let started, release; const active = new Promise(resolve => { started = resolve; }); let first = true;

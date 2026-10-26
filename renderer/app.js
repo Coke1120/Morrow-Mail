@@ -12065,9 +12065,10 @@ async function resumeDraft(email, extra) {
   const data = await call("mail:openEmail", { emailId: email.id, full: true });
   const draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
+  if (!draft.fromAddress) throw new Error("This draft's sender address could not be resolved. The saved draft was retained.");
   await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
     draftRevision: draft.draftRevision,
-    fromAddress: draft.from,
+    fromAddress: draft.fromAddress,
     fromDisplayName: draft.fromDisplayName,
     to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
     body: readable(draft),

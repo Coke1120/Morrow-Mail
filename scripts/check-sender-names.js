@@ -180,7 +180,8 @@ async function settingsUi() {
   const { renderer } = require("./check-ux-workflows");
   const features = renderer({ document, window: { morrow: {}, morrowFeaturesCatalog: require("../renderer/features-catalog") } });
   features.run("paintFeatureCatalog()");
-  assert.match(get("features-catalog").textContent, /Sender identities.*Morrow-only display name.*Drafts and scheduled mail retain/);
+  assert.match(get("features-catalog").textContent, /Sender identities.*Morrow-only display name.*Drafts and scheduled mail retain the selected name and address/);
+  assert.match(get("features-catalog").textContent, /Unchanged source drafts are cleaned up after delivery; later edits stay saved/);
   assert.match(html, /id="cli-sender-names"[\s\S]*bridge has no display-name parameter/);
 }
 
@@ -202,6 +203,11 @@ async function sqlSnapshots() {
     assert.equal(db.messageById(row.id).from_display_name, "Different", "sync cannot overwrite a protected local edit");
     db.insertMessage({ ...row, id: "legacy-draft", draftPending: false, fromDisplayName: undefined });
     assert.equal(db.messageById("legacy-draft").from_display_name, null);
+    const legacyProof = db.draftRevision(db.messageById("legacy-draft"));
+    db.updateMessage("legacy-draft", { from_display_name: "", from_address: account.email });
+    assert.equal(db.draftRevision(db.messageById("legacy-draft")), legacyProof, "empty legacy name enrichment is not a content edit");
+    db.updateMessage("legacy-draft", { from_display_name: "New name" });
+    assert.notEqual(db.draftRevision(db.messageById("legacy-draft")), legacyProof, "a genuine sender-name change still invalidates queued proof");
   } finally { await db.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 }
 
