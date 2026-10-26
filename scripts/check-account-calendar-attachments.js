@@ -156,9 +156,10 @@ async function attachmentChecks(engine,db,remote,secrets,dir){
   const rem=await archive("remote-files",["2","3"]);
   assert.deepEqual(rem.map(f=>f.data.toString()),["REMOTE 2","REMOTE 3"]);assert.equal(connections,1);
   const savedRead=remote.readPart,beforeFailure=dialogs;
+  engine.attachmentCacheForTest.clear(); // Exercise a cold transport failure, not the newly shared warm bytes.
   remote.readPart=async()=>{throw new Error("Synthetic part read interrupted");};
   assert.equal((await engine.answer("mail:downloadAttachmentsZip",[{emailId:"remote-files",attachmentIds:["2","3"]}])).success,false);
-  assert.equal(dialogs,beforeFailure,"a failed part read cannot save an incomplete archive");
+  assert.equal(dialogs,beforeFailure+1,"Save is reviewed before the cold transfer; failure still cannot write an incomplete archive");
   remote.readPart=savedRead;assert.equal((await archive("remote-files",["2"]))[0].data.toString(),"REMOTE 2");
   db.insertMessage(message("mixed-files","files",{uid:89,attachments:[{...current[0],filename:"same.txt"},{id:"2",filename:"same.txt"}]}));
   const mix=await archive("mixed-files",[current[0].id,"2"]);

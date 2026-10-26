@@ -67,12 +67,16 @@ async function main() {
     $: id => nodes[id], api: { replyUpdatePreparation: p => replies.push(p) },
     oooDirty: () => false, aiDirty: () => false, inboxRuleBaseline: "", updateAiBaseline: null,
     state: {}, sendTimer: null, agentChatBusy: false, brainSkillBusy: false,
+    attachmentTasks: new Map(),
     brainFixBusy: false, brainCategoryBusy: false, brainView: {},
     brainCategories: [], updateCategoriesBaseline: "[]", updateMemoryBaseline: "",
     updateFreezeNonce: null, updateWasInert: false,
   });
   vm.runInContext(guards, context);
   assert.equal(context.updateRestartBlocked(), false);
+  context.attachmentTasks.set("download", {});
+  assert.equal(context.updateRestartBlocked(), true, "active attachment requests block restart");
+  context.attachmentTasks.clear();
   context.aiDirty = () => true;
   assert.equal(context.updateRestartBlocked(), true, "unsaved AI authentication/model changes block restart");
   context.aiDirty = () => false;
