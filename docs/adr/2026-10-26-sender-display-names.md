@@ -1,8 +1,9 @@
 # Morrow-only sender display names
 
-Status: implemented on draft PR #315; full CI passed for the implementation at
-`ff511e389fb1e52489f057def361282110ee2ddf`. Independent functional review and
-the final head's checks remain integration gates.
+Status: merged through PR #315 after final head
+`bab7fc21f9b05938a745d4a9aa31fe1db13d2ee3` passed full CI run 40312807878
+and an independent Astra Max functional recheck with no confirmed blockers.
+The v0.3.0 release candidate includes this feature; native/live validation remains untested.
 
 Previously Settings discovered Gmail's verified Send mail as addresses, including
 their display names, while outgoing MIME used bare email addresses. Add an
@@ -20,7 +21,7 @@ for Unicode/quoting instead of hand-built From headers.
 
 This feature changes messages sent from Morrow only. It does not update Gmail's
 send-as settings, request new OAuth scopes, enumerate Workspace domains, or modify
-release preparation branches. Integration/versioning waits for checks and independent review. Providers and recipients' contact displays can affect
+release preparation branches. Integration/versioning waited for checks and independent review; those gates passed for the final head above. Providers and recipients' contact displays can affect
 the final visible name; synthetic MIME/UI checks do not prove live delivery behavior.
 
 The optional `senderNames` object preserves existing compose settings unchanged.
@@ -51,7 +52,7 @@ queued revision proofs. The correction persists a separate nullable bare
 An unresolved sender keeps the draft rather than choosing primary. Revision
 proofs ignore equivalent metadata enrichment while retaining genuine name/content
 changes. Regressions exercise actual resume-to-MIME and provider-search-to-queued
-cleanup flows, plus a subsequent real edit. Recheck and final-head CI remain gates.
+cleanup flows, plus a subsequent real edit. Final-head CI and independent recheck passed after the additional historical-cache correction below.
 
 A recheck found historical cache text was unquoted display formatting, so RFC
 header parsing alone still misclassified punctuation/Unicode names. Compatibility
