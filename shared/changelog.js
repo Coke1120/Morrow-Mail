@@ -7,6 +7,14 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.2.40": [
+      "Preview, Open and Save share attachment downloads and reuse complete files from a bounded in-memory cache while Morrow is open.",
+      "Save and Save as ZIP ask for a location before downloading. Cancelling the picker does not start a provider read.",
+      "Attachment transfers show request-specific progress and Cancel controls without locking unrelated mail actions. Received bytes appear when available; there is no invented percentage.",
+      "Closing Preview or cancelling one request leaves another Save or Open running. The last consumer stops queued or active provider work; a completed write or external launch cannot be recalled.",
+      "Cached files expire after five minutes and are checked against the current account, message and attachment. Files over 32 MiB are not retained; incoming and ZIP size limits still apply.",
+      "There is no background attachment prefetch or persistent attachment cache. Native dialogs and live provider performance remain unverified.",
+    ],
     "0.2.39": [
       "Google mail can use Gmail API with narrower requested mail permissions. Google Calendar asks for its own optional grant.",
       "Existing Google OAuth IMAP accounts keep their connection until you review Migrate Gmail to Gmail API in Accounts. Cached mail and local drafts stay.",
