@@ -36,6 +36,13 @@ async function rendererChecks(){
   assert.equal(ui.run("latestBodies.size"),0);assert.equal(ui.run("bodyNotices.size"),0);assert.equal(ui.run("reads.length"),0);assert.equal(ui.run("reloads"),0);
   ui.run(`for(let n=0;n<1000;n++)applyBodyUpdate({email:{id:'legacy-'+n,accountId:'a',bodyEpoch:0,bodyVersion:n+1,textBody:'body'.repeat(2048),bodyComplete:true}});`);
   assert.equal(ui.run("latestBodies.size"),0,"unopened full compatibility events retain no bodies");
+  const small=uiFixture();
+  small.run(`for(let n=0;n<100;n++)noteBody({id:'small-'+n,accountId:'a',bodyEpoch:0,textBody:'Small'});`);
+  assert.equal(small.run("latestBodies.size"),32,"the count budget holds independently of the byte budget");
+  assert.ok(small.run("![...latestBodies.values()].some(entry=>entry.body.id==='small-0')"));
+  small.run(`preferBody({id:'small-68',accountId:'a',bodyEpoch:0});noteBody({id:'small-100',accountId:'a',bodyEpoch:0,textBody:'New'});`);
+  assert.ok(small.run("[...latestBodies.values()].some(entry=>entry.body.id==='small-68')"));
+  assert.ok(small.run("![...latestBodies.values()].some(entry=>entry.body.id==='small-69')"),"reuse keeps an entry recent when the oldest entry is evicted");
   ui.run(`for(let n=0;n<100;n++)noteBody({id:'cached-'+n,accountId:'a',bodyEpoch:0,bodyVersion:n,textBody:'x'.repeat(300000),attachments:[{content:'do not cache'}]});`);
   assert.ok(ui.run("latestBodies.size<=BODY_CACHE_LIMITS.entries&&latestBodyBytes<=BODY_CACHE_LIMITS.bytes"));
   assert.ok(ui.run("bodyReadFences.size<=64"));
@@ -114,6 +121,10 @@ async function rendererChecks(){
   const preview=uiFixture();
   preview.run(`globalThis.opened=peekMessage('preview');invalidatePeek();reads[0].resolve({email:{id:'preview',accountId:'a',bodyEpoch:0,textBody:'Superseded'}});`);
   await preview.run("opened");assert.equal(preview.run("peekEmail"),null);assert.equal(preview.run("pendingPeekId"),"");assert.equal(preview.run("bodyNotices.size"),0);
+  const previewRefresh=uiFixture();
+  previewRefresh.run(`$('agent-peek').open=true;peekEmail={id:'preview-refresh',accountId:'a',bodyEpoch:0};applyBodyUpdate({accountId:'a',emailId:'preview-refresh',bodyEpoch:0,bodyVersion:1,hasBody:true});`);
+  await flush();previewRefresh.run(`invalidatePeek();reads[0].resolve({email:{id:'preview-refresh',accountId:'a',bodyEpoch:0,bodyVersion:1,textBody:'Closed preview'}});`);await flush();
+  assert.equal(previewRefresh.run("peekEmail"),null);assert.equal(previewRefresh.run("renders"),0);assert.equal(previewRefresh.run("latestBodies.size"),0);assert.equal(previewRefresh.run("bodyNotices.size"),0);
   const threadRace=uiFixture();
   threadRace.run(`state.prefs.conversation=true;state.emails=[{id:'thread-race',accountId:'a',hasBody:true,bodyComplete:true}];globalThis.opened=openMessage('thread-race',false).catch(error=>error.message);
     reads[0].resolve({email:{id:'thread-race',accountId:'a',threadId:'thread',bodyEpoch:0,bodyVersion:0,textBody:'Old connection'}});`);
