@@ -18,6 +18,7 @@ function backgroundPollDue(healthy, lastAt, at, safetyMs) {
 }
 
 function wantsIdle(account) {
+  if (account?.mail_transport === "gmail_api") return false;
   if (!account || !account.id || !account.imap_host) return false;
   const platform = String(account.platform || "imap").toLowerCase();
   return platform === "imap";

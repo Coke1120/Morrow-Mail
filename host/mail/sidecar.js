@@ -97,8 +97,9 @@ function secretKey(account, purpose) {
   const provider = providerOf(account);
   // One shared API token avoids independent refresh-token rotation for each
   // feature. Legacy per-purpose grants remain fallbacks after partial consent.
-  const candidates = [`${account.id}:bundle`, `${account.id}:${purpose}`];
-  if (provider === "google") candidates.push(account.id);
+  const candidates = provider === "google" && purpose === "calendar" ? [`${account.id}:calendar`, `${account.id}:bundle`, account.id]
+    : provider === "google" && account.mail_transport === "gmail_api" ? [account.id, `${account.id}:bundle`, `${account.id}:${purpose}`]
+      : [`${account.id}:bundle`, `${account.id}:${purpose}`, ...(provider === "google" ? [account.id] : [])];
   for (const key of candidates) {
     const grant = readJson(key);
     if (grant && grant.refreshToken && config.hasPurposeScopes(grant.grantedScopes, provider, purpose)) return key;
@@ -125,7 +126,7 @@ function gateMessage(reason, provider, purpose) {
   }
   if (purpose === "calendar") return "Calendar needs a calendar grant.";
   if (provider === "microsoft") return "Outlook folders need the Mail.ReadWrite grant. This mailbox stays on IMAP until then.";
-  return "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.";
+  return "Gmail labels need the gmail.modify grant. Existing mail and cached work stay available.";
 }
 
 function missingGrantMessage(provider, purpose) {
@@ -136,13 +137,13 @@ function missingGrantMessage(provider, purpose) {
   }
   if (purpose === "rules") {
     if (key === "microsoft") return "Microsoft did not return MailboxSettings.ReadWrite and folder read access (Mail.Read or Mail.ReadWrite).";
-    return "Google did not return both gmail.settings.basic and gmail.labels permissions.";
+    return "Google did not return Gmail settings and label access (gmail.settings.basic plus gmail.modify or a sufficient legacy grant).";
   }
   if (purpose === "vacation") {
     return key === "microsoft" ? "Microsoft did not return the MailboxSettings.ReadWrite grant." : "Google did not return the gmail.settings.basic grant.";
   }
   if (key === "microsoft") return "Microsoft did not return the Mail.ReadWrite grant. This mailbox stays on IMAP until then.";
-  return "Google did not return the gmail.modify grant. This mailbox stays on IMAP until then.";
+  return "Google did not return the gmail.modify grant. Existing mail and cached work were retained.";
 }
 
 function gateAccount(account, purpose) {
@@ -266,6 +267,11 @@ function accountGrants() {
       email: row.email,
       provider: providerOf(row),
       authKind: row.auth_kind || "password",
+      mailTransport: row.mail_transport || "imap",
+      gmailMigrationAvailable: providerOf(row) === "google" && row.auth_kind === "oauth2" && row.mail_transport !== "gmail_api",
+      broadGoogleGrant: providerOf(row) === "google" && [row.id, `${row.id}:bundle`, `${row.id}:calendar`, `${row.id}:organize`, `${row.id}:rules`, `${row.id}:vacation`]
+        .some(key => config.hasScopes(readJson(key)?.grantedScopes || "", "https://mail.google.com/")),
+      requestedScopes: { mail: readJson(row.id)?.requestedScopes || "", calendar: readJson(secretKey(row, "calendar"))?.requestedScopes || "" },
       organize: organize.ok,
       calendar: calendarGate.ok,
       rules: rulesGate.ok,
@@ -324,11 +330,11 @@ function calendarStatus() {
 function grantResult(account, purpose) {
   const missing = API_PURPOSES.filter((name) => !gateAccount(account, name).ok);
   return ok({ accountId: account.id, email: account.email, provider: providerOf(account), purpose,
-    api: purpose === "bundle" ? missing.length === 0 : gateAccount(account, purpose).ok,
+    api: purpose === "bundle" ? missing.filter(name => providerOf(account) !== "google" || name !== "calendar").length === 0 : gateAccount(account, purpose).ok,
     missing, reason: "", grantedScopes: scopeText(account, purpose) });
 }
 
-function saveBundle(account, signed) {
+function saveBundle(account, signed, requestedPurpose = "bundle") {
   const provider = providerOf(account);
   if (signed.provider !== provider || !sameEmail(signed.email, account.email)) {
     return fail("account_mismatch", "Sign in with the selected mailbox. Existing credentials are unchanged.");
@@ -338,13 +344,14 @@ function saveBundle(account, signed) {
   if (!API_PURPOSES.some((purpose) => config.hasPurposeScopes(granted, provider, purpose))) {
     return fail("scope_missing", "The provider did not grant the requested feature permissions. Existing credentials are unchanged.");
   }
-  const key = `${account.id}:bundle`;
+  const separateCalendar = provider === "google" && requestedPurpose === "calendar";
+  const key = `${account.id}:${separateCalendar ? "calendar" : "bundle"}`;
   const previous = readJson(key);
-  const blob = { ...tokenBlob(signed), purpose: "bundle" };
+  const blob = { ...tokenBlob(signed), purpose: separateCalendar ? "calendar" : "bundle" };
   const writes = [];
   // Retain an older shared token for any feature omitted from the new consent.
   // Never claim the union of two grants on either token or overwrite mail here.
-  for (const purpose of API_PURPOSES) {
+  for (const purpose of separateCalendar ? [] : API_PURPOSES) {
     if (previous && config.hasPurposeScopes(previous.grantedScopes, provider, purpose) && !config.hasPurposeScopes(granted, provider, purpose)) {
       writes.push([`${account.id}:${purpose}`, JSON.stringify(previous)]);
     }
@@ -368,7 +375,7 @@ function saveBundle(account, signed) {
     }
     return fail("keychain", restored ? "Could not save permissions. Previous credentials were restored." : "Could not restore all credentials after a storage failure. Reconnect the affected features.");
   }
-  return grantResult(account, "bundle");
+  return grantResult(account, separateCalendar ? "calendar" : "bundle");
 }
 
 async function grantPurpose(params, purpose) {
@@ -378,22 +385,23 @@ async function grantPurpose(params, purpose) {
   if (provider !== "google" && provider !== "microsoft") return fail("imap_only", "These permissions need a Google or Microsoft account.");
   if (provider === "google" && !oauth.oauthReady().google) return fail("oauth_not_ready", "Google Desktop OAuth is not configured.");
   const already = grantResult(account, purpose);
-  if (already.data.api) return already;
+  if (already.data.api && params?.forceReauthorize !== true) return already;
   const identity = secrets.getPassword(account.id);
   const bundle = secrets.getPassword(`${account.id}:bundle`);
+  const feature = secrets.getPassword(`${account.id}:${purpose}`);
   let signed;
   try {
-    signed = await oauth.signIn(provider, "bundle", { expectedEmail: account.email });
+    signed = await oauth.signIn(provider, provider === "google" && purpose === "calendar" ? "calendar" : "bundle", { expectedEmail: account.email });
   } catch (error) {
     return failFrom(error);
   }
   let saved;
   try {
     const current = accountFrom(params);
-    if (!current || !sameEmail(current.email, account.email) || secrets.getPassword(account.id) !== identity || secrets.getPassword(`${account.id}:bundle`) !== bundle) {
+    if (!current || !sameEmail(current.email, account.email) || secrets.getPassword(account.id) !== identity || secrets.getPassword(`${account.id}:bundle`) !== bundle || secrets.getPassword(`${account.id}:${purpose}`) !== feature) {
       saved = fail("conflict", "This mailbox connection changed. Try again for the selected account.");
     } else {
-      saved = saveBundle(account, signed);
+      saved = saveBundle(account, signed, purpose);
       if (!saved.success && saved.error.code === "scope_missing" && purpose !== "bundle") {
         saved = fail("scope_missing", missingGrantMessage(provider, purpose));
       }

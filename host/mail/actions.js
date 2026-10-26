@@ -334,11 +334,11 @@ async function runRemote(action) {
     const value = await remote.withClient(account, password, async (client) => {
       entered = true;
       if (intent.kind === "star") {
-        await remote.changeFlags(client, source.folderPath, source.uid, intent.starred ? ["\\Flagged"] : [], intent.starred ? [] : ["\\Flagged"], source.uidValidity);
+        await remote.changeFlags(client, source.folderPath, source.uid, intent.starred ? ["\\Flagged"] : [], intent.starred ? [] : ["\\Flagged"], source.uidValidity, action.message_id);
         return { dest: null };
       }
       if (intent.kind === "read") {
-        await remote.changeFlags(client, source.folderPath, source.uid, intent.unread ? [] : ["\\Seen"], intent.unread ? ["\\Seen"] : [], source.uidValidity);
+        await remote.changeFlags(client, source.folderPath, source.uid, intent.unread ? [] : ["\\Seen"], intent.unread ? ["\\Seen"] : [], source.uidValidity, action.message_id);
         return { dest: null };
       }
       if (intent.kind === "remove" && intent.permanent) {
@@ -346,7 +346,7 @@ async function runRemote(action) {
         return { dest: null };
       }
       const destination = intent.kind === "undo" ? intent.restore.folderPath : intent.destPath;
-      const next = await remote.moveUid(client, source.folderPath, source.uid, destination, source.uidValidity);
+      const next = await remote.moveUid(client, source.folderPath, source.uid, destination, source.uidValidity, action.message_id);
       return {
         dest: {
           folderPath: destination,

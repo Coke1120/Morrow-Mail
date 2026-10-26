@@ -1,4 +1,4 @@
-// Gmail API transport primitives. Engine/cache migration is deliberately not enabled yet.
+// Gmail API transport. All ordinary deletion uses Trash; no permanent-delete API.
 const { retryAfterMs } = require("./provider-http");
 const provider = require("./provider-api");
 const ROOT = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -163,6 +163,7 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     return work(credential, guardedFetch);
   }
   return { profile: () => request("/profile"), listMessages, getMessage, raw, attachment, history, listDrafts, getDraft, saveDraft, discardDraft, send,
+    getLabel: labelId => request(`/labels/${id(labelId)}`),
     modifyLabels, trash, restoreTrash,
     markRead: (messageId, read) => modifyLabels(messageId, read ? [] : ["UNREAD"], read ? ["UNREAD"] : []),
     star: (messageId, starred) => modifyLabels(messageId, starred ? ["STARRED"] : [], starred ? [] : ["STARRED"]),

@@ -7,6 +7,7 @@ const mailboxRoles = require("../../shared/mailbox-roles");
 const textEncoding = require("./text-encoding");
 const { isGmail } = require("./gmail-policy");
 const clientAccounts = new WeakMap();
+const gmail = require("./gmail-session");
 
 const SOURCE_CAP = 96 * 1024;
 const FULL_CAP = 3 * 1024 * 1024;
@@ -72,6 +73,7 @@ function explain(error, secret, account) {
 
 
 function makeClient(account, secret, options) {
+  if (gmail.migrated(account)) throw Object.assign(new Error("This Gmail account uses the Gmail API, not IMAP."), { operationIssued: false });
   const tls = account.imap_tls === 1;
   const secure = tls && account.imap_port !== 143;
   const auth = imapAuth(account, secret);
@@ -102,6 +104,7 @@ function makeClient(account, secret, options) {
 }
 
 async function withClient(account, password, fn) {
+  if (gmail.migrated(account)) return fn({ gmail: gmail.createSession(account, password) });
   const client = makeClient(account, password);
   try {
     await client.connect();
@@ -203,6 +206,7 @@ function transport(account, secret) {
 }
 
 async function verifySmtp(account, password) {
+  if (gmail.migrated(account)) { await gmail.createSession(account, password).api.profile(); return; }
   const client = transport(account, password);
   try {
     await client.verify();
@@ -334,6 +338,7 @@ function skipBox(box) {
 }
 
 async function listFolderRecords(client) {
+  if (client.gmail) return client.gmail.folders();
   const boxes = await client.list();
   const delimiter = (boxes.find((box) => box.delimiter) || {}).delimiter || "/";
   const folders = [];
@@ -414,6 +419,7 @@ const FETCH_FIELDS = {
 };
 
 async function searchUids(client, folderPath, query, flagPage) {
+  if (client.gmail) throw new Error("Gmail API sync uses paginated provider ids, not IMAP UID searches.");
   const lock = await client.getMailboxLock(folderPath);
   try {
     const box = client.mailbox || {};
@@ -452,6 +458,7 @@ async function searchUids(client, folderPath, query, flagPage) {
 }
 
 async function fetchMessages(client, folderPath, uids) {
+  if (client.gmail) throw new Error("Gmail API sync uses provider message retrieval, not IMAP FETCH.");
   const list = (uids || []).map(Number).filter((uid) => uid > 0);
   const lock = await client.getMailboxLock(folderPath);
   try {
@@ -473,6 +480,7 @@ async function fetchMessages(client, folderPath, uids) {
 }
 
 async function syncFolder(client, folderPath, options) {
+  if (client.gmail) return client.gmail.search(folderPath, "", options?.limit || 40);
   const lock = await client.getMailboxLock(folderPath);
   try {
     const box = client.mailbox || {};
@@ -528,6 +536,7 @@ async function syncFolder(client, folderPath, options) {
 }
 
 async function fetchSource(client, folderPath, uid, expectedValidity) {
+  if (client.gmail) return client.gmail.source(folderPath, uid, expectedValidity);
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);
@@ -556,6 +565,7 @@ async function fetchSource(client, folderPath, uid, expectedValidity) {
 }
 
 async function readPart(client, folderPath, uid, part, expectedValidity) {
+  if (client.gmail) return client.gmail.attachment(folderPath, uid, part, expectedValidity);
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);
@@ -578,7 +588,8 @@ function assertUidValidity(client, expected) {
   throw error;
 }
 
-async function moveUid(client, folderPath, uid, destination, expectedValidity) {
+async function moveUid(client, folderPath, uid, destination, expectedValidity, localMessageId) {
+  if (client.gmail) return client.gmail.move(folderPath, uid, destination, expectedValidity, localMessageId);
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);
@@ -596,7 +607,8 @@ async function moveUid(client, folderPath, uid, destination, expectedValidity) {
   }
 }
 
-async function changeFlags(client, folderPath, uid, add, remove, expectedValidity) {
+async function changeFlags(client, folderPath, uid, add, remove, expectedValidity, localMessageId) {
+  if (client.gmail) return client.gmail.flags(folderPath, uid, add, remove, expectedValidity, localMessageId);
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);
@@ -608,6 +620,7 @@ async function changeFlags(client, folderPath, uid, add, remove, expectedValidit
 }
 
 async function removeUid(client, folderPath, uid, expectedValidity) {
+  if (client.gmail) return client.gmail.remove(folderPath, uid, expectedValidity);
   if (isGmail(clientAccounts.get(client))) {
     let listing;
     try { listing = await listFolderRecords(client); }
@@ -628,20 +641,24 @@ async function removeUid(client, folderPath, uid, expectedValidity) {
 }
 
 async function checkUidValidity(client, folderPath, expectedValidity) {
+  if (client.gmail) { client.gmail.alive(); return; }
   const lock = await client.getMailboxLock(folderPath);
   try { assertUidValidity(client, expectedValidity); }
   finally { lock.release(); }
 }
 
 async function createBox(client, folderPath) {
+  if (client.gmail) return client.gmail.create(folderPath);
   await client.mailboxCreate(folderPath);
 }
 
 async function renameBox(client, fromPath, toPath) {
+  if (client.gmail) return client.gmail.rename(fromPath, toPath);
   await client.mailboxRename(fromPath, toPath);
 }
 
 async function appendRaw(client, folderPath, raw, flags) {
+  if (client.gmail) return client.gmail.append(folderPath, raw);
   return client.append(folderPath, raw, flags, new Date());
 }
 
@@ -662,6 +679,7 @@ async function searchTextUids(client, needle, gmail) {
 }
 
 async function findText(client, folderPath, text, limit, options) {
+  if (client.gmail) return client.gmail.search(folderPath, String(text || ""), limit);
   const needle = String(text || "").trim();
   if (!needle) return null;
   const lock = await client.getMailboxLock(folderPath);
@@ -741,6 +759,7 @@ async function searchFromUids(client, address, gmail) {
 }
 
 async function findFrom(client, folderPath, address, limit, options) {
+  if (client.gmail) return client.gmail.search(folderPath, `from:${address}`, limit);
   const addr = String(address || "").trim();
   if (!addr) return null;
   let lock;
@@ -791,6 +810,14 @@ async function buildRaw(options) {
 }
 
 async function sendSmtp(account, password, options) {
+  if (gmail.migrated(account)) {
+    const session = gmail.createSession(account, password);
+    const raw = await buildRaw(options);
+    const result = await session.api.send({ raw, confirmed: true });
+    session.alive();
+    return { messageId: options.messageId, providerId: result.id,
+      accepted: require("./delivery-receipt").addresses([...(options.to || []), ...(options.cc || []), ...(options.bcc || [])]), rejected: [] };
+  }
   const client = transport(account, password);
   try {
     return await client.sendMail(options);
