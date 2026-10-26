@@ -157,12 +157,15 @@ async function cleanupChecks(engine, db, remote) {
         assert.equal(edited.success, true); assert.equal(edited.data.remoteSaved, true);
         assert.notEqual(db.draftRevision(db.messageById(id)), proof);
       }
+      const sentBefore = sent.length;
       await engine.pumpScheduled();
-      assert.equal(db.scheduledById(queued).status, "sent");
+      assert.equal(sent.length, sentBefore + 1, "the queued snapshot submits exactly once");
       if (edit) {
+        assert.equal(db.scheduledById(queued).status, "sent");
         assert.equal(db.messageById(id).from_display_name, "Actually edited name");
         assert.match(db.scheduledById(queued).error, /source draft was kept/);
       } else {
+        assert.equal(db.scheduledById(queued), null, "successful delivery without a warning clears its queue row");
         assert.equal(db.messageById(id), null, "an unchanged legacy draft is removed after its queued message is accepted");
         assert.ok(removals.includes(31 + index));
       }
