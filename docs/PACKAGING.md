@@ -40,7 +40,7 @@ The signed macOS manifest URL is `https://github.com/Coke1120/Morrow-Mail/releas
 
 The final publisher binds a new release tag to the exact workflow source SHA, after both platform artifacts pass validation.
 
-The release body includes the matching `shared/changelog.js` entry and, when present, `docs/releases/v<version>.md`. Keep version-specific rollout prerequisites and validation limits in that file so they reach GitHub Releases as well as the source docs. See [v0.2.39 Gmail/consent rollout](releases/v0.2.39.md); publication does not verify the real Google project's API/Console/verification state.
+The release body includes the matching `shared/changelog.js` entry and, when present, `docs/releases/v<version>.md`. Keep version-specific rollout prerequisites and validation limits in that file so they reach GitHub Releases as well as the source docs. See [v0.2.40 attachment transfers](releases/v0.2.40.md) and [v0.2.39 Gmail/consent rollout](releases/v0.2.39.md); publication does not verify the real Google project's API/Console/verification state.
 
 A version tag must match the stable package version and exact source commit. Existing releases are rejected without overwriting assets.
 
