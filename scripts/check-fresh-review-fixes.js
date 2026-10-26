@@ -95,12 +95,14 @@ async function rendererChecks() {
   const features = renderer({ document: featureDoc });
   features.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
   features.run("paintFeatureCatalog()");
-  for (const text of [/Reply-To/, /reviewed message/, /server draft.*every attachment/, /cp932 and UTF-7/, /all-day and timed input keeps the dates/]) {
+  for (const text of [/Reply-To/, /historical bot mail from aliases/, /reviewed message/, /server draft.*every attachment/, /cp932 and UTF-7/, /all-day and timed input keeps the dates/]) {
     assert.match(featureDoc.body.textContent, text);
   }
   const help = fs.readFileSync(require.resolve("../renderer/index.html"), "utf8");
   assert.match(help, /Finish or cancel AI writing before previewing/);
   assert.match(help, /Switching All day keeps the dates/);
+  const helpDocument = new JSDOM(help).window.document;
+  assert.match(helpDocument.getElementById("cli-sender-names").textContent,/desktop can reply to historical bot Sent copies from aliases/);
   console.log("fresh-review-renderer-ok: immutable preview, AI gates, calendar type sanitization");
 }
 
@@ -278,6 +280,7 @@ async function hostChecks() {
     assert.deepEqual(Object.fromEntries(sent.attachments.map(f=>[f.filename,f.content.toString()])),{"contract.pdf":"CONTRACT","logo.png":"IMAGE"});
     assert.equal(sent.attachments.find(f=>f.filename==="logo.png").contentId,"<logo>");
     await localSentChecks({db,engine,remote,secrets,ask});
+    await legacyAliasSentChecks({db,engine,remote,ask});
     console.log("fresh-review-host-ok: Gmail charset/MIME isolation, structured Reply-To, draft hydration/MIME/queue/failure/cancel/retry");
   } finally {
     remote.withClient=original.withClient;remote.readPart=original.readPart; global.fetch=originalFetch;
@@ -363,6 +366,89 @@ async function localSentChecks({db,engine,remote,secrets,ask}) {
     console.log("local-sent-reply-ok: bot/synthetic SMTP, filing success/failure, legacy repair, adoption and remote-header gates");
   } finally {
     engine.setSmtpSenderForTest(null); remote.withClient=original.withClient; remote.sendSmtp=original.sendSmtp; remote.appendRaw=original.appendRaw;
+  }
+}
+
+async function legacyAliasSentChecks({db,engine,remote,ask}) {
+  // Captured by the original v0.3.0 bot/send → submitSmtp → fileSentMessage /
+  // noteBotSent paths, not a hand-written approximation of their database rows.
+  const fixture = require("./fixtures/legacy-bot-alias-sent.json");
+  const settings = require("../host/settings"), previous = settings.answer("emailBrain:getComposeSettings", []);
+  const originalClient = remote.withClient;
+  let providerReads = 0;
+  try {
+    db.insertAccount(fixture.account); db.replaceFolders(fixture.account.id, fixture.folders);
+    settings.answer("emailBrain:saveComposeSettings", [fixture.composeSettings]);
+    for (const {input,stored,receipt} of fixture.messages) {
+      db.insertMessage(input);
+      const row = db.messageById(input.id);
+      for (const [key,value] of Object.entries(stored)) assert.deepEqual(row[key], value, `original production column ${key}`);
+      assert.equal(receipt.state,"submitted"); assert.equal(receipt.fromAddress,row.from_addr);
+      assert.equal(receipt.messageId,row.rfc_message_id);
+      assert.notEqual(row.from_addr.split("@")[1],fixture.account.email.split("@")[1]);
+    }
+    await db.close(); await engine.init(); // Reply to persisted pre-upgrade records after reopening.
+    remote.withClient = async () => { providerReads++; throw new Error("Synthetic unknown remote headers"); };
+    const ui = composeUi();
+    for (const {mode,input} of fixture.messages) {
+      const email = (await ask("mail:openEmail",{emailId:input.id})).email;
+      for (const kind of ["reply","all"]) {
+        const context = await ask("mail:getComposeContext",{accountId:fixture.account.id,sourceMessageId:input.id,kind});
+        assert.deepEqual(context.replyTo,[],`${mode} ${kind}: historical alias uses known empty Reply-To`);
+        assert.equal(context.fromAddress,fixture.alias); assert.equal(context.fromDisplayName,"Historical Alias");
+        Object.assign(ui.context,{email,self:context.selfAddresses,all:kind==="all"});
+        const parties = ui.run("replyParties(email,self,all)");
+        assert.equal(parties.to,kind==="all"?"customer@fixture.invalid":"customer@fixture.invalid, colleague@fixture.invalid");
+        assert.equal(parties.cc,kind==="all"?"colleague@fixture.invalid":"");
+        assert.ok(!JSON.stringify(parties).includes(fixture.alias));
+        assert.ok(!JSON.stringify(parties).includes("hidden@fixture.invalid"));
+      }
+      assert.deepEqual(JSON.parse(db.messageById(input.id).recipient_headers_json),{replyTo:[]});
+    }
+    assert.equal(providerReads,0,"historical alias replies must not require a mailbox read");
+    const negatives = [
+      {label:"provider transport metadata",recipientHeaders:{originalTo:[],deliveredTo:[],envelopeTo:[]}},
+      {label:"provider UID",uid:42,uidValidity:13},
+      {label:"provider validity",uidValidity:13},
+      {label:"Gmail mapping",gmailId:"remote-provider-id"},
+      {label:"remote API cache id",id:"m-fedcba9876543210"},
+      {label:"non-Sent folder",folderPath:"INBOX"},
+      {label:"display From instead of bare local From",from:`Historical Alias <${fixture.alias}>`},
+      {label:"message-id domain differs from both From and account",domain:"unrelated.fixture.invalid"},
+      {label:"incomplete body",bodyComplete:false},
+      {label:"draft",isDraft:true},
+      {label:"unknown NULL header cache",nullHeaders:true},
+    ];
+    for (const [index,{label,domain,gmailId,nullHeaders,...extra}] of negatives.entries()) {
+      const input = {...fixture.messages[0].input,id:db.newMessageId(),rfcMessageId:`<${index.toString(16).padStart(24,"0")}@${domain||fixture.alias.split("@")[1]}>`,...extra};
+      db.insertMessage(input);
+      if (gmailId) db.updateMessage(input.id,{gmail_id:gmailId});
+      if (nullHeaders) db.updateMessage(input.id,{recipient_headers_json:null});
+      const originalHeaders = db.messageById(input.id).recipient_headers_json;
+      for (const kind of ["reply","all"]) {
+        const result = await engine.answer("mail:getComposeContext",[{accountId:fixture.account.id,sourceMessageId:input.id,kind}]);
+        assert.equal(result.success,false,`${label}: unknown remote metadata must stay blocked`);
+        assert.equal(result.error.code,"read",label);
+      }
+      assert.equal(db.messageById(input.id).recipient_headers_json,originalHeaders,`${label}: do not mark remote headers known`);
+    }
+    const local = fixture.messages[0].input;
+    const raw = await remote.buildRaw({from:{address:fixture.alias,name:"Historical Alias"},to:local.to,cc:local.cc,subject:local.subject,text:local.textBody,
+      messageId:local.rfcMessageId,replyTo:{address:"provider-reply@fixture.invalid",name:"Provider"}});
+    const parsed = await require("mailparser").simpleParser(raw);
+    const fetched = await remote.fetchSource({mailbox:{uidValidity:13},getMailboxLock:async()=>({release(){}}),async *fetch(){
+      yield {uid:71,source:raw,envelope:{from:parsed.from.value,to:parsed.to.value,cc:parsed.cc.value,replyTo:parsed.replyTo.value},flags:new Set()};
+    }},"Sent",71,13);
+    db.applyFolderSync(fixture.account.id,"Sent",{validity:13,messages:[fetched],keepOthers:true});
+    assert.equal(db.messageById(local.id).uid,71,"provider adoption preserves the historical alias cache id");
+    for (const kind of ["reply","all"]) {
+      const context = await ask("mail:getComposeContext",{accountId:fixture.account.id,sourceMessageId:local.id,kind});
+      assert.equal(context.replyTo[0].address,"provider-reply@fixture.invalid","provider Reply-To replaces repaired local metadata");
+    }
+    console.log("legacy-alias-reply-ok: original v0.3.0 bot/Sent-filing/fallback fixtures, reopened DB, recipients/name, 11 remote negatives and provider adoption");
+  } finally {
+    remote.withClient=originalClient;
+    settings.answer("emailBrain:saveComposeSettings",[previous]);
   }
 }
 

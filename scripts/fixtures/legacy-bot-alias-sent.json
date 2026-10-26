@@ -1,0 +1,250 @@
+{
+  "source": {
+    "commit": "5f50132ec07d818330e12bd73f8f7b18d823d7d4",
+    "sourceHashes": {
+      "host/bot/send.js": "337de3304ae9176362465ef763864924e606b512e8ca02e28d1939611c0cb63e",
+      "host/mail/engine.js": "a1af46d5a085931a84d2fdd1f1871d134466e02f03e5c59dec59dc761b3908bf",
+      "host/mail/db.js": "a1a3add57422abd2a838b813523a65d7c38e7159bb86270ebe4aab7d9f1fe345"
+    },
+    "generator": "scripts/fixtures/capture-legacy-bot-alias.js"
+  },
+  "account": {
+    "id": "legacy-alias",
+    "email": "owner@primary.fixture.invalid",
+    "username": "owner",
+    "profile": "custom",
+    "authKind": "password",
+    "createdAt": 1,
+    "imapHost": "imap.fixture.invalid",
+    "imapPort": 993,
+    "imapTls": true,
+    "smtpHost": "smtp.fixture.invalid",
+    "smtpPort": 465,
+    "smtpTls": true
+  },
+  "alias": "author@different.fixture.invalid",
+  "folders": [
+    {
+      "path": "Sent",
+      "name": "Sent",
+      "wellKnown": "sentitems"
+    },
+    {
+      "path": "INBOX",
+      "name": "Inbox",
+      "wellKnown": "inbox"
+    }
+  ],
+  "composeSettings": {
+    "ccByDomain": {},
+    "bccByDomain": {},
+    "accounts": {
+      "legacy-alias": {
+        "aliases": [
+          {
+            "address": "author@different.fixture.invalid"
+          }
+        ],
+        "senderNames": {
+          "author@different.fixture.invalid": "Historical Alias"
+        }
+      }
+    }
+  },
+  "messages": [
+    {
+      "mode": "sent-filing",
+      "input": {
+        "id": "m-mvphidzp-a9a1c72b",
+        "accountId": "legacy-alias",
+        "folderPath": "Sent",
+        "threadId": "m-mvphidzp-a9a1c72b",
+        "rfcMessageId": "<c9d40ee6d01ddd72b1ad2cf9@different.fixture.invalid>",
+        "subject": "Historical alias sent-filing",
+        "snippet": "Original bot production path",
+        "from": "author@different.fixture.invalid",
+        "fromDisplayName": "Historical Alias",
+        "to": [
+          "customer@fixture.invalid"
+        ],
+        "cc": [
+          "author@different.fixture.invalid",
+          "colleague@fixture.invalid"
+        ],
+        "bcc": [
+          "hidden@fixture.invalid"
+        ],
+        "date": "2026-10-26T16:42:08.341Z",
+        "listSortTs": 1793032928341,
+        "isDraft": false,
+        "hasAttachments": false,
+        "attachments": [],
+        "htmlBody": "Original bot production path",
+        "textBody": "Original bot production path",
+        "bodyComplete": true,
+        "inReplyTo": null
+      },
+      "stored": {
+        "id": "m-mvphidzp-a9a1c72b",
+        "account_id": "legacy-alias",
+        "folder_path": "Sent",
+        "uid": 0,
+        "uid_validity": 0,
+        "thread_id": "m-mvphidzp-a9a1c72b",
+        "rfc_message_id": "<c9d40ee6d01ddd72b1ad2cf9@different.fixture.invalid>",
+        "in_reply_to": null,
+        "subject": "Historical alias sent-filing",
+        "snippet": "Original bot production path",
+        "from_addr": "author@different.fixture.invalid",
+        "to_json": "[\"customer@fixture.invalid\"]",
+        "cc_json": "[\"author@different.fixture.invalid\",\"colleague@fixture.invalid\"]",
+        "bcc_json": "[\"hidden@fixture.invalid\"]",
+        "date_iso": "2026-10-26T16:42:08.341Z",
+        "list_sort_ts": 1793032928341,
+        "unread": 0,
+        "starred": 0,
+        "is_draft": 0,
+        "has_attachments": 0,
+        "html_body": "Original bot production path",
+        "text_body": "Original bot production path",
+        "attachments_json": "[]",
+        "body_complete": 1,
+        "recipient_headers_json": "{}",
+        "draft_pending": 0,
+        "from_display_name": "Historical Alias",
+        "from_address": "author@different.fixture.invalid",
+        "gmail_id": null
+      },
+      "receipt": {
+        "auditId": "97ce6b5c-42aa-4ee4-8693-b7628060dc87",
+        "clientId": "4814a862-671a-49b1-8404-51caca253960",
+        "accountId": "legacy-alias",
+        "requestId": "753f06ee-2a25-423a-80c2-76023ee68797",
+        "state": "submitted",
+        "payloadHash": "7745e67a5d7a95c90188291df2db6c41ddfa470e64fadc5427ab1c5057ecae8c",
+        "messageId": "<c9d40ee6d01ddd72b1ad2cf9@different.fixture.invalid>",
+        "fromAddress": "author@different.fixture.invalid",
+        "fromDisplayName": "Historical Alias",
+        "recipients": {
+          "to": [
+            "customer@fixture.invalid"
+          ],
+          "cc": [
+            "author@different.fixture.invalid",
+            "colleague@fixture.invalid"
+          ],
+          "bcc": [
+            "hidden@fixture.invalid"
+          ]
+        },
+        "subject": "Historical alias sent-filing",
+        "claimedAt": "2026-10-26T16:42:08.339Z",
+        "finishedAt": "2026-10-26T16:42:08.341Z",
+        "smtpReceipt": {
+          "messageId": "<c9d40ee6d01ddd72b1ad2cf9@different.fixture.invalid>",
+          "accepted": [
+            "customer@fixture.invalid"
+          ],
+          "rejected": [],
+          "rejectionDetails": []
+        }
+      }
+    },
+    {
+      "mode": "bot-fallback",
+      "input": {
+        "id": "m-mvphie0a-f5a4c69c",
+        "accountId": "legacy-alias",
+        "folderPath": "Sent",
+        "threadId": "m-mvphie0a-f5a4c69c",
+        "rfcMessageId": "<c69d4804979c2e2a860e1ccb@different.fixture.invalid>",
+        "subject": "Historical alias bot-fallback",
+        "snippet": "Original bot production path",
+        "from": "author@different.fixture.invalid",
+        "fromDisplayName": "Historical Alias",
+        "to": [
+          "customer@fixture.invalid"
+        ],
+        "cc": [
+          "author@different.fixture.invalid",
+          "colleague@fixture.invalid"
+        ],
+        "bcc": [
+          "hidden@fixture.invalid"
+        ],
+        "date": "2026-10-26T16:42:08.362Z",
+        "listSortTs": 1793032928362,
+        "isDraft": false,
+        "htmlBody": "Original bot production path",
+        "textBody": "Original bot production path",
+        "bodyComplete": true,
+        "inReplyTo": null
+      },
+      "stored": {
+        "id": "m-mvphie0a-f5a4c69c",
+        "account_id": "legacy-alias",
+        "folder_path": "Sent",
+        "uid": 0,
+        "uid_validity": 0,
+        "thread_id": "m-mvphie0a-f5a4c69c",
+        "rfc_message_id": "<c69d4804979c2e2a860e1ccb@different.fixture.invalid>",
+        "in_reply_to": null,
+        "subject": "Historical alias bot-fallback",
+        "snippet": "Original bot production path",
+        "from_addr": "author@different.fixture.invalid",
+        "to_json": "[\"customer@fixture.invalid\"]",
+        "cc_json": "[\"author@different.fixture.invalid\",\"colleague@fixture.invalid\"]",
+        "bcc_json": "[\"hidden@fixture.invalid\"]",
+        "date_iso": "2026-10-26T16:42:08.362Z",
+        "list_sort_ts": 1793032928362,
+        "unread": 0,
+        "starred": 0,
+        "is_draft": 0,
+        "has_attachments": 0,
+        "html_body": "Original bot production path",
+        "text_body": "Original bot production path",
+        "attachments_json": "[]",
+        "body_complete": 1,
+        "recipient_headers_json": "{}",
+        "draft_pending": 0,
+        "from_display_name": "Historical Alias",
+        "from_address": "author@different.fixture.invalid",
+        "gmail_id": null
+      },
+      "receipt": {
+        "auditId": "cccdfc77-d83d-4d8a-9938-4cf0cdd7e91a",
+        "clientId": "efc4812c-ceae-4698-b430-186e142038ff",
+        "accountId": "legacy-alias",
+        "requestId": "411afe1c-659c-411a-a043-007913154526",
+        "state": "submitted",
+        "payloadHash": "ddce5092900f8e60c4a2d7d98f8cf681058f3e7e4cc62f96b2aede83e7a41030",
+        "messageId": "<c69d4804979c2e2a860e1ccb@different.fixture.invalid>",
+        "fromAddress": "author@different.fixture.invalid",
+        "fromDisplayName": "Historical Alias",
+        "recipients": {
+          "to": [
+            "customer@fixture.invalid"
+          ],
+          "cc": [
+            "author@different.fixture.invalid",
+            "colleague@fixture.invalid"
+          ],
+          "bcc": [
+            "hidden@fixture.invalid"
+          ]
+        },
+        "subject": "Historical alias bot-fallback",
+        "claimedAt": "2026-10-26T16:42:08.360Z",
+        "finishedAt": "2026-10-26T16:42:08.361Z",
+        "smtpReceipt": {
+          "messageId": "<c69d4804979c2e2a860e1ccb@different.fixture.invalid>",
+          "accepted": [
+            "customer@fixture.invalid"
+          ],
+          "rejected": [],
+          "rejectionDetails": []
+        }
+      }
+    }
+  ]
+}

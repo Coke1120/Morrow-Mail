@@ -2186,9 +2186,12 @@ function localSentReplyHeaders(row, account) {
   // Do not infer local origin from uid=0, Sent membership or From alone.
   const rfc = /^<[a-f0-9]{24}@([^<>\s]+)>$/.exec(row.rfc_message_id || "");
   const from = composePolicy.address(row.from_addr);
+  // Desktop sends generated ids from the account domain; bot sends used the
+  // selected bare From, including aliases on a different domain. Both are
+  // historical local formats, independent of today's alias configuration.
   if (!/^m-[a-z0-9]+-[a-f0-9]{1,8}$/.test(row.id) || !rfc
-      || rfc[1].toLowerCase() !== String(account.email).split("@")[1]?.toLowerCase()
-      || !from || from !== row.from_addr.trim().toLowerCase()) return row;
+      || !from || from !== row.from_addr.trim().toLowerCase()
+      || ![String(account.email).split("@")[1]?.toLowerCase(), from.split("@")[1]].includes(rfc[1].toLowerCase())) return row;
   db.updateMessage(row.id, { recipient_headers_json: JSON.stringify({ replyTo: [] }) });
   return db.messageById(row.id);
 }
