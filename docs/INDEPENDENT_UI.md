@@ -4,6 +4,8 @@
 
 ## What this shell does
 
+- Settings → AI can review, allow and revoke AI data permission through the same existing host consent handlers as AI Setup. The exact three invoke channels are allowlisted in the first-party preload; unknown channels stay rejected. A ready saved connection and explicit-action checkbox are required, with separate optional background permission. Regression tests include the actual preload, Settings mount, config/consent validation and in-memory persistence, without native windows or live AI calls.
+
 - Scheduled cleanup also recognizes historical provider display text with literal quotes, angle brackets and Unicode names. Tests create real MIME and pass synthetic IMAP search results through the production parser/formatter, then verify metadata-only cleanup and protection of later name, From and body edits.
 
 - Resuming or recovering a sender-named draft keeps its bare From address, including names with angle brackets, quotes and Unicode. It does not reparse a display preview as an email address. Equivalent legacy sender metadata refreshes preserve queued cleanup proofs; genuinely edited drafts remain saved after the queued snapshot sends.
