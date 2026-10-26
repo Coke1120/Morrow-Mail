@@ -288,7 +288,7 @@ async function runTranslate(reqId, params, signal) {
 }
 
 module.exports = {
-  answer: answer,
+  answer: (...args) => require("./ai-context").operation(() => answer(...args)),
   splitSegment: splitSegment,
   planTranslate: planTranslate,
   translateSegments: translateSegments,

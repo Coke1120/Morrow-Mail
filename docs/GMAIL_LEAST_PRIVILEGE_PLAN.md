@@ -1,0 +1,49 @@
+# Gmail API and least-privilege migration plan
+
+Status: plan accompanying the AI consent draft. **This PR changes no mail transport, OAuth scope, existing account or Google Console setting.** The user subsequently approved implementation in a separate draft PR; until that draft's coverage and checks are complete, the current transport remains as described below. Continue with Google remains OAuth. Replacing IMAP/SMTP with Gmail API does not replace Google login.
+
+## Current feature → scope map
+
+Source: `host/mail/oauth-config.js`, `oauth.js`, `engine.js`, `remote.js`, `sidecar.js`, `provider-api.js`, `vacation-api.js`, `inbox-rules.js`, `compose-identity.js` and `calendar-api.js` at dev `6217cfe`.
+
+The Google connection currently requests `openid email https://mail.google.com/ https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels`. Authorization includes existing grants; received granted scopes are recorded separately from requested scopes. A smaller request does not prove an existing broader grant was removed.
+
+| Implemented operation | Current transport/grant | Proposed Gmail API / minimum retained permission |
+| --- | --- | --- |
+| Identity, mailbox matching | OpenID/userinfo and Gmail profile | Retain `openid email`; verify returned mailbox identity. |
+| Sync/history, body/MIME, attachments, server search, flags | IMAP XOAUTH2 needs `mail.google.com`; cache/search are local | `messages.list/get`, attachment `get`, labels/counters and history/reconciliation under `gmail.modify`. |
+| Save/resume/replace drafts | Local MIME; drafts appended via IMAP; old draft cleaned up | `drafts.create/get/list/update` under `gmail.modify`; preserve correlations and uncertain-write recovery. |
+| Send/reply/forward/aliases/attachments/scheduled send | MIME and SMTP XOAUTH2 need `mail.google.com` | MIME `messages.send`/`drafts.send` under `gmail.modify`. Preserve From checks, threading headers, attachments and ambiguous delivery. No redundant `gmail.send`/`gmail.compose` where `gmail.modify` covers the implemented method. |
+| Read/star/archive/trash/move/Undo | IMAP flags/moves | `messages.modify`, `trash`, `untrash`; restore original labels for Undo. `gmail.modify` suffices. No message/thread permanent-delete or batch-delete method. |
+| Labels list/create/rename/nest/delete/apply/remove | Gmail API organize gate requires `gmail.modify` | Retain `gmail.modify`; separate `gmail.labels` is redundant when that grant covers the methods. Label deletion is not message deletion. |
+| Filters, Out of Office, accepted send-as identities | Gmail settings filters/vacation/sendAs APIs | Retain `gmail.settings.basic`; `gmail.modify` does not cover settings. No `gmail.settings.sharing`. |
+| Calendar list/read/create/update/delete | Calendar API | `calendar.calendarlist.readonly` + `calendar.events` in a separately requested Calendar grant. Mail connection needs no Calendar access. AI still requires its own permission. |
+
+Target mail request: `openid email gmail.modify gmail.settings.basic` (full URIs in code). Calendar is separately enabled. Read-only or send-only scopes cannot preserve this mail client. `gmail.modify` and settings access remain restricted under Google's classification; narrowing does not promise that restricted verification or CASA disappears.
+
+## Deletion facts before changing code
+
+- Ordinary `mail:delete`, `mail:threadTrash`, and non-Trash `mail:deleteBatch` in `actions.js` move to deleted-items/Trash and journal Undo.
+- A real permanent path exists: `mail:deleteBatch` with `folderWellKnownName` equal to `deleteditems` or `trash`. `removeCommand` verifies the actual source is Trash. The executor calls `remote.removeUid` → ImapFlow `messageDelete`; actual IMAP deletion/expunge behavior is server-dependent. This is deletion **from Trash**, not evidence of bypass-Trash deletion from Inbox.
+- `remote.removeUid` also cleans up replaced/sent/discarded remote drafts in `engine.js`. Map these separately: replacing every call with Trash can create duplicate drafts and alter lifecycle behavior. Ordinary received mail must never use a draft-deletion endpoint.
+- No existing Gmail HTTP `messages.delete`, `threads.delete` or `messages.batchDelete` request was found in `provider-api.js`. Do not claim one was removed; the adapter must not introduce one.
+- Microsoft and generic IMAP share these primitives. Preserve their behavior unless a separately reviewed product change includes them. Explicitly report shared-handler/mixed-account effects.
+
+## Phases and acceptance gates
+
+1. **Adapter/fixtures before scope switch.** Implement explicit paginated sync/body/MIME/attachment, draft, send, flags, labels, trash/restore operations. Synthetic fixtures forbid sockets and fail on Gmail permanent-delete URLs or Gmail IMAP/SMTP calls. Test empty/large/labelled mailboxes, rate limits, token expiry, cancellation and ambiguous writes. An unfinished adapter is unavailable, not parity.
+2. **Stable account/cache identity.** Persist Gmail message/thread/draft ids alongside legacy UID/UIDVALIDITY/folder copies. Backfill by provider id or carefully matched RFC Message-ID, which is not guaranteed unique. Preserve account/local message ids, draft correlations, outstanding receipts, scheduled payloads, search rows, horizon and body-progress state. Deduplicate label copies; surface ambiguous matches. Roll back by transport marker without deleting local work.
+3. **Wire every operation.** Route migrated Gmail OAuth accounts to the adapter; keep Microsoft and password/custom IMAP/SMTP unchanged. Verify cached reading during sync, history paging, body download, attachment save/open/ZIP, aliases, draft revision/partial-delivery recovery, no duplicate sent copies, flags, trash/Undo, label/folder UI, server search and bounded background polling. Gmail API has no IMAP IDLE connection: display polling truthfully and backfill expired history cursors. No Gmail IMAP fallback after narrowing.
+4. **Separate grants and transparent migration.** Use a reviewed migrate/reconnect action on the existing account, not delete/recreate. Explain OAuth, transport/scopes, preserved cache and optional Calendar. Cancellation/partial grants preserve prior valid credentials/local work. Validate the new token before switching the marker/credential. Preserve Calendar feature records without unexpected grants. Settings distinguish requested versus actually granted scopes and identify remaining `mail.google.com` grants as broad. Explain deliberate Google revocation/re-consent; never call a smaller request a revoked broad grant.
+5. **Scope switch after coverage/verification.** Remove full-mail and redundant scopes only after every shipped Gmail feature uses the API. Keep Calendar separate. Test legacy primary/feature grants, narrow/partial/declined grants, account mismatch/removal, reconnect races, storage failure and crash recovery. Refresh must not widen partial grants. Coordinate Google's staging/verification sequence; no production Console changes or use of newly unapproved scopes in this task.
+6. **Draft review/release evidence.** Run full repository checks and exact-head CI, Features/help consistency and synthetic UI fixtures. Native rendering, provider registration, real grant behavior and a Google-facing demo remain separately pending. All compliance PRs stay draft, separate from the timeout release. If incomplete, report exact wired/unavailable methods, unchanged requests, remaining broad grants and any Gmail IMAP/SMTP path.
+
+## Verification and public-disclosure evidence gaps
+
+Google decides verification/assessment applicability from the actual scopes, restricted-data handling, deployment and third-party AI transfers. Neither a desktop label nor narrower scopes proves an exemption. The AI gate documents actual context transfers but cannot prove provider retention/training suitability. Provider contractual evidence and accurate public Limited Use/data-transfer text remain required review evidence; consent does not waive Google's restrictions.
+
+Still needed, without requesting secrets: actual Console project/client configuration and authorized domains; approved/requested/granted scope lists; domain ownership; public home/privacy/terms content and update timing; a migration/consent/revoke demo using synthetic mail; complete data flow/storage/deletion descriptions; CASA/assessment determination and assessor evidence if required; incident/contact and user deletion/help processes. No real authorization, mailbox action or user-data migration is performed here.
+
+Public-policy correction task `01a17414-44de-7281-9133-577f18efe0f2` is coordinated through the parent. Its text must distinguish released behavior from proposed AI consent and Gmail migration. No claim that either is deployed is authorized.
+
+Sources checked 2026-10-25: [minimum scopes](https://support.google.com/cloud/answer/13807380), [verification FAQ](https://support.google.com/cloud/answer/13463817?hl=en), [Gmail scope definitions](https://developers.google.com/workspace/gmail/api/auth/scopes), [messages.trash](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/trash), [Workspace data policy](https://developers.google.com/workspace/workspace-api-user-data-developer-policy), [privacy guidance](https://support.google.com/cloud/answer/13806988). Requested sources `13807382` and `13805798` were inaccessible; their requirements remain unverified and no alternate route was tried.
