@@ -47,14 +47,15 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     if (typeof value !== "string" || !value) throw invalid("Gmail authorization is unavailable.");
     return value;
   }
-  async function request(path, { method = "GET", body, query } = {}) {
+  async function request(path, { method = "GET", body, query, signal: readSignal } = {}) {
     alive();
+    readSignal?.throwIfAborted();
     const url = new URL(`${ROOT}${path}`);
     for (const [name, value] of Object.entries(query || {})) {
       for (const item of Array.isArray(value) ? value : [value]) if (item !== undefined && item !== "") url.searchParams.append(name, String(item));
     }
     const credential = await token();
-    const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(45000)]) : AbortSignal.timeout(45000);
+    const requestSignal = AbortSignal.any([signal, readSignal, AbortSignal.timeout(45000)].filter(Boolean));
     let response;
     let issued = false;
     try {
@@ -77,7 +78,7 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     }
     if (response.status === 204) return {};
     let text;
-    try { text = await response.text(); alive(); }
+    try { text = await response.text(); alive(); readSignal?.throwIfAborted(); }
     catch (cause) { throw Object.assign(new Error("Gmail response could not be confirmed."), { code: "provider_network", operationIssued: method !== "GET", cause }); }
     if (Buffer.byteLength(text) > Math.ceil(MAX_BYTES * 4 / 3) + 1024 * 1024) throw Object.assign(new Error("Gmail returned an oversized response."), { code: "provider", operationIssued: method !== "GET" });
     try { return JSON.parse(text); }
@@ -93,9 +94,9 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     payload.messages.forEach(message);
     return payload;
   }
-  async function getMessage(messageId, { format = "full" } = {}) {
+  async function getMessage(messageId, { format = "full", signal: readSignal } = {}) {
     if (!["full", "metadata", "raw"].includes(format)) throw invalid("Choose a supported Gmail message format.");
-    return message(await request(`/messages/${id(messageId)}`, { query: { format } }));
+    return message(await request(`/messages/${id(messageId)}`, { query: { format }, signal: readSignal }));
   }
   async function raw(messageId) {
     const result = await getMessage(messageId, { format: "raw" });
@@ -103,8 +104,8 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     if (!source.length) throw invalid("Gmail returned an empty MIME message.");
     return { ...result, source };
   }
-  async function attachment(messageId, attachmentId) {
-    const result = await request(`/messages/${id(messageId)}/attachments/${id(attachmentId)}`);
+  async function attachment(messageId, attachmentId, { signal: readSignal } = {}) {
+    const result = await request(`/messages/${id(messageId)}/attachments/${id(attachmentId)}`, { signal: readSignal });
     return decode(result.data);
   }
   async function modifyLabels(messageId, add = [], remove = []) {

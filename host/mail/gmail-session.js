@@ -18,14 +18,15 @@ function parts(root) {
 }
 function stringAddresses(value) { return (value?.value || []).map(row => row.name ? `${row.name} <${row.address}>` : row.address).filter(Boolean); }
 
-function createSession(account, token, { api, check = () => {} } = {}) {
+function createSession(account, token, { api, check = () => {}, signal } = {}) {
   const incarnation = account.gmail_generation;
   function alive() {
+    signal?.throwIfAborted();
     check();
     const current = db.accountById(account.id);
     if (!migrated(current) || current.gmail_generation !== incarnation) throw Object.assign(new Error("This Gmail connection changed. Start the action again."), { code: "account_removed", operationIssued: false });
   }
-  api ||= createGmailMailApi({ accessToken: async () => token, check: alive });
+  api ||= createGmailMailApi({ accessToken: async () => token, check: alive, signal });
   const rfcChecks = new Map();
   async function folders() {
     alive();
@@ -211,13 +212,18 @@ function createSession(account, token, { api, check = () => {} } = {}) {
     // promote this verified identity together with the new MIME metadata.
     return { ...value, uid: Number(uid), providerUid: mapped.local_uid, providerValidity: incarnation };
   }
-  async function attachment(path, uid, partId, validity) {
+  async function attachment(path, uid, partId, validity, { signal: readSignal, maxBytes, onProgress } = {}) {
+    readSignal?.throwIfAborted();
     if (typeof partId !== "string" || !partId.startsWith("gmail:")) throw Object.assign(new Error("This attachment identifier predates Gmail migration. Reopen the message before downloading its files."), { code: "attachment_changed", operationIssued: false });
-    const mapped = await resolve(path, uid, validity, undefined, { readOnly: true }), data = await api.getMessage(mapped.provider_id);
+    const mapped = await resolve(path, uid, validity, undefined, { readOnly: true }), data = await api.getMessage(mapped.provider_id, { signal: readSignal });
     const part = parts(data.payload).find(row => `gmail:${row.partId || "0"}` === partId);
     if (!part) throw new Error("This Gmail attachment is no longer available.");
-    const result = typeof part.body?.data === "string" ? Buffer.from(part.body.data, "base64url") : await api.attachment(data.id, part.body.attachmentId);
-    alive(); return result;
+    if (maxBytes && Number(part.body?.size) > maxBytes) throw require("./attachment-cache").tooLarge();
+    onProgress?.({ phase: "downloading", loaded: 0 });
+    const result = typeof part.body?.data === "string" ? Buffer.from(part.body.data, "base64url") : await api.attachment(data.id, part.body.attachmentId, { signal: readSignal });
+    readSignal?.throwIfAborted(); alive();
+    if (maxBytes && result.length > maxBytes) throw require("./attachment-cache").tooLarge();
+    onProgress?.({ phase: "downloading", loaded: result.length }); return result;
   }
   async function move(path, uid, destination, validity, localMessageId, options = {}) {
     const mapped = await resolve(path, uid, validity, localMessageId), from = folder(path).provider_id, to = folder(destination).provider_id;

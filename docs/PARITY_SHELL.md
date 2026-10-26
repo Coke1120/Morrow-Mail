@@ -69,3 +69,28 @@ Settings shows its modal shell before deferred mailbox paint. General and Mail &
 Panels lead with the common task. General groups appearance, translation language, and sidebar preferences. Mail & Sync keeps Sync history and Compact message list above reading/sending preferences, with download details folded. AI places the key hint beside the field and keeps Save AI and connection testing together; only the reply preference saves automatically. Accounts leads with mailbox tools and connected accounts; permissions/calendar access and recovery/removal each have a disclosure. Reconnect stays visible in Accounts. Out of Office keeps mode, dates, audience, messages, warnings, and review actions visible; provider formatting details fold away. Bot access follows four numbered steps, with Activity last: 1 Create bot (name, mailboxes, optional permissions and expiry), 2 Turn on access (the local listener), 3 Another device, optional (copyable Serve command, saved address, and a check you start), and 4 Bot setup (copy or download the prompt). Activity keeps draft proposals, send receipts, and recent bot calls separate from setup. Send mail from these mailboxes confirms the selected mailbox list before the bot is created. A foreign HTTPS answer shows a guided fix and does not run Tailscale. Extra capabilities and expiry sit in More options. Revoke invalidates a secret; Delete removes the row after confirm. The top review link moves to Activity and expands Draft proposals. Native disclosures retain keyboard behavior and do not add provider reads or saved preferences.
 
 Offline navigation regression check: `xvfb-run -a npx electron --no-sandbox scripts/check-page-navigation.cjs`. It exercises the real opening handlers with synthetic IPC, delayed Calendar/status and AI responses, retained nodes, mailbox/month races, one Agent scroll container on Todos and Skills and a pinned Conversation composer, provider creation/grant/drag wiring, compact Sync and the shared About sheet. It has no latency thresholds. Also run `npm run check`, `scripts/check-shell-performance.cjs`, `scripts/check-motion.js`, and `scripts/check-ux-renderer.cjs`. Linux fixtures do not establish Windows frame times.
+
+### Shared attachment downloads
+
+Preview, Open and Save share identity-validated complete bytes and in-flight reads
+across desktop windows. Save chooses its location before downloading. A separate
+Attachment transfers panel exposes phases and cancellation without holding the
+shell-wide busy guard. Closing Preview cancels only that consumer. Another Save or
+Open of the same file keeps its shared transfer alive. Cancellation cannot recall
+a completed write or viewer launch; an already open system picker may still need
+dismissing. `mail:cancelAttachmentRequest` is scoped to its originating renderer,
+and `mail:attachmentProgress` reports phases/counts/received bytes only to that renderer.
+
+The process-memory cache retains files of at most 32 MiB for up to five minutes,
+with 64 MiB/64 entries overall, two active batches and at most 16 pending files.
+Incoming reads allow 64 MiB per file and ZIP data totals 128 MiB; Gmail retains its
+existing 35 MiB decoded-response bound. Outgoing attachment limits are unchanged.
+Cache hits revalidate local identities; removal, reconnect or Gmail migration
+invalidates account bytes and consumers. Failed/partial/cancelled reads are not
+cached. There is no disk cache or IMAP connection pooling. Existing body-sync and
+PDF behavior remains unchanged. Bots still receive attachment metadata, not bytes.
+
+Checks use synthetic providers, request counters/phase barriers, real renderer
+functions with a synthetic DOM, and existing CI application fixtures. They establish
+request reuse and cancellation behavior, not user-network throughput or native UI
+performance.

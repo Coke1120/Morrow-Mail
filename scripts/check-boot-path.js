@@ -25,6 +25,9 @@ const syntax = [
   "scripts/check-ipc-diagnostics.js",
   "scripts/check-bot-provider-metadata.js",
   "host/mail/engine.js",
+  "host/mail/attachment-cache.js",
+  "host/mail/attachment-requests.js",
+  "scripts/check-attachment-transfers.js",
   "host/mail/overnight.js",
   "host/mail/body-progress.js",
   "host/mail/background-jobs.js",
@@ -127,7 +130,7 @@ for (const file of syntax) {
 }
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
-for (const name of ["check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js"]) {
+for (const name of ["check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js"]) {
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(fixture.status, 0, name + " failed");
 }
@@ -3986,7 +3989,7 @@ const featureSeed = [
   ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send."],
   ["signatures", "Signatures", "Mail", "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target."],
   ["mail-keyboard", "Mail list keyboard navigation", "Mail", "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus."],
-  ["attachment-downloads", "Attachment downloads", "Mail", "Save or open the selected file, or save all as ZIP, including cached draft attachments. Stale IDs, missing files, or a changed message stop the download. Opening cached Gmail mail refreshes legacy attachment identities while preserving complete text; reopen an older selection. Bot access still exposes metadata only."],
+  ["attachment-downloads", "Attachment downloads", "Mail", "Preview, Open and Save share downloads. Complete files up to 32 MiB can be reused for five minutes while Morrow is open; larger files remain on demand. Save asks for a location first. Attachment transfers show progress and individual Cancel controls; closing Preview keeps another Save or Open running. Downloads allow 64 MiB per file and 128 MiB per ZIP, with existing provider limits. Changed identities stop reuse; reopen legacy Gmail selections. Bot access remains metadata only."],
   ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],

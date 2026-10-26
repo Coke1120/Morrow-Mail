@@ -11,6 +11,9 @@ const presets = require("./presets");
 const discovery = require("./discovery");
 const remote = require("./remote");
 const zipBytes = require("./zip-bytes");
+const attachmentTransfers = require("./attachment-cache");
+const attachmentCache = attachmentTransfers.createAttachmentCache();
+const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
 
 const secrets = process.env.MORROW_MAIL_SECRETS === "memory"
   ? require("./memory-secrets")
@@ -1502,7 +1505,7 @@ async function connectOAuthAccount(providerInput, expectedAccountId, options = {
       });
       if (signed.provider === "google") detachedDrafts = db.enableGmail(id);
     });
-    if (signed.provider === "google" && existing) accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
+    if (existing) invalidateAttachmentAccount(id);
     oauthCommitted.add(id);
     syncRetryScheduler.clear(id);
     });
@@ -1634,6 +1637,7 @@ async function connectAccount(params) {
       db.setMailTransport(id, "imap");
       db.replaceFolders(id, draft.folders || [], draft.delimiter || "/");
     });
+    if (existing) invalidateAttachmentAccount(id);
   } catch (error) {
     let restored = true;
     if (attempted) {
@@ -1681,10 +1685,17 @@ async function connectAccount(params) {
   return ok(view);
 }
 
+function invalidateAttachmentAccount(id) {
+  accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
+  const error = removedAccountError();
+  attachmentRequests.invalidateAccount(id, error);
+  attachmentCache.invalidateAccount(id, error);
+}
+
 async function removeAccount(params) {
   const id = params && (params.accountId || params.id);
   if (!id || !db.accountById(id)) return undefined;
-  accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
+  invalidateAttachmentAccount(id);
   secrets.deletePassword(id);
   secrets.deletePassword(`${id}:organize`);
   secrets.deletePassword(`${id}:calendar`);
@@ -2611,15 +2622,22 @@ function saveUpload(params) {
   return ok({ storageUrl: `local:${id}`, pageUrl: null, fileWrapperUrl: `local:${id}`, filename, mimeType: mime, size: bytes.length });
 }
 
-async function bytesFor(params) {
+function attachmentSelection(params, all = false) {
   const row = db.messageById(params && (params.messageId || params.emailId));
   if (!row) return null;
   const attachments = db.jsonList(row.attachments_json);
+  if (all) return { row, files: selectableAttachments(attachments, params?.attachmentIds) };
   const explicit = params && params.attachmentId != null;
   const matches = explicit ? attachments.filter(item => String(item.id) === String(params.attachmentId)) : [];
   const wanted = explicit ? (matches.length === 1 ? matches[0] : null) : attachments[0];
   if (!wanted) return null;
-  const files = await attachmentParts(row, [wanted]);
+  return { row, files: [wanted] };
+}
+
+async function bytesFor(params, options) {
+  const selection = attachmentSelection(params);
+  if (!selection) return null;
+  const files = await attachmentParts(selection.row, selection.files, options);
   return { filename: params.filename || files[0].name, data: files[0].data };
 }
 
@@ -2633,55 +2651,136 @@ function selectableAttachments(attachments, ids) {
   return picked;
 }
 
-async function attachmentParts(row, files) {
+function attachmentSnapshot(row) {
   const account = bindAccount(db.accountById(row.account_id));
-  const local = new Map();
-  const names = new Map();
-  for (const item of files) {
-    if (!String(item.storageUrl || "").startsWith("local:")) continue;
-    const blob = db.readBlob(item.storageUrl.slice(6));
-    if (!blob?.data) throw new Error("That local attachment is no longer available. Attach the file again.");
-    local.set(item, Buffer.from(blob.data));
-    names.set(item, blob.filename);
-  }
-  const pack = item => ({ name: item.filename || names.get(item) || "attachment", data: local.get(item) });
-  if (local.size === files.length) return files.map(pack);
-  if (!(row.uid > 0)) throw new Error("That remote attachment is not available on this computer.");
+  const login = value => JSON.stringify([value.created_at, value.auth_kind, value.mail_transport, value.gmail_generation,
+    value.username, value.imap_host, value.imap_port, value.imap_tls]);
+  const connection = login(account);
   const assertSnapshot = () => {
     assertAccountCurrent(account);
+    if (login(db.accountById(account.id)) !== connection) throw removedAccountError();
     const current = db.messageById(row.id);
-    if (!current || ["account_id", "folder_path", "uid", "uid_validity", "rfc_message_id", "attachments_json"].some(key => current[key] !== row[key])) {
+    if (!current || ["account_id", "folder_path", "uid", "uid_validity", "gmail_id", "rfc_message_id", "attachments_json"].some(key => current[key] !== row[key])) {
       throw new Error("The message or its attachments changed. Reopen it before saving its files.");
     }
-    actions.assertIdentityReady(row.id);
   };
-  return exclusive(account.id, async () => {
-    assertSnapshot();
-    const password = await secretFor(account);
-    assertSnapshot();
-    return remote.withClient(account, password, async client => {
-      const parts = [];
-      for (const item of files) {
-        assertSnapshot();
-        const data = local.has(item) ? local.get(item) : await remote.readPart(client, row.folder_path, row.uid, item.id, row.uid_validity);
-        assertSnapshot();
-        parts.push({ name: item.filename || names.get(item) || "attachment", data: Buffer.from(data || []) });
-      }
-      return parts;
-    });
-  });
+  assertSnapshot();
+  return { account, assertSnapshot, key: JSON.stringify([account.id, account[ACCOUNT_EPOCH], connection, row.id,
+    row.folder_path, row.uid, row.uid_validity, row.gmail_id, row.rfc_message_id, row.attachments_json]) };
 }
 
-async function attachmentZip(params) {
-  const row = db.messageById(params && (params.messageId || params.emailId));
-  if (!row) return null;
-  const files = selectableAttachments(db.jsonList(row.attachments_json), params && params.attachmentIds);
-  if (!files.length) return null;
-  const parts = await attachmentParts(row, files);
-  return {
-    filename: zipBytes.zipDownloadName(textEncoding.repairMojibake(row.subject || "")),
-    data: zipBytes.zipFiles(parts),
+async function attachmentParts(row, files, { signal, onProgress = () => {} } = {}) {
+  signal?.throwIfAborted();
+  const { account, assertSnapshot, key } = attachmentSnapshot(row);
+  const parts = new Map(), remoteItems = [];
+  let localBytes = 0;
+  for (const [index, item] of files.entries()) {
+    if (Number(item.size) > attachmentTransfers.LIMITS.fileBytes) throw attachmentTransfers.tooLarge();
+    if (String(item.storageUrl || "").startsWith("local:")) {
+      const blob = db.readBlob(item.storageUrl.slice(6));
+      if (!blob?.data) throw new Error("That local attachment is no longer available. Attach the file again.");
+      if (blob.data.length > attachmentTransfers.LIMITS.fileBytes) throw attachmentTransfers.tooLarge();
+      localBytes += blob.data.length;
+      if (localBytes > attachmentTransfers.LIMITS.zipBytes) throw Object.assign(new Error("These files exceed the 128 MiB combined download limit. Save them separately."), { code: "too-large" });
+      parts.set(index, { name: item.filename || blob.filename || "attachment", data: Buffer.from(blob.data) });
+    } else remoteItems.push({ key: JSON.stringify([key, String(item.id)]), item, index });
+  }
+  const assertRemote = () => {
+    assertSnapshot();
+    actions.assertIdentityReady(row.id);
+    const folder = db.folderByPath(row.account_id, row.folder_path);
+    if (account.mail_transport !== "gmail_api" && folder?.uid_validity > 0 && Number(folder.uid_validity) !== Number(row.uid_validity)) {
+      throw Object.assign(new Error("This folder changed. Sync and reopen the message before downloading its files."), { code: "uid_validity_changed" });
+    }
   };
+  if (remoteItems.length) {
+    if (!(row.uid > 0)) throw new Error("That remote attachment is not available on this computer.");
+    assertRemote();
+    // A large ZIP consumes bounded batches, rather than refusing valid selections
+    // just because they contain more files than the pending-transfer budget.
+    for (let start = 0; start < remoteItems.length; start += 8) {
+      const batch = remoteItems.slice(start, start + 8);
+      const downloaded = await attachmentCache.getMany(batch, { accountId: account.id, signal,
+        maxTotalBytes: attachmentTransfers.LIMITS.zipBytes - [...parts.values()].reduce((sum, part) => sum + part.data.length, 0),
+        onProgress: value => onProgress({ ...value, index: batch[value.index].index, count: files.length }),
+        load: (entries, groupSignal) => updateGate.run(() => exclusive(account.id, async () => {
+          groupSignal.throwIfAborted(); assertRemote();
+          for (const entry of entries) entry.report({ phase: "connecting", loaded: 0 });
+          const password = await secretFor(account);
+          groupSignal.throwIfAborted(); assertRemote();
+          await remote.withClient(account, password, async client => {
+            for (const entry of entries) {
+              groupSignal.throwIfAborted();
+              if (entry.signal.aborted) continue;
+              assertRemote(); entry.report({ phase: "downloading", loaded: 0 });
+              try {
+                const data = await remote.readPart(client, row.folder_path, row.uid, entry.item.item.id, row.uid_validity,
+                  { signal: entry.signal, maxBytes: attachmentTransfers.LIMITS.fileBytes, onProgress: entry.report });
+                assertRemote(); if (!entry.signal.aborted) entry.complete(data);
+              } catch (error) { entry.fail(entry.signal.aborted ? attachmentTransfers.cancelled() : error); }
+            }
+          }, { signal: groupSignal });
+        })) });
+      signal?.throwIfAborted(); assertRemote();
+      for (const [index, data] of downloaded.entries()) {
+        const selected = batch[index];
+        parts.set(selected.index, { name: selected.item.filename || "attachment", data });
+      }
+    }
+  }
+  signal?.throwIfAborted(); assertSnapshot();
+  const result = files.map((_file, index) => parts.get(index));
+  if (result.reduce((sum, part) => sum + part.data.length, 0) > attachmentTransfers.LIMITS.zipBytes) throw Object.assign(new Error("These files exceed the 128 MiB combined download limit. Save them separately."), { code: "too-large" });
+  return result;
+}
+
+async function attachmentOperation(channel, params, owner) {
+  let request;
+  try {
+    request = attachmentRequests.begin(params, owner);
+    const zip = channel === "mail:downloadAttachmentsZip";
+    const selection = attachmentSelection(params, zip);
+    if (!selection || !selection.files.length) return fail("not-found", "That attachment is no longer available.");
+    const { row, files } = selection;
+    const snapshot = attachmentSnapshot(row);
+    request.accountId = row.account_id;
+    const assertCurrent = () => { request.signal.throwIfAborted(); snapshot.assertSnapshot(); };
+    const filename = zip ? zipBytes.zipDownloadName(textEncoding.repairMojibake(row.subject || ""))
+      : params.filename || files[0].filename || "attachment";
+    let target;
+    if (channel === "mail:downloadAttachment" || zip) {
+      request.report({ phase: "choosing" });
+      const { dialog, BrowserWindow } = require("electron");
+      const win = (owner && BrowserWindow.fromWebContents?.(owner)) || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+      const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: filename });
+      assertCurrent();
+      if (picked.canceled || !picked.filePath) throw attachmentTransfers.cancelled();
+      target = picked.filePath;
+    }
+    assertCurrent();
+    const parts = await attachmentParts(row, files, { signal: request.signal, onProgress: value => request.report(value) });
+    assertCurrent();
+    const data = zip ? zipBytes.zipFiles(parts) : parts[0].data;
+    if (channel === "mail:fetchAttachmentBytes") return ok(data);
+    request.report({ phase: "writing" });
+    assertCurrent();
+    if (channel === "mail:openAttachmentExternally") {
+      const dir = path.join(os.tmpdir(), "morrow-mail-attachments");
+      fs.mkdirSync(dir, { recursive: true });
+      const safe = filename.replace(/[^\w.\- ()[\]]+/g, "_").slice(0, 120) || "attachment";
+      target = path.join(dir, `${crypto.randomUUID()}-${safe}`);
+    }
+    fs.writeFileSync(target, data, { mode: 0o600 });
+    if (channel === "mail:openAttachmentExternally") {
+      request.report({ phase: "opening" });
+      const opened = await require("electron").shell.openPath(target);
+      if (opened) return fail("open", opened);
+    }
+    return ok({ path: target });
+  } catch (error) {
+    if (request?.signal.aborted || error?.code === "cancelled" || error?.name === "AbortError") return fail("cancelled", "cancelled");
+    return fail(error?.code || "attachment", remote.explain(error));
+  } finally { request?.finish(); }
 }
 
 function signatureText(value) {
@@ -3244,10 +3343,11 @@ async function pumpScheduledAdmitted() {
   }
 }
 
-function answer(channel, args) {
+function answer(channel, args, event) {
   if (!ready) return undefined;
   if (sidecar.handles(channel)) return sidecar.answer(channel, args);
   const params = args && args.length ? args[0] : undefined;
+  if (channel === "mail:cancelAttachmentRequest") return ok(attachmentRequests.cancel(params?.requestId, event?.sender));
   if (channel === "mail:listImapSmtpPresets") return ok(presets.CARDS);
   if (channel === "mail:discoverMail") return discoverMail(params || {});
   if (channel === "mail:connectImapSmtp") return connectAccount(params || {});
@@ -3777,63 +3877,10 @@ function answer(channel, args) {
     case "mail:restoreScheduled":
       return restoreScheduled(params || {});
     case "mail:downloadAttachment":
-      return (async () => {
-        try {
-          const file = await bytesFor(params || {});
-          if (!file) return fail("not-found", "That attachment is no longer available.");
-          const { dialog, BrowserWindow } = require("electron");
-          const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-          const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: file.filename });
-          if (picked.canceled || !picked.filePath) return fail("cancelled", "cancelled");
-          fs.writeFileSync(picked.filePath, file.data);
-          return ok({ path: picked.filePath });
-        } catch (error) {
-          return fail("attachment", remote.explain(error));
-        }
-      })();
     case "mail:downloadAttachmentsZip":
-      return (async () => {
-        try {
-          const packed = await attachmentZip(params || {});
-          if (!packed) return fail("not-found", "That message has no attachments to save.");
-          const { dialog, BrowserWindow } = require("electron");
-          const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-          const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: packed.filename });
-          if (picked.canceled || !picked.filePath) return fail("cancelled", "cancelled");
-          fs.writeFileSync(picked.filePath, packed.data);
-          return ok({ path: picked.filePath });
-        } catch (error) {
-          return fail("attachment", remote.explain(error));
-        }
-      })();
     case "mail:fetchAttachmentBytes":
-      return (async () => {
-        try {
-          const file = await bytesFor(params || {});
-          if (!file) return fail("not-found", "That attachment is no longer available.");
-          return ok(file.data);
-        } catch (error) {
-          return fail("attachment", remote.explain(error));
-        }
-      })();
     case "mail:openAttachmentExternally":
-      return (async () => {
-        try {
-          const file = await bytesFor(params || {});
-          if (!file) return fail("not-found", "That attachment is no longer available.");
-          const { shell } = require("electron");
-          const dir = path.join(os.tmpdir(), "morrow-mail-attachments");
-          fs.mkdirSync(dir, { recursive: true });
-          const safe = file.filename.replace(/[^\w.\- ()[\]]+/g, "_").slice(0, 120) || "attachment";
-          const target = path.join(dir, `${Date.now()}-${safe}`);
-          fs.writeFileSync(target, file.data);
-          const opened = await shell.openPath(target);
-          if (opened) return fail("open", opened);
-          return ok({ path: target });
-        } catch (error) {
-          return fail("attachment", remote.explain(error));
-        }
-      })();
+      return attachmentOperation(channel, params || {}, event?.sender);
     case "mail:listScheduled":
       return listScheduled(params);
     default:
@@ -3894,6 +3941,7 @@ module.exports = {
   settleActions: actions.settleActions,
   settleAccount: actions.settleAccount,
   bytesFor,
+  attachmentCacheForTest: attachmentCache,
   submitSmtp,
   setSmtpSenderForTest,
   noteBotSent,

@@ -7035,7 +7035,75 @@ let attachmentPreviewToken = 0;
 let attachmentPreviewUrl = "";
 let attachmentPreviewEmailId = "";
 let attachmentPreviewAbort = null;
+let attachmentPreviewRequest = null;
+let attachmentPreviewFileId = "";
 let pdfPreviewLoader = null;
+const attachmentTasks = new Map();
+
+function attachmentTaskKey(email, ids) {
+  return JSON.stringify([String(email.id), ids]);
+}
+
+function attachmentTaskCopy(task) {
+  if (task.cancelRequested) return `${task.label}: cancelling…`;
+  const phases = { choosing: "Choose a save location…", queued: "Waiting for mailbox…", connecting: "Connecting…",
+    downloading: "Downloading…", ready: task.cached ? "Using cached file…" : "Download complete…",
+    writing: "Saving…", opening: "Opening application…" };
+  const bytes = task.phase === "downloading" && task.loaded > 0 ? ` (${Math.ceil(task.loaded / 1024).toLocaleString()} KiB received)` : "";
+  const file = task.count > 1 ? ` File ${(task.index || 0) + 1} of ${task.count}.` : "";
+  return `${task.label}: ${phases[task.phase] || "Waiting…"}${bytes}${file}`;
+}
+
+function paintAttachmentTasks() {
+  for (const list of document.querySelectorAll(".attachment-task-list")) {
+    list.replaceChildren();
+    for (const task of attachmentTasks.values()) {
+      if (list.dataset.attachmentTasks !== "all" && task.viewKey !== list.dataset.attachmentTasks) continue;
+      const row = document.createElement("div"); row.className = "attachment-task";
+      const status = document.createElement("span"); status.setAttribute("role", "status"); status.textContent = `${task.filename} · ${attachmentTaskCopy(task)}`;
+      const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "ghost"; cancel.textContent = "Cancel";
+      cancel.setAttribute("aria-label", `Cancel ${task.label.toLowerCase()}`);
+      cancel.disabled = task.cancelRequested || ["writing", "opening"].includes(task.phase);
+      cancel.addEventListener("click", () => cancelAttachmentTask(task));
+      row.append(status, cancel); list.appendChild(row);
+    }
+    list.hidden = !list.childNodes.length;
+  }
+}
+
+function cancelAttachmentTask(task) {
+  if (!task || task.done || task.cancelRequested) return;
+  task.cancelRequested = true; paintAttachmentTasks();
+  call("mail:cancelAttachmentRequest", { requestId: task.requestId }).catch(() => {
+    if (task.done) return;
+    task.cancelRequested = false; paintAttachmentTasks(); showStatus("Could not request attachment cancellation. Try Cancel again.", true);
+  });
+}
+
+function startAttachmentTask(channel, email, files, label) {
+  const zip = channel === "mail:downloadAttachmentsZip", ids = zip ? files.map(file => file.id) : files[0].id;
+  const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids]);
+  const existing = attachmentTasks.get(key);
+  if (existing && !existing.cancelRequested) return existing;
+  const task = { requestId: crypto.randomUUID(), viewKey, label, filename: zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
+  attachmentTasks.set(key, task);
+  const off = typeof api.on === "function" ? api.on("mail:attachmentProgress", value => {
+    if (value?.requestId !== task.requestId || task.done) return;
+    Object.assign(task, { phase: value.phase, loaded: value.loaded, cached: value.cached, index: value.index, count: value.count }); paintAttachmentTasks();
+    if (task === attachmentPreviewRequest && $("attachment-preview-status")) $("attachment-preview-status").textContent = attachmentTaskCopy(task);
+  }) : () => {};
+  const params = { emailId: email.id, messageId: email.id, requestId: task.requestId,
+    ...(zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
+  task.promise = call(channel, params).finally(() => {
+    task.done = true; off?.(); if (attachmentTasks.get(key) === task) attachmentTasks.delete(key); paintAttachmentTasks();
+  });
+  paintAttachmentTasks(); return task;
+}
+
+function attachmentAction(fn) {
+  // Attachment work has its own state. It must not hold the shell-wide guard.
+  Promise.resolve().then(fn).catch(error => { if (error?.message !== "cancelled") showStatus(error.message || String(error), true); });
+}
 
 function attachmentIcon(kind) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -7090,6 +7158,9 @@ function clearPdfPreviewPages() {
 function clearAttachmentPreview() {
   attachmentPreviewToken += 1;
   attachmentPreviewEmailId = "";
+  attachmentPreviewFileId = "";
+  cancelAttachmentTask(attachmentPreviewRequest);
+  attachmentPreviewRequest = null;
   if (attachmentPreviewAbort) {
     attachmentPreviewAbort.abort();
     attachmentPreviewAbort = null;
@@ -7196,26 +7267,32 @@ function pdfPreviewError(error) {
 async function previewAttachment(email, file) {
   const kind = attachmentPreviewKind(file);
   if (!kind || !file || !file.id) return;
+  if (attachmentPreviewEmailId === email.id && attachmentPreviewFileId === file.id && $("attachment-preview")?.open) return;
   const gen = ++attachmentPreviewToken;
   if (attachmentPreviewAbort) {
     attachmentPreviewAbort.abort();
     attachmentPreviewAbort = null;
   }
+  cancelAttachmentTask(attachmentPreviewRequest);
+  const controller = new AbortController();
+  attachmentPreviewAbort = controller;
   attachmentPreviewEmailId = email && email.id ? email.id : "";
+  attachmentPreviewFileId = file.id;
   showAttachmentPreviewShell(file, kind);
   const label = file.filename || "attachment";
   let data;
   try {
-    data = await call("mail:fetchAttachmentBytes", {
-      emailId: email.id,
-      messageId: email.id,
-      attachmentId: file.id,
-      filename: file.filename,
-    });
+    attachmentPreviewRequest = startAttachmentTask("mail:fetchAttachmentBytes", email, [file], "Preview");
+    data = await attachmentPreviewRequest.promise;
   } catch (error) {
     if (gen !== attachmentPreviewToken) return;
+    attachmentPreviewFileId = "";
     const message = error instanceof Error ? error.message : String(error);
-    if (message === "cancelled") return;
+    if (message === "cancelled") {
+      const status = $("attachment-preview-status");
+      if (status) { status.hidden = false; status.textContent = "Preview cancelled."; }
+      return;
+    }
     const status = $("attachment-preview-status");
     if (status) {
       status.hidden = false;
@@ -7250,6 +7327,7 @@ async function previewAttachment(email, file) {
     };
     img.onerror = () => {
       if (gen !== attachmentPreviewToken) return;
+      attachmentPreviewFileId = "";
       img.hidden = true;
       if (status) {
         status.hidden = false;
@@ -7265,8 +7343,7 @@ async function previewAttachment(email, file) {
   const stage = $("attachment-preview-stage");
   if (!pages || !stage) return;
   pages.hidden = false;
-  const controller = new AbortController();
-  attachmentPreviewAbort = controller;
+  if (status) { status.hidden = false; status.textContent = "Rendering PDF…"; }
   try {
     const pdfApi = await loadPdfPreview();
     if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
@@ -7282,6 +7359,7 @@ async function previewAttachment(email, file) {
     });
   } catch (error) {
     if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
+    attachmentPreviewFileId = "";
     const message = pdfPreviewError(error);
     if (!message || !status) return;
     status.hidden = false;
@@ -7293,11 +7371,7 @@ async function saveAttachmentsZip(email, files) {
   const attachmentIds = (files || []).map((file) => file && file.id).filter(Boolean);
   if (!attachmentIds.length) return;
   try {
-    await call("mail:downloadAttachmentsZip", {
-      emailId: email.id,
-      messageId: email.id,
-      attachmentIds,
-    });
+    await startAttachmentTask("mail:downloadAttachmentsZip", email, files, "Save ZIP").promise;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === "cancelled") return;
@@ -7335,7 +7409,7 @@ function renderAttachments(pane, email) {
     zipLabel.textContent = "Save as ZIP";
     zip.appendChild(zipLabel);
     zip.setAttribute("aria-label", "Save all attachments as ZIP");
-    zip.addEventListener("click", () => guard(() => saveAttachmentsZip(email, files)));
+    zip.addEventListener("click", () => attachmentAction(() => saveAttachmentsZip(email, files)));
     head.appendChild(zip);
   }
   card.appendChild(head);
@@ -7363,7 +7437,7 @@ function renderAttachments(pane, email) {
     if (kind) {
       name.type = "button";
       name.setAttribute("aria-label", "Preview " + label);
-      name.addEventListener("click", () => guard(() => previewAttachment(email, file)));
+      name.addEventListener("click", () => attachmentAction(() => previewAttachment(email, file)));
     }
     main.appendChild(name);
     if (size) {
@@ -7376,9 +7450,9 @@ function renderAttachments(pane, email) {
     if (file.id) {
       const actions = document.createElement("div");
       actions.className = "attachment-actions";
-      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + label, () => guard(() => previewAttachment(email, file))));
-      actions.appendChild(attachmentGhost("Save", "Save " + label, () => guard(() => useAttachment("mail:downloadAttachment", email, file))));
-      actions.appendChild(attachmentGhost("Open", "Open " + label, () => guard(() => useAttachment("mail:openAttachmentExternally", email, file))));
+      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + label, () => attachmentAction(() => previewAttachment(email, file))));
+      actions.appendChild(attachmentGhost("Save", "Save " + label, () => attachmentAction(() => useAttachment("mail:downloadAttachment", email, file))));
+      actions.appendChild(attachmentGhost("Open", "Open " + label, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
       item.appendChild(actions);
     }
     list.appendChild(item);
@@ -7389,12 +7463,7 @@ function renderAttachments(pane, email) {
 
 async function useAttachment(channel, email, file) {
   try {
-    await call(channel, {
-      emailId: email.id,
-      messageId: email.id,
-      attachmentId: file.id,
-      filename: file.filename,
-    });
+    await startAttachmentTask(channel, email, [file], channel === "mail:downloadAttachment" ? "Save" : "Open").promise;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === "cancelled") return;
@@ -13378,6 +13447,7 @@ async function installUpdate() {
 
 // No implicit saves or sends: the user must resolve editing before restart.
 function updateRestartBlocked() {
+  if (attachmentTasks.size) return true;
   if (Array.from(document.querySelectorAll("dialog[open]")).some(node => node.id !== "about-dialog")) return true;
   if (state.composePending || state.composeQueued || state.composeInitializing || state.oauthPending || state.connectPending || state.busy || sendTimer) return true;
   if (agentChatBusy || brainSkillBusy || brainFixBusy || brainCategoryBusy || brainView.refreshing || brainView.rebuilding) return true;
@@ -20390,6 +20460,7 @@ function wire() {
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
   $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
+  window.addEventListener("beforeunload", () => { for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
   $("attachment-preview").addEventListener("close", clearAttachmentPreview);
   $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
   $("agent-peek-mail").addEventListener("click", () => {
