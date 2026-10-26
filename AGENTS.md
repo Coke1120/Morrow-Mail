@@ -25,6 +25,14 @@ Project-level standing rules for humans and coding agents (Cloud Agent / Claude 
 - Cross-repo bot habits: Grok Bot skill `leo-coding-prefs` + Graph `projects.yaml`.
 - This file + `docs/adr/` win for **this repo's** rules and decisions.
 
+## Security audit skill
+
+- Skill path: `.cursor/skills/security-audit/`
+- Use only when Leo explicitly asks for a security audit, pen-test, or full security review.
+- Not always-on. Do not run it on every PR or feature task.
+- Full audit mode is expensive (multi-agent). Prefer guidance mode unless Leo asks for a full audit or report artifacts.
+- Source: Cloudflare security-audit-skill (MIT) — https://github.com/cloudflare/security-audit-skill
+
 ---
 
 # Coding guide (restored from main)
