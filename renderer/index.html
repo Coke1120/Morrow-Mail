@@ -536,6 +536,7 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
+        <p class="hint" id="cli-performance">For a POSIX development checkout, <code>MORROW_PERF=1 npm start</code> opts into bounded local performance summaries in Debug log every 30 seconds. The flag does not send telemetry or grant access to accounts. Restart without it to disable tracing. The offline benchmark is <code>node --expose-gc scripts/benchmark-mail-responsiveness.js</code>; it always creates synthetic temporary mail data, and does not measure native Mac rendering or a real Keychain.</p>
         <p class="hint" id="cli-ai-connection">AI authentication and AI data permission are configured in desktop Settings → AI or Morrow Mail → AI Setup. Existing connections require disclosure and affirmative approval before AI transfers. Background AI needs a separate opt-in. Cancel / revoke blocks pending and future AI transfers. ChatGPT sign-in, callback paste-back and credentials are not exposed through the CLI or bot bridge. The existing API key/custom endpoint choice remains available. ChatGPT adds no general-purpose model proxy. Ordinary bot mail operations do not grant AI permission.</p>
         <section class="cli-guide" aria-labelledby="cli-bot-title">
           <h3 id="cli-bot-title">Bot access today</h3>
@@ -594,6 +595,7 @@
         <button type="button" class="ghost" id="log-refresh">Refresh</button>
       </div>
       <p class="hint" id="ipc-diagnostics-note">IPC diagnostics keep known channel names/counts and renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries can still contain account/folder context.</p>
+      <p class="hint" id="performance-diagnostics-note">Optional performance timings appear here every 30 seconds when launched with MORROW_PERF=1. These bounded summaries contain fixed stage names, counts and durations for the main loop, startup, database, Keychain waits and mail IPC. They omit request data, mail content, identities, paths and credentials; they create no separate trace file or remote telemetry. Timings can include network waits and are not proof of a Mac freeze's cause. Restart without the flag to turn them off.</p>
       <p class="hint">Known credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. This is a limited recent-session history, not a complete activity record.</p>
       <div class="row"><label for="log-source">Source</label><select id="log-source"><option value="">All sources</option></select><button type="button" class="ghost" id="log-preview">Preview support copy…</button></div>
       <p id="log-status" role="status"></p>
