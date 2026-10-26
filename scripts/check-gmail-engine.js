@@ -13,7 +13,12 @@ async function run() {
   Object.assign(process.env, { MORROW_MAIL_DIR: directory, MORROW_USER_DATA: directory, MORROW_AI_CONFIG_DIR: directory, MORROW_MAIL_SECRETS: 'memory' });
   require('node:net').Socket.prototype.connect = function () { throw new Error('Socket forbidden in Gmail fixture'); };
   const { server, message } = require('./gmail-fixture');
-  const service = server([message('incoming', ['INBOX', 'UNREAD', 'Label_work'])]);
+  const withFiles=message('attachments'); withFiles.payload={mimeType:'multipart/mixed',headers:withFiles.payload.headers,parts:[
+    {partId:'0',mimeType:'text/plain',body:{attachmentId:'unfetched-text',size:100}},
+    {partId:'1',mimeType:'text/plain',filename:'first.txt',body:{data:Buffer.from('FIRST').toString('base64url')}},
+    {partId:'2',mimeType:'text/plain',filename:'second.txt',body:{data:Buffer.from('SECOND').toString('base64url')}},
+  ]};
+  const service = server([message('incoming', ['INBOX', 'UNREAD', 'Label_work']),withFiles]);
   const db = require('../host/mail/db'), oauth = require('../host/mail/oauth'), config = require('../host/mail/oauth-config');
   const secrets = require('../host/mail/memory-secrets'), remote = require('../host/mail/remote');
   const sidecar = require('../host/mail/sidecar');
@@ -54,6 +59,9 @@ async function run() {
     await engine.init(); const original = legacy('gmail');
     db.insertMessage({id:'cached',accountId:'gmail',folderPath:'INBOX',uid:44,uidValidity:88,rfcMessageId:'<incoming@fixture.invalid>',threadId:'legacy-thread',
       subject:'Retained synthetic mail',textBody:'Retained body',bodyComplete:true,date:new Date().toISOString(),listSortTs:Date.now()});
+    db.insertMessage({id:'legacy-files',accountId:'gmail',folderPath:'INBOX',uid:45,uidValidity:88,rfcMessageId:'<attachments@fixture.invalid>',
+      textBody:'Retained attachment body',bodyComplete:true,attachments:[{id:'2',filename:'first.txt'},{id:'3',filename:'second.txt'}],hasAttachments:true,
+      date:new Date().toISOString(),listSortTs:Date.now()});
     assert.equal((await answer('mail:migrateGmail',{accountId:'gmail'})).error.code,'confirmation_required');
     assert.equal(signins.length,0);
     assert.equal((await answer('mail:addAccount',{provider:'google',expectedAccountId:'gmail'})).error.code,'gmail_migration_required');
@@ -74,11 +82,24 @@ async function run() {
     await engine.syncAccountById('gmail',{background:false});
     assert.equal(db.messageById('cached').gmail_id,'incoming',JSON.stringify({folders:db.foldersFor('gmail'),calls:service.calls.map(({route,method,query})=>({route,method,query:String(query)}))}));
     assert.equal(db.folderByPath('gmail','Old cached label').provider_id,null,'unbound legacy folders stay local without blocking sync');
+    assert.equal(db.messageById('legacy-files').text_body,'Retained attachment body');
+    const firstFile=db.jsonList(db.messageById('legacy-files').attachments_json).find(row=>row.filename==='first.txt');
+    assert.equal((await engine.bytesFor({emailId:'legacy-files',attachmentId:firstFile.id})).data.toString(),'FIRST');
+    assert.equal(await engine.bytesFor({emailId:'legacy-files',attachmentId:'2',filename:'first.txt'}),null,'stale IMAP attachment ids cannot address a different Gmail part');
     success(await answer('calendar:connect',{accountId:'gmail',forceReauthorize:true}));
     assert.equal(signins.at(-1).purpose,'calendar');
     assert.equal(JSON.parse(secrets.getPassword('gmail:calendar')).grantedScopes,config.CALENDAR_SCOPES.google);
     assert.equal(JSON.parse(secrets.getPassword('gmail')).grantedScopes,config.SCOPES.google);
     assert.equal(answer('mail:oauthStatus').data.accounts.find(row=>row.id==='gmail').broadGoogleGrant,false);
+    const calendarSecret=secrets.getPassword('gmail:calendar'), primarySecret=secrets.getPassword('gmail');
+    for (const scopes of [config.SCOPES.google,'openid email https://www.googleapis.com/auth/calendar.events']) {
+      scenario={scopes}; const denied=await answer('calendar:connect',{accountId:'gmail',forceReauthorize:true});
+      assert.equal(denied.success,false); assert.equal(denied.error.code,'scope_missing');
+      assert.equal(secrets.getPassword('gmail:calendar'),calendarSecret,'incomplete Calendar reauthorization preserves the working credential');
+      assert.equal(secrets.getPassword('gmail'),primarySecret);
+      assert.equal(success(await answer('calendar:list',{accountId:'gmail',timeMin:'2026-10-01T00:00:00Z',timeMax:'2026-11-01T00:00:00Z'})).api,true);
+    }
+    scenario={};
     const mailSecret=secrets.getPassword('gmail'), access=oauth.accessTokenFor;
     oauth.accessTokenFor=async()=>({token:'synthetic-partial-refresh',store:JSON.stringify({...JSON.parse(mailSecret),grantedScopes:config.VACATION_SCOPES.google})});
     await assert.rejects(sidecar.gmailSendAsToken(db.accountById('gmail')),error=>error.code==='scope_missing');
@@ -97,17 +118,54 @@ async function run() {
     assert.ok(search.some(row=>db.messageById(row.id)?.gmail_id==='incoming'));
     const history=success(await answer('mail:searchSender',{address:'sender@fixture.invalid'}));
     assert.ok(JSON.stringify(history).includes('incoming@fixture.invalid'));
-    success(await answer('mail:delete',{emailId:'cached'})); const trashed = await engine.settleActions();
+    for (const row of db.gmailCopies('gmail','incoming')) db.updateMessage(row.id,{thread_id:'conversation-fixture'});
+    assert.equal(db.gmailCopies('gmail','incoming').length,3);
+    const trashBefore=service.calls.filter(call=>call.route==='/messages/incoming/trash').length;
+    const conversation=success(await answer('mail:threadTrash',{accountId:'gmail',threadId:'conversation-fixture'}));
+    assert.equal(conversation.pending.length,1,'one journal action for three label copies');
+    const trashed = await engine.settleActions();
+    assert.equal(trashed.outcomes.filter(row=>row.status==='completed').length,1);
     const opId = trashed.outcomes.find(row=>row.status==='completed')?.opId; assert.ok(opId,JSON.stringify(trashed));
+    assert.equal(service.calls.filter(call=>call.route==='/messages/incoming/trash').length,trashBefore+1);
+    assert.equal(db.gmailCopies('gmail','incoming').length,1); const survivor=db.gmailCopies('gmail','incoming')[0];
+    assert.equal(survivor.folder_path,'[Gmail]/Trash');
+    assert.ok(db.readOp(opId).moves[0].providerUndo.labelIds.includes('INBOX'));
     assert.ok(service.messages.get('incoming').labelIds.includes('TRASH'));
-    success(await answer('mail:deleteBatch',{items:[{emailId:'cached'}],folderWellKnownName:'deleteditems'})); await engine.settleActions();
-    success(await answer('mail:undoRemoval',{opIds:[opId]})); await engine.settleActions();
+    success(await answer('mail:deleteBatch',{items:[{emailId:survivor.id}],folderWellKnownName:'deleteditems'})); await engine.settleActions();
+    success(await answer('mail:markRead',{emailId:survivor.id,isRead:false})); await engine.settleActions();
+    success(await answer('mail:toggleStar',{emailId:survivor.id,isStarred:false})); await engine.settleActions();
+    success(await answer('mail:undoRemoval',{opIds:[opId]})); const restored=await engine.settleActions();
+    assert.equal(restored.outcomes.filter(row=>row.status==='completed').length,1); assert.ok(restored.outcomes.every(row=>row.status==='completed'));
     assert.ok(service.messages.get('incoming').labelIds.includes('INBOX'));
     assert.ok(service.messages.get('incoming').labelIds.includes('Label_work'));
-    success(await answer('mail:archive',{emailId:'cached'})); await engine.settleActions();
+    assert.ok(service.messages.get('incoming').labelIds.includes('UNREAD')); assert.ok(!service.messages.get('incoming').labelIds.includes('STARRED'));
+    assert.equal(db.gmailCopies('gmail','incoming').length,3);
+    const allCopy=db.gmailCopies('gmail','incoming').find(row=>row.folder_path==='[Gmail]/All Mail');
+    const archiveBefore=service.calls.filter(call=>call.route==='/messages/incoming/modify').length;
+    success(await answer('mail:archive',{emailId:allCopy.id})); const archived=await engine.settleActions();
+    assert.equal(service.calls.filter(call=>call.route==='/messages/incoming/modify').length,archiveBefore+1,'Archive from All Mail issues a provider write');
     assert.ok(!service.messages.get('incoming').labelIds.includes('INBOX'));
+    assert.ok(!db.gmailCopies('gmail','incoming').some(row=>row.folder_path==='INBOX'));
+    const archiveOp=archived.outcomes.find(row=>row.status==='completed')?.opId; assert.ok(archiveOp);
+    success(await answer('mail:undoRemoval',{opIds:[archiveOp]})); await engine.settleActions();
+    assert.ok(service.messages.get('incoming').labelIds.includes('INBOX'),'Archive Undo from All Mail restores Inbox');
+    const found=success(await answer('mail:search',{accountId:'gmail',query:'Synthetic'})).find(row=>db.messageById(row.id)?.gmail_id==='incoming');
+    success(await answer('mail:archive',{emailId:found.id})); await engine.settleActions();
+    assert.ok(!service.messages.get('incoming').labelIds.includes('INBOX'),'Archive also works from a provider-search copy');
     assert.ok(service.calls.every(call=>call.method!=='DELETE'));
-    console.log('gmail-engine-ok: real action journal, read/star, Trash/repeated Delete, Undo membership and Archive; no permanent endpoint or sockets');
+    console.log('gmail-engine-ok: migrated attachment bytes, conversation Trash deduplication/Undo, Archive from All Mail/search and preserved later flags');
+
+    service.messages.set('old-draft',message('old-draft',['DRAFT'],'<old-draft@fixture.invalid>'));
+    db.insertMessage({id:'unmapped-draft',accountId:'gmail',folderPath:'Drafts',uid:777,uidValidity:88,rfcMessageId:'<old-draft@fixture.invalid>',isDraft:true,
+      textBody:'Old local draft',bodyComplete:true,date:new Date().toISOString(),listSortTs:Date.now()});
+    const legacyParams={accountId:'gmail',emailId:'unmapped-draft',to:'to@fixture.invalid',subject:'Legacy edit',body:'<p>First edit</p>'};
+    const legacySave=success(await answer('mail:upsertDraft',legacyParams)); assert.equal(legacySave.remoteSaved,true); assert.match(legacySave.warning,/earlier Gmail draft.*retained/i);
+    assert.notEqual(db.messageById('unmapped-draft').gmail_id,'old-draft');
+    const savedAgain=success(await answer('mail:upsertDraft',{...legacyParams,body:'<p>Second edit</p>',draftRevision:legacySave.draftRevision}));
+    assert.equal(savedAgain.remoteSaved,true); assert.match(db.messageById('unmapped-draft').text_body,/Second edit/);
+    success(await answer('mail:deleteDraft',{emailId:'unmapped-draft'})); assert.equal(db.messageById('unmapped-draft'),null);
+    assert.ok(service.messages.get('old-draft').labelIds.includes('DRAFT')&&!service.messages.get('old-draft').labelIds.includes('TRASH'),'unverified original draft is retained');
+    console.log('gmail-engine-ok: save before legacy draft adoption, repeated Save and discard; earlier unmapped server draft is retained');
 
     const params={accountId:'gmail',to:'to@fixture.invalid',cc:'cc@fixture.invalid',bcc:'hidden@fixture.invalid',subject:'Synthetic reply',body:'<p>Synthetic draft</p>',inReplyTo:'<incoming@fixture.invalid>',references:['<incoming@fixture.invalid>']};
     const saved=success(await answer('mail:upsertDraft',params)); assert.equal(saved.remoteSaved,true);

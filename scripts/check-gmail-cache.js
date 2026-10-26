@@ -80,7 +80,40 @@ test("body retrieval fetches text and attachment bytes only when needed", async 
   assert.equal(f.service.calls.filter(call => call.route.includes("/attachments/")).length, 0);
   const body = await s.source(row.folder_path, row.uid, row.uid_validity); assert.equal(body.bodyComplete, true);
   assert.equal(f.service.calls.filter(call => call.route.includes("/attachments/file-part")).length, 0);
-  assert.equal((await s.attachment(row.folder_path, row.uid, "2", row.uid_validity)).toString(), "Synthetic attachment");
+  assert.equal((await s.attachment(row.folder_path, row.uid, "gmail:2", row.uid_validity)).toString(), "Synthetic attachment");
+});
+
+test("complete IMAP bodies retain text while attachment metadata rebinds to distinct Gmail part ids", async t => {
+  const source = message("files"); source.payload = { mimeType: "multipart/mixed", headers: source.payload.headers, parts: [
+    { partId: "0", mimeType: "text/plain", body: { attachmentId: "body-text", size: 100 } },
+    { partId: "1", mimeType: "text/plain", filename: "first.txt", body: { data: Buffer.from("FIRST BYTES").toString("base64url") } },
+    { partId: "2", mimeType: "text/plain", filename: "second.txt", body: { data: Buffer.from("SECOND BYTES").toString("base64url") } },
+  ] };
+  const f = await fixture(t, [source]);
+  f.cached("legacy-files", "<files@fixture.invalid>", "INBOX", { attachments: [{ id: "2", filename: "first.txt" }, { id: "3", filename: "second.txt" }], hasAttachments: true });
+  const s = await f.migrate(); await s.sync("INBOX");
+  const row = db.messageById("legacy-files"), files = db.jsonList(row.attachments_json);
+  assert.equal(row.html_body, "<b>Cached synthetic</b>"); assert.equal(row.body_complete, 1);
+  assert.deepEqual(Array.from(files, item => [item.id, item.filename]), [["gmail:1", "first.txt"], ["gmail:2", "second.txt"]]);
+  assert.equal((await s.attachment(row.folder_path, row.uid, files[0].id, row.uid_validity)).toString(), "FIRST BYTES");
+  assert.equal((await s.attachment(row.folder_path, row.uid, files[1].id, row.uid_validity)).toString(), "SECOND BYTES");
+  await assert.rejects(s.attachment(row.folder_path, row.uid, "2", row.uid_validity), error => error.code === "attachment_changed");
+});
+
+test("label copies cannot repeat Trash or replace its snapshot; Undo from All Mail restores Inbox and later flags", async t => {
+  const f = await fixture(t, [message("copies", ["INBOX", "Label_work", "UNREAD"])]), s = await f.migrate(); await s.sync("INBOX");
+  const rows = db.gmailCopies("gmail", "copies"), inbox = rows.find(row => row.folder_path === "INBOX"), work = rows.find(row => row.folder_path === "Work");
+  const first = await s.move("INBOX", inbox.uid, "[Gmail]/Trash", inbox.uid_validity);
+  const again = await s.move("Work", work.uid, "[Gmail]/Trash", work.uid_validity);
+  assert.equal(again.undoable, false);
+  assert.equal(f.service.calls.filter(call => call.route.endsWith("/trash") && call.method === "POST").length, 1);
+  assert.ok(JSON.parse(db.gmailMap("gmail", "copies").trash_labels_json).includes("INBOX"));
+  await s.flags("[Gmail]/Trash", first.uid, ["\\Seen", "\\Flagged"], [], first.uidValidity);
+  await s.move("[Gmail]/Trash", first.uid, "[Gmail]/All Mail", first.uidValidity, null, { kind: "undo", providerUndo: first.providerUndo });
+  const labels = f.service.messages.get("copies").labelIds;
+  assert.ok(labels.includes("INBOX") && labels.includes("Label_work") && labels.includes("STARRED"));
+  assert.ok(!labels.includes("TRASH") && !labels.includes("UNREAD"));
+  assert.ok(first.providerUndo.labelIds.includes("INBOX") && first.providerUndo.labelIds.includes("UNREAD"), "operation snapshot is immutable");
 });
 
 test("moves/Trash/restore use stable provider identity and label rename preserves cache ids", async t => {

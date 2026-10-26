@@ -3614,6 +3614,10 @@ function answer(channel, args) {
         if (existing && params.draftRevision && params.draftRevision !== db.draftRevision(existing)) {
           return fail("draft_conflict", "This draft changed in another window. Your text is still here; keep a copy before reopening the saved draft.");
         }
+        // A legacy UID is not a Gmail identity. Preserve the remote draft rather
+        // than replacing its RFC id locally and then trying to resolve that new id.
+        const detachedGmailDraft = account.mail_transport === "gmail_api" && existing?.uid > 0
+          && !db.gmailAlias(account.id, existing.folder_path, existing.uid, existing.uid_validity);
         const resolved = resolveAttachments(params && params.attachments, account);
         if (resolved.error) return fail(resolved.error.code, resolved.error.message);
         const files = resolved.files;
@@ -3630,8 +3634,8 @@ function answer(channel, args) {
           id: emailId,
           accountId: account.id,
           folderPath: drafts.path,
-          uid: existing ? existing.uid : 0,
-          uidValidity: existing ? existing.uid_validity : 0,
+          uid: existing && !detachedGmailDraft ? existing.uid : 0,
+          uidValidity: existing && !detachedGmailDraft ? existing.uid_validity : 0,
           threadId: (params && params.threadId) || emailId,
           rfcMessageId: messageId,
           subject: presented.subject,
@@ -3654,6 +3658,7 @@ function answer(channel, args) {
         };
         if (existing) {
           db.updateMessage(emailId, {
+            ...(detachedGmailDraft ? { uid: 0, uid_validity: 0, gmail_id: null } : {}),
             folder_path: drafts.path,
             thread_id: record.threadId,
             subject: record.subject,
@@ -3678,7 +3683,7 @@ function answer(channel, args) {
           db.insertMessage(record);
         }
         let remoteSaved = false;
-        let warning = "";
+        let warning = detachedGmailDraft ? "The earlier Gmail draft could not be linked safely and was retained on the server. This Save creates a new server copy." : "";
         const revision = db.draftRevision(db.messageById(emailId));
         try {
           await exclusive(account.id, async () => {

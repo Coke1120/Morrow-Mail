@@ -345,10 +345,13 @@ function saveBundle(account, signed, requestedPurpose = "bundle") {
   }
   if (!signed.refreshToken || !signed.accessToken) return fail("oauth", "Provider did not return offline access. Existing credentials are unchanged.");
   const granted = signed.grantedScopes || "";
+  const separateCalendar = provider === "google" && requestedPurpose === "calendar";
+  if (separateCalendar && !config.hasPurposeScopes(granted, provider, "calendar")) {
+    return fail("scope_missing", "Google did not grant complete Calendar permissions. Existing credentials are unchanged.");
+  }
   if (!API_PURPOSES.some((purpose) => config.hasPurposeScopes(granted, provider, purpose))) {
     return fail("scope_missing", "The provider did not grant the requested feature permissions. Existing credentials are unchanged.");
   }
-  const separateCalendar = provider === "google" && requestedPurpose === "calendar";
   const key = `${account.id}:${separateCalendar ? "calendar" : "bundle"}`;
   const previous = readJson(key);
   const blob = { ...tokenBlob(signed), purpose: separateCalendar ? "calendar" : "bundle" };

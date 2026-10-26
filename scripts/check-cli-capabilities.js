@@ -33,7 +33,7 @@ function run() {
   assert.ok(connection.includes(`${constants.HOST}:${constants.PORT}`));
   for (const phrase of ["v1.92+", "HTTPS", "readBridge: true", "0600", "installation ID", "Check connection", "does not configure Serve", "Keep Funnel off"]) assert.ok(connection.includes(phrase), phrase);
   const safety = text(byId("cli-send-safety"));
-  for (const phrase of ["after From resolution", "before claiming", "after mailbox/credential waits", "before SMTP submission", "cannot be recalled", "same ID and content", "SEND_OUTCOME_UNKNOWN", "partial delivery"]) assert.ok(safety.includes(phrase), phrase);
+  for (const phrase of ["after From resolution", "before claiming", "after mailbox/credential waits", "before mail-provider submission", "cannot be recalled", "same ID and content", "SEND_OUTCOME_UNKNOWN", "partial delivery"]) assert.ok(safety.includes(phrase), phrase);
   for (const id of ["cli-connection", "cli-send-safety", "cli-json-examples"]) {
     assert.equal(byId(id).name, "details");
     assert.ok(DomUtils.findOne(node => node.name === "summary" && text(node), byId(id).children));

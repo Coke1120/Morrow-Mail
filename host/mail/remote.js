@@ -588,8 +588,8 @@ function assertUidValidity(client, expected) {
   throw error;
 }
 
-async function moveUid(client, folderPath, uid, destination, expectedValidity, localMessageId) {
-  if (client.gmail) return client.gmail.move(folderPath, uid, destination, expectedValidity, localMessageId);
+async function moveUid(client, folderPath, uid, destination, expectedValidity, localMessageId, options) {
+  if (client.gmail) return client.gmail.move(folderPath, uid, destination, expectedValidity, localMessageId, options);
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);

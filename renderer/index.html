@@ -564,8 +564,8 @@
         </details>
         <details class="cli-guide" id="cli-send-safety">
           <summary>Sending, revocation and retries</summary>
-          <p>Send permission allows mail without waiting for you to press Send. Morrow rechecks the grant, expiry, installation, enabled flag, mailbox/send scopes and connected account after From resolution, before claiming the request, and again after mailbox/credential waits immediately before SMTP submission.</p>
-          <p>Revoking or disabling access stops a pending send before that boundary. Once SMTP submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
+          <p>Send permission allows mail without waiting for you to press Send. Morrow rechecks the grant, expiry, installation, enabled flag, mailbox/send scopes and connected account after From resolution, before claiming the request, and again after mailbox/credential waits immediately before mail-provider submission.</p>
+          <p>Revoking or disabling access stops a pending send before that boundary. Once mail-provider submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
           <p><code>mail.send</code> requires a UUID in <code>--request-id</code>. Retry the same ID and content; the client never retries automatically. <code>SEND_OUTCOME_UNKNOWN</code> means do not send the same message under a new ID. For partial delivery, review rejected recipients separately; do not resend the original list.</p>
         </details>
         <details class="cli-guide" id="cli-json-examples">
@@ -638,7 +638,7 @@
     <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>
-        <p class="hint">Pending messages send while Morrow is open; a missed time sends on the next launch. Uncertain or SMTP-accepted deliveries never resend automatically: check Sent before recovering a draft copy. This list includes every account, whichever mailbox is selected. Edit/reschedule saves a local draft and requires an explicit new schedule. Cancel or dismiss asks twice; Undo restores the record with its existing delivery status.</p>
+        <p class="hint">Pending messages send while Morrow is open; a missed time sends on the next launch. Uncertain or provider-accepted deliveries never resend automatically: check Sent before recovering a draft copy. This list includes every account, whichever mailbox is selected. Edit/reschedule saves a local draft and requires an explicit new schedule. Cancel or dismiss asks twice; Undo restores the record with its existing delivery status.</p>
         <p id="scheduled-summary" class="hint"></p>
         <p id="scheduled-status" role="status"></p>
         <div class="row">

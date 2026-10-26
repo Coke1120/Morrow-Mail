@@ -54,6 +54,7 @@ function createSession(account, token, { api, check = () => {} } = {}) {
   }
   function pathsFor(labels) {
     const ids = new Set(labels || []), visible = !ids.has("TRASH") && !ids.has("SPAM");
+    if (!visible) return db.foldersFor(account.id).filter(row => row.provider_id === (ids.has("TRASH") ? "TRASH" : "SPAM")).map(row => row.path);
     return db.foldersFor(account.id).filter(row => ids.has(row.provider_id) || (row.provider_id === ALL && visible)).map(row => row.path);
   }
   async function uniqueRfc(rfc) {
@@ -88,7 +89,7 @@ function createSession(account, token, { api, check = () => {} } = {}) {
         body[type === "text/html" ? "html" : "text"].push(text);
       } else {
         const contentId = header(part, "content-id").replace(/^<|>$/g, "");
-        attachments.push({ id: part.partId || "0", filename: part.filename || `attachment-${part.partId || "0"}`, mimeType: type,
+        attachments.push({ id: `gmail:${part.partId || "0"}`, filename: part.filename || `attachment-${part.partId || "0"}`, mimeType: type,
           size: Number(part.body?.size) || 0, contentId: contentId || null, isInlineFromApi: !!contentId && !/attachment/i.test(disposition) });
       }
     }
@@ -96,7 +97,7 @@ function createSession(account, token, { api, check = () => {} } = {}) {
     // Inline images belong to the displayed body. Ordinary attachment files stay on demand.
     for (const attachment of attachments.filter(row => row.isInlineFromApi && row.mimeType.startsWith("image/"))) {
       if (!full) { complete = false; continue; }
-      const part = list.find(row => (row.partId || "0") === attachment.id);
+      const part = list.find(row => `gmail:${row.partId || "0"}` === attachment.id);
       let bytes = typeof part?.body?.data === "string" ? Buffer.from(part.body.data, "base64url") : null;
       if (!bytes && part?.body?.attachmentId) bytes = await api.attachment(data.id, part.body.attachmentId);
       if (bytes && html) html = html.split(`cid:${attachment.contentId}`).join(`data:${attachment.mimeType};base64,${bytes.toString("base64")}`);
@@ -164,7 +165,7 @@ function createSession(account, token, { api, check = () => {} } = {}) {
       if (rows.length < 20) { state.verifyNeeded = false; state.verifyBefore = 0; }
     }
     const filter = { labelIds: selected.provider_id === ALL ? [] : [selected.provider_id],
-      includeSpamTrash: selected.provider_id !== ALL, query: after == null ? "" : `after:${Math.floor(after / 1000)}`, limit };
+      includeSpamTrash: ["TRASH", "SPAM"].includes(selected.provider_id), query: after == null ? "" : `after:${Math.floor(after / 1000)}`, limit };
     if (state.complete && state.historyId) {
       try {
         const page = await api.history({ startHistoryId: state.historyId, pageToken: state.historyPageToken || "", limit });
@@ -207,36 +208,63 @@ function createSession(account, token, { api, check = () => {} } = {}) {
     return { ...value, uid: Number(uid) }; // retain the caller's legacy pair until its cache row is adopted
   }
   async function attachment(path, uid, partId, validity) {
+    if (typeof partId !== "string" || !partId.startsWith("gmail:")) throw Object.assign(new Error("This attachment identifier predates Gmail migration. Reopen the message before downloading its files."), { code: "attachment_changed", operationIssued: false });
     const mapped = await resolve(path, uid, validity), data = await api.getMessage(mapped.provider_id);
-    const part = parts(data.payload).find(row => (row.partId || "0") === partId);
+    const part = parts(data.payload).find(row => `gmail:${row.partId || "0"}` === partId);
     if (!part) throw new Error("This Gmail attachment is no longer available.");
     const result = typeof part.body?.data === "string" ? Buffer.from(part.body.data, "base64url") : await api.attachment(data.id, part.body.attachmentId);
     alive(); return result;
   }
-  async function move(path, uid, destination, validity, localMessageId) {
+  async function move(path, uid, destination, validity, localMessageId, options = {}) {
     const mapped = await resolve(path, uid, validity, localMessageId), from = folder(path).provider_id, to = folder(destination).provider_id;
-    const priorTrashLabels = JSON.parse(mapped.trash_labels_json || "[]");
+    const undo = options.providerUndo;
+    if (undo && (undo.messageId !== mapped.provider_id || !Array.isArray(undo.labelIds))) throw Object.assign(new Error("This Gmail Undo does not match the message. Refresh before continuing."), { code: "message_moving", operationIssued: false });
+    const priorTrashLabels = undo?.kind === "trash" ? undo.labelIds : JSON.parse(mapped.trash_labels_json || "[]");
+    const trashUndo = options.kind === "undo" && (undo?.kind === "trash" || from === "TRASH");
+    const archiveUndo = options.kind === "undo" && undo?.kind === "archive";
     const protectedRestore = from === "TRASH" && priorTrashLabels.includes(to) && ["DRAFT", "SENT"].includes(to);
-    if (from !== to && ["DRAFT", "SENT"].includes(to) && !protectedRestore) throw Object.assign(new Error("Gmail does not allow moving existing mail into Drafts or Sent. Save a draft or send the message instead."), { code: "unsupported", operationIssued: false });
-    if (from !== to && (JSON.parse(mapped.labels_json).includes("DRAFT")) && !["TRASH", "DRAFT"].includes(to)) throw Object.assign(new Error("Gmail does not allow applying folder labels to drafts. Save or send the draft instead."), { code: "unsupported", operationIssued: false });
-    if (from !== to) {
-      let result;
+    if (!archiveUndo && from !== to && ["DRAFT", "SENT"].includes(to) && !protectedRestore) throw Object.assign(new Error("Gmail does not allow moving existing mail into Drafts or Sent. Save a draft or send the message instead."), { code: "unsupported", operationIssued: false });
+    if (!trashUndo && !archiveUndo && from !== to && (JSON.parse(mapped.labels_json).includes("DRAFT")) && !["TRASH", "DRAFT"].includes(to)) throw Object.assign(new Error("Gmail does not allow applying folder labels to drafts. Save or send the draft instead."), { code: "unsupported", operationIssued: false });
+    let providerUndo, undoable = true, result;
+    if (archiveUndo) {
+      result = undo.labelIds.includes("INBOX") ? await api.modifyLabels(mapped.provider_id, ["INBOX"]) : await api.getMessage(mapped.provider_id);
+    } else if (trashUndo) {
+      result = await api.restoreTrash({ messageId: mapped.provider_id, priorLabelIds: priorTrashLabels });
+      if (protectedRestore && !(result.labelIds || []).includes(to)) throw Object.assign(new Error("Gmail restored this message but did not confirm its original Drafts/Sent membership. Refresh and review it in Gmail."), { code: "provider", operationIssued: true });
+    } else if (from !== to || to === ALL) {
       if (to === "TRASH") {
         const prior = await api.getMessage(mapped.provider_id, { format: "metadata" });
         alive();
-        db.rememberGmail(account.id, { providerId: mapped.provider_id, priorTrashLabels: prior.labelIds || [] });
-        result = (await api.trash(mapped.provider_id)).message;
+        if ((prior.labelIds || []).includes("TRASH")) {
+          result = prior; undoable = false; // a repeated Trash request cannot replace the original snapshot
+        } else {
+          providerUndo = { kind: "trash", messageId: mapped.provider_id, labelIds: [...(prior.labelIds || [])] };
+          db.rememberGmail(account.id, { providerId: mapped.provider_id, priorTrashLabels: providerUndo.labelIds });
+          result = (await api.trash(mapped.provider_id)).message;
+        }
       }
       else {
         if (from === "TRASH") result = await api.restoreTrash({ messageId: mapped.provider_id, priorLabelIds: priorTrashLabels });
         if (protectedRestore) {
           if (!(result.labelIds || []).includes(to)) throw Object.assign(new Error("Gmail restored this message but did not confirm its original Drafts/Sent membership. Refresh and review it in Gmail."), { code: "provider", operationIssued: true });
-        } else if (to === ALL) result = await api.archive(mapped.provider_id);
+        } else if (to === ALL) {
+          const prior = result || await api.getMessage(mapped.provider_id, { format: "metadata" });
+          providerUndo = { kind: "archive", messageId: mapped.provider_id, labelIds: [...(prior.labelIds || [])] };
+          result = await api.archive(mapped.provider_id);
+        }
         else result = await api.modifyLabels(mapped.provider_id, [to], [ALL, "TRASH", "SENT", "DRAFT"].includes(from) ? [] : [from]);
       }
-      alive(); db.rememberGmail(account.id, { providerId: mapped.provider_id, labelIds: result.labelIds || [], ...(from === "TRASH" ? { priorTrashLabels: null } : {}) });
     }
-    return { uid: mapped.local_uid, uidValidity: incarnation };
+    alive();
+    if (result) db.rememberGmail(account.id, { providerId: mapped.provider_id, labelIds: result.labelIds || [], ...(from === "TRASH" ? { priorTrashLabels: null } : {}) });
+    let cache = {};
+    try {
+      const value = await adopt(result?.payload ? result : await api.getMessage(mapped.provider_id), { cache: false });
+      cache = { gmailMessage: value, gmailPaths: pathsFor(value.labelIds) };
+    } catch {
+      alive(); cache = { cacheWarning: "Gmail confirmed this change. Refresh to update its cached label copies." };
+    }
+    return { uid: mapped.local_uid, uidValidity: incarnation, providerUndo, undoable, ...cache };
   }
   async function flags(path, uid, add, remove, validity, localMessageId) {
     const mapped = await resolve(path, uid, validity, localMessageId);
@@ -253,7 +281,7 @@ function createSession(account, token, { api, check = () => {} } = {}) {
   }
   async function search(path, query, limit = 80) {
     const selected = folder(path);
-    const page = await api.listMessages({ labelIds: selected.provider_id === ALL ? [] : [selected.provider_id], includeSpamTrash: selected.provider_id !== ALL, query, limit });
+    const page = await api.listMessages({ labelIds: selected.provider_id === ALL ? [] : [selected.provider_id], includeSpamTrash: ["TRASH", "SPAM"].includes(selected.provider_id), query, limit });
     const messages = [];
     for (const row of page.messages) messages.push(await adopt(await api.getMessage(row.id)));
     return { gmail: true, messages, validity: incarnation, keepOthers: true, searched: true, nextPageToken: page.nextPageToken };

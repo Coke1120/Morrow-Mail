@@ -1924,7 +1924,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
       const attachments = found?.is_draft && localOutgoingAttachments(found.attachments_json);
       const input = { ...message, id: found?.id || newMessageId(), accountId, folderPath, uid: mapping.local_uid,
         uidValidity: account.gmail_generation, threadId: found?.thread_id || message.threadId,
-        ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true, attachments: jsonList(found.attachments_json), hasAttachments: !!found.has_attachments } : {}),
+        ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true } : {}),
         ...(attachments ? { attachments, hasAttachments: true } : {}) };
       if (!found) insertMessageRecord(input);
       else {
