@@ -100,6 +100,7 @@ const INVOKE = [
   "mail:listFromNetwork",
   "host:getDebugLog",
   "mail:openEmail",
+  "mail:prepareDraft",
   "mail:markRead",
   "mail:markReadBatch",
   "mail:toggleStar",
