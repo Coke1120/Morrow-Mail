@@ -1,5 +1,11 @@
 # Preserve draft files, reviewed sends and message metadata
 
+Status: merged through PR #319 after final head
+`e49184b1fe31f916f8987402ea94e66964b295b6` passed full Node 20 CI run
+40364608529 and an independent Astra Max final functional recheck with no
+remaining confirmed blockers. Included in the v0.3.1 release candidate;
+native/live validation remains untested.
+
 The independent v0.3.0 functional review reproduced dropped provider-draft files,
 send content changing after preview, Gmail charset sync stalls, missing Reply-To,
 and calendar dates being cleared by input-type sanitization.

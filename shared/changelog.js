@@ -7,6 +7,14 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.1": [
+      "Provider drafts prepare all attachment files before editing. Failed or cancelled preparation keeps the original draft for retry, including inline images and the selected sender.",
+      "Save, Send and Schedule wait for AI writing to finish or be cancelled. Confirmation uses the reviewed preview; changing content requires another preview.",
+      "Gmail handles more mail charsets, including cp932, UTF-7 and ISO-2022-JP. Malformed MIME is isolated, and incomplete fallback content keeps a visible reader warning.",
+      "Reply and Reply All honor Reply-To with self-address filtering and deduplication. Known local Sent copies, including narrowly recognized older bot aliases, avoid unnecessary header reads; unknown remote headers still need retrieval.",
+      "Calendar type changes retain dates. An unchanged timed → all-day → timed round trip restores the original hours; edited all-day ranges keep the selected dates with 09:00/10:00 defaults.",
+      "These fixes passed synthetic provider, MIME, SQLite and DOM checks. Native UI, real delivery and live AI/provider behavior remain unverified.",
+    ],
     "0.3.0": [
       "Settings → Compose previews a Morrow-only sender name for each exact From address. Keep the Gmail default, set a local name, clear it for address-only sending, or reset it.",
       "Refreshing Gmail identities preserves local name overrides and manually configured aliases. Names change mail sent from Morrow, not Gmail settings or sending permissions.",
