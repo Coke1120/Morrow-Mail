@@ -152,8 +152,8 @@ async function listSendAs(accessToken, fetchImpl) {
   if (!Array.isArray(json.sendAs)) throw new Error("Gmail did not return its send-as addresses.");
   const { address } = require("../../shared/compose-policy");
   return json.sendAs.filter((row) => row.isPrimary || row.verificationStatus === "accepted")
-    .map((row) => ({ email: address(row.sendAsEmail), name: row.displayName || "",
-      isDefault: row.isDefault === true, verified: true, source: "gmail" })).filter((row) => row.email);
+    .map((row) => ({ email: address(row.sendAsEmail), name: row.displayName || "", isPrimary: row.isPrimary === true,
+      isDefault: row.isDefault === true, verificationStatus: row.verificationStatus || "", verified: true, source: "gmail" })).filter((row) => row.email);
 }
 
 async function createLabel(accessToken, name, fetchImpl) {

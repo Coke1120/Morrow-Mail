@@ -182,9 +182,10 @@ async function prepare(ctx) {
   }
   const account = db.accountById(params.accountId);
   if (!account) throw coded("NOT_FOUND");
-  let fromAddress;
+  let fromAddress, fromDisplayName;
   try {
-    fromAddress = await composeIdentity.sendingFrom(account, params.fromAddress);
+    ({ fromAddress, fromDisplayName } = composeIdentity.outgoingIdentity(account, params.fromAddress));
+    fromAddress = await composeIdentity.sendingFrom(account, fromAddress);
   } catch {
     throw coded("INVALID_REQUEST");
   }
@@ -215,6 +216,7 @@ async function prepare(ctx) {
   const normalized = {
     accountId: params.accountId,
     fromAddress,
+    fromDisplayName,
     to,
     cc,
     bcc,
@@ -231,7 +233,7 @@ async function prepare(ctx) {
     account: fresh,
     inReplyToHeader,
     options: {
-      from: fromAddress,
+      from: composeIdentity.mimeFrom(fresh, fromAddress, fromDisplayName),
       to,
       cc,
       bcc,
@@ -278,6 +280,7 @@ function claimOrReplay(prepared) {
     payloadHash: prepared.hash,
     messageId: messageIdFor(prepared.fromAddress),
     fromAddress: prepared.fromAddress,
+    fromDisplayName: prepared.fromDisplayName,
     recipients: { to: prepared.to, cc: prepared.cc, bcc: prepared.bcc },
     subject: prepared.subject,
     claimedAt: new Date().toISOString(),
@@ -338,6 +341,7 @@ async function finishSend(prepared, receipt) {
       accountId: next.accountId,
       messageId: next.messageId,
       fromAddress: next.fromAddress,
+      fromDisplayName: next.fromDisplayName,
       to: prepared.to,
       cc: prepared.cc,
       bcc: prepared.bcc,

@@ -2558,6 +2558,7 @@ function previewDraft(fields, quote, when, files) {
     body,
     attachments: composeAttachmentList(files).map((row) => ({ filename: row.filename, size: row.size })),
     sendAt: schedule ? schedule.toISOString() : "",
+    ...(source.fromAddress ? { fromAddress: source.fromAddress, fromDisplayName: source.fromDisplayName || "" } : {}),
   };
 }
 
@@ -10322,6 +10323,7 @@ function composePayload(account) {
       ? joinComposeHtml(rich, toHtml(outgoingBody("", quote)))
       : toHtml(outgoingBody(plain, quote)),
     fromAddress: meta.fromAddress || account.preferredFromAddress || account.email,
+    fromDisplayName: meta.fromDisplayName,
     draftId: state.draftId || undefined,
     emailId: state.draftId || undefined,
     draftRevision: state.draftRevision || undefined,
@@ -10390,7 +10392,7 @@ function paintComposeNote() {
   const account = composeAccount();
   const live = isLive(account);
   let text = live
-    ? `From ${(state.composeMeta && state.composeMeta.fromAddress) || account.preferredFromAddress || account.email}`
+    ? "From " + window.morrowComposePolicy.senderPreview((state.composeMeta && state.composeMeta.fromAddress) || account.preferredFromAddress || account.email, state.composeMeta?.fromDisplayName || "")
     : "Connect an account before saving or sending.";
   const review = state.botDraftReview;
   if (review) {
@@ -11541,8 +11543,10 @@ async function initializeComposeIdentity(fields) {
     fromAddress: fields.fromAddress || undefined });
   if (!context || !context.fromAddress) throw new Error("The mailbox did not return a From address.");
   state.composeMeta.fromAddress = context.fromAddress;
+  state.composeMeta.fromDisplayName = typeof fields.fromDisplayName === "string"
+    ? window.morrowComposePolicy.displayName(fields.fromDisplayName) : context.fromDisplayName || "";
   const choices = context.sendAs || [];
-  for (const row of choices) picker.appendChild(option(row.email, row.email));
+  for (const row of choices) picker.appendChild(option(row.email, window.morrowComposePolicy.senderPreview(row.email, row.displayName || "")));
   if (!choices.some((row) => row.email === context.fromAddress)) {
     picker.appendChild(option(context.fromAddress, context.fromAddress + " (saved address — configure in Brain)"));
   }
@@ -11575,7 +11579,13 @@ function paintComposeIdentity() {
   const context = state.composeIdentity;
   if (!context) return;
   const row = context.sendAs.find((item) => item.email === state.composeMeta.fromAddress);
+  for (const choice of $("compose-from").options || []) {
+    const identity = context.sendAs.find(item => item.email === choice.value);
+    if (identity) choice.textContent = window.morrowComposePolicy.senderPreview(choice.value,
+      choice.value === state.composeMeta.fromAddress ? state.composeMeta.fromDisplayName : identity.displayName || "");
+  }
   const text = [];
+  text.push("Recipients see: " + window.morrowComposePolicy.senderPreview(state.composeMeta.fromAddress, state.composeMeta.fromDisplayName) + ".");
   if (context.receivedAddress) text.push("Received as " + context.receivedAddress + ".");
   else if (context.fallback) text.push("No received address matched this mailbox's known aliases. Add a missing alias in Email Brain or choose From.");
   text.push("CC domain: " + (context.domain || "none") + ".");
@@ -11590,6 +11600,7 @@ function changeComposeFrom() {
   const context = state.composeIdentity;
   const fromAddress = $("compose-from").value;
   state.composeMeta.fromAddress = fromAddress;
+  state.composeMeta.fromDisplayName = context.sendAs.find((row) => row.email === fromAddress)?.displayName || "";
   const account = composeAccount();
   const defaults = window.morrowComposePolicy.recipientDefaults(fromAddress, account, context.settings, context.kind);
   context.domain = defaults.ccDomain;
@@ -12022,6 +12033,7 @@ function setComposeStatus(text, isError) {
 function composeSnapshot() {
   return JSON.stringify({ accountId: state.composeMeta && state.composeMeta.accountId,
     fromAddress: state.composeMeta && state.composeMeta.fromAddress,
+    fromDisplayName: state.composeMeta && state.composeMeta.fromDisplayName,
     to: $("compose-to").value, cc: $("compose-cc").value, bcc: $("compose-bcc").value,
     subject: $("compose-subject").value, body: $("compose-body").value,
     html: composeEditorSnapshot(),
@@ -12053,9 +12065,11 @@ async function resumeDraft(email, extra) {
   const data = await call("mail:openEmail", { emailId: email.id, full: true });
   const draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
+  if (!draft.fromAddress) throw new Error("This draft's sender address could not be resolved. The saved draft was retained.");
   await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
     draftRevision: draft.draftRevision,
-    fromAddress: draft.from,
+    fromAddress: draft.fromAddress,
+    fromDisplayName: draft.fromDisplayName,
     to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
     body: readable(draft),
     htmlBody: typeof draft.htmlBody === "string" ? draft.htmlBody : "",
@@ -12353,6 +12367,8 @@ async function scheduleMail(whenOverride) {
 
 function composeFields() {
   return {
+    fromAddress: state.composeMeta?.fromAddress || "",
+    fromDisplayName: state.composeMeta?.fromDisplayName || "",
     to: $("compose-to").value,
     cc: $("compose-cc").value,
     bcc: $("compose-bcc").value,
@@ -12391,6 +12407,7 @@ function paintPreview(draft) {
     when.textContent = "";
   }
   $("compose-preview-to").textContent = draft.to || "";
+  $("compose-preview-from").textContent = window.morrowComposePolicy.senderPreview(draft.fromAddress || "", draft.fromDisplayName || "");
   const ccRow = $("compose-preview-cc-row");
   const bccRow = $("compose-preview-bcc-row");
   if (ccRow) ccRow.hidden = !draft.cc;
@@ -12500,6 +12517,7 @@ function cancelUndoSend() {
 async function separatePartialReceipt(payload, message) {
   const shown = value => Array.isArray(value) ? value.join(", ") : value || "";
   const seed = { title: "Partial delivery receipt", accountId: payload.accountId, fromAddress: payload.fromAddress,
+    fromDisplayName: payload.fromDisplayName,
     to: shown(payload.to), cc: shown(payload.cc), bcc: shown(payload.bcc), subject: payload.subject || "",
     body: plainFromMailHtml(payload.body || ""), htmlBody: payload.body || "", attachments: payload.attachments,
     partialReceipt: message };

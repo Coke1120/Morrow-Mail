@@ -31,6 +31,12 @@
         blurb: "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send.",
       },
       {
+        id: "sender-identities",
+        title: "Sender identities",
+        category: "Mail",
+        blurb: "Settings → Compose previews each exact From address and its Morrow-only display name. Verified Gmail send-as names are the default; local overrides survive refresh. Clear a name for address-only sending or reset to the default. Drafts and scheduled mail retain the selected name and address, including punctuation and Unicode in names. Bot mail.send uses these defaults. Provider sending permissions still apply; Gmail settings and OAuth scopes stay unchanged. Providers or recipient contacts may affect the delivered display.",
+      },
+      {
         id: "signatures",
         title: "Signatures",
         category: "Mail",
@@ -58,7 +64,7 @@
         id: "schedule-send",
         title: "Send later",
         category: "Mail",
-        blurb: "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first.",
+        blurb: "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved.",
       },
       {
         id: "out-of-office",

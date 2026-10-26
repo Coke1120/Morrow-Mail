@@ -167,6 +167,24 @@ async function run() {
     }
     // Once the SMTP transport has been invoked it cannot be recalled. An
     // accepted receipt must survive revocation and retain replay protection.
+    await reset("named-sender");
+    const settings = require("../host/settings");
+    const senderName = '陳美玲, "Bot"';
+    settings.answer("emailBrain:saveComposeSettings", [{ accounts: { sender: { senderNames: { "sender@example.test": senderName } } } }]);
+    let namedOptions;
+    engine.setSmtpSenderForTest(async ({ options, messageId }) => {
+      smtpCalls++; namedOptions = options; return { messageId, accepted: options.to, rejected: [] };
+    });
+    await service.execute(ctx);
+    assert.deepEqual(namedOptions.from, { address: "sender@example.test", name: senderName });
+    assert.equal(receipts()[0].fromDisplayName, senderName);
+    const parsedSender = await require("mailparser").simpleParser(await remote.buildRaw(namedOptions));
+    assert.equal(parsedSender.from.value[0].name, senderName);
+    settings.answer("emailBrain:saveComposeSettings", [{ accounts: { sender: { senderNames: { "sender@example.test": "Changed default" } } } }]);
+    await service.execute(ctx);
+    assert.equal(smtpCalls, 1, "a Settings name change cannot resubmit an idempotent bot request");
+    assert.equal(receipts()[0].fromDisplayName, senderName);
+
     await reset("already-submitted");
     const originalAccess = fs.readFileSync(path.join(home, "bot-access.json"), "utf8");
     const held = deferred();

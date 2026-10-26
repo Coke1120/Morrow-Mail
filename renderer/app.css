@@ -2102,6 +2102,11 @@ button.inline-link:focus-visible { color: var(--ink); }
 #brain-compose-form { display: grid; gap: 8px; padding: 0; }
 #brain-compose-form textarea { min-height: 80px; }
 #brain-compose-status.error { color: var(--danger); }
+#brain-compose-senders { display: grid; gap: 10px; }
+.sender-identity { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 6px; min-width: 0; }
+.sender-identity h5, .sender-identity p { margin: 0; overflow-wrap: anywhere; }
+.sender-identity .sender-preview { font-size: 13px; overflow-wrap: anywhere; }
+.sender-identity button { justify-self: start; }
 #brain-compose-pointer { margin: 12px 0; }
 
 #brain-skill-dialog {
