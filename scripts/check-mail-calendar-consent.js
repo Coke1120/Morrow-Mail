@@ -379,6 +379,7 @@ async function run() {
     memory.setPassword(`${ms.id}:bundle`, keptBundle);
 
     // Removing an account during consent must not resurrect its credentials.
+    memory.deletePassword(`${partialId}:calendar`);
     memory.setPassword(`${partialId}:bundle`, JSON.stringify({ ...read(`${partialId}:bundle`), grantedScopes: config.VACATION_SCOPES.google }));
     scenario = { email: "partial@example.invalid", onOpen: () => engine.answer("mail:removeAccount", [{ accountId: partialId }]) };
     assert.equal((await feature(partialId, "calendar")).error.code, "conflict");

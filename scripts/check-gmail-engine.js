@@ -45,7 +45,7 @@ async function run() {
   const legacy = id => {
     db.insertAccount({id,email:id === 'gmail' ? 'owner@fixture.invalid' : `${id}@fixture.invalid`, username:'owner',profile:'gmail',authKind:'oauth2',createdAt:1,
       imapHost:'imap.gmail.com',imapPort:993,imapTls:true,smtpHost:'smtp.gmail.com',smtpPort:465,smtpTls:true});
-    db.replaceFolders(id,[{path:'INBOX',name:'Inbox',wellKnown:'inbox'},{path:'Drafts',name:'Drafts',wellKnown:'drafts'}]);
+    db.replaceFolders(id,[{path:'INBOX',name:'Inbox',wellKnown:'inbox'},{path:'Drafts',name:'Drafts',wellKnown:'drafts'},{path:'Old cached label',name:'Old cached label'}]);
     const raw = JSON.stringify({provider:'google',purpose:'imap',accessToken:'legacy-access',refreshToken:'legacy-refresh',expiresAt:Date.now()+3600000,
       grantedScopes:'openid email https://mail.google.com/ '+config.CALENDAR_SCOPES.google});
     secrets.setPassword(id,raw); return raw;
@@ -73,6 +73,7 @@ async function run() {
     assert.equal(db.messageById('cached').text_body,'Retained body');
     await engine.syncAccountById('gmail',{background:false});
     assert.equal(db.messageById('cached').gmail_id,'incoming',JSON.stringify({folders:db.foldersFor('gmail'),calls:service.calls.map(({route,method,query})=>({route,method,query:String(query)}))}));
+    assert.equal(db.folderByPath('gmail','Old cached label').provider_id,null,'unbound legacy folders stay local without blocking sync');
     success(await answer('calendar:connect',{accountId:'gmail',forceReauthorize:true}));
     assert.equal(signins.at(-1).purpose,'calendar');
     assert.equal(JSON.parse(secrets.getPassword('gmail:calendar')).grantedScopes,config.CALENDAR_SCOPES.google);
@@ -82,6 +83,10 @@ async function run() {
     oauth.accessTokenFor=async()=>({token:'synthetic-partial-refresh',store:JSON.stringify({...JSON.parse(mailSecret),grantedScopes:config.VACATION_SCOPES.google})});
     await assert.rejects(sidecar.gmailSendAsToken(db.accountById('gmail')),error=>error.code==='scope_missing');
     assert.equal(secrets.getPassword('gmail'),mailSecret,'feature refresh cannot replace mail with an insufficient grant'); oauth.accessTokenFor=access;
+    success(await answer('mail:createFolder',{accountId:'gmail',folderName:'Projects'}));
+    const labelId=db.folderByPath('gmail','Projects').provider_id; assert.ok(labelId);
+    const nested=success(await answer('mail:moveFolder',{accountId:'gmail',folderId:'Projects',destinationId:'Work'}));
+    assert.equal(nested.id,'Work/Projects'); assert.equal(db.folderByPath('gmail',nested.id).provider_id,labelId);
     console.log('gmail-engine-ok: explicit migration, declined/partial/mismatch/storage rollback, cache retention and separate Calendar');
 
     success(await answer('mail:markRead',{emailId:'cached',isRead:true})); await engine.settleActions();

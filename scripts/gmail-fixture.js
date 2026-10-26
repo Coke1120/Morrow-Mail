@@ -31,6 +31,10 @@ function server(initial = []) {
       return json({ historyId, history });
     }
     if (route === "/labels" && method === "GET") return json({ labels });
+    if (route === "/labels" && method === "POST") {
+      const label = { id: `Label_${++counter}`, name: JSON.parse(options.body).name, type: "user" };
+      labels.push(label); return json(label);
+    }
     if (route.startsWith("/labels/") && method === "PATCH") {
       const label = labels.find(row => row.id === decodeURIComponent(route.split("/")[2]));
       Object.assign(label, JSON.parse(options.body)); return json(label);

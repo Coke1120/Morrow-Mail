@@ -1059,7 +1059,7 @@ async function syncAccountAdmitted(account, options) {
           const listed = await remote.listFolderRecords(client);
           assertAccountCurrent(account);
           db.replaceFolders(account.id, listed.folders, listed.delimiter);
-          const folders = db.foldersFor(account.id);
+          const folders = db.foldersFor(account.id).filter(folder => account.mail_transport !== "gmail_api" || folder.provider_id);
           if (background) {
             plan = planBackgroundFolders(folders, activeFolder.get(account.id), backgroundCursor.get(account.id) || 0);
             jobs = plan.jobs;
@@ -3506,6 +3506,7 @@ function answer(channel, args) {
           path: folder.path,
           name: folder.name,
           wellKnown: folder.well_known,
+          providerId: folder.provider_id,
         }));
         const plan = db.planImapPathMove(records, sourceId, destinationId, delimiter);
         if (!plan.ok) return fail(plan.code || "invalid", plan.message);
@@ -3523,7 +3524,13 @@ function answer(channel, args) {
         }
         const serverFolders = listed && Array.isArray(listed.folders) ? listed.folders : [];
         const confirmed = db.confirmedImapRenames(plan, serverFolders);
-        const rewrite = db.rewriteFolderPaths(account.id, confirmed);
+        // Stable-id Gmail discovery may already have reconciled the rename.
+        const reconciled = account.mail_transport === "gmail_api" ? confirmed.filter(move => {
+          const providerId = records.find(row => row.path === move.from)?.providerId;
+          return providerId && !db.folderByPath(account.id, move.from) && db.folderByPath(account.id, move.to)?.provider_id === providerId;
+        }) : [];
+        const rewritten = db.rewriteFolderPaths(account.id, confirmed.filter(move => !reconciled.includes(move)));
+        const rewrite = { moved: [...reconciled.map(({ from, to }) => ({ from, to })), ...rewritten.moved], skipped: rewritten.skipped };
         const sourceMoved = rewrite.moved.some((row) => row.from === plan.source);
         if (!sourceMoved || rewrite.skipped.length) {
           const message = rewrite.skipped.length
@@ -3568,6 +3575,7 @@ function answer(channel, args) {
           return fail("PROVIDER_ERROR", remote.explain(error));
         }
         if (!db.folderByPath(account.id, folderPath)) {
+          if (account.mail_transport === "gmail_api") return fail("partial", "Gmail accepted the label creation but has not returned its identity. Refresh folders before moving mail; do not repeat creation.");
           db.replaceFolders(account.id, [...db.foldersFor(account.id).map((folder) => ({
             path: folder.path,
             name: folder.name,
