@@ -25,6 +25,14 @@ Project-level standing rules for humans and coding agents (Cloud Agent / Claude 
 - Cross-repo bot habits: Grok Bot skill `leo-coding-prefs` + Graph `projects.yaml`.
 - This file + `docs/adr/` win for **this repo's** rules and decisions.
 
+## Security audit skill
+
+- Skill path: `.cursor/skills/security-audit/`
+- Use only when Leo explicitly asks for a security audit, pen-test, or full security review.
+- Not always-on. Do not run it on every PR or feature task.
+- Full audit mode is expensive (multi-agent). Prefer guidance mode unless Leo asks for a full audit or report artifacts.
+- Source: Cloudflare security-audit-skill (MIT) — https://github.com/cloudflare/security-audit-skill
+
 ---
 
 # Coding guide (restored from main)
@@ -47,7 +55,7 @@ The first-party shell in `renderer/` is still vanilla DOM. Use icons and motion 
 
 ## OAuth consent
 
-Google connects mail, calendar, organize, Out of Office, and rules in one full consent. Microsoft uses two dialogs maximum: Outlook IMAP/SMTP only, then one Graph bundle for all API features. Never mix Outlook and Graph on an authorize URL, code exchange, or refresh. Reuse saved grants, request missing permissions incrementally, and preserve existing tokens after partial consent. Bot bridge stays separate. See `docs/OAUTH.md`.
+Google OAuth mail uses Gmail API with gmail.modify + gmail.settings.basic; Calendar is a separate grant. Existing Google OAuth IMAP accounts require the reviewed migration action before switching transport or mail credentials. Never silently narrow scopes while leaving Gmail on IMAP/SMTP; requested scopes do not prove old broad grants were revoked. Microsoft uses two dialogs maximum: Outlook IMAP/SMTP only, then one Graph bundle for all API features. Never mix Outlook and Graph on an authorize URL, code exchange, or refresh. Reuse saved grants, request missing permissions incrementally, and preserve existing tokens after partial consent. Bot bridge stays separate. See `docs/OAUTH.md`.
 
 ## Out of Office
 

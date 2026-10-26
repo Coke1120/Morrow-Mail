@@ -1,6 +1,6 @@
 # Versioned permission before AI data transfers
 
-Status: proposed in a draft PR to dev; not released.
+Status: implemented through PR #302 and included in the v0.2.39 release scope. Native/live and provider/Google validation remain pending; see [release limits](../releases/v0.2.39.md).
 
 Existing remote AI entrypoints share `openai-client`, but API-key presence previously authorized transfers implicitly. ChatGPT account background consent did not cover API mode or explicit data transfer consent. Google/user authorization needs an understandable disclosure and affirmative choice before transfers, including derived mail/profile data and calendar context.
 

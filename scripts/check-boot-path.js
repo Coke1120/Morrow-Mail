@@ -30,6 +30,9 @@ const syntax = [
   "host/mail/background-jobs.js",
   "host/mail/text-encoding.js",
   "host/mail/actions.js",
+  "host/mail/gmail-mail-api.js",
+  "host/mail/gmail-policy.js",
+  "scripts/check-gmail-mail-api.js",
   "host/mail/idle.js",
   "shared/sync-retry.js",
   "shared/primary-mailboxes.js",
@@ -121,6 +124,12 @@ const syntax = [
 for (const file of syntax) {
   const result = spawnSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
+}
+
+// Isolate provider fixtures from the legacy suite's mutable host mocks.
+for (const name of ["check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js"]) {
+  const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout: 30000 });
+  assert.strictEqual(fixture.status, 0, name + " failed");
 }
 
 const uiEditorFeedback = spawnSync(process.execPath, [path.join(__dirname, "check-ui-editor-feedback.js")], { stdio: "inherit", timeout: 15000 });
@@ -510,7 +519,7 @@ assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app pa
 assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
 assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.2.38");
+assert.strictEqual(pkg.version, "0.2.39");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -764,7 +773,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.2.38");
+assert.strictEqual(pkg.version, "0.2.39");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -3977,16 +3986,16 @@ const featureSeed = [
   ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send."],
   ["signatures", "Signatures", "Mail", "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target."],
   ["mail-keyboard", "Mail list keyboard navigation", "Mail", "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus."],
-  ["attachment-downloads", "Attachment downloads", "Mail", "Save or open the selected file, or save all as ZIP, including cached draft attachments. Stale IDs, missing files, or a changed message stop the download. Bot access still exposes metadata only."],
+  ["attachment-downloads", "Attachment downloads", "Mail", "Save or open the selected file, or save all as ZIP, including cached draft attachments. Stale IDs, missing files, or a changed message stop the download. Opening cached Gmail mail refreshes legacy attachment identities while preserving complete text; reopen an older selection. Bot access still exposes metadata only."],
   ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
   ["imap-recovery", "IMAP connection recovery", "Mail", "Connection timeouts during IMAP sync use the usual connection-error and retry status. Inbox push falls back to polling and reconnects with backoff."],
-  ["overnight-body-fill", "Full message bodies", "Mail", "Mail → Bodies shows per-mailbox body activity separately from list sync. Message requests and the listed page download as needed. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Activity has no whole-mailbox total or percentage. Large messages can remain incomplete at the 3 MiB source limit; attachment files stay on demand."],
+  ["overnight-body-fill", "Full message bodies", "Mail", "Mail → Bodies shows per-mailbox body activity separately from list sync. Message requests and the listed page download as needed. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Activity has no whole-mailbox total or percentage. IMAP messages can remain incomplete at the 3 MiB source limit; Gmail API handles MIME parts within its response limit; attachment files stay on demand."],
   ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
-  ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again."],
+  ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again. Gmail Delete moves to Trash; deleting again keeps mail there. Conversation Trash acts once per Gmail message across label copies, with one membership snapshot for Undo. Verified copies leave their old labels after Trash; unrelated cached mail and unsaved edits stay. Archive removes Inbox membership even from All Mail or a search copy. Gmail draft cleanup moves old remote copies to Trash. Microsoft and other IMAP deletion behavior is unchanged. Google login remains OAuth. New Google connections use Gmail API polling/history with gmail.modify and gmail.settings.basic; Calendar is separate. Existing Google OAuth accounts migrate after review in Accounts. Cached mail and drafts stay; uncertain actions must be resolved first. A narrower request does not revoke older broad grants; Accounts shows actual saved scopes. Gmail API cannot move mail into Sent or Drafts; use Send or Save draft."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; CLI explains capabilities, possible provider calls, Tailscale setup, and revocation limits."],
-  ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions."],
+  ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Incomplete Google Calendar reauthorization preserves the working Calendar connection. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions."],
   ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed."],
   ["ipc-diagnostics", "IPC diagnostics", "Support", "IPC trace records known channels and argument counts, plus renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries may retain account/folder context."],
 ];
@@ -4393,13 +4402,13 @@ assert.strictEqual(providerUi.calendarView({ api: false, reason: "error" }).erro
 assert.strictEqual(providerUi.calendarView({ api: false, reason: "no_account" }).showGrid, false);
 assert.strictEqual(
   needsAuth.status,
-  "Enable calendar and mailbox features. Google uses one consent; Microsoft connects mail first, then checks feature permissions for the same account.",
+  "Enable calendar and mailbox features. Google requests Calendar separately from mail; Microsoft connects mail first, then checks feature permissions for the same account.",
 );
 assert.strictEqual(providerUi.calendarCopy("oauth_not_ready"), "Google Desktop OAuth is not configured, so calendar stays offline.");
 assert.strictEqual(providerUi.calendarCopy("no_account"), "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.");
 assert.strictEqual(
   providerUi.calendarCopy("needs_auth", "ada@example.com"),
-  "Enable calendar and mailbox features for ada@example.com. Google uses one consent; Microsoft connects mail first, then checks feature permissions for the same account.",
+  "Enable calendar and mailbox features for ada@example.com. Google requests Calendar separately from mail; Microsoft connects mail first, then checks feature permissions for the same account.",
 );
 assert.deepStrictEqual(providerUi.calendarConnection(null, null), {
   connected: false,
@@ -4748,7 +4757,7 @@ assert.ok(gmailApi.graphSenderNext("https://graph.microsoft.com/v1.0/me/messages
 assert.strictEqual(gmailApi.graphSenderNext("https://evil.example/v1.0/me/messages"), "");
 assert.strictEqual(gmailApi.graphSenderNext("https://graph.microsoft.com/v1.0/me/events"), "");
 const oauthConfig = require("../host/mail/oauth-config");
-assert.strictEqual(oauthConfig.SCOPES.google, "openid email https://mail.google.com/");
+assert.strictEqual(oauthConfig.SCOPES.google, "openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic");
 assert.strictEqual(
   oauthConfig.SCOPES.microsoft,
   "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
@@ -4759,7 +4768,7 @@ assert.strictEqual(oauthConfig.IMAP_PRESETS.microsoft.imap.host, "outlook.office
 assert.strictEqual(oauthConfig.IMAP_PRESETS.microsoft.smtp.host, "smtp.office365.com");
 assert.strictEqual(
   oauthConfig.ORGANIZE_SCOPES.google,
-  `${oauthConfig.SCOPES.google} https://www.googleapis.com/auth/gmail.modify`,
+  "openid email https://www.googleapis.com/auth/gmail.modify",
 );
 assert.strictEqual(
   oauthConfig.ORGANIZE_SCOPES.microsoft,
@@ -4789,11 +4798,11 @@ assert.strictEqual(oauthConfig.redirectPath("google", "vacation"), "/api/oauth/g
 assert.strictEqual(oauthConfig.redirectPath("microsoft", "vacation"), "/api/oauth/microsoft/callback");
 assert.strictEqual(oauthConfig.profileUrl("google", "vacation"), "https://openidconnect.googleapis.com/v1/userinfo");
 assert.strictEqual(oauthConfig.hasMarker(`https://graph.microsoft.com/${oauthConfig.MARKERS.vacation.microsoft}`, "microsoft", "vacation"), true);
-assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "vacation"), false);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "vacation"), true);
 assert.strictEqual(oauthConfig.hasMarker("Mail.Read", "microsoft", "organize"), false);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.ORGANIZE_SCOPES.microsoft, "outlook", "organize"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.ORGANIZE_SCOPES.google, "gmail", "organize"), true);
-assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "organize"), false);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "organize"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.CALENDAR_SCOPES.google, "google", "calendar"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.CALENDAR_SCOPES.microsoft, "microsoft", "calendar"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "imap"), true);
@@ -4853,7 +4862,7 @@ const googleAuth = new URL(oauthConfig.authorizeUrl("google", "organize", {
   ...authFields,
   redirectUri: "http://localhost:1/api/oauth/google/callback",
 }));
-assert.strictEqual(googleAuth.searchParams.get("include_granted_scopes"), "true");
+assert.strictEqual(googleAuth.searchParams.get("include_granted_scopes"), "false");
 assert.strictEqual(googleAuth.searchParams.get("prompt"), "consent");
 assert.strictEqual(googleAuth.searchParams.get("access_type"), "offline");
 assert.strictEqual(googleAuth.searchParams.get("scope"), oauthConfig.ORGANIZE_SCOPES.google);
@@ -9820,7 +9829,7 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
   assert.strictEqual(result.status, 0, "Account/calendar/attachment fixture failed");
   const liveness = spawnSync(process.execPath, [path.join(root, "scripts/check-account-liveness.js")], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(liveness.status, 0, "Account liveness fixture failed");
-  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js"]) {
+  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js", "check-gmail-mail-api.js"]) {
     const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
     assert.strictEqual(fixture.status, 0, name + " failed");
   }

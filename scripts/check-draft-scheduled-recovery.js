@@ -165,7 +165,7 @@ async function uiChecks() {
   const start = source.indexOf("function scheduledLine("), end = source.indexOf("\nfunction removalPayload", start);
   const line = vm.runInNewContext("(" + source.slice(start, end).trim() + ")", { Intl, Date });
   assert.match(line({ status: "unknown" }), /uncertain.*no automatic resend/);
-  assert.match(line({ status: "sent" }), /SMTP accepted.*no automatic resend/);
+  assert.match(line({ status: "sent" }), /Provider accepted.*no automatic resend/);
   assert.match(line({ status: "failed" }), /not sent; edit to retry/);
   const editStart = source.indexOf("async function editScheduledMail("), editEnd = source.indexOf("\nasync function composeOperation", editStart);
   const calls = [], confirmations = [], handoffs = [];
