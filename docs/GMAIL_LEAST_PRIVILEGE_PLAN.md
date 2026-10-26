@@ -1,12 +1,12 @@
 # Gmail API and least-privilege migration plan
 
-Status: plan accompanying the AI consent draft. **This PR changes no mail transport, OAuth scope, existing account or Google Console setting.** The user subsequently approved implementation in a separate draft PR; until that draft's coverage and checks are complete, the current transport remains as described below. Continue with Google remains OAuth. Replacing IMAP/SMTP with Gmail API does not replace Google login.
+Status: historical pre-migration plan accompanying AI consent PR #302 (now integrated into dev). **AI consent PR #302 changed no mail transport, OAuth scope, existing account or Google Console setting.** The user subsequently approved implementation in separate draft PR #305. This document retains the original baseline and phased plan; see [the implementation coverage and current gates](GMAIL_API_MIGRATION.md) for the new branch behavior. The baseline below describes the pre-migration version, not the new requested scopes. Continue with Google remains OAuth. Replacing IMAP/SMTP with Gmail API does not replace Google login.
 
 ## Current feature → scope map
 
 Source: `host/mail/oauth-config.js`, `oauth.js`, `engine.js`, `remote.js`, `sidecar.js`, `provider-api.js`, `vacation-api.js`, `inbox-rules.js`, `compose-identity.js` and `calendar-api.js` at dev `6217cfe`.
 
-The Google connection currently requests `openid email https://mail.google.com/ https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels`. Authorization includes existing grants; received granted scopes are recorded separately from requested scopes. A smaller request does not prove an existing broader grant was removed.
+The pre-migration Google connection requested `openid email https://mail.google.com/ https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels`. Authorization includes existing grants; received granted scopes are recorded separately from requested scopes. A smaller request does not prove an existing broader grant was removed.
 
 | Implemented operation | Current transport/grant | Proposed Gmail API / minimum retained permission |
 | --- | --- | --- |
@@ -44,6 +44,6 @@ Google decides verification/assessment applicability from the actual scopes, res
 
 Still needed, without requesting secrets: actual Console project/client configuration and authorized domains; approved/requested/granted scope lists; domain ownership; public home/privacy/terms content and update timing; a migration/consent/revoke demo using synthetic mail; complete data flow/storage/deletion descriptions; CASA/assessment determination and assessor evidence if required; incident/contact and user deletion/help processes. No real authorization, mailbox action or user-data migration is performed here.
 
-Public-policy correction task `01a17414-44de-7281-9133-577f18efe0f2` is coordinated through the parent. Its text must distinguish released behavior from proposed AI consent and Gmail migration. No claim that either is deployed is authorized.
+Public-policy correction task `01a17414-44de-7281-9133-577f18efe0f2` is coordinated through the parent. Its owner confirmed hwl-hk #21 and promotion #22 are merged and published at `179adf38a1d6f0b52472c8420e89a9b6427df26d`, describing released v0.2.38. That publication does not establish that consent #302 or Gmail migration #305 is released. Future disclosures must align with the actual app version and migration coverage.
 
 Sources checked 2026-10-25: [minimum scopes](https://support.google.com/cloud/answer/13807380), [verification FAQ](https://support.google.com/cloud/answer/13463817?hl=en), [Gmail scope definitions](https://developers.google.com/workspace/gmail/api/auth/scopes), [messages.trash](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/trash), [Workspace data policy](https://developers.google.com/workspace/workspace-api-user-data-developer-policy), [privacy guidance](https://support.google.com/cloud/answer/13806988). Requested sources `13807382` and `13805798` were inaccessible; their requirements remain unverified and no alternate route was tried.

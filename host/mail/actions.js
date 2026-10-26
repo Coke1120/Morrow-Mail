@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const db = require("./db");
 const remote = require("./remote");
 const virtuals = require("./virtual-folders");
+const { isGmail } = require("./gmail-policy");
 
 // A thrown command that already entered STORE or MOVE may have landed.
 // Revert only when issued is still false. Flag sync preserves pending/unknown writes.
@@ -182,6 +183,7 @@ function rememberMove(action, dest) {
       uidValidity: source.uidValidity,
       isDraft: prior.isDraft ? 1 : 0,
       destination: { folderPath: dest.folderPath, uid: dest.uid, uidValidity: dest.uidValidity },
+      ...(dest.providerUndo ? { providerUndo: dest.providerUndo } : {}),
     }],
   });
   return id;
@@ -196,7 +198,12 @@ function newerPending(action) {
 }
 
 function assertIdentityReady(messageId) {
-  const pending = db.mailActionsForMessage(messageId).find((row) => {
+  const target = db.messageById(messageId);
+  const account = target && db.accountById(target.account_id);
+  const related = account?.mail_transport === "gmail_api" && target.gmail_id ? db.gmailCopies(account.id, target.gmail_id)
+    : account?.mail_transport === "gmail_api" && target.rfc_message_id ? db.gmailLegacy(account.id, target.rfc_message_id) : [];
+  const ids = [...new Set([messageId, ...related.map(row => row.id)])];
+  const pending = ids.flatMap(id => db.mailActionsForMessage(id)).find((row) => {
     const kind = parse(row.intent_json, {}).kind;
     return (kind === "remove" || kind === "undo") &&
       (row.phase === "accepted" || row.phase === "publishing" || row.receipt === "unknown" || row.receipt === "superseded");
@@ -227,8 +234,10 @@ function applyClose(action, receipt, error, dest, skipWrite) {
         uid_validity: dest.uidValidity,
       });
     }
-    opId = rememberMove(action, dest);
+    if (dest.undoable !== false) opId = rememberMove(action, dest);
   } else if (!skipWrite && receipt === "completed" && intent.kind === "undo" && dest) {
+    const clash = db.accountById(action.account_id)?.mail_transport === "gmail_api" && dest.uid && db.messageByUid(action.account_id, dest.folderPath, dest.uid, dest.uidValidity);
+    if (clash && clash.id !== action.message_id) db.deleteMessage(clash.id);
     db.updateMessage(action.message_id, {
       folder_path: dest.folderPath,
       uid: dest.uid,
@@ -242,6 +251,15 @@ function applyClose(action, receipt, error, dest, skipWrite) {
     error: error || null,
     undo_op_id: opId,
   });
+  if (receipt === "completed" && dest?.gmailMessage && Array.isArray(dest.gmailPaths)) {
+    try {
+      db.applyGmailMessage(action.account_id, dest.gmailPaths, dest.gmailMessage);
+      db.pruneGmailCopies(action.account_id, dest.gmailMessage.providerId, dest.gmailPaths);
+    } catch {
+      error = "Gmail confirmed this change, but the local copies could not be refreshed. Refresh before acting again.";
+      db.updateMailAction(action.id, { error });
+    }
+  }
   const stored = db.mailActionById(action.id);
   return outcomeOf(stored, receipt, error, opId);
 }
@@ -297,7 +315,7 @@ async function publishOne(row) {
   if (!db.mailActionById(fresh.id)) return null; // Account removal invalidated this result.
   if (newerPending(fresh)) return applyClose(fresh, "superseded", null, null, true);
   if (attempt.issued && !attempt.error) {
-    return applyClose(fresh, "completed", null, attempt.value && attempt.value.dest);
+    return applyClose(fresh, "completed", attempt.value?.warning || null, attempt.value && attempt.value.dest);
   }
   if (!attempt.issued) {
     batchStopped.add(row.batch_id);
@@ -313,13 +331,14 @@ async function publishOne(row) {
 async function runRemote(action) {
   const intent = parse(action.intent_json, {});
   const source = parse(action.source_json, {});
+  const account = db.accountById(action.account_id);
+  if (isGmail(account) && intent.kind === "remove" && intent.permanent) return { issued: false, error: "Permanent Gmail deletion is unavailable. Use Move to Trash; mail already in Trash stays there." };
   if (!source.uid) {
     if (intent.kind === "undo") {
       return { issued: true, value: { dest: { ...intent.restore, uid: intent.restore.uid || 0, uidValidity: intent.restore.uidValidity || 0 } } };
     }
     return { issued: true, value: { dest: intent.kind === "remove" ? { folderPath: intent.destPath, uid: 0, uidValidity: source.uidValidity } : null } };
   }
-  const account = db.accountById(action.account_id);
   if (!account) return { issued: false, error: "That account is no longer connected." };
   let password;
   try {
@@ -332,11 +351,11 @@ async function runRemote(action) {
     const value = await remote.withClient(account, password, async (client) => {
       entered = true;
       if (intent.kind === "star") {
-        await remote.changeFlags(client, source.folderPath, source.uid, intent.starred ? ["\\Flagged"] : [], intent.starred ? [] : ["\\Flagged"], source.uidValidity);
+        await remote.changeFlags(client, source.folderPath, source.uid, intent.starred ? ["\\Flagged"] : [], intent.starred ? [] : ["\\Flagged"], source.uidValidity, action.message_id);
         return { dest: null };
       }
       if (intent.kind === "read") {
-        await remote.changeFlags(client, source.folderPath, source.uid, intent.unread ? [] : ["\\Seen"], intent.unread ? ["\\Seen"] : [], source.uidValidity);
+        await remote.changeFlags(client, source.folderPath, source.uid, intent.unread ? [] : ["\\Seen"], intent.unread ? ["\\Seen"] : [], source.uidValidity, action.message_id);
         return { dest: null };
       }
       if (intent.kind === "remove" && intent.permanent) {
@@ -344,13 +363,19 @@ async function runRemote(action) {
         return { dest: null };
       }
       const destination = intent.kind === "undo" ? intent.restore.folderPath : intent.destPath;
-      const next = await remote.moveUid(client, source.folderPath, source.uid, destination, source.uidValidity);
+      const next = await remote.moveUid(client, source.folderPath, source.uid, destination, source.uidValidity, action.message_id,
+        { kind: intent.well === "archive" ? "archive" : intent.kind, providerUndo: intent.providerUndo });
       return {
+        warning: next.cacheWarning,
         dest: {
           folderPath: destination,
           uid: next.uid,
           uidValidity: next.uidValidity,
           isDraft: intent.kind === "undo" ? intent.restore.isDraft : 0,
+          providerUndo: next.providerUndo,
+          gmailMessage: next.gmailMessage,
+          gmailPaths: next.gmailPaths,
+          undoable: next.undoable,
         },
       };
     });
@@ -374,7 +399,8 @@ function localDest(action) {
   const intent = parse(action.intent_json, {});
   const source = parse(action.source_json, {});
   if (intent.kind === "remove" && !intent.permanent) {
-    return { folderPath: intent.destPath, uid: 0, uidValidity: source.uidValidity || 0 };
+    return { folderPath: intent.destPath, uid: 0, uidValidity: source.uidValidity || 0,
+      ...(db.accountById(action.account_id)?.mail_transport === "gmail_api" && source.folderPath === intent.destPath ? { undoable: false } : {}) };
   }
   if (intent.kind === "undo") return { ...intent.restore, uid: intent.restore.uid || 0, uidValidity: intent.restore.uidValidity || 0 };
   return null;
@@ -418,6 +444,8 @@ function acceptOne(command, batchId, stopped) {
     return { outcome: { id: command.messageId, status: "failed", kind: command.intent.kind, error: error.message,
       projection: displayOf(row), generation: db.maxActionGeneration(command.messageId) } };
   }
+  const gmailArchive = db.accountById(row?.account_id)?.mail_transport === "gmail_api" && command.intent.kind === "remove"
+    && (command.intent.well === "archive" || command.intent.destWell === "all");
   const open = db.openMailAction(command.messageId);
   if (open && open.phase === "accepted") {
     const openIntent = parse(open.intent_json, {});
@@ -425,7 +453,7 @@ function acceptOne(command, batchId, stopped) {
       const prior = parse(open.prior_json, {});
       const generation = open.generation + 1;
       db.updateMailAction(open.id, { generation, intent_json: JSON.stringify(command.intent) });
-      if (matches(prior, command.intent)) {
+      if (matches(prior, command.intent) && !gmailArchive) {
         writePrior(db.mailActionById(open.id));
         const outcome = closeLocal(db.mailActionById(open.id), "completed");
         return { outcome, terminal: true };
@@ -436,7 +464,7 @@ function acceptOne(command, batchId, stopped) {
   }
   const current = db.messageById(command.messageId);
   const prior = priorOf(current);
-  if (matches(prior, command.intent) && !uncertain(command.messageId) && !command.intent.permanent) {
+  if (matches(prior, command.intent) && !gmailArchive && !uncertain(command.messageId) && !command.intent.permanent) {
     const action = insertAction({
       batchId, messageId: command.messageId, accountId: current.account_id,
       generation: db.maxActionGeneration(command.messageId) + 1,
@@ -480,7 +508,20 @@ function acceptAll(commands) {
   const outcomes = [];
   const accounts = new Set();
   const stopped = { batch: false };
+  const gmailSeen = new Set();
   for (const command of commands) {
+    // Label/All Mail copies represent one Gmail message. Only one structural
+    // journal entry and one Undo snapshot may be created for that identity.
+    const row = db.messageById(command.messageId);
+    if (!command.error && ["remove", "undo"].includes(command.intent?.kind) && row && db.accountById(row.account_id)?.mail_transport === "gmail_api") {
+      const providerId = row.gmail_id || (row.uid > 0 && db.gmailAlias(row.account_id, row.folder_path, row.uid, row.uid_validity)?.provider_id);
+      const identity = providerId ? `id:${providerId}` : row.uid > 0 && row.rfc_message_id ? `rfc:${row.rfc_message_id}` : "";
+      if (identity) {
+        const key = JSON.stringify([row.account_id, command.intent.kind, identity]);
+        if (gmailSeen.has(key)) continue;
+        gmailSeen.add(key);
+      }
+    }
     const result = acceptOne(command, batchId, stopped);
     if (result.outcome) outcomes.push(result.outcome);
     if (result.pending) pending.push(result.pending);
@@ -513,6 +554,10 @@ function removeCommand(messageId, well, targetPath, permanent) {
   if (!row || !db.accountById(row.account_id)) {
     return { messageId, error: { message: "Message or account is no longer available.", stop: true }, intent: { kind: "remove" }, stopBatch: true };
   }
+  if (permanent && isGmail(db.accountById(row.account_id))) {
+    permanent = false;
+    well = "deleteditems";
+  }
   if (permanent) {
     const source = db.folderByPath(row.account_id, row.folder_path);
     if (!source || !["deleteditems", "trash"].includes(source.well_known)) {
@@ -520,7 +565,8 @@ function removeCommand(messageId, well, targetPath, permanent) {
     }
     return { messageId, accountId: row.account_id, intent: { kind: "remove", permanent: true, destPath: row.folder_path }, stopBatch: true };
   }
-  const folder = targetPath ? db.folderByPath(row.account_id, targetPath) : db.folderByWellKnown(row.account_id, well);
+  const folder = targetPath ? db.folderByPath(row.account_id, targetPath) : db.folderByWellKnown(row.account_id, well)
+    || (well === "archive" && isGmail(db.accountById(row.account_id)) ? db.folderByWellKnown(row.account_id, "all") : null);
   if (!folder) {
     return { messageId, error: { message: "That folder is not on this account." }, intent: { kind: "remove" }, stopBatch: true };
   }
@@ -560,6 +606,7 @@ function undoCommands(opIds) {
           kind: "undo",
           opId,
           restore: { folderPath: snap.folderPath, uid: snap.uid, uidValidity: snap.uidValidity, isDraft: snap.isDraft ? 1 : 0 },
+          providerUndo: snap.providerUndo,
         },
       });
     }

@@ -186,6 +186,25 @@ function migrate() {
   if (!all("PRAGMA table_info(accounts)").some((row) => row.name === "label")) {
     run("ALTER TABLE accounts ADD COLUMN label TEXT");
   }
+  for (const [table, column, type] of [["accounts", "mail_transport", "TEXT NOT NULL DEFAULT 'imap'"],
+    ["accounts", "gmail_generation", "INTEGER"], ["folders", "provider_id", "TEXT"], ["messages", "gmail_id", "TEXT"]]) {
+    if (!all(`PRAGMA table_info(${table})`).some(row => row.name === column)) run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+  run(`CREATE TABLE IF NOT EXISTS gmail_messages (
+    account_id TEXT NOT NULL, provider_id TEXT NOT NULL, local_uid INTEGER NOT NULL,
+    thread_id TEXT, draft_id TEXT, labels_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (account_id, provider_id), UNIQUE (account_id, local_uid)
+  )`);
+  if (!all("PRAGMA table_info(gmail_messages)").some(row => row.name === "trash_labels_json")) run("ALTER TABLE gmail_messages ADD COLUMN trash_labels_json TEXT");
+  run(`CREATE TABLE IF NOT EXISTS gmail_aliases (
+    account_id TEXT NOT NULL, folder_path TEXT NOT NULL, uid INTEGER NOT NULL, uid_validity INTEGER NOT NULL,
+    provider_id TEXT NOT NULL, PRIMARY KEY (account_id, folder_path, uid, uid_validity)
+  )`);
+  run(`CREATE TABLE IF NOT EXISTS gmail_sync (
+    account_id TEXT NOT NULL, folder_path TEXT NOT NULL, state_json TEXT NOT NULL,
+    PRIMARY KEY (account_id, folder_path)
+  )`);
+  run("CREATE INDEX IF NOT EXISTS messages_gmail ON messages(account_id, gmail_id, folder_path)");
   run(`CREATE INDEX IF NOT EXISTS messages_thread ON messages(account_id, thread_id)`);
   run(`CREATE TABLE IF NOT EXISTS snooze (
     account_id TEXT NOT NULL,
@@ -383,6 +402,7 @@ function removeAccount(id) {
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
     run("DELETE FROM mail_actions WHERE account_id = ?", [id]);
+    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
@@ -395,18 +415,22 @@ function replaceFolders(accountId, folders, delimiter) {
     const next = new Set(folders.map((folder) => folder.path));
     for (const folder of folders) {
       if (existing.has(folder.path)) {
-        updateChanged("folders", { name: folder.name, well_known: folder.wellKnown },
+        updateChanged("folders", { name: folder.name, well_known: folder.wellKnown, ...(folder.providerId ? { provider_id: folder.providerId } : {}) },
           "account_id = ? AND path = ?", [accountId, folder.path]);
       } else {
         run(
-          `INSERT INTO folders (account_id, path, name, well_known, uid_validity, unread, total, synced_at)
-           VALUES (?, ?, ?, ?, NULL, 0, 0, NULL)`,
-          [accountId, folder.path, folder.name, folder.wellKnown]
+          `INSERT INTO folders (account_id, path, name, well_known, uid_validity, unread, total, synced_at, provider_id)
+           VALUES (?, ?, ?, ?, NULL, 0, 0, NULL, ?)`,
+          [accountId, folder.path, folder.name, folder.wellKnown, folder.providerId || null]
         );
       }
     }
     for (const pathName of existing) {
       if (next.has(pathName)) continue;
+      if (accountById(accountId)?.mail_transport === "gmail_api") {
+        updateChanged("folders", { provider_id: null }, "account_id = ? AND path = ?", [accountId, pathName]);
+        continue; // old cached folders remain readable until their identity is reconciled
+      }
       forgetIds(all("SELECT id FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, pathName]));
       run("DELETE FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, pathName]);
       run("DELETE FROM folders WHERE account_id = ? AND path = ?", [accountId, pathName]);
@@ -833,6 +857,10 @@ function localOutgoingAttachments(json) {
 }
 
 function applyFolderSync(accountId, folderPath, report) {
+  if (report.gmail) {
+    for (const message of report.messages) applyGmailMessage(accountId, [folderPath], message);
+    return true;
+  }
   let flagsChanged = false;
   const result = transaction(() => {
     assertAccountPresent(accountId);
@@ -1761,6 +1789,8 @@ function rewriteFolderPaths(accountId, moves) {
         "UPDATE messages SET folder_path = ? WHERE account_id = ? AND folder_path = ?",
         [move.to, accountId, move.from]
       );
+      run("UPDATE gmail_aliases SET folder_path = ? WHERE account_id = ? AND folder_path = ?", [move.to, accountId, move.from]);
+      run("UPDATE gmail_sync SET folder_path = ? WHERE account_id = ? AND folder_path = ?", [move.to, accountId, move.from]);
       moved.push({ from: move.from, to: move.to });
     }
     return { moved, skipped };
@@ -1793,7 +1823,183 @@ function recentInbox(limit) {
   ).map(inboxRow);
 }
 
+function gmailMigrationBlockers(accountId) {
+  return all("SELECT * FROM mail_actions WHERE account_id = ? AND (phase IN ('accepted', 'publishing') OR receipt IN ('unknown', 'superseded'))", [accountId]).filter(row => {
+    if (["accepted", "publishing"].includes(row.phase)) return true;
+    let kind; try { kind = JSON.parse(row.intent_json).kind; } catch { return true; }
+    if (["read", "star"].includes(kind)) return row.receipt !== "superseded" && flagHeld(row.message_id, kind);
+    return true;
+  }).length
+    + all("SELECT id FROM scheduled_sends WHERE account_id = ? AND status = 'sending'", [accountId]).length;
+}
+
+function enableGmail(accountId) {
+  return transaction(() => {
+    assertAccountPresent(accountId);
+    if (gmailMigrationBlockers(accountId)) throw Object.assign(new Error("Finish or resolve pending mail actions before migrating Gmail."), { code: "conflict" });
+    const account = accountById(accountId);
+    if (account.mail_transport === "gmail_api") return 0;
+    let generation;
+    do { generation = crypto.randomInt(1, 2147483647); }
+    while (get("SELECT 1 FROM messages WHERE account_id = ? AND uid_validity = ? LIMIT 1", [accountId, generation]));
+    run("UPDATE accounts SET mail_transport = 'gmail_api', gmail_generation = ? WHERE id = ?", [generation, accountId]);
+    // Unuploaded edits have a newer RFC id than their old server copy. Keep their
+    // content/revision, but never guess which old server draft may be replaced.
+    const pending = get("SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND draft_pending = 1 AND uid > 0", [accountId]).n;
+    run("UPDATE messages SET uid = 0, uid_validity = 0, gmail_id = NULL WHERE account_id = ? AND draft_pending = 1", [accountId]);
+    return pending;
+  });
+}
+
+function setMailTransport(accountId, value) {
+  if (!["imap", "gmail_api"].includes(value)) throw new Error("Unsupported mail transport.");
+  transaction(() => run("UPDATE accounts SET mail_transport = ? WHERE id = ?", [value, accountId]));
+}
+
+function gmailMap(accountId, providerId) {
+  return get("SELECT * FROM gmail_messages WHERE account_id = ? AND provider_id = ?", [accountId, providerId]);
+}
+
+function rememberGmail(accountId, message) {
+  return transaction(() => {
+    assertAccountPresent(accountId);
+    let row = gmailMap(accountId, message.providerId);
+    if (!row) {
+      const uid = get("SELECT COALESCE(MAX(local_uid), 0) + 1 AS uid FROM gmail_messages WHERE account_id = ?", [accountId]).uid;
+      if (!Number.isSafeInteger(uid) || uid <= 0) throw new Error("Gmail local identity space is exhausted.");
+      run("INSERT INTO gmail_messages (account_id, provider_id, local_uid) VALUES (?, ?, ?)", [accountId, message.providerId, uid]);
+      row = gmailMap(accountId, message.providerId);
+    }
+    const patch = {};
+    if (message.providerThreadId) patch.thread_id = message.providerThreadId;
+    if (message.providerDraftId) patch.draft_id = message.providerDraftId;
+    if (Array.isArray(message.labelIds)) patch.labels_json = JSON.stringify(message.labelIds);
+    if (Object.hasOwn(message, "priorTrashLabels")) patch.trash_labels_json = message.priorTrashLabels == null ? null : JSON.stringify(message.priorTrashLabels);
+    updateChanged("gmail_messages", patch, "account_id = ? AND provider_id = ?", [accountId, message.providerId]);
+    return gmailMap(accountId, message.providerId);
+  });
+}
+
+function gmailAlias(accountId, folderPath, uid, validity) {
+  const generation = accountById(accountId)?.gmail_generation;
+  if (Number(validity) === generation) {
+    return get("SELECT * FROM gmail_messages WHERE account_id = ? AND local_uid = ?", [accountId, uid]);
+  }
+  return get(`SELECT g.* FROM gmail_aliases a JOIN gmail_messages g
+    ON g.account_id = a.account_id AND g.provider_id = a.provider_id
+    WHERE a.account_id = ? AND a.folder_path = ? AND a.uid = ? AND a.uid_validity = ?`, [accountId, folderPath, uid, validity]);
+}
+
+function bindGmailAlias(row, providerId) {
+  return transaction(() => {
+    assertAccountPresent(row.account_id);
+    if (row.uid > 0) {
+      const prior = get("SELECT provider_id FROM gmail_aliases WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?", [row.account_id, row.folder_path, row.uid, row.uid_validity]);
+      if (prior && prior.provider_id !== providerId) throw Object.assign(new Error("Cached Gmail identity is ambiguous. No mail was changed."), { code: "gmail_identity_ambiguous", operationIssued: false });
+      if (!prior) run("INSERT INTO gmail_aliases (account_id, folder_path, uid, uid_validity, provider_id) VALUES (?, ?, ?, ?, ?)", [row.account_id, row.folder_path, row.uid, row.uid_validity, providerId]);
+    }
+    updateChanged("messages", { gmail_id: providerId }, "id = ? AND draft_pending = 0", [row.id]);
+  });
+}
+
+function gmailLegacy(accountId, rfcMessageId, folderPath) {
+  if (!rfcMessageId) return [];
+  return all(`SELECT * FROM messages WHERE account_id = ? AND rfc_message_id = ? AND gmail_id IS NULL
+    ${folderPath ? "AND folder_path = ?" : ""}`, [accountId, rfcMessageId, ...(folderPath ? [folderPath] : [])]);
+}
+
+function applyGmailMessage(accountId, folderPaths, message) {
+  return transaction(() => {
+    const mapping = rememberGmail(accountId, message), account = accountById(accountId);
+    if (message.legacyVerified) {
+      // The provider's unique RFC match covers all label copies, including
+      // folders no longer present in the live membership (for example Trash).
+      const legacy = gmailLegacy(accountId, message.rfcMessageId).filter(row => !row.draft_pending);
+      const seen = new Set();
+      for (const row of legacy) {
+        if (seen.has(row.folder_path)) throw Object.assign(new Error("Multiple cached Gmail messages match this identity. Cached work was retained."), { code: "gmail_identity_ambiguous" });
+        seen.add(row.folder_path);
+      }
+      for (const row of legacy) bindGmailAlias(row, message.providerId);
+    }
+    for (const folderPath of folderPaths) {
+      let found = get("SELECT * FROM messages WHERE account_id = ? AND folder_path = ? AND gmail_id = ?", [accountId, folderPath, message.providerId]);
+      if (!found && message.legacyVerified) {
+        const candidates = gmailLegacy(accountId, message.rfcMessageId, folderPath);
+        if (candidates.length > 1) throw Object.assign(new Error("Multiple cached Gmail messages match this identity. Cached work was retained."), { code: "gmail_identity_ambiguous" });
+        found = candidates[0];
+      }
+      if (found?.draft_pending || (found && messageHeld(found.id))) continue;
+      if (found) bindGmailAlias(found, message.providerId);
+      const complete = found?.body_complete && !message.bodyComplete;
+      const attachments = found?.is_draft && localOutgoingAttachments(found.attachments_json);
+      const input = { ...message, id: found?.id || newMessageId(), accountId, folderPath, uid: mapping.local_uid,
+        uidValidity: account.gmail_generation, threadId: found?.thread_id || message.threadId,
+        ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true } : {}),
+        ...(attachments ? { attachments, hasAttachments: true } : {}) };
+      if (!found) insertMessageRecord(input);
+      else {
+        const patch = { uid: input.uid, uid_validity: input.uidValidity, subject: input.subject || "", snippet: input.snippet || found.snippet,
+          from_addr: input.from || "", to_json: JSON.stringify(input.to || []), cc_json: JSON.stringify(input.cc || []), bcc_json: JSON.stringify(input.bcc || []),
+          rfc_message_id: input.rfcMessageId || null, in_reply_to: input.inReplyTo || null,
+          date_iso: input.date, list_sort_ts: input.listSortTs, unread: input.unread ? 1 : 0, starred: input.starred ? 1 : 0,
+          is_draft: input.isDraft ? 1 : 0, html_body: input.htmlBody || null, text_body: input.textBody || null,
+          has_attachments: input.hasAttachments ? 1 : 0, attachments_json: JSON.stringify(input.attachments || []),
+          body_complete: input.bodyComplete ? 1 : 0, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}) };
+        if (flagHeld(found.id, "read")) delete patch.unread;
+        if (flagHeld(found.id, "star")) delete patch.starred;
+        const indexed = Object.entries(patch).some(([key, value]) => INDEXED_PATCH.has(key) && found[key] !== value);
+        updateChanged("messages", patch, "id = ?", [found.id]); if (indexed) indexText(found.id);
+      }
+      updateChanged("messages", { gmail_id: message.providerId }, "id = ?", [input.id]);
+    }
+  });
+}
+
+function gmailCopies(accountId, providerId) {
+  return all("SELECT * FROM messages WHERE account_id = ? AND gmail_id = ?", [accountId, providerId]);
+}
+
+function pruneGmailCopies(accountId, providerId, livePaths) {
+  transaction(() => {
+    for (const row of gmailCopies(accountId, providerId)) {
+      if (livePaths.includes(row.folder_path) || row.draft_pending || messageHeld(row.id)) continue;
+      forgetIndex(row.id); run("DELETE FROM messages WHERE id = ?", [row.id]);
+    }
+  });
+}
+
+function gmailSyncState(accountId, folderPath, next) {
+  if (next === undefined) {
+    try { return JSON.parse(get("SELECT state_json FROM gmail_sync WHERE account_id = ? AND folder_path = ?", [accountId, folderPath])?.state_json || "{}"); } catch { return {}; }
+  }
+  transaction(() => {
+    assertAccountPresent(accountId);
+    const json = JSON.stringify(next);
+    const previous = get("SELECT state_json FROM gmail_sync WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]);
+    if (previous) updateChanged("gmail_sync", { state_json: json }, "account_id = ? AND folder_path = ?", [accountId, folderPath]);
+    else run("INSERT INTO gmail_sync (account_id, folder_path, state_json) VALUES (?, ?, ?)", [accountId, folderPath, json]);
+    const count = countInFolder(accountId, folderPath);
+    const folder = folderByPath(accountId, folderPath);
+    const patch = { uid_validity: accountById(accountId).gmail_generation, window_done: next.complete ? 1 : 0,
+      sync_horizon_days: next.horizonDays ?? null, total: count,
+      unread: get("SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND folder_path = ? AND unread = 1", [accountId, folderPath]).n };
+    if (previous?.state_json !== json || Object.entries(patch).some(([key, value]) => folder?.[key] !== value)) patch.synced_at = Date.now();
+    updateChanged("folders", patch,
+    "account_id = ? AND path = ?", [accountId, folderPath]);
+  });
+  observedSync.set(JSON.stringify([accountId, folderPath, accountById(accountId).gmail_generation]), Date.now());
+}
+
+function gmailVerifyPage(accountId, folderPath, beforeUid = 0) {
+  return all(`SELECT DISTINCT gmail_id, uid FROM messages WHERE account_id = ? AND folder_path = ?
+    AND gmail_id IS NOT NULL AND uid > 0 ${beforeUid > 0 ? "AND uid < ?" : ""} ORDER BY uid DESC LIMIT 20`,
+  [accountId, folderPath, ...(beforeUid > 0 ? [beforeUid] : [])]);
+}
+
 module.exports = {
+  enableGmail, setMailTransport, gmailMigrationBlockers, gmailMap, rememberGmail, gmailAlias, bindGmailAlias,
+  gmailLegacy, applyGmailMessage, gmailCopies, pruneGmailCopies, gmailSyncState, gmailVerifyPage,
   open,
   close,
   checkpoint: () => storage ? storage.checkpoint() : Promise.resolve(),

@@ -246,6 +246,8 @@ function accountView(row, index) {
     delimiter: row.delimiter || "/",
     imapUsername: row.username,
     authKind: row.auth_kind || "password",
+    mailTransport: row.mail_transport || "imap",
+    gmailMigrationAvailable: row.profile === "gmail" && row.auth_kind === "oauth2" && row.mail_transport !== "gmail_api",
     push: idlePush(row.id),
   };
   if (row.profile === "custom") {
@@ -436,6 +438,10 @@ async function secretFor(account) {
     throw error;
   }
   if (account.auth_kind !== "oauth2") return stored;
+  if (account.mail_transport === "gmail_api") {
+    let grant; try { grant = JSON.parse(stored); } catch { grant = {}; }
+    if (!oauthConfig.hasPurposeScopes(grant.grantedScopes || "", "google", "imap")) throw Object.assign(new Error("Gmail API mail permission is missing. Reconnect Google; cached work was retained."), { code: "scope_missing" });
+  }
   const result = await oauth.accessTokenFor(account, stored, "imap");
   if (secrets.getPassword(account.id) !== stored) {
     const error = new Error("This mailbox connection changed. Try again with the current connection.");
@@ -444,6 +450,7 @@ async function secretFor(account) {
   }
   if (typeof result === "string") return result;
   if (result && result.store) {
+    if (account.mail_transport === "gmail_api" && !oauthConfig.hasPurposeScopes(JSON.parse(result.store).grantedScopes || "", "google", "imap")) throw Object.assign(new Error("The refreshed Google grant is missing Gmail API mail permission. Reauthorize the mailbox."), { code: "scope_missing" });
     try { secrets.setPassword(account.id, result.store); } catch { /* best effort */ }
     return result.token;
   }
@@ -935,6 +942,15 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
   };
   try {
     const folder = db.folderByPath(account.id, folderPath);
+    if (client.gmail) {
+      const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: batchSize(account) });
+      assertAccountCurrent(account);
+      clearStrikes(account.id);
+      emitFolderSync(account.id, folderPath, result.bootstrapped);
+      broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folderPath, folderIds: [folderPath] });
+      if (result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
+      return result;
+    }
     const result = folder && windowOpen(folder, days)
       ? await warmFolder(client, account, folder, started, days, bounds)
       : await bootstrapFolder(client, account, folderPath, started, days, bounds);
@@ -1043,7 +1059,7 @@ async function syncAccountAdmitted(account, options) {
           const listed = await remote.listFolderRecords(client);
           assertAccountCurrent(account);
           db.replaceFolders(account.id, listed.folders, listed.delimiter);
-          const folders = db.foldersFor(account.id);
+          const folders = db.foldersFor(account.id).filter(folder => account.mail_transport !== "gmail_api" || folder.provider_id);
           if (background) {
             plan = planBackgroundFolders(folders, activeFolder.get(account.id), backgroundCursor.get(account.id) || 0);
             jobs = plan.jobs;
@@ -1360,7 +1376,7 @@ async function settleOAuthMailbox(id) {
   emitAccounts();
 }
 
-async function connectOAuthAccount(providerInput, expectedAccountId) {
+async function connectOAuthAccount(providerInput, expectedAccountId, options = {}) {
   const gen = ++oauthGeneration;
   // OAuth reveals the email only after sign-in. Pin every currently connected
   // incarnation so an implicit same-email reconnect cannot become a fresh add
@@ -1368,6 +1384,10 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
   const reconnects = db.listAccountRows().map(bindAccount);
   const expected = expectedAccountId ? reconnects.find(row => row.id === expectedAccountId) : null;
   if (expectedAccountId && !expected) return fail("account_mismatch", "Sign in with the mailbox named in Reconnect. Existing accounts and credentials are unchanged.");
+  if (expected?.profile === "gmail" && expected.auth_kind === "oauth2" && expected.mail_transport !== "gmail_api" && options.migrateGmail !== true) {
+    return fail("gmail_migration_required", "Review Migrate Gmail to Gmail API in Settings → Accounts first. Google OAuth remains available; cached mail and drafts stay in this account.");
+  }
+  const expectedSecret = expected ? secrets.getPassword(expected.id) : null;
   let signed;
   try {
     signed = await oauth.signIn(providerInput, oauthConfig.providerKey(providerInput) === "google" ? "bundle" : "imap", { expectedEmail: expected?.email });
@@ -1422,15 +1442,9 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
   });
   const existing = db.accountByEmail(signed.email);
   const id = existing ? existing.id : draft.id;
-  // A narrower reconnect must never downgrade an existing primary token.
-  if (existing && signed.provider === "google") {
-    let previous;
-    try { previous = JSON.parse(secrets.getPassword(id)); } catch { /* password or no prior grant */ }
-    if (previous?.grantedScopes && !oauthConfig.hasScopes(signed.grantedScopes, previous.grantedScopes)) {
-      const message = "Some previously granted permissions were omitted. Existing credentials were retained; approve the missing permissions and try again.";
-      finishOAuthPage(signed, false, message);
-      return fail("scope_missing", message);
-    }
+  if (existing?.profile === "gmail" && existing.auth_kind === "oauth2" && existing.mail_transport !== "gmail_api" && options.migrateGmail !== true) {
+    finishOAuthPage(signed, false, "Review Gmail API migration in Settings → Accounts. Existing mail and credentials were retained.");
+    return fail("gmail_migration_required", "Review Gmail API migration in Settings → Accounts. Existing mail and credentials were retained.");
   }
   const displayName = signed.displayName || null;
   const login = {
@@ -1449,25 +1463,49 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
   const previous = new Map();
   const written = [];
   let stage = "keychain";
+  let detachedDrafts = 0;
   try {
+    await exclusive(id, () => {
+    if (gen !== oauthGeneration) throw Object.assign(new Error("Sign-in canceled. The current connection was retained."), { code: "oauth_cancelled" });
+    if (reconnect) assertAccountCurrent(reconnect);
+    if (expected && secrets.getPassword(id) !== expectedSecret) throw Object.assign(new Error("The mailbox credentials changed during sign-in. Retry for the current connection."), { code: "conflict" });
+    if (signed.provider === "google" && existing && db.gmailMigrationBlockers(id)) throw Object.assign(new Error("Finish or resolve pending mail actions before migrating Gmail."), { code: "conflict" });
+    if (signed.provider === "google" && existing) {
+      // Keep separately granted features without claiming a union of token scopes.
+      for (const purpose of ["calendar", "organize", "rules", "vacation"]) {
+        const key = `${id}:${purpose}`;
+        if (oauthConfig.hasPurposeScopes(signed.grantedScopes, "google", purpose)) {
+          if (secrets.getPassword(key)) writes.push([key, null]);
+          continue;
+        }
+        const legacy = [key, `${id}:bundle`, id].map(name => secrets.getPassword(name)).find(raw => {
+          try { return oauthConfig.hasPurposeScopes(JSON.parse(raw).grantedScopes || "", "google", purpose); } catch { return false; }
+        });
+        if (legacy) writes.push([key, legacy]);
+      }
+      if (secrets.getPassword(`${id}:bundle`)) writes.push([`${id}:bundle`, null]);
+    }
     for (const [key] of writes) previous.set(key, secrets.getPassword(key));
     for (const [key, value] of writes) {
       written.push(key);
-      secrets.setPassword(key, value);
+      if (value == null) secrets.deletePassword(key); else secrets.setPassword(key, value);
     }
     stage = "storage";
-    if (existing) db.updateAccountLogin(id, login);
-    else {
-      db.insertAccount({
+    db.transaction(() => {
+      if (existing) db.updateAccountLogin(id, login);
+      else db.insertAccount({
         id,
         email: draft.email,
         ...login,
         delimiter: "/",
         createdAt: Date.now(),
       });
-    }
+      if (signed.provider === "google") detachedDrafts = db.enableGmail(id);
+    });
+    if (signed.provider === "google" && existing) accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
     oauthCommitted.add(id);
     syncRetryScheduler.clear(id);
+    });
   } catch (error) {
     let restored = true;
     for (const key of written.reverse()) {
@@ -1476,11 +1514,11 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
         else secrets.setPassword(key, previous.get(key));
       } catch { restored = false; }
     }
-    const message = restored
+    const message = ["conflict", "oauth_cancelled"].includes(error?.code) ? error.message : restored
       ? (stage === "keychain" ? "Could not save credentials. Previous credentials were restored." : "Could not save this account. Previous credentials were restored.")
       : "Could not restore all credentials after a storage failure. Reconnect the mailbox.";
     finishOAuthPage(signed, false, message);
-    return fail(stage, message);
+    return fail(["conflict", "oauth_cancelled"].includes(error?.code) ? error.code : stage, message);
   }
   finishOAuthPage(signed, true);
   let grantWarning = "";
@@ -1496,8 +1534,11 @@ async function connectOAuthAccount(providerInput, expectedAccountId) {
   }
   const current = db.accountById(id);
   if (!current || gen !== oauthGeneration) return fail("oauth_cancelled", "Sign-in stopped. Any saved mailbox connection was retained.");
-  const missing = ["calendar", "organize", "vacation", "rules"].filter((purpose) => !sidecar.gateAccount(current, purpose).ok);
+  const missing = (signed.provider === "google" ? ["organize", "vacation", "rules"] : ["calendar", "organize", "vacation", "rules"]).filter((purpose) => !sidecar.gateAccount(current, purpose).ok);
   if (missing.length && !grantWarning) grantWarning = "Some feature permissions were not granted. Enable the missing features to try again.";
+  if (detachedDrafts) grantWarning += `${grantWarning ? " " : ""}${detachedDrafts} unuploaded draft edit(s) were kept locally. Save them again; an earlier server copy may remain.`;
+  if (signed.provider === "google" && oauthConfig.hasScopes(signed.grantedScopes || "", "https://mail.google.com/")) grantWarning += `${grantWarning ? " " : ""}Google returned an existing broad mail grant. The request is narrower, but this granted permission has not been narrowed. Review Google app access before deliberately revoking and reconnecting.`;
+  if (signed.provider === "google" && idleController) await idleController.forget(id).catch(() => {});
   emitAccounts({ activeAccountId: id, folderId: "" });
   watchIdle();
   setTimeout(() => {
@@ -1590,6 +1631,7 @@ async function connectAccount(params) {
     db.transaction(() => {
       if (existing) db.updateAccountLogin(id, login);
       else db.insertAccount({ id, email, ...login, delimiter: draft.delimiter || "/", createdAt: Date.now() });
+      db.setMailTransport(id, "imap");
       db.replaceFolders(id, draft.folders || [], draft.delimiter || "/");
     });
   } catch (error) {
@@ -2026,6 +2068,11 @@ async function fillOvernightBodies() {
   return { ran: true, fetched: fresh && fresh.body_complete === 1 ? 1 : 0, window: true };
 }
 
+function needsGmailMetadata(row, account) {
+  return account?.mail_transport === "gmail_api" && (!row.gmail_id || Number(row.uid_validity) !== Number(account.gmail_generation) || db.jsonList(row.attachments_json)
+    .some(file => !String(file.storageUrl || "").startsWith("local:") && !String(file.id || "").startsWith("gmail:")));
+}
+
 async function ensureBody(row, options) {
   const background = !!(options && options.background);
   const outcome = options && options.outcome;
@@ -2034,9 +2081,10 @@ async function ensureBody(row, options) {
   };
   // Full RFC822 via fetchSource. A text/html part fetch needs stored structure
   // so attachments and recipient headers stay intact.
-  if (!row || row.draft_pending || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
+  if (!row || row.draft_pending || !row.uid) return row;
   const account = db.accountById(row.account_id);
   if (!account) return row;
+  if (row.body_complete === 1 && row.recipient_headers_json != null && !needsGmailMetadata(row, account)) return row;
   if (background && priorityWaiting(account.id)) {
     markSkip();
     return row;
@@ -2051,11 +2099,12 @@ async function ensureBody(row, options) {
     }
     // Another open may have filled the cache while this request queued.
     row = db.messageById(row.id);
-    if (!row || row.draft_pending || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
+    if (!row || row.draft_pending || !row.uid || (row.body_complete === 1 && row.recipient_headers_json != null && !needsGmailMetadata(row, account))) return row;
     actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
     bodyProgress.start(bodyTask);
-    const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity));
+    const metadataOnly = account.mail_transport === "gmail_api" && row.body_complete === 1;
+    const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity, { metadataOnly }));
     bodyResult = "incomplete";
     // A FETCH row for another UID must not be written onto this message.
     if (!fetched || Number(fetched.uid) !== Number(row.uid)) return row;
@@ -2067,17 +2116,17 @@ async function ensureBody(row, options) {
       error.code = "message_moving";
       throw error;
     }
+    const localFiles = account.mail_transport === "gmail_api" && row.is_draft ? db.jsonList(row.attachments_json).filter(file => String(file.storageUrl || "").startsWith("local:")) : [];
     db.updateMessage(row.id, {
-      html_body: fetched.htmlBody,
-      text_body: fetched.textBody,
-      snippet: fetched.snippet || row.snippet,
-      attachments_json: JSON.stringify(fetched.attachments || []),
-      has_attachments: fetched.hasAttachments ? 1 : 0,
-      body_complete: fetched.bodyComplete ? 1 : 0,
+      ...(account.mail_transport === "gmail_api" && fetched.providerId && Number.isSafeInteger(fetched.providerUid) && fetched.providerUid > 0 && fetched.providerValidity === account.gmail_generation
+        ? { gmail_id: fetched.providerId, uid: fetched.providerUid, uid_validity: fetched.providerValidity } : {}),
+      ...(metadataOnly ? {} : { html_body: fetched.htmlBody, text_body: fetched.textBody, body_complete: fetched.bodyComplete ? 1 : 0, snippet: fetched.snippet || row.snippet }),
+      attachments_json: JSON.stringify(localFiles.length ? localFiles : fetched.attachments || []),
+      has_attachments: localFiles.length > 0 || fetched.hasAttachments ? 1 : 0,
       subject: fetched.subject || row.subject,
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
     });
-    bodyResult = fetched.bodyComplete ? "done" : "incomplete";
+    bodyResult = metadataOnly || fetched.bodyComplete ? "done" : "incomplete";
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
   } catch (error) {
@@ -2112,6 +2161,7 @@ function storeImapHits(account, folderPath, found) {
   assertAccountCurrent(account);
   const messages = found && Array.isArray(found.messages) ? found.messages : [];
   if (!messages.length) return [];
+  if (found.gmail) return messages.map(message => db.gmailCopies(account.id, message.providerId).find(row => row.folder_path === folderPath) || db.gmailCopies(account.id, message.providerId)[0]).filter(Boolean).map(listRow);
   db.applyFolderSync(account.id, folderPath, {
     messages,
     validity: found.validity,
@@ -2162,6 +2212,11 @@ function rememberApiHit(account, hit) {
 async function searchImap(account, text, limit) {
   const password = await secretFor(account);
   return exclusive(account.id, () => remote.withClient(account, password, async (client) => {
+    if (client.gmail) {
+      const all = db.folderByWellKnown(account.id, "all");
+      const found = await client.gmail.search(all.path, text, limit);
+      return storeImapHits(account, all.path, found).slice(0, limit);
+    }
     if (account.profile === "gmail") {
       for (const box of GMAIL_ALL) {
         let found = null;
@@ -2338,7 +2393,7 @@ async function refillSenderApi(account, address, cursor, runPage) {
   let nextCursor = null;
   for (let round = 0; round < SENDER_REQUESTS && exact.length < SENDER_EXACT; round += 1) {
     const page = await runPage(step, SENDER_EXACT - exact.length);
-    const stored = (page.hits || []).map((hit) => rememberApiHit(account, hit)).filter(Boolean);
+    const stored = page.stored || (page.hits || []).map((hit) => rememberApiHit(account, hit)).filter(Boolean);
     exact.push(...senderSummaries(stored, address, account.id));
     if (page.short || !page.cursor) {
       exhausted = true;
@@ -2354,6 +2409,18 @@ async function refillSenderApi(account, address, cursor, runPage) {
 
 async function searchSenderGmailApi(account, address, cursor, token) {
   let pageToken = cursor && cursor.pageToken ? String(cursor.pageToken) : "";
+  if (account.mail_transport === "gmail_api") return exclusive(account.id, () => remote.withClient(account, token.accessToken, async client => {
+    return refillSenderApi(account, address, pageToken ? { pageToken } : null, async (step, limit) => {
+      const page = await client.gmail.api.listMessages({ query: senderHistory.gmailFromQuery(address), pageToken: step?.pageToken || "", limit });
+      const stored = [];
+      for (const row of page.messages) {
+        await client.gmail.adopt(await client.gmail.api.getMessage(row.id));
+        const cached = db.gmailCopies(account.id, row.id)[0];
+        if (cached) stored.push(listRow(cached));
+      }
+      return { stored, short: !page.nextPageToken, cursor: page.nextPageToken ? { pageToken: page.nextPageToken } : null };
+    });
+  }));
   return refillSenderApi(account, address, pageToken ? { pageToken } : null, async (step, limit) => {
     const page = await providerApi.searchGmailPage(token.accessToken, senderHistory.gmailFromQuery(address), limit, step && step.pageToken);
     return {
@@ -2907,6 +2974,7 @@ function provedRefusal(error) {
   const command = typeof error.command === "string" ? error.command.toUpperCase() : "";
   const responseCode = Number(error.responseCode);
   const proved = PRE_ACCEPT_CODES.has(code) || CERT_CODES.has(code)
+    || error.operationIssued === false
     || code === "EAUTH" || code === "EMESSAGE" || code === "auth"
     || (Number.isFinite(responseCode) && responseCode >= 400)
     || (PRE_ACCEPT_COMMANDS.has(command) && responseCode >= 400);
@@ -2943,6 +3011,11 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       bodyComplete: true,
       inReplyTo: (extra && extra.inReplyTo) || null,
     });
+    if (account.mail_transport === "gmail_api" && info?.providerId) {
+      const mapping = db.rememberGmail(account.id, { providerId: info.providerId, labelIds: ["SENT"] });
+      db.updateMessage(emailId, { gmail_id: info.providerId, uid: mapping.local_uid, uid_validity: account.gmail_generation });
+      return { emailId, messageId: keptId };
+    }
     if (password && account.profile !== "gmail") {
       try {
         const raw = await remote.buildRaw({ ...options, messageId: keptId });
@@ -3191,6 +3264,13 @@ function answer(channel, args) {
     return ok(true);
   }
   if (channel === "mail:cancelOAuth") return cancelOAuth();
+  if (channel === "mail:migrateGmail") {
+    const account = db.accountById(params?.accountId);
+    if (!account || account.profile !== "gmail" || account.auth_kind !== "oauth2") return fail("invalid", "Choose a connected Google OAuth mailbox.");
+    if (params?.confirmed !== true) return fail("confirmation_required", "Review Gmail API migration and reauthorization before continuing.");
+    if (db.gmailMigrationBlockers(account.id)) return fail("conflict", "Finish or resolve pending mail actions before migrating Gmail.");
+    return connectOAuthAccount("google", account.id, { migrateGmail: true });
+  }
   if (channel === "mail:setOnline") {
     const online = !params || params.online !== false;
     if (online) idleOnline();
@@ -3433,6 +3513,7 @@ function answer(channel, args) {
           path: folder.path,
           name: folder.name,
           wellKnown: folder.well_known,
+          providerId: folder.provider_id,
         }));
         const plan = db.planImapPathMove(records, sourceId, destinationId, delimiter);
         if (!plan.ok) return fail(plan.code || "invalid", plan.message);
@@ -3450,7 +3531,13 @@ function answer(channel, args) {
         }
         const serverFolders = listed && Array.isArray(listed.folders) ? listed.folders : [];
         const confirmed = db.confirmedImapRenames(plan, serverFolders);
-        const rewrite = db.rewriteFolderPaths(account.id, confirmed);
+        // Stable-id Gmail discovery may already have reconciled the rename.
+        const reconciled = account.mail_transport === "gmail_api" ? confirmed.filter(move => {
+          const providerId = records.find(row => row.path === move.from)?.providerId;
+          return providerId && !db.folderByPath(account.id, move.from) && db.folderByPath(account.id, move.to)?.provider_id === providerId;
+        }) : [];
+        const rewritten = db.rewriteFolderPaths(account.id, confirmed.filter(move => !reconciled.includes(move)));
+        const rewrite = { moved: [...reconciled.map(({ from, to }) => ({ from, to })), ...rewritten.moved], skipped: rewritten.skipped };
         const sourceMoved = rewrite.moved.some((row) => row.from === plan.source);
         if (!sourceMoved || rewrite.skipped.length) {
           const message = rewrite.skipped.length
@@ -3495,6 +3582,7 @@ function answer(channel, args) {
           return fail("PROVIDER_ERROR", remote.explain(error));
         }
         if (!db.folderByPath(account.id, folderPath)) {
+          if (account.mail_transport === "gmail_api") return fail("partial", "Gmail accepted the label creation but has not returned its identity. Refresh folders before moving mail; do not repeat creation.");
           db.replaceFolders(account.id, [...db.foldersFor(account.id).map((folder) => ({
             path: folder.path,
             name: folder.name,
@@ -3533,6 +3621,10 @@ function answer(channel, args) {
         if (existing && params.draftRevision && params.draftRevision !== db.draftRevision(existing)) {
           return fail("draft_conflict", "This draft changed in another window. Your text is still here; keep a copy before reopening the saved draft.");
         }
+        // A legacy UID is not a Gmail identity. Preserve the remote draft rather
+        // than replacing its RFC id locally and then trying to resolve that new id.
+        const detachedGmailDraft = account.mail_transport === "gmail_api" && existing?.uid > 0
+          && !db.gmailAlias(account.id, existing.folder_path, existing.uid, existing.uid_validity);
         const resolved = resolveAttachments(params && params.attachments, account);
         if (resolved.error) return fail(resolved.error.code, resolved.error.message);
         const files = resolved.files;
@@ -3549,8 +3641,8 @@ function answer(channel, args) {
           id: emailId,
           accountId: account.id,
           folderPath: drafts.path,
-          uid: existing ? existing.uid : 0,
-          uidValidity: existing ? existing.uid_validity : 0,
+          uid: existing && !detachedGmailDraft ? existing.uid : 0,
+          uidValidity: existing && !detachedGmailDraft ? existing.uid_validity : 0,
           threadId: (params && params.threadId) || emailId,
           rfcMessageId: messageId,
           subject: presented.subject,
@@ -3573,6 +3665,7 @@ function answer(channel, args) {
         };
         if (existing) {
           db.updateMessage(emailId, {
+            ...(detachedGmailDraft ? { uid: 0, uid_validity: 0, gmail_id: null } : {}),
             folder_path: drafts.path,
             thread_id: record.threadId,
             subject: record.subject,
@@ -3597,7 +3690,7 @@ function answer(channel, args) {
           db.insertMessage(record);
         }
         let remoteSaved = false;
-        let warning = "";
+        let warning = detachedGmailDraft ? "The earlier Gmail draft could not be linked safely and was retained on the server. This Save creates a new server copy." : "";
         const revision = db.draftRevision(db.messageById(emailId));
         try {
           await exclusive(account.id, async () => {
@@ -3607,11 +3700,13 @@ function answer(channel, args) {
             const raw = await remote.buildRaw({
               ...mimeOptions(account, { ...params, subject: presented.subject, body: html }, files),
               messageId,
+              keepBcc: account.mail_transport === "gmail_api",
             });
             await remote.withClient(account, password, async (client) => {
               if (!matches()) { warning = "A newer draft revision was saved. This upload was skipped."; return; }
               actions.assertIdentityReady(emailId);
               const prior = db.messageById(emailId);
+              if (client.gmail && prior.uid > 0) await client.gmail.resolve(prior.folder_path, prior.uid, prior.uid_validity, emailId);
               if (prior.uid > 0 && prior.uid_validity > 0) await remote.checkUidValidity(client, prior.folder_path, prior.uid_validity);
               if (!matches()) { warning = "A newer draft revision was saved. This upload was skipped."; return; }
               // Keep the old remote copy until the replacement is confirmed and
@@ -3623,6 +3718,7 @@ function answer(channel, args) {
               db.updateMessage(emailId, {
                 uid: confirmed ? Number(appended.uid) : 0,
                 uid_validity: confirmed ? Number(appended.uidValidity) : 0,
+                ...(client.gmail ? { gmail_id: appended.providerId } : {}),
                 draft_pending: 0,
               });
               remoteSaved = true;
@@ -3653,13 +3749,16 @@ function answer(channel, args) {
                 const password = await secretFor(account);
                 actions.assertIdentityReady(row.id);
                 const current = db.messageById(row.id);
+                if (account.mail_transport === "gmail_api" && current && db.draftRevision(current) !== db.draftRevision(row)) throw Object.assign(new Error("This draft changed while deletion was waiting. Review the current draft before discarding it."), { code: "draft_changed" });
                 if (current) await remote.withClient(account, password, (client) => remote.removeUid(client, current.folder_path, current.uid, current.uid_validity));
               });
             }
           } catch (error) {
-            if (error?.code === "uid_validity_changed" || error?.code === "message_moving") return fail(error.code, error.message);
+            if (db.accountById(row.account_id)?.mail_transport === "gmail_api" || error?.code === "uid_validity_changed" || error?.code === "message_moving") return fail(error.code || "draft_cleanup", error.message || "The Gmail draft could not be moved to Trash. The local copy was retained.");
             // Drop the local row even if the server delete fails.
           }
+          const current = db.messageById(row.id);
+          if (db.accountById(row.account_id)?.mail_transport === "gmail_api" && current && db.draftRevision(current) !== db.draftRevision(row)) return fail("draft_changed", "The server copy was moved to Trash. New local edits were retained; review the current draft.");
           db.deleteMessage(row.id);
           emitAccounts();
         }

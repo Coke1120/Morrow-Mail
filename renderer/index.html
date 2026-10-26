@@ -548,8 +548,9 @@
             <div><dt>Proposals</dt><dd><code data-bot-operation>agent.proposals.list</code>, <code data-bot-operation>draft.proposals.submit</code>, <code data-bot-operation>draft.proposals.list</code> — inert local proposals for review. Draft lists omit the body; proposals do not send or create mailbox drafts.</dd></div>
             <div><dt>Send plain text</dt><dd><code data-bot-operation>mail.send</code> — separate permission; sends immediately. Optional <code>inReplyToMessageId</code> links a same-account reply; you supply recipients and text.</dd></div>
           </dl>
+          <p id="cli-gmail-transport" class="hint">Google sign-in stays OAuth. New or explicitly migrated Gmail accounts use Gmail API; other providers retain their transports. Gmail desktop Delete moves to Trash, including repeated Delete. Migration and separate Calendar reauthorization are reviewed in desktop Settings → Accounts; they are not bot commands. Requested scopes do not revoke older grants.</p>
           <p id="cli-unavailable"><strong>Unavailable to bots:</strong> attachment upload/attach/download, mailbox draft create/edit/delete, full thread retrieval, dedicated reply-all/forward, read/unread changes, move/archive/delete, and calendar actions. The desktop app has additional actions; they are not bot commands.</p>
-          <p id="cli-provider-semantics"><code>bridge.describe</code> reports whether granted operations may contact providers: <code>providerCalls</code> is true when <code>mail.send</code> is available. Cached reads stay local. This is not a per-request network count: send replay/join or pre-submit denial may still involve From lookup or OAuth refresh. Receipts describe SMTP outcomes and replay status, not absence of provider traffic.</p>
+          <p id="cli-provider-semantics"><code>bridge.describe</code> reports whether granted operations may contact providers: <code>providerCalls</code> is true when <code>mail.send</code> is available. Cached reads stay local. This is not a per-request network count: send replay/join or pre-submit denial may still involve From lookup or OAuth refresh. Receipts describe mail-provider submission outcomes and replay status, not absence of provider traffic.</p>
         </section>
         <details class="cli-guide" id="cli-connection">
           <summary>Connect another device with Tailscale</summary>
@@ -563,8 +564,8 @@
         </details>
         <details class="cli-guide" id="cli-send-safety">
           <summary>Sending, revocation and retries</summary>
-          <p>Send permission allows mail without waiting for you to press Send. Morrow rechecks the grant, expiry, installation, enabled flag, mailbox/send scopes and connected account after From resolution, before claiming the request, and again after mailbox/credential waits immediately before SMTP submission.</p>
-          <p>Revoking or disabling access stops a pending send before that boundary. Once SMTP submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
+          <p>Send permission allows mail without waiting for you to press Send. Morrow rechecks the grant, expiry, installation, enabled flag, mailbox/send scopes and connected account after From resolution, before claiming the request, and again after mailbox/credential waits immediately before mail-provider submission.</p>
+          <p>Revoking or disabling access stops a pending send before that boundary. Once mail-provider submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
           <p><code>mail.send</code> requires a UUID in <code>--request-id</code>. Retry the same ID and content; the client never retries automatically. <code>SEND_OUTCOME_UNKNOWN</code> means do not send the same message under a new ID. For partial delivery, review rejected recipients separately; do not resend the original list.</p>
         </details>
         <details class="cli-guide" id="cli-json-examples">
@@ -637,7 +638,7 @@
     <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>
-        <p class="hint">Pending messages send while Morrow is open; a missed time sends on the next launch. Uncertain or SMTP-accepted deliveries never resend automatically: check Sent before recovering a draft copy. This list includes every account, whichever mailbox is selected. Edit/reschedule saves a local draft and requires an explicit new schedule. Cancel or dismiss asks twice; Undo restores the record with its existing delivery status.</p>
+        <p class="hint">Pending messages send while Morrow is open; a missed time sends on the next launch. Uncertain or provider-accepted deliveries never resend automatically: check Sent before recovering a draft copy. This list includes every account, whichever mailbox is selected. Edit/reschedule saves a local draft and requires an explicit new schedule. Cancel or dismiss asks twice; Undo restores the record with its existing delivery status.</p>
         <p id="scheduled-summary" class="hint"></p>
         <p id="scheduled-status" role="status"></p>
         <div class="row">
@@ -652,7 +653,7 @@
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
         <p id="connect-recovery-note" class="hint"></p>
-        <p class="hint">Google connects mail, calendar, organize, Out of Office, and inbox rules with one consent. Microsoft connects mail first, then checks those features for the same account. Approve any missing permissions; you can keep mail if you decline features. Yahoo Mail uses an app password.</p>
+        <p class="hint">Google OAuth connects Gmail API mail, labels, Out of Office and inbox rules. Calendar is requested separately; existing Google OAuth IMAP accounts migrate after review in Settings → Accounts. Microsoft connects mail first, then checks those features for the same account. Approve any missing permissions; you can keep mail if you decline features. Yahoo Mail uses an app password.</p>
         <div class="row" role="group" aria-label="Account providers">
           <button type="button" class="primary" id="oauth-google">Continue with Google</button>
           <button type="button" class="ghost" id="oauth-microsoft">Continue with Microsoft</button>
@@ -1167,6 +1168,8 @@
           </div>
           </div>
           <details class="settings-disclosure" id="account-permissions"><summary>Permissions &amp; calendar access</summary>
+            <p id="settings-gmail-migration" class="hint">Google login still uses OAuth. New Google connections use Gmail API mail access; Calendar is requested separately. Existing Google OAuth mailboxes migrate only after review. Account ids, cached mail and drafts stay. A narrower request does not revoke older broad grants. Gmail Delete moves to Trash; deleting again keeps mail there. Microsoft and other IMAP deletion behavior is unchanged.</p>
+            <div class="row"><button type="button" class="ghost" id="settings-gmail-migrate" hidden>Migrate Gmail to Gmail API</button><button type="button" class="ghost" id="settings-gmail-calendar" hidden>Reauthorize Google Calendar separately</button><button type="button" class="ghost" id="settings-gmail-cancel" hidden>Cancel Google reauthorization</button></div>
             <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
             <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
           </details>
