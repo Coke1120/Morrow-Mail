@@ -178,6 +178,9 @@ function migrate() {
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "recipient_headers_json")) {
     run("ALTER TABLE messages ADD COLUMN recipient_headers_json TEXT");
   }
+  if (!all("PRAGMA table_info(messages)").some((row) => row.name === "body_warning")) {
+    run("ALTER TABLE messages ADD COLUMN body_warning TEXT");
+  }
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "draft_pending")) {
     run("ALTER TABLE messages ADD COLUMN draft_pending INTEGER NOT NULL DEFAULT 0");
   }
@@ -973,6 +976,7 @@ function applyFolderSync(accountId, folderPath, report) {
         );
       }
       indexText(id);
+      updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
     }
     for (const flags of Array.isArray(report.flags) ? report.flags : []) {
       const row = get("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
@@ -1103,6 +1107,7 @@ function insertMessageRecord(row) {
         senderHeader.bareAddress(row.fromAddress) || senderHeader.bareAddress(row.from) || null,
       ]
     );
+    if (row.bodyWarning) run("UPDATE messages SET body_warning = ? WHERE id = ?", [row.bodyWarning, row.id]);
     indexText(row.id);
 }
 
@@ -1952,7 +1957,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
       const attachments = found?.is_draft && localOutgoingAttachments(found.attachments_json);
       const input = { ...message, id: found?.id || newMessageId(), accountId, folderPath, uid: mapping.local_uid,
         uidValidity: account.gmail_generation, threadId: found?.thread_id || message.threadId,
-        ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true } : {}),
+        ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true, bodyWarning: message.bodyWarning || found.body_warning } : {}),
         ...(attachments ? { attachments, hasAttachments: true } : {}) };
       if (!found) insertMessageRecord(input);
       else {
@@ -1964,7 +1969,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
           date_iso: input.date, list_sort_ts: input.listSortTs, unread: input.unread ? 1 : 0, starred: input.starred ? 1 : 0,
           is_draft: input.isDraft ? 1 : 0, html_body: input.htmlBody || null, text_body: input.textBody || null,
           has_attachments: input.hasAttachments ? 1 : 0, attachments_json: JSON.stringify(input.attachments || []),
-          body_complete: input.bodyComplete ? 1 : 0, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}) };
+          body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}) };
         if (flagHeld(found.id, "read")) delete patch.unread;
         if (flagHeld(found.id, "star")) delete patch.starred;
         const indexed = Object.entries(patch).some(([key, value]) => INDEXED_PATCH.has(key) && found[key] !== value);

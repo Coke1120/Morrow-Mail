@@ -2486,6 +2486,7 @@ function composeFileMeta(row) {
     storageUrl,
     filename,
     mimeType: String(row.mimeType || row.contentType || "application/octet-stream"),
+    ...(row.contentId ? { contentId: row.contentId } : {}),
     size: Number.isFinite(size) && size > 0 ? size : 0,
   };
 }
@@ -2509,6 +2510,7 @@ function attachmentPayload(rows) {
     mimeType: row.mimeType,
     size: row.size,
     id: row.id,
+    ...(row.contentId ? { contentId: row.contentId } : {}),
   }));
 }
 
@@ -3343,17 +3345,20 @@ function addressRows(value) {
   const parts = Array.isArray(value) ? value : (value ? [value] : []);
   const rows = [];
   for (const item of parts) {
-    const text = String(item || "").trim();
+    const structured = item && typeof item === "object" && item.address;
+    const text = structured
+      ? (item.name ? JSON.stringify(item.name) + " <" + item.address + ">" : item.address)
+      : String(item || "").trim();
     if (!text) continue;
-    const angled = text.match(/<([^<>]+)>/);
-    const addr = (angled ? angled[1] : text).trim().toLowerCase();
+    const angled = structured ? null : text.match(/<([^<>]+)>/);
+    const addr = String(structured ? item.address : angled ? angled[1] : text).trim().toLowerCase();
     if (!addr.includes("@")) continue;
     rows.push({ addr, text });
   }
   return rows;
 }
 
-// shortcut: Reply puts the sender in To. Reply All keeps other To and Cc in Cc. Upgrade if Reply-To should replace From.
+// Prefer structured Reply-To, keeping self addresses and duplicate recipients out.
 function replyParties(email, self, all) {
   const mine = new Set(addressRows(self).map((row) => row.addr));
   const seen = new Set();
@@ -3366,16 +3371,18 @@ function replyParties(email, self, all) {
     }
     return out;
   };
-  const from = addressRows(email && email.from)[0];
-  const fromOther = from && !mine.has(from.addr) ? from : null;
-  if (fromOther) seen.add(fromOther.addr);
+  const replyTo = addressRows(email && email.replyTo);
+  const authors = (replyTo.length ? replyTo : addressRows(email && email.from).slice(0, 1)).filter(row => {
+    if (mine.has(row.addr) || seen.has(row.addr)) return false;
+    seen.add(row.addr); return true;
+  }).map(row => row.text);
   const toRows = take(email && email.to);
   const ccRows = take(email && email.cc);
   if (!all) {
-    if (fromOther) return { to: fromOther.text, cc: "" };
+    if (authors.length) return { to: authors.join(", "), cc: "" };
     return { to: toRows.concat(ccRows).join(", "), cc: "" };
   }
-  if (fromOther) return { to: fromOther.text, cc: toRows.concat(ccRows).join(", ") };
+  if (authors.length) return { to: authors.join(", "), cc: toRows.concat(ccRows).join(", ") };
   return { to: toRows.join(", "), cc: ccRows.join(", ") };
 }
 
@@ -3437,6 +3444,7 @@ function quoteSource(email) {
   return {
     id: message.id ? String(message.id) : "",
     from: message.from || "",
+    replyTo: Array.isArray(message.replyTo) ? message.replyTo : [],
     to: message.to || "",
     cc: message.cc || "",
     date: message.date || "",
@@ -6201,7 +6209,7 @@ function renderActions(pane, email) {
     resume.type = "button";
     resume.className = "primary";
     resume.textContent = "Resume draft";
-    resume.addEventListener("click", () => guard(() => resumeDraft(email)));
+    resume.addEventListener("click", () => attachmentAction(() => resumeDraft(email)));
     bar.appendChild(resume);
   }
   const besideStar = document.createElement("div");
@@ -6536,6 +6544,11 @@ function appendMessageBody(parent, email, imagesOn) {
 }
 
 function renderBody(pane, email) {
+  if (email?.bodyWarning) {
+    const warning = document.createElement("p");
+    warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = email.bodyWarning;
+    pane.appendChild(warning);
+  }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
   appendMessageBody(pane, email, remoteVisible(state.prefs.images, allowed));
 }
@@ -7082,11 +7095,12 @@ function cancelAttachmentTask(task) {
 }
 
 function startAttachmentTask(channel, email, files, label) {
-  const zip = channel === "mail:downloadAttachmentsZip", ids = zip ? files.map(file => file.id) : files[0].id;
+  const zip = channel === "mail:downloadAttachmentsZip", prepare = channel === "mail:prepareDraft";
+  const ids = zip || prepare ? files.map(file => file.id) : files[0].id;
   const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids]);
   const existing = attachmentTasks.get(key);
   if (existing && !existing.cancelRequested) return existing;
-  const task = { requestId: crypto.randomUUID(), viewKey, label, filename: zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
+  const task = { requestId: crypto.randomUUID(), viewKey, label, filename: prepare ? "Draft attachments" : zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
   attachmentTasks.set(key, task);
   const off = typeof api.on === "function" ? api.on("mail:attachmentProgress", value => {
     if (value?.requestId !== task.requestId || task.done) return;
@@ -7094,7 +7108,7 @@ function startAttachmentTask(channel, email, files, label) {
     if (task === attachmentPreviewRequest && $("attachment-preview-status")) $("attachment-preview-status").textContent = attachmentTaskCopy(task);
   }) : () => {};
   const params = { emailId: email.id, messageId: email.id, requestId: task.requestId,
-    ...(zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
+    ...(prepare ? { draftRevision: email.draftRevision } : zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
   task.promise = call(channel, params).finally(() => {
     task.done = true; off?.(); if (attachmentTasks.get(key) === task) attachmentTasks.delete(key); paintAttachmentTasks();
   });
@@ -9669,10 +9683,11 @@ function applyBodyUpdate(payload) {
   if (known) {
     known.bodyComplete = email.bodyComplete === true;
     known.hasBody = !!(email.htmlBody || email.textBody || email.hasBody);
+    known.bodyWarning = email.bodyWarning || "";
   }
   if (peekEmail && String(peekEmail.id) === id) {
     const nextPeek = preferBody(peekEmail);
-    const peekChanged = nextPeek.htmlBody !== peekEmail.htmlBody || nextPeek.textBody !== peekEmail.textBody;
+    const peekChanged = nextPeek.htmlBody !== peekEmail.htmlBody || nextPeek.textBody !== peekEmail.textBody || nextPeek.bodyWarning !== peekEmail.bodyWarning;
     peekEmail = nextPeek;
     const dialog = $("agent-peek");
     if (peekChanged && dialog && dialog.open) paintPeek(peekEmail);
@@ -9681,7 +9696,7 @@ function applyBodyUpdate(payload) {
   if (pendingOpenBody && pendingOpenId && String(pendingOpenId) === id) return;
   if (!state.email || String(state.email.id) !== id) return;
   const next = preferBody(state.email);
-  const contentSame = next.htmlBody === state.email.htmlBody && next.textBody === state.email.textBody;
+  const contentSame = next.htmlBody === state.email.htmlBody && next.textBody === state.email.textBody && next.bodyWarning === state.email.bodyWarning;
   state.email = next;
   if (!contentSame) renderReader(false);
 }
@@ -10358,10 +10373,10 @@ function syncComposeRecipientRows() {
   }
 }
 
-function syncCompose() {
+function syncComposeActions() {
   const account = composeAccount();
   const live = isLive(account);
-  const locked = state.composePending || state.composeQueued || state.composeInitializing;
+  const locked = state.composePending || state.composeQueued || state.composeInitializing || !!state.draftWrite?.pending;
   for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked || !!state.composeIdentityError;
   $("compose-schedule").disabled = !live || locked || !!state.composeIdentityError || !!state.botDraftReview;
   const sendButton = $("compose-send");
@@ -10372,6 +10387,11 @@ function syncCompose() {
     sendNow.hidden = !offerNow;
     sendNow.disabled = !live || locked || !!state.composeIdentityError;
   }
+}
+
+function syncCompose() {
+  const locked = state.composePending || state.composeQueued || state.composeInitializing;
+  syncComposeActions();
   $("compose-close").disabled = state.composePending || state.composeInitializing;
   for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at", "compose-attach", "compose-file"]) {
     const control = $(id);
@@ -11237,6 +11257,7 @@ function resetDraftWrite() {
 
 function paintDraft() {
   if (state.composeQueued || state.composePending) return;
+  syncComposeActions();
   const view = state.draftWrite;
   const pending = !!(view && view.pending);
   const error = $("ai-write-error");
@@ -11552,7 +11573,7 @@ async function initializeComposeIdentity(fields) {
   }
   picker.value = context.fromAddress;
   if ((fields.kind === "reply" || fields.kind === "all") && fields.quoteEmail && !fields.draftId && !fields.botDraft) {
-    const parties = replyParties(fields.quoteEmail, context.selfAddresses, fields.kind === "all");
+    const parties = replyParties({ ...fields.quoteEmail, ...(Array.isArray(context.replyTo) ? { replyTo: context.replyTo } : {}) }, context.selfAddresses, fields.kind === "all");
     $("compose-to").value = parties.to;
     $("compose-cc").value = parties.cc;
   }
@@ -12061,11 +12082,29 @@ async function requestComposeClose() {
   return true;
 }
 
-async function resumeDraft(email, extra) {
+const draftResumes = new Map();
+function resumeDraft(email, extra) {
+  const key = JSON.stringify([email.accountId, email.id]);
+  if (draftResumes.has(key)) return draftResumes.get(key);
+  const pending = prepareDraftCompose(email, extra).finally(() => draftResumes.delete(key));
+  draftResumes.set(key, pending);
+  return pending;
+}
+
+async function prepareDraftCompose(email, extra) {
   const data = await call("mail:openEmail", { emailId: email.id, full: true });
-  const draft = data && data.email;
+  let draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
   if (!draft.fromAddress) throw new Error("This draft's sender address could not be resolved. The saved draft was retained.");
+  if (!draft.bodyComplete || draft.bodyWarning) throw new Error("The complete draft body could not be downloaded. The saved draft was retained; reopen it to retry.");
+  if (draft.attachments?.length) {
+    const prepared = await startAttachmentTask("mail:prepareDraft", draft, draft.attachments, "Prepare draft").promise;
+    draft = prepared.email;
+    if (!draft || draft.accountId !== email.accountId || draft.id !== email.id
+        || composeAttachmentList(draft.attachments).length !== draft.attachments.length) {
+      throw new Error("Draft attachments could not be prepared. The saved draft was retained; retry from Drafts.");
+    }
+  }
   await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
     draftRevision: draft.draftRevision,
     fromAddress: draft.fromAddress,
@@ -12328,7 +12367,7 @@ async function editScheduledMail(row) {
 }
 
 async function composeOperation(work) {
-  if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError) return false;
+  if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending) return false;
   state.composePending = true;
   syncCompose();
   try { await work(); return true; }
@@ -12336,10 +12375,11 @@ async function composeOperation(work) {
   finally { state.composePending = false; syncCompose(); }
 }
 
-async function scheduleMail(whenOverride) {
+async function scheduleMail(whenOverride, reviewedPayload) {
   if (state.botDraftReview) { setComposeStatus("Review this Bot proposal and use Send when ready. It cannot be scheduled from proposal review."); return false; }
   const account = composeAccount();
   if (!isLive(account)) return false;
+  if (reviewedPayload && reviewedPayload.accountId !== account.id) return false;
   if (!composeHasRecipient()) {
     setComposeStatus("Add at least one recipient.", true);
     $("compose-to").focus();
@@ -12350,7 +12390,7 @@ async function scheduleMail(whenOverride) {
   if (!when || when.getTime() <= Date.now() + 1000) { setComposeStatus("Pick a time in the future.", true); $("schedule-at").focus(); return false; }
   return composeOperation(async () => {
     setComposeStatus("Scheduling…");
-    await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
+    await call("mail:scheduleSend", { ...(reviewedPayload || composePayload(account)), sendAt: when.toISOString() });
     state.composeQueued = true;
     $("compose-title").textContent = "Scheduled receipt";
     // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
@@ -12381,6 +12421,10 @@ function composeReady() {
   const account = composeAccount();
   if (!isLive(account)) return false;
   if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError) return false;
+  if (state.draftWrite?.pending) {
+    setComposeStatus("Finish or cancel AI writing before reviewing this message.", true);
+    return false;
+  }
   if (!composeHasRecipient()) {
     setComposeStatus("Add at least one recipient.", true);
     $("compose-to").focus();
@@ -12433,7 +12477,8 @@ function paintPreview(draft) {
 function openComposePreview(when) {
   if (!composeReady()) return false;
   const draft = previewDraft(composeFields(), state.composeQuote && state.composeQuote.text, when, state.composeAttachments);
-  previewDraftState = draft;
+  previewDraftState = { ...draft, payload: JSON.parse(JSON.stringify(composePayload(composeAccount()))),
+    session: state.composeSession, snapshot: composeSnapshot() };
   paintPreview(draft);
   openDialog("compose-preview");
   const confirm = $("compose-preview-confirm");
@@ -12470,8 +12515,12 @@ async function confirmComposePreview() {
   if (!draft) return false;
   previewDraftState = null;
   await closeDialog("compose-preview");
-  if (draft.kind === "schedule") return scheduleMail(new Date(draft.sendAt));
-  await sendMail();
+  if (draft.session !== state.composeSession || draft.snapshot !== composeSnapshot() || state.draftWrite?.pending) {
+    setComposeStatus("The message changed. Review a new preview before sending or scheduling.", true);
+    return false;
+  }
+  if (draft.kind === "schedule") return scheduleMail(new Date(draft.sendAt), draft.payload);
+  await sendMail(draft.payload);
   return true;
 }
 
@@ -12586,15 +12635,16 @@ async function deliverMail(payload, session = state.composeSession) {
 }
 
 // The local delay can be canceled only before mail:send begins.
-async function sendMail() {
+async function sendMail(reviewedPayload) {
   const account = composeAccount();
-  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || sendTimer) return;
+  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending || sendTimer) return;
+  if (reviewedPayload && reviewedPayload.accountId !== account.id) return;
   if (!composeHasRecipient()) {
     setComposeStatus("Add at least one recipient.", true);
     $("compose-to").focus();
     return;
   }
-  const payload = composePayload(account);
+  const payload = reviewedPayload || composePayload(account);
   const session = state.composeSession;
   const delay = sendDelayMs(state.prefs.undoSend);
   if (!delay) { await deliverMail(payload, session); return; }
@@ -18626,18 +18676,19 @@ function syncAllDayInputs() {
   const start = $("calendar-start");
   const end = $("calendar-end");
   if (!allDay || !start || !end) return;
+  const startValue = start.value, endValue = end.value;
   const enabled = !!allDay.checked;
   start.type = enabled ? "date" : "datetime-local";
   end.type = enabled ? "date" : "datetime-local";
   const endLabel = document.querySelector("label[for='calendar-end']");
   if (endLabel) endLabel.textContent = enabled ? "End (exclusive)" : "End";
   if (enabled) {
-    if (start.value.length > 10) start.value = start.value.slice(0, 10);
-    if (end.value.length > 10) end.value = end.value.slice(0, 10);
+    start.value = startValue.slice(0, 10);
+    end.value = endValue.slice(0, 10);
     if (start.value && (!end.value || end.value <= start.value)) end.value = plusDays(start.value, 1);
-  } else if (/^\d{4}-\d{2}-\d{2}$/.test(start.value)) {
-    start.value = start.value + "T09:00";
-    if (/^\d{4}-\d{2}-\d{2}$/.test(end.value)) end.value = end.value + "T10:00";
+  } else {
+    start.value = /^\d{4}-\d{2}-\d{2}$/.test(startValue) ? startValue + "T09:00" : startValue;
+    end.value = /^\d{4}-\d{2}-\d{2}$/.test(endValue) ? endValue + "T10:00" : endValue;
   }
 }
 
@@ -18681,6 +18732,8 @@ function openCalendarEditor(event, dayStamp) {
   const descriptionNote = $("calendar-description-note");
   if (descriptionNote) descriptionNote.hidden = !(editing && event.descriptionTruncated);
   if (allDay) allDay.checked = editing ? !!event.allDay : false;
+  // Assign values only after the input type accepts their representation.
+  start.type = end.type = editing && event.allDay ? "date" : "datetime-local";
   if (editing && event.allDay) {
     start.value = String(event.start || "").slice(0, 10);
     end.value = String(event.end || "").slice(0, 10);

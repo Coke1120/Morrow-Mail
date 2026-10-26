@@ -273,7 +273,7 @@
         <label for="calendar-end">End</label>
         <input id="calendar-end" type="datetime-local" />
         <p id="calendar-form-status" role="alert" tabindex="-1"></p>
-        <p id="calendar-save-note" class="hint">Cancel closes this editor. A save already in progress can still finish; confirmed changes appear when the calendar refreshes.</p>
+        <p id="calendar-save-note" class="hint">Cancel closes this editor. A save already in progress can still finish; confirmed changes appear when the calendar refreshes. Switching All day keeps the dates; an all-day end is exclusive.</p>
         <div class="row">
           <button type="submit" class="primary" id="calendar-save">Add event</button>
           <button type="button" class="ghost" id="calendar-delete" hidden>Delete</button>
@@ -1559,6 +1559,7 @@
           <div class="preview-row" id="compose-preview-files-row" hidden><dt>Files</dt><dd id="compose-preview-files"></dd></div>
         </dl>
         <pre id="compose-preview-body"></pre>
+        <p class="hint">Finish or cancel AI writing before previewing. Confirm sends the reviewed message; if it changes, review a new preview.</p>
         <div class="row">
           <button type="submit" class="primary" id="compose-preview-confirm">Confirm send</button>
           <button type="button" class="ghost" id="compose-preview-cancel">Cancel</button>

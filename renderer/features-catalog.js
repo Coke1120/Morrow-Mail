@@ -28,7 +28,7 @@
         id: "compose-window",
         title: "Compose in its own window",
         category: "Mail",
-        blurb: "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send.",
+        blurb: "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send. Reply and Reply All prefer Reply-To addresses when supplied, exclude your own addresses, and avoid duplicate recipients. Finish or cancel AI writing before Save, Send or Schedule. Confirmation uses the reviewed message; changes require a new preview.",
       },
       {
         id: "sender-identities",
@@ -52,7 +52,7 @@
         id: "attachment-downloads",
         title: "Attachment downloads",
         category: "Mail",
-        blurb: "Preview, Open and Save share downloads. Complete files up to 32 MiB can be reused for five minutes while Morrow is open; larger files remain on demand. Save asks for a location first. Attachment transfers show progress and individual Cancel controls; closing Preview keeps another Save or Open running. Downloads allow 64 MiB per file and 128 MiB per ZIP, with existing provider limits. Changed identities stop reuse; reopen legacy Gmail selections. Bot access remains metadata only.",
+        blurb: "Preview, Open and Save share downloads. Complete files up to 32 MiB can be reused for five minutes while Morrow is open; larger files remain on demand. Save asks for a location first. Attachment transfers show progress and individual Cancel controls; closing Preview keeps another Save or Open running. Downloads allow 64 MiB per file and 128 MiB per ZIP, with existing provider limits. Changed identities stop reuse; reopen legacy Gmail selections. Resuming a server draft prepares every attachment before editing, within the 25 MiB outgoing limit. Preparation shares the download cache and Cancel controls. Failure keeps the saved draft for retry. Inline file identities are retained. Bot access remains metadata only.",
       },
       {
         id: "local-search",
@@ -82,7 +82,7 @@
         id: "overnight-body-fill",
         title: "Full message bodies",
         category: "Mail",
-        blurb: "Mail → Bodies shows per-mailbox body activity separately from list sync. Message requests and the listed page download as needed. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Activity has no whole-mailbox total or percentage. IMAP messages can remain incomplete at the 3 MiB source limit; Gmail API handles MIME parts within its response limit; attachment files stay on demand.",
+        blurb: "Mail → Bodies shows per-mailbox body activity separately from list sync. Message requests and the listed page download as needed. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Activity has no whole-mailbox total or percentage. IMAP messages can remain incomplete at the 3 MiB source limit; Gmail API handles MIME parts within its response limit; attachment files stay on demand. Gmail decodes legacy mail encodings including cp932 and UTF-7. Malformed MIME or an unknown charset leaves available content with an incomplete-body warning and does not stop other messages from syncing.",
       },
       {
         id: "inbox-rules",
@@ -106,7 +106,7 @@
         id: "calendar",
         title: "Calendar",
         category: "Calendar",
-        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Incomplete Google Calendar reauthorization preserves the working Calendar connection. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions.",
+        blurb: "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Incomplete Google Calendar reauthorization preserves the working Calendar connection. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions. Opening an all-day event or switching between all-day and timed input keeps the dates. All-day ends are exclusive.",
       },
       {
         id: "in-app-updater",
