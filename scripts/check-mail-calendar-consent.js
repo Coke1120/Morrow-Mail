@@ -41,6 +41,7 @@ async function run() {
   const remoteOriginal = {};
   const opened = [], posts = [], pages = [], syncs = [], keys = new Set();
   let scenario = {};
+  let googlePurpose = "bundle";
   const json = (data, ok = true) => ({ ok, status: ok ? 200 : 400, json: async () => data, text: async () => JSON.stringify(data) });
   const fetchMock = async (url, init = {}) => {
     const href = String(url);
@@ -57,7 +58,7 @@ async function run() {
       const mail = scope.includes("outlook.office.com");
       if ((scenario.cancel && (mail || google)) || (scenario.graphCancel && !mail && !google)) oauth.cancelActive();
       if (scenario.refreshFailure || (scenario.graphFailure && !mail && !google)) return json({ error: "interaction_required" }, false);
-      const granted = google ? (scenario.googleScopes ?? config.BUNDLE_SCOPES.google)
+      const granted = google ? (scenario.googleScopes ?? ((body.get("grant_type") === "authorization_code" ? googlePurpose === "calendar" : scope.includes("calendar.events")) ? config.CALENDAR_SCOPES.google : config.BUNDLE_SCOPES.google))
         : mail ? (scenario.mailScopes ?? config.SCOPES.microsoft) : (scenario.graphScopes ?? config.BUNDLE_SCOPES.microsoft);
       return json({
         access_token: google ? "fixture-google-both" : mail ? "fixture-outlook-mail" : "fixture-graph-calendar",
@@ -126,7 +127,8 @@ async function run() {
   try {
     global.fetch = fetchMock;
     oauth.signIn = (provider, purpose, options) => {
-      assert.ok(purpose === "bundle" || (provider === "microsoft" && purpose === "imap"));
+      if (provider === "google") googlePurpose = purpose;
+      assert.ok(purpose === "bundle" || (provider === "microsoft" && purpose === "imap") || (provider === "google" && purpose === "calendar"));
       return original.signIn(provider, purpose, {
         ...options, fetchImpl: fetchMock, timeoutMs: 3000,
         openBrowser: async (url) => {
@@ -135,7 +137,7 @@ async function run() {
           assert.equal(auth.searchParams.get("scope"), config.scopesFor(provider, purpose));
           assert.equal(auth.searchParams.get("code_challenge_method"), "S256");
           assert.ok(auth.searchParams.get("state"));
-          if (provider === "google") assert.equal(auth.searchParams.get("include_granted_scopes"), "true");
+          if (provider === "google") assert.equal(auth.searchParams.get("include_granted_scopes"), "false");
           if (provider === "microsoft") {
             if (purpose !== "imap") {
               assert.equal(auth.searchParams.get("prompt"), null, "do not force repeated consent");
@@ -157,7 +159,7 @@ async function run() {
     for (const provider of ["microsoft", "google"]) {
       const scopes = config.BUNDLE_SCOPES[provider];
       assert.doesNotMatch(scopes, /contacts|drive/i);
-      for (const purpose of Object.keys(channels)) assert.equal(config.hasPurposeScopes(scopes, provider, purpose), true);
+      for (const purpose of Object.keys(channels)) assert.equal(config.hasPurposeScopes(scopes, provider, purpose), provider !== "google" || purpose !== "calendar");
       const count = opened.length;
       scenario = { omitScope: provider === "microsoft" };
       const result = await connect(provider);
@@ -179,11 +181,14 @@ async function run() {
       }
       const status = engine.answer("mail:oauthStatus", []);
       for (const purpose of Object.keys(channels)) {
-        assert.equal(status.data.accounts.find((row) => row.id === id)[purpose], true);
-        assert.equal((await feature(id, purpose)).data.api, true);
+        assert.equal(status.data.accounts.find((row) => row.id === id)[purpose], provider !== "google" || purpose !== "calendar");
+        const result = await feature(id, purpose);
+        assert.equal(result.success, true, JSON.stringify({provider,purpose,result}));
+        assert.equal(result.data.api, true);
       }
       assert.doesNotMatch(JSON.stringify({ result, status }), /fixture-api-refresh|fixture-imap-refresh|fixture-google-both|fixture-outlook-mail|fixture-graph-calendar/);
-      assert.equal(opened.length, count + dialogs, "all granted features must reuse consent");
+      assert.equal(opened.length, count + dialogs + (provider === "google" ? 1 : 0), "only Google Calendar needs separate consent");
+      if (provider === "google") assert.equal(read(`${id}:calendar`).grantedScopes, config.CALENDAR_SCOPES.google);
       await calendarList(id);
       for (const channel of ["mail:listProviderFolders", "mail:listInboxRules", "mail:vacationGet"]) {
         const listed = await engine.answer(channel, [{ accountId: id }]);
@@ -281,8 +286,7 @@ async function run() {
     for (const purpose of Object.keys(channels)) assert.equal(granted(ms.id, purpose), true);
 
     const google = db.accountByEmail("google@example.invalid");
-    for (const scopes of [config.SCOPES.google, config.CALENDAR_SCOPES.google,
-      `${config.SCOPES.google} https://www.googleapis.com/auth/calendar.events`]) {
+    for (const scopes of ["openid email", config.CALENDAR_SCOPES.google, config.VACATION_SCOPES.google]) {
       scenario = { googleScopes: scopes };
       const before = memory.getPassword(google.id);
       assert.equal((await connect("google", google.id)).success, false);
@@ -291,7 +295,7 @@ async function run() {
     }
     // A new partial Google connection can sync mail. Enabling a missing feature
     // requests the full bundle once, retaining the original primary secret.
-    scenario = { email: "partial@example.invalid", googleScopes: config.SCOPES.google };
+    scenario = { email: "partial@example.invalid", googleScopes: config.ORGANIZE_SCOPES.google };
     const partialGoogle = await connect("google");
     assert.equal(partialGoogle.success, true);
     assert.ok(partialGoogle.data.grantWarning);
@@ -300,14 +304,14 @@ async function run() {
     scenario = { email: "partial@example.invalid", googleScopes: config.VACATION_SCOPES.google };
     assert.equal((await feature(partialId, "rules")).success, false);
     assert.equal(granted(partialId, "vacation"), true);
-    assert.equal(granted(partialId, "rules"), false, "Gmail rules also need labels");
+    assert.equal(granted(partialId, "rules"), false, "Gmail rules also need mail modification");
     assert.equal(memory.getPassword(partialId), mailOnly);
     scenario = { email: "partial@example.invalid" };
     count = opened.length;
     assert.equal((await feature(partialId, "calendar")).success, true);
     assert.equal(opened.length, count + 1);
     for (const purpose of Object.keys(channels)) assert.equal((await feature(partialId, purpose)).data.api, true);
-    assert.equal(opened.length, count + 1);
+    assert.equal(opened.length, count + 2, "Calendar is separate from the mail feature bundle");
     assert.equal(memory.getPassword(partialId), mailOnly);
     // Without mail permission a new mailbox cannot be created.
     scenario = { email: "no-mail@example.invalid", googleScopes: config.CALENDAR_SCOPES.google };
@@ -375,6 +379,7 @@ async function run() {
     memory.setPassword(`${ms.id}:bundle`, keptBundle);
 
     // Removing an account during consent must not resurrect its credentials.
+    memory.deletePassword(`${partialId}:calendar`);
     memory.setPassword(`${partialId}:bundle`, JSON.stringify({ ...read(`${partialId}:bundle`), grantedScopes: config.VACATION_SCOPES.google }));
     scenario = { email: "partial@example.invalid", onOpen: () => engine.answer("mail:removeAccount", [{ accountId: partialId }]) };
     assert.equal((await feature(partialId, "calendar")).error.code, "conflict");

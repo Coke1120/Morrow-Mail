@@ -66,6 +66,7 @@ const INVOKE = [
   "mail:discoverMail",
   "mail:connectImapSmtp",
   "mail:addAccount",
+  "mail:migrateGmail",
   "mail:cancelOAuth",
   "mail:oauthStatus",
   "mail:grantOrganize",

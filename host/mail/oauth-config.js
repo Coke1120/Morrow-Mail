@@ -6,16 +6,16 @@ const MICROSOFT_CLIENT_ID = fs
   .trim();
 
 // Legacy scope sets also describe the minimum permissions for each feature.
-// New Google consent bundles every feature; Microsoft keeps Outlook and Graph
+// Google mail excludes Calendar; Microsoft keeps Outlook and Graph
 // on separate authorize URLs, code exchanges, and refreshes.
 const SCOPES = {
-  google: "openid email https://mail.google.com/",
+  google: "openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic",
   microsoft:
     "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
 };
 
 const ORGANIZE_SCOPES = {
-  google: `${SCOPES.google} https://www.googleapis.com/auth/gmail.modify`,
+  google: "openid email https://www.googleapis.com/auth/gmail.modify",
   microsoft: "offline_access User.Read Mail.ReadWrite Mail.Send",
 };
 
@@ -28,7 +28,7 @@ const CALENDAR_SCOPES = {
 // Gmail settings.basic is not included in gmail.modify.
 const RULES_SCOPES = {
   google:
-    "openid email https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels",
+    "openid email https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.modify",
   microsoft: "offline_access User.Read MailboxSettings.ReadWrite Mail.Read",
 };
 
@@ -40,12 +40,13 @@ const VACATION_SCOPES = {
 const BUNDLE_SCOPES = Object.fromEntries(["google", "microsoft"].map((provider) => [
   provider,
   [...new Set([ORGANIZE_SCOPES, CALENDAR_SCOPES, RULES_SCOPES, VACATION_SCOPES]
+    .filter(scopes => provider !== "google" || scopes !== CALENDAR_SCOPES)
     .flatMap((scopes) => scopes[provider].split(" ")))].join(" "),
 ]));
 
 const MARKERS = {
   imap: {
-    google: "https://mail.google.com/",
+    google: "https://www.googleapis.com/auth/gmail.modify",
     microsoft: "https://outlook.office.com/IMAP.AccessAsUser.All",
   },
   organize: {
@@ -215,6 +216,7 @@ function hasMarker(granted, provider, purpose) {
   if (!marker) return false;
   const needle = normalizeScopeToken(marker);
   if (!needle) return false;
+  if (key === "google" && ["imap", "organize"].includes(name) && hasScopes(granted, "https://mail.google.com/")) return true;
   return decodeScopeText(granted)
     .split(/[\s,]+/)
     .map(normalizeScopeToken)
@@ -237,6 +239,13 @@ function tokenScopeText(scopes) {
 function hasPurposeScopes(granted, provider, purpose) {
   const key = providerKey(provider);
   if (!key) return false;
+  if (key === "google") {
+    const name = normalizePurpose(purpose);
+    if (name === "bundle") return ["organize", "rules", "vacation"].every(value => hasPurposeScopes(granted, key, value));
+    if (name === "imap" || name === "organize") return hasMarker(granted, key, name);
+    if (name === "rules") return hasScopes(granted, "https://www.googleapis.com/auth/gmail.settings.basic")
+      && (hasMarker(granted, key, "organize") || hasScopes(granted, "https://www.googleapis.com/auth/gmail.labels"));
+  }
   if (purpose === "bundle") return ["organize", "calendar", "rules", "vacation"].every((name) => hasPurposeScopes(granted, key, name));
   let required = scopesFor(key, purpose).split(" ").filter((scope) => !["openid", "email", "offline_access", "User.Read"].includes(scope));
   if (purpose === "organize" && key === "google") required = required.filter((scope) => scope !== "https://mail.google.com/");
@@ -306,7 +315,9 @@ function authorizeUrl(provider, purpose, fields) {
   if (key === "google") {
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("prompt", "consent");
-    url.searchParams.set("include_granted_scopes", "true");
+    // Request the reviewed feature scope set, without silently accumulating an
+    // old full-mail grant. Google's returned scopes remain the source of truth.
+    url.searchParams.set("include_granted_scopes", "false");
   } else if (normalizePurpose(purpose) === "imap" && !fields.loginHint) {
     url.searchParams.set("prompt", "select_account");
   }

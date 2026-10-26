@@ -203,7 +203,7 @@ async function main() {
   const row = { id: 'a:1', account_id: 'a', uid: 1, body_complete: 0 };
   let fetched = 0;
   const bodyCtx = vm.createContext({ bodyProgress: createBodyProgress(), accountEpochs: new Map(), db: { accountById: () => ({ id: 'a' }), messageById: () => ({ ...row, body_complete: 1, recipient_headers_json: '{}', html_body: '<p>Complete</p>' }) }, exclusive: async (_id, fn) => fn(), priorityWaiting: () => false, secretFor: () => { fetched++; throw Error('should not fetch'); } });
-  vm.runInContext(between(engine, 'async function ensureBody', 'function pushRows'), bodyCtx);
+  vm.runInContext(between(engine, 'function needsGmailMetadata', 'function pushRows'), bodyCtx);
   assert.equal((await bodyCtx.ensureBody(row)).html_body, '<p>Complete</p>');
   assert.equal(fetched, 0);
   await assertDownloadedBodyStaysOnTheRequestedUid();
@@ -266,7 +266,7 @@ async function assertDownloadedBodyStaysOnTheRequestedUid() {
       }),
     },
   });
-  vm.runInContext(between(engine, 'async function ensureBody', 'function pushRows'), mismatch);
+  vm.runInContext(between(engine, 'function needsGmailMetadata', 'function pushRows'), mismatch);
   const opened = await mismatch.ensureBody(stored.get('a'));
   assert.equal(opened.subject, 'Alpha');
   assert.equal(opened.html_body, null);

@@ -1438,7 +1438,7 @@ function calendarCopy(reason, email) {
   if (reason === "error") return "Calendar could not be loaded.";
   if (reason === "loading") return "Loading calendar…";
   const who = email ? ` for ${email}` : "";
-  return `Enable calendar and mailbox features${who}. Google uses one consent; Microsoft connects mail first, then checks feature permissions for the same account.`;
+  return `Enable calendar and mailbox features${who}. Google requests Calendar separately from mail; Microsoft connects mail first, then checks feature permissions for the same account.`;
 }
 
 function calendarConnection(status, account, listed) {
@@ -1453,7 +1453,7 @@ function calendarConnection(status, account, listed) {
     connected,
     canGrant: true,
     reason: connected ? "" : ((row && row.calendarReason) || "needs_auth"),
-    label: connected ? "Refresh calendar" : "Enable mailbox features",
+    label: connected ? "Refresh calendar" : (account.imapSmtpProfile || account.profile) === "gmail" ? "Enable Google Calendar" : "Enable mailbox features",
   };
 }
 
@@ -2592,7 +2592,7 @@ function scheduledLine(row, accounts = []) {
   const account = accounts.find(item => item.id === row.accountId);
   const label = row.status === "partial" ? "Partly sent — rejected recipients need review; no automatic resend"
     : row.status === "unknown" ? "Delivery uncertain — check Sent; no automatic resend"
-    : row.status === "sent" ? "SMTP accepted — check Sent; no automatic resend"
+    : row.status === "sent" ? "Provider accepted — check Sent; no automatic resend"
     : row.status === "failed" ? "Failed — not sent; edit to retry" : row.status === "sending" ? "Sending" : "Pending";
   return [account ? account.email : (row && row.accountId), subject, to, time, label, detail].filter(Boolean).join(" · ");
 }
@@ -9845,7 +9845,7 @@ async function connectOAuth(provider) {
   paintConnectPending();
   setConnectStatus(provider === "microsoft"
     ? "Continue in your browser to connect mail. Morrow then checks calendar, organize, Out of Office, and inbox rules for the same account; approve any missing permissions. Mail stays connected if you decline those features."
-    : "Approve mail, calendar, organize, Out of Office, and inbox rules in one browser consent.");
+    : "Continue with Google OAuth for Gmail API mail, labels, Out of Office and inbox rules. Calendar is enabled separately. Existing legacy OAuth mailboxes require the reviewed migration in Settings → Accounts.");
   try {
     const view = await call("mail:addAccount", { provider, expectedAccountId: state.reconnectAccountId || undefined });
     if (!view || !view.id || !view.email) throw new Error("Sign-in did not return an account.");
@@ -12690,7 +12690,7 @@ function cliCatalog() {
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "Call the loopback bridge while Morrow is open and bot access is on. params.json is {}. Replace placeholders; use --token-file, never --token." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "After the Tailscale steps, use the exact paired HTTPS endpoint. TLS is verified; redirects and non-loopback plain HTTP are rejected." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.list_cached --params-file ./list.json", action: "List the granted account's cached inbox with the list.json example above. This does not fetch new mail or mark it read." },
-    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Already submitted SMTP cannot be recalled." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Mail-provider submission cannot be recalled once it begins." },
     { group: "Tailscale Serve", command: "tailscale serve --bg --https=8443 --accept-app-caps=com.coke1120.morrow-mail/bot-access http://127.0.0.1:47831", action: "Run this on the computer where Morrow is open. Morrow does not run it. Settings copies the same command. The port stays 8443 until you save another HTTPS port. Do not run tailscale funnel." },
     { group: "Tailscale Serve", command: "tailscale serve status --json", action: "Show Serve status as JSON. Morrow does not run this." },
     { group: "Tailscale Serve", command: "tailscale funnel status --json", action: "Confirm Funnel is not serving this port. Do not run tailscale funnel." },
@@ -14746,6 +14746,14 @@ function paintSettingsMailbox() {
   $("settings-reconnect").disabled = !account;
   $("settings-reconnect").textContent = "Reconnect mailbox";
   $("settings-reconnect").title = account ? "Reconnect " + account.email : "Connect a mailbox first";
+  if ($("settings-gmail-migrate")) {
+    const google = (account?.imapSmtpProfile || account?.profile) === "gmail";
+    $("settings-gmail-migrate").hidden = !google || account?.authKind !== "oauth2";
+    $("settings-gmail-migrate").textContent = account?.mailTransport === "gmail_api" ? "Reauthorize Gmail API mail" : "Migrate Gmail to Gmail API";
+    $("settings-gmail-calendar").hidden = !google;
+    $("settings-gmail-migrate").disabled = gmailMigrationBusy;
+    $("settings-gmail-calendar").disabled = gmailMigrationBusy;
+  }
   $("settings-mailbox-note").textContent = account ? "Signatures, rules, and automatic replies use this mailbox." : "Connect an account in Accounts to get started.";
   syncRemove();
 }
@@ -14781,13 +14789,71 @@ async function loadSettingsCapabilities() {
     const local = account.authKind !== "oauth2";
     const permission = key => grants ? (grants[key] ? "Permission granted" : "Additional consent needed") : "Unknown — refresh permissions";
     node.textContent = ["Mail: " + (account.needsReauth ? "Reconnect needed" : "Configured; connection health is shown in Sync"), "Signatures: saved on this computer", "Labels/folders: " + (local ? "IMAP folders" : permission("organize")), "Rules: " + (local ? "Local; runs on new downloads while open" : permission("rules")), "Calendar: " + (local ? "Requires Google or Microsoft browser sign-in" : permission("calendar")), "Out of Office: " + (local ? "Check support in the Out of Office tab" : permission("vacation"))].join("\n");
+    if (grants?.provider === "google") node.textContent += "\nMail transport: " + (grants.mailTransport === "gmail_api" ? "Gmail API (polling)" : "Legacy IMAP/SMTP — review migration")
+      + "\nRequested mail scopes: " + (grants.requestedScopes?.mail || "Unknown legacy request")
+      + "\nGranted mail scopes: " + (grants.grantedScopes?.imap || "Unknown")
+      + "\nRequested Calendar scopes: " + (grants.requestedScopes?.calendar || "Not separately requested")
+      + "\nGranted Calendar scopes: " + (grants.grantedScopes?.calendar || "None")
+      + "\n" + (grants.broadGoogleGrant ? "A saved broad mail.google.com grant remains. A narrower request has not removed it. To remove it, deliberately revoke Morrow access in Google Account connections, reauthorize Gmail API mail, then separately reauthorize Calendar. Cached mail and local work stay; server access pauses until reauthorization." : "No broad mail.google.com scope is recorded in the saved grants. Google controls actual app access.");
   } catch (error) { if (gen === settingsCapabilityGen) node.textContent = "Permissions unknown. Refresh permissions to retry. " + error.message; }
+}
+let gmailMigrationBusy = false;
+let gmailMigrationOperation = 0;
+async function reauthorizeGmail(calendar = false) {
+  if (gmailMigrationBusy || state.oauthPending || state.connectPending) return;
+  const account = settingsAccount();
+  if (!account || (account.imapSmtpProfile || account.profile) !== "gmail") return;
+  const answer = await askConfirm({ title: calendar ? "Reauthorize Google Calendar" : "Migrate or reauthorize Gmail API mail",
+    body: calendar
+      ? "Continue with Google OAuth for calendar list and event access only, for " + account.email + ". Mail access stays separate. This replaces the saved Calendar credential only after successful consent. A saved broad grant may remain until you deliberately revoke Morrow access in Google Account connections and reauthorize both features."
+      : "Continue with Google OAuth for " + account.email + ". Gmail API replaces Gmail IMAP/SMTP for this account. The request is gmail.modify and gmail.settings.basic: mail, drafts, send, labels, Trash, rules and Out of Office; Calendar is separate. Account id, cached mail and local drafts stay. Pending or uncertain mail actions must be resolved first. Unuploaded draft edits stay local for another Save; an older server copy may remain. Cancel or declined/insufficient mail permission preserves the current connection. Older broad Google grants are not revoked by a narrower request; review the actual granted scopes afterward.",
+    confirm: "Continue with Google", cancel: "Keep current connection" });
+  if (!answer?.ok || settingsAccount()?.id !== account.id || gmailMigrationBusy || state.oauthPending) return;
+  const operation = ++gmailMigrationOperation;
+  gmailMigrationBusy = true; state.oauthPending = true;
+  paintSettingsMailbox(); paintConnectPending();
+  $("settings-gmail-cancel").hidden = false;
+  $("settings-capabilities").textContent = "Waiting for Google OAuth approval…";
+  try {
+    const result = await call(calendar ? "calendar:connect" : "mail:migrateGmail", { accountId: account.id, confirmed: true, ...(calendar ? { forceReauthorize: true } : {}) });
+    if (operation !== gmailMigrationOperation) return;
+    showStatus(calendar ? "Google Calendar authorization updated. Review granted scopes in Accounts." : `Gmail API connection updated. ${result?.grantWarning || "Review granted scopes in Accounts."}`);
+    await loadAccounts();
+    await loadSettingsCapabilities();
+  } catch (error) {
+    if (operation === gmailMigrationOperation) $("settings-capabilities").textContent = error.message || "Google reauthorization did not finish. Review the current connection.";
+  } finally {
+    if (operation === gmailMigrationOperation) {
+      gmailMigrationBusy = false; state.oauthPending = false;
+      $("settings-gmail-cancel").hidden = true;
+      paintSettingsMailbox(); paintConnectPending();
+    }
+  }
+}
+async function cancelGmailReauthorization() {
+  if (!gmailMigrationBusy) return;
+  const operation = gmailMigrationOperation;
+  $("settings-gmail-cancel").disabled = true;
+  try {
+    await call("mail:cancelOAuth");
+    if (operation === gmailMigrationOperation) {
+      gmailMigrationOperation++;
+      gmailMigrationBusy = false; state.oauthPending = false;
+      $("settings-gmail-cancel").hidden = true;
+      $("settings-capabilities").textContent = "Google reauthorization cancelled. Refresh permissions to review the current connection.";
+    }
+  } catch (error) {
+    if (operation === gmailMigrationOperation) $("settings-capabilities").textContent = "Cancellation could not be confirmed. Authorization may still finish; retry Cancel before starting another authorization. " + error.message;
+  } finally {
+    $("settings-gmail-cancel").disabled = false;
+    paintSettingsMailbox(); paintConnectPending();
+  }
 }
 function openConnectFor(account) {
   if (state.oauthPending || state.connectPending) return;
   state.reconnectAccountId = account?.id || null;
   $("connect-title").textContent = account ? "Reconnect " + account.email : "Connect account";
-  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Password reconnects update the login type and servers only after saving credentials; a failure attempts to restore the prior credentials. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google requests all mailbox features together; Microsoft asks for mail, then its feature bundle." : "";
+  $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Password reconnects update the login type and servers only after saving credentials; a failure attempts to restore the prior credentials. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google mail uses Gmail API scopes with separate Calendar consent; migrate a legacy Google OAuth mailbox from Settings → Accounts. Microsoft asks for mail, then its feature bundle." : "";
   $("email").value = account?.email || "";
   $("email").readOnly = !!account;
   $("username").value = account?.imapUsername || "";
@@ -20239,6 +20305,9 @@ function wire() {
   $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
   $("settings-account").addEventListener("change", () => changeSettingsMailbox($("settings-account").value));
   $("settings-reconnect").addEventListener("click", () => openConnectFor(settingsAccount()));
+  $("settings-gmail-migrate").addEventListener("click", () => reauthorizeGmail(false));
+  $("settings-gmail-calendar").addEventListener("click", () => reauthorizeGmail(true));
+  $("settings-gmail-cancel").addEventListener("click", cancelGmailReauthorization);
   $("settings-calendar").addEventListener("click", () => {
     const accountId = settingsAccount()?.id || "";
     if (state.calendarAccountId !== accountId) { state.calendarId = ""; state.calendarEventId = ""; }
