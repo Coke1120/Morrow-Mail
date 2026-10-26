@@ -1,7 +1,9 @@
 # Restore the Settings AI consent bridge
 
-Status: implemented on draft PR #323; full exact-head CI and review are required.
-No merge or release is authorized for this PR.
+Status: merged through PR #323 after final head
+`4a2ddbbf05af7ab3801edab48c343cf038db25ea` passed full CI run40373071406
+and an independent Astra final functional recheck with no confirmed blockers.
+Included in the v0.3.2 release candidate; native/live validation remains untested.
 
 The shared Settings consent panel calls the existing host status, grant and revoke
 handlers, but the first-party renderer preload did not allow those three invoke
