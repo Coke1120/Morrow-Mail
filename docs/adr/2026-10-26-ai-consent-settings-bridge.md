@@ -1,6 +1,7 @@
 # Restore the Settings AI consent bridge
 
-Status: draft implementation; no merge or release authorized.
+Status: implemented on draft PR #323; full exact-head CI and review are required.
+No merge or release is authorized for this PR.
 
 The shared Settings consent panel calls the existing host status, grant and revoke
 handlers, but the first-party renderer preload did not allow those three invoke
@@ -22,3 +23,13 @@ Cover ready/unready connections, explicit and background choices, revoke, errors
 stale destination/model tokens and rejection of unknown channels. Existing native
 and live-provider validation limits remain; the overnight body diagnosis is
 outside this patch.
+
+`scripts/check-ai-consent-settings.js` runs the real Settings mount and preload
+against the real host handler registration, config module and consent module with
+in-memory filesystem/credentials and synthetic account state. It checks ready and
+unready modes, affirmative/manual versus background choices, grant/revoke,
+persistence/status errors, changed saved bindings, pending actions, AI Setup and
+unknown-channel rejection. It is part of `scripts/check-boot-path.js`. Existing
+HTML-parser DOM fixtures run in CI; a dependency-free DOM supports local VM
+checks. No provider inference, OAuth grant or real configuration/consent write is
+part of these tests.
