@@ -244,7 +244,7 @@ function createSession(account, token, { api, check = () => {} } = {}) {
     const saved = await api.saveDraft({ raw });
     alive();
     const mapped = db.rememberGmail(account.id, { providerId: saved.message.id, providerThreadId: saved.message.threadId, providerDraftId: saved.id, labelIds: saved.message.labelIds || ["DRAFT"] });
-    return { uid: mapped.local_uid, uidValidity: incarnation };
+    return { uid: mapped.local_uid, uidValidity: incarnation, providerId: saved.message.id };
   }
   async function search(path, query, limit = 80) {
     const selected = folder(path);

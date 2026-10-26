@@ -3698,6 +3698,7 @@ function answer(channel, args) {
               db.updateMessage(emailId, {
                 uid: confirmed ? Number(appended.uid) : 0,
                 uid_validity: confirmed ? Number(appended.uidValidity) : 0,
+                ...(client.gmail ? { gmail_id: appended.providerId } : {}),
                 draft_pending: 0,
               });
               remoteSaved = true;

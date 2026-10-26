@@ -28,6 +28,7 @@ async function run() {
       grantedScopes:scopes, requestedScopes:config.scopesFor('google', purpose) };
   };
   oauth.cancelActive = () => {};
+  oauth.oauthReady = () => ({google:true,microsoft:true});
   global.fetch = async (url, options) => {
     if (String(url).startsWith('https://www.googleapis.com/calendar/v3/')) return new Response(JSON.stringify({items:[]}));
     return service.fetcher(url, options);
@@ -99,8 +100,10 @@ async function run() {
     const saved=success(await answer('mail:upsertDraft',params)); assert.equal(saved.remoteSaved,true);
     let raw=service.mime.at(-1).toString(); assert.match(raw,/Bcc: hidden@fixture.invalid/i); assert.match(raw,/In-Reply-To: <incoming@fixture.invalid>/i);
     const firstUid=db.messageById(saved.emailId).uid;
+    const firstProvider=db.messageById(saved.emailId).gmail_id; assert.ok(firstProvider);
     const revised=success(await answer('mail:upsertDraft',{...params,emailId:saved.emailId,draftRevision:saved.draftRevision,body:'<p>Revision two</p>'}));
     assert.equal(revised.remoteSaved,true); assert.notEqual(db.messageById(saved.emailId).uid,firstUid);
+    assert.notEqual(db.messageById(saved.emailId).gmail_id,firstProvider);
     assert.ok([...service.messages.values()].some(row=>row.labelIds.includes('TRASH')&&row.labelIds.includes('DRAFT')),'old draft moves to Trash');
     const priorFetch=global.fetch;
     global.fetch=async(url,options)=>String(url).endsWith('/trash') ? new Response('{}',{status:503}) : priorFetch(url,options);
