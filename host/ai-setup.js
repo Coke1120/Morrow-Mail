@@ -13,6 +13,7 @@ const authActions = {
   "host:chatgptSignOut": bridge.chatgptSignOut, "host:chatgptSelect": bridge.chatgptSelect,
   "host:chatgptPreferences": bridge.chatgptPreferences, "host:chatgptResumeUsage": bridge.chatgptResumeUsage,
   "host:aiListModels": bridge.listModels,
+  "host:aiConsentStatus": bridge.consentStatus, "host:aiConsentGrant": bridge.consentGrant, "host:aiConsentRevoke": bridge.consentRevoke,
 };
 const accountSettings = window.morrowChatgptSettings.mount({
   container: document.getElementById("ai-account-settings"),
@@ -58,6 +59,7 @@ document.getElementById("save").onclick = async () => {
     if (baseUrl.value === input.baseUrl) baseUrl.value = saved.baseUrl;
     if (model.value === input.model) model.value = saved.model;
     keyHint(saved);
+    accountSettings.refreshConsent();
     if (owner === operation) statusNode.textContent = formState(draft()) === formState(saved)
       ? "Saved." : "Earlier settings saved. Your newer changes are not saved.";
   } catch (error) {

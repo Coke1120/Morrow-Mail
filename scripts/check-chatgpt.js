@@ -469,12 +469,18 @@ test("existing API key/custom endpoint behavior and separate ChatGPT settings su
   const originalFetch = global.fetch;
   const responses = require("../host/chatgpt-responses");
   const originalResponses = responses.getResponses;
+  const consentModule = require("../host/ai-consent"), originalConsent = consentModule.getConsent;
   try {
     for (const key of Object.keys(env)) delete process.env[key];
     process.env.MORROW_AI_CONFIG_DIR = directory;
     const config = require("../host/ai-config");
     const client = require("../host/openai-client");
+    const consent = consentModule.createConsent({ directory: () => directory, config: config.loadConfig,
+      account: () => ({ activeId: "synthetic-account", connected: true, planEnabled: true }), background() {} });
+    consentModule.getConsent = () => consent;
+    const allow = () => consent.grant({ token: consent.status().token, manual: true, background: false });
     config.saveConfig({ baseUrl: "https://synthetic-api.invalid/custom/v1", model: "existing-model", apiKey: "synthetic-api-key" });
+    allow();
     assert.equal(config.loadConfig().authMode, "api_key");
     const calls = [];
     global.fetch = async (url, input) => {
@@ -492,6 +498,7 @@ test("existing API key/custom endpoint behavior and separate ChatGPT settings su
     assert.deepEqual(await client.listModels(), { ok: true, models: ["existing-model"] });
     const original = config.loadConfig();
     config.saveConfig({ authMode: "chatgpt", chatgptModel: "synthetic-sol", apiKey: "" });
+    allow();
     assert.equal(config.loadConfig().apiKey, original.apiKey);
     assert.equal(config.loadConfig().baseUrl, original.baseUrl);
     assert.equal(config.loadConfig().model, original.model);
@@ -509,22 +516,22 @@ test("existing API key/custom endpoint behavior and separate ChatGPT settings su
     assert.equal(calls.length, apiCalls, "ChatGPT errors must never fall back to API billing");
     assert.deepEqual(await client.listModels(), { ok: true, models: ["synthetic-sol"] });
     config.saveConfig({ authMode: "api_key" });
+    allow();
     assert.equal(config.loadConfig().apiKey, "synthetic-api-key");
     assert.equal(config.loadConfig().chatgptModel, "synthetic-sol");
-    // A mode edit during an existing API stream cannot move its completion
-    // retry onto ChatGPT. The old adapter/config stays pinned for that request.
+    // A mode edit cancels the old request and forbids its completion retry.
     const apiFetch = global.fetch;
     global.fetch = async (url, input) => {
       if (JSON.parse(input.body).stream) config.saveConfig({ authMode: "chatgpt" });
       return apiFetch(url, input);
     };
     let output = "";
-    await client.stream([{ role: "user", content: "Synthetic" }], piece => { output += piece; });
-    assert.equal(output, "Existing API response");
+    await assert.rejects(client.stream([{ role: "user", content: "Synthetic" }], piece => { output += piece; }), /cancelled/);
+    assert.equal(output, "");
     assert.equal(oauthCalls, 2);
     assert.throws(() => config.saveConfig({ authMode: "unknown" }), /Choose API key or ChatGPT/);
   } finally {
-    global.fetch = originalFetch; responses.getResponses = originalResponses;
+    global.fetch = originalFetch; responses.getResponses = originalResponses; consentModule.getConsent = originalConsent;
     for (const [key, value] of Object.entries(env)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -573,15 +580,22 @@ test("host background classification survives async work and cannot be removed b
   const previousDir = process.env.MORROW_AI_CONFIG_DIR;
   const responses = require("../host/chatgpt-responses");
   const previousResponses = responses.getResponses;
+  const consentModule = require("../host/ai-consent"), previousConsent = consentModule.getConsent;
   try {
     process.env.MORROW_AI_CONFIG_DIR = directory;
-    require("../host/ai-config").saveConfig({ authMode: "chatgpt", chatgptModel: "synthetic-sol" });
+    const config = require("../host/ai-config");
+    const consent = consentModule.createConsent({ directory: () => directory, config: config.loadConfig,
+      account: () => ({ activeId: "synthetic-account", connected: true, planEnabled: true }), background() {} });
+    consentModule.getConsent = () => consent;
+    config.saveConfig({ authMode: "chatgpt", chatgptModel: "synthetic-sol" });
+    consent.grant({ token: consent.status().token, manual: true, background: true });
     let options;
     responses.getResponses = () => ({ complete: async (_messages, input) => { options = input; return "Synthetic"; } });
     await context.background(() => require("../host/openai-client").complete([{ role: "user", content: "Synthetic" }], { background: false }));
     assert.equal(options.background, true, "caller options cannot downgrade a classified background run");
   } finally {
     responses.getResponses = previousResponses;
+    consentModule.getConsent = previousConsent;
     if (previousDir === undefined) delete process.env.MORROW_AI_CONFIG_DIR; else process.env.MORROW_AI_CONFIG_DIR = previousDir;
     fs.rmSync(directory, { recursive: true, force: true });
   }

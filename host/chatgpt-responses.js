@@ -58,6 +58,7 @@ function createResponses({ auth = getAuth(), fetcher = (...args) => fetch(...arg
     let reader;
     try {
       const rows = await catalog(lease);
+      options.check?.();
       if (!options.model || !rows.some(row => row.id === options.model)) throw new Error("Fetch ChatGPT models in AI settings and choose one available to this account.");
       const input = [];
       for (const message of messages) {

@@ -8,7 +8,7 @@ const { createDiagnostics, attachRendererDiagnostics } = require("./ipc-diagnost
 const { loadConfig, publicConfig, saveConfig, completionsUrl, modelsUrl, DEFAULTS } = require("./ai-config");
 const { complete, extractJson, modelIds, listModels } = require("./openai-client");
 
-const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels", "host:chatgptStatus", "host:chatgptStart", "host:chatgptCallback", "host:chatgptCancel", "host:chatgptSignOut", "host:chatgptSelect", "host:chatgptPreferences", "host:chatgptResumeUsage"];
+const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels", "host:aiConsentStatus", "host:aiConsentGrant", "host:aiConsentRevoke", "host:chatgptStatus", "host:chatgptStart", "host:chatgptCallback", "host:chatgptCancel", "host:chatgptSignOut", "host:chatgptSelect", "host:chatgptPreferences", "host:chatgptResumeUsage"];
 const { init: initMail, startBackgroundSync } = require("./mail/engine");
 const { startupFailureDialog, startupStatusHtml } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
@@ -222,7 +222,7 @@ function openAiSetup() {
   setupWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const target = new URL(url);
-      if (target.protocol === "https:" && ["openai.com", "chatgpt.com"].includes(target.hostname)) shell.openExternal(url).catch(() => {});
+      if (target.protocol === "https:" && ["openai.com", "chatgpt.com", "hwl-hk.com"].includes(target.hostname)) shell.openExternal(url).catch(() => {});
     } catch { /* ignore malformed links */ }
     return { action: "deny" };
   });
@@ -374,12 +374,20 @@ function trackWindow(win, savedZoom) {
 
 function registerHostAi() {
   const auth = () => require("./chatgpt-auth").getAuth();
+  const consent = () => require("./ai-consent").getConsent();
+  const changeAccount = work => updateGate.run(() => {
+    if (loadConfig().authMode === "chatgpt") consent().revoke();
+    return work();
+  });
+  ipcMain.handle("host:aiConsentStatus", () => consent().status());
+  ipcMain.handle("host:aiConsentGrant", (_event, input) => updateGate.run(() => consent().grant(input)));
+  ipcMain.handle("host:aiConsentRevoke", () => consent().revoke());
   ipcMain.handle("host:chatgptStatus", () => auth().status());
-  ipcMain.handle("host:chatgptStart", (_event, input) => updateGate.run(() => auth().start(input)));
-  ipcMain.handle("host:chatgptCallback", (_event, input) => updateGate.run(() => auth().callback(input)));
+  ipcMain.handle("host:chatgptStart", (_event, input) => changeAccount(() => auth().start(input)));
+  ipcMain.handle("host:chatgptCallback", (_event, input) => changeAccount(() => auth().callback(input)));
   ipcMain.handle("host:chatgptCancel", () => { auth().cancel(); return auth().status(); });
-  ipcMain.handle("host:chatgptSignOut", (_event, id) => updateGate.run(() => auth().signOut(id)));
-  ipcMain.handle("host:chatgptSelect", (_event, id) => updateGate.run(() => auth().select(id)));
+  ipcMain.handle("host:chatgptSignOut", (_event, id) => changeAccount(() => auth().signOut(id)));
+  ipcMain.handle("host:chatgptSelect", (_event, id) => changeAccount(() => auth().select(id)));
   ipcMain.handle("host:chatgptPreferences", (_event, input) => updateGate.run(() => auth().preferences(input)));
   ipcMain.handle("host:chatgptResumeUsage", () => auth().resumeUsage());
   ipcMain.handle("host:aiGetConfig", () => publicConfig());

@@ -70,6 +70,7 @@ function publicConfig() {
 function saveConfig(input) {
   if (input?.authMode !== undefined && !["api_key", "chatgpt"].includes(input.authMode)) throw new Error("Choose API key or ChatGPT authentication.");
   const current = readFileConfig();
+  const previous = loadConfig();
   const next = {
     baseUrl: (input && input.baseUrl ? String(input.baseUrl) : current.baseUrl || DEFAULTS.baseUrl).trim(),
     model: (input && input.model ? String(input.model) : current.model || DEFAULTS.model).trim(),
@@ -81,6 +82,7 @@ function saveConfig(input) {
   };
   if (!next.baseUrl) throw new Error("Base URL is required");
   if (!next.model) throw new Error("Model id is required");
+  require("./ai-consent").getConsent().validate(next);
   const dir = userDataDir();
   fs.mkdirSync(dir, { recursive: true });
   const dest = configPath();
@@ -90,6 +92,7 @@ function saveConfig(input) {
   } catch {
     // Some volumes ignore chmod. The file is still outside the renderer.
   }
+  require("./ai-consent").getConsent().configurationChanged(previous, loadConfig());
   if (next.authMode !== (current.authMode || "api_key") || next.chatgptModel !== (current.chatgptModel || "")) {
     require("./chatgpt-auth").getAuth().invalidateRequests();
   }

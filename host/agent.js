@@ -857,6 +857,7 @@ function contextForSkill(skill, params) {
 }
 
 async function runSkill(params) {
+  if (!require("./ai-context").stamp()) return require("./ai-context").operation(() => runSkill(params));
   if (params?.source === "schedule" && !require("./ai-context").isBackground()) {
     return require("./ai-context").background(() => runSkill(params));
   }
@@ -2137,7 +2138,7 @@ async function runScheduled(skillId, contactEmail) {
 }
 
 function pumpDueSkills(now) {
-  return updateGate.run(() => pumpDueSkillsAdmitted(now));
+  return require("./ai-context").operation(() => updateGate.run(() => pumpDueSkillsAdmitted(now)));
 }
 
 function pumpDueSkillsAdmitted(now) {
@@ -2306,7 +2307,7 @@ function answer(channel, args) {
 }
 
 module.exports = {
-  answer,
+  answer: (...args) => require("./ai-context").operation(() => answer(...args)),
   listHomeSkills,
   listLibrarySkills,
   installSkill,
