@@ -550,6 +550,7 @@
           </dl>
           <p id="cli-gmail-transport" class="hint">Google sign-in stays OAuth. New or explicitly migrated Gmail accounts use Gmail API; other providers retain their transports. Gmail desktop Delete moves to Trash, including repeated Delete. Migration and separate Calendar reauthorization are reviewed in desktop Settings → Accounts; they are not bot commands. Requested scopes do not revoke older grants.</p>
           <p id="cli-unavailable"><strong>Unavailable to bots:</strong> attachment upload/attach/download, mailbox draft create/edit/delete, full thread retrieval, dedicated reply-all/forward, read/unread changes, move/archive/delete, and calendar actions. The desktop app has additional actions; they are not bot commands.</p>
+          <p id="cli-attachment-transfers">Desktop Preview, Open, Save and Cancel use the app's attachment transfers panel. These controls do not add bot commands or file-byte access to <code>mail.attachment.get</code>.</p>
           <p id="cli-provider-semantics"><code>bridge.describe</code> reports whether granted operations may contact providers: <code>providerCalls</code> is true when <code>mail.send</code> is available. Cached reads stay local. This is not a per-request network count: send replay/join or pre-submit denial may still involve From lookup or OAuth refresh. Receipts describe mail-provider submission outcomes and replay status, not absence of provider traffic.</p>
         </section>
         <details class="cli-guide" id="cli-connection">
@@ -1581,6 +1582,7 @@
         </div>
       </form>
     </dialog>
+    <aside id="attachment-transfer-activity" class="attachment-task-list" data-attachment-tasks="all" aria-label="Attachment transfers" hidden></aside>
     <script src="./motion.bundle.js"></script>
     <script src="../shared/compose-policy.js"></script>
     <script src="../shared/mailbox-roles.js"></script>

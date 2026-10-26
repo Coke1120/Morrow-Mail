@@ -103,16 +103,22 @@ function makeClient(account, secret, options) {
   return client;
 }
 
-async function withClient(account, password, fn) {
-  if (gmail.migrated(account)) return fn({ gmail: gmail.createSession(account, password) });
+async function withClient(account, password, fn, { signal } = {}) {
+  signal?.throwIfAborted();
+  if (gmail.migrated(account)) return fn({ gmail: gmail.createSession(account, password, { signal }) });
   const client = makeClient(account, password);
+  const abort = () => { try { client.close(); } catch { /* already closed */ } };
+  signal?.addEventListener("abort", abort, { once: true });
   try {
+    signal?.throwIfAborted();
     await client.connect();
+    signal?.throwIfAborted();
     return await fn(client);
   } catch (error) {
     throw connectionError(client, error);
   } finally {
     try { await client.logout(); } catch { client.close(); }
+    signal?.removeEventListener("abort", abort);
   }
 }
 
@@ -564,17 +570,35 @@ async function fetchSource(client, folderPath, uid, expectedValidity, options) {
   }
 }
 
-async function readPart(client, folderPath, uid, part, expectedValidity) {
-  if (client.gmail) return client.gmail.attachment(folderPath, uid, part, expectedValidity);
+async function readPart(client, folderPath, uid, part, expectedValidity, options = {}) {
+  const { signal, onProgress, maxBytes } = options;
+  signal?.throwIfAborted();
+  if (client.gmail) return client.gmail.attachment(folderPath, uid, part, expectedValidity, options);
   const lock = await client.getMailboxLock(folderPath);
+  let content;
+  const abort = () => content?.destroy?.();
   try {
+    signal?.throwIfAborted();
     assertUidValidity(client, expectedValidity);
-    const downloaded = await client.download(String(uid), part || "1", { uid: true });
+    const downloaded = await client.download(String(uid), part || "1", { uid: true,
+      ...(maxBytes ? { maxBytes: maxBytes + 1 } : {}) });
     if (!downloaded || !downloaded.content) return Buffer.alloc(0);
+    content = downloaded.content;
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) { abort(); signal.throwIfAborted(); }
     const chunks = [];
-    for await (const chunk of downloaded.content) chunks.push(Buffer.from(chunk));
+    let loaded = 0;
+    for await (const chunk of content) {
+      signal?.throwIfAborted();
+      loaded += chunk.length;
+      if (maxBytes && loaded > maxBytes) throw require("./attachment-cache").tooLarge();
+      chunks.push(Buffer.from(chunk)); onProgress?.({ phase: "downloading", loaded });
+    }
+    signal?.throwIfAborted();
     return Buffer.concat(chunks);
   } finally {
+    signal?.removeEventListener("abort", abort);
+    content?.destroy?.();
     lock.release();
   }
 }

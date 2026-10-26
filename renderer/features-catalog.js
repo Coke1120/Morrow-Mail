@@ -46,7 +46,7 @@
         id: "attachment-downloads",
         title: "Attachment downloads",
         category: "Mail",
-        blurb: "Save or open the selected file, or save all as ZIP, including cached draft attachments. Stale IDs, missing files, or a changed message stop the download. Opening cached Gmail mail refreshes legacy attachment identities while preserving complete text; reopen an older selection. Bot access still exposes metadata only.",
+        blurb: "Preview, Open and Save share downloads. Complete files up to 32 MiB can be reused for five minutes while Morrow is open; larger files remain on demand. Save asks for a location first. Attachment transfers show progress and individual Cancel controls; closing Preview keeps another Save or Open running. Downloads allow 64 MiB per file and 128 MiB per ZIP, with existing provider limits. Changed identities stop reuse; reopen legacy Gmail selections. Bot access remains metadata only.",
       },
       {
         id: "local-search",

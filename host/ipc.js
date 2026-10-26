@@ -121,7 +121,7 @@ function mailEnvelope(data) {
   return { success: true, data };
 }
 
-function fallback(channel, args) {
+function fallback(channel, args, event) {
   if (channel === "update:getState" || channel === "app:getVersion") {
     try {
       const updater = require("./updater");
@@ -136,7 +136,7 @@ function fallback(channel, args) {
       }
     } catch { /* keep stub */ }
   }
-  const live = liveAnswer(channel, args);
+  const live = liveAnswer(channel, args, event);
   if (live !== undefined) return live;
   const draft = draftAnswer(channel, args);
   if (draft !== undefined) return draft;
@@ -178,7 +178,7 @@ function createIpc(logPath) {
       if (typeof channel === "string" && channel.startsWith("bot:")) {
         return require("./bot/manage").answer(channel, args && args[0], event);
       }
-      return fallback(channel, args);
+      return fallback(channel, args, event);
     },
     send(_event, channel, ...args) {
       diagnostics.ipc("send", channel, args.length);
