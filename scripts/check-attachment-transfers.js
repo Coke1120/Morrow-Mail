@@ -185,6 +185,11 @@ async function extraChecks() {
     download: async (_uid, _part, opts) => { assert.equal(opts.maxBytes, 5); return { content: stream }; } };
   await assert.rejects(transport.remote.readPart(client, "INBOX", 8, "2", 100, { maxBytes: 4 }), /limit/);
   assert(stream.destroyed, "oversize stream is closed, not silently truncated");
+  const many = fixture();
+  many.row.attachments_json = JSON.stringify(Array.from({ length: 17 }, (_, index) => ({ id: String(index + 2), filename: `file-${index}.txt` })));
+  assert.equal((await many.invoke("mail:downloadAttachmentsZip", { emailId: "message" }, many.owner())).success, true, "large ZIP selections are batched, not rejected by the pending-file cap");
+  assert.equal(many.events.filter(e => e.startsWith("part:")).length, 17);
+  many.cache.clear();
   const disappearing = fixture(), window = disappearing.owner(); disappearing.controls.held = gate();
   const closed = disappearing.invoke("mail:fetchAttachmentBytes", { ...disappearing.params, requestId: "closed" }, window);
   await until(() => count(disappearing, "part:2") === 1); window.emit("destroyed");

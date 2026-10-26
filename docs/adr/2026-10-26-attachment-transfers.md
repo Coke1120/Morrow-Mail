@@ -29,6 +29,8 @@ Limits: 64 MiB total retained bytes, 32 MiB per retained file, 64 entries, five-
 TTL, two active batches and 16 pending files. Incoming transfer and ZIP budgets are
 64 MiB/file and 128 MiB combined; Gmail keeps its existing response bounds and
 outgoing files keep their existing limit. No partial bytes enter the cache. Each
+large ZIP is read in bounded eight-file batches rather than limiting its selection
+to the in-flight file count. Each
 consumer receives its own copy. Keys include the account incarnation/transport and
 full local message/attachment snapshot. Current identities and pending actions are
 checked on warm hits as well as provider reads. Reconnect/removal/migration abort

@@ -2673,12 +2673,15 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
   signal?.throwIfAborted();
   const { account, assertSnapshot, key } = attachmentSnapshot(row);
   const parts = new Map(), remoteItems = [];
+  let localBytes = 0;
   for (const [index, item] of files.entries()) {
     if (Number(item.size) > attachmentTransfers.LIMITS.fileBytes) throw attachmentTransfers.tooLarge();
     if (String(item.storageUrl || "").startsWith("local:")) {
       const blob = db.readBlob(item.storageUrl.slice(6));
       if (!blob?.data) throw new Error("That local attachment is no longer available. Attach the file again.");
       if (blob.data.length > attachmentTransfers.LIMITS.fileBytes) throw attachmentTransfers.tooLarge();
+      localBytes += blob.data.length;
+      if (localBytes > attachmentTransfers.LIMITS.zipBytes) throw Object.assign(new Error("These files exceed the 128 MiB combined download limit. Save them separately."), { code: "too-large" });
       parts.set(index, { name: item.filename || blob.filename || "attachment", data: Buffer.from(blob.data) });
     } else remoteItems.push({ key: JSON.stringify([key, String(item.id)]), item, index });
   }
@@ -2693,31 +2696,36 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
   if (remoteItems.length) {
     if (!(row.uid > 0)) throw new Error("That remote attachment is not available on this computer.");
     assertRemote();
-    const downloaded = await attachmentCache.getMany(remoteItems, { accountId: account.id, signal,
-      maxTotalBytes: attachmentTransfers.LIMITS.zipBytes - [...parts.values()].reduce((sum, part) => sum + part.data.length, 0),
-      onProgress: value => onProgress({ ...value, index: remoteItems[value.index].index, count: files.length }),
-      load: (entries, groupSignal) => updateGate.run(() => exclusive(account.id, async () => {
-        groupSignal.throwIfAborted(); assertRemote();
-        for (const entry of entries) entry.report({ phase: "connecting", loaded: 0 });
-        const password = await secretFor(account);
-        groupSignal.throwIfAborted(); assertRemote();
-        await remote.withClient(account, password, async client => {
-          for (const entry of entries) {
-            groupSignal.throwIfAborted();
-            if (entry.signal.aborted) continue;
-            assertRemote(); entry.report({ phase: "downloading", loaded: 0 });
-            try {
-              const data = await remote.readPart(client, row.folder_path, row.uid, entry.item.item.id, row.uid_validity,
-                { signal: entry.signal, maxBytes: attachmentTransfers.LIMITS.fileBytes, onProgress: entry.report });
-              assertRemote(); if (!entry.signal.aborted) entry.complete(data);
-            } catch (error) { entry.fail(entry.signal.aborted ? attachmentTransfers.cancelled() : error); }
-          }
-        }, { signal: groupSignal });
-      })) });
-    signal?.throwIfAborted(); assertRemote();
-    for (const [index, data] of downloaded.entries()) {
-      const selected = remoteItems[index];
-      parts.set(selected.index, { name: selected.item.filename || "attachment", data });
+    // A large ZIP consumes bounded batches, rather than refusing valid selections
+    // just because they contain more files than the pending-transfer budget.
+    for (let start = 0; start < remoteItems.length; start += 8) {
+      const batch = remoteItems.slice(start, start + 8);
+      const downloaded = await attachmentCache.getMany(batch, { accountId: account.id, signal,
+        maxTotalBytes: attachmentTransfers.LIMITS.zipBytes - [...parts.values()].reduce((sum, part) => sum + part.data.length, 0),
+        onProgress: value => onProgress({ ...value, index: batch[value.index].index, count: files.length }),
+        load: (entries, groupSignal) => updateGate.run(() => exclusive(account.id, async () => {
+          groupSignal.throwIfAborted(); assertRemote();
+          for (const entry of entries) entry.report({ phase: "connecting", loaded: 0 });
+          const password = await secretFor(account);
+          groupSignal.throwIfAborted(); assertRemote();
+          await remote.withClient(account, password, async client => {
+            for (const entry of entries) {
+              groupSignal.throwIfAborted();
+              if (entry.signal.aborted) continue;
+              assertRemote(); entry.report({ phase: "downloading", loaded: 0 });
+              try {
+                const data = await remote.readPart(client, row.folder_path, row.uid, entry.item.item.id, row.uid_validity,
+                  { signal: entry.signal, maxBytes: attachmentTransfers.LIMITS.fileBytes, onProgress: entry.report });
+                assertRemote(); if (!entry.signal.aborted) entry.complete(data);
+              } catch (error) { entry.fail(entry.signal.aborted ? attachmentTransfers.cancelled() : error); }
+            }
+          }, { signal: groupSignal });
+        })) });
+      signal?.throwIfAborted(); assertRemote();
+      for (const [index, data] of downloaded.entries()) {
+        const selected = batch[index];
+        parts.set(selected.index, { name: selected.item.filename || "attachment", data });
+      }
     }
   }
   signal?.throwIfAborted(); assertSnapshot();
