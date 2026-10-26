@@ -2069,7 +2069,7 @@ async function fillOvernightBodies() {
 }
 
 function needsGmailMetadata(row, account) {
-  return account?.mail_transport === "gmail_api" && (!row.gmail_id || db.jsonList(row.attachments_json)
+  return account?.mail_transport === "gmail_api" && (!row.gmail_id || Number(row.uid_validity) !== Number(account.gmail_generation) || db.jsonList(row.attachments_json)
     .some(file => !String(file.storageUrl || "").startsWith("local:") && !String(file.id || "").startsWith("gmail:")));
 }
 
@@ -2118,6 +2118,8 @@ async function ensureBody(row, options) {
     }
     const localFiles = account.mail_transport === "gmail_api" && row.is_draft ? db.jsonList(row.attachments_json).filter(file => String(file.storageUrl || "").startsWith("local:")) : [];
     db.updateMessage(row.id, {
+      ...(account.mail_transport === "gmail_api" && fetched.providerId && Number.isSafeInteger(fetched.providerUid) && fetched.providerUid > 0 && fetched.providerValidity === account.gmail_generation
+        ? { gmail_id: fetched.providerId, uid: fetched.providerUid, uid_validity: fetched.providerValidity } : {}),
       ...(metadataOnly ? {} : { html_body: fetched.htmlBody, text_body: fetched.textBody, body_complete: fetched.bodyComplete ? 1 : 0, snippet: fetched.snippet || row.snippet }),
       attachments_json: JSON.stringify(localFiles.length ? localFiles : fetched.attachments || []),
       has_attachments: localFiles.length > 0 || fetched.hasAttachments ? 1 : 0,

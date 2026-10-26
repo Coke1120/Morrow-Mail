@@ -207,7 +207,9 @@ function createSession(account, token, { api, check = () => {} } = {}) {
   async function source(path, uid, validity, { metadataOnly = false } = {}) {
     const mapped = await resolve(path, uid, validity, undefined, { readOnly: true });
     const value = await normalize(await api.getMessage(mapped.provider_id), !metadataOnly);
-    return { ...value, uid: Number(uid) }; // retain the caller's legacy pair until its cache row is adopted
+    // Keep the caller's pair for its stale-result guard, then let the engine
+    // promote this verified identity together with the new MIME metadata.
+    return { ...value, uid: Number(uid), providerUid: mapped.local_uid, providerValidity: incarnation };
   }
   async function attachment(path, uid, partId, validity) {
     if (typeof partId !== "string" || !partId.startsWith("gmail:")) throw Object.assign(new Error("This attachment identifier predates Gmail migration. Reopen the message before downloading its files."), { code: "attachment_changed", operationIssued: false });

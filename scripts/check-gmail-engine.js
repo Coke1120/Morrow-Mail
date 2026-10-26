@@ -130,6 +130,16 @@ async function run() {
     assert.equal((await engine.bytesFor({emailId:'unopened-legacy',attachmentId:'gmail:2'})).data.toString(),'SECOND');
     assert.equal(await engine.bytesFor({emailId:'unopened-legacy',attachmentId:'2'}),null,'stale selection remains invalid after recovery');
     assert.equal(service.calls.filter(call=>call.route==='/messages/unopened-files/attachments/unfetched-text').length,0,'metadata recovery does not replace complete cached text');
+    assert.equal(db.messageById('unopened-legacy').uid_validity,db.accountById('gmail').gmail_generation,'metadata recovery promotes the verified cache identity');
+    const flagBound=message('flag-bound-files'); flagBound.payload={...withFiles.payload,headers:flagBound.payload.headers}; service.messages.set(flagBound.id,flagBound);
+    db.insertMessage({id:'flag-bound-legacy',accountId:'gmail',folderPath:'INBOX',uid:501,uidValidity:88,rfcMessageId:'<flag-bound-files@fixture.invalid>',
+      textBody:'Complete text before flag lookup',bodyComplete:true,recipientHeaders:{},date:new Date().toISOString(),listSortTs:Date.now()});
+    success(await answer('mail:toggleStar',{emailId:'flag-bound-legacy',isStarred:true})); await engine.settleActions();
+    assert.equal(db.messageById('flag-bound-legacy').gmail_id,'flag-bound-files'); assert.equal(db.messageById('flag-bound-legacy').uid_validity,88);
+    const boundOpened=success(await answer('mail:openEmail',{emailId:'flag-bound-legacy',full:true})).email;
+    assert.equal(boundOpened.textBody,'Complete text before flag lookup'); assert.equal(boundOpened.attachments.find(row=>row.filename==='first.txt').id,'gmail:1');
+    assert.equal(db.messageById('flag-bound-legacy').uid_validity,db.accountById('gmail').gmail_generation);
+    assert.equal((await engine.bytesFor({emailId:'flag-bound-legacy',attachmentId:'gmail:1'})).data.toString(),'FIRST');
     console.log('gmail-engine-ok: repeated openEmail(full:true) refreshes unadopted attachment metadata and retains complete cached text/HTML');
 
     service.messages.set('unmapped-copies',message('unmapped-copies',['INBOX','Label_work']));
