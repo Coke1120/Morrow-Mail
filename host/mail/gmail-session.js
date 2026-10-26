@@ -133,7 +133,7 @@ function createSession(account, token, { api, check = () => {} } = {}) {
     }
     return { ...value, uid: mapping.local_uid, validity: incarnation };
   }
-  async function resolve(path, uid, validity, localMessageId) {
+  async function resolve(path, uid, validity, localMessageId, { readOnly = false } = {}) {
     alive();
     const mapped = db.gmailAlias(account.id, path, uid, validity);
     if (mapped) return mapped;
@@ -143,8 +143,10 @@ function createSession(account, token, { api, check = () => {} } = {}) {
     const providerId = row.gmail_id || await uniqueRfc(row.rfc_message_id);
     const data = await api.getMessage(providerId, { format: "metadata" });
     alive();
-    const providerFolder = folder(path).provider_id;
-    if (providerFolder !== ALL && !(data.labelIds || []).includes(providerFolder)) throw Object.assign(new Error("This Gmail message moved. Refresh before changing it."), { code: "message_moving", operationIssued: false });
+    if (!readOnly) {
+      const providerFolder = folder(path).provider_id;
+      if (providerFolder !== ALL && !(data.labelIds || []).includes(providerFolder)) throw Object.assign(new Error("This Gmail message moved. Refresh before changing it."), { code: "message_moving", operationIssued: false });
+    }
     const mapping = db.rememberGmail(account.id, { providerId, providerThreadId: data.threadId, labelIds: data.labelIds || [] });
     db.bindGmailAlias(row, providerId);
     return mapping;
@@ -202,14 +204,14 @@ function createSession(account, token, { api, check = () => {} } = {}) {
     db.gmailSyncState(account.id, path, state);
     return { paused: false, bootstrapped: state.complete };
   }
-  async function source(path, uid, validity) {
-    const mapped = await resolve(path, uid, validity);
-    const value = await normalize(await api.getMessage(mapped.provider_id), true);
+  async function source(path, uid, validity, { metadataOnly = false } = {}) {
+    const mapped = await resolve(path, uid, validity, undefined, { readOnly: true });
+    const value = await normalize(await api.getMessage(mapped.provider_id), !metadataOnly);
     return { ...value, uid: Number(uid) }; // retain the caller's legacy pair until its cache row is adopted
   }
   async function attachment(path, uid, partId, validity) {
     if (typeof partId !== "string" || !partId.startsWith("gmail:")) throw Object.assign(new Error("This attachment identifier predates Gmail migration. Reopen the message before downloading its files."), { code: "attachment_changed", operationIssued: false });
-    const mapped = await resolve(path, uid, validity), data = await api.getMessage(mapped.provider_id);
+    const mapped = await resolve(path, uid, validity, undefined, { readOnly: true }), data = await api.getMessage(mapped.provider_id);
     const part = parts(data.payload).find(row => `gmail:${row.partId || "0"}` === partId);
     if (!part) throw new Error("This Gmail attachment is no longer available.");
     const result = typeof part.body?.data === "string" ? Buffer.from(part.body.data, "base64url") : await api.attachment(data.id, part.body.attachmentId);

@@ -535,8 +535,8 @@ async function syncFolder(client, folderPath, options) {
   }
 }
 
-async function fetchSource(client, folderPath, uid, expectedValidity) {
-  if (client.gmail) return client.gmail.source(folderPath, uid, expectedValidity);
+async function fetchSource(client, folderPath, uid, expectedValidity, options) {
+  if (client.gmail) return client.gmail.source(folderPath, uid, expectedValidity, options);
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);

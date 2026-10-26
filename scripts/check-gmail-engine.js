@@ -110,6 +110,56 @@ async function run() {
     assert.equal(nested.id,'Work/Projects'); assert.equal(db.folderByPath('gmail',nested.id).provider_id,labelId);
     console.log('gmail-engine-ok: explicit migration, declined/partial/mismatch/storage rollback, cache retention and separate Calendar');
 
+    // Exercise the actual reopen/list handlers before the legacy cache rows
+    // have appeared in a provider sync, with complete bodies and headers.
+    const unopened=message('unopened-files'); unopened.payload={...withFiles.payload,headers:unopened.payload.headers};
+    service.messages.set(unopened.id,unopened);
+    db.insertMessage({id:'unopened-legacy',accountId:'gmail',folderPath:'INBOX',uid:500,uidValidity:88,rfcMessageId:'<unopened-files@fixture.invalid>',
+      textBody:'Correct complete cached text',htmlBody:'<p>Correct complete cached HTML</p>',bodyComplete:true,recipientHeaders:{deliveredTo:['owner@fixture.invalid']},
+      attachments:[{id:'2',filename:'first.txt'},{id:'3',filename:'second.txt'}],hasAttachments:true,date:new Date().toISOString(),listSortTs:Date.now()});
+    assert.equal(db.messageById('unopened-legacy').gmail_id,null);
+    assert.equal(await engine.bytesFor({emailId:'unopened-legacy',attachmentId:'2'}).then(()=>null,error=>error.code),'attachment_changed');
+    const reopened=success(await answer('mail:openEmail',{emailId:'unopened-legacy',full:true})).email;
+    assert.equal(reopened.textBody,'Correct complete cached text'); assert.equal(reopened.htmlBody,'<p>Correct complete cached HTML</p>');
+    const freshFile=reopened.attachments.find(row=>row.filename==='first.txt'); assert.equal(freshFile.id,'gmail:1');
+    const readsAfterOpen=service.calls.filter(call=>call.route==='/messages/unopened-files').length;
+    const repeated=success(await answer('mail:openEmail',{emailId:'unopened-legacy',full:true})).email;
+    assert.equal(repeated.attachments.find(row=>row.filename==='first.txt').id,'gmail:1');
+    assert.equal(service.calls.filter(call=>call.route==='/messages/unopened-files').length,readsAfterOpen,'fresh metadata is reused on repeated open');
+    assert.equal((await engine.bytesFor({emailId:'unopened-legacy',attachmentId:freshFile.id})).data.toString(),'FIRST');
+    assert.equal((await engine.bytesFor({emailId:'unopened-legacy',attachmentId:'gmail:2'})).data.toString(),'SECOND');
+    assert.equal(await engine.bytesFor({emailId:'unopened-legacy',attachmentId:'2'}),null,'stale selection remains invalid after recovery');
+    assert.equal(service.calls.filter(call=>call.route==='/messages/unopened-files/attachments/unfetched-text').length,0,'metadata recovery does not replace complete cached text');
+    console.log('gmail-engine-ok: repeated openEmail(full:true) refreshes unadopted attachment metadata and retains complete cached text/HTML');
+
+    service.messages.set('unmapped-copies',message('unmapped-copies',['INBOX','Label_work']));
+    const legacyIds=['unmapped-inbox','unmapped-work','unmapped-all'];
+    for (const [index,folder] of ['INBOX','Work','[Gmail]/All Mail'].entries()) db.insertMessage({id:legacyIds[index],accountId:'gmail',folderPath:folder,
+      uid:600+index,uidValidity:88,rfcMessageId:'<unmapped-copies@fixture.invalid>',threadId:'unmapped-conversation',textBody:'Cached legacy copy',bodyComplete:true,
+      recipientHeaders:{},date:new Date().toISOString(),listSortTs:Date.now()});
+    db.insertMessage({id:'unrelated-legacy-work',accountId:'gmail',folderPath:'Work',uid:610,uidValidity:88,rfcMessageId:'<unrelated-retained@fixture.invalid>',
+      textBody:'Retain unrelated cached mail',bodyComplete:true,recipientHeaders:{},date:new Date().toISOString(),listSortTs:Date.now()});
+    db.insertMessage({id:'pending-legacy-edit',accountId:'gmail',folderPath:'Drafts',uid:0,uidValidity:0,rfcMessageId:'<unmapped-copies@fixture.invalid>',
+      textBody:'Retain unsaved local edits',isDraft:true,draftPending:true,bodyComplete:true,recipientHeaders:{},date:new Date().toISOString(),listSortTs:Date.now()});
+    // Other fixture bodies are already downloaded; keep visible-page prefetch
+    // out of this deterministic cache-membership test.
+    for (const row of db.gmailCopies('gmail','attachments')) if (!row.body_complete) db.updateMessage(row.id,{text_body:'Previously downloaded fixture text',body_complete:1,recipient_headers_json:'{}'});
+    for (const folder of ['Work','[Gmail]/All Mail']) assert.ok(success(await answer('mail:listFromCache',{accountId:'gmail',folderId:folder,limit:100})).emails.some(row=>legacyIds.includes(row.id)));
+    const legacyTrashBefore=service.calls.filter(call=>call.route==='/messages/unmapped-copies/trash').length;
+    const legacyTrash=success(await answer('mail:threadTrash',{accountId:'gmail',threadId:'unmapped-conversation'})); assert.equal(legacyTrash.pending.length,1);
+    const legacySettled=await engine.settleActions(); assert.equal(legacySettled.outcomes.filter(row=>row.status==='completed').length,1);
+    assert.equal(service.calls.filter(call=>call.route==='/messages/unmapped-copies/trash').length,legacyTrashBefore+1);
+    for (const folder of ['Work','[Gmail]/All Mail']) {
+      const refreshed=success(await answer('mail:listFromNetwork',{accountId:'gmail',folderId:folder,limit:100}));
+      assert.ok(refreshed.emails.every(row=>row.messageId!=='<unmapped-copies@fixture.invalid>'),'refreshed list cannot retain an unadopted label copy after Trash');
+      const listed=success(await answer('mail:listFromCache',{accountId:'gmail',folderId:folder,limit:100}));
+      assert.ok(listed.emails.every(row=>row.messageId!=='<unmapped-copies@fixture.invalid>'));
+    }
+    assert.ok(success(await answer('mail:listFromCache',{accountId:'gmail',folderId:'Work',limit:100})).emails.some(row=>row.id==='unrelated-legacy-work'));
+    assert.equal(db.messageById('unrelated-legacy-work').gmail_id,null); assert.equal(db.messageById('pending-legacy-edit').draft_pending,1);
+    assert.equal(db.gmailCopies('gmail','unmapped-copies').length,1); assert.equal(db.gmailCopies('gmail','unmapped-copies')[0].folder_path,'[Gmail]/Trash');
+    console.log('gmail-engine-ok: actual cache/network list handlers remove all verified legacy label copies after one Trash while retaining unrelated mail/local edits');
+
     success(await answer('mail:markRead',{emailId:'cached',isRead:true})); await engine.settleActions();
     success(await answer('mail:toggleStar',{emailId:'cached',isStarred:true})); await engine.settleActions();
     assert.ok(!service.messages.get('incoming').labelIds.includes('UNREAD'));

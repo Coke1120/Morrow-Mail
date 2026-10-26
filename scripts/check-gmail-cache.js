@@ -116,6 +116,31 @@ test("label copies cannot repeat Trash or replace its snapshot; Undo from All Ma
   assert.ok(first.providerUndo.labelIds.includes("INBOX") && first.providerUndo.labelIds.includes("UNREAD"), "operation snapshot is immutable");
 });
 
+test("verified Trash reconciles legacy copies outside live labels without touching unrelated or pending mail", async t => {
+  const f = await fixture(t, [message("legacy-labels", ["INBOX", "Label_work"])]), s = await f.migrate();
+  for (const [id, folder] of [["old-inbox", "INBOX"], ["old-work", "Work"], ["old-all", "[Gmail]/All Mail"]]) f.cached(id, "<legacy-labels@fixture.invalid>", folder);
+  f.cached("unrelated", "<unrelated@fixture.invalid>", "Work", { uid: 43 });
+  f.cached("pending", "<legacy-labels@fixture.invalid>", "Drafts", { uid: 0, isDraft: true, draftPending: true });
+  const result = await s.move("INBOX", 42, "[Gmail]/Trash", 77);
+  assert.equal(result.gmailMessage.legacyVerified, true);
+  db.applyGmailMessage("gmail", result.gmailPaths, result.gmailMessage);
+  db.pruneGmailCopies("gmail", "legacy-labels", result.gmailPaths);
+  await s.sync("Work"); await s.sync("[Gmail]/All Mail");
+  assert.deepEqual(Array.from(db.gmailCopies("gmail", "legacy-labels"), row => row.folder_path), ["[Gmail]/Trash"]);
+  assert.equal(db.messageById("old-work"), null); assert.equal(db.messageById("old-all"), null);
+  assert.equal(db.messageById("unrelated").gmail_id, null); assert.equal(db.messageById("pending").draft_pending, 1);
+});
+
+test("ambiguous legacy copies in a non-live folder refuse reconciliation atomically", async t => {
+  const f = await fixture(t, [message("ambiguous-cache", ["TRASH"])]), s = await f.migrate();
+  f.cached("copy-one", "<ambiguous-cache@fixture.invalid>", "Work");
+  f.cached("copy-two", "<ambiguous-cache@fixture.invalid>", "Work", { uid: 43 });
+  await assert.rejects(s.adopt(f.service.messages.get("ambiguous-cache")), error => error.code === "gmail_identity_ambiguous");
+  for (const id of ["copy-one", "copy-two"]) { assert.equal(db.messageById(id).gmail_id, null); assert.equal(db.messageById(id).html_body, "<b>Cached synthetic</b>"); }
+  assert.equal(db.gmailAlias("gmail", "Work", 42, 77), null);
+  assert.equal(f.service.calls.filter(call => call.method !== "GET").length, 0);
+});
+
 test("moves/Trash/restore use stable provider identity and label rename preserves cache ids", async t => {
   const f = await fixture(t, [message("move", ["INBOX", "UNREAD"])]), s = await f.migrate(); await s.sync("INBOX");
   const row = db.gmailCopies("gmail", "move").find(row => row.folder_path === "INBOX"), trash = db.folderByWellKnown("gmail", "deleteditems");

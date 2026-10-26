@@ -1911,6 +1911,17 @@ function gmailLegacy(accountId, rfcMessageId, folderPath) {
 function applyGmailMessage(accountId, folderPaths, message) {
   return transaction(() => {
     const mapping = rememberGmail(accountId, message), account = accountById(accountId);
+    if (message.legacyVerified) {
+      // The provider's unique RFC match covers all label copies, including
+      // folders no longer present in the live membership (for example Trash).
+      const legacy = gmailLegacy(accountId, message.rfcMessageId).filter(row => !row.draft_pending);
+      const seen = new Set();
+      for (const row of legacy) {
+        if (seen.has(row.folder_path)) throw Object.assign(new Error("Multiple cached Gmail messages match this identity. Cached work was retained."), { code: "gmail_identity_ambiguous" });
+        seen.add(row.folder_path);
+      }
+      for (const row of legacy) bindGmailAlias(row, message.providerId);
+    }
     for (const folderPath of folderPaths) {
       let found = get("SELECT * FROM messages WHERE account_id = ? AND folder_path = ? AND gmail_id = ?", [accountId, folderPath, message.providerId]);
       if (!found && message.legacyVerified) {

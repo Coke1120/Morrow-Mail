@@ -2068,6 +2068,11 @@ async function fillOvernightBodies() {
   return { ran: true, fetched: fresh && fresh.body_complete === 1 ? 1 : 0, window: true };
 }
 
+function needsGmailMetadata(row, account) {
+  return account?.mail_transport === "gmail_api" && (!row.gmail_id || db.jsonList(row.attachments_json)
+    .some(file => !String(file.storageUrl || "").startsWith("local:") && !String(file.id || "").startsWith("gmail:")));
+}
+
 async function ensureBody(row, options) {
   const background = !!(options && options.background);
   const outcome = options && options.outcome;
@@ -2076,9 +2081,10 @@ async function ensureBody(row, options) {
   };
   // Full RFC822 via fetchSource. A text/html part fetch needs stored structure
   // so attachments and recipient headers stay intact.
-  if (!row || row.draft_pending || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
+  if (!row || row.draft_pending || !row.uid) return row;
   const account = db.accountById(row.account_id);
   if (!account) return row;
+  if (row.body_complete === 1 && row.recipient_headers_json != null && !needsGmailMetadata(row, account)) return row;
   if (background && priorityWaiting(account.id)) {
     markSkip();
     return row;
@@ -2093,11 +2099,12 @@ async function ensureBody(row, options) {
     }
     // Another open may have filled the cache while this request queued.
     row = db.messageById(row.id);
-    if (!row || row.draft_pending || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
+    if (!row || row.draft_pending || !row.uid || (row.body_complete === 1 && row.recipient_headers_json != null && !needsGmailMetadata(row, account))) return row;
     actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
     bodyProgress.start(bodyTask);
-    const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity));
+    const metadataOnly = account.mail_transport === "gmail_api" && row.body_complete === 1;
+    const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity, { metadataOnly }));
     bodyResult = "incomplete";
     // A FETCH row for another UID must not be written onto this message.
     if (!fetched || Number(fetched.uid) !== Number(row.uid)) return row;
@@ -2109,17 +2116,15 @@ async function ensureBody(row, options) {
       error.code = "message_moving";
       throw error;
     }
+    const localFiles = account.mail_transport === "gmail_api" && row.is_draft ? db.jsonList(row.attachments_json).filter(file => String(file.storageUrl || "").startsWith("local:")) : [];
     db.updateMessage(row.id, {
-      html_body: fetched.htmlBody,
-      text_body: fetched.textBody,
-      snippet: fetched.snippet || row.snippet,
-      attachments_json: JSON.stringify(fetched.attachments || []),
-      has_attachments: fetched.hasAttachments ? 1 : 0,
-      body_complete: fetched.bodyComplete ? 1 : 0,
+      ...(metadataOnly ? {} : { html_body: fetched.htmlBody, text_body: fetched.textBody, body_complete: fetched.bodyComplete ? 1 : 0, snippet: fetched.snippet || row.snippet }),
+      attachments_json: JSON.stringify(localFiles.length ? localFiles : fetched.attachments || []),
+      has_attachments: localFiles.length > 0 || fetched.hasAttachments ? 1 : 0,
       subject: fetched.subject || row.subject,
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
     });
-    bodyResult = fetched.bodyComplete ? "done" : "incomplete";
+    bodyResult = metadataOnly || fetched.bodyComplete ? "done" : "incomplete";
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
   } catch (error) {
