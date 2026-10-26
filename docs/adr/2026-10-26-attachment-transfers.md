@@ -1,6 +1,6 @@
 # Share bounded attachment transfers across user actions
 
-Status: implemented for draft review; independent functional review pending.
+Status: implemented. Offline checks passed at `3687a12` and again locally before this note. Native save dialogs, live mailboxes, OAuth grants, Console actions, and release were not run.
 
 Preview, Open and Save currently fetch the same remote attachment again, and Save
 downloads before presenting its dialog. A dismissed preview leaves the transfer
@@ -21,9 +21,14 @@ IMAP UIDVALIDITY checks, local draft files, and ZIP selection behavior. Do not e
 bot access to attachment bytes. Keep connection pooling, body-sync redesign and PDF
 worker changes separate. Tune IMAP chunks only with bounded synthetic evidence.
 
-The draft PR must record completed implementation, real test results and remaining
-native/live boundaries. No release, live mailbox, OAuth grant or Console action is
-part of this change.
+`npm run check` (`node scripts/check-boot-path.js`) passed locally on Node 22 and in
+CI on Node 20 (run 40284869284, `ui-path-ok`). That run includes
+`scripts/check-attachment-transfers.js` and `scripts/check-account-calendar-attachments.js`:
+shared IMAP and Gmail reads, identity checks on cache hits, Save before fetch,
+per-consumer cancellation, a 17-file ZIP, and synthetic renderer progress that leaves
+the shell-wide busy flag clear. No release, live mailbox, real attachment, OAuth grant,
+or Console action is part of this change. A crash during the final `writeFileSync` can
+still leave a partial file at the chosen path; failed and cancelled reads are not cached.
 
 Limits: 64 MiB total retained bytes, 32 MiB per retained file, 64 entries, five-minute
 TTL, two active batches and 16 pending files. Incoming transfer and ZIP budgets are
