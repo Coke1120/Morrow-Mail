@@ -79,6 +79,7 @@ let ready = false;
 const lanes = new Map();
 const flagCursors = new Map();
 const accountEpochs = new Map();
+let bodyVersion = 0;
 const ACCOUNT_EPOCH = Symbol("accountEpoch");
 
 function removedAccountError() {
@@ -254,6 +255,8 @@ function accountView(row, index) {
     delimiter: row.delimiter || "/",
     imapUsername: row.username,
     authKind: row.auth_kind || "password",
+    bodyEpoch: accountEpochs.get(row.id) || 0,
+    bodyVersion,
     mailTransport: row.mail_transport || "imap",
     gmailMigrationAvailable: row.profile === "gmail" && row.auth_kind === "oauth2" && row.mail_transport !== "gmail_api",
     push: idlePush(row.id),
@@ -285,7 +288,7 @@ function publicAttachment(item) {
   return out;
 }
 
-function listRow(row) {
+function listRow(row, generations) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
   const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
   const sender = row.from_address || row.from_addr || "";
@@ -309,7 +312,7 @@ function listRow(row) {
     unread: row.unread === 1,
     isRead: row.unread !== 1,
     isStarred: row.starred === 1,
-    actionGeneration: actions.generationOf(row.id),
+    actionGeneration: generations instanceof Map ? generations.get(row.id) || 0 : actions.generationOf(row.id),
     isDraft: row.is_draft === 1,
     hasAttachments: row.has_attachments === 1,
     unifiedCategory: "primary",
@@ -323,24 +326,43 @@ function listRow(row) {
     bodyWarning: row.body_warning || "",
     bodyComplete: row.body_complete === 1,
     hasBody: usableStoredBody(row),
+    bodyEpoch: accountEpochs.get(row.account_id) || 0,
+    bodyVersion,
   };
 }
 
-function detailOf(row) {
+function listRows(rows, details = false) {
+  const generations = db.maxActionGenerations(rows.map(row => row.id));
+  return rows.map(row => details ? detailOf(row, generations) : listRow(row, generations));
+}
+
+function detailOf(row, generations) {
   const presented = textEncoding.presentMessage({
     subject: row.subject || "",
     htmlBody: row.html_body,
     textBody: row.text_body,
   });
   return {
-    ...listRow(row),
+    ...listRow(row, generations),
     subject: presented.subject,
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
+    bodyMetadataVersion: bodyVersion,
     fromAddress: composeIdentity.savedAddress(row),
     ...(row.is_draft ? { draftRevision: db.draftRevision(row), draftPending: !!row.draft_pending,
       fromDisplayName: composeIdentity.savedName(row) } : {}),
   };
+}
+
+function bodyAvailability(row) {
+  return { accountId: row.account_id, emailId: row.id, bodyEpoch: accountEpochs.get(row.account_id) || 0, bodyVersion,
+    bodyComplete: row.body_complete === 1, hasBody: usableStoredBody(row), bodyWarning: row.body_warning || "" };
+}
+
+function cachedBody(row) {
+  // Only visible consumers request this snapshot. Include current draft/inline
+  // attachment and sender metadata; notifications themselves remain body-free.
+  return detailOf(row);
 }
 
 function threadMeta(rows) {
@@ -418,7 +440,7 @@ function synced(query, days) {
 
 function listPayload(params) {
   const query = queryFrom(params);
-  const rows = db.selectMessages(query, { headersOnly: true }).map(listRow);
+  const rows = listRows(db.selectMessages(query, { headersOnly: true }));
   const total = db.countMessages(query);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const days = syncHorizonDays();
@@ -1933,11 +1955,13 @@ function bodySyncSnapshot() {
 function scheduleVisibleBodyPrefetch(emails) {
   const page = Array.isArray(emails) ? emails.slice(0, BODY_PREFETCH_LIMIT) : [];
   const ids = [];
+  const owners = new Map();
   for (const email of page) {
     if (!email || email.id == null || email.bodyComplete === true) continue;
     ids.push(String(email.id));
+    owners.set(String(email.id), email.accountId);
   }
-  const key = ids.join("\n");
+  const key = JSON.stringify(ids.map(id => [owners.get(id), id, accountEpochs.get(owners.get(id)) || 0]));
   if (key === fillKey) return;
   fillKey = key;
   fillGen += 1;
@@ -1945,7 +1969,8 @@ function scheduleVisibleBodyPrefetch(emails) {
   fillQueue = fillQueue.filter((item) => item.kind === "open");
   for (const id of ids) {
     if (bodyJobs.has(id) || fillQueue.some((item) => item.id === id)) continue;
-    const accountId = db.messageById(id)?.account_id;
+    const accountId = owners.get(id);
+    if (!accountId) continue;
     fillQueue.push({ id, gen, kind: "prefetch", accountId, generation: accountEpochs.get(accountId) || 0 });
   }
   bodyProgress.changed();
@@ -1965,6 +1990,7 @@ function queueOpenFill(row) {
 function fillBodyInBackground(row, outcome, bodySource = "visible") {
   if (!row || row.id == null) return Promise.resolve(row);
   const id = String(row.id);
+  const generation = accountEpochs.get(row.account_id) || 0;
   if (bodyJobs.has(id) || !rowNeedsBody(row)) return Promise.resolve(row);
   bodyJobs.add(id);
   const beforeHtml = row.html_body;
@@ -1974,8 +2000,10 @@ function fillBodyInBackground(row, outcome, bodySource = "visible") {
   return ensureBody(row, { background: true, outcome, bodySource }).then((fresh) => {
     const next = fresh || row;
     if (outcome && outcome.skipped) return next;
+    if (!db.isReady() || generation !== (accountEpochs.get(row.account_id) || 0) || !db.messageById(id) || next.account_id !== row.account_id) return next;
     if (next.html_body !== beforeHtml || next.text_body !== beforeText || next.body_complete !== beforeComplete || next.body_warning !== beforeWarning) {
-      broadcast("mail:bodyUpdated", { email: detailOf(next) });
+      bodyVersion += 1;
+      broadcast("mail:bodyUpdated", bodyAvailability(next));
     }
     return next;
   }).finally(() => {
@@ -1994,7 +2022,7 @@ async function pumpBodyFills() {
         continue;
       }
       const row = db.messageById(item.id);
-      if (!row || !rowNeedsBody(row)) {
+      if (!row || row.account_id !== item.accountId || item.generation !== (accountEpochs.get(item.accountId) || 0) || !rowNeedsBody(row)) {
         fillQueue.shift();
         continue;
       }
@@ -2320,11 +2348,11 @@ async function searchAccount(account, text, limit) {
 
 function searchLocal(params) {
   const query = params || {};
-  return db.searchMessages({
+  return listRows(db.searchMessages({
     query: query.query,
     accountId: query.accountId || null,
     limit: query.limit,
-  }).map(listRow);
+  }));
 }
 
 async function searchRemote(params) {
@@ -3615,6 +3643,8 @@ function answer(channel, args, event) {
       return (async () => {
         const stored = db.messageById(params && params.emailId);
         if (!stored) return fail("email-gone", "That message is no longer in the mailbox.");
+        if (params?.accountId && params.accountId !== stored.account_id) return fail("email-gone", "That message is no longer in this mailbox.");
+        const generation = accountEpochs.get(stored.account_id) || 0;
         const paintFirst = !(params && params.full === true)
           && stored.body_complete !== 1
           && usableStoredBody(stored);
@@ -3622,14 +3652,23 @@ function answer(channel, args, event) {
         try { row = paintFirst ? stored : await ensureBody(stored); }
         catch (error) { return fail(error.code || "read", error.message); }
         if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
+        if (generation !== (accountEpochs.get(stored.account_id) || 0)) return fail("message_changed", "The mailbox connection changed. Reopen the message.");
+        row = db.messageById(row.id);
+        if (!row || row.account_id !== stored.account_id) return fail("email-gone", "That message is no longer in the mailbox.");
         if (paintFirst) queueOpenFill(stored);
-        const members = db.messagesByThread(row.account_id, row.thread_id, { headersOnly: true }).map(listRow);
+        const members = listRows(db.messagesByThread(row.account_id, row.thread_id, { headersOnly: true }));
         return ok({
           email: detailOf(row),
           isThread: members.length > 1,
           threadMessages: members,
         });
       })();
+    case "mail:readCachedBody": {
+      const row = db.messageById(params?.emailId);
+      if (!row || row.account_id !== params?.accountId || !db.accountById(row.account_id)) return fail("email-gone", "That message is no longer in this mailbox.");
+      if (!Number.isSafeInteger(params?.bodyEpoch) || params.bodyEpoch !== (accountEpochs.get(row.account_id) || 0)) return fail("message_changed", "The mailbox connection changed. Reopen the message.");
+      return ok({ email: cachedBody(row) });
+    }
     case "mail:prepareDraft":
       return updateGate.run(() => prepareDraft(params || {}, event?.sender));
     case "mail:readEmail":
@@ -3649,7 +3688,7 @@ function answer(channel, args, event) {
       const rows = accountId
         ? db.messagesByThread(accountId, threadId, { headersOnly })
         : db.selectMessages({ tokens: [], limit: 50 }, { headersOnly }).filter((row) => row.thread_id === threadId);
-      return ok(rows.map((row) => headersOnly ? listRow(row) : detailOf(row)));
+      return ok(listRows(rows, !headersOnly));
     }
     case "mail:markRead":
     case "mail:markReadBatch":
@@ -3699,7 +3738,7 @@ function answer(channel, args, event) {
       const active = db.snoozeRows(accountId, "active");
       const untilByThread = {};
       for (const row of active) untilByThread[row.thread_id] = row.until_iso;
-      const emails = db.selectMessages({ accountId, onlySnoozed: true, limit: 200 }).map(listRow);
+      const emails = listRows(db.selectMessages({ accountId, onlySnoozed: true, limit: 200 }));
       return ok({ emails, snoozedUntilByThread: untilByThread, threads: threadMeta(emails), total: emails.length });
     }
     case "mail:listResurfaced":

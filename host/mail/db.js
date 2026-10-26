@@ -1499,6 +1499,20 @@ function maxActionGeneration(messageId) {
   return row && row.n ? Number(row.n) : 0;
 }
 
+function maxActionGenerations(messageIds) {
+  const ids = [...new Set(messageIds)], result = new Map(ids.map(id => [id, 0]));
+  // Bounded parameter lists also work with SQLite builds using the 999 limit.
+  for (let offset = 0; offset < ids.length; offset += 400) {
+    const page = ids.slice(offset, offset + 400);
+    for (const row of all(`SELECT a.message_id, MAX(a.generation) AS generation
+      FROM mail_actions a JOIN messages m ON m.id = a.message_id AND m.account_id = a.account_id
+      WHERE a.message_id IN (${page.map(() => "?").join(",")}) GROUP BY a.message_id`, page)) {
+      result.set(row.message_id, Number(row.generation) || 0);
+    }
+  }
+  return result;
+}
+
 function messageHeld(id) {
   const rows = all("SELECT phase, receipt, intent_json FROM mail_actions WHERE message_id = ?", [id]);
   return rows.some((row) => {
@@ -2122,6 +2136,7 @@ module.exports = {
   publishingMailActions,
   acceptedAccountIds,
   maxActionGeneration,
+  maxActionGenerations,
   messageHeld,
   recentForAi,
   recentInWellKnown,

@@ -115,6 +115,12 @@
         blurb: "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed.",
       },
       {
+        id: "mail-body-updates",
+        title: "Mail body updates",
+        category: "Mail",
+        blurb: "Mail lists batch action metadata. Body notifications carry availability instead of full messages; open readers and previews refresh from already downloaded mail. Each window can reuse up to 32 recent bodies within an estimated 8 MiB of strings, at most 2 MiB per entry. Larger bodies remain available in the open view. Reconnect/removal invalidates reuse; cache eviction never deletes saved mail, drafts or attachments. Native Mac responsiveness still needs profiling.",
+      },
+      {
         id: "mail-responsiveness",
         title: "Mail responsiveness",
         category: "Support",
