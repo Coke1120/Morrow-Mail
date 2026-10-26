@@ -35,6 +35,12 @@ async function cacheChecks() {
   const retry = () => cache.getMany([{ key: "retry" }], { accountId: "a", load: async es => { if (++tries === 1) throw Error("synthetic failure"); es[0].complete(Buffer.from("ok")); } });
   await assert.rejects(retry(), /failure/); assert.equal((await retry())[0].toString(), "ok"); assert.equal(tries, 2);
   cache.clear();
+  const batch = createAttachmentCache(), batchAbort = new AbortController();
+  const batchResult = batch.getMany(Array.from({ length: 16 }, (_, index) => ({ key: `batch-${index}` })), {
+    accountId: "batch", signal: batchAbort.signal, load: async (_entries, signal) => signal.throwIfAborted() });
+  assert.equal(require("node:events").getEventListeners(batchAbort.signal, "abort").length, 1, "a ZIP request owns one abort listener, independent of file count");
+  batchAbort.abort(); await assert.rejects(batchResult); await until(() => batch.stats().active === 0);
+  assert.equal(batch.stats().pending, 0); batch.clear();
   await assert.rejects(cache.getMany([{ key: "budget-a" }, { key: "budget-b" }], { accountId: "a", maxTotalBytes: 5,
     load: async es => { for (const e of es) e.complete(Buffer.from("1234")); } }), /combined/);
   cache.clear();

@@ -69,6 +69,8 @@ function createAttachmentCache(options = {}) {
     if (items.reduce((sum, item) => sum + (completed.get(item.key)?.data.length || 0), 0) > maxTotalBytes) throw totalError();
     let received = 0;
     const fresh = [], consumers = [];
+    const abort = () => { for (const { consumer } of consumers) consumer.abort(); };
+    signal?.addEventListener("abort", abort, { once: true });
     try {
       const promises = items.map((item, index) => {
         const cached = completed.get(item.key);
@@ -100,7 +102,6 @@ function createAttachmentCache(options = {}) {
             }
           };
           current.consumers.add(consumer); consumers.push({ entry: current, consumer });
-          signal?.addEventListener("abort", consumer.abort, { once: true });
           consumer.progress(current.progress);
           if (signal?.aborted) consumer.abort();
         });
@@ -118,8 +119,8 @@ function createAttachmentCache(options = {}) {
       }
       return await Promise.all(promises);
     } finally {
+      signal?.removeEventListener("abort", abort);
       for (const { entry, consumer } of consumers) {
-        signal?.removeEventListener("abort", consumer.abort);
         entry.consumers.delete(consumer);
         if (!entry.done && !entry.consumers.size) {
           if (pending.get(entry.key) === entry) pending.delete(entry.key);
