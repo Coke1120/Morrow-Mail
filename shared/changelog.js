@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.2": [
+      "Settings → AI data permission can again show status, review Allow and Revoke instead of failing with Unsupported channel.",
+      "Save a ready API or ChatGPT connection, review its destination/model/account and explicitly choose manual AI use. Background use stays a separate optional choice.",
+      "Changed saved destinations, models or accounts still require fresh review. Revocation stops queued and active work but cannot recall data already delivered.",
+      "Updating does not grant AI permission automatically. This patch leaves mail body downloads and performance policy unchanged.",
+    ],
     "0.3.1": [
       "Provider drafts prepare all attachment files before editing. Failed or cancelled preparation keeps the original draft for retry, including inline images and the selected sender.",
       "Save, Send and Schedule wait for AI writing to finish or be cancelled. Confirmation uses the reviewed preview; changing content requires another preview.",
