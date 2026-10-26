@@ -41,6 +41,7 @@ async function run() {
   const remoteOriginal = {};
   const opened = [], posts = [], pages = [], syncs = [], keys = new Set();
   let scenario = {};
+  let googlePurpose = "bundle";
   const json = (data, ok = true) => ({ ok, status: ok ? 200 : 400, json: async () => data, text: async () => JSON.stringify(data) });
   const fetchMock = async (url, init = {}) => {
     const href = String(url);
@@ -57,7 +58,7 @@ async function run() {
       const mail = scope.includes("outlook.office.com");
       if ((scenario.cancel && (mail || google)) || (scenario.graphCancel && !mail && !google)) oauth.cancelActive();
       if (scenario.refreshFailure || (scenario.graphFailure && !mail && !google)) return json({ error: "interaction_required" }, false);
-      const granted = google ? (scenario.googleScopes ?? (scope.includes("calendar.events") ? config.CALENDAR_SCOPES.google : config.BUNDLE_SCOPES.google))
+      const granted = google ? (scenario.googleScopes ?? ((body.get("grant_type") === "authorization_code" ? googlePurpose === "calendar" : scope.includes("calendar.events")) ? config.CALENDAR_SCOPES.google : config.BUNDLE_SCOPES.google))
         : mail ? (scenario.mailScopes ?? config.SCOPES.microsoft) : (scenario.graphScopes ?? config.BUNDLE_SCOPES.microsoft);
       return json({
         access_token: google ? "fixture-google-both" : mail ? "fixture-outlook-mail" : "fixture-graph-calendar",
@@ -126,6 +127,7 @@ async function run() {
   try {
     global.fetch = fetchMock;
     oauth.signIn = (provider, purpose, options) => {
+      if (provider === "google") googlePurpose = purpose;
       assert.ok(purpose === "bundle" || (provider === "microsoft" && purpose === "imap") || (provider === "google" && purpose === "calendar"));
       return original.signIn(provider, purpose, {
         ...options, fetchImpl: fetchMock, timeoutMs: 3000,
@@ -180,7 +182,9 @@ async function run() {
       const status = engine.answer("mail:oauthStatus", []);
       for (const purpose of Object.keys(channels)) {
         assert.equal(status.data.accounts.find((row) => row.id === id)[purpose], provider !== "google" || purpose !== "calendar");
-        assert.equal((await feature(id, purpose)).data.api, true);
+        const result = await feature(id, purpose);
+        assert.equal(result.success, true, JSON.stringify({provider,purpose,result}));
+        assert.equal(result.data.api, true);
       }
       assert.doesNotMatch(JSON.stringify({ result, status }), /fixture-api-refresh|fixture-imap-refresh|fixture-google-both|fixture-outlook-mail|fixture-graph-calendar/);
       assert.equal(opened.length, count + dialogs + (provider === "google" ? 1 : 0), "only Google Calendar needs separate consent");

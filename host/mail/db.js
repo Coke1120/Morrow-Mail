@@ -1824,7 +1824,12 @@ function recentInbox(limit) {
 }
 
 function gmailMigrationBlockers(accountId) {
-  return all("SELECT id FROM mail_actions WHERE account_id = ? AND (phase IN ('accepted', 'publishing') OR receipt IN ('unknown', 'superseded'))", [accountId]).length
+  return all("SELECT * FROM mail_actions WHERE account_id = ? AND (phase IN ('accepted', 'publishing') OR receipt IN ('unknown', 'superseded'))", [accountId]).filter(row => {
+    if (["accepted", "publishing"].includes(row.phase)) return true;
+    let kind; try { kind = JSON.parse(row.intent_json).kind; } catch { return true; }
+    if (["read", "star"].includes(kind)) return row.receipt !== "superseded" && flagHeld(row.message_id, kind);
+    return true;
+  }).length
     + all("SELECT id FROM scheduled_sends WHERE account_id = ? AND status = 'sending'", [accountId]).length;
 }
 

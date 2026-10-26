@@ -123,3 +123,18 @@ test("Gmail protected Sent/Draft labels are never manually applied or removed; T
   assert.ok(!f.service.messages.get("draft").labelIds.includes("TRASH"));
   await assert.rejects(s.move("Work", sent.uid, "Drafts", sent.uid_validity), error => error.code === "unsupported");
 });
+
+test("migration blocks unsettled writes but does not strand already superseded/confirmed flags", async t => {
+  const f = await fixture(t); f.cached("legacy");
+  function action(id, generation, kind, receipt, phase = "closed") {
+    db.insertMailAction({ id, batchId: id, messageId: "legacy", accountId: "gmail", generation,
+      intentJson: JSON.stringify({kind}), priorJson: "{}", sourceJson: "{}", phase, receipt, createdAt: generation });
+  }
+  action("old-read", 1, "read", "superseded"); action("new-read", 2, "read", "completed");
+  assert.equal(db.gmailMigrationBlockers("gmail"), 0);
+  action("unknown-star", 3, "star", "unknown"); assert.equal(db.gmailMigrationBlockers("gmail"), 1);
+  action("confirmed-star", 4, "star", "completed"); assert.equal(db.gmailMigrationBlockers("gmail"), 0);
+  action("pending-move", 5, "remove", null, "accepted");
+  assert.throws(() => db.enableGmail("gmail"), error => error.code === "conflict");
+  assert.equal(db.accountById("gmail").mail_transport, "imap"); assert.ok(db.messageById("legacy"));
+});
