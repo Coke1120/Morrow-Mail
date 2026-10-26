@@ -4402,13 +4402,13 @@ assert.strictEqual(providerUi.calendarView({ api: false, reason: "error" }).erro
 assert.strictEqual(providerUi.calendarView({ api: false, reason: "no_account" }).showGrid, false);
 assert.strictEqual(
   needsAuth.status,
-  "Enable calendar and mailbox features. Google uses one consent; Microsoft connects mail first, then checks feature permissions for the same account.",
+  "Enable calendar and mailbox features. Google requests Calendar separately from mail; Microsoft connects mail first, then checks feature permissions for the same account.",
 );
 assert.strictEqual(providerUi.calendarCopy("oauth_not_ready"), "Google Desktop OAuth is not configured, so calendar stays offline.");
 assert.strictEqual(providerUi.calendarCopy("no_account"), "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.");
 assert.strictEqual(
   providerUi.calendarCopy("needs_auth", "ada@example.com"),
-  "Enable calendar and mailbox features for ada@example.com. Google uses one consent; Microsoft connects mail first, then checks feature permissions for the same account.",
+  "Enable calendar and mailbox features for ada@example.com. Google requests Calendar separately from mail; Microsoft connects mail first, then checks feature permissions for the same account.",
 );
 assert.deepStrictEqual(providerUi.calendarConnection(null, null), {
   connected: false,

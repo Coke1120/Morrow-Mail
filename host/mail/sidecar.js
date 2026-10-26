@@ -213,6 +213,7 @@ async function gmailSendAsToken(account) {
 async function tokenFor(account, purpose) {
   const key = secretKey(account, purpose);
   const raw = secrets.getPassword(key);
+  const primary = secrets.getPassword(account.id);
   const parsed = readJson(key);
   if (!raw || !parsed || !parsed.refreshToken) {
     const error = new Error(
@@ -226,24 +227,27 @@ async function tokenFor(account, purpose) {
     throw error;
   }
   const result = await oauth.accessTokenFor(account, raw, purpose);
-  if (secrets.getPassword(key) !== raw) {
+  const current = db.accountById(account.id);
+  if (!current || current.created_at !== account.created_at || current.auth_kind !== account.auth_kind
+      || current.mail_transport !== account.mail_transport || secrets.getPassword(key) !== raw || secrets.getPassword(account.id) !== primary) {
     const error = new Error("This mailbox connection changed. Refresh the feature and try again.");
     error.code = "conflict";
     throw error;
   }
   if (typeof result === "string") return { accessToken: result, grantedScopes: parsed.grantedScopes || "" };
   if (result && result.token) {
-    if (result.store) {
-      try { secrets.setPassword(key, result.store); } catch { /* this call can still use the token */ }
-    }
     let granted = parsed.grantedScopes || "";
     if (result.store) {
       try { granted = JSON.parse(result.store).grantedScopes || granted; } catch { /* keep the previous scopes */ }
     }
-    if (!config.hasPurposeScopes(granted, providerOf(account), purpose)) {
+    if (!config.hasPurposeScopes(granted, providerOf(account), purpose)
+        || (key === account.id && account.mail_transport === "gmail_api" && !config.hasPurposeScopes(granted, "google", "imap"))) {
       const error = new Error("The refreshed token is missing permissions. Enable this feature again.");
       error.code = "scope_missing";
       throw error;
+    }
+    if (result.store) {
+      try { secrets.setPassword(key, result.store); } catch { /* this call can still use the token */ }
     }
     return {
       accessToken: result.token,

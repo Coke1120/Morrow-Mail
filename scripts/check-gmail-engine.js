@@ -72,18 +72,26 @@ async function run() {
     assert.equal(secrets.getPassword('gmail:calendar'),original,'legacy Calendar stays separate and is truthfully broad');
     assert.equal(db.messageById('cached').text_body,'Retained body');
     await engine.syncAccountById('gmail',{background:false});
-    assert.equal(db.messageById('cached').gmail_id,'incoming');
+    assert.equal(db.messageById('cached').gmail_id,'incoming',JSON.stringify({folders:db.foldersFor('gmail'),calls:service.calls.map(({route,method,query})=>({route,method,query:String(query)}))}));
     success(await answer('calendar:connect',{accountId:'gmail',forceReauthorize:true}));
     assert.equal(signins.at(-1).purpose,'calendar');
     assert.equal(JSON.parse(secrets.getPassword('gmail:calendar')).grantedScopes,config.CALENDAR_SCOPES.google);
     assert.equal(JSON.parse(secrets.getPassword('gmail')).grantedScopes,config.SCOPES.google);
     assert.equal(answer('mail:oauthStatus').data.accounts.find(row=>row.id==='gmail').broadGoogleGrant,false);
+    const mailSecret=secrets.getPassword('gmail'), access=oauth.accessTokenFor;
+    oauth.accessTokenFor=async()=>({token:'synthetic-partial-refresh',store:JSON.stringify({...JSON.parse(mailSecret),grantedScopes:config.VACATION_SCOPES.google})});
+    await assert.rejects(sidecar.gmailSendAsToken(db.accountById('gmail')),error=>error.code==='scope_missing');
+    assert.equal(secrets.getPassword('gmail'),mailSecret,'feature refresh cannot replace mail with an insufficient grant'); oauth.accessTokenFor=access;
     console.log('gmail-engine-ok: explicit migration, declined/partial/mismatch/storage rollback, cache retention and separate Calendar');
 
     success(await answer('mail:markRead',{emailId:'cached',isRead:true})); await engine.settleActions();
     success(await answer('mail:toggleStar',{emailId:'cached',isStarred:true})); await engine.settleActions();
     assert.ok(!service.messages.get('incoming').labelIds.includes('UNREAD'));
     assert.ok(service.messages.get('incoming').labelIds.includes('STARRED'));
+    const search=success(await answer('mail:search',{accountId:'gmail',query:'Synthetic'}));
+    assert.ok(search.some(row=>db.messageById(row.id)?.gmail_id==='incoming'));
+    const history=success(await answer('mail:searchSender',{address:'sender@fixture.invalid'}));
+    assert.ok(JSON.stringify(history).includes('incoming@fixture.invalid'));
     success(await answer('mail:delete',{emailId:'cached'})); const trashed = await engine.settleActions();
     const opId = trashed.outcomes.find(row=>row.status==='completed')?.opId; assert.ok(opId,JSON.stringify(trashed));
     assert.ok(service.messages.get('incoming').labelIds.includes('TRASH'));
@@ -121,6 +129,11 @@ async function run() {
     console.log('gmail-engine-ok: actual MIME/Bcc/reply headers, draft revisions/cleanup/failure retention, send receipts and ambiguous/scheduled delivery');
 
     const oldSecret=secrets.getPassword('gmail'); let release;
+    let unhold; service.hold(new Promise(resolve=>{unhold=resolve;}));
+    const walking=engine.syncAccountById('gmail',{background:false}); await new Promise(resolve=>setImmediate(resolve));
+    scenario={}; const queued=answer('mail:migrateGmail',{accountId:'gmail',confirmed:true}); await new Promise(resolve=>setImmediate(resolve));
+    success(answer('mail:cancelOAuth')); unhold(); await walking; assert.equal((await queued).success,false);
+    assert.equal(secrets.getPassword('gmail'),oldSecret,'cancellation is rechecked after waiting for the mailbox queue');
     scenario={wait:new Promise(resolve=>{release=resolve;})};
     const pending=answer('mail:migrateGmail',{accountId:'gmail',confirmed:true}); await new Promise(resolve=>setImmediate(resolve));
     success(answer('mail:cancelOAuth')); release(); assert.equal((await pending).success,false); assert.equal(secrets.getPassword('gmail'),oldSecret);

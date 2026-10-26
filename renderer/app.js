@@ -1438,7 +1438,7 @@ function calendarCopy(reason, email) {
   if (reason === "error") return "Calendar could not be loaded.";
   if (reason === "loading") return "Loading calendar…";
   const who = email ? ` for ${email}` : "";
-  return `Enable calendar and mailbox features${who}. Google uses one consent; Microsoft connects mail first, then checks feature permissions for the same account.`;
+  return `Enable calendar and mailbox features${who}. Google requests Calendar separately from mail; Microsoft connects mail first, then checks feature permissions for the same account.`;
 }
 
 function calendarConnection(status, account, listed) {
@@ -1453,7 +1453,7 @@ function calendarConnection(status, account, listed) {
     connected,
     canGrant: true,
     reason: connected ? "" : ((row && row.calendarReason) || "needs_auth"),
-    label: connected ? "Refresh calendar" : "Enable mailbox features",
+    label: connected ? "Refresh calendar" : (account.imapSmtpProfile || account.profile) === "gmail" ? "Enable Google Calendar" : "Enable mailbox features",
   };
 }
 
