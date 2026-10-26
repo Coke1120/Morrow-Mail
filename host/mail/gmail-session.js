@@ -4,16 +4,25 @@ const db = require("./db");
 const { isGmail } = require("./gmail-policy");
 const { recipientHeaders } = require("./recipient-headers");
 const textEncoding = require("./text-encoding");
+const iconv = require("iconv-lite");
 const ALL = "__gmail_all__";
 const SYSTEM = { INBOX: ["INBOX", "Inbox", "inbox"], SENT: ["[Gmail]/Sent Mail", "Sent", "sentitems"],
   DRAFT: ["[Gmail]/Drafts", "Drafts", "drafts"], TRASH: ["[Gmail]/Trash", "Trash", "deleteditems"], SPAM: ["[Gmail]/Spam", "Spam", "junkemail"] };
 const VIRTUAL = new Set(["UNREAD", "STARRED", "IMPORTANT", "CHAT"]);
 const migrated = account => isGmail(account) && account.auth_kind === "oauth2" && account.mail_transport === "gmail_api";
 const ambiguous = () => Object.assign(new Error("This cached Gmail message cannot be matched uniquely. No mail was changed; keep the local copy and review it in Gmail."), { code: "gmail_identity_ambiguous", operationIssued: false });
-function header(part, name) { return (part?.headers || []).find(value => String(value.name).toLowerCase() === name.toLowerCase())?.value || ""; }
-function parts(root) {
+function header(part, name) {
+  const value = (Array.isArray(part?.headers) ? part.headers : []).find(value => String(value?.name).toLowerCase() === name.toLowerCase())?.value;
+  return typeof value === "string" ? value : "";
+}
+function parts(root, malformed = () => {}) {
   const result = [];
-  function visit(part) { if (!part || typeof part !== "object") return; result.push(part); for (const child of part.parts || []) visit(child); }
+  function visit(part) {
+    if (!part || typeof part !== "object") { malformed(); return; }
+    result.push(part);
+    if (part.parts != null && !Array.isArray(part.parts)) malformed();
+    for (const child of Array.isArray(part.parts) ? part.parts : []) visit(child);
+  }
   visit(root); return result;
 }
 function stringAddresses(value) { return (value?.value || []).map(row => row.name ? `${row.name} <${row.address}>` : row.address).filter(Boolean); }
@@ -69,24 +78,40 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
   }
   async function normalize(data, full = false) {
     alive();
-    const list = parts(data.payload);
-    const headers = (data.payload?.headers || []).filter(row => row && typeof row.name === "string" && typeof row.value === "string");
+    let complete = true, bodyWarning = "";
+    const warn = () => { complete = false; bodyWarning = "Some message content could not be decoded. The available content is shown; reopen the message to retry."; };
+    const list = parts(data.payload, warn);
+    const headers = (Array.isArray(data.payload?.headers) ? data.payload.headers : []).filter(row => row && typeof row.name === "string" && typeof row.value === "string");
     const headerBytes = Buffer.from(headers.map(row => `${row.name}: ${row.value}`).join("\r\n") + "\r\n\r\n");
-    const parsed = await simpleParser(headerBytes);
+    let parsed;
+    try { parsed = await simpleParser(headerBytes); }
+    catch { parsed = {}; warn(); }
     const body = { text: [], html: [] }, attachments = [];
-    let complete = true;
     for (const part of list) {
-      if (part.parts?.length) continue;
+      if (Array.isArray(part.parts) && part.parts.length) continue;
       const type = String(part.mimeType || "application/octet-stream").toLowerCase();
       const disposition = header(part, "content-disposition");
       const file = !!part.filename || /attachment/i.test(disposition) || !["text/plain", "text/html"].includes(type);
       let bytes;
-      if (typeof part.body?.data === "string") bytes = Buffer.from(part.body.data, "base64url");
+      if (part.body?.data != null) {
+        if (typeof part.body.data !== "string" || !/^[A-Za-z0-9_-]*={0,2}$/.test(part.body.data)) { warn(); continue; }
+        bytes = Buffer.from(part.body.data, "base64url");
+      }
       if (!file) {
         if (!bytes && part.body?.attachmentId && full) bytes = await api.attachment(data.id, part.body.attachmentId);
         if (!bytes && (part.body?.attachmentId || Number(part.body?.size) > 0)) { complete = false; continue; }
         const charset = /charset\s*=\s*["']?([^;\s"']+)/i.exec(header(part, "content-type"))?.[1] || "utf-8";
-        const text = new TextDecoder(charset).decode(bytes || Buffer.alloc(0));
+        let text;
+        try {
+          // Mail aliases use iconv; retain ICU/TextDecoder-only encodings such
+          // as ISO-2022-JP before considering an incomplete UTF-8 fallback.
+          if (!iconv.encodingExists(charset)) throw new Error("Unknown mail charset");
+          text = iconv.decode(bytes || Buffer.alloc(0), charset);
+        } catch {
+          try {
+            text = new TextDecoder(charset).decode(bytes || Buffer.alloc(0));
+          } catch { warn(); text = new TextDecoder("utf-8").decode(bytes || Buffer.alloc(0)); }
+        }
         body[type === "text/html" ? "html" : "text"].push(text);
       } else {
         const contentId = header(part, "content-id").replace(/^<|>$/g, "");
@@ -105,7 +130,8 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     }
     alive();
     const presented = textEncoding.presentMessage({ subject: parsed.subject || "", htmlBody: html, textBody: body.text.join("\n") || null });
-    const date = parsed.date instanceof Date && Number.isFinite(parsed.date.getTime()) ? parsed.date : new Date(Number(data.internalDate) || 0);
+    let date = parsed.date instanceof Date && Number.isFinite(parsed.date.getTime()) ? parsed.date : new Date(Number(data.internalDate) || 0);
+    if (!Number.isFinite(date.getTime())) { date = new Date(0); warn(); }
     const labels = data.labelIds || [];
     const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
     const root = references[0] || parsed.inReplyTo || parsed.messageId;
@@ -114,11 +140,11 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
       inReplyTo: parsed.inReplyTo || null, subject: presented.subject, from: stringAddresses(parsed.from).join(", "),
       fromAddress: parsed.from?.value?.[0]?.address || "",
       fromDisplayName: parsed.from?.value?.[0]?.name || "",
-      to: stringAddresses(parsed.to), cc: stringAddresses(parsed.cc), bcc: stringAddresses(parsed.bcc), recipientHeaders: recipientHeaders(headerBytes),
+      to: stringAddresses(parsed.to), cc: stringAddresses(parsed.cc), bcc: stringAddresses(parsed.bcc), recipientHeaders: recipientHeaders(headerBytes, parsed.replyTo),
       date: date.toISOString(), listSortTs: date.getTime(), snippet: data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ").slice(0, 180),
       unread: labels.includes("UNREAD"), starred: labels.includes("STARRED"), isDraft: labels.includes("DRAFT"),
       hasAttachments: attachments.some(row => !row.isInlineFromApi || !row.mimeType.startsWith("image/")), attachments,
-      htmlBody: presented.htmlBody, textBody: presented.textBody, bodyComplete: complete };
+      htmlBody: presented.htmlBody, textBody: presented.textBody, bodyComplete: complete, bodyWarning };
   }
   async function adopt(data, { full = false, after = null, cache = true } = {}) {
     const value = await normalize(data, full);

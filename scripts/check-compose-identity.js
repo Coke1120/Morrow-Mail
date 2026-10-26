@@ -139,7 +139,7 @@ function decisions() {
   assert.throws(() => policy.normalizeDomainKeys(["not a domain"]), /signature domain/);
   assert.throws(() => policy.normalizeDomainKeys(["hkbscl.com", "@hkbscl.com"]), /only once/);
   const headers = recipientHeaders("Delivered-To: leo@gmail.com\r\nX-Original-To:\r\n leo@hkbscl.com\r\nReceived: by mx.example for <leo@second.example>; Mon, 1 Jan\r\nX-Envelope-To: inbound@relay.example\r\n\r\nX-Original-To: body@evil.example");
-  assert.deepEqual(headers, { originalTo: ["leo@hkbscl.com"], deliveredTo: ["leo@gmail.com"], envelopeTo: ["leo@second.example", "inbound@relay.example"] });
+  assert.deepEqual(headers, { originalTo: ["leo@hkbscl.com"], deliveredTo: ["leo@gmail.com"], envelopeTo: ["leo@second.example", "inbound@relay.example"], replyTo: [] });
 }
 
 async function hostRoundTrips() {
@@ -450,7 +450,7 @@ async function rendererFlows() {
   `);
   for (const displayName of ['Operations <West>', '陳美玲, "Ops <香港>"']) {
     ui.context.restoredDraft = { id: "restored", isDraft: true, accountId: "aliases", fromAddress: "leo@hkbscl.com",
-      fromDisplayName: displayName, from: displayName + " <leo@hkbscl.com>", to: ["client@client.example"], textBody: "Restored text" };
+      fromDisplayName: displayName, from: displayName + " <leo@hkbscl.com>", to: ["client@client.example"], textBody: "Restored text", bodyComplete: true };
     await ui.run("resumeDraft({id:'restored',accountId:'aliases'})");
     assert.equal(ui.run("composePayload(composeAccount()).fromAddress"), "leo@hkbscl.com");
     assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), displayName);

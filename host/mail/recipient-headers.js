@@ -1,8 +1,17 @@
 const { addresses } = require("../../shared/compose-policy");
 
+function replyToAddresses(input) {
+  const rows = Array.isArray(input) ? input : input?.value || [];
+  return rows.flatMap(row => {
+    if (row?.group) return replyToAddresses(row.group);
+    const address = addresses(row?.address)[0];
+    return address ? [{ address, name: String(row.name || "").replace(/[\x00-\x1f\x7f]/g, " ").trim() }] : [];
+  }).slice(0, 100);
+}
+
 // Store only recipient evidence, never the whole transport/header block.
-function recipientHeaders(source) {
-  const result = { originalTo: [], deliveredTo: [], envelopeTo: [] };
+function recipientHeaders(source, replyTo) {
+  const result = { originalTo: [], deliveredTo: [], envelopeTo: [], replyTo: replyToAddresses(replyTo) };
   const head = Buffer.from(source || "").toString("utf8").split(/\r?\n\r?\n/, 1)[0]
     .replace(/\r?\n[ \t]+/g, " ");
   for (const line of head.split(/\r?\n/)) {
@@ -18,8 +27,8 @@ function recipientHeaders(source) {
       if (recipient) result.envelopeTo.push(...addresses(recipient[1]));
     }
   }
-  for (const key of Object.keys(result)) result[key] = [...new Set(result[key])].slice(0, 100);
+  for (const key of ["originalTo", "deliveredTo", "envelopeTo"]) result[key] = [...new Set(result[key])].slice(0, 100);
   return result;
 }
 
-module.exports = { recipientHeaders };
+module.exports = { recipientHeaders, replyToAddresses };

@@ -294,6 +294,7 @@ async function parseSource(source, truncated) {
       messageId: parsed.messageId || null,
       inReplyTo: parsed.inReplyTo || null,
       references: parsed.references || null,
+      replyTo: parsed.replyTo || null,
       complete: !truncated,
     };
   } catch {
@@ -394,7 +395,7 @@ async function readFetched(msg, validity, cap) {
     to: formatList(envelope.to),
     cc: formatList(envelope.cc),
     bcc: formatList(envelope.bcc),
-    recipientHeaders: require("./recipient-headers").recipientHeaders(source),
+    recipientHeaders: require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo),
     date: when.toISOString(),
     listSortTs: when.getTime(),
     unread: !seen,

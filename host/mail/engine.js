@@ -282,6 +282,7 @@ function publicAttachment(item) {
 
 function listRow(row) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
+  const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
   const sender = row.from_address || row.from_addr || "";
   const parsedAddress = composePolicy.address(sender);
   const bareSender = parsedAddress && parsedAddress === sender.trim().toLowerCase() ? parsedAddress : "";
@@ -312,7 +313,9 @@ function listRow(row) {
     attachments,
     messageId: row.rfc_message_id || null,
     inReplyTo: row.in_reply_to || null,
-    recipientHeaders: JSON.parse(row.recipient_headers_json || "{}"),
+    recipientHeaders,
+    replyTo: recipientHeaders.replyTo || [],
+    bodyWarning: row.body_warning || "",
     bodyComplete: row.body_complete === 1,
     hasBody: usableStoredBody(row),
   };
@@ -1961,10 +1964,11 @@ function fillBodyInBackground(row, outcome, bodySource = "visible") {
   const beforeHtml = row.html_body;
   const beforeText = row.text_body;
   const beforeComplete = row.body_complete;
+  const beforeWarning = row.body_warning;
   return ensureBody(row, { background: true, outcome, bodySource }).then((fresh) => {
     const next = fresh || row;
     if (outcome && outcome.skipped) return next;
-    if (next.html_body !== beforeHtml || next.text_body !== beforeText || next.body_complete !== beforeComplete) {
+    if (next.html_body !== beforeHtml || next.text_body !== beforeText || next.body_complete !== beforeComplete || next.body_warning !== beforeWarning) {
       broadcast("mail:bodyUpdated", { email: detailOf(next) });
     }
     return next;
@@ -2101,7 +2105,11 @@ async function ensureBody(row, options) {
   if (!row || row.draft_pending || !row.uid) return row;
   const account = db.accountById(row.account_id);
   if (!account) return row;
-  if (row.body_complete === 1 && row.recipient_headers_json != null && !needsGmailMetadata(row, account)) return row;
+  const completeHeaders = value => {
+    if (!options?.replyHeaders) return value.recipient_headers_json != null;
+    try { return Array.isArray(JSON.parse(value.recipient_headers_json).replyTo); } catch { return false; }
+  };
+  if (row.body_complete === 1 && !row.body_warning && completeHeaders(row) && !needsGmailMetadata(row, account)) return row;
   if (background && priorityWaiting(account.id)) {
     markSkip();
     return row;
@@ -2116,7 +2124,7 @@ async function ensureBody(row, options) {
     }
     // Another open may have filled the cache while this request queued.
     row = db.messageById(row.id);
-    if (!row || row.draft_pending || !row.uid || (row.body_complete === 1 && row.recipient_headers_json != null && !needsGmailMetadata(row, account))) return row;
+    if (!row || row.draft_pending || !row.uid || (row.body_complete === 1 && !row.body_warning && completeHeaders(row) && !needsGmailMetadata(row, account))) return row;
     actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
     bodyProgress.start(bodyTask);
@@ -2138,6 +2146,7 @@ async function ensureBody(row, options) {
       ...(account.mail_transport === "gmail_api" && fetched.providerId && Number.isSafeInteger(fetched.providerUid) && fetched.providerUid > 0 && fetched.providerValidity === account.gmail_generation
         ? { gmail_id: fetched.providerId, uid: fetched.providerUid, uid_validity: fetched.providerValidity } : {}),
       ...(metadataOnly ? {} : { html_body: fetched.htmlBody, text_body: fetched.textBody, body_complete: fetched.bodyComplete ? 1 : 0, snippet: fetched.snippet || row.snippet }),
+      body_warning: fetched.bodyWarning || null,
       attachments_json: JSON.stringify(localFiles.length ? localFiles : fetched.attachments || []),
       has_attachments: localFiles.length > 0 || fetched.hasAttachments ? 1 : 0,
       subject: fetched.subject || row.subject,
@@ -2163,6 +2172,28 @@ async function ensureBody(row, options) {
   } finally {
     bodyProgress.finish(bodyTask, bodyResult);
   }
+}
+
+function localSentReplyHeaders(row, account) {
+  let headers;
+  try { headers = JSON.parse(row.recipient_headers_json); } catch { return row; }
+  if (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.keys(headers).length || row.is_draft || row.body_complete !== 1
+      || Number(row.uid) !== 0 || Number(row.uid_validity) !== 0 || row.gmail_id
+      || db.folderByPath(account.id, row.folder_path)?.well_known !== "sentitems") return row;
+  // Before Reply-To was stored, unfiled locally generated Sent rows used empty
+  // metadata and these cache/RFC id formats. Remote API search hits use a
+  // different cache id; provider-fetched rows retain transport header evidence.
+  // Do not infer local origin from uid=0, Sent membership or From alone.
+  const rfc = /^<[a-f0-9]{24}@([^<>\s]+)>$/.exec(row.rfc_message_id || "");
+  const from = composePolicy.address(row.from_addr);
+  // Desktop sends generated ids from the account domain; bot sends used the
+  // selected bare From, including aliases on a different domain. Both are
+  // historical local formats, independent of today's alias configuration.
+  if (!/^m-[a-z0-9]+-[a-f0-9]{1,8}$/.test(row.id) || !rfc
+      || !from || from !== row.from_addr.trim().toLowerCase()
+      || ![String(account.email).split("@")[1]?.toLowerCase(), from.split("@")[1]].includes(rfc[1].toLowerCase())) return row;
+  db.updateMessage(row.id, { recipient_headers_json: JSON.stringify({ replyTo: [] }) });
+  return db.messageById(row.id);
 }
 
 function pushRows(into, rows, limit) {
@@ -2790,6 +2821,50 @@ async function attachmentOperation(channel, params, owner) {
   } finally { request?.finish(); }
 }
 
+async function prepareDraft(params, owner) {
+  let request;
+  try {
+    request = attachmentRequests.begin(params, owner);
+    let row = db.messageById(params.emailId);
+    if (!row?.is_draft) throw new Error("That draft is no longer available.");
+    request.accountId = row.account_id;
+    row = await ensureBody(row);
+    if (!row?.is_draft || !row.body_complete || row.body_warning) throw new Error("The complete draft body could not be downloaded. Reopen it to retry.");
+    const revision = db.draftRevision(row);
+    if (params.draftRevision !== revision) throw new Error("This draft changed. Reopen the current revision before editing.");
+    const snapshot = attachmentSnapshot(row), files = db.jsonList(row.attachments_json);
+    const check = () => {
+      request.signal.throwIfAborted(); snapshot.assertSnapshot();
+      if (db.draftRevision(db.messageById(row.id)) !== revision) throw new Error("This draft changed while its files were loading. Reopen it.");
+    };
+    check();
+    if (files.some(file => !file?.id) || files.reduce((sum, file) => sum + (Number(file.size) || 0), 0) > ATTACHMENT_CAP) {
+      throw new Error("This draft's files cannot be prepared within the 25 MiB outgoing attachment limit.");
+    }
+    const parts = await attachmentParts(row, files, { signal: request.signal, onProgress: value => request.report(value) });
+    check();
+    if (parts.some(part => !part.data.length) || parts.reduce((sum, part) => sum + part.data.length, 0) > ATTACHMENT_CAP) {
+      throw new Error("This draft contains an empty file or exceeds the 25 MiB outgoing attachment limit.");
+    }
+    // Hydration is not an edit. Keep the source row/revision intact for queued
+    // cleanup proofs; publish all local files atomically after every read succeeds.
+    const attachments = db.transaction(() => {
+      check();
+      return files.map((file, index) => {
+        const part = parts[index];
+        if (String(file.storageUrl || "").startsWith("local:")) return { ...file, size: part.data.length };
+        const id = crypto.randomBytes(9).toString("hex");
+        db.saveBlob(id, file.filename || part.name, file.mimeType || "application/octet-stream", part.data);
+        return { ...file, id, storageUrl: `local:${id}`, size: part.data.length };
+      });
+    });
+    return ok({ email: { ...detailOf(row), attachments } });
+  } catch (error) {
+    if (request?.signal.aborted || error?.code === "cancelled") return fail("cancelled", "cancelled");
+    return fail(error?.code || "draft_prepare", (error.message || String(error)) + " The saved draft was retained. Retry from Drafts; nothing was sent.");
+  } finally { request?.finish(); }
+}
+
 function signatureText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -3054,6 +3129,7 @@ function editScheduled(params) {
     attachments: resolved.meta,
     htmlBody: html, textBody: text,
     snippet: plainFromHtml(html).slice(0, 180), bodyComplete: true,
+    recipientHeaders: { replyTo: [] },
   });
   emitAccounts();
   return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString(),
@@ -3118,6 +3194,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       htmlBody: options.html,
       textBody: options.text,
       bodyComplete: true,
+      recipientHeaders: { replyTo: [] },
       inReplyTo: (extra && extra.inReplyTo) || null,
     });
     if (account.mail_transport === "gmail_api" && info?.providerId) {
@@ -3413,11 +3490,18 @@ function answer(channel, args, event) {
         try {
           let message = null;
           if (params.sourceMessageId) {
-            const row = db.messageById(params.sourceMessageId);
+            let row = db.messageById(params.sourceMessageId);
             if (!row || row.account_id !== account.id) return fail("invalid", "The source message does not belong to this mailbox.");
-            message = detailOf(await ensureBody(row));
+            const replying = ["reply", "all"].includes(params.kind);
+            if (replying) row = localSentReplyHeaders(row, account);
+            const fresh = await ensureBody(row, { replyHeaders: replying });
+            if (replying && !Array.isArray(JSON.parse(fresh.recipient_headers_json || "{}").replyTo)) {
+              return fail("read", "Reply headers could not be downloaded. Reopen the message to retry before replying.");
+            }
+            message = detailOf(fresh);
           }
-          return ok(await composeIdentity.context(account, message, params.kind || "new", params.fromAddress, params.refresh === true));
+          return ok({ ...await composeIdentity.context(account, message, params.kind || "new", params.fromAddress, params.refresh === true),
+            ...(message ? { replyTo: message.replyTo } : {}) });
         } catch (error) { return fail("compose_identity", error.message); }
       })();
     case "mail:refreshAccounts":
@@ -3540,6 +3624,8 @@ function answer(channel, args, event) {
           threadMessages: members,
         });
       })();
+    case "mail:prepareDraft":
+      return updateGate.run(() => prepareDraft(params || {}, event?.sender));
     case "mail:readEmail":
       return (async () => {
         let row;
@@ -3777,6 +3863,7 @@ function answer(channel, args, event) {
           htmlBody: html,
           textBody: presented.textBody || plainFromHtml(html),
           bodyComplete: true,
+          recipientHeaders: { replyTo: [] },
           draftPending: true,
           inReplyTo: params.inReplyTo || null,
         };
@@ -3802,6 +3889,7 @@ function answer(channel, args, event) {
             html_body: html,
             text_body: record.textBody,
             body_complete: 1,
+            recipient_headers_json: JSON.stringify(record.recipientHeaders),
             draft_pending: 1,
             in_reply_to: record.inReplyTo,
           });
@@ -3946,6 +4034,7 @@ function noteBotSent(receipt) {
       htmlBody: receipt.html || "",
       textBody: receipt.text || "",
       bodyComplete: true,
+      recipientHeaders: { replyTo: [] },
       inReplyTo: receipt.inReplyTo || null,
     });
   } catch {
