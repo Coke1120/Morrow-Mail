@@ -526,7 +526,8 @@ function removeCommand(messageId, well, targetPath, permanent) {
     }
     return { messageId, accountId: row.account_id, intent: { kind: "remove", permanent: true, destPath: row.folder_path }, stopBatch: true };
   }
-  const folder = targetPath ? db.folderByPath(row.account_id, targetPath) : db.folderByWellKnown(row.account_id, well);
+  const folder = targetPath ? db.folderByPath(row.account_id, targetPath) : db.folderByWellKnown(row.account_id, well)
+    || (well === "archive" && isGmail(db.accountById(row.account_id)) ? db.folderByWellKnown(row.account_id, "all") : null);
   if (!folder) {
     return { messageId, error: { message: "That folder is not on this account." }, intent: { kind: "remove" }, stopBatch: true };
   }

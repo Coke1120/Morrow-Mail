@@ -215,15 +215,21 @@ function createSession(account, token, { api, check = () => {} } = {}) {
   }
   async function move(path, uid, destination, validity, localMessageId) {
     const mapped = await resolve(path, uid, validity, localMessageId), from = folder(path).provider_id, to = folder(destination).provider_id;
+    if (from !== to && ["DRAFT", "SENT"].includes(to)) throw Object.assign(new Error("Gmail does not allow moving existing mail into Drafts or Sent. Save a draft or send the message instead."), { code: "unsupported", operationIssued: false });
     if (from !== to) {
       let result;
-      if (to === "TRASH") result = (await api.trash(mapped.provider_id)).message;
+      if (to === "TRASH") {
+        const prior = await api.getMessage(mapped.provider_id, { format: "metadata" });
+        alive();
+        db.rememberGmail(account.id, { providerId: mapped.provider_id, priorTrashLabels: prior.labelIds || [] });
+        result = (await api.trash(mapped.provider_id)).message;
+      }
       else {
-        if (from === "TRASH") await api.restoreTrash({ messageId: mapped.provider_id, priorLabelIds: [] });
+        if (from === "TRASH") await api.restoreTrash({ messageId: mapped.provider_id, priorLabelIds: JSON.parse(mapped.trash_labels_json || "[]") });
         if (to === ALL) result = await api.archive(mapped.provider_id);
         else result = await api.modifyLabels(mapped.provider_id, [to], from === ALL || from === "TRASH" ? [] : [from]);
       }
-      alive(); db.rememberGmail(account.id, { providerId: mapped.provider_id, labelIds: result.labelIds || [] });
+      alive(); db.rememberGmail(account.id, { providerId: mapped.provider_id, labelIds: result.labelIds || [], ...(from === "TRASH" ? { priorTrashLabels: null } : {}) });
     }
     return { uid: mapped.local_uid, uidValidity: incarnation };
   }
@@ -242,9 +248,9 @@ function createSession(account, token, { api, check = () => {} } = {}) {
   }
   async function search(path, query, limit = 80) {
     const selected = folder(path);
-    const page = await api.listMessages({ labelIds: selected.provider_id === ALL ? [] : [selected.provider_id], includeSpamTrash: true, query, limit });
+    const page = await api.listMessages({ labelIds: selected.provider_id === ALL ? [] : [selected.provider_id], includeSpamTrash: selected.provider_id !== ALL, query, limit });
     const messages = [];
-    for (const row of page.messages) messages.push(await adopt(await api.getMessage(row.id), { cache: false }));
+    for (const row of page.messages) messages.push(await adopt(await api.getMessage(row.id)));
     return { gmail: true, messages, validity: incarnation, keepOthers: true, searched: true, nextPageToken: page.nextPageToken };
   }
   return { api, account, alive, folders, folder, sync, source, attachment, resolve, move, flags, append, search, adopt,
@@ -252,7 +258,9 @@ function createSession(account, token, { api, check = () => {} } = {}) {
     async create(path) { await api.createLabel(path); alive(); },
     async rename(from, to) {
       const labels = await api.labels();
-      for (const label of labels.filter(row => row.name === from || row.name.startsWith(`${from}/`))) {
+      const selected = labels.filter(row => row.name === from || row.name.startsWith(`${from}/`));
+      if (!selected.length || selected.some(row => row.type !== "user")) throw Object.assign(new Error("Choose an existing user label to rename."), { code: "unsupported", operationIssued: false });
+      for (const label of selected) {
         await api.renameLabel(label.id, to + label.name.slice(from.length)); alive();
       }
     },

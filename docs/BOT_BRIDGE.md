@@ -1,6 +1,6 @@
 # Bot bridge
 
-Morrow owns OAuth credentials, Keychain or DPAPI secrets, and `mail.sqlite`. The bridge is a loopback HTTP API in the running Electron host. A bot does not reopen the database and does not hold a provider token.
+Morrow owns OAuth credentials, Keychain or DPAPI secrets, and `mail.sqlite`. New or explicitly migrated Gmail OAuth accounts submit through Gmail API; other accounts retain SMTP. The legacy submission/receipt field names remain compatible. Gmail migration and separate Calendar reauthorization require desktop review in Settings → Accounts and are not bridge commands. The bridge has no move/archive/delete capability; desktop Gmail Delete is Trash-only. A narrower request does not revoke older broad grants. The bridge is a loopback HTTP API in the running Electron host. A bot does not reopen the database and does not hold a provider token.
 
 The listener defaults to off. When a grant exists and Settings turns it on, it binds `127.0.0.1:47831` only. There is no public bind and no Tailscale Funnel.
 
@@ -100,7 +100,7 @@ Cached reads do not mark mail read and do not download a missing body. `mail.att
 
 Every account-scoped call also requires that the granted account still exists locally. A scoped but disconnected account returns `NOT_FOUND`, including direct message/attachment IDs, health and proposal reads/submissions. An ungranted account remains `FORBIDDEN`; unavailable storage remains `HOST_NOT_READY`. `accounts.list` omits disconnected accounts. These access checks do not purge retained legacy cache or proposal data. An offline or reauthentication-needed account that still exists can continue reading its granted cache.
 
-`bridge.describe.semantics.providerCalls` describes potential behavior of granted operations: it is true when `mail.send` is advertised, false for cache-only reads and inert proposals. `cacheOnlyReads` stays true. This is not a per-request network count. From/alias resolution may contact Gmail before claim, join or replay, and OAuth may refresh before a final SMTP authorization denial. Receipts describe SMTP outcome and replay status; they do not certify zero provider traffic. No provider-call field is added to receipts.
+`bridge.describe.semantics.providerCalls` describes potential behavior of granted operations: it is true when `mail.send` is advertised, false for cache-only reads and inert proposals. `cacheOnlyReads` stays true. This is not a per-request network count. From/alias resolution may contact Gmail before claim, join or replay, and OAuth may refresh before a final SMTP authorization denial. Receipts describe mail-provider submission outcome and replay status; they do not certify zero provider traffic. No provider-call field is added to receipts.
 
 The routine IPC trace records known channel names and argument counts once per invoke/send channel, plus renderer console levels/line numbers and load error codes. It omits request values, renderer text, URLs and error descriptions, including copies forwarded to stderr or support rows. Unknown channel names use a fixed label. Other Debug log sources can still contain account/folder context and need review before sharing. This change does not inspect or erase existing diagnostic files; normal startup trace initialization is unchanged.
 

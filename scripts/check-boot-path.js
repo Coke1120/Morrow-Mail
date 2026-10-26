@@ -4751,7 +4751,7 @@ assert.ok(gmailApi.graphSenderNext("https://graph.microsoft.com/v1.0/me/messages
 assert.strictEqual(gmailApi.graphSenderNext("https://evil.example/v1.0/me/messages"), "");
 assert.strictEqual(gmailApi.graphSenderNext("https://graph.microsoft.com/v1.0/me/events"), "");
 const oauthConfig = require("../host/mail/oauth-config");
-assert.strictEqual(oauthConfig.SCOPES.google, "openid email https://mail.google.com/");
+assert.strictEqual(oauthConfig.SCOPES.google, "openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic");
 assert.strictEqual(
   oauthConfig.SCOPES.microsoft,
   "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
@@ -4762,7 +4762,7 @@ assert.strictEqual(oauthConfig.IMAP_PRESETS.microsoft.imap.host, "outlook.office
 assert.strictEqual(oauthConfig.IMAP_PRESETS.microsoft.smtp.host, "smtp.office365.com");
 assert.strictEqual(
   oauthConfig.ORGANIZE_SCOPES.google,
-  `${oauthConfig.SCOPES.google} https://www.googleapis.com/auth/gmail.modify`,
+  "openid email https://www.googleapis.com/auth/gmail.modify",
 );
 assert.strictEqual(
   oauthConfig.ORGANIZE_SCOPES.microsoft,
@@ -4792,11 +4792,11 @@ assert.strictEqual(oauthConfig.redirectPath("google", "vacation"), "/api/oauth/g
 assert.strictEqual(oauthConfig.redirectPath("microsoft", "vacation"), "/api/oauth/microsoft/callback");
 assert.strictEqual(oauthConfig.profileUrl("google", "vacation"), "https://openidconnect.googleapis.com/v1/userinfo");
 assert.strictEqual(oauthConfig.hasMarker(`https://graph.microsoft.com/${oauthConfig.MARKERS.vacation.microsoft}`, "microsoft", "vacation"), true);
-assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "vacation"), false);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "vacation"), true);
 assert.strictEqual(oauthConfig.hasMarker("Mail.Read", "microsoft", "organize"), false);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.ORGANIZE_SCOPES.microsoft, "outlook", "organize"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.ORGANIZE_SCOPES.google, "gmail", "organize"), true);
-assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "organize"), false);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "organize"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.CALENDAR_SCOPES.google, "google", "calendar"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.CALENDAR_SCOPES.microsoft, "microsoft", "calendar"), true);
 assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "imap"), true);
@@ -4856,7 +4856,7 @@ const googleAuth = new URL(oauthConfig.authorizeUrl("google", "organize", {
   ...authFields,
   redirectUri: "http://localhost:1/api/oauth/google/callback",
 }));
-assert.strictEqual(googleAuth.searchParams.get("include_granted_scopes"), "true");
+assert.strictEqual(googleAuth.searchParams.get("include_granted_scopes"), "false");
 assert.strictEqual(googleAuth.searchParams.get("prompt"), "consent");
 assert.strictEqual(googleAuth.searchParams.get("access_type"), "offline");
 assert.strictEqual(googleAuth.searchParams.get("scope"), oauthConfig.ORGANIZE_SCOPES.google);
@@ -9823,7 +9823,7 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
   assert.strictEqual(result.status, 0, "Account/calendar/attachment fixture failed");
   const liveness = spawnSync(process.execPath, [path.join(root, "scripts/check-account-liveness.js")], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(liveness.status, 0, "Account liveness fixture failed");
-  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js", "check-gmail-mail-api.js", "check-gmail-mail-api-ui.js"]) {
+  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js", "check-gmail-mail-api.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js"]) {
     const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
     assert.strictEqual(fixture.status, 0, name + " failed");
   }

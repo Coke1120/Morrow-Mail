@@ -806,13 +806,15 @@ async function findFrom(client, folderPath, address, limit, options) {
 
 async function buildRaw(options) {
   const composer = new MailComposer(options);
-  return composer.compile().build();
+  const message = composer.compile();
+  if (options.keepBcc) message.keepBcc = true;
+  return message.build();
 }
 
 async function sendSmtp(account, password, options) {
   if (gmail.migrated(account)) {
     const session = gmail.createSession(account, password);
-    const raw = await buildRaw(options);
+    const raw = await buildRaw({ ...options, keepBcc: true });
     const result = await session.api.send({ raw, confirmed: true });
     session.alive();
     return { messageId: options.messageId, providerId: result.id,

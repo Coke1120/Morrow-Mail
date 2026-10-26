@@ -195,6 +195,7 @@ function migrate() {
     thread_id TEXT, draft_id TEXT, labels_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (account_id, provider_id), UNIQUE (account_id, local_uid)
   )`);
+  if (!all("PRAGMA table_info(gmail_messages)").some(row => row.name === "trash_labels_json")) run("ALTER TABLE gmail_messages ADD COLUMN trash_labels_json TEXT");
   run(`CREATE TABLE IF NOT EXISTS gmail_aliases (
     account_id TEXT NOT NULL, folder_path TEXT NOT NULL, uid INTEGER NOT NULL, uid_validity INTEGER NOT NULL,
     provider_id TEXT NOT NULL, PRIMARY KEY (account_id, folder_path, uid, uid_validity)
@@ -1788,6 +1789,8 @@ function rewriteFolderPaths(accountId, moves) {
         "UPDATE messages SET folder_path = ? WHERE account_id = ? AND folder_path = ?",
         [move.to, accountId, move.from]
       );
+      run("UPDATE gmail_aliases SET folder_path = ? WHERE account_id = ? AND folder_path = ?", [move.to, accountId, move.from]);
+      run("UPDATE gmail_sync SET folder_path = ? WHERE account_id = ? AND folder_path = ?", [move.to, accountId, move.from]);
       moved.push({ from: move.from, to: move.to });
     }
     return { moved, skipped };
@@ -1866,6 +1869,7 @@ function rememberGmail(accountId, message) {
     if (message.providerThreadId) patch.thread_id = message.providerThreadId;
     if (message.providerDraftId) patch.draft_id = message.providerDraftId;
     if (Array.isArray(message.labelIds)) patch.labels_json = JSON.stringify(message.labelIds);
+    if (Object.hasOwn(message, "priorTrashLabels")) patch.trash_labels_json = message.priorTrashLabels == null ? null : JSON.stringify(message.priorTrashLabels);
     updateChanged("gmail_messages", patch, "account_id = ? AND provider_id = ?", [accountId, message.providerId]);
     return gmailMap(accountId, message.providerId);
   });

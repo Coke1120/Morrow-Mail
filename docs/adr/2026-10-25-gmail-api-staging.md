@@ -1,9 +1,11 @@
-# Stage Gmail API support before changing mail grants
+# Gmail API before narrower mail requests
 
-Status: incomplete draft, not shipped.
+Status: implemented in draft PR #305, pending review/release. Supersedes the initial primitive-only staging boundary.
 
-The user does not need bypass-Trash permanent deletion and approved narrower Gmail scopes with continued Google OAuth. The current engine still relies on IMAP UID/UIDVALIDITY, SMTP receipts and draft correlation. Removing full-mail scopes without integrating those paths would break connected mailboxes and risk local drafts/actions.
+The user approved separate Gmail migration implementation because Morrow does not need bypass-Trash permanent deletion. Removing full-mail scopes while Gmail still used IMAP/SMTP would break normal mail. This draft therefore introduces stable provider-id/cache mapping and a complete API engine route before requesting gmail.modify + gmail.settings.basic for new/migrated OAuth mail. Google OAuth login stays; Calendar is separate. Microsoft and password transports remain compatible.
 
-Implement/test explicit Gmail API primitives first. Correct current Gmail deletion paths to Trash, including old remote draft cleanup, while preserving Microsoft/other-provider behavior. Keep the adapter unavailable and current scope requests unchanged until persisted provider ids/cache backfill, all engine operations, explicit migration/reauthorization and separate Calendar grants are complete. Smaller requested scopes do not imply older broad granted scopes disappeared. No silent account migration or delete/recreate flow.
+Existing accounts require reviewed reauthorization, preserve account/local data and retain omitted grants. A narrower request does not revoke earlier broad grants; requested/received scopes remain distinct and displayed. Pending/unknown actions block transport migration. Ambiguous legacy identities or write outcomes fail for review rather than guessing or automatically resubmitting. Gmail Trash replaces actual permanent paths: batch Delete from Trash and old remote draft cleanup. Other-provider deletion semantics stay unchanged.
 
-This staged draft exposes its incomplete status in Features/Accounts help and [coverage documentation](../GMAIL_API_MIGRATION.md). It is separate from AI-consent PR #302 and the independently released timeout/Bodies changes. Do not merge, release or claim narrowed Gmail grants based on this foundation. Google still determines verification/CASA from actual scopes/data flows.
+The API has bounded list/history backfill, lazy MIME/attachments, drafts, send/receipts/schedules, flags, labels/search and Trash/Undo, with no migrated Gmail IMAP/SMTP fallback. Gmail API uses polling/history rather than IDLE. Credential-store/SQL reported failures are compensated, without claiming process-crash atomicity across both stores. See [exact coverage and validation limits](../GMAIL_API_MIGRATION.md).
+
+Consent PR #302 is already integrated; this draft preserves it and the original published Gmail history with a non-force merge. It does not authorize merging/releasing #305 or publishing policy PR hwl-hk #21. Native/live grant/registration/demo and Google verification/CASA evidence remain review gates. No Console/live mailbox/model action or retry/bypass of blocked browser/daemon access occurred.

@@ -1,0 +1,100 @@
+const assert = require("node:assert/strict");
+const { test } = require("node:test");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { server, message, cacheRuntime } = require("./gmail-fixture");
+const runtime = cacheRuntime(), db = runtime.db;
+console.log(runtime.native ? "Gmail cache fixtures: production persistence/parser" : "Gmail cache fixtures: Node SQLite SQL/VM; production persistence/parser require CI dependencies");
+
+async function fixture(t, messages = []) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-gmail-cache-"));
+  await db.open(path.join(directory, "mail.sqlite"));
+  t.after(async () => { await db.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  db.insertAccount({ id: "gmail", email: "owner@fixture.invalid", username: "owner", profile: "gmail", authKind: "oauth2", createdAt: 1,
+    imapHost: "imap.fixture.invalid", imapPort: 993, imapTls: true, smtpHost: "smtp.fixture.invalid", smtpPort: 465, smtpTls: true });
+  db.replaceFolders("gmail", [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }, { path: "Drafts", name: "Drafts", wellKnown: "drafts" }]);
+  const service = server(messages);
+  function session() { return runtime.createSession(db.accountById("gmail"), "synthetic-token", { api: service.api() }); }
+  function cached(id, rfc = `<${id}@fixture.invalid>`, folder = "INBOX", extra = {}) {
+    db.insertMessage({ id, accountId: "gmail", folderPath: folder, uid: 42, uidValidity: 77, threadId: "preserved-thread", rfcMessageId: rfc,
+      subject: "Cached synthetic", date: "2026-10-25T00:00:00.000Z", listSortTs: 1792886400000, htmlBody: "<b>Cached synthetic</b>", bodyComplete: true, ...extra });
+  }
+  async function migrate() { db.enableGmail("gmail"); const s = session(); const listed = await s.folders(); db.replaceFolders("gmail", listed.folders, "/"); return s; }
+  return { service, session, cached, migrate, directory };
+}
+
+test("legacy cache ids, complete bodies, local work and arbitrary Gmail ids survive adoption", async t => {
+  const providerId = "99999999999999999999999999", f = await fixture(t, [message(providerId, ["INBOX"], "<legacy@fixture.invalid>")]);
+  f.cached("legacy-local", "<legacy@fixture.invalid>"); f.cached("local-draft", "<local@fixture.invalid>", "Drafts", { uid: 0, isDraft: true, draftPending: true });
+  const s = await f.migrate();
+  await s.sync("INBOX");
+  const row = db.messageById("legacy-local");
+  assert.equal(row.gmail_id, providerId); assert.equal(row.thread_id, "preserved-thread"); assert.equal(row.body_complete, 1);
+  assert.equal(db.gmailMap("gmail", providerId).local_uid, row.uid);
+  assert.ok(Number.isSafeInteger(row.uid));
+  assert.equal((await s.resolve("INBOX", 42, 77)).provider_id, providerId);
+  assert.equal(db.messageById("local-draft").draft_pending, 1);
+  const source = await s.source("INBOX", 42, 77); assert.equal(source.uid, 42); assert.match(source.textBody, /Synthetic body/);
+});
+
+test("ambiguous RFC matches retain cache and refuse reads/moves rather than guessing", async t => {
+  const f = await fixture(t, [message("one", ["INBOX"], "<same@fixture.invalid>"), message("two", ["INBOX"], "<same@fixture.invalid>")]);
+  f.cached("legacy", "<same@fixture.invalid>");
+  const s = await f.migrate();
+  await assert.rejects(s.resolve("INBOX", 42, 77), error => error.code === "gmail_identity_ambiguous");
+  await assert.rejects(s.sync("INBOX"), error => error.code === "gmail_identity_ambiguous");
+  assert.equal(db.messageById("legacy").uid, 42);
+  assert.equal(f.service.calls.filter(call => call.method !== "GET").length, 0);
+});
+
+test("bounded paging resumes across sessions and history removes known copies, with expired-cursor backfill", async t => {
+  const f = await fixture(t, [message("one"), message("two")]); f.service.pageSize(1);
+  let s = await f.migrate();
+  assert.equal((await s.sync("INBOX")).bootstrapped, false);
+  assert.equal(db.gmailSyncState("gmail", "INBOX").pageToken, "1");
+  s = f.session(); assert.equal((await s.sync("INBOX")).bootstrapped, true);
+  assert.equal(db.countInFolder("gmail", "INBOX"), 2);
+  f.service.messages.delete("one"); f.service.history([{ id: "101", messagesDeleted: [{ message: { id: "one" } }] }]);
+  await s.sync("INBOX"); assert.equal(db.gmailCopies("gmail", "one").length, 0);
+  f.service.expire(); f.service.messages.delete("two"); await s.sync("INBOX");
+  assert.equal(db.gmailCopies("gmail", "two").length, 0);
+});
+
+test("body retrieval fetches text and attachment bytes only when needed", async t => {
+  const source = message("body"); source.payload = { mimeType: "multipart/mixed", headers: source.payload.headers,
+    parts: [{ partId: "1", mimeType: "text/plain", body: { attachmentId: "text-part", size: 20 } },
+      { partId: "2", mimeType: "application/octet-stream", filename: "fixture.bin", body: { attachmentId: "file-part", size: 20 } }] };
+  const f = await fixture(t, [source]), s = await f.migrate(); await s.sync("INBOX");
+  const row = db.gmailCopies("gmail", "body")[0]; assert.equal(row.body_complete, 0);
+  assert.equal(f.service.calls.filter(call => call.route.includes("/attachments/")).length, 0);
+  const body = await s.source(row.folder_path, row.uid, row.uid_validity); assert.equal(body.bodyComplete, true);
+  assert.equal(f.service.calls.filter(call => call.route.includes("/attachments/file-part")).length, 0);
+  assert.equal((await s.attachment(row.folder_path, row.uid, "2", row.uid_validity)).toString(), "Synthetic attachment");
+});
+
+test("moves/Trash/restore use stable provider identity and label rename preserves cache ids", async t => {
+  const f = await fixture(t, [message("move", ["INBOX", "UNREAD"])]), s = await f.migrate(); await s.sync("INBOX");
+  const row = db.gmailCopies("gmail", "move").find(row => row.folder_path === "INBOX"), trash = db.folderByWellKnown("gmail", "deleteditems");
+  const moved = await s.move("INBOX", row.uid, trash.path, row.uid_validity);
+  await s.move(trash.path, moved.uid, "INBOX", moved.uidValidity);
+  assert.ok(f.service.messages.get("move").labelIds.includes("INBOX"));
+  await s.flags("INBOX", row.uid, ["\\Seen", "\\Flagged"], [], row.uid_validity);
+  assert.ok(!f.service.messages.get("move").labelIds.includes("UNREAD"));
+  assert.ok(f.service.messages.get("move").labelIds.includes("STARRED"));
+  await s.rename("Work", "Projects"); const listed = await s.folders(); db.replaceFolders("gmail", listed.folders, "/");
+  assert.equal(db.folderByPath("gmail", "Projects").provider_id, "Label_work");
+  assert.equal(db.messageById(row.id).id, row.id);
+});
+
+test("unuploaded drafts survive migration; removed accounts cannot be resurrected by late responses", async t => {
+  const f = await fixture(t, [message("late")]);
+  f.cached("pending", "<new-revision@fixture.invalid>", "Drafts", { isDraft: true, draftPending: true });
+  assert.equal(db.enableGmail("gmail"), 1); assert.equal(db.messageById("pending").uid, 0);
+  const s = f.session(); const listed = await s.folders(); db.replaceFolders("gmail", listed.folders, "/");
+  let release; f.service.hold(new Promise(resolve => { release = resolve; }));
+  const reading = s.sync("INBOX"); await new Promise(resolve => setImmediate(resolve));
+  db.removeAccount("gmail"); release();
+  await assert.rejects(reading, error => error.code === "account_removed");
+  assert.equal(db.accountById("gmail"), null);
+});

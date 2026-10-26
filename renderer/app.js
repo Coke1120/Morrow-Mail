@@ -14832,19 +14832,21 @@ async function reauthorizeGmail(calendar = false) {
 }
 async function cancelGmailReauthorization() {
   if (!gmailMigrationBusy) return;
-  const operation = ++gmailMigrationOperation;
+  const operation = gmailMigrationOperation;
   $("settings-gmail-cancel").disabled = true;
   try {
     await call("mail:cancelOAuth");
-    if (operation === gmailMigrationOperation) $("settings-capabilities").textContent = "Google reauthorization cancelled. Refresh permissions to review the current connection.";
-  } catch (error) {
-    if (operation === gmailMigrationOperation) $("settings-capabilities").textContent = "Cancellation could not be confirmed. Refresh permissions before retrying. " + error.message;
-  } finally {
     if (operation === gmailMigrationOperation) {
+      gmailMigrationOperation++;
       gmailMigrationBusy = false; state.oauthPending = false;
-      $("settings-gmail-cancel").hidden = true; $("settings-gmail-cancel").disabled = false;
-      paintSettingsMailbox(); paintConnectPending();
+      $("settings-gmail-cancel").hidden = true;
+      $("settings-capabilities").textContent = "Google reauthorization cancelled. Refresh permissions to review the current connection.";
     }
+  } catch (error) {
+    if (operation === gmailMigrationOperation) $("settings-capabilities").textContent = "Cancellation could not be confirmed. Authorization may still finish; retry Cancel before starting another authorization. " + error.message;
+  } finally {
+    $("settings-gmail-cancel").disabled = false;
+    paintSettingsMailbox(); paintConnectPending();
   }
 }
 function openConnectFor(account) {

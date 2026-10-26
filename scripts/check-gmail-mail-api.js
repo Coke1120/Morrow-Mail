@@ -75,7 +75,8 @@ test("send requires an explicit action and preserves To/Cc/Bcc/threading/MIME wi
   assert.equal(MAIL_SCOPES.includes("calendar"), false);
   assert.equal(CALENDAR_SCOPES.includes("gmail"), false);
   const actual = require("../host/mail/oauth-config").scopesFor("google", "bundle");
-  assert.ok(actual.includes("https://mail.google.com/"), "current production request remains broad until engine migration is complete");
+  assert.ok(!actual.includes("https://mail.google.com/"), "Gmail API requests omit full-mail scope");
+  assert.ok(!actual.includes("calendar"), "Calendar consent remains separate");
 });
 
 test("read/star/archive/labels and Trash Undo preserve membership without erasing later flags", async () => {
@@ -162,7 +163,7 @@ test("real IMAP draft cleanup moves Gmail copies to Trash and never expunges; ot
     async messageMove(uid, destination) { calls.push(["move", destination]); return { uidMap: new Map([[Number(uid), 2]]), uidValidity: 1 }; }
     async messageDelete() { calls.push(["delete"]); }
   }
-  const remote = vmModule(require.resolve("../host/mail/remote"), { imapflow: { ImapFlow: FakeClient }, nodemailer: {}, "nodemailer/lib/mail-composer": class {}, mailparser: {} }).exports;
+  const remote = vmModule(require.resolve("../host/mail/remote"), { imapflow: { ImapFlow: FakeClient }, nodemailer: {}, "nodemailer/lib/mail-composer": class {}, mailparser: {}, "./gmail-session": { migrated: () => false } }).exports;
   for (const profile of ["gmail", "outlook", "custom"]) {
     const account = { profile, imap_host: profile === "custom" ? "imap.gmail.com" : `${profile}.invalid` };
     await remote.withClient(account, "fixture", client => remote.removeUid(client, "Drafts", 1, 1));

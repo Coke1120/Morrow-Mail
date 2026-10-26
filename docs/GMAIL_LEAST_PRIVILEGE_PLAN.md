@@ -1,6 +1,6 @@
 # Gmail API and least-privilege migration plan
 
-Status: plan accompanying the AI consent draft. **This PR changes no mail transport, OAuth scope, existing account or Google Console setting.** The user subsequently approved implementation in a separate draft PR; until that draft's coverage and checks are complete, the current transport remains as described below. Continue with Google remains OAuth. Replacing IMAP/SMTP with Gmail API does not replace Google login.
+Status: historical pre-migration plan accompanying AI consent PR #302 (now integrated into dev). **This PR changes no mail transport, OAuth scope, existing account or Google Console setting.** The user subsequently approved implementation in separate draft PR #305. This document retains the original baseline and phased plan; see [the implementation coverage and current gates](GMAIL_API_MIGRATION.md) for the new branch behavior. The baseline below describes the pre-migration version, not the new requested scopes. Continue with Google remains OAuth. Replacing IMAP/SMTP with Gmail API does not replace Google login.
 
 ## Current feature → scope map
 

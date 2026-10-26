@@ -6,7 +6,7 @@ const MICROSOFT_CLIENT_ID = fs
   .trim();
 
 // Legacy scope sets also describe the minimum permissions for each feature.
-// New Google consent bundles every feature; Microsoft keeps Outlook and Graph
+// Google mail excludes Calendar; Microsoft keeps Outlook and Graph
 // on separate authorize URLs, code exchanges, and refreshes.
 const SCOPES = {
   google: "openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic",
