@@ -64,7 +64,7 @@
         id: "schedule-send",
         title: "Send later",
         category: "Mail",
-        blurb: "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery; later edits stay saved.",
+        blurb: "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved.",
       },
       {
         id: "out-of-office",

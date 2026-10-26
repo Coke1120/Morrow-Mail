@@ -181,7 +181,7 @@ async function settingsUi() {
   const features = renderer({ document, window: { morrow: {}, morrowFeaturesCatalog: require("../renderer/features-catalog") } });
   features.run("paintFeatureCatalog()");
   assert.match(get("features-catalog").textContent, /Sender identities.*Morrow-only display name.*Drafts and scheduled mail retain the selected name and address/);
-  assert.match(get("features-catalog").textContent, /Unchanged source drafts are cleaned up after delivery; later edits stay saved/);
+  assert.match(get("features-catalog").textContent, /Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved/);
   assert.match(html, /id="cli-sender-names"[\s\S]*bridge has no display-name parameter/);
 }
 
@@ -208,6 +208,20 @@ async function sqlSnapshots() {
     assert.equal(db.draftRevision(db.messageById("legacy-draft")), legacyProof, "empty legacy name enrichment is not a content edit");
     db.updateMessage("legacy-draft", { from_display_name: "New name" });
     assert.notEqual(db.draftRevision(db.messageById("legacy-draft")), legacyProof, "a genuine sender-name change still invalidates queued proof");
+    const remoteSource = fs.readFileSync(require.resolve("../host/mail/remote"), "utf8");
+    const formatter = vm.runInNewContext(remoteSource.slice(remoteSource.indexOf("function formatAddress("), remoteSource.indexOf("function walkParts(")) + "\nformatList;");
+    for (const [index, name] of ['Operations <West>', 'Operations "West"', '陳美玲, "Ops <香港>"', 'Operations <help@example.test>'].entries()) {
+      const id = "historical-format-" + index;
+      const from = formatter([{ name, address: "Owner@Fixture.Invalid" }]).join(", ");
+      db.insertMessage({ ...row, id, from, draftPending: false, fromDisplayName: undefined, fromAddress: undefined });
+      const oldProof = db.draftRevision(db.messageById(id));
+      db.updateMessage(id, { from_display_name: name, from_address: "owner@fixture.invalid" });
+      assert.equal(db.draftRevision(db.messageById(id)), oldProof, "production historical formatting matches the newly parsed metadata exactly");
+      db.updateMessage(id, { html_body: "<p>Real body edit</p>" });
+      assert.notEqual(db.draftRevision(db.messageById(id)), oldProof);
+      db.updateMessage(id, { html_body: null, from_addr: "changed@fixture.invalid" });
+      assert.notEqual(db.draftRevision(db.messageById(id)), oldProof);
+    }
   } finally { await db.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 }
 

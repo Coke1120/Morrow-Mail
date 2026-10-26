@@ -1122,8 +1122,9 @@ function draftRevision(row) {
   ];
   // Enriching legacy sender metadata is not an edit. Its original From header
   // already participates in the old proof. Include only a different, nonempty
-  // name; null -> empty and a decoded header name retain the queued proof.
-  if (row.from_display_name && row.from_display_name !== senderHeader.headerParts(row.from_addr).name) content.push(row.from_display_name);
+  // name; null -> empty and equivalent provider-formatted display text retain
+  // the queued proof, including names that are not valid unquoted MIME headers.
+  if (row.from_display_name && !senderHeader.cachedNameMatches(row)) content.push(row.from_display_name);
   return crypto.createHash("sha256").update(JSON.stringify(content)).digest("hex");
 }
 

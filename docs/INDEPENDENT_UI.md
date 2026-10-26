@@ -4,6 +4,8 @@
 
 ## What this shell does
 
+- Scheduled cleanup also recognizes historical provider display text with literal quotes, angle brackets and Unicode names. Tests create real MIME and pass synthetic IMAP search results through the production parser/formatter, then verify metadata-only cleanup and protection of later name, From and body edits.
+
 - Resuming or recovering a sender-named draft keeps its bare From address, including names with angle brackets, quotes and Unicode. It does not reparse a display preview as an email address. Equivalent legacy sender metadata refreshes preserve queued cleanup proofs; genuinely edited drafts remain saved after the queued snapshot sends.
 
 - Settings → Compose has a Sender identities editor with an exact-address list, primary / Gmail-verified / Gmail-default / new-mail From states, a Morrow display-name field and recipient-visible preview. Discovery supplies Gmail names, including primary-name inheritance for blank custom names. Local overrides live in `brainCompose.accounts[accountId].senderNames` in `settings.json` and survive refresh; an empty override is address-only and resetting removes the override. Manual aliases remain explicitly unverified. Gmail settings and OAuth scopes are unchanged. Open compositions, saved drafts and scheduled content retain their selected name; choosing another From uses that identity's current name. The send preview shows From, and MIME uses Nodemailer structured addresses for quoting/Unicode. Other providers keep their existing alias restrictions. Provider or recipient contacts can alter the final display. Synthetic DOM/MIME tests do not verify native windows or live delivery.

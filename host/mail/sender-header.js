@@ -21,4 +21,18 @@ function savedAddress(row) {
   return bareAddress(row.from_address) || headerParts(row.from_addr).address;
 }
 
-module.exports = { bareAddress, headerParts, savedAddress };
+function cachedNameMatches(row) {
+  const name = row.from_display_name;
+  if (typeof name !== "string") return false;
+  const address = bareAddress(row.from_address);
+  const cached = row.from_addr || "";
+  // Historical IMAP/Gmail caches store decoded display text, not an RFC From
+  // header. Match the entire historical formatter output against the separately
+  // supplied provider name/address. Never parse that display text to authorize
+  // an address, strip punctuation, or accept a different name/From.
+  if (address && cached.slice(0, name.length) === name && cached.slice(name.length).toLowerCase() === ` <${address}>`) return true;
+  const parsed = headerParts(cached);
+  return parsed.name === name && (!address || parsed.address === address);
+}
+
+module.exports = { bareAddress, headerParts, savedAddress, cachedNameMatches };

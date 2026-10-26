@@ -52,3 +52,13 @@ An unresolved sender keeps the draft rather than choosing primary. Revision
 proofs ignore equivalent metadata enrichment while retaining genuine name/content
 changes. Regressions exercise actual resume-to-MIME and provider-search-to-queued
 cleanup flows, plus a subsequent real edit. Recheck and final-head CI remain gates.
+
+A recheck found historical cache text was unquoted display formatting, so RFC
+header parsing alone still misclassified punctuation/Unicode names. Compatibility
+now verifies the entire historical formatter representation using the provider's
+separate name and validated address; only address case is normalized. It preserves
+the original cached text in the proof and does not infer send-as authorization.
+Coverage builds real MIME and feeds synthetic IMAP SEARCH/FETCH through production
+parsing/formatting, asserts only the two metadata columns change, and verifies
+cleanup plus subsequent real name, From and body edit protection. It includes
+literal quotes, angle brackets, Unicode and address-like text within a name.
