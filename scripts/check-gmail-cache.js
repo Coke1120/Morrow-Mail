@@ -61,6 +61,16 @@ test("bounded paging resumes across sessions and history removes known copies, w
   assert.equal(db.gmailCopies("gmail", "two").length, 0);
 });
 
+test("the engine's numeric zero means All history; shorter horizons retain existing cache", async t => {
+  const old = message("old"); old.payload.headers = old.payload.headers.filter(row => row.name !== "Date"); old.internalDate = "1000000000000";
+  const f = await fixture(t, [old]), s = await f.migrate();
+  await s.sync("INBOX", { horizonDays: 0 });
+  assert.ok(db.gmailCopies("gmail", "old").length);
+  assert.equal(f.service.calls.find(call => call.route === "/messages").query.get("q"), null);
+  await s.sync("INBOX", { horizonDays: 180 });
+  assert.ok(db.gmailCopies("gmail", "old").length, "shortening the horizon does not remove older downloaded mail");
+});
+
 test("body retrieval fetches text and attachment bytes only when needed", async t => {
   const source = message("body"); source.payload = { mimeType: "multipart/mixed", headers: source.payload.headers,
     parts: [{ partId: "1", mimeType: "text/plain", body: { attachmentId: "text-part", size: 20 } },
@@ -97,4 +107,19 @@ test("unuploaded drafts survive migration; removed accounts cannot be resurrecte
   db.removeAccount("gmail"); release();
   await assert.rejects(reading, error => error.code === "account_removed");
   assert.equal(db.accountById("gmail"), null);
+});
+
+test("Gmail protected Sent/Draft labels are never manually applied or removed; Trash Undo uses untrash", async t => {
+  const f = await fixture(t, [message("sent", ["SENT"]), message("draft", ["DRAFT"])]), s = await f.migrate();
+  await s.sync("[Gmail]/Sent Mail"); await s.sync("Drafts");
+  const sent = db.gmailCopies("gmail", "sent").find(row => row.folder_path === "[Gmail]/Sent Mail");
+  await s.move(sent.folder_path, sent.uid, "Work", sent.uid_validity);
+  assert.ok(f.service.messages.get("sent").labelIds.includes("SENT"));
+  const draft = db.gmailCopies("gmail", "draft").find(row => row.folder_path === "Drafts");
+  await assert.rejects(s.move("Drafts", draft.uid, "Work", draft.uid_validity), error => error.code === "unsupported" && error.operationIssued === false);
+  const moved = await s.move("Drafts", draft.uid, "[Gmail]/Trash", draft.uid_validity);
+  await s.move("[Gmail]/Trash", moved.uid, "Drafts", moved.uidValidity);
+  assert.ok(f.service.messages.get("draft").labelIds.includes("DRAFT"));
+  assert.ok(!f.service.messages.get("draft").labelIds.includes("TRASH"));
+  await assert.rejects(s.move("Work", sent.uid, "Drafts", sent.uid_validity), error => error.code === "unsupported");
 });

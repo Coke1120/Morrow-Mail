@@ -150,7 +150,7 @@ function createSession(account, token, { api, check = () => {} } = {}) {
   }
   async function sync(path, { horizonDays = null, limit = 40 } = {}) {
     alive();
-    const selected = folder(path), after = horizonDays == null ? null : Date.now() - Number(horizonDays) * 86400000;
+    const selected = folder(path), after = Number(horizonDays) > 0 ? Date.now() - Number(horizonDays) * 86400000 : null;
     let state = db.gmailSyncState(account.id, path);
     if (state.horizonDays !== horizonDays) state = { verifyNeeded: true };
     async function verifyCached() {
@@ -215,7 +215,10 @@ function createSession(account, token, { api, check = () => {} } = {}) {
   }
   async function move(path, uid, destination, validity, localMessageId) {
     const mapped = await resolve(path, uid, validity, localMessageId), from = folder(path).provider_id, to = folder(destination).provider_id;
-    if (from !== to && ["DRAFT", "SENT"].includes(to)) throw Object.assign(new Error("Gmail does not allow moving existing mail into Drafts or Sent. Save a draft or send the message instead."), { code: "unsupported", operationIssued: false });
+    const priorTrashLabels = JSON.parse(mapped.trash_labels_json || "[]");
+    const protectedRestore = from === "TRASH" && priorTrashLabels.includes(to) && ["DRAFT", "SENT"].includes(to);
+    if (from !== to && ["DRAFT", "SENT"].includes(to) && !protectedRestore) throw Object.assign(new Error("Gmail does not allow moving existing mail into Drafts or Sent. Save a draft or send the message instead."), { code: "unsupported", operationIssued: false });
+    if (from !== to && (JSON.parse(mapped.labels_json).includes("DRAFT")) && !["TRASH", "DRAFT"].includes(to)) throw Object.assign(new Error("Gmail does not allow applying folder labels to drafts. Save or send the draft instead."), { code: "unsupported", operationIssued: false });
     if (from !== to) {
       let result;
       if (to === "TRASH") {
@@ -225,9 +228,11 @@ function createSession(account, token, { api, check = () => {} } = {}) {
         result = (await api.trash(mapped.provider_id)).message;
       }
       else {
-        if (from === "TRASH") await api.restoreTrash({ messageId: mapped.provider_id, priorLabelIds: JSON.parse(mapped.trash_labels_json || "[]") });
-        if (to === ALL) result = await api.archive(mapped.provider_id);
-        else result = await api.modifyLabels(mapped.provider_id, [to], from === ALL || from === "TRASH" ? [] : [from]);
+        if (from === "TRASH") result = await api.restoreTrash({ messageId: mapped.provider_id, priorLabelIds: priorTrashLabels });
+        if (protectedRestore) {
+          if (!(result.labelIds || []).includes(to)) throw Object.assign(new Error("Gmail restored this message but did not confirm its original Drafts/Sent membership. Refresh and review it in Gmail."), { code: "provider", operationIssued: true });
+        } else if (to === ALL) result = await api.archive(mapped.provider_id);
+        else result = await api.modifyLabels(mapped.provider_id, [to], [ALL, "TRASH", "SENT", "DRAFT"].includes(from) ? [] : [from]);
       }
       alive(); db.rememberGmail(account.id, { providerId: mapped.provider_id, labelIds: result.labelIds || [], ...(from === "TRASH" ? { priorTrashLabels: null } : {}) });
     }

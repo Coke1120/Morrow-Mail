@@ -61,6 +61,7 @@ function server(initial = []) {
       if (action?.startsWith("attachments/")) return json({ data: Buffer.from("Synthetic attachment").toString("base64url") });
       if (action === "modify") {
         const body = JSON.parse(options.body);
+        if ([...body.addLabelIds, ...body.removeLabelIds].some(id => ["SENT", "DRAFT"].includes(id)) || row.labelIds.includes("DRAFT")) return json({}, 400);
         row.labelIds = [...new Set([...row.labelIds.filter(id => !body.removeLabelIds.includes(id)), ...body.addLabelIds])];
       }
       if (action === "trash") row.labelIds = [...new Set([...row.labelIds.filter(id => id !== "INBOX"), "TRASH"])];
