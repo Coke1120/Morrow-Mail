@@ -45,3 +45,11 @@ unchanged. Native/rendered validation remains unavailable under the existing
 renderer-navigation restriction; fixtures do not establish live-provider or OS
 dialog behavior. No mail, OAuth grant or live model/provider request is needed for
 the tests.
+
+## Independent review follow-up
+
+Keep the union of iconv mail aliases and TextDecoder/ICU encodings. In particular, ISO-2022-JP must not become an incomplete UTF-8 fallback when iconv lacks it. Only a charset rejected by both decoders receives that fallback and warning. Real MIME/IMAP and Gmail fixtures cover ISO-2022-JP, UTF-8, Windows-1252, cp932, UTF-7 and an unknown label.
+
+Locally generated MIME has known empty Reply-To, even before its Sent copy has a server UID. Sent filing, bot Sent records, draft saves and scheduled recovery persist that value explicitly. The historical unfiled Sent format can be repaired narrowly: complete non-draft body, Sent role, zero UID/UIDVALIDITY and no Gmail mapping, an empty metadata object, Morrow cache-id and RFC-id formats, a bare sender, and the generating account's message-id domain. UID zero, folder membership, or a matching From alone does not establish local provenance. Remote API search hits have different cache IDs, provider-fetched records carry transport evidence, and unknown remote rows retain the reply-header gate. Authoritative provider adoption overrides local metadata.
+
+An editor keeps the original full timed values only while an all-day conversion is reversible without guessing: toggling back over the unchanged all-day range restores the exact timed range. Edits to that date range keep the selected dates with explicit timed defaults; a new editor starts without another event's snapshot.

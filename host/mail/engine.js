@@ -2174,6 +2174,25 @@ async function ensureBody(row, options) {
   }
 }
 
+function localSentReplyHeaders(row, account) {
+  let headers;
+  try { headers = JSON.parse(row.recipient_headers_json); } catch { return row; }
+  if (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.keys(headers).length || row.is_draft || row.body_complete !== 1
+      || Number(row.uid) !== 0 || Number(row.uid_validity) !== 0 || row.gmail_id
+      || db.folderByPath(account.id, row.folder_path)?.well_known !== "sentitems") return row;
+  // Before Reply-To was stored, unfiled locally generated Sent rows used empty
+  // metadata and these cache/RFC id formats. Remote API search hits use a
+  // different cache id; provider-fetched rows retain transport header evidence.
+  // Do not infer local origin from uid=0, Sent membership or From alone.
+  const rfc = /^<[a-f0-9]{24}@([^<>\s]+)>$/.exec(row.rfc_message_id || "");
+  const from = composePolicy.address(row.from_addr);
+  if (!/^m-[a-z0-9]+-[a-f0-9]{1,8}$/.test(row.id) || !rfc
+      || rfc[1].toLowerCase() !== String(account.email).split("@")[1]?.toLowerCase()
+      || !from || from !== row.from_addr.trim().toLowerCase()) return row;
+  db.updateMessage(row.id, { recipient_headers_json: JSON.stringify({ replyTo: [] }) });
+  return db.messageById(row.id);
+}
+
 function pushRows(into, rows, limit) {
   const seen = new Set(into.map((row) => row.id));
   for (const row of rows || []) {
@@ -3107,6 +3126,7 @@ function editScheduled(params) {
     attachments: resolved.meta,
     htmlBody: html, textBody: text,
     snippet: plainFromHtml(html).slice(0, 180), bodyComplete: true,
+    recipientHeaders: { replyTo: [] },
   });
   emitAccounts();
   return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString(),
@@ -3171,6 +3191,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       htmlBody: options.html,
       textBody: options.text,
       bodyComplete: true,
+      recipientHeaders: { replyTo: [] },
       inReplyTo: (extra && extra.inReplyTo) || null,
     });
     if (account.mail_transport === "gmail_api" && info?.providerId) {
@@ -3466,9 +3487,10 @@ function answer(channel, args, event) {
         try {
           let message = null;
           if (params.sourceMessageId) {
-            const row = db.messageById(params.sourceMessageId);
+            let row = db.messageById(params.sourceMessageId);
             if (!row || row.account_id !== account.id) return fail("invalid", "The source message does not belong to this mailbox.");
             const replying = ["reply", "all"].includes(params.kind);
+            if (replying) row = localSentReplyHeaders(row, account);
             const fresh = await ensureBody(row, { replyHeaders: replying });
             if (replying && !Array.isArray(JSON.parse(fresh.recipient_headers_json || "{}").replyTo)) {
               return fail("read", "Reply headers could not be downloaded. Reopen the message to retry before replying.");
@@ -3838,6 +3860,7 @@ function answer(channel, args, event) {
           htmlBody: html,
           textBody: presented.textBody || plainFromHtml(html),
           bodyComplete: true,
+          recipientHeaders: { replyTo: [] },
           draftPending: true,
           inReplyTo: params.inReplyTo || null,
         };
@@ -3863,6 +3886,7 @@ function answer(channel, args, event) {
             html_body: html,
             text_body: record.textBody,
             body_complete: 1,
+            recipient_headers_json: JSON.stringify(record.recipientHeaders),
             draft_pending: 1,
             in_reply_to: record.inReplyTo,
           });
@@ -4007,6 +4031,7 @@ function noteBotSent(receipt) {
       htmlBody: receipt.html || "",
       textBody: receipt.text || "",
       bodyComplete: true,
+      recipientHeaders: { replyTo: [] },
       inReplyTo: receipt.inReplyTo || null,
     });
   } catch {

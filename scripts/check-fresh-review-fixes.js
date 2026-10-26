@@ -74,11 +74,23 @@ async function rendererChecks() {
   assert.equal(node("calendar-start").value, "2026-10-26"); assert.equal(node("calendar-end").value, "2026-10-27");
   cal.run(`openCalendarEditor({id:'timed',calendarId:'primary',title:'Meeting',allDay:false,start:'2026-10-26T09:00:00Z',end:'2026-10-26T10:00:00Z'})`);
   assert.equal(node("calendar-start").value, cal.run("toDateTimeLocal('2026-10-26T09:00:00Z')"));
-  node("calendar-start").value = "2026-10-26T09:00"; node("calendar-end").value = "2026-10-26T10:00";
+  node("calendar-start").value = "2026-10-26T14:35"; node("calendar-end").value = "2026-10-26T16:10";
   node("calendar-all-day").checked = true; cal.run("syncAllDayInputs()");
   assert.equal(node("calendar-start").value, "2026-10-26"); assert.equal(node("calendar-end").value, "2026-10-27");
   node("calendar-all-day").checked = false; cal.run("syncAllDayInputs()");
-  assert.equal(node("calendar-start").value, "2026-10-26T09:00"); assert.equal(node("calendar-end").value, "2026-10-27T10:00");
+  assert.equal(node("calendar-start").value, "2026-10-26T14:35"); assert.equal(node("calendar-end").value, "2026-10-26T16:10", "an unchanged round trip restores the original end, not the exclusive all-day end");
+  node("calendar-all-day").checked = true; cal.run("syncAllDayInputs()");
+  node("calendar-start").value = "2026-10-28"; node("calendar-end").value = "2026-10-30";
+  node("calendar-all-day").checked = false; cal.run("syncAllDayInputs()");
+  assert.equal(node("calendar-start").value, "2026-10-28T09:00"); assert.equal(node("calendar-end").value, "2026-10-30T10:00", "edited all-day dates use the selected range and timed defaults");
+  node("calendar-start").value = "2026-10-28T22:15"; node("calendar-end").value = "2026-10-29T01:20";
+  node("calendar-all-day").checked = true; cal.run("syncAllDayInputs()");
+  node("calendar-all-day").checked = false; cal.run("syncAllDayInputs()");
+  assert.equal(node("calendar-start").value, "2026-10-28T22:15"); assert.equal(node("calendar-end").value, "2026-10-29T01:20");
+  node("calendar-all-day").checked = true; cal.run("syncAllDayInputs()");
+  cal.run(`openCalendarEditor({id:'another',calendarId:'primary',title:'All day',allDay:true,start:'2026-11-01',end:'2026-11-02'})`);
+  node("calendar-all-day").checked = false; cal.run("syncAllDayInputs()");
+  assert.equal(node("calendar-start").value, "2026-11-01T09:00"); assert.equal(node("calendar-end").value, "2026-11-02T10:00", "a new editor cannot inherit another event's hours");
   const featureDoc = new JSDOM('<div id="features-catalog"></div><p id="features-empty"></p>').window.document;
   const features = renderer({ document: featureDoc });
   features.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
@@ -115,15 +127,31 @@ async function hostChecks() {
       const result = await engine.answer(channel, [input], { sender: owner });
       assert.equal(result.success, true, JSON.stringify(result)); return result.data;
     };
-    for (const charset of ["cp932", "utf-7", "x-unknown"]) {
-      const source = message("encoding-"+charset), bytes = charset === "x-unknown" ? Buffer.from("Fallback text") : require("iconv-lite").encode("Hello 日本語", charset);
+    const encodedCases = [
+      ["utf-8", Buffer.from("Hello 日本語"), "Hello 日本語"],
+      ["windows-1252", Buffer.from([67,97,102,233,32,128]), "Café €"],
+      ["iso-2022-jp", Buffer.from([27,36,66,70,124,75,92,56,108,27,40,66]), "日本語"],
+      ...["cp932","utf-7"].map(charset=>[charset,require("iconv-lite").encode("Hello 日本語",charset),"Hello 日本語"]),
+      ["x-unknown",Buffer.from("Fallback text"),"Fallback text"],
+    ];
+    for (const [charset,bytes,expected] of encodedCases) {
+      const source = message("encoding-"+charset);
       source.payload.headers.push({name:"Content-Type",value:"text/plain; charset="+charset}); source.payload.body.data = bytes.toString("base64url");
       service.messages.set(source.id, source);
+      const raw = Buffer.from('Content-Type: text/plain; charset='+charset+'\r\nContent-Transfer-Encoding: base64\r\n\r\n'+bytes.toString('base64'));
+      const mime=await simpleParser(raw); assert.equal(mime.text.trim(),expected,"real MIME parser: "+charset);
+      const imap=await remote.fetchSource({mailbox:{uidValidity:1},getMailboxLock:async()=>({release(){}}),async *fetch(){yield{uid:1,source:raw,envelope:{},flags:new Set()};}},"INBOX",1,1);
+      assert.equal(imap.textBody.trim(),expected,"IMAP parser: "+charset);
     }
     const malformed = message("malformed"); malformed.payload.parts = "not an array";
     service.messages.set(malformed.id, malformed); service.messages.set("healthy", message("healthy"));
     assert.equal((await session.sync("INBOX")).bootstrapped, true);
-    for (const charset of ["cp932", "utf-7"]) assert.equal(db.gmailCopies("gmail","encoding-"+charset)[0].text_body, "Hello 日本語");
+    for (const [charset,,expected] of encodedCases) {
+      const cached=db.gmailCopies("gmail","encoding-"+charset)[0];
+      assert.equal(cached.text_body,expected,"Gmail parser: "+charset);
+      assert.equal(cached.body_complete,charset==="x-unknown"?0:1);
+      assert.equal(!!cached.body_warning,charset==="x-unknown");
+    }
     assert.ok(db.gmailCopies("gmail","encoding-x-unknown")[0].body_warning);
     assert.equal(db.gmailCopies("gmail","malformed")[0].body_complete, 0);
     assert.ok(db.gmailCopies("gmail","healthy")[0]);
@@ -249,6 +277,7 @@ async function hostChecks() {
     assert.equal(sent.from.value[0].name,"Saved, Name");
     assert.deepEqual(Object.fromEntries(sent.attachments.map(f=>[f.filename,f.content.toString()])),{"contract.pdf":"CONTRACT","logo.png":"IMAGE"});
     assert.equal(sent.attachments.find(f=>f.filename==="logo.png").contentId,"<logo>");
+    await localSentChecks({db,engine,remote,secrets,ask});
     console.log("fresh-review-host-ok: Gmail charset/MIME isolation, structured Reply-To, draft hydration/MIME/queue/failure/cancel/retry");
   } finally {
     remote.withClient=original.withClient;remote.readPart=original.readPart; global.fetch=originalFetch;
@@ -257,6 +286,83 @@ async function hostChecks() {
       if(env[key]===undefined)delete process.env[key];else process.env[key]=env[key];
     }
     fs.rmSync(directory,{recursive:true,force:true});
+  }
+}
+
+async function localSentChecks({db,engine,remote,secrets,ask}) {
+  db.insertAccount({id:"local-sent",email:"author@local.fixture.invalid",username:"author",profile:"custom",authKind:"password",createdAt:1,
+    imapHost:"imap.fixture.invalid",imapPort:993,imapTls:true,smtpHost:"smtp.fixture.invalid",smtpPort:465,smtpTls:true});
+  db.replaceFolders("local-sent",[{path:"Sent",name:"Sent",wellKnown:"sentitems"},{path:"INBOX",name:"Inbox",wellKnown:"inbox"}]);
+  secrets.setPassword("local-sent","synthetic-password");
+  const account=db.accountById("local-sent"), original={withClient:remote.withClient,sendSmtp:remote.sendSmtp,appendRaw:remote.appendRaw};
+  let providerReads=0;
+  const options={from:{address:account.email,name:"Local Author"},to:["customer@fixture.invalid"],cc:["colleague@fixture.invalid"],bcc:["hidden@fixture.invalid"],subject:"Locally sent",html:"<p>Local text</p>",text:"Local text"};
+  const id=letter=>`<${letter.repeat(24)}@local.fixture.invalid>`;
+  const ui=composeUi();
+  const checkReplies=async row=>{
+    const beforeReads=providerReads;
+    const email=(await ask("mail:openEmail",{emailId:row.id})).email;
+    for(const kind of ["reply","all"]){
+      const context=await ask("mail:getComposeContext",{accountId:account.id,sourceMessageId:row.id,kind});
+      assert.deepEqual(context.replyTo,[]);
+      Object.assign(ui.context,{email,self:context.selfAddresses,all:kind==="all"});
+      const parties=ui.run("replyParties(email,self,all)");
+      assert.equal(parties.to,kind==="all"?"customer@fixture.invalid":"customer@fixture.invalid, colleague@fixture.invalid");
+      assert.equal(parties.cc,kind==="all"?"colleague@fixture.invalid":"");
+      assert.ok(!JSON.stringify(parties).includes(account.email));
+      assert.ok(!JSON.stringify(parties).includes("hidden@fixture.invalid"));
+    }
+    assert.equal(providerReads,beforeReads,"known local headers require no mailbox read");
+  };
+  try {
+    remote.withClient=async()=>{providerReads++;throw new Error("Synthetic filing/read failure");};
+    engine.noteBotSent({accountId:account.id,messageId:id("a"),fromAddress:account.email,to:options.to,cc:options.cc,subject:options.subject,text:options.text});
+    const bot=db.messageByRfc(account.id,id("a"));
+    assert.equal(bot.uid,0); assert.deepEqual(JSON.parse(bot.recipient_headers_json).replyTo,[]); await checkReplies(bot);
+    engine.setSmtpSenderForTest(async({messageId})=>({messageId,accepted:options.to,rejected:[]}));
+    const accepted=await engine.submitSmtp({account,options,messageId:id("b")});
+    assert.equal(accepted.kind,"accepted");
+    const synthetic=db.messageById(accepted.emailId); assert.equal(synthetic.uid,0);
+    assert.deepEqual(JSON.parse(synthetic.recipient_headers_json).replyTo,[]); await checkReplies(synthetic);
+    engine.setSmtpSenderForTest(null);
+    remote.sendSmtp=async(_account,_password,input)=>({messageId:input.messageId,accepted:options.to,rejected:[]});
+    const failedFiling=await engine.submitSmtp({account,options,messageId:id("c")});
+    assert.equal(failedFiling.kind,"accepted");
+    const unfiled=db.messageById(failedFiling.emailId); assert.equal(unfiled.uid,0);
+    assert.deepEqual(JSON.parse(unfiled.recipient_headers_json).replyTo,[]); await checkReplies(unfiled);
+    for(const row of [bot,synthetic,unfiled]){
+      db.updateMessage(row.id,{recipient_headers_json:"{}"});
+      await checkReplies(row);
+      assert.deepEqual(JSON.parse(db.messageById(row.id).recipient_headers_json).replyTo,[],"legacy local Sent repair is persisted");
+    }
+    remote.withClient=async(_account,_password,work)=>work({}); remote.appendRaw=async()=>({uid:23,uidValidity:7});
+    const filed=await engine.submitSmtp({account,options,messageId:id("d")});
+    const filedRow=db.messageById(filed.emailId); assert.equal(filedRow.uid,23); await checkReplies(filedRow);
+    const raw=await remote.buildRaw({...options,messageId:id("a"),replyTo:{address:"relay@fixture.invalid",name:"Relay"}});
+    const parsed=await require("mailparser").simpleParser(raw);
+    const fetched=await remote.fetchSource({mailbox:{uidValidity:7},getMailboxLock:async()=>({release(){}}),async *fetch(){yield{uid:17,source:raw,envelope:{from:parsed.from.value,to:parsed.to.value,cc:parsed.cc.value,replyTo:parsed.replyTo.value},flags:new Set()};}},"Sent",17,7);
+    db.applyFolderSync(account.id,"Sent",{validity:7,messages:[fetched],keepOthers:true});
+    assert.equal(db.messageById(bot.id).uid,17,"provider adoption keeps the local cache id");
+    const adopted=await ask("mail:getComposeContext",{accountId:account.id,sourceMessageId:bot.id,kind:"reply"});
+    assert.equal(adopted.replyTo[0].address,"relay@fixture.invalid","authoritative provider headers replace the local empty value");
+    remote.withClient=async()=>{providerReads++;throw new Error("Synthetic remote read failure");};
+    const unknowns=[
+      {id:db.newMessageId(),uid:0,recipientHeaders:{originalTo:[],deliveredTo:[],envelopeTo:[]}},
+      {id:"m-0123456789abcdef",uid:0},
+      {id:db.newMessageId(),uid:42,uidValidity:7},
+      {id:db.newMessageId(),uid:0,folderPath:"INBOX"},
+    ];
+    for(const [index,extra] of unknowns.entries()){
+      db.insertMessage({accountId:account.id,folderPath:"Sent",threadId:"unknown",rfcMessageId:id(String(index+1)),from:account.email,to:options.to,textBody:"Remote copy",bodyComplete:true,date:new Date().toISOString(),listSortTs:Date.now(),...extra});
+      for(const kind of ["reply","all"]){
+        const result=await engine.answer("mail:getComposeContext",[{accountId:account.id,sourceMessageId:extra.id,kind}]);
+        assert.equal(result.success,false,"unknown remote headers must remain blocked"); assert.equal(result.error.code,"read");
+      }
+      assert.equal(JSON.parse(db.messageById(extra.id).recipient_headers_json).replyTo,undefined);
+    }
+    console.log("local-sent-reply-ok: bot/synthetic SMTP, filing success/failure, legacy repair, adoption and remote-header gates");
+  } finally {
+    engine.setSmtpSenderForTest(null); remote.withClient=original.withClient; remote.sendSmtp=original.sendSmtp; remote.appendRaw=original.appendRaw;
   }
 }
 

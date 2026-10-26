@@ -18284,6 +18284,7 @@ function checkedCalendarEvents(events) {
 let calendarDetailKey = "";
 let calendarEditingId = "";
 let calendarEditingIdentity = null;
+let calendarTimedSnapshot = null;
 let calendarEditorGeneration = 0;
 let calendarWritePending = false;
 
@@ -18678,6 +18679,9 @@ function syncAllDayInputs() {
   if (!allDay || !start || !end) return;
   const startValue = start.value, endValue = end.value;
   const enabled = !!allDay.checked;
+  const wasTimed = start.type === "datetime-local";
+  const restore = !enabled && calendarTimedSnapshot
+    && startValue === calendarTimedSnapshot.dateStart && endValue === calendarTimedSnapshot.dateEnd;
   start.type = enabled ? "date" : "datetime-local";
   end.type = enabled ? "date" : "datetime-local";
   const endLabel = document.querySelector("label[for='calendar-end']");
@@ -18686,9 +18690,11 @@ function syncAllDayInputs() {
     start.value = startValue.slice(0, 10);
     end.value = endValue.slice(0, 10);
     if (start.value && (!end.value || end.value <= start.value)) end.value = plusDays(start.value, 1);
+    if (wasTimed) calendarTimedSnapshot = { start: startValue, end: endValue, dateStart: start.value, dateEnd: end.value };
   } else {
-    start.value = /^\d{4}-\d{2}-\d{2}$/.test(startValue) ? startValue + "T09:00" : startValue;
-    end.value = /^\d{4}-\d{2}-\d{2}$/.test(endValue) ? endValue + "T10:00" : endValue;
+    start.value = restore ? calendarTimedSnapshot.start : /^\d{4}-\d{2}-\d{2}$/.test(startValue) ? startValue + "T09:00" : startValue;
+    end.value = restore ? calendarTimedSnapshot.end : /^\d{4}-\d{2}-\d{2}$/.test(endValue) ? endValue + "T10:00" : endValue;
+    calendarTimedSnapshot = null;
   }
 }
 
@@ -18699,6 +18705,7 @@ function openCalendarEditor(event, dayStamp) {
     return;
   }
   calendarEditorGeneration += 1;
+  calendarTimedSnapshot = null;
   const dialogTitle = $("calendar-dialog-title");
   const save = $("calendar-save");
   const remove = $("calendar-delete");

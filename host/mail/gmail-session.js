@@ -101,12 +101,18 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
         if (!bytes && part.body?.attachmentId && full) bytes = await api.attachment(data.id, part.body.attachmentId);
         if (!bytes && (part.body?.attachmentId || Number(part.body?.size) > 0)) { complete = false; continue; }
         const charset = /charset\s*=\s*["']?([^;\s"']+)/i.exec(header(part, "content-type"))?.[1] || "utf-8";
+        let text;
         try {
-          const supported = iconv.encodingExists(charset);
-          if (!supported) warn();
-          const text = iconv.decode(bytes || Buffer.alloc(0), supported ? charset : "utf-8");
-          body[type === "text/html" ? "html" : "text"].push(text);
-        } catch { warn(); }
+          // Mail aliases use iconv; retain ICU/TextDecoder-only encodings such
+          // as ISO-2022-JP before considering an incomplete UTF-8 fallback.
+          if (!iconv.encodingExists(charset)) throw new Error("Unknown mail charset");
+          text = iconv.decode(bytes || Buffer.alloc(0), charset);
+        } catch {
+          try {
+            text = new TextDecoder(charset).decode(bytes || Buffer.alloc(0));
+          } catch { warn(); text = new TextDecoder("utf-8").decode(bytes || Buffer.alloc(0)); }
+        }
+        body[type === "text/html" ? "html" : "text"].push(text);
       } else {
         const contentId = header(part, "content-id").replace(/^<|>$/g, "");
         attachments.push({ id: `gmail:${part.partId || "0"}`, filename: part.filename || `attachment-${part.partId || "0"}`, mimeType: type,
