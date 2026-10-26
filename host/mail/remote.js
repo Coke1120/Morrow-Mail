@@ -389,6 +389,7 @@ async function readFetched(msg, validity, cap) {
     subject: presented.subject,
     snippet: snippetOf(presented.textBody, presented.htmlBody),
     from: formatList(envelope.from).join(", "),
+    fromDisplayName: Array.isArray(envelope.from) ? envelope.from[0]?.name || "" : "",
     to: formatList(envelope.to),
     cc: formatList(envelope.cc),
     bcc: formatList(envelope.bcc),

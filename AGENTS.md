@@ -60,3 +60,7 @@ Google OAuth mail uses Gmail API with gmail.modify + gmail.settings.basic; Calen
 ## Out of Office
 
 Settings → Out of Office is a reviewed provider write. Gmail uses `gmail.settings.basic` and Microsoft uses `MailboxSettings.ReadWrite`, covered by the provider bundle or an existing legacy token. Do not replace the mailbox secret after partial consent. IMAP may install only the ManageSieve script `morrow-vacation` on port 4190 after STARTTLS. Do not send local automatic replies or replace another active script.
+
+## Sender identities
+
+Sender display names are Morrow-only preferences keyed by account id and exact normalized From address. Gmail discovery supplies defaults; refresh must preserve local overrides and manual aliases. An empty override means address-only; absence means inherit the default. Freeze the selected name with draft/scheduled content and use Nodemailer structured addresses for MIME. Never turn a display name into address authorization, update Gmail settings, or add scopes for local names. Preserve alias/provider restrictions and bot idempotent receipts. See `docs/adr/2026-10-26-sender-display-names.md`.

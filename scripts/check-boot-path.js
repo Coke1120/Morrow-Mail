@@ -3987,6 +3987,7 @@ const featureSeed = [
   ["email-brain", "Email Brain", "Agent", "Profile, categories, skills, and inbox rules built from your mail. Skills can draft a reply or propose a move. You still press Send."],
   ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. Reply opens a compose window. Done and Dismiss stay on this computer."],
   ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send."],
+  ["sender-identities", "Sender identities", "Mail", "Settings → Compose previews each exact From address and its Morrow-only display name. Verified Gmail send-as names are the default; local overrides survive refresh. Clear a name for address-only sending or reset to the default. Drafts and scheduled mail retain the selected name. Bot mail.send uses these defaults. Provider sending permissions still apply; Gmail settings and OAuth scopes stay unchanged. Providers or recipient contacts may affect the delivered display."],
   ["signatures", "Signatures", "Mail", "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target."],
   ["mail-keyboard", "Mail list keyboard navigation", "Mail", "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus."],
   ["attachment-downloads", "Attachment downloads", "Mail", "Preview, Open and Save share downloads. Complete files up to 32 MiB can be reused for five minutes while Morrow is open; larger files remain on demand. Save asks for a location first. Attachment transfers show progress and individual Cancel controls; closing Preview keeps another Save or Open running. Downloads allow 64 MiB per file and 128 MiB per ZIP, with existing provider limits. Changed identities stop reuse; reopen legacy Gmail selections. Bot access remains metadata only."],
@@ -9832,7 +9833,7 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
   assert.strictEqual(result.status, 0, "Account/calendar/attachment fixture failed");
   const liveness = spawnSync(process.execPath, [path.join(root, "scripts/check-account-liveness.js")], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(liveness.status, 0, "Account liveness fixture failed");
-  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js", "check-gmail-mail-api.js"]) {
+  for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js", "check-gmail-mail-api.js", "check-sender-names.js"]) {
     const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
     assert.strictEqual(fixture.status, 0, name + " failed");
   }

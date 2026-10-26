@@ -161,7 +161,7 @@ async function hostRoundTrips() {
     db.insertAccount({ id: account.id, email: account.email, username: account.email, profile: "gmail", createdAt: Date.now(),
       imapHost: "imap.example.com", imapPort: 993, imapTls: true, smtpHost: "smtp.example.com", smtpPort: 587, smtpTls: true });
     secrets.setPassword(account.id, "fixture");
-    db.replaceFolders(account.id, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }, { path: "Drafts", name: "Drafts", wellKnown: "drafts" }], "/");
+    db.replaceFolders(account.id, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }, { path: "Drafts", name: "Drafts", wellKnown: "drafts" }, { path: "Sent", name: "Sent", wellKnown: "sentitems" }], "/");
     settings.answer("emailBrain:saveComposeSettings", [prefs]);
     settings.answer("config:setTheme", ["dark"]);
     assert.deepEqual(settings.answer("emailBrain:getComposeSettings", []), prefs, "ordinary settings writes retain Brain defaults");
@@ -227,6 +227,55 @@ async function hostRoundTrips() {
     const before = settings.answer("emailBrain:getComposeSettings", []);
     assert.throws(() => settings.answer("emailBrain:saveComposeSettings", [{ ccByDomain: { "broken": [] } }]));
     assert.deepEqual(settings.answer("emailBrain:getComposeSettings", []), before);
+
+    // Real MIME + production draft/queue paths. Every transport below remains
+    // synthetic: raw bytes are parsed locally and no mailbox is contacted.
+    const { simpleParser } = require("mailparser");
+    const name = '陳美玲, "Morrow"';
+    const namedPrefs = structuredClone(prefs);
+    namedPrefs.accounts.aliases.senderNames = { "leo@hkbscl.com": name };
+    settings.answer("emailBrain:saveComposeSettings", [namedPrefs]);
+    provider.listSendAs = async () => [
+      { email: account.email, name: "Gmail Primary", verified: true, source: "gmail", isPrimary: true },
+      { email: "leo@hkbscl.com", name: "Gmail Business", verified: true, source: "gmail", isDefault: true },
+    ];
+    const namedContext = await request("mail:getComposeContext", { accountId: account.id, refresh: true });
+    assert.equal(namedContext.fromDisplayName, name);
+    const namedPayload = { ...payload, fromDisplayName: name };
+    const namedDraft = await request("mail:upsertDraft", namedPayload);
+    const namedRow = db.messageById(namedDraft.emailId);
+    assert.equal(namedRow.from_display_name, name);
+    const draftMime = await simpleParser(Buffer.from(appended.at(-1)));
+    assert.equal(draftMime.from.value[0].name, name);
+    assert.equal(draftMime.from.value[0].address, "leo@hkbscl.com");
+    const opened = (await request("mail:openEmail", { emailId: namedDraft.emailId, full: true })).email;
+    assert.equal(opened.fromDisplayName, name);
+    const queued = await request("mail:scheduleSend", { ...namedPayload, sendAt: new Date(Date.now() + 60000).toISOString() });
+    namedPrefs.accounts.aliases.senderNames["leo@hkbscl.com"] = "Changed later";
+    settings.answer("emailBrain:saveComposeSettings", [namedPrefs]);
+    const savedText = await request("mail:upsertDraft", { ...namedPayload, emailId: namedDraft.emailId, draftRevision: opened.draftRevision, body: "<p>Edited text</p>" });
+    assert.equal(db.messageById(savedText.emailId).from_display_name, name, "editing text retains the selected snapshot");
+    db.setScheduledSendAt(queued.id, Date.now() - 1000); await engine.pumpScheduled();
+    assert.deepEqual(sent.at(-1).from, { address: "leo@hkbscl.com", name });
+    const sentMime = await simpleParser(await remote.buildRaw(sent.at(-1)));
+    assert.equal(sentMime.from.value[0].name, name);
+    const cachedSent = db.selectMessages({ accountId: account.id, folderId: "Sent" });
+    assert.ok(cachedSent.some(row => row.from_display_name === name));
+    const recovering = await request("mail:scheduleSend", { ...namedPayload, sendAt: new Date(Date.now() + 60000).toISOString() });
+    const recovered = await request("mail:editScheduled", { id: recovering.id });
+    assert.equal(db.messageById(recovered.emailId).from_display_name, name);
+    const count = sent.length;
+    for (const channel of ["mail:upsertDraft", "mail:scheduleSend", "mail:send"]) {
+      const invalid = await engine.answer(channel, [{ ...namedPayload, fromDisplayName: "Bad\r\nBcc: intruder@example.com", sendAt: new Date(Date.now() + 60000).toISOString() }]);
+      assert.equal(invalid.success, false); assert.equal(invalid.error.code, "invalid_from");
+    }
+    assert.equal(sent.length, count);
+    await request("mail:send", { ...namedPayload, fromDisplayName: "" });
+    assert.equal(sent.at(-1).from, "leo@hkbscl.com", "address-only overrides do not inherit a name");
+    db.insertMessage({ id: "legacy-named", accountId: account.id, folderPath: "Drafts", isDraft: true,
+      from: '"Legacy, Name" <leo@hkbscl.com>', bodyComplete: true, textBody: "Legacy", date: new Date().toISOString(), listSortTs: Date.now() });
+    assert.equal((await request("mail:openEmail", { emailId: "legacy-named", full: true })).email.fromDisplayName, "Legacy, Name");
+    console.log("sender-names-host-ok: MIME Unicode/quotes, draft resume/edit, scheduled snapshots/recovery, Sent and injection gates");
   } finally {
     Object.assign(remote, saved); sidecar.gmailSendAsToken = savedToken; provider.listSendAs = savedList;
     secrets.deletePassword(account.id); db.close();
@@ -327,6 +376,30 @@ async function rendererFlows() {
   assert.equal(get("compose-bcc").value, "logs@gmail.com");
   assert.match(get("compose-from-note").textContent, /CC domain: project\.example\./);
   assert.match(get("compose-from-note").textContent, /Signature domain: gmail\.com\./);
+  ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
+  ui.run(`
+    fixtureAccount = {...fixtureAccount, sendAs:[
+      {email:'leo@gmail.com',name:'Gmail Owner',source:'gmail',verified:true},
+      {email:'leo@hkbscl.com',name:'Business',source:'gmail',verified:true},
+      {email:'leo@second.example',name:'Second',source:'gmail',verified:true,isDefault:true}]};
+    fixturePrefs = {...fixturePrefs, accounts:{...fixturePrefs.accounts,aliases:{...fixturePrefs.accounts.aliases,
+      senderNames:{'leo@hkbscl.com':'Morrow Business','leo@second.example':'Morrow Second'}}}};
+  `);
+  await ui.run("openCompose()");
+  assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Morrow Second");
+  ui.run("fixturePrefs.accounts.aliases.senderNames['leo@second.example']='Newer default'");
+  assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Morrow Second", "an open composition retains its previewed name");
+  ui.run("requestSendNowPreview()");
+  assert.equal(get("compose-preview-from").textContent, "Morrow Second <leo@second.example>");
+  ui.run("cancelComposePreview()");
+  get("compose-from").value = "leo@gmail.com"; ui.run("changeComposeFrom()");
+  assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Gmail Owner");
+  get("compose-from").value = "leo@hkbscl.com"; ui.run("changeComposeFrom()");
+  assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Morrow Business");
+  ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
+  await ui.run("openCompose({draftId:'saved',fromAddress:'leo@hkbscl.com',fromDisplayName:'Saved draft name'})");
+  assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Saved draft name");
+  assert.match(get("compose-from-note").textContent, /Recipients see: Saved draft name <leo@hkbscl.com>/);
   ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
   ui.run("failed=true");
   await ui.run("openCompose()"); get("compose-to").value = "client@client.example";

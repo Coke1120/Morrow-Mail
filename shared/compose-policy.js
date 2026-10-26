@@ -29,6 +29,20 @@
 
   function emptySettings() { return { ccByDomain: {}, bccByDomain: {}, accounts: {} }; }
 
+  function displayName(value) {
+    if (typeof value !== "string" || value.length > 200 || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value)) {
+      throw new Error("Use a sender name of at most 200 characters, without line breaks or control characters.");
+    }
+    return value.trim();
+  }
+
+  function providerName(value) {
+    try { return displayName(value || ""); } catch { return ""; }
+  }
+
+  // Plain-text preview only. MIME quoting/encoding belongs to MailComposer.
+  function senderPreview(email, name) { return name ? name + " <" + email + ">" : email; }
+
   function normalizeAddressMap(source, label) {
     const entries = Object.entries(source || {});
     if (entries.length > 100) throw new Error(`Use at most 100 ${label} domains.`);
@@ -67,6 +81,18 @@
       const defaultDomain = value.defaultDomain ? domain(value.defaultDomain) : "";
       if ((value.preferredFromAddress && !preferred) || (value.defaultDomain && !defaultDomain)) throw new Error("Enter a valid preferred From address and default CC domain.");
       result.accounts[id] = { aliases: mapped, preferredFromAddress: preferred, defaultDomain };
+      if (value.senderNames != null) {
+        if (typeof value.senderNames !== "object" || Array.isArray(value.senderNames)) throw new Error("Expected sender names by exact email address.");
+        const entries = Object.entries(value.senderNames);
+        if (entries.length > 200) throw new Error("Use at most 200 sender names per mailbox.");
+        const names = {};
+        for (const [key, name] of entries) {
+          const email = address(key);
+          if (!email || email !== key.trim().toLowerCase() || Object.hasOwn(names, email)) throw new Error("Each sender name needs a unique exact email address.");
+          names[email] = displayName(name);
+        }
+        result.accounts[id].senderNames = names;
+      }
     }
     return result;
   }
@@ -89,7 +115,17 @@
     for (const item of configured) {
       if (!rows.has(item.address)) rows.set(item.address, { email: item.address, source: "configured", verified: false });
     }
-    return [...rows.values()];
+    const primaryRow = rows.get(primary);
+    const primaryName = primaryRow?.source === "gmail" ? providerName(primaryRow.name) : providerName(account.senderName || account.display_name || account.name);
+    return [...rows.values()].map((row) => {
+      const ownName = providerName(row.name);
+      const defaultName = row.source === "gmail" ? (ownName || primaryName) : (ownName || (row.email === primary ? primaryName : ""));
+      const overridden = Object.hasOwn(prefs.senderNames || {}, row.email);
+      return { ...row, isPrimary: row.email === primary, defaultName,
+        displayName: overridden ? displayName(prefs.senderNames[row.email]) : defaultName,
+        nameSource: overridden ? "morrow" : row.source === "gmail" ? "gmail" : defaultName ? "account" : "address",
+        nameOverridden: overridden };
+    });
   }
 
   function preferredFrom(account, settings) {
@@ -136,7 +172,7 @@
     const ownFrom = addresses(message && message.from).find((email) => mine.has(email));
     const fromAddress = address(explicitFrom) || received || ownFrom || preferredFrom(account, settings);
     const defaults = recipientDefaults(fromAddress, account, settings, kind);
-    return { fromAddress, receivedAddress: received, domain: defaults.ccDomain, policyDomain: defaults.policyDomain,
+    return { fromAddress, fromDisplayName: rows.find((row) => row.email === fromAddress)?.displayName || "", receivedAddress: received, domain: defaults.ccDomain, policyDomain: defaults.policyDomain,
       sendAs: rows, selfAddresses: [...mine], defaultCc: defaults.cc, defaultBcc: defaults.bcc,
       fallback: !!message && !received && !ownFrom && !explicitFrom };
   }
@@ -182,7 +218,7 @@
     return keys;
   }
 
-  return { address, addresses, domain, emptySettings, normalizeSettings, accountSettings, identities, preferredFrom,
+  return { address, addresses, domain, displayName, senderPreview, emptySettings, normalizeSettings, accountSettings, identities, preferredFrom,
     policyDomain, ccDomain, recipientDefaults, resolve, seedRecipients, openRecipientSeeds, applyRecipientSeeds,
     normalizeDomainKeys };
 });

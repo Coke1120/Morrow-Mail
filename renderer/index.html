@@ -552,6 +552,7 @@
           <p id="cli-unavailable"><strong>Unavailable to bots:</strong> attachment upload/attach/download, mailbox draft create/edit/delete, full thread retrieval, dedicated reply-all/forward, read/unread changes, move/archive/delete, and calendar actions. The desktop app has additional actions; they are not bot commands.</p>
           <p id="cli-attachment-transfers">Desktop Preview, Open, Save and Cancel use the app's attachment transfers panel. These controls do not add bot commands or file-byte access to <code>mail.attachment.get</code>.</p>
           <p id="cli-provider-semantics"><code>bridge.describe</code> reports whether granted operations may contact providers: <code>providerCalls</code> is true when <code>mail.send</code> is available. Cached reads stay local. This is not a per-request network count: send replay/join or pre-submit denial may still involve From lookup or OAuth refresh. Receipts describe mail-provider submission outcomes and replay status, not absence of provider traffic.</p>
+          <p id="cli-sender-names"><code>mail.send</code> uses the selected identity's Morrow display name from Settings → Compose, including Gmail names when discovered. Optional <code>fromAddress</code> selects an authorized exact address; the bridge has no display-name parameter. A name override does not grant send-as permission. Changing Settings does not resubmit a matching request ID.</p>
         </section>
         <details class="cli-guide" id="cli-connection">
           <summary>Connect another device with Tailscale</summary>
@@ -1202,7 +1203,11 @@
               <textarea id="brain-compose-bcc" rows="4" placeholder="@example.org = records@example.org, audit@example.com" spellcheck="false" disabled></textarea>
               <label for="brain-compose-account">Mailbox for alias settings</label>
               <select id="brain-compose-account" disabled></select>
+              <h4>Sender identities</h4>
+              <p class="hint">Names below are used only by Morrow. Gmail names are the default when discovered; refreshing addresses keeps your Morrow overrides. This does not change Gmail settings or list every domain or plus address.</p>
               <p id="brain-compose-identities" class="hint"></p>
+              <div id="brain-compose-senders" aria-label="Sender identities"></div>
+              <p class="hint">Edit a name and save compose defaults. Clear the name for address-only sending, or use the default name to remove an override. Changes apply to future compositions. Saved drafts and scheduled mail keep their selected name; switching From selects that identity's current name. Your provider or the recipient's contacts may change the final display.</p>
               <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
               <textarea id="brain-compose-aliases" rows="3" placeholder="ada@example.com&#10;ada@example.org = example.com" spellcheck="false" disabled></textarea>
               <p class="hint">Add only addresses belonging to this mailbox. Gmail must verify send-as aliases; Outlook needs send-as permission. Your SMTP provider may restrict the From address.</p>
@@ -1544,6 +1549,7 @@
         <h2 id="compose-preview-title">Preview send</h2>
         <p id="compose-preview-when" class="hint" hidden></p>
         <dl class="preview-meta">
+          <div class="preview-row"><dt>From</dt><dd id="compose-preview-from"></dd></div>
           <div class="preview-row"><dt>To</dt><dd id="compose-preview-to"></dd></div>
           <div class="preview-row" id="compose-preview-cc-row" hidden><dt>Cc</dt><dd id="compose-preview-cc"></dd></div>
           <div class="preview-row" id="compose-preview-bcc-row" hidden><dt>Bcc</dt><dd id="compose-preview-bcc"></dd></div>
