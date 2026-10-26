@@ -389,6 +389,7 @@ async function rendererFlows() {
   assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Morrow Second");
   ui.run("fixturePrefs.accounts.aliases.senderNames['leo@second.example']='Newer default'");
   assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Morrow Second", "an open composition retains its previewed name");
+  get("compose-to").value = "client@client.example";
   ui.run("requestSendNowPreview()");
   assert.equal(get("compose-preview-from").textContent, "Morrow Second <leo@second.example>");
   ui.run("cancelComposePreview()");
@@ -419,5 +420,5 @@ function brainLines() {
 }
 
 async function run() { decisions(); brainLines(); await hostRoundTrips(); await rendererFlows(); console.log("compose-identity-ok"); }
-module.exports = { run };
+module.exports = { run, rendererFlows };
 if (require.main === module) run().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -227,9 +227,17 @@ async function run() {
     assert.ok(service.messages.get('old-draft').labelIds.includes('DRAFT')&&!service.messages.get('old-draft').labelIds.includes('TRASH'),'unverified original draft is retained');
     console.log('gmail-engine-ok: save before legacy draft adoption, repeated Save and discard; earlier unmapped server draft is retained');
 
-    const params={accountId:'gmail',to:'to@fixture.invalid',cc:'cc@fixture.invalid',bcc:'hidden@fixture.invalid',subject:'Synthetic reply',body:'<p>Synthetic draft</p>',inReplyTo:'<incoming@fixture.invalid>',references:['<incoming@fixture.invalid>']};
+    const senderName='Gmail 團隊, "Morrow"';
+    db.saveSendAs('gmail',{email:'owner@fixture.invalid',updatedAt:Date.now(),identities:[
+      {email:'owner@fixture.invalid',name:senderName,source:'gmail',isPrimary:true,isDefault:true,verified:true}]});
+    const from=success(await answer('mail:getComposeContext',{accountId:'gmail'}));
+    assert.equal(from.fromDisplayName,senderName);
+    const params={accountId:'gmail',fromAddress:from.fromAddress,fromDisplayName:from.fromDisplayName,to:'to@fixture.invalid',cc:'cc@fixture.invalid',bcc:'hidden@fixture.invalid',subject:'Synthetic reply',body:'<p>Synthetic draft</p>',inReplyTo:'<incoming@fixture.invalid>',references:['<incoming@fixture.invalid>']};
     const saved=success(await answer('mail:upsertDraft',params)); assert.equal(saved.remoteSaved,true);
     let raw=service.mime.at(-1).toString(); assert.match(raw,/Bcc: hidden@fixture.invalid/i); assert.match(raw,/In-Reply-To: <incoming@fixture.invalid>/i);
+    let parsedFrom=(await require('mailparser').simpleParser(Buffer.from(raw))).from.value[0];
+    assert.equal(parsedFrom.name,senderName); assert.equal(parsedFrom.address,'owner@fixture.invalid');
+    assert.equal(db.messageById(saved.emailId).from_display_name,senderName);
     const firstUid=db.messageById(saved.emailId).uid;
     const firstProvider=db.messageById(saved.emailId).gmail_id; assert.ok(firstProvider);
     const revised=success(await answer('mail:upsertDraft',{...params,emailId:saved.emailId,draftRevision:saved.draftRevision,body:'<p>Revision two</p>'}));
@@ -243,6 +251,8 @@ async function run() {
     const sent=success(await answer('mail:send',{...params,draftId:saved.emailId,draftRevision:revised.draftRevision}));
     assert.ok(db.messageById(sent.emailId).gmail_id); assert.equal(db.messageById(saved.emailId),null);
     raw=service.mime.at(-1).toString(); assert.match(raw,/Bcc: hidden@fixture.invalid/i); assert.match(raw,/References: <incoming@fixture.invalid>/i);
+    parsedFrom=(await require('mailparser').simpleParser(Buffer.from(raw))).from.value[0];
+    assert.equal(parsedFrom.name,senderName); assert.equal(db.messageById(sent.emailId).from_display_name,senderName);
     const before=service.calls.filter(call=>call.route==='/messages/send').length;
     global.fetch=async(url,options)=>String(url).endsWith('/messages/send') ? (await priorFetch(url,options),Promise.reject(new Error('Synthetic lost acknowledgement'))) : priorFetch(url,options);
     const unknown=await answer('mail:send',params); assert.equal(unknown.error.delivery,'unknown');

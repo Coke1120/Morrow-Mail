@@ -1,6 +1,8 @@
 # Morrow-only sender display names
 
-Status: implemented on a separate draft PR; validation and independent review pending.
+Status: implemented on draft PR #315; full CI passed for the implementation at
+`ff511e389fb1e52489f057def361282110ee2ddf`. Independent functional review and
+the final head's checks remain integration gates.
 
 Previously Settings discovered Gmail's verified Send mail as addresses, including
 their display names, while outgoing MIME used bare email addresses. Add an
@@ -28,3 +30,15 @@ separate. Saved content carries `fromDisplayName` independently of address
 authorization; the nullable SQLite column preserves legacy draft revision proofs.
 Legacy queued mail stays address-only. No new name parameter is exposed to bots,
 and idempotent replay uses the original receipt even after default-name edits.
+
+Validation uses synthetic providers, temporary SQLite, parsed MIME and synthetic
+DOM/IPC. `check-sender-names.js` covers provider defaults, local/blank/reset
+overrides, manual identities, account isolation, stale/concurrent discovery,
+account removal, Settings edits/refresh and Features/CLI consistency.
+`check-compose-identity.js`, `check-gmail-engine.js` and bot authorization checks
+exercise actual draft/send/queue builders, Unicode/commas/quotes, saved-name
+snapshots, address restrictions and idempotent replay. Full checks run through
+`node scripts/check-boot-path.js` in the existing CI environment. The local VM
+also runs the dependency-free DOM/policy/SQL and attachment/Gmail fixtures;
+its full suite stops on missing native/parser dependencies. No native window,
+OAuth grant, live Gmail/SMTP delivery or recipient-contact behavior was tested.
