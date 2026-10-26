@@ -227,6 +227,14 @@ async function uiChecks() {
   assert.equal(calls.filter(c => c.channel === "mail:fetchAttachmentBytes").length, 3, "failed preview can retry without closing the dialog");
   ui.run("clearAttachmentPreview()"); await retryAgain;
   jobs.get(a.requestId).release({ success: true, data: { path: "/synthetic" } }); await a.promise;
+  const oldSave = ui.run(`startAttachmentTask('mail:downloadAttachment',email,[file],'Save')`);
+  ui.context.oldSave = oldSave;
+  ui.run("cancelAttachmentTask(oldSave)");
+  const newSave = ui.run(`startAttachmentTask('mail:downloadAttachment',email,[file],'Save')`);
+  assert.notEqual(newSave.requestId, oldSave.requestId, "immediate retry must not rejoin the cancelled request");
+  await assert.rejects(oldSave.promise, /cancelled/);
+  assert.equal(ui.run("attachmentTasks.size"), 1, "old completion cannot remove the fresh request");
+  jobs.get(newSave.requestId).release({ success: true, data: { path: "/synthetic" } }); await newSave.promise;
   assert.equal(activity.childNodes.length, 0); assert.equal(listeners.size, 0);
   assert.equal(ui.run("attachmentTasks.size"), 0);
   console.log("attachment-ui-ok (real renderer functions, synthetic DOM: repeated actions, progress, preview close, independent Save)");

@@ -7083,7 +7083,8 @@ function cancelAttachmentTask(task) {
 function startAttachmentTask(channel, email, files, label) {
   const zip = channel === "mail:downloadAttachmentsZip", ids = zip ? files.map(file => file.id) : files[0].id;
   const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids]);
-  if (attachmentTasks.has(key)) return attachmentTasks.get(key);
+  const existing = attachmentTasks.get(key);
+  if (existing && !existing.cancelRequested) return existing;
   const task = { requestId: crypto.randomUUID(), viewKey, label, filename: zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
   attachmentTasks.set(key, task);
   const off = typeof api.on === "function" ? api.on("mail:attachmentProgress", value => {
