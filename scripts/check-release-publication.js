@@ -8,7 +8,7 @@ const { prepare, namesFor } = require('./prepare-release-assets');
 const { artifactURL, macZipName } = require('../host/update-manifest');
 const { createManifest } = require('./create-update-manifest');
 const publish = require('./publish-release');
-const version = '0.2.6', sha = 'a'.repeat(40), runId = '123', runAttempt = '1';
+const version = require('../package.json').version, sha = 'a'.repeat(40), runId = '123', runAttempt = '1';
 const missing = () => { const e = Error('not found'); e.status = 404; throw e; };
 function mock({ failUpload = false, corruptDownload = false, existing = false, wrongTag = false } = {}) {
   const calls = [], assets = new Map();
@@ -24,7 +24,7 @@ function mock({ failUpload = false, corruptDownload = false, existing = false, w
     },
     listReleaseAssets() {},
     getReleaseAsset: async args => ({ data: corruptDownload ? Buffer.from('tampered') : assets.get(args.asset_id) }),
-    updateRelease: async args => { calls.push(['promote', args]); return { data: { draft: false, prerelease: false, tag_name: `v${version}`, html_url: 'https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.2.6' } }; },
+    updateRelease: async args => { calls.push(['promote', args]); return { data: { draft: false, prerelease: false, tag_name: `v${version}`, html_url: `https://github.com/Coke1120/Morrow-Mail/releases/tag/v${version}` } }; },
   };
   return { calls, rest: { repos, git: { getRef: async () => ({ data: { object: { type: 'commit', sha: wrongTag ? 'b'.repeat(40) : sha } } }) } },
     paginate: async () => calls.filter(call => call[0] === 'upload').map((call, i) => ({ id: i + 1, name: call[1] })) };
@@ -57,6 +57,11 @@ function mock({ failUpload = false, corruptDownload = false, existing = false, w
     }
     const args = { context: { repo: { owner: 'Coke1120', repo: 'Morrow-Mail' }, sha, eventName: 'push', ref: `refs/tags/v${version}` }, artifactDirectory: staging, version, publicKey, runId, runAttempt };
     const good = mock(); await publish({ ...args, github: good });
+    assert.match(good.calls[0][1].body, /Fixture release notes/);
+    for (const line of require('../shared/changelog').notesFor(version)) assert.ok(good.calls[0][1].body.includes(line));
+    const details = await fs.readFile(path.join(__dirname, '..', 'docs', 'releases', `v${version}.md`), 'utf8')
+      .catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+    if (details) assert.ok(good.calls[0][1].body.includes(details.trim()), 'versioned rollout notes reach the published body');
     assert.match(good.calls[0][1].body, /not Apple Developer ID signed or notarized/);
     assert.match(good.calls[0][1].body, /manual installation through Finder/);
     assert.equal(good.calls[0][0], 'create'); assert.equal(good.calls[0][1].draft, true);

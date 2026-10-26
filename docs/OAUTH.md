@@ -4,7 +4,7 @@ Google login remains **OAuth**. New Google mail connections use **Gmail API**, r
 
 ## Consent and token scopes
 
-This is draft PR #305 behavior, pending review/release. See [implementation coverage and validation limits](GMAIL_API_MIGRATION.md). Requesting fewer scopes does not revoke existing broad grants; Settings shows requested and actual saved granted scopes separately.
+This behavior is included in the v0.2.39 release scope; see [versioned rollout prerequisites](releases/v0.2.39.md). See [implementation coverage and validation limits](GMAIL_API_MIGRATION.md). Requesting fewer scopes does not revoke existing broad grants; Settings shows requested and actual saved granted scopes separately.
 
 | Connection | Requested scopes | Redirect path |
 |------------|------------------|---------------|
@@ -61,7 +61,7 @@ Loopback is `http://localhost:<port>` with the port chosen when the browser open
 Do this in the same Desktop client Morrow-Mail uses. Do not paste the secret into the repo, a PR, or this doc.
 
 1. Review the actual approved scopes against the two Google request sets above. This PR does not change Console settings. Do not remove an existing registration requirement until legacy-account support and verification have been reviewed with Google.
-2. Enable the Gmail API and the Google Calendar API on the project.
+2. Enable the Gmail API on the Desktop client project; additionally enable the Google Calendar API when Calendar is used. This release does not inspect or change those Console settings.
 3. Create an OAuth client of type **Desktop**. Download the JSON (`installed.client_id` and `installed.client_secret`).
 4. Provide it at runtime as `GOOGLE_DESKTOP_OAUTH_JSON`, `MORROW_GOOGLE_OAUTH_JSON`, `MORROW_GOOGLE_OAUTH_FILE`, dev `resources/google-oauth.json` (gitignored), or packaged `process.resourcesPath/google-oauth.json`.
 
@@ -112,6 +112,6 @@ Plan My Week and Meeting Prep call `calendar:list` only when that calendar grant
 
 ## Mock validation and live smoke notes
 
-`npm run check` includes `scripts/check-mail-calendar-consent.js`: real local loopback callbacks with fake provider token/profile responses, memory-only secrets, and a temporary database. It checks one Google dialog, two Microsoft dialogs with separate code exchanges, resource-specific refreshes, no popup for granted features, partial consent, legacy grants, account mismatch, cancellation, storage rollback, and mail sync/calendar availability. It also rejects mixed-resource Microsoft token requests. No live OAuth credentials, Keychain, or mailbox writes are needed.
+`npm run check` includes `scripts/check-mail-calendar-consent.js`: real local loopback callbacks with fake provider token/profile responses, memory-only secrets, and a temporary database. It checks Google mail and its separate optional Calendar grant, two Microsoft dialogs with separate code exchanges, resource-specific refreshes, no popup for granted features, partial consent, legacy grants, account mismatch, cancellation, storage rollback, and mail sync/calendar availability. It also rejects mixed-resource Microsoft token requests. No live OAuth credentials, Keychain, or mailbox writes are needed.
 
 Live smoke checks are pending. With an authorized test account, approve Google mail and the separate optional Calendar dialog, or Microsoft's mail then Graph dialogs, verify mail sync, and open Calendar, organize, Out of Office, and Inbox Rules without another popup. View settings only; this consent change does not authorize a live settings/rules/event write. Repeat Microsoft with personal and work/school accounts under their applicable consent policies, including an admin-required case. Decline Graph or individual Google permissions, verify mail and existing grants remain, then enable a missing feature and retry. Verify mail-only and calendar-only migration preserves cached work. Bot bridge still uses its separate grants. Mocks cannot verify provider registration, verification, or tenant policy.
