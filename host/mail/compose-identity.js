@@ -3,6 +3,8 @@ const settings = require("../settings");
 const policy = require("../../shared/compose-policy");
 const sidecar = require("./sidecar");
 const provider = require("./provider-api");
+const senderHeader = require("./sender-header");
+const lookups = new Map();
 
 function preferences() { return settings.answer("emailBrain:getComposeSettings", []); }
 
@@ -15,7 +17,7 @@ function cacheOf(account) {
 }
 
 function accountIdentity(account, prefs = preferences()) {
-  const view = { id: account.id, email: account.email, sendAs: cacheOf(account).identities };
+  const view = { id: account.id, email: account.email, senderName: account.display_name, sendAs: cacheOf(account).identities };
   const sendAs = policy.identities(view, prefs);
   return { sendAs, preferredFromAddress: policy.preferredFrom(view, prefs) };
 }
@@ -24,6 +26,8 @@ async function refresh(account, force) {
   if (sidecar.providerOf(account) !== "google") return "";
   const cache = cacheOf(account);
   if (!force && Date.now() - cache.updatedAt < 10 * 60 * 1000) return "";
+  const attempt = {};
+  lookups.set(account.id, attempt);
   let timer;
   try {
     const identities = await Promise.race([
@@ -35,14 +39,18 @@ async function refresh(account, force) {
     ]);
     if (!identities) return "Gmail aliases could not be checked. Configure verified send-as addresses in Gmail and add them in Brain, or enable mailbox features to discover them.";
     const current = db.accountById(account.id);
-    if (!current || current.email !== account.email || current.auth_kind !== account.auth_kind || current.profile !== account.profile) {
+    if (lookups.get(account.id) !== attempt || !current || current.email !== account.email || current.auth_kind !== account.auth_kind || current.profile !== account.profile
+      || current.created_at !== account.created_at || current.mail_transport !== account.mail_transport || current.gmail_generation !== account.gmail_generation) {
       throw new Error("The mailbox connection changed. Reopen compose.");
     }
     db.saveSendAs(account.id, { email: account.email, identities, updatedAt: Date.now() });
     return "";
   } catch {
     return "Could not refresh Gmail send-as addresses. Cached and explicitly configured aliases remain available; Gmail must verify the address before sending.";
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    if (lookups.get(account.id) === attempt) lookups.delete(account.id);
+  }
 }
 
 async function context(account, message, kind, explicitFrom, force) {
@@ -50,7 +58,7 @@ async function context(account, message, kind, explicitFrom, force) {
   const current = db.accountById(account.id);
   if (!current) throw new Error("That mailbox is no longer connected.");
   const prefs = preferences();
-  const view = { id: current.id, email: current.email, ...accountIdentity(current, prefs) };
+  const view = { id: current.id, email: current.email, senderName: current.display_name, ...accountIdentity(current, prefs) };
   return { ...policy.resolve(view, message, prefs, kind, explicitFrom), settings: prefs, warning };
 }
 
@@ -65,6 +73,25 @@ function outgoingFrom(account, input) {
   }
   // Preserve the selected identity. SMTP is the authority for Outlook/IMAP send-as.
   return email;
+}
+
+function outgoingIdentity(account, input, name) {
+  const email = outgoingFrom(account, input);
+  const resolved = accountIdentity(account).sendAs.find((row) => row.email === email);
+  return { fromAddress: email, fromDisplayName: name === undefined ? resolved?.displayName || "" : policy.displayName(name) };
+}
+
+function mimeFrom(account, input, name) {
+  const identity = outgoingIdentity(account, input, name);
+  return identity.fromDisplayName ? { address: identity.fromAddress, name: identity.fromDisplayName } : identity.fromAddress;
+}
+
+function savedName(row) {
+  if (typeof row.from_display_name === "string") {
+    try { return policy.displayName(row.from_display_name); } catch { return ""; }
+  }
+  // Legacy/provider drafts retain their original header, not today's Settings.
+  try { return policy.displayName(senderHeader.headerParts(row.from_addr).name); } catch { return ""; }
 }
 
 async function sendingFrom(account, input) {
@@ -83,4 +110,6 @@ async function sendingFrom(account, input) {
   return outgoingFrom(account, input);
 }
 
-module.exports = { preferences, accountIdentity, context, outgoingFrom, sendingFrom };
+module.exports = { preferences, accountIdentity, context, outgoingFrom, outgoingIdentity, mimeFrom, savedName, sendingFrom,
+  savedAddress: senderHeader.savedAddress,
+  invalidate: id => lookups.delete(id) };

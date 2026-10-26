@@ -152,6 +152,8 @@ function restoreRow(row) {
     subject: row.subject,
     snippet: row.snippet,
     from: row.from_addr,
+    fromAddress: row.from_address,
+    fromDisplayName: row.from_display_name,
     to: parse(row.to_json, []),
     cc: parse(row.cc_json, []),
     bcc: parse(row.bcc_json, []),

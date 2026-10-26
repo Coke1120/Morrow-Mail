@@ -112,6 +112,8 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     return { providerId: data.id, providerThreadId: data.threadId, labelIds: labels, rfcMessageId: parsed.messageId || null,
       threadId: root ? `thr:${String(root).replace(/[<>\s]/g, "").slice(0, 180)}` : `gmail:${data.threadId || data.id}`,
       inReplyTo: parsed.inReplyTo || null, subject: presented.subject, from: stringAddresses(parsed.from).join(", "),
+      fromAddress: parsed.from?.value?.[0]?.address || "",
+      fromDisplayName: parsed.from?.value?.[0]?.name || "",
       to: stringAddresses(parsed.to), cc: stringAddresses(parsed.cc), bcc: stringAddresses(parsed.bcc), recipientHeaders: recipientHeaders(headerBytes),
       date: date.toISOString(), listSortTs: date.getTime(), snippet: data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ").slice(0, 180),
       unread: labels.includes("UNREAD"), starred: labels.includes("STARRED"), isDraft: labels.includes("DRAFT"),

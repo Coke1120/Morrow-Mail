@@ -80,7 +80,7 @@ async function run() {
   await ui.run('requestComposeClose()');
   ui.run(`call=async(channel,payload)=>channel==='mail:getComposeContext'
     ? {...window.morrowComposePolicy.resolve(state.accounts[0], null, {ccByDomain:{},accounts:{}}, 'new', payload.fromAddress), settings:{ccByDomain:{},accounts:{}}}
-    : {email:{id:payload.emailId,isDraft:true,accountId:'a',to:['recipient@example.test'],subject:'Saved',textBody:'Saved body',inReplyTo:'source',threadId:'thread'}}`);
+    : {email:{id:payload.emailId,isDraft:true,accountId:'a',fromAddress:state.accounts[0].email,to:['recipient@example.test'],subject:'Saved',textBody:'Saved body',inReplyTo:'source',threadId:'thread'}}`);
   await ui.run(`resumeDraft({id:'saved-id',accountId:'a'})`);
   assert.equal(ui.run('state.draftId'),'saved-id');
   assert.equal(get('compose-body').value,'Saved body');

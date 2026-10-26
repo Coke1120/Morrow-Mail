@@ -1,6 +1,7 @@
 const { Persistence } = require("./persistence");
 const crypto = require("crypto");
 const primaryFolderLib = require("../../shared/primary-mailboxes");
+const senderHeader = require("./sender-header");
 
 let db = null;
 let filePath = "";
@@ -179,6 +180,12 @@ function migrate() {
   }
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "draft_pending")) {
     run("ALTER TABLE messages ADD COLUMN draft_pending INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!all("PRAGMA table_info(messages)").some((row) => row.name === "from_display_name")) {
+    run("ALTER TABLE messages ADD COLUMN from_display_name TEXT");
+  }
+  if (!all("PRAGMA table_info(messages)").some((row) => row.name === "from_address")) {
+    run("ALTER TABLE messages ADD COLUMN from_address TEXT");
   }
   if (!all("PRAGMA table_info(accounts)").some((row) => row.name === "send_as_json")) {
     run("ALTER TABLE accounts ADD COLUMN send_as_json TEXT");
@@ -938,6 +945,8 @@ function applyFolderSync(accountId, folderPath, report) {
         attachmentBit, message.htmlBody || null, message.textBody || null,
         JSON.stringify(attachmentRows), message.bodyComplete ? 1 : 0,
         JSON.stringify(message.recipientHeaders || {}),
+        typeof message.fromDisplayName === "string" ? message.fromDisplayName : null,
+        senderHeader.bareAddress(message.fromAddress) || senderHeader.bareAddress(message.from) || null,
       ];
       if (found) {
         run(
@@ -946,7 +955,7 @@ function applyFolderSync(accountId, folderPath, report) {
             thread_id = ?, rfc_message_id = ?, in_reply_to = ?, subject = ?, snippet = ?,
             from_addr = ?, to_json = ?, cc_json = ?, bcc_json = ?, date_iso = ?, list_sort_ts = ?,
             unread = ?, starred = ?, is_draft = ?, has_attachments = ?, html_body = ?, text_body = ?,
-            attachments_json = ?, body_complete = ?, recipient_headers_json = ?
+            attachments_json = ?, body_complete = ?, recipient_headers_json = ?, from_display_name = ?, from_address = ?
           WHERE id = ?`,
           [message.uid, report.validity, ...fields, id]
         );
@@ -955,8 +964,8 @@ function applyFolderSync(accountId, folderPath, report) {
           `INSERT INTO messages (
             id, account_id, folder_path, uid, uid_validity, thread_id, rfc_message_id, in_reply_to,
             subject, snippet, from_addr, to_json, cc_json, bcc_json, date_iso, list_sort_ts,
-            unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete, recipient_headers_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete, recipient_headers_json, from_display_name, from_address
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             id, accountId, folderPath, message.uid, report.validity,
             ...fields,
@@ -1079,8 +1088,8 @@ function insertMessageRecord(row) {
       `INSERT INTO messages (
         id, account_id, folder_path, uid, uid_validity, thread_id, rfc_message_id, in_reply_to,
         subject, snippet, from_addr, to_json, cc_json, bcc_json, date_iso, list_sort_ts,
-        unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete, recipient_headers_json, draft_pending
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete, recipient_headers_json, draft_pending, from_display_name, from_address
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id, row.accountId, row.folderPath, row.uid || 0, row.uidValidity || 0,
         row.threadId || row.id, row.rfcMessageId || null, row.inReplyTo || null,
@@ -1090,6 +1099,8 @@ function insertMessageRecord(row) {
         row.hasAttachments ? 1 : 0, row.htmlBody || null, row.textBody || null,
         JSON.stringify(row.attachments || []), row.bodyComplete ? 1 : 0,
         JSON.stringify(row.recipientHeaders || {}), row.draftPending ? 1 : 0,
+        typeof row.fromDisplayName === "string" ? row.fromDisplayName : null,
+        senderHeader.bareAddress(row.fromAddress) || senderHeader.bareAddress(row.from) || null,
       ]
     );
     indexText(row.id);
@@ -1104,11 +1115,17 @@ function messageById(id) {
 // changing submitted content; every local save gets a fresh RFC Message-ID.
 function draftRevision(row) {
   if (!row || !row.is_draft) return "";
-  return crypto.createHash("sha256").update(JSON.stringify([
+  const content = [
     row.id, row.account_id, row.folder_path, row.rfc_message_id, row.thread_id,
     row.in_reply_to, row.subject, row.from_addr, row.to_json, row.cc_json, row.bcc_json,
     row.html_body, row.text_body, row.attachments_json, row.date_iso,
-  ])).digest("hex");
+  ];
+  // Enriching legacy sender metadata is not an edit. Its original From header
+  // already participates in the old proof. Include only a different, nonempty
+  // name; null -> empty and equivalent provider-formatted display text retain
+  // the queued proof, including names that are not valid unquoted MIME headers.
+  if (row.from_display_name && !senderHeader.cachedNameMatches(row)) content.push(row.from_display_name);
+  return crypto.createHash("sha256").update(JSON.stringify(content)).digest("hex");
 }
 
 function saveSendAs(accountId, value) {
@@ -1940,7 +1957,9 @@ function applyGmailMessage(accountId, folderPaths, message) {
       if (!found) insertMessageRecord(input);
       else {
         const patch = { uid: input.uid, uid_validity: input.uidValidity, subject: input.subject || "", snippet: input.snippet || found.snippet,
-          from_addr: input.from || "", to_json: JSON.stringify(input.to || []), cc_json: JSON.stringify(input.cc || []), bcc_json: JSON.stringify(input.bcc || []),
+          from_addr: input.from || "", from_display_name: typeof input.fromDisplayName === "string" ? input.fromDisplayName : null,
+          from_address: senderHeader.bareAddress(input.fromAddress) || senderHeader.bareAddress(input.from) || null,
+          to_json: JSON.stringify(input.to || []), cc_json: JSON.stringify(input.cc || []), bcc_json: JSON.stringify(input.bcc || []),
           rfc_message_id: input.rfcMessageId || null, in_reply_to: input.inReplyTo || null,
           date_iso: input.date, list_sort_ts: input.listSortTs, unread: input.unread ? 1 : 0, starred: input.starred ? 1 : 0,
           is_draft: input.isDraft ? 1 : 0, html_body: input.htmlBody || null, text_body: input.textBody || null,

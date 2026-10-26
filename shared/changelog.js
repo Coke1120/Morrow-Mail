@@ -7,7 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
-    "0.2.40": [
+    "0.3.0": [
+      "Settings → Compose previews a Morrow-only sender name for each exact From address. Keep the Gmail default, set a local name, clear it for address-only sending, or reset it.",
+      "Refreshing Gmail identities preserves local name overrides and manually configured aliases. Names change mail sent from Morrow, not Gmail settings or sending permissions.",
+      "Drafts and scheduled mail retain their selected sender name and address. Resume and recovery preserve names with quotes, brackets and Unicode without switching an alias to primary.",
+      "Unchanged legacy drafts still clean up after a confirmed queued send; genuine subsequent name, From or body edits remain saved. Providers or recipient contacts may affect the delivered display.",
       "Preview, Open and Save share attachment downloads and reuse complete files from a bounded in-memory cache while Morrow is open.",
       "Save and Save as ZIP ask for a location before downloading. Cancelling the picker does not start a provider read.",
       "Attachment transfers show request-specific progress and Cancel controls without locking unrelated mail actions. Received bytes appear when available; there is no invented percentage.",

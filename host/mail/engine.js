@@ -282,6 +282,9 @@ function publicAttachment(item) {
 
 function listRow(row) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
+  const sender = row.from_address || row.from_addr || "";
+  const parsedAddress = composePolicy.address(sender);
+  const bareSender = parsedAddress && parsedAddress === sender.trim().toLowerCase() ? parsedAddress : "";
   return {
     id: row.id,
     accountId: row.account_id,
@@ -291,7 +294,7 @@ function listRow(row) {
     folders: [row.folder_path],
     subject: textEncoding.repairMojibake(row.subject || ""),
     snippet: textEncoding.repairMojibake(row.snippet || ""),
-    from: row.from_addr || "",
+    from: row.from_display_name && bareSender ? composePolicy.senderPreview(bareSender, row.from_display_name) : row.from_addr || "",
     to: db.jsonList(row.to_json),
     cc: db.jsonList(row.cc_json),
     bcc: db.jsonList(row.bcc_json),
@@ -326,7 +329,9 @@ function detailOf(row) {
     subject: presented.subject,
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
-    ...(row.is_draft ? { draftRevision: db.draftRevision(row), draftPending: !!row.draft_pending } : {}),
+    fromAddress: composeIdentity.savedAddress(row),
+    ...(row.is_draft ? { draftRevision: db.draftRevision(row), draftPending: !!row.draft_pending,
+      fromDisplayName: composeIdentity.savedName(row) } : {}),
   };
 }
 
@@ -1505,7 +1510,7 @@ async function connectOAuthAccount(providerInput, expectedAccountId, options = {
       });
       if (signed.provider === "google") detachedDrafts = db.enableGmail(id);
     });
-    if (existing) invalidateAttachmentAccount(id);
+    if (existing) { invalidateAttachmentAccount(id); composeIdentity.invalidate(id); }
     oauthCommitted.add(id);
     syncRetryScheduler.clear(id);
     });
@@ -1637,7 +1642,7 @@ async function connectAccount(params) {
       db.setMailTransport(id, "imap");
       db.replaceFolders(id, draft.folders || [], draft.delimiter || "/");
     });
-    if (existing) invalidateAttachmentAccount(id);
+    if (existing) { invalidateAttachmentAccount(id); composeIdentity.invalidate(id); }
   } catch (error) {
     let restored = true;
     if (attempted) {
@@ -1695,6 +1700,7 @@ function invalidateAttachmentAccount(id) {
 async function removeAccount(params) {
   const id = params && (params.accountId || params.id);
   if (!id || !db.accountById(id)) return undefined;
+  composeIdentity.invalidate(id);
   invalidateAttachmentAccount(id);
   secrets.deletePassword(id);
   secrets.deletePassword(`${id}:organize`);
@@ -1864,7 +1870,7 @@ function resolveAttachments(list, account) {
 function mimeOptions(account, params, files) {
   const html = typeof params.body === "string" ? params.body : "";
   return {
-    from: composeIdentity.outgoingFrom(account, params.fromAddress),
+    from: composeIdentity.mimeFrom(account, params.fromAddress, params.fromDisplayName),
     to: addrList(params.to),
     cc: addrList(params.cc),
     bcc: addrList(params.bcc),
@@ -2136,6 +2142,7 @@ async function ensureBody(row, options) {
       has_attachments: localFiles.length > 0 || fetched.hasAttachments ? 1 : 0,
       subject: fetched.subject || row.subject,
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
+      from_address: fetched.fromAddress || row.from_address || null,
     });
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : "incomplete";
     return db.messageById(row.id);
@@ -2900,8 +2907,8 @@ function scheduleSend(params) {
   const input = params || {};
   const account = db.accountById(input.accountId);
   if (!account) return fail("not-found", "Choose an account before scheduling.");
-  let fromAddress;
-  try { fromAddress = composeIdentity.outgoingFrom(account, input.fromAddress); }
+  let fromAddress, fromDisplayName;
+  try { ({ fromAddress, fromDisplayName } = composeIdentity.outgoingIdentity(account, input.fromAddress, input.fromDisplayName)); }
   catch (error) { return fail("invalid_from", error.message); }
   const to = storedAddress(input.to);
   const cc = storedAddress(input.cc);
@@ -2922,6 +2929,7 @@ function scheduleSend(params) {
     subject: presented.subject,
     body: presented.htmlBody || "",
     fromAddress,
+    fromDisplayName,
   };
   if (input.draftId) payload.draftId = input.draftId;
   if (input.emailId) payload.emailId = input.emailId;
@@ -3039,7 +3047,8 @@ function editScheduled(params) {
     id: emailId, accountId: account.id, folderPath: drafts.path,
     threadId: payload.threadId || emailId, inReplyTo: payload.inReplyTo || null,
     rfcMessageId: rfcMessageId(account.email), subject: presented.subject,
-    from: payload.fromAddress || account.email, to: addrList(payload.to), cc: addrList(payload.cc), bcc: addrList(payload.bcc),
+    from: payload.fromAddress || account.email, fromDisplayName: typeof payload.fromDisplayName === "string" ? payload.fromDisplayName : "",
+    to: addrList(payload.to), cc: addrList(payload.cc), bcc: addrList(payload.bcc),
     date: now.toISOString(), listSortTs: now.getTime(), isDraft: true,
     hasAttachments: resolved.meta.length > 0,
     attachments: resolved.meta,
@@ -3096,7 +3105,8 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       rfcMessageId: keptId,
       subject: options.subject,
       snippet: plainFromHtml(options.html).slice(0, 180),
-      from: options.from,
+      from: typeof options.from === "object" ? options.from.address : options.from,
+      fromDisplayName: typeof options.from === "object" ? options.from.name || "" : "",
       to: options.to,
       cc: options.cc,
       bcc: options.bcc,
@@ -3210,7 +3220,12 @@ async function deliver(params, lifecycle) {
   const draftId = params && (params.draftId || params.emailId);
   const proof = draftId && /^[a-f0-9]{64}$/.test(params.draftRevision || "")
     ? { id: draftId, revision: params.draftRevision } : null;
-  try { params = { ...params, fromAddress: await composeIdentity.sendingFrom(account, params.fromAddress) }; }
+  try {
+    // Freeze the name before any provider lookup/queue wait. Only the address
+    // gets revalidated against provider permissions immediately before sending.
+    const identity = composeIdentity.outgoingIdentity(account, params.fromAddress, params.fromDisplayName);
+    params = { ...params, ...identity, fromAddress: await composeIdentity.sendingFrom(account, identity.fromAddress) };
+  }
   catch (error) { return fail("invalid_from", error.message); }
   account = db.accountById(account.id);
   if (!account) return fail("not-found", "That mailbox is no longer connected.");
@@ -3236,7 +3251,7 @@ async function deliver(params, lifecycle) {
         db.insertScheduled({ id: candidateId, accountId: account.id, status: "partial", sendAt: Date.now(), createdAt: Date.now(),
           messageId: next.messageId, receiptJson: JSON.stringify(next), error: deliveryReceipt.summary(next),
           payloadJson: JSON.stringify({ to: params.to, cc: params.cc, bcc: params.bcc, subject: options.subject, body: options.html,
-            fromAddress: params.fromAddress, attachments: resolved.meta, inReplyTo: params.inReplyTo, threadId: params.threadId, references: params.references }) });
+            fromAddress: params.fromAddress, fromDisplayName: params.fromDisplayName, attachments: resolved.meta, inReplyTo: params.inReplyTo, threadId: params.threadId, references: params.references }) });
         recoveryId = candidateId;
         scheduledDelivering.add(candidateId);
       },
@@ -3311,6 +3326,7 @@ async function pumpScheduledAdmitted() {
       try {
         result = await deliver({
           ...payload,
+          fromDisplayName: typeof payload.fromDisplayName === "string" ? payload.fromDisplayName : "",
           accountId: row.account_id,
           subject: presented.subject,
           body: presented.htmlBody || "",
@@ -3710,8 +3726,8 @@ function answer(channel, args, event) {
       return (async () => {
         const account = db.accountById(params && params.accountId);
         if (!account) return fail("not-found", "Choose an account before saving a draft.");
-        let fromAddress;
-        try { fromAddress = composeIdentity.outgoingFrom(account, params.fromAddress); }
+        let fromAddress, fromDisplayName;
+        try { ({ fromAddress, fromDisplayName } = composeIdentity.outgoingIdentity(account, params.fromAddress, params.fromDisplayName)); }
         catch (error) { return fail("invalid_from", error.message); }
         const drafts = db.folderByWellKnown(account.id, "drafts");
         if (!drafts) return fail("not-found", "This account has no Drafts folder.");
@@ -3748,6 +3764,7 @@ function answer(channel, args, event) {
           subject: presented.subject,
           snippet: plainFromHtml(html).slice(0, 180),
           from: fromAddress,
+          fromDisplayName,
           to: addrList(params.to),
           cc: addrList(params.cc),
           bcc: addrList(params.bcc),
@@ -3771,6 +3788,8 @@ function answer(channel, args, event) {
             subject: record.subject,
             snippet: record.snippet,
             from_addr: record.from,
+            from_address: record.from,
+            from_display_name: record.fromDisplayName,
             rfc_message_id: messageId,
             to_json: JSON.stringify(record.to),
             cc_json: JSON.stringify(record.cc),
@@ -3798,7 +3817,7 @@ function answer(channel, args, event) {
             if (!matches()) { warning = "A newer draft revision was saved. This upload was skipped."; return; }
             const password = await secretFor(account);
             const raw = await remote.buildRaw({
-              ...mimeOptions(account, { ...params, subject: presented.subject, body: html }, files),
+              ...mimeOptions(account, { ...params, fromAddress, fromDisplayName, subject: presented.subject, body: html }, files),
               messageId,
               keepBcc: account.mail_transport === "gmail_api",
             });
@@ -3917,6 +3936,7 @@ function noteBotSent(receipt) {
       subject: receipt.subject || "",
       snippet: String(receipt.text || "").slice(0, 180),
       from: receipt.fromAddress || "",
+      fromDisplayName: receipt.fromDisplayName || "",
       to: receipt.to || [],
       cc: receipt.cc || [],
       bcc: receipt.bcc || [],
