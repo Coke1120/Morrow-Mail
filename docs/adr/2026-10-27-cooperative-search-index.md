@@ -56,7 +56,10 @@ added.
 ## Validation boundary
 
 `check-index-opening-control.js` exercises actual module lifecycle guards with a
-held synthetic storage load and fixed DOM objects. The real SQLite fixture
+held synthetic storage load and fixed DOM objects, plus fake-window progress
+throttling, quit cleanup, intentional/genuine failure and late-success guards.
+Initialization resolving after startup quit cannot continue to open the shell.
+The real SQLite fixture
 `check-search-index-rebuild.js` compares all indexed documents/terms against the
 incremental index, checks event-loop heartbeats and admission, malformed markers,
 abort/close and resume, journal failures before batches/final publication, child

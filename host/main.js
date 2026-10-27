@@ -869,6 +869,7 @@ app.whenReady().then(async () => {
   } finally {
     stopIndexProgress();
   }
+  if (bootCancelled) return;
   if (process.env.MORROW_MAIL_SELFTEST === "1") {
     const code = await require("./mail/selftest").run();
     app.exit(code);
