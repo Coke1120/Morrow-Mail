@@ -242,6 +242,15 @@ async function engineContracts() {
   assert.deepEqual(cancel.errors, []);
   assert.equal(cancel.saved.get("fixture"), "new-after-cancel");
 
+  const missingAfterCancel = engineFixture(true);
+  const immediate = missingAfterCancel.context.cancelOAuth();
+  assert.equal(immediate.success, true);
+  assert.deepEqual(missingAfterCancel.errors, []);
+  await flush();
+  assert.equal(missingAfterCancel.errors.length, 1, "missing credentials are still reported after the async scan");
+  assert.match(missingAfterCancel.errors[0].error, /credentials are unavailable/);
+  assert.deepEqual(missingAfterCancel.writes, []);
+
   const unavailable = engineFixture(true);
   const timeout = Object.assign(new Error("secure storage timeout"), { code: "secure_storage_timeout" });
   unavailable.saved.set("fixture", initial);

@@ -8193,6 +8193,9 @@ async function checkProviderApi() {
     const canceledDraft = engine.answer("mail:cancelOAuth", []);
     assert.strictEqual(canceledDraft.success, true);
     assert.strictEqual(canceledDraft.data.canceled, true);
+    // Cancellation acknowledges immediately; credential availability is now an
+    // asynchronous scan. Keep its missing-credential assertion after completion.
+    await new Promise(resolve => setImmediate(resolve));
     assert.ok(db.accountById("oauth-draft"));
     assert.ok(db.accountById("oauth-draft").auth_error);
     assert.ok(db.accountById("named-oauth"));
