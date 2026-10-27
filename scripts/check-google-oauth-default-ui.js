@@ -12,8 +12,8 @@ const manual = { id: "manual", email: "manual@example.invalid", platform: "imap"
 const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
 
 function fixture(t, { failure, googleReady = true } = {}) {
-  const dom = new JSDOM(html), { window } = dom, { document } = window, calls = [];
-  t.after(() => window.close());
+  const dom = new JSDOM(html), { window } = dom, { document } = window, calls = [], timers = new Set();
+  t.after(() => { for (const timer of timers) clearTimeout(timer); window.close(); });
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.showModal = () => { dialog.open = true; };
     dialog.close = () => { if (!dialog.open) return; dialog.open = false; dialog.dispatchEvent(new window.Event("close")); };
@@ -31,7 +31,12 @@ function fixture(t, { failure, googleReady = true } = {}) {
   window.morrowFeaturesCatalog = require("../renderer/features-catalog");
   const ui = renderer({ window, document, navigator: window.navigator, Event: window.Event, Node: window.Node,
     requestAnimationFrame: work => { queueMicrotask(() => work(0)); return 1; },
-    setTimeout: (work, delay) => { const handle = setTimeout(work, delay); handle.unref(); return handle; }, clearTimeout });
+    // Drain frame/task handoffs deterministically; no wall-clock/rendering claim.
+    setTimeout: (work, delay) => {
+      if (!delay) { queueMicrotask(work); return 0; }
+      const handle = setTimeout(() => { timers.delete(handle); work(); }, delay);
+      handle.unref(); timers.add(handle); return handle;
+    }, clearTimeout });
   ui.context.fixtures = { gmail, manual };
   ui.run(`state.accounts = [fixtures.gmail, fixtures.manual]; state.accountId = 'manual'; state.settingsAccountId = 'manual';
     state.oauthStatus = {google: ${googleReady}};
