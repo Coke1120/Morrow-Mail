@@ -58,7 +58,7 @@
         id: "local-search",
         title: "Search on this computer",
         category: "Mail",
-        blurb: "Toolbar search reads subject, from, and body already synced to this computer.",
+        blurb: "Toolbar search reads subject, from, and body already synced to this computer. When the local index needs repair, opening shows preparation progress and works in saved batches, yielding between them. Mail and search become available after verification. Quitting keeps committed progress for the next open. No mail is downloaded by rebuilding. A large individual message or disk call can still cause a pause.",
       },
       {
         id: "schedule-send",

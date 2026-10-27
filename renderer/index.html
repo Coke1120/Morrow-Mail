@@ -182,7 +182,7 @@
           <div id="search-scope" hidden>
             <label class="sr" for="search-account">Search account</label>
             <select id="search-account" aria-label="Search account"></select>
-            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Sync history is set in Settings → Mail &amp; Sync (180 days, 365 days, or All); older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched.</p></details>
+            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Sync history is set in Settings → Mail &amp; Sync (180 days, 365 days, or All); older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched.</p><p id="search-rebuild-help" class="list-filter-note">If the local index needs repair, the opening window shows preparation progress. Mail and search wait for verification; quitting keeps saved batches for the next open. Rebuilding uses downloaded mail and does not fetch mail. Work yields between batches, while a large message or disk call can still cause a pause.</p></details>
           </div>
           <button type="button" class="ghost" id="filter-chip" hidden></button>
           <div id="selection-bar" class="selection-bar" hidden>

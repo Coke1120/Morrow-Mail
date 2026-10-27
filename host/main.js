@@ -11,7 +11,7 @@ const { complete, extractJson, modelIds, listModels } = require("./openai-client
 
 const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels", "host:aiConsentStatus", "host:aiConsentGrant", "host:aiConsentRevoke", "host:chatgptStatus", "host:chatgptStart", "host:chatgptCallback", "host:chatgptCancel", "host:chatgptSignOut", "host:chatgptSelect", "host:chatgptPreferences", "host:chatgptResumeUsage"];
 const { init: initMail, startBackgroundSync } = require("./mail/engine");
-const { startupFailureDialog, startupStatusHtml } = require("./startup-error");
+const { startupFailureDialog, startupStatusHtml, startupIndexProgressScript } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
 
@@ -700,12 +700,16 @@ const quitController = quitScheduled.createQuitController({
   cleanup: async () => {
     try { await require("./bot/server").stop(); } catch { /* the bridge is already stopped */ }
     try { await require("./mail/engine").stopIdle(); } catch { /* mail is not open */ }
+    if (!bootFinished) {
+      try { await require("./mail/db").close(); } catch { /* committed index work remains recoverable */ }
+    }
   },
   platform: process.platform,
   format: scheduledQuitTime,
 });
 
 app.on("before-quit", (event) => {
+  if (!bootFinished && !bootFailed) bootCancelled = true;
   quitController.onBeforeQuit(event);
 });
 
@@ -721,6 +725,7 @@ app.on("window-all-closed", () => {
 });
 
 let bootWindow = null;
+let bootCancelled = false;
 let bootFinished = false;
 let bootFailed = false;
 
@@ -756,7 +761,7 @@ async function presentBootStatus() {
   bootWindow = win;
   win.on("closed", () => {
     if (bootWindow === win) bootWindow = null;
-    if (!bootFinished && !bootFailed) app.quit();
+    if (!bootFinished && !bootFailed) { bootCancelled = true; app.quit(); }
   });
   await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(startupStatusHtml())}`);
   if (!win.isDestroyed()) win.show();
@@ -839,9 +844,21 @@ app.whenReady().then(async () => {
     process.on("unhandledRejection", onBootRejection);
     try { await presentBootStatus(); } catch (error) { console.error(error instanceof Error ? error.message : error); }
   }
+  let lastIndexPaint = -Infinity;
+  const stopIndexProgress = require("./mail/db").subscribeIndexProgress(progress => {
+    const win = bootWindow;
+    if (!interactiveBoot || !win || win.isDestroyed()) return;
+    const now = Date.now();
+    if (progress.phase === "building" && now - lastIndexPaint < 100) return;
+    const script = startupIndexProgressScript(progress);
+    if (!script) return;
+    lastIndexPaint = now;
+    try { Promise.resolve(win.webContents.executeJavaScript(script)).catch(() => {}); } catch { /* window closed */ }
+  });
   try {
     await initMail();
   } catch (error) {
+    if (bootCancelled) return;
     if (!interactiveBoot) {
       console.error(error instanceof Error ? error.stack || error.message : error);
       app.exit(1);
@@ -849,6 +866,8 @@ app.whenReady().then(async () => {
     }
     await presentBootFailure(error);
     return;
+  } finally {
+    stopIndexProgress();
   }
   if (process.env.MORROW_MAIL_SELFTEST === "1") {
     const code = await require("./mail/selftest").run();

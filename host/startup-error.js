@@ -87,10 +87,21 @@ function startupStatusHtml() {
     <span class="page-busy-spin" aria-hidden="true"></span>
     <h1>Opening your mailbox</h1>
     <p>A large mailbox can take a moment. Your mail stays on this computer.</p>
+    <p id="startup-index-progress" hidden></p>
   </div>
 </main>
 </body>
 </html>`;
 }
 
-module.exports = { startupFailureDialog, startupStatusHtml };
+function startupIndexProgressScript(progress) {
+  if (!progress || !["building", "ready"].includes(progress.phase)) return "";
+  const total = Number.isSafeInteger(progress.total) && progress.total >= 0 ? progress.total : 0;
+  const completed = Number.isSafeInteger(progress.completed) ? Math.max(0, Math.min(progress.completed, total)) : 0;
+  const text = progress.phase === "ready" ? "Local search is ready."
+    : completed === total ? "Finishing local search checks…"
+      : `${progress.resumed === true ? "Resuming" : "Preparing"} local search: ${completed} of ${total} saved messages. You can quit and continue next time.`;
+  return `(() => { const node = document.getElementById("startup-index-progress"); if (node) { node.hidden = false; node.textContent = ${JSON.stringify(text)}; } })();`;
+}
+
+module.exports = { startupFailureDialog, startupStatusHtml, startupIndexProgressScript };
