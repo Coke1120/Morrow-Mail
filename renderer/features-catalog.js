@@ -94,7 +94,7 @@
         id: "google-desktop-oauth",
         title: "Bring your own Google OAuth client",
         category: "Accounts",
-        blurb: "Settings → Accounts imports a Google Desktop OAuth client JSON into this computer's app data. That file is used instead of a client bundled with the app. Developer environment variables still override it. Web client JSON is rejected. The client secret is not shown. Clear imported client removes only the imported file. A mailbox connected with another client must be connected again. While the Google consent screen stays in Testing, only test users can connect and refresh tokens expire after about seven days.",
+        blurb: "Settings → Accounts imports a Google Desktop OAuth client JSON into this computer's app data. That file is used instead of a client bundled with the app. Developer environment variables still override it. Web client JSON is rejected. The client secret is not shown. Clear imported client removes only the imported file. Changing clients requires Gmail and separate Calendar reauthorization. Older grants with an unknown client need one-time reauthorization; cached mail and saved credentials stay. Finish or cancel Google sign-in before import or clear; finish the picker before starting Google sign-in. Invalid developer environment overrides must be fixed or removed. While the Google consent screen stays in Testing, only test users can connect and refresh tokens expire after about seven days.",
       },
       {
         id: "multi-account",

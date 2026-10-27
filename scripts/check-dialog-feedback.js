@@ -14,7 +14,8 @@ async function run(){
   assert.match(get('oauth-unavailable').textContent, /Import one in Settings → Accounts/);
   ui.run(`state.googleOauthClient={ready:true,source:'imported',imported:true}; paintGoogleOauthClient();`);
   assert.match(get('google-oauth-client-status').textContent, /your imported Desktop client/);
-  assert.equal(get('google-oauth-clear').disabled, false);
+  assert.equal(get('google-oauth-clear').disabled, true, 'client changes wait for pending sign-in');
+  assert.equal(get('google-oauth-import').disabled, true);
   ui.run(`state.googleOauthClient={ready:true,source:'env',imported:true}; paintGoogleOauthClient();`);
   assert.match(get('google-oauth-client-status').textContent, /developer environment variable/);
   ui.run(`state.googleOauthClient={ready:true,source:'bundled',imported:false}; paintGoogleOauthClient();`);
@@ -27,6 +28,7 @@ async function run(){
   assert.match(get('connect-status').textContent,/Could not finish sign-in.*Fixture consent rejected/);
   assert.equal(get('oauth-microsoft').disabled,false);
   assert.equal(get('oauth-google').disabled,true);
+  assert.equal(get('google-oauth-import').disabled,false);
   ui.run(`calls.length=0; call=async(channel)=>{calls.push(channel); if(channel==='mail:addAccount') return {id:'box',email:'ada@example.com'}; return [];};
     loadAccounts=()=>new Promise((resolve)=>setTimeout(resolve,40));`);
   const connected=ui.run(`connectOAuth('microsoft')`);

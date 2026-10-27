@@ -23,9 +23,11 @@ You do not register a fixed port. A Desktop client uses a loopback address. Morr
 - That file is used instead of a client bundled with the installer or left in a development checkout. Updating the app does not remove it.
 - A developer environment variable (`MORROW_GOOGLE_OAUTH_FILE`, `MORROW_GOOGLE_OAUTH_JSON`, or `GOOGLE_DESKTOP_OAUTH_JSON`) still wins over the imported file.
 - **Clear imported client** deletes only the imported file. Your mailbox, the bundled client, and any environment variable stay.
-- A mailbox already connected with a different client must be connected again. Its saved refresh token belongs to the client that issued it. Import does not move that token.
+- After changing clients, reauthorize Gmail and Google Calendar separately. Settings reports reconnect needed, and Enable Google Calendar requests a new Calendar grant instead of reusing one from another client. Import does not move refresh tokens between clients.
+- Older saved Google grants without a recorded client identity need one-time reauthorization, even if you have kept the same client. This preserves your saved credentials, account id, cached mail and local drafts until successful consent replaces the relevant grant. Declined or incomplete Calendar consent leaves the old credential saved, without presenting it as connected to the new client.
+- Finish or cancel Google sign-in before importing or clearing a client. Finish or cancel the file picker before starting another Google sign-in. Cancellation may take time while an in-flight exchange settles; retry after it finishes.
 - Google OAuth becomes ready or not ready as soon as you import or clear. You do not need to restart Morrow Mail.
-- Settings says whether the client in use came from an environment variable, your import, or a bundled file. It does not show the client secret.
+- Settings says whether the client in use came from an environment variable, your import, or a bundled file. If an environment override is invalid, fix or remove it; importing or clearing a client cannot override it. Settings does not show the client secret.
 
 ## Testing mode
 

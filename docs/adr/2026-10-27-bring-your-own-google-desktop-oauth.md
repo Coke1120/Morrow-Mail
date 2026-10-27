@@ -15,3 +15,5 @@ Everyone else imports their own Desktop client JSON in Settings → Accounts. Th
 The client secret is not shown in the UI and is not returned over IPC. A mailbox connected with a different client must be connected again; import does not move that refresh token. Web client JSON is rejected. Clear deletes only the imported file. `oauthReady().google` follows the file on the next read, so a restart is unnecessary.
 
 This does not add an app-password path, drop the Gmail API, change requested Google scopes, or change the Microsoft public client id.
+
+Grant binding and safe runtime switching are specified in [Bind Google grants to their Desktop client](2026-10-27-google-client-grant-binding.md). Different-client and older unknown-client grants require Gmail and separate Calendar reauthorization. Import/clear cannot overlap Google authorization, and invalid environment overrides are reported as environment errors. Credentials and cached work are retained.

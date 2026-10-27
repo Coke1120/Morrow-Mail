@@ -51,6 +51,7 @@ const syntax = [
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
   "scripts/check-mail-calendar-consent.js",
+  "scripts/check-google-client-switching.js",
   "scripts/check-oauth-graph-regressions.js",
   "scripts/check-mail-reader.js",
   "scripts/check-mail-review-regressions.js",
@@ -132,7 +133,7 @@ for (const file of syntax) {
 }
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
-for (const name of ["check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js"]) {
+for (const name of ["check-google-client-switching.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js"]) {
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(fixture.status, 0, name + " failed");
 }
@@ -4008,7 +4009,7 @@ const featureSeed = [
   ["imap-recovery", "IMAP connection recovery", "Mail", "Connection timeouts during IMAP sync use the usual connection-error and retry status. Inbox push falls back to polling and reconnects with backoff."],
   ["overnight-body-fill", "Full message bodies", "Mail", "Mail → Bodies shows per-mailbox body activity separately from list sync. Message requests and the listed page download as needed. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Activity has no whole-mailbox total or percentage. IMAP messages can remain incomplete at the 3 MiB source limit; Gmail API handles MIME parts within its response limit; attachment files stay on demand. Gmail decodes legacy mail encodings including cp932 and UTF-7, and retains ISO-2022-JP decoding. Malformed MIME or an unknown charset leaves available content with an incomplete-body warning and does not stop other messages from syncing."],
   ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
-  ["google-desktop-oauth", "Bring your own Google OAuth client", "Accounts", "Settings → Accounts imports a Google Desktop OAuth client JSON into this computer's app data. That file is used instead of a client bundled with the app. Developer environment variables still override it. Web client JSON is rejected. The client secret is not shown. Clear imported client removes only the imported file. A mailbox connected with another client must be connected again. While the Google consent screen stays in Testing, only test users can connect and refresh tokens expire after about seven days."],
+  ["google-desktop-oauth", "Bring your own Google OAuth client", "Accounts", "Settings → Accounts imports a Google Desktop OAuth client JSON into this computer's app data. That file is used instead of a client bundled with the app. Developer environment variables still override it. Web client JSON is rejected. The client secret is not shown. Clear imported client removes only the imported file. Changing clients requires Gmail and separate Calendar reauthorization. Older grants with an unknown client need one-time reauthorization; cached mail and saved credentials stay. Finish or cancel Google sign-in before import or clear; finish the picker before starting Google sign-in. Invalid developer environment overrides must be fixed or removed. While the Google consent screen stays in Testing, only test users can connect and refresh tokens expire after about seven days."],
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again. Gmail Delete moves to Trash; deleting again keeps mail there. Conversation Trash acts once per Gmail message across label copies, with one membership snapshot for Undo. Verified copies leave their old labels after Trash; unrelated cached mail and unsaved edits stay. Archive removes Inbox membership even from All Mail or a search copy. Gmail draft cleanup moves old remote copies to Trash. Microsoft and other IMAP deletion behavior is unchanged. Google login remains OAuth. New Google connections use Gmail API polling/history with gmail.modify and gmail.settings.basic; Calendar is separate. Existing Google OAuth accounts migrate after review in Accounts. Cached mail and drafts stay; uncertain actions must be resolved first. A narrower request does not revoke older broad grants; Accounts shows actual saved scopes. Gmail API cannot move mail into Sent or Drafts; use Send or Save draft."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; CLI explains capabilities, possible provider calls, Tailscale setup, and revocation limits."],
   ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Incomplete Google Calendar reauthorization preserves the working Calendar connection. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions. Opening an all-day event or switching between all-day and timed input keeps the dates. All-day ends are exclusive. An unchanged timed → all-day → timed round trip in the same editor restores the original dates and hours. Edited all-day dates or an event opened as all-day use 09:00/10:00 defaults when switched to timed."],
@@ -7282,8 +7283,10 @@ async function checkProviderApi() {
     assert.ok(microsoftRefresh.grantedScopes.includes("Calendars.ReadWrite"));
     assert.ok(seen[1].body.includes("Calendars.ReadWrite"));
     const freshCount = seen.length;
+    process.env.MORROW_GOOGLE_OAUTH_JSON = JSON.stringify({ installed: { client_id: "check-provider.apps.googleusercontent.com", client_secret: "fixture-only" } });
     const fresh = await oauthMod.accessTokenFor({ profile: "gmail" }, JSON.stringify({
       provider: "google",
+      googleClientId: "check-provider.apps.googleusercontent.com",
       refreshToken: "refresh-gmail",
       accessToken: "still-good",
       expiresAt: Date.now() + 5 * 60 * 1000,
@@ -7291,6 +7294,7 @@ async function checkProviderApi() {
     }));
     assert.strictEqual(fresh, "still-good");
     assert.strictEqual(seen.length, freshCount);
+    delete process.env.MORROW_GOOGLE_OAUTH_JSON;
     if (!fs.existsSync(bundled)) {
       await assert.rejects(
         () => oauthMod.accessTokenFor({ profile: "gmail" }, JSON.stringify({
@@ -7844,6 +7848,7 @@ async function checkProviderApi() {
 
     secrets.setPassword("gmail-live:organize", JSON.stringify({
       provider: "google",
+      googleClientId: "check-provider.apps.googleusercontent.com",
       purpose: "organize",
       refreshToken: "refresh-gmail",
       accessToken: "access-gmail",
@@ -8240,6 +8245,7 @@ async function checkProviderApi() {
     assert.strictEqual(secrets.getPassword("gmail-live"), keptMailbox);
     const granted = sidecar.rememberVacation(db.accountById("gmail-live"), {
       provider: "google",
+      googleClientId: "check-provider.apps.googleusercontent.com",
       email: "ada.live@example.com",
       refreshToken: "vacation-refresh",
       grantedScopes: oauthConfig.VACATION_SCOPES.google,
@@ -9537,6 +9543,7 @@ async function checkInboxRules() {
     });
     secrets.setPassword("rules-gmail:rules", JSON.stringify({
       provider: "google",
+      googleClientId: "inbox-rules.apps.googleusercontent.com",
       purpose: "rules",
       refreshToken: "refresh-rules",
       accessToken: "access-rules",
