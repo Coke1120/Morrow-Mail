@@ -32,10 +32,23 @@ through the existing in-memory 200-line Debug log. The monitor timer is unref'd;
 there is no separate timing file or remote telemetry. Other existing Debug log
 entries can retain account/folder context, so still review support copies.
 
-The synchronous macOS `security` bridge is measured as `keychain.wait` but remains
-synchronous. Async credential migration needs a separate change covering every
-caller's return, concurrency and token-invalidation semantics. This phase adds no
-credential cache and changes no Keychain arguments, errors or security behavior.
+The macOS `security` bridge is measured as `keychain.wait`. Routine mail credential
+reads and startup/missing-credential checks now use an asynchronous child with a
+30-second deadline including queue time, at most four live children, and a 1 MiB
+stdout limit. Same-account concurrent reads share pending work; no completed
+credential cache is added. A caller can abandon its read without cancelling a
+remaining consumer. In-app writes/deletes invalidate pending reads and opaque
+revisions protect post-await account/refresh checks. Errors from the subprocess
+runner use fixed messages rather than child output or command arguments.
+
+Compatibility reads in feature/status gates and existing synchronous reconnect,
+write, delete and compensation blocks remain synchronous, now with a 30-second
+limit per `security` command and `SIGKILL` on timeout. Several commands can take
+longer in total. Windows DPAPI is unchanged. This is a partial API migration,
+not a claim that every credential path or native Mac freeze has been fixed.
+See [coverage, concurrency and validation limits](adr/2026-10-27-keychain-read-deadlines.md).
+The [search-index responsiveness plan](SEARCH_INDEX_RESPONSIVENESS_PLAN.md) is
+separate proposed work; no rebuild/storage rewrite is implemented here.
 
 ## Data-path changes
 

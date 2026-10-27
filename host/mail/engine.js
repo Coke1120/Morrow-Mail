@@ -15,9 +15,7 @@ const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
 
-const secrets = process.env.MORROW_MAIL_SECRETS === "memory"
-  ? require("./memory-secrets")
-  : require("./secrets");
+const secrets = require("./secrets");
 const oauth = require("./oauth");
 const oauthConfig = require("./oauth-config");
 const sidecar = require("./sidecar");
@@ -133,7 +131,7 @@ async function initializeMail() {
   await db.open(dataFile());
   db.recoverScheduled();
   ready = true;
-  markMissingOAuthSecrets();
+  await markMissingOAuthSecrets();
   actions.resume();
 }
 
@@ -469,7 +467,18 @@ function cachedList(params) {
 }
 
 async function secretFor(account) {
-  const stored = secrets.getPassword(account.id);
+  account = bindAccount(account);
+  const revision = secrets.revision(account.id);
+  function assertCurrent() {
+    assertAccountCurrent(account);
+    const current = db.accountById(account.id);
+    if (current.auth_kind !== account.auth_kind || current.mail_transport !== account.mail_transport
+        || secrets.revision(account.id) !== revision) {
+      throw Object.assign(new Error("This mailbox connection changed. Try again with the current connection."), { code: "conflict" });
+    }
+  }
+  const stored = await secrets.getPasswordAsync(account.id);
+  assertCurrent();
   if (!stored) {
     const error = new Error("The password for this account is not in the keychain. Connect the account again.");
     error.code = "auth";
@@ -481,10 +490,16 @@ async function secretFor(account) {
     if (!oauthConfig.hasPurposeScopes(grant.grantedScopes || "", "google", "imap")) throw Object.assign(new Error("Gmail API mail permission is missing. Reconnect Google; cached work was retained."), { code: "scope_missing" });
   }
   const result = await oauth.accessTokenFor(account, stored, "imap");
-  if (secrets.getPassword(account.id) !== stored) {
+  assertCurrent();
+  const latest = await secrets.getPasswordAsync(account.id);
+  assertCurrent();
+  if (latest !== stored) {
     const error = new Error("This mailbox connection changed. Try again with the current connection.");
     error.code = "conflict";
     throw error;
+  }
+  if (oauthConfig.providerKey(account.profile) === "google") {
+    oauthConfig.requireGoogleGrantClient(JSON.parse(stored));
   }
   if (typeof result === "string") return result;
   if (result && result.store) {
@@ -723,6 +738,9 @@ function clearStrikes(accountId) {
 }
 
 function explainSyncError(account, error, secret) {
+  if (/^secure_storage_/.test(error?.code || "")) {
+    return "Secure storage is temporarily unavailable. Check access and retry.";
+  }
   let hidden = secret || "";
   if (!hidden && account && account.id) {
     try { hidden = secrets.getPassword(account.id) || ""; } catch { hidden = ""; }
@@ -1273,34 +1291,40 @@ async function stopIdle() {
   await controller.stop();
 }
 
-function markMissingOAuthSecrets() {
+async function markMissingOAuthSecrets() {
   if (!ready) return false;
   let changed = false;
-  for (const row of db.listAccountRows()) {
-    if (row.auth_kind !== "oauth2") continue;
-    let secret = null;
-    try {
-      secret = secrets.getPassword(row.id);
-    } catch (error) {
+  const rows = db.listAccountRows().filter(row => row.auth_kind === "oauth2").map(row => ({
+    row: bindAccount(row), revision: secrets.revision(row.id),
+  }));
+  const results = await Promise.allSettled(rows.map(({ row }) => secrets.getPasswordAsync(row.id)));
+  for (let i = 0; i < rows.length; i++) {
+    const { row, revision } = rows[i];
+    try { assertAccountCurrent(row); } catch { continue; }
+    const current = db.accountById(row.id);
+    if (current.auth_kind !== row.auth_kind || current.mail_transport !== row.mail_transport) continue;
+    if (secrets.revision(row.id) !== revision) continue;
+    const result = results[i];
+    if (result.status === "rejected") {
       // A just-saved mailbox stays connected if the key store read fails.
       if (oauthCommitted.has(row.id)) continue;
-      throw error;
+      throw result.reason;
     }
-    if (secret) continue;
+    if (result.value) continue;
     // A purged or unavailable key store is not evidence of abandoned sign-in.
     // New OAuth accounts are inserted only after authentication succeeds.
     // Keep local mail and purpose-specific grants so re-login can reuse the id.
-    if (row.auth_error) continue;
+    if (current.auth_error) continue;
     db.setAuthError(row.id, "Mailbox credentials are unavailable. Sign in again to reconnect. Local mail is retained.");
     changed = true;
   }
   return changed;
 }
 
-function cancelOAuth() {
+async function cancelOAuth() {
   oauthGeneration += 1;
   try { oauth.cancelActive(); } catch { /* no browser flow is waiting */ }
-  if (markMissingOAuthSecrets()) emitAccounts();
+  if (await markMissingOAuthSecrets()) emitAccounts();
   return ok({ canceled: true });
 }
 

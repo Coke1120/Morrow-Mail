@@ -130,7 +130,7 @@
         id: "mail-responsiveness",
         title: "Mail responsiveness",
         category: "Support",
-        blurb: "Cached lists and thread headers avoid copying message bodies into JavaScript. IMAP sync keeps existing search terms when indexed content is unchanged. MORROW_PERF=1 enables bounded local timings in Debug log every 30 seconds, without mail contents or telemetry. Keychain and durable writes keep their existing behavior. Native Mac freezes still need profiling.",
+        blurb: "Cached lists and thread headers avoid copying message bodies into JavaScript. IMAP sync keeps existing search terms when indexed content is unchanged. On macOS, routine mail credential reads and startup checks wait asynchronously, share pending reads and stop waiting after 30 seconds. Read failures retain saved credentials. Some account setup/status checks and credential writes remain synchronous, bounded to 30 seconds per command; search-index rebuilds remain synchronous. Durable writes are unchanged. MORROW_PERF=1 enables bounded local timings in Debug log every 30 seconds, without mail contents or telemetry. Native Mac freezes still need profiling.",
       },
       {
         id: "ipc-diagnostics",

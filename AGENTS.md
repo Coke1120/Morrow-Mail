@@ -61,6 +61,17 @@ Google OAuth mail uses Gmail API with gmail.modify + gmail.settings.basic; Calen
 
 Settings → Out of Office is a reviewed provider write. Gmail uses `gmail.settings.basic` and Microsoft uses `MailboxSettings.ReadWrite`, covered by the provider bundle or an existing legacy token. Do not replace the mailbox secret after partial consent. IMAP may install only the ManageSieve script `morrow-vacation` on port 4190 after STARTTLS. Do not send local automatic replies or replace another active script.
 
+## Mail credential reads
+
+Use the `secrets` facade for mutations so pending reads and opaque revisions are
+invalidated. Routine mail reads use `getPasswordAsync`; recheck account incarnation,
+login/transport, revision and Google client binding after awaits and before token
+use/storage. Share only in-flight reads, never completed credential values. Do not
+replace synchronous credential/SQLite commit-compensation blocks with awaits
+without a separate serialized mutation design and race tests. Compatibility macOS
+commands keep their explicit deadline. Tests must mock child processes and never
+access a real Keychain. See `docs/adr/2026-10-27-keychain-read-deadlines.md`.
+
 ## AI data permission bridge
 
 Settings uses the first-party renderer preload; AI Setup has its own preload.

@@ -1166,6 +1166,7 @@
           </div>
           <div class="settings-group">
           <h4>Connected accounts</h4>
+          <p class="hint" id="mail-secure-storage-help">On macOS, routine mail credential reads and startup checks wait asynchronously and time out after 30 seconds. Read errors keep your saved credentials; check secure-storage access and retry. Some account setup/status checks and credential writes still wait synchronously, with a 30-second limit per command. A workflow with several commands can take longer. This does not change provider sign-in, permissions or your saved mailbox.</p>
           <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
           <div class="row">
             <button type="button" class="ghost icon-label" id="connect-open">
