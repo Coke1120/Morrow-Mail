@@ -1,9 +1,19 @@
 const { spawnSync } = require("child_process");
 const { SERVICE } = require("./secret-service");
 const perf = require("../performance-diagnostics");
+const { createReader, TIMEOUT_MS, MAX_OUTPUT } = require("./keychain-reader");
+const read = createReader();
 
 function run(args) {
-  return perf.sync("keychain.wait", () => spawnSync("security", args, { encoding: "utf8" }));
+  const result = perf.sync("keychain.wait", () => spawnSync("security", args, {
+    encoding: "utf8", timeout: TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: MAX_OUTPUT,
+  }));
+  if (result.error) {
+    const timeout = result.error.code === "ETIMEDOUT";
+    throw Object.assign(new Error(timeout ? "Secure storage did not respond in time. Check access and retry."
+      : "Secure storage is unavailable. Try again."), { code: timeout ? "secure_storage_timeout" : "secure_storage_unavailable" });
+  }
+  return result;
 }
 
 function write(service, account, password) {
@@ -38,8 +48,12 @@ function getPassword(account) {
   return find(SERVICE, account);
 }
 
+function getPasswordAsync(account, options) {
+  return perf.measure("keychain.wait", () => read(["find-generic-password", "-s", SERVICE, "-a", account, "-w"], options));
+}
+
 function deletePassword(account) {
   remove(SERVICE, account);
 }
 
-module.exports = { setPassword, getPassword, deletePassword, SERVICE };
+module.exports = { setPassword, getPassword, getPasswordAsync, deletePassword, SERVICE };

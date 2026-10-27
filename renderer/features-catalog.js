@@ -58,7 +58,7 @@
         id: "local-search",
         title: "Search on this computer",
         category: "Mail",
-        blurb: "Toolbar search reads subject, from, and body already synced to this computer.",
+        blurb: "Toolbar search reads subject, from, and body already synced to this computer. When the local index needs repair, opening shows preparation progress and works in saved batches, yielding between them. Mail and search become available after verification. Quitting keeps committed progress for the next open. No mail is downloaded by rebuilding. A large individual message or disk call can still cause a pause.",
       },
       {
         id: "schedule-send",
@@ -130,7 +130,7 @@
         id: "mail-responsiveness",
         title: "Mail responsiveness",
         category: "Support",
-        blurb: "Cached lists and thread headers avoid copying message bodies into JavaScript. IMAP sync keeps existing search terms when indexed content is unchanged. MORROW_PERF=1 enables bounded local timings in Debug log every 30 seconds, without mail contents or telemetry. Keychain and durable writes keep their existing behavior. Native Mac freezes still need profiling.",
+        blurb: "Cached lists and thread headers avoid copying message bodies into JavaScript. IMAP sync keeps existing search terms when indexed content is unchanged. On macOS, routine mail credential reads and startup checks wait asynchronously, share pending reads and stop waiting after 30 seconds. Read failures retain saved credentials. Some account setup/status checks and credential writes remain synchronous, bounded to 30 seconds per command. Search repair yields between saved batches; individual index or disk calls can still pause work. Durable writes are unchanged. MORROW_PERF=1 enables bounded local timings in Debug log every 30 seconds, without mail contents or telemetry. Native Mac freezes still need profiling.",
       },
       {
         id: "ipc-diagnostics",

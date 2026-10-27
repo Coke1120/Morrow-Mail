@@ -134,7 +134,7 @@ for (const file of syntax) {
 }
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
-for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js"]) {
+for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-keychain-reads.js"]) {
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(fixture.status, 0, name + " failed");
 }
@@ -4004,7 +4004,7 @@ const featureSeed = [
   ["signatures", "Signatures", "Mail", "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target."],
   ["mail-keyboard", "Mail list keyboard navigation", "Mail", "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus."],
   ["attachment-downloads", "Attachment downloads", "Mail", "Preview, Open and Save share downloads. Complete files up to 32 MiB can be reused for five minutes while Morrow is open; larger files remain on demand. Save asks for a location first. Attachment transfers show progress and individual Cancel controls; closing Preview keeps another Save or Open running. Downloads allow 64 MiB per file and 128 MiB per ZIP, with existing provider limits. Changed identities stop reuse; reopen legacy Gmail selections. Resuming a server draft prepares every attachment before editing, within the 25 MiB outgoing limit. Preparation shares the download cache and Cancel controls. Failure keeps the saved draft for retry. Inline file identities are retained. Bot access remains metadata only."],
-  ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer."],
+  ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer. When the local index needs repair, opening shows preparation progress and works in saved batches, yielding between them. Mail and search become available after verification. Quitting keeps committed progress for the next open. No mail is downloaded by rebuilding. A large individual message or disk call can still cause a pause."],
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself."],
   ["imap-recovery", "IMAP connection recovery", "Mail", "Connection timeouts during IMAP sync use the usual connection-error and retry status. Inbox push falls back to polling and reconnects with backoff."],
@@ -4016,7 +4016,7 @@ const featureSeed = [
   ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Incomplete Google Calendar reauthorization preserves the working Calendar connection. Enabling another feature or reconnecting Gmail also preserves a usable current-client Calendar grant ahead of stale records. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions. Opening an all-day event or switching between all-day and timed input keeps the dates. All-day ends are exclusive. An unchanged timed → all-day → timed round trip in the same editor restores the original dates and hours. Edited all-day dates or an event opened as all-day use 09:00/10:00 defaults when switched to timed."],
   ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed."],
   ["mail-body-updates", "Mail body updates", "Mail", "Mail lists batch action metadata. Body notifications carry availability instead of full messages; open readers and previews refresh from already downloaded mail. Each window can reuse up to 32 recent bodies within an estimated 8 MiB of strings, at most 2 MiB per entry. Larger bodies remain available in the open view. Reconnect/removal invalidates reuse; cache eviction never deletes saved mail, drafts or attachments. Native Mac responsiveness still needs profiling."],
-  ["mail-responsiveness", "Mail responsiveness", "Support", "Cached lists and thread headers avoid copying message bodies into JavaScript. IMAP sync keeps existing search terms when indexed content is unchanged. MORROW_PERF=1 enables bounded local timings in Debug log every 30 seconds, without mail contents or telemetry. Keychain and durable writes keep their existing behavior. Native Mac freezes still need profiling."],
+  ["mail-responsiveness", "Mail responsiveness", "Support", "Cached lists and thread headers avoid copying message bodies into JavaScript. IMAP sync keeps existing search terms when indexed content is unchanged. On macOS, routine mail credential reads and startup checks wait asynchronously, share pending reads and stop waiting after 30 seconds. Read failures retain saved credentials. Some account setup/status checks and credential writes remain synchronous, bounded to 30 seconds per command. Search repair yields between saved batches; individual index or disk calls can still pause work. Durable writes are unchanged. MORROW_PERF=1 enables bounded local timings in Debug log every 30 seconds, without mail contents or telemetry. Native Mac freezes still need profiling."],
   ["ipc-diagnostics", "IPC diagnostics", "Support", "IPC trace records known channels and argument counts, plus renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries may retain account/folder context."],
 ];
 assert.deepStrictEqual(featureCatalog.items.map((row) => [row.id, row.title, row.category, row.blurb]), featureSeed);
@@ -8193,6 +8193,9 @@ async function checkProviderApi() {
     const canceledDraft = engine.answer("mail:cancelOAuth", []);
     assert.strictEqual(canceledDraft.success, true);
     assert.strictEqual(canceledDraft.data.canceled, true);
+    // Cancellation acknowledges immediately; credential availability is now an
+    // asynchronous scan. Keep its missing-credential assertion after completion.
+    await new Promise(resolve => setImmediate(resolve));
     assert.ok(db.accountById("oauth-draft"));
     assert.ok(db.accountById("oauth-draft").auth_error);
     assert.ok(db.accountById("named-oauth"));
@@ -9973,6 +9976,12 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
   assert.strictEqual(result.status, 0, "Account/calendar/attachment fixture failed");
   const liveness = spawnSync(process.execPath, [path.join(root, "scripts/check-account-liveness.js")], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(liveness.status, 0, "Account liveness fixture failed");
+  const indexControl = spawnSync(process.execPath, [path.join(root, "scripts/check-index-opening-control.js")], { stdio: "inherit", timeout: 15000 });
+  assert.strictEqual(indexControl.status, 0, "Index opening control fixture failed");
+  const indexRebuild = spawnSync(process.execPath, [path.join(root, "scripts/check-search-index-rebuild.js")], { stdio: "inherit", timeout: 120000 });
+  assert.strictEqual(indexRebuild.status, 0, "Search index rebuild fixture failed");
+  const startupCredentialQuit = spawnSync(process.execPath, [path.join(root, "scripts/check-startup-credential-quit.js")], { stdio: "inherit", timeout: 120000 });
+  assert.strictEqual(startupCredentialQuit.status, 0, "Combined startup/credential quit fixture failed");
   for (const name of ["check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js", "check-ai-consent-settings.js", "check-gmail-mail-api.js", "check-sender-names.js"]) {
     const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
     assert.strictEqual(fixture.status, 0, name + " failed");
