@@ -469,16 +469,16 @@ function cachedList(params) {
 async function secretFor(account) {
   account = bindAccount(account);
   const revision = secrets.revision(account.id);
-  function assertCurrent() {
+  function assertCurrent(expectedRevision) {
     assertAccountCurrent(account);
     const current = db.accountById(account.id);
     if (current.auth_kind !== account.auth_kind || current.mail_transport !== account.mail_transport
-        || secrets.revision(account.id) !== revision) {
+        || (expectedRevision != null && secrets.revision(account.id) !== expectedRevision)) {
       throw Object.assign(new Error("This mailbox connection changed. Try again with the current connection."), { code: "conflict" });
     }
   }
   const stored = await secrets.getPasswordAsync(account.id);
-  assertCurrent();
+  assertCurrent(revision);
   if (!stored) {
     const error = new Error("The password for this account is not in the keychain. Connect the account again.");
     error.code = "auth";
@@ -491,8 +491,11 @@ async function secretFor(account) {
   }
   const result = await oauth.accessTokenFor(account, stored, "imap");
   assertCurrent();
+  // A failed synchronous reconnect may have restored the exact prior state.
+  // Preserve that contract; pin this read window and compare the actual value.
+  const latestRevision = secrets.revision(account.id);
   const latest = await secrets.getPasswordAsync(account.id);
-  assertCurrent();
+  assertCurrent(latestRevision);
   if (latest !== stored) {
     const error = new Error("This mailbox connection changed. Try again with the current connection.");
     error.code = "conflict";

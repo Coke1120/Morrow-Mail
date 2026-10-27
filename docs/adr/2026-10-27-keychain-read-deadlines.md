@@ -35,9 +35,12 @@ This is an incremental read migration, not complete asynchronous credential I/O.
   an await without a permanent cache of credential values. Deleting a record
   releases its tracking entry; a later same-ID record has a different token.
 - `secretFor` pins account incarnation and rechecks login/transport and revision
-  after reads/refreshes. It retains the actual-value comparison after OAuth and
+  around each async read. It retains the actual-value comparison after OAuth and
   verifies Google client binding again before returning/storing a token. There
   is no await between the final guards and a synchronous refresh-store attempt.
+  A failed synchronous reconnect which restores the exact prior account and
+  credential can still allow an already-running refresh to finish. A successful
+  reconnect or a changed value/read revision remains rejected.
 - Startup/cancel scans do not mark a removed/recreated/reconnected mailbox as
   missing. OAuth cancellation increments its generation and cancels the browser
   flow and acknowledges synchronously before its async scan. This preserves the

@@ -268,6 +268,18 @@ async function engineContracts() {
   happy.context.oauth.accessTokenFor = async () => ({ token: "fresh-access", store: initial });
   assert.equal(await happy.context.secretFor(happy.row), "fresh-access");
   assert.deepEqual(happy.writes, [initial]);
+
+  const rolledBack = engineFixture(true), refreshedAfterRollback = deferred();
+  rolledBack.saved.set("fixture", initial);
+  rolledBack.context.oauth.accessTokenFor = () => refreshedAfterRollback.promise;
+  const retained = rolledBack.context.secretFor(rolledBack.row);
+  await flush();
+  rolledBack.secrets.setPassword("fixture", "failed-new-password");
+  rolledBack.secrets.setPassword("fixture", initial); // Synchronous compensation restored the exact old state.
+  const renewed = JSON.stringify({ ...JSON.parse(initial), accessToken: "new-valid-token" });
+  refreshedAfterRollback.resolve({ token: "new-valid-token", store: renewed });
+  assert.equal(await retained, "new-valid-token");
+  assert.equal(rolledBack.saved.get("fixture"), renewed);
 }
 
 async function submissionContracts() {
