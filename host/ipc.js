@@ -6,6 +6,7 @@ const { answer: agentAnswer } = require("./agent");
 const { answer: translateAnswer } = require("./translate");
 const { answer: settingsAnswer } = require("./settings");
 const debugLog = require("./debug-log");
+const perf = require("./performance-diagnostics");
 
 const SESSION = {
   userId: "local-user",
@@ -174,16 +175,19 @@ function createIpc(logPath) {
   const diagnostics = createDiagnostics(logPath);
   return {
     handle(event, channel, ...args) {
-      diagnostics.ipc("invoke", channel, args.length);
-      if (typeof channel === "string" && channel.startsWith("bot:")) {
-        return require("./bot/manage").answer(channel, args && args[0], event);
-      }
-      return fallback(channel, args, event);
+      return perf.ipc(channel, () => handle(event, channel, args));
     },
     send(_event, channel, ...args) {
       diagnostics.ipc("send", channel, args.length);
     },
   };
+  function handle(event, channel, args) {
+    diagnostics.ipc("invoke", channel, args.length);
+    if (typeof channel === "string" && channel.startsWith("bot:")) {
+      return require("./bot/manage").answer(channel, args && args[0], event);
+    }
+    return fallback(channel, args, event);
+  }
 }
 
 module.exports = { createIpc, SESSION };

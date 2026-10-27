@@ -115,6 +115,12 @@
         blurb: "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed.",
       },
       {
+        id: "mail-responsiveness",
+        title: "Mail responsiveness",
+        category: "Support",
+        blurb: "Cached lists and thread headers avoid copying message bodies into JavaScript. IMAP sync keeps existing search terms when indexed content is unchanged. MORROW_PERF=1 enables bounded local timings in Debug log every 30 seconds, without mail contents or telemetry. Keychain and durable writes keep their existing behavior. Native Mac freezes still need profiling.",
+      },
+      {
         id: "ipc-diagnostics",
         title: "IPC diagnostics",
         category: "Support",

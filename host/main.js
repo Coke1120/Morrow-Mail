@@ -1,4 +1,5 @@
 const { app, BrowserWindow, dialog, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell, screen } = require("electron");
+require("./performance-diagnostics").startMonitoring();
 const fs = require("fs");
 const os = require("os");
 const path = require("path");

@@ -8,6 +8,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { Worker, isMainThread, parentPort, workerData } = require("node:worker_threads");
 const Database = require("better-sqlite3");
+const perf = require("../performance-diagnostics");
 
 const MAGIC = Buffer.from("MORROWJ1");
 const HEADER_SIZE = 80;
@@ -234,6 +235,10 @@ function readAll(fd, length, position) {
 // A short final frame is an interrupted append. A complete but invalid frame,
 // wrong database generation, or sequence gap is corruption: fail closed.
 function replay(database, file, { repairTail = false } = {}) {
+  return perf.sync("storage.replay", () => replayJournal(database, file, { repairTail }));
+}
+
+function replayJournal(database, file, { repairTail = false } = {}) {
   if (!fs.existsSync(file)) return;
   const current = state(database);
   if (!current) throw new Error("Mail journal has no matching SQLite checkpoint.");
@@ -368,6 +373,10 @@ class Persistence {
   }
 
   append(commands) {
+    return perf.sync("storage.journal", () => this.appendJournal(commands));
+  }
+
+  appendJournal(commands) {
     this.openJournal();
     const offset = this.bytes;
     const parts = encode(this.generation, this.sequence + 1, commands);

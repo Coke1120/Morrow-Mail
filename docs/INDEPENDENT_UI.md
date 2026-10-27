@@ -1,5 +1,13 @@
 # Independent UI
 
+Mail list and header-only thread queries omit body strings from JavaScript rows,
+and IMAP sync preserves search entries for unchanged indexed content. Full message
+and full-thread responses retain their bodies. Optional `MORROW_PERF=1` local
+timings appear in Debug log every 30 seconds with fixed labels and numeric
+aggregates, no mail/request/identity/path/credential data or telemetry. Keychain
+and durable writes keep their existing semantics. See [performance diagnostics
+and synthetic measurements](PERFORMANCE.md); native Mac freezes remain unverified.
+
 `npm start` loads `renderer/` through the host IPC that already exists. It does not read `resources/ui.asar`, unless you set `MORROW_ASAR` to an `app.asar` path.
 
 ## What this shell does

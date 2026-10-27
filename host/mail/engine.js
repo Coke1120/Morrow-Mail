@@ -29,6 +29,7 @@ const overnight = require("./overnight");
 const { createBodyProgress } = require("./body-progress");
 const syncRetry = require("../../shared/sync-retry");
 const debugLog = require("../debug-log");
+const perf = require("../performance-diagnostics");
 const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
 const composePolicy = require("../../shared/compose-policy");
@@ -124,6 +125,10 @@ function dataFile() {
 }
 
 async function init() {
+  return perf.measure("startup.mail", () => initializeMail());
+}
+
+async function initializeMail() {
   await db.open(dataFile());
   db.recoverScheduled();
   ready = true;
@@ -413,7 +418,7 @@ function synced(query, days) {
 
 function listPayload(params) {
   const query = queryFrom(params);
-  const rows = db.selectMessages(query).map(listRow);
+  const rows = db.selectMessages(query, { headersOnly: true }).map(listRow);
   const total = db.countMessages(query);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const days = syncHorizonDays();
@@ -1891,6 +1896,7 @@ function storedBodyText(value) {
 }
 
 function usableStoredBody(row) {
+  if (row && typeof row.has_body === "number") return row.has_body === 1;
   return !!(row && (storedBodyText(row.html_body) || storedBodyText(row.text_body)));
 }
 
@@ -3617,7 +3623,7 @@ function answer(channel, args, event) {
         catch (error) { return fail(error.code || "read", error.message); }
         if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
         if (paintFirst) queueOpenFill(stored);
-        const members = db.messagesByThread(row.account_id, row.thread_id).map(listRow);
+        const members = db.messagesByThread(row.account_id, row.thread_id, { headersOnly: true }).map(listRow);
         return ok({
           email: detailOf(row),
           isThread: members.length > 1,
@@ -3639,10 +3645,10 @@ function answer(channel, args, event) {
       const threadId = params && params.threadId;
       const accountId = params && params.accountId;
       if (!threadId) return ok([]);
-      const rows = accountId
-        ? db.messagesByThread(accountId, threadId)
-        : db.selectMessages({ tokens: [], limit: 50 }).filter((row) => row.thread_id === threadId);
       const headersOnly = params && params.headersOnly === true;
+      const rows = accountId
+        ? db.messagesByThread(accountId, threadId, { headersOnly })
+        : db.selectMessages({ tokens: [], limit: 50 }, { headersOnly }).filter((row) => row.thread_id === threadId);
       return ok(rows.map((row) => headersOnly ? listRow(row) : detailOf(row)));
     }
     case "mail:markRead":
