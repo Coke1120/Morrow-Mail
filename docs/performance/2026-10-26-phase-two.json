@@ -1,0 +1,288 @@
+{
+  "date": "2026-10-26",
+  "baselineSha": "ed95f2b778efa1940526ded29bd360a01bd87354",
+  "focused": {
+    "before": {
+      "node": "v20.20.2",
+      "platform": "linux",
+      "arch": "x64",
+      "fixture": {
+        "messages": 240,
+        "listRows": 200,
+        "unopenedEvents": 1000,
+        "bodyCharacters": 8192,
+        "listWarmups": 2,
+        "listRounds": 12
+      },
+      "completeListQueries": 213,
+      "incompleteListQueries": 415,
+      "bodyNotificationBytes": 54057,
+      "cachedListMedianMs": 6.5,
+      "cachedListP95Ms": 10.81,
+      "rendererBurstMs": 1.51,
+      "retained": {
+        "entries": 1000,
+        "stringBytes": 16384000,
+        "reloads": 0
+      },
+      "limits": "Synthetic Linux host/SQLite calls and VM renderer functions, not native Mac timing. Renderer burst uses full compatibility events to compare retention; production candidate sends lightweight availability notices. Query counts include synchronous work before the list RPC returns. Burst times include fixture construction and are not an end-to-end UI metric."
+    },
+    "after": {
+      "node": "v20.20.2",
+      "platform": "linux",
+      "arch": "x64",
+      "fixture": {
+        "messages": 240,
+        "listRows": 200,
+        "unopenedEvents": 1000,
+        "bodyCharacters": 8192,
+        "listWarmups": 2,
+        "listRounds": 12
+      },
+      "completeListQueries": 14,
+      "incompleteListQueries": 16,
+      "bodyNotificationBytes": 145,
+      "cachedListMedianMs": 4.37,
+      "cachedListP95Ms": 6.13,
+      "rendererBurstMs": 3.33,
+      "retained": {
+        "entries": 0,
+        "stringBytes": 0,
+        "reloads": 0
+      },
+      "limits": "Synthetic Linux host/SQLite calls and VM renderer functions, not native Mac timing. Renderer burst uses full compatibility events to compare retention; production candidate sends lightweight availability notices. Query counts include synchronous work before the list RPC returns. Burst times include fixture construction and are not an end-to-end UI metric."
+    }
+  },
+  "largeTrials": [
+    {
+      "order": "baseline then candidate",
+      "before": {
+        "node": "v20.20.2",
+        "platform": "linux",
+        "arch": "x64",
+        "profile": {
+          "count": 10000,
+          "threadCount": 256,
+          "bodyBytes": 4096,
+          "threadBytes": 65536,
+          "openId": "performance-10000"
+        },
+        "iterations": 12,
+        "materializedBodyBytes": {
+          "list200": 0,
+          "threadHeaders": 0
+        },
+        "maxSampledRssMiB": 359.04,
+        "samples": [
+          {
+            "name": "cached-list-200",
+            "rounds": 12,
+            "p50Ms": 16.75,
+            "p95Ms": 19.95,
+            "maxMs": 19.95
+          },
+          {
+            "name": "thread-headers",
+            "rounds": 12,
+            "p50Ms": 15.32,
+            "p95Ms": 16.45,
+            "maxMs": 16.45
+          },
+          {
+            "name": "cached-message-open",
+            "rounds": 12,
+            "p50Ms": 16.73,
+            "p95Ms": 19.96,
+            "maxMs": 19.96
+          },
+          {
+            "name": "reopen-and-first-list",
+            "rounds": 3,
+            "p50Ms": 96.18,
+            "p95Ms": 99.96,
+            "maxMs": 99.96
+          },
+          {
+            "name": "unchanged-sync-40",
+            "rounds": 12,
+            "p50Ms": 9.49,
+            "p95Ms": 15.73,
+            "maxMs": 15.73
+          }
+        ],
+        "limits": "Synthetic host/SQLite calls on this machine; no Electron rendering, actual Mac profiling, Keychain or provider timing. Sampled RSS is not a peak-memory measurement. Reopen uses a warm OS cache."
+      },
+      "after": {
+        "node": "v20.20.2",
+        "platform": "linux",
+        "arch": "x64",
+        "profile": {
+          "count": 10000,
+          "threadCount": 256,
+          "bodyBytes": 4096,
+          "threadBytes": 65536,
+          "openId": "performance-10000"
+        },
+        "iterations": 12,
+        "materializedBodyBytes": {
+          "list200": 0,
+          "threadHeaders": 0
+        },
+        "maxSampledRssMiB": 308.58,
+        "samples": [
+          {
+            "name": "cached-list-200",
+            "rounds": 12,
+            "p50Ms": 15.52,
+            "p95Ms": 22.46,
+            "maxMs": 22.46
+          },
+          {
+            "name": "thread-headers",
+            "rounds": 12,
+            "p50Ms": 13.28,
+            "p95Ms": 18.61,
+            "maxMs": 18.61
+          },
+          {
+            "name": "cached-message-open",
+            "rounds": 12,
+            "p50Ms": 15.43,
+            "p95Ms": 21.47,
+            "maxMs": 21.47
+          },
+          {
+            "name": "reopen-and-first-list",
+            "rounds": 3,
+            "p50Ms": 129.92,
+            "p95Ms": 237.41,
+            "maxMs": 237.41
+          },
+          {
+            "name": "unchanged-sync-40",
+            "rounds": 12,
+            "p50Ms": 9.68,
+            "p95Ms": 22.09,
+            "maxMs": 22.09
+          }
+        ],
+        "limits": "Synthetic host/SQLite calls on this machine; no Electron rendering, actual Mac profiling, Keychain or provider timing. Sampled RSS is not a peak-memory measurement. Reopen uses a warm OS cache."
+      }
+    },
+    {
+      "order": "candidate then baseline",
+      "before": {
+        "node": "v20.20.2",
+        "platform": "linux",
+        "arch": "x64",
+        "profile": {
+          "count": 10000,
+          "threadCount": 256,
+          "bodyBytes": 4096,
+          "threadBytes": 65536,
+          "openId": "performance-10000"
+        },
+        "iterations": 12,
+        "materializedBodyBytes": {
+          "list200": 0,
+          "threadHeaders": 0
+        },
+        "maxSampledRssMiB": 318.98,
+        "samples": [
+          {
+            "name": "cached-list-200",
+            "rounds": 12,
+            "p50Ms": 17.3,
+            "p95Ms": 21.28,
+            "maxMs": 21.28
+          },
+          {
+            "name": "thread-headers",
+            "rounds": 12,
+            "p50Ms": 16.61,
+            "p95Ms": 18.66,
+            "maxMs": 18.66
+          },
+          {
+            "name": "cached-message-open",
+            "rounds": 12,
+            "p50Ms": 17.02,
+            "p95Ms": 19.22,
+            "maxMs": 19.22
+          },
+          {
+            "name": "reopen-and-first-list",
+            "rounds": 3,
+            "p50Ms": 93.55,
+            "p95Ms": 102.24,
+            "maxMs": 102.24
+          },
+          {
+            "name": "unchanged-sync-40",
+            "rounds": 12,
+            "p50Ms": 9.52,
+            "p95Ms": 12.06,
+            "maxMs": 12.06
+          }
+        ],
+        "limits": "Synthetic host/SQLite calls on this machine; no Electron rendering, actual Mac profiling, Keychain or provider timing. Sampled RSS is not a peak-memory measurement. Reopen uses a warm OS cache."
+      },
+      "after": {
+        "node": "v20.20.2",
+        "platform": "linux",
+        "arch": "x64",
+        "profile": {
+          "count": 10000,
+          "threadCount": 256,
+          "bodyBytes": 4096,
+          "threadBytes": 65536,
+          "openId": "performance-10000"
+        },
+        "iterations": 12,
+        "materializedBodyBytes": {
+          "list200": 0,
+          "threadHeaders": 0
+        },
+        "maxSampledRssMiB": 308.47,
+        "samples": [
+          {
+            "name": "cached-list-200",
+            "rounds": 12,
+            "p50Ms": 15.6,
+            "p95Ms": 19.78,
+            "maxMs": 19.78
+          },
+          {
+            "name": "thread-headers",
+            "rounds": 12,
+            "p50Ms": 13.75,
+            "p95Ms": 14.97,
+            "maxMs": 14.97
+          },
+          {
+            "name": "cached-message-open",
+            "rounds": 12,
+            "p50Ms": 15.12,
+            "p95Ms": 18.97,
+            "maxMs": 18.97
+          },
+          {
+            "name": "reopen-and-first-list",
+            "rounds": 3,
+            "p50Ms": 93.37,
+            "p95Ms": 93.96,
+            "maxMs": 93.96
+          },
+          {
+            "name": "unchanged-sync-40",
+            "rounds": 12,
+            "p50Ms": 9.87,
+            "p95Ms": 17.35,
+            "maxMs": 17.35
+          }
+        ],
+        "limits": "Synthetic host/SQLite calls on this machine; no Electron rendering, actual Mac profiling, Keychain or provider timing. Sampled RSS is not a peak-memory measurement. Reopen uses a warm OS cache."
+      }
+    }
+  ]
+}

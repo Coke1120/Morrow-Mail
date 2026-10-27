@@ -1,5 +1,15 @@
 # Independent UI
 
+Phase-two mail responsiveness batches action generations for lists/thread rows
+and reuses account IDs already present in list metadata for prefetch admission.
+Body notifications contain availability and scoped versions; open readers and
+previews pull current snapshots from local mail without provider fetches. The
+per-window body-only cache has 32-entry / estimated 8 MiB string / 2 MiB entry
+limits. Active views and compositions retain their own data; eviction deletes no
+mail, draft or attachment. Stale connection responses and superseded reads are
+ignored, and fresh snapshots retain inline attachment/sender/draft metadata.
+See [phase-two evidence and limits](PERFORMANCE_PHASE_TWO.md).
+
 Mail list and header-only thread queries omit body strings from JavaScript rows,
 and IMAP sync preserves search entries for unchanged indexed content. Full message
 and full-thread responses retain their bodies. Optional `MORROW_PERF=1` local

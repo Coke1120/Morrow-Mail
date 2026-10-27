@@ -13,6 +13,7 @@ const STAGES = new Set([
 const IPC = new Map([
   ...["mail:listFromCache", "mail:listFromCacheAggregate", "mail:listWindowRead", "mail:loadMoreAggregate"].map(name => [name, "ipc.mail.list"]),
   ["mail:openEmail", "ipc.mail.open"], ["mail:readEmail", "ipc.mail.open"],
+  ["mail:readCachedBody", "ipc.mail.open"],
   ["mail:listThreadMessages", "ipc.mail.thread"], ["mail:getLocalThreadMembers", "ipc.mail.thread"],
   ["mail:listFromNetwork", "ipc.mail.sync"],
 ]);

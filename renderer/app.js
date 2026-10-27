@@ -93,8 +93,16 @@ let openGen = 0;
 let pendingOpenId = "";
 let pendingOpenBody = false;
 const latestBodies = new Map();
+const BODY_CACHE_LIMITS = Object.freeze({ entries: 32, bytes: 8 * 1024 * 1024, entryBytes: 2 * 1024 * 1024 });
+let latestBodyBytes = 0;
+const bodyNotices = new Map();
+const bodyReadFences = new Map();
+let bodyReadSerial = 0;
+let bodyRefresh = null;
 let peekGen = 0;
 let peekEmail = null;
+let pendingPeekId = "";
+let pendingPeekAccountId = "";
 let reloadTimer = null;
 let undoOpIds = null;
 let undoReceipt = "";
@@ -7984,7 +7992,7 @@ async function loadAccounts(preferredId) {
   const gen = ++accountGen;
   const data = await call("mail:listAccounts");
   if (gen !== accountGen) return;
-  state.accounts = Array.isArray(data) ? data : [];
+  acceptBodyAccounts(Array.isArray(data) ? data : []);
   rememberSelection(preferredId);
   renderAccounts();
   paintBodySyncStatus();
@@ -9623,6 +9631,8 @@ function invalidateReaderOpen() {
   openGen += 1;
   pendingOpenId = "";
   pendingOpenBody = false;
+  const previews = new Set(activeBodyTargets().filter(target => target.peek).map(target => target.identity.key));
+  for (const key of bodyNotices.keys()) if (!previews.has(key)) bodyNotices.delete(key);
 }
 
 function abandonOpen(emailId, message) {
@@ -9654,51 +9664,168 @@ function listedHasBody(email) {
   return email.hasBody === true;
 }
 
-function noteBody(email) {
-  if (!email || email.id == null) return;
-  const id = String(email.id);
-  const previous = latestBodies.get(id);
-  if (!previous || bodyScore(email) >= bodyScore(previous)) latestBodies.set(id, email);
+function bodyIdentity(email, current = false) {
+  if (!email || email.id == null || !email.accountId) return null;
+  const account = state.accounts.find(row => row.id === email.accountId);
+  if (!account) return null;
+  const epoch = Number.isSafeInteger(account.bodyEpoch) ? account.bodyEpoch : 0;
+  if (!current && email.bodyEpoch != null && email.bodyEpoch !== epoch) return null;
+  return { id: String(email.id), accountId: email.accountId, bodyEpoch: epoch,
+    key: JSON.stringify([email.accountId, epoch, String(email.id)]) };
 }
 
-function bodyScore(email) {
-  if (!email) return 0;
-  return (email.bodyComplete ? 100000000 : 0) + String(email.htmlBody || "").length + String(email.textBody || "").length;
+function bodyFields(email, identity) {
+  return { id: identity.id, accountId: identity.accountId, bodyEpoch: identity.bodyEpoch,
+    bodyVersion: Number.isSafeInteger(email.bodyVersion) ? email.bodyVersion : 0,
+    htmlBody: typeof email.htmlBody === "string" ? email.htmlBody : null,
+    textBody: typeof email.textBody === "string" ? email.textBody : null,
+    bodyComplete: email.bodyComplete === true, hasBody: listedHasBody(email), bodyWarning: typeof email.bodyWarning === "string" ? email.bodyWarning : "" };
+}
+
+function dropBody(key) {
+  const entry = latestBodies.get(key);
+  if (entry) latestBodyBytes -= entry.bytes;
+  latestBodies.delete(key);
+}
+
+function noteBody(email, explicit = true) {
+  const identity = bodyIdentity(email);
+  if (!identity) return;
+  if (explicit) {
+    bodyReadFences.delete(identity.key); bodyReadFences.set(identity.key, ++bodyReadSerial);
+    while (bodyReadFences.size > 64) bodyReadFences.delete(bodyReadFences.keys().next().value);
+    const notice = bodyNotices.get(identity.key);
+    if (notice) notice.attempted = -1;
+  }
+  const body = bodyFields(email, identity), previous = latestBodies.get(identity.key);
+  if (previous && previous.body.bodyVersion > body.bodyVersion) return;
+  dropBody(identity.key);
+  const bytes = 2 * (identity.key.length + (body.htmlBody || "").length + (body.textBody || "").length + body.bodyWarning.length);
+  if (bytes > BODY_CACHE_LIMITS.entryBytes) return; // Open views still own their full body.
+  while (latestBodies.size && (latestBodies.size >= BODY_CACHE_LIMITS.entries || latestBodyBytes + bytes > BODY_CACHE_LIMITS.bytes)) dropBody(latestBodies.keys().next().value);
+  latestBodies.set(identity.key, { body, bytes }); latestBodyBytes += bytes;
 }
 
 function preferBody(email) {
-  if (!email || email.id == null) return email;
-  const latest = latestBodies.get(String(email.id));
-  if (!latest || latest === email) return email;
-  if (bodyScore(latest) > bodyScore(email)) return { ...email, ...latest };
+  const identity = bodyIdentity(email);
+  const entry = identity && latestBodies.get(identity.key);
+  if (!entry) return email;
+  latestBodies.delete(identity.key); latestBodies.set(identity.key, entry);
+  if (entry.body.bodyVersion > (Number.isSafeInteger(email.bodyVersion) ? email.bodyVersion : 0)) return {
+    ...email, bodyMetadataVersion: email.bodyMetadataVersion ?? email.bodyVersion ?? 0, ...entry.body };
   return email;
 }
 
+function activeBodyTargets() {
+  const targets = [];
+  if (pendingOpenId) targets.push({ pending: true, email: listedMessage(pendingOpenId) || { id: pendingOpenId, accountId: state.accountId } });
+  else if (state.email) targets.push({ email: state.email });
+  if (pendingPeekId) targets.push({ pending: true, peek: true, email: { id: pendingPeekId, accountId: pendingPeekAccountId || listedMessage(pendingPeekId)?.accountId } });
+  else if (peekEmail && $("agent-peek")?.open) targets.push({ peek: true, email: peekEmail });
+  return targets.map(target => ({ ...target, identity: bodyIdentity(target.email, true) })).filter(target => target.identity);
+}
+
+function pruneBodyNotices() {
+  const keys = new Set(activeBodyTargets().map(target => target.identity.key));
+  for (const key of bodyNotices.keys()) if (!keys.has(key)) bodyNotices.delete(key);
+}
+
+function applyCachedBody(email) {
+  const identity = bodyIdentity(email);
+  if (!identity) return;
+  noteBody(email, false);
+  const body = bodyFields(email, identity);
+  for (const target of activeBodyTargets()) {
+    if (target.pending || target.identity.key !== identity.key) continue;
+    if ((target.email.bodyEpoch ?? 0) === identity.bodyEpoch && (target.email.bodyVersion || 0) > body.bodyVersion) continue;
+    let changed = target.email.htmlBody !== body.htmlBody || target.email.textBody !== body.textBody
+      || target.email.bodyWarning !== body.bodyWarning || target.email.bodyComplete !== body.bodyComplete;
+    const metadata = {};
+    for (const field of ["attachments", "hasAttachments", "draftRevision", "draftPending", "from", "fromAddress", "fromDisplayName", "recipientHeaders", "replyTo",
+      "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft"]) {
+      if (Object.hasOwn(email, field)) metadata[field] = email[field];
+    }
+    changed ||= Object.entries(metadata).some(([field, value]) => JSON.stringify(target.email[field]) !== JSON.stringify(value));
+    // Fresh local snapshots preserve body-associated draft/attachment identity.
+    // Optimistic action flags stay with their own action-generation guards.
+    const next = { ...target.email, ...metadata, ...body, bodyMetadataVersion: body.bodyVersion };
+    if (target.peek) { peekEmail = next; if (changed) paintPeek(next); }
+    else { state.email = next; if (changed) renderReader(false); }
+  }
+}
+
+function pumpBodyRefreshes() {
+  pruneBodyNotices();
+  if (bodyRefresh) return;
+  for (const [key, notice] of bodyNotices) {
+    const targets = activeBodyTargets().filter(target => target.identity.key === key);
+    const cached = latestBodies.get(key)?.body.bodyVersion ?? -1;
+    const needed = targets.some(target => {
+      const current = target.pending || (target.email.bodyEpoch ?? 0) !== notice.bodyEpoch ? -1 : target.email.bodyVersion ?? -1;
+      const metadata = target.pending ? cached : (target.email.bodyMetadataVersion ?? current);
+      return Math.min(Math.max(cached, current), metadata) < notice.bodyVersion;
+    });
+    if (!needed || notice.attempted >= notice.bodyVersion) continue;
+    notice.attempted = notice.bodyVersion;
+    const request = { key, fence: bodyReadFences.get(key) || 0, version: notice.bodyVersion };
+    bodyRefresh = request;
+    Promise.resolve().then(() => call("mail:readCachedBody", { accountId: notice.accountId, emailId: notice.id, bodyEpoch: notice.bodyEpoch }))
+      .then(result => {
+        const email = result?.email, identity = bodyIdentity(email);
+        if (!identity || identity.key !== key || !activeBodyTargets().some(target => target.identity.key === key)) return;
+        if ((bodyReadFences.get(key) || 0) !== request.fence) {
+          const latest = bodyNotices.get(key);
+          if (latest && latest.attempted === request.version) latest.attempted = -1;
+          return;
+        }
+        applyCachedBody(email);
+      }).catch(() => { /* Retry on a newer notice or an explicit reopen, never spin on a failed local read. */ })
+      .finally(() => { if (bodyRefresh === request) bodyRefresh = null; pumpBodyRefreshes(); });
+    return;
+  }
+}
+
+function acceptBodyAccounts(accounts) {
+  const previous = new Map(state.accounts.map(account => [account.id, account.bodyEpoch || 0]));
+  state.accounts = Array.isArray(accounts) ? accounts : [];
+  for (const [key, entry] of latestBodies) if (!bodyIdentity(entry.body)) dropBody(key);
+  for (const key of bodyReadFences.keys()) {
+    const [accountId, epoch] = JSON.parse(key);
+    if (!state.accounts.some(account => account.id === accountId && (account.bodyEpoch || 0) === epoch)) bodyReadFences.delete(key);
+  }
+  pruneBodyNotices();
+  for (const target of activeBodyTargets()) {
+    const account = state.accounts.find(row => row.id === target.identity.accountId);
+    if ((previous.has(account.id) && previous.get(account.id) !== (account.bodyEpoch || 0))
+        || (target.email.bodyEpoch != null && target.email.bodyEpoch !== (account.bodyEpoch || 0))) bodyNotices.set(target.identity.key,
+      { ...target.identity, bodyVersion: account.bodyVersion || 0, attempted: -1 });
+  }
+  pumpBodyRefreshes();
+}
+
 function applyBodyUpdate(payload) {
-  const email = payload && payload.email;
-  if (!email || email.id == null) return;
-  noteBody(email);
-  const id = String(email.id);
-  const known = listedMessage(id);
-  if (known) {
-    known.bodyComplete = email.bodyComplete === true;
-    known.hasBody = !!(email.htmlBody || email.textBody || email.hasBody);
-    known.bodyWarning = email.bodyWarning || "";
+  const full = payload?.email;
+  const incoming = full || { ...payload, id: payload?.emailId };
+  const identity = bodyIdentity(incoming);
+  if (!identity) return;
+  if (incoming.bodyVersion != null && (!Number.isSafeInteger(incoming.bodyVersion) || incoming.bodyVersion < 0)) return;
+  const version = Number.isSafeInteger(incoming.bodyVersion) ? incoming.bodyVersion : 0;
+  const known = listedMessage(identity.id);
+  if (known && known.accountId === identity.accountId && Math.max(known.bodyNoticeVersion ?? -1, known.bodyVersion ?? -1) <= version) {
+    known.bodyNoticeVersion = version;
+    if (known !== state.email && known !== peekEmail) {
+      known.bodyComplete = incoming.bodyComplete === true;
+      known.hasBody = full ? listedHasBody(full) : incoming.hasBody === true;
+      known.bodyWarning = incoming.bodyWarning || "";
+    }
   }
-  if (peekEmail && String(peekEmail.id) === id) {
-    const nextPeek = preferBody(peekEmail);
-    const peekChanged = nextPeek.htmlBody !== peekEmail.htmlBody || nextPeek.textBody !== peekEmail.textBody || nextPeek.bodyWarning !== peekEmail.bodyWarning;
-    peekEmail = nextPeek;
-    const dialog = $("agent-peek");
-    if (peekChanged && dialog && dialog.open) paintPeek(peekEmail);
-  }
-  if (pendingOpenId && String(pendingOpenId) !== id) return;
-  if (pendingOpenBody && pendingOpenId && String(pendingOpenId) === id) return;
-  if (!state.email || String(state.email.id) !== id) return;
-  const next = preferBody(state.email);
-  const contentSame = next.htmlBody === state.email.htmlBody && next.textBody === state.email.textBody && next.bodyWarning === state.email.bodyWarning;
-  state.email = next;
-  if (!contentSame) renderReader(false);
+  if (pendingPeekId === identity.id && !pendingPeekAccountId) pendingPeekAccountId = identity.accountId;
+  const targets = activeBodyTargets().filter(target => target.identity.key === identity.key);
+  if (!targets.length) return; // Unopened body updates retain no body or per-message notice.
+  if (full) { applyCachedBody(full); return; } // Compatibility with already queued full events.
+  const previous = bodyNotices.get(identity.key);
+  if (!previous || previous.bodyVersion < version) bodyNotices.set(identity.key, { ...identity, bodyVersion: version, attempted: previous?.attempted ?? -1 });
+  pumpBodyRefreshes();
 }
 
 function paintReaderPending(email) {
@@ -9767,6 +9894,10 @@ async function openMessage(emailId, focus) {
     }
     if (gen !== openGen) return;
   }
+  if (email.bodyEpoch != null && !bodyIdentity(email)) {
+    const message = "The mailbox connection changed. Reopen the message.";
+    abandonOpen(emailId, message); throw new Error(message);
+  }
   pendingOpenId = "";
   pendingOpenBody = false;
   noteBody(email);
@@ -9774,6 +9905,7 @@ async function openMessage(emailId, focus) {
   state.thread = state.prefs.conversation === false ? [] : threadMembers(fromOpen, listed);
   renderReader(focus !== false);
   renderList();
+  pumpBodyRefreshes();
   if (!email.unread) return;
   try {
     await setRead(email, true);
@@ -9832,7 +9964,7 @@ function onAccountsUpdated(payload) {
   const preferred = preferredAccountId(payload);
   const accounts = payload && Array.isArray(payload.accounts) ? payload.accounts : null;
   if (accounts) {
-    state.accounts = accounts;
+    acceptBodyAccounts(accounts);
     rememberSelection(preferred);
     renderAccounts();
     syncRemove();
@@ -11773,7 +11905,7 @@ function finishComposeOpen(fields) {
 
 async function loadComposeAccounts() {
   const data = await call("mail:listAccounts");
-  state.accounts = Array.isArray(data) ? data : [];
+  acceptBodyAccounts(Array.isArray(data) ? data : []);
   if (!state.accountId && state.accounts[0]) state.accountId = state.accounts[0].id;
 }
 
@@ -11789,7 +11921,7 @@ async function bootComposeWindow() {
   api.on("aiDraftWrite:event", onDraftEvent);
   api.on("mail:accountsUpdated", (payload) => {
     const accounts = payload && Array.isArray(payload.accounts) ? payload.accounts : null;
-    if (accounts) state.accounts = accounts;
+    if (accounts) acceptBodyAccounts(accounts);
   });
   wire();
   let seed = {};
@@ -11860,6 +11992,7 @@ function publishReaderTitle(subject) {
 }
 
 function showReaderOpenError(message) {
+  invalidateReaderOpen();
   const pane = $("reader");
   if (!pane) return;
   pane.removeAttribute("aria-busy");
@@ -11881,11 +12014,14 @@ async function bootReaderWindow() {
   wire();
   if (typeof api.on === "function") api.on("mail:translate:event", onTranslateEvent);
   if (typeof api.on === "function") api.on("mail:bodyUpdated", applyBodyUpdate);
+  if (typeof api.on === "function") api.on("mail:accountsUpdated", payload => {
+    if (Array.isArray(payload?.accounts)) acceptBodyAccounts(payload.accounts);
+  });
   await loadLook();
   await loadShellPrefs();
   try {
     const data = await call("mail:listAccounts");
-    state.accounts = Array.isArray(data) ? data : [];
+    acceptBodyAccounts(Array.isArray(data) ? data : []);
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -11904,6 +12040,8 @@ async function bootReaderWindow() {
     showStatus("That message could not be opened.", true);
     return;
   }
+  state.accountId = accountId || state.accountId;
+  pendingOpenId = messageId; pendingOpenBody = true;
   let opened;
   try {
     opened = await call("mail:openEmail", { emailId: messageId, accountId: accountId });
@@ -11919,12 +12057,17 @@ async function bootReaderWindow() {
     showStatus("That message is no longer in the mailbox.", true);
     return;
   }
+  if (email.bodyEpoch != null && !bodyIdentity(email)) {
+    showReaderOpenError("The mailbox connection changed. Reopen the message."); return;
+  }
+  pendingOpenId = ""; pendingOpenBody = false;
   noteBody(email);
   state.email = preferBody(email);
   state.thread = [];
   state.accountId = email.accountId || accountId || state.accountId;
   publishReaderTitle(email.subject || "");
   renderReader(false);
+  pumpBodyRefreshes();
   const openedId = email.id;
   loadSnoozed().then(() => loadProviderFolders(accountGen)).then(() => {
     if (state.email && state.email.id === openedId) renderReader(false);
@@ -17492,23 +17635,38 @@ function paintPeek(email) {
   paintMailBody(pane, email, () => paintPeek(email));
 }
 
+function invalidatePeek() {
+  peekGen += 1;
+  peekEmail = null;
+  pendingPeekId = "";
+  pendingPeekAccountId = "";
+  pruneBodyNotices();
+}
+
 async function peekMessage(messageId) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
   const gen = ++peekGen;
+  pendingPeekId = String(messageId); pendingPeekAccountId = listedMessage(messageId)?.accountId || "";
   let data;
   try {
     data = await call("mail:openEmail", { emailId: messageId });
   } catch (error) {
     if (gen !== peekGen) return;
+    pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
     throw error;
   }
   if (gen !== peekGen) return;
   const email = data && data.email;
-  if (!email) throw new Error("That message is no longer in the mailbox.");
+  if (!email || (email.bodyEpoch != null && !bodyIdentity(email))) {
+    pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
+    throw new Error("That message is no longer available for this mailbox.");
+  }
   noteBody(email);
   peekEmail = preferBody(email);
-  paintPeek(email);
+  pendingPeekId = ""; pendingPeekAccountId = "";
+  paintPeek(peekEmail);
   openDialog("agent-peek");
+  pumpBodyRefreshes();
 }
 
 async function openPeekInMail() {
@@ -20544,9 +20702,7 @@ function wire() {
   $("agent-peek-mail").addEventListener("click", () => {
     openPeekInMail().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
   });
-  $("agent-peek").addEventListener("close", () => {
-    peekEmail = null;
-  });
+  $("agent-peek").addEventListener("close", invalidatePeek);
   $("confirm").addEventListener("close", () => {
     if (!confirmResult) return;
     const pending = confirmResult;
