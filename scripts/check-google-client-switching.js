@@ -232,6 +232,8 @@ async function uiChecks() {
   assert.match(get("features-catalog").textContent, /Environment|environment/);
   assert.match(get("features-catalog").textContent, /unknown client need one-time reauthorization/);
   assert.match(get("features-catalog").textContent, /Finish or cancel Google sign-in/);
+  assert.match(get("features-catalog").textContent, /reconnecting Gmail also preserves a usable current-client Calendar grant/);
+  assert.match(get("settings-google-calendar-preservation").textContent, /preserves a usable Calendar grant for the current Desktop client/);
   assert.match(get("google-oauth-client").textContent, /reauthorize Gmail and Google Calendar separately/);
   ui.run("showFeaturesTab('cli')");
   assert.match(get("cli-gmail-transport").textContent, /not a bot command/);
@@ -286,6 +288,48 @@ function seed(id = "review-google", email = "review@example.invalid") {
   memory.setPassword(id, JSON.stringify(saved("fixture-a", "bundle")));
   memory.setPassword(id + ":calendar", JSON.stringify(saved("fixture-a", "calendar")));
   return id;
+}
+async function calendarPreservation() {
+  for (const kind of ["vacation", "primary", "shared"]) {
+    const id = seed("preserve-" + kind);
+    try {
+      const usable = saved("fixture-a", kind === "vacation" ? "calendar" : "bundle");
+      if (kind !== "vacation") {
+        usable.grantedScopes += " " + config.CALENDAR_SCOPES.google;
+        usable.requestedScopes = usable.grantedScopes;
+        grantedByToken.set(usable.refreshToken, usable.grantedScopes);
+      }
+      const expected = JSON.stringify(usable);
+      if (kind === "vacation") {
+        memory.setPassword(id, JSON.stringify(saved("fixture-a", "organize")));
+        const stale = { ...saved("fixture-a", "bundle"), grantedScopes: config.BUNDLE_SCOPES.google + " " + config.CALENDAR_SCOPES.google };
+        delete stale.googleClientId;
+        memory.setPassword(id + ":bundle", JSON.stringify(stale));
+        memory.setPassword(id + ":calendar", expected);
+        assert.equal(sidecar.gateAccount(db.accountById(id), "vacation").ok, false);
+      } else {
+        const stale = saved("fixture-b", "calendar");
+        if (kind === "primary") delete stale.googleClientId;
+        memory.setPassword(id + ":calendar", JSON.stringify(stale));
+        memory.setPassword(kind === "primary" ? id : id + ":bundle", expected);
+      }
+      assert.equal(sidecar.gateAccount(db.accountById(id), "calendar").ok, true, "current-client read fallback is usable before the write");
+      const result = await engine.answer(kind === "vacation" ? "mail:grantVacation" : kind === "primary" ? "mail:addAccount" : "mail:migrateGmail",
+        [kind === "vacation" ? { accountId: id } : kind === "primary" ? { provider: "google", expectedAccountId: id } : { accountId: id, confirmed: true }]);
+      assert.equal(result.success, true, JSON.stringify(result));
+      assert.equal(memory.getPassword(id + ":calendar"), expected, kind + " must retain the exact usable Calendar grant without merging scope/issuer metadata");
+      assert.equal(sidecar.gateAccount(db.accountById(id), "calendar").ok, true);
+      const listed = await engine.answer("calendar:list", [{ accountId: id, timeMin: "2026-10-01T00:00:00Z", timeMax: "2026-11-01T00:00:00Z" }]);
+      assert.equal(listed.success, true, JSON.stringify(listed));
+      assert.equal(listed.data.api, true);
+      pass(kind === "vacation" ? "Out of Office enablement cannot replace a current Calendar grant with an identityless shared bundle"
+        : kind === "primary" ? "Gmail reconnect preserves a current-client primary Calendar fallback instead of an identityless Calendar slot"
+          : "reviewed Gmail reauthorization preserves a current-client shared Calendar fallback instead of a different-client Calendar slot");
+    } finally {
+      db.removeAccount(id);
+      for (const suffix of ["", ":calendar", ":bundle", ":organize", ":rules", ":vacation"]) memory.deletePassword(id + suffix);
+    }
+  }
 }
 async function integration() {
   const id = seed();
@@ -436,7 +480,7 @@ async function integration() {
   await Promise.all(pages);
 }
 (async () => {
-  try { await basic(); await uiChecks(); await integration(); }
+  try { await basic(); await uiChecks(); await calendarPreservation(); await integration(); }
   finally { await new Promise(resolve => setTimeout(resolve, 100)); engine.stopIdle(); await db.close(); }
   console.log("google-client-switching-ok: " + checks + " fixture groups; provider I/O mocked; local loopback only; no native/live validation");
 })().catch(error => { console.error(error); process.exitCode = 1; });

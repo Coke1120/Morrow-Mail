@@ -1528,9 +1528,7 @@ async function connectOAuthAccountAdmitted(providerInput, expectedAccountId, opt
           if (secrets.getPassword(key)) writes.push([key, null]);
           continue;
         }
-        const legacy = [key, `${id}:bundle`, id].map(name => secrets.getPassword(name)).find(raw => {
-          try { return oauthConfig.hasPurposeScopes(JSON.parse(raw).grantedScopes || "", "google", purpose); } catch { return false; }
-        });
+        const legacy = sidecar.grantForPreservation(existing, purpose);
         if (legacy) writes.push([key, legacy]);
       }
       if (secrets.getPassword(`${id}:bundle`)) writes.push([`${id}:bundle`, null]);

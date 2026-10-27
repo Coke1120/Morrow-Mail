@@ -114,6 +114,13 @@ function secretKey(account, purpose) {
   return `${account.id}:${purpose}`;
 }
 
+function grantForPreservation(account, purpose) {
+  const key = secretKey(account, purpose);
+  const grant = readJson(key);
+  return grant?.refreshToken && config.hasPurposeScopes(grant.grantedScopes, providerOf(account), purpose)
+    ? secrets.getPassword(key) : null;
+}
+
 function gateMessage(reason, provider, purpose) {
   if (reason === "google_client_changed") return "This Google grant belongs to a different or unknown Desktop client. Reauthorize this feature in Settings → Accounts. Gmail and Calendar need separate consent; cached work is retained.";
   if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts.";
@@ -379,7 +386,8 @@ function saveBundle(account, signed, requestedPurpose = "bundle") {
   // Never claim the union of two grants on either token or overwrite mail here.
   for (const purpose of separateCalendar ? [] : API_PURPOSES) {
     if (previous && config.hasPurposeScopes(previous.grantedScopes, provider, purpose) && !config.hasPurposeScopes(granted, provider, purpose)) {
-      writes.push([`${account.id}:${purpose}`, JSON.stringify(previous)]);
+      const preserved = grantForPreservation(account, purpose);
+      if (preserved && preserved !== secrets.getPassword(`${account.id}:${purpose}`)) writes.push([`${account.id}:${purpose}`, preserved]);
     }
   }
   writes.push([key, JSON.stringify(blob)]);
@@ -1301,4 +1309,5 @@ module.exports = {
   gmailSendAsToken,
   rememberVacation,
   grantPurpose,
+  grantForPreservation,
 };
