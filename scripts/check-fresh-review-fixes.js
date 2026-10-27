@@ -110,6 +110,8 @@ async function hostChecks() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-five-fixes-"));
   const env = { ...process.env }, originalFetch = global.fetch;
   Object.assign(process.env, { MORROW_MAIL_DIR: directory, MORROW_USER_DATA: directory, MORROW_AI_CONFIG_DIR: directory, MORROW_MAIL_SECRETS: "memory" });
+  delete process.env.MORROW_GOOGLE_OAUTH_FILE;
+  process.env.MORROW_GOOGLE_OAUTH_JSON = JSON.stringify({ installed: { client_id: "review-fixture.apps.googleusercontent.com", client_secret: "fixture-only" } });
   const db = require("../host/mail/db"), engine = require("../host/mail/engine"), remote = require("../host/mail/remote");
   const secrets = require("../host/mail/memory-secrets"), { createSession } = require("../host/mail/gmail-session");
   const { simpleParser } = require("mailparser");
@@ -120,7 +122,7 @@ async function hostChecks() {
     db.insertAccount({ id: "gmail", email: "owner@fixture.invalid", username: "owner", profile: "gmail", authKind: "oauth2", createdAt: 1,
       imapHost: "imap.fixture.invalid", imapPort: 993, imapTls: true, smtpHost: "smtp.fixture.invalid", smtpPort: 465, smtpTls: true });
     db.enableGmail("gmail");
-    secrets.setPassword("gmail", JSON.stringify({ provider: "google", accessToken: "synthetic", refreshToken: "synthetic", expiresAt: Date.now()+3600000,
+    secrets.setPassword("gmail", JSON.stringify({ provider: "google", googleClientId: "review-fixture.apps.googleusercontent.com", accessToken: "synthetic", refreshToken: "synthetic", expiresAt: Date.now()+3600000,
       grantedScopes: require("../host/mail/oauth-config").SCOPES.google }));
     const session = createSession(db.accountById("gmail"), "synthetic", { api: service.api() });
     db.replaceFolders("gmail", (await session.folders()).folders);

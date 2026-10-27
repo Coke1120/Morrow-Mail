@@ -1415,6 +1415,16 @@ async function settleOAuthMailbox(id) {
 }
 
 async function connectOAuthAccount(providerInput, expectedAccountId, options = {}) {
+  let release;
+  if (oauthConfig.providerKey(providerInput) === "google") {
+    try { release = oauthConfig.acquireGoogleClient(); }
+    catch (error) { return fail(error.code, error.message); }
+  }
+  try { return await connectOAuthAccountAdmitted(providerInput, expectedAccountId, options); }
+  finally { release?.(); }
+}
+
+async function connectOAuthAccountAdmitted(providerInput, expectedAccountId, options) {
   const gen = ++oauthGeneration;
   // OAuth reveals the email only after sign-in. Pin every currently connected
   // incarnation so an implicit same-email reconnect cannot become a fresh add
@@ -1477,6 +1487,7 @@ async function connectOAuthAccount(providerInput, expectedAccountId, options = {
     expiresAt: grant.expiresAt,
     grantedScopes: grant.grantedScopes,
     requestedScopes: grant.requestedScopes || grant.grantedScopes,
+    ...(signed.provider === "google" ? { googleClientId: grant.googleClientId } : {}),
   });
   const existing = db.accountByEmail(signed.email);
   const id = existing ? existing.id : draft.id;
@@ -1505,6 +1516,7 @@ async function connectOAuthAccount(providerInput, expectedAccountId, options = {
   try {
     await exclusive(id, () => {
     if (gen !== oauthGeneration) throw Object.assign(new Error("Sign-in canceled. The current connection was retained."), { code: "oauth_cancelled" });
+    if (signed.provider === "google") oauthConfig.requireGoogleGrantClient(signed);
     if (reconnect) assertAccountCurrent(reconnect);
     if (expected && secrets.getPassword(id) !== expectedSecret) throw Object.assign(new Error("The mailbox credentials changed during sign-in. Retry for the current connection."), { code: "conflict" });
     if (signed.provider === "google" && existing && db.gmailMigrationBlockers(id)) throw Object.assign(new Error("Finish or resolve pending mail actions before migrating Gmail."), { code: "conflict" });
@@ -1516,9 +1528,7 @@ async function connectOAuthAccount(providerInput, expectedAccountId, options = {
           if (secrets.getPassword(key)) writes.push([key, null]);
           continue;
         }
-        const legacy = [key, `${id}:bundle`, id].map(name => secrets.getPassword(name)).find(raw => {
-          try { return oauthConfig.hasPurposeScopes(JSON.parse(raw).grantedScopes || "", "google", purpose); } catch { return false; }
-        });
+        const legacy = sidecar.grantForPreservation(existing, purpose);
         if (legacy) writes.push([key, legacy]);
       }
       if (secrets.getPassword(`${id}:bundle`)) writes.push([`${id}:bundle`, null]);
@@ -1552,11 +1562,11 @@ async function connectOAuthAccount(providerInput, expectedAccountId, options = {
         else secrets.setPassword(key, previous.get(key));
       } catch { restored = false; }
     }
-    const message = ["conflict", "oauth_cancelled"].includes(error?.code) ? error.message : restored
+    const message = ["conflict", "oauth_cancelled", "google_client_changed"].includes(error?.code) ? error.message : restored
       ? (stage === "keychain" ? "Could not save credentials. Previous credentials were restored." : "Could not save this account. Previous credentials were restored.")
       : "Could not restore all credentials after a storage failure. Reconnect the mailbox.";
     finishOAuthPage(signed, false, message);
-    return fail(["conflict", "oauth_cancelled"].includes(error?.code) ? error.code : stage, message);
+    return fail(["conflict", "oauth_cancelled", "google_client_changed"].includes(error?.code) ? error.code : stage, message);
   }
   finishOAuthPage(signed, true);
   let grantWarning = "";
@@ -3480,6 +3490,14 @@ const GOOGLE_OAUTH_IMPORT_MESSAGES = new Set([
 ]);
 
 async function importGoogleOauthClient(event) {
+  let release;
+  try { release = oauthConfig.acquireGoogleClient(); }
+  catch (error) { return fail(error.code, error.message); }
+  try { return await importGoogleOauthClientAdmitted(event); }
+  finally { release(); }
+}
+
+async function importGoogleOauthClientAdmitted(event) {
   let picked;
   try {
     const { dialog, BrowserWindow } = require("electron");
@@ -3552,9 +3570,14 @@ function answer(channel, args, event) {
   }
   if (channel === "mail:googleOauthStatus") return ok(oauthConfig.googleOauthStatus());
   if (channel === "mail:clearGoogleOauth") {
-    try { oauthConfig.clearImportedGoogleDesktopJson(); }
-    catch { return fail("invalid_google_oauth", "Could not remove the imported Google OAuth client."); }
-    return ok(oauthConfig.googleOauthStatus());
+    let release;
+    try { release = oauthConfig.acquireGoogleClient(); }
+    catch (error) { return fail(error.code, error.message); }
+    try {
+      oauthConfig.clearImportedGoogleDesktopJson();
+      return ok(oauthConfig.googleOauthStatus());
+    } catch { return fail("invalid_google_oauth", "Could not remove the imported Google OAuth client."); }
+    finally { release(); }
   }
   if (channel === "mail:importGoogleOauth") return importGoogleOauthClient(event);
   if (channel === "mail:addAccount") {

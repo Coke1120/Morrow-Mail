@@ -12,7 +12,7 @@ const { spawnSync } = require("node:child_process");
 
 let engine, db, remote, secrets, oauth, sidecar, auth, server, catalog, budget;
 let reconnectCases = 0;
-const envKeys = ["MORROW_USER_DATA", "MORROW_MAIL_DIR", "MORROW_AI_CONFIG_DIR", "MORROW_MAIL_SECRETS"];
+const envKeys = ["MORROW_USER_DATA", "MORROW_MAIL_DIR", "MORROW_AI_CONFIG_DIR", "MORROW_MAIL_SECRETS", "MORROW_GOOGLE_OAUTH_JSON", "MORROW_GOOGLE_OAUTH_FILE"];
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function configure(dir) {
@@ -20,7 +20,9 @@ function configure(dir) {
   Object.assign(process.env, {
     MORROW_USER_DATA: dir, MORROW_MAIL_DIR: dir, MORROW_AI_CONFIG_DIR: dir,
     MORROW_MAIL_SECRETS: "memory",
+    MORROW_GOOGLE_OAUTH_JSON: JSON.stringify({ installed: { client_id: "liveness-fixture.apps.googleusercontent.com", client_secret: "fixture-only" } }),
   });
+  delete process.env.MORROW_GOOGLE_OAUTH_FILE;
 }
 
 function modules() {
@@ -79,6 +81,7 @@ function imap(email, expectedAccountId, password = "synthetic-pending") {
 function signed(provider, email, completed) {
   const config = require("../host/mail/oauth-config");
   return { provider, profile: provider === "google" ? "gmail" : "outlook", purpose: "imap",
+    ...(provider === "google" ? { googleClientId: config.credentials("google").clientId } : {}),
     email, username: email, refreshToken: "synthetic-refresh", accessToken: "synthetic-access",
     expiresAt: Date.now() + 3600000,
     grantedScopes: provider === "google" ? config.BUNDLE_SCOPES.google : config.SCOPES.microsoft,

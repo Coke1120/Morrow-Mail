@@ -140,40 +140,70 @@ function parseLocatedGoogleClient(raw) {
 
 // Env stays first so a developer machine can override a client imported in Settings.
 // The imported file then wins over the repo copy and the release bake.
-function locateGoogleClientRaw() {
+function locateGoogleClient() {
   const file = (process.env.MORROW_GOOGLE_OAUTH_FILE || "").trim();
-  if (file) return { source: "env", raw: fs.readFileSync(file, "utf8") };
+  if (file) return { source: "env", read: () => fs.readFileSync(file, "utf8") };
   const raw = (
     process.env.MORROW_GOOGLE_OAUTH_JSON ||
     process.env.GOOGLE_DESKTOP_OAUTH_JSON ||
     ""
   ).trim();
-  if (raw) return { source: "env", raw };
+  if (raw) return { source: "env", read: () => raw };
   const imported = importedGoogleOauthPath();
-  if (fs.existsSync(imported)) return { source: "imported", raw: fs.readFileSync(imported, "utf8") };
+  if (fs.existsSync(imported)) return { source: "imported", read: () => fs.readFileSync(imported, "utf8") };
   for (const bundled of googleClientFiles()) {
-    if (fs.existsSync(bundled)) return { source: "bundled", raw: fs.readFileSync(bundled, "utf8") };
+    if (fs.existsSync(bundled)) return { source: "bundled", read: () => fs.readFileSync(bundled, "utf8") };
   }
   return null;
 }
 
 function loadGoogleClient() {
-  const located = locateGoogleClientRaw();
+  const located = locateGoogleClient();
   if (!located) return null;
-  return parseLocatedGoogleClient(located.raw);
+  return parseLocatedGoogleClient(located.read());
 }
 
 function googleOauthStatus() {
   let imported = false;
   try { imported = fs.existsSync(importedGoogleOauthPath()); } catch { imported = false; }
+  let located;
   try {
-    const located = locateGoogleClientRaw();
+    located = locateGoogleClient();
     if (!located) return { ready: false, source: "none", imported };
-    parseLocatedGoogleClient(located.raw);
+    parseLocatedGoogleClient(located.read());
     return { ready: true, source: located.source, imported };
   } catch {
-    return { ready: false, source: "invalid", imported };
+    return { ready: false, source: "invalid", invalidSource: located?.source || "unknown", imported };
   }
+}
+
+function googleGrantMatches(grant) {
+  if (!grant || typeof grant.googleClientId !== "string" || !grant.googleClientId) return false;
+  try { return grant.googleClientId === loadGoogleClient()?.clientId; }
+  catch { return false; }
+}
+
+function requireGoogleGrantClient(grant) {
+  if (googleGrantMatches(grant)) return;
+  const error = new Error("Google Desktop client changed or the saved grant has no client identity. Sign in again in Settings → Accounts; reauthorize Gmail and Google Calendar separately. Cached work is retained.");
+  error.code = "google_client_changed";
+  throw error;
+}
+
+// Cover the picker/browser wait and the final host commit, not just signIn().
+// Client changes and Google authorization share this main-process lease.
+let googleClientLocked = false;
+function acquireGoogleClient() {
+  if (googleClientLocked) {
+    const error = new Error("Finish or cancel Google sign-in or the Desktop client picker before changing the Google OAuth client or starting another Google sign-in.");
+    error.code = "conflict";
+    throw error;
+  }
+  googleClientLocked = true;
+  let released = false;
+  return () => {
+    if (!released) { released = true; googleClientLocked = false; }
+  };
 }
 
 function writePrivateFile(dest, text) {
@@ -439,6 +469,9 @@ module.exports = {
   googleOauthStatus,
   importGoogleDesktopJson,
   clearImportedGoogleDesktopJson,
+  googleGrantMatches,
+  requireGoogleGrantClient,
+  acquireGoogleClient,
   oauthReady,
   providerKey,
   normalizePurpose,

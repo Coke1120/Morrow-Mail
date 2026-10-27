@@ -659,7 +659,7 @@
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
         <p id="connect-recovery-note" class="hint"></p>
-        <p class="hint">Google OAuth connects Gmail API mail, labels, Out of Office and inbox rules. Calendar is requested separately; existing Google OAuth IMAP accounts migrate after review in Settings → Accounts. If Continue with Google is unavailable, import a Desktop client JSON under Settings → Accounts. Microsoft connects mail first, then checks those features for the same account. Approve any missing permissions; you can keep mail if you decline features. Yahoo Mail uses an app password.</p>
+        <p id="connect-google-help" class="hint">Choose Continue with Google for Google browser sign-in; no password is needed in Morrow. The bundled Google client is used by default when present; a personal client is optional under Advanced in Settings → Accounts. Google OAuth connects Gmail API mail, labels, Out of Office and inbox rules. Calendar is separate. Existing Google OAuth IMAP accounts require migration review in Accounts. Microsoft connects mail first, then checks its feature permissions. Yahoo Mail uses an app password.</p>
         <div class="row" role="group" aria-label="Account providers">
           <button type="button" class="primary" id="oauth-google">Continue with Google</button>
           <button type="button" class="ghost" id="oauth-microsoft">Continue with Microsoft</button>
@@ -667,6 +667,10 @@
         </div>
         <p id="oauth-unavailable" class="hint"></p>
         <p id="connect-status" class="hint" role="status" aria-live="polite"></p>
+        <button type="button" class="ghost icon-label" id="connect-gmail-migration" hidden>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"></path></svg>
+          <span>Review Gmail API migration</span>
+        </button>
         <details id="connect-imap"><summary>Other email provider</summary>
         <p class="hint">The password stays in this app's keychain. A typed address fills the servers it can find.</p>
         <label for="profile">Provider</label>
@@ -1175,9 +1179,10 @@
           </div>
           </div>
           <details class="settings-disclosure" id="google-oauth-client">
-            <summary>Google OAuth client</summary>
+            <summary>Advanced: personal Google OAuth client (optional)</summary>
             <p id="google-oauth-client-status" class="hint" role="status">Checking Google OAuth…</p>
-            <p class="hint">Releases may include a shared Desktop client that only Google test users can approve. Import your own Desktop client JSON instead. In Google Cloud Console, create a project, enable the Gmail API and the Calendar API, set the OAuth consent screen to External and Testing, add your Google account as a test user, then create an OAuth client of type Desktop and download the JSON. The secret stays on this computer and is not shown. An imported client is used instead of a bundled one. A mailbox already connected with a different client must be connected again. Developer environment variables still win. While Testing, refresh tokens expire after about seven days; sign in again then. Do not paste the JSON into git, issues, or chat. <a href="https://github.com/Coke1120/Morrow-Mail/blob/dev/docs/bring-your-own-google-oauth.md" target="_blank" rel="noreferrer">How to create a Desktop client</a></p>
+            <p id="google-oauth-default-help" class="hint">Continue with Google uses the bundled Desktop client by default when present. Importing a personal client is optional and replaces the bundled client on this computer; developer environment variables still win. Google controls which users can approve each client. This status checks local configuration, not the Google project's publication or verification status.</p>
+            <p class="hint">If you choose a personal client, follow the linked guide to create a Google Cloud project, enable the APIs you use, configure its test users and download a Desktop client JSON. The secret stays on this computer and is not shown. After changing clients, reauthorize Gmail and Google Calendar separately. Older grants with an unknown client need one-time reauthorization. Cached mail and saved credentials stay. Finish or cancel Google sign-in before importing or clearing; finish the picker before starting Google sign-in. Fix or remove an invalid developer environment override. Clear imported client returns to the bundled client when present. Do not paste the JSON into git, issues, or chat. <a href="https://github.com/Coke1120/Morrow-Mail/blob/dev/docs/bring-your-own-google-oauth.md" target="_blank" rel="noreferrer">Optional personal Desktop client guide</a></p>
             <div class="row">
               <button type="button" class="ghost icon-label" id="google-oauth-import">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1192,6 +1197,7 @@
           </details>
           <details class="settings-disclosure" id="account-permissions"><summary>Permissions &amp; calendar access</summary>
             <p id="settings-gmail-migration" class="hint">Google login still uses OAuth. New Google connections use Gmail API mail access; Calendar is requested separately. Existing Google OAuth mailboxes migrate only after review. Account ids, cached mail and drafts stay. A narrower request does not revoke older broad grants. Gmail Delete moves to Trash; deleting again keeps mail there. Microsoft and other IMAP deletion behavior is unchanged.</p>
+            <p id="settings-google-calendar-preservation" class="hint">Enabling another Google feature or reconnecting Gmail preserves a usable Calendar grant for the current Desktop client, even when stale records remain. Changing clients still requires separate Calendar reauthorization.</p>
             <div class="row"><button type="button" class="ghost" id="settings-gmail-migrate" hidden>Migrate Gmail to Gmail API</button><button type="button" class="ghost" id="settings-gmail-calendar" hidden>Reauthorize Google Calendar separately</button><button type="button" class="ghost" id="settings-gmail-cancel" hidden>Cancel Google reauthorization</button></div>
             <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
             <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
