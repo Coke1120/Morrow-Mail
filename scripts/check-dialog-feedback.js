@@ -11,7 +11,7 @@ async function run(){
   assert.match(get('connect-status').textContent,/browser/);
   assert.equal(get('oauth-microsoft').disabled,true);
   assert.equal(get('connect-close').textContent,'Cancel sign-in');
-  assert.match(get('oauth-unavailable').textContent, /Import one in Settings → Accounts/);
+  assert.match(get('oauth-unavailable').textContent, /Review Google OAuth status in Settings → Accounts/);
   ui.run(`state.googleOauthClient={ready:true,source:'imported',imported:true}; paintGoogleOauthClient();`);
   assert.match(get('google-oauth-client-status').textContent, /your imported Desktop client/);
   assert.equal(get('google-oauth-clear').disabled, false);

@@ -92,9 +92,9 @@
       },
       {
         id: "google-desktop-oauth",
-        title: "Bring your own Google OAuth client",
+        title: "Google sign-in and optional personal client",
         category: "Accounts",
-        blurb: "Settings → Accounts imports a Google Desktop OAuth client JSON into this computer's app data. That file is used instead of a client bundled with the app. Developer environment variables still override it. Web client JSON is rejected. The client secret is not shown. Clear imported client removes only the imported file. A mailbox connected with another client must be connected again. While the Google consent screen stays in Testing, only test users can connect and refresh tokens expire after about seven days.",
+        blurb: "Continue with Google uses the bundled Desktop client by default when present. New connections and Gmail OAuth reconnects keep Other email provider collapsed; manual-provider reconnects retain their form. A legacy Gmail connection offers Review Gmail API migration, which opens Accounts without migrating until you review and confirm. Settings → Accounts → Advanced: personal Google OAuth client (optional) imports a Desktop JSON into this computer's app data. An explicit import replaces the bundled client; developer environment variables still win. Web client JSON is rejected and the secret is not shown. Clear imported client removes only that file. Changing clients requires reconnecting. Local readiness does not prove Google permits sign-in.",
       },
       {
         id: "multi-account",
