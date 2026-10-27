@@ -46,6 +46,30 @@ const source = name => fs.readFileSync(path.join(root, name), "utf8");
 assert(!fs.existsSync(path.join(root, "resources/google-oauth.json")), "Use a clean worktree without real OAuth JSON");
 let checks = 0;
 function pass(text) { checks++; console.log("PASS " + text); }
+function assertImportedClientFile(stat, platform = process.platform) {
+  assert.equal(stat.isFile(), true, "the imported client must be a regular file");
+  // Windows exposes read/write flags, not POSIX owner/group/other permissions.
+  // These flags do not establish a Windows ACL privacy guarantee.
+  // https://nodejs.org/docs/latest-v20.x/api/fs.html#fschmodpath-mode-callback
+  if (platform === "win32") assert.equal(stat.mode & 0o600, 0o600, "the imported Windows file must be readable and writable");
+  else assert.equal(stat.mode & 0o777, 0o600, "the imported POSIX file must remain owner-only");
+}
+function fileMetadataChecks() {
+  const stat = (mode, regular = true) => ({ mode, isFile: () => regular });
+  for (const platform of ["linux", "darwin"]) {
+    assertImportedClientFile(stat(0o100600), platform);
+    assert.throws(() => assertImportedClientFile(stat(0o100666), platform), { code: "ERR_ASSERTION" });
+    assert.throws(() => assertImportedClientFile(stat(0o100400), platform), { code: "ERR_ASSERTION" });
+  }
+  assertImportedClientFile(stat(0o100666), "win32");
+  assertImportedClientFile(stat(0o100600), "win32");
+  assert.throws(() => assertImportedClientFile(stat(0o100444), "win32"), { code: "ERR_ASSERTION" });
+  assert.throws(() => assertImportedClientFile(stat(0o100222), "win32"), { code: "ERR_ASSERTION" });
+  for (const platform of ["linux", "darwin", "win32"]) {
+    assert.throws(() => assertImportedClientFile(stat(0o600, false), platform), { code: "ERR_ASSERTION" });
+  }
+  pass("platform file metadata: POSIX 0600 remains mandatory; Windows 0666 uses supported read/write flags; directories are rejected");
+}
 const response = (value, ok = true) => ({ ok, status: ok ? 200 : 400,
   json: async () => value, text: async () => JSON.stringify(value) });
 let activePurpose = "bundle", onOpen = null;
@@ -172,9 +196,9 @@ async function basic() {
   finally { fs.renameSync = rename; }
   assert.equal(fs.readdirSync(dir).filter(x => x.endsWith(".tmp")).length, 0);
   assert.equal((await importFile(file("bom.json", "\ufeff" + json("fixture-a")))).success, true);
-  assert.equal(fs.statSync(config.importedGoogleOauthPath()).mode & 0o777, 0o600);
+  assertImportedClientFile(fs.statSync(config.importedGoogleOauthPath()));
   assert(!JSON.stringify(config.googleOauthStatus()).includes("synthetic-only"));
-  pass("native-picker handler with synthetic selection: BOM, cancel, malformed/Web/bare/array/missing/oversized, picker/write failure; prior file preserved; private mode/status");
+  pass("native-picker handler with synthetic selection: BOM, cancel, malformed/Web/bare/array/missing/oversized, picker/write failure; prior file preserved; platform file metadata/status");
 }
 async function uiChecks() {
   const { JSDOM } = req("jsdom");
@@ -480,7 +504,7 @@ async function integration() {
   await Promise.all(pages);
 }
 (async () => {
-  try { await basic(); await uiChecks(); await calendarPreservation(); await integration(); }
+  try { fileMetadataChecks(); await basic(); await uiChecks(); await calendarPreservation(); await integration(); }
   finally { await new Promise(resolve => setTimeout(resolve, 100)); engine.stopIdle(); await db.close(); }
   console.log("google-client-switching-ok: " + checks + " fixture groups; provider I/O mocked; local loopback only; no native/live validation");
 })().catch(error => { console.error(error); process.exitCode = 1; });
