@@ -104,7 +104,7 @@ test("existing label hierarchy API is reused with redirects disabled", async () 
 });
 
 test("HTTP failure, lost writes, history expiry, malformed data and cancellation stay explicit", async () => {
-  for (const [status, code, issued] of [[403, "scope_missing", false], [429, "rate_limit", false], [500, "provider", true]]) {
+  for (const [status, code, issued] of [[403, "provider", false], [429, "rate_limit", false], [500, "provider", true]]) {
     const f = fixture(() => reply({}, status, { "retry-after": "2" }));
     await assert.rejects(f.api.send({ raw: source, confirmed: true }), error => error.code === code && error.operationIssued === issued);
     assert.equal(f.calls.length, 1);

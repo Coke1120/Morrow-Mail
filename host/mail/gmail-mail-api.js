@@ -1,5 +1,5 @@
 // Gmail API transport. All ordinary deletion uses Trash; no permanent-delete API.
-const { retryAfterMs } = require("./provider-http");
+const { gmailError } = require("./gmail-error");
 const provider = require("./provider-api");
 const ROOT = "https://gmail.googleapis.com/gmail/v1/users/me";
 const MAIL_SCOPES = "openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic";
@@ -47,7 +47,7 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     if (typeof value !== "string" || !value) throw invalid("Gmail authorization is unavailable.");
     return value;
   }
-  async function request(path, { method = "GET", body, query, signal: readSignal } = {}) {
+  async function request(path, { operation, method = "GET", body, query, signal: readSignal } = {}) {
     alive();
     readSignal?.throwIfAborted();
     const url = new URL(`${ROOT}${path}`);
@@ -69,12 +69,7 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
       throw Object.assign(new Error("Gmail request could not be confirmed. Refresh before retrying a write."), { code: requestSignal.aborted ? "aborted" : "provider_network", operationIssued: method !== "GET" && issued, cause });
     }
     if (!response.ok) {
-      const error = Object.assign(new Error(`Gmail rejected the request (HTTP ${response.status}).`), {
-        status: response.status, code: response.status === 429 ? "rate_limit" : [401, 403].includes(response.status) ? "scope_missing" : "provider",
-        operationIssued: method !== "GET" && (response.status >= 500 || response.status === 408),
-      });
-      const wait = retryAfterMs(response); if (wait != null) error.retryAfterMs = wait;
-      throw error;
+      throw await gmailError(response, operation, { method, signal: requestSignal });
     }
     if (response.status === 204) return {};
     let text;
@@ -89,14 +84,14 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     catch (error) { error.code = "provider"; error.operationIssued = true; throw error; }
   }
   async function listMessages({ labelIds: labels = [], query = "", pageToken = "", limit = 100, includeSpamTrash = false } = {}) {
-    const payload = page(await request("/messages", { query: { labelIds: labelIds(labels), q: query, pageToken,
+    const payload = page(await request("/messages", { operation: "messages.list", query: { labelIds: labelIds(labels), q: query, pageToken,
       maxResults: Math.min(500, Math.max(1, Number(limit) || 100)), includeSpamTrash } }), "messages");
     payload.messages.forEach(message);
     return payload;
   }
   async function getMessage(messageId, { format = "full", signal: readSignal } = {}) {
     if (!["full", "metadata", "raw"].includes(format)) throw invalid("Choose a supported Gmail message format.");
-    return message(await request(`/messages/${id(messageId)}`, { query: { format }, signal: readSignal }));
+    return message(await request(`/messages/${id(messageId)}`, { operation: "messages.get", query: { format }, signal: readSignal }));
   }
   async function raw(messageId) {
     const result = await getMessage(messageId, { format: "raw" });
@@ -105,24 +100,24 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     return { ...result, source };
   }
   async function attachment(messageId, attachmentId, { signal: readSignal } = {}) {
-    const result = await request(`/messages/${id(messageId)}/attachments/${id(attachmentId)}`, { signal: readSignal });
+    const result = await request(`/messages/${id(messageId)}/attachments/${id(attachmentId)}`, { operation: "attachments.get", signal: readSignal });
     return decode(result.data);
   }
   async function modifyLabels(messageId, add = [], remove = []) {
     const addLabelIds = labelIds(add), removeLabelIds = labelIds(remove);
     if (addLabelIds.some(value => removeLabelIds.includes(value))) throw invalid("A label cannot be both added and removed.");
-    return writeResult(await request(`/messages/${id(messageId)}/modify`, { method: "POST", body: { addLabelIds, removeLabelIds } }));
+    return writeResult(await request(`/messages/${id(messageId)}/modify`, { operation: "messages.modify", method: "POST", body: { addLabelIds, removeLabelIds } }));
   }
   async function trash(messageId) {
     const prior = await getMessage(messageId, { format: "metadata" });
-    const result = writeResult(await request(`/messages/${id(messageId)}/trash`, { method: "POST" }));
+    const result = writeResult(await request(`/messages/${id(messageId)}/trash`, { operation: "messages.trash", method: "POST" }));
     return { message: result, undo: { messageId, priorLabelIds: Array.isArray(prior.labelIds) ? prior.labelIds : [] } };
   }
   async function restoreTrash(undo) {
     const messageId = undo?.messageId;
     id(messageId);
     const prior = labelIds(undo?.priorLabelIds || []);
-    const result = writeResult(await request(`/messages/${id(messageId)}/untrash`, { method: "POST" }));
+    const result = writeResult(await request(`/messages/${id(messageId)}/untrash`, { operation: "messages.untrash", method: "POST" }));
     // Restore folder membership without overwriting later read/star/label changes.
     const mutable = prior.filter(value => !["TRASH", "SENT", "DRAFT", "UNREAD", "STARRED", "IMPORTANT", "CHAT"].includes(value));
     const missing = mutable.filter(value => !(result.labelIds || []).includes(value));
@@ -130,18 +125,18 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
   }
   async function history({ startHistoryId, pageToken = "", limit = 100 } = {}) {
     if (typeof startHistoryId !== "string" || !/^\d+$/.test(startHistoryId)) throw invalid("A Gmail history cursor is required.");
-    try { return page(await request("/history", { query: { startHistoryId, pageToken, maxResults: Math.min(500, Math.max(1, Number(limit) || 100)) } }), "history"); }
+    try { return page(await request("/history", { operation: "history.list", query: { startHistoryId, pageToken, maxResults: Math.min(500, Math.max(1, Number(limit) || 100)) } }), "history"); }
     catch (error) { if (error.status === 404) error.code = "history_expired"; throw error; }
   }
   function draft(value) { if (!value || typeof value !== "object") throw invalid("Gmail returned an invalid draft."); id(value.id); message(value.message); return value; }
   async function listDrafts({ pageToken = "", limit = 100 } = {}) {
-    const result = page(await request("/drafts", { query: { pageToken, maxResults: Math.min(500, Math.max(1, Number(limit) || 100)) } }), "drafts");
+    const result = page(await request("/drafts", { operation: "drafts.list", query: { pageToken, maxResults: Math.min(500, Math.max(1, Number(limit) || 100)) } }), "drafts");
     result.drafts.forEach(draft); return result;
   }
-  async function getDraft(draftId) { return draft(await request(`/drafts/${id(draftId)}`, { query: { format: "full" } })); }
+  async function getDraft(draftId) { return draft(await request(`/drafts/${id(draftId)}`, { operation: "drafts.get", query: { format: "full" } })); }
   async function saveDraft({ draftId, raw: source, threadId } = {}) {
     const body = { message: rawMessage(source, threadId) };
-    return writeResult(await request(draftId ? `/drafts/${id(draftId)}` : "/drafts", { method: draftId ? "PUT" : "POST", body }), draft);
+    return writeResult(await request(draftId ? `/drafts/${id(draftId)}` : "/drafts", { operation: draftId ? "drafts.update" : "drafts.create", method: draftId ? "PUT" : "POST", body }), draft);
   }
   async function discardDraft(draftId) {
     const current = await getDraft(draftId);
@@ -149,22 +144,37 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
   }
   async function send({ raw: source, threadId, confirmed = false } = {}) {
     if (confirmed !== true) throw invalid("Send requires an explicit reviewed send action.");
-    return writeResult(await request("/messages/send", { method: "POST", body: rawMessage(source, threadId) }));
+    return writeResult(await request("/messages/send", { operation: "messages.send", method: "POST", body: rawMessage(source, threadId) }));
   }
   // Reuse the existing provider label hierarchy implementation, with strict transport ownership.
   async function labelsCall(work) {
     const credential = await token();
+    let failure;
     const guardedFetch = async (url, options) => {
       alive();
       if (!String(url).startsWith(`${ROOT}/labels`)) throw invalid("Unexpected Gmail label destination.");
       const combined = signal ? AbortSignal.any([signal, AbortSignal.timeout(45000)]) : AbortSignal.timeout(45000);
       const result = await fetchImpl(url, { ...options, redirect: "error", signal: combined });
-      alive(); return result;
+      alive();
+      if (!result.ok) {
+        const method = options.method || "GET";
+        const operation = { GET: "labels.list", POST: "labels.create", PATCH: "labels.update", DELETE: "labels.delete" }[method];
+        failure = await gmailError(result, operation, { method, signal: combined });
+        throw failure;
+      }
+      return result;
     };
-    return work(credential, guardedFetch);
+    try { return await work(credential, guardedFetch); }
+    catch (error) {
+      // apiJson wraps fetch errors. Keep safe HTTP evidence, and preserve the
+      // hierarchy mover's partial-result receipt when some renames succeeded.
+      if (failure && error.code !== "partial") throw failure;
+      if (failure) error.message += " " + failure.message;
+      throw error;
+    }
   }
-  return { profile: () => request("/profile"), listMessages, getMessage, raw, attachment, history, listDrafts, getDraft, saveDraft, discardDraft, send,
-    getLabel: labelId => request(`/labels/${id(labelId)}`),
+  return { profile: () => request("/profile", { operation: "profile.get" }), listMessages, getMessage, raw, attachment, history, listDrafts, getDraft, saveDraft, discardDraft, send,
+    getLabel: labelId => request(`/labels/${id(labelId)}`, { operation: "labels.get" }),
     modifyLabels, trash, restoreTrash,
     markRead: (messageId, read) => modifyLabels(messageId, read ? [] : ["UNREAD"], read ? ["UNREAD"] : []),
     star: (messageId, starred) => modifyLabels(messageId, starred ? ["STARRED"] : [], starred ? [] : ["STARRED"]),

@@ -129,7 +129,9 @@ async function testStickyAuthDoesNotRetry() {
   assert.equal(expired.auth, true);
   const forbidden = retry.noteFailure("ada", "no", { error: { statusCode: 403 } });
   assert.equal(forbidden.auth, true);
-  const explain = loadFunctions(fs.readFileSync(path.join(__dirname, "../host/mail/remote.js"), "utf8"), ["isYahooAuth", "explain"]).explain;
+  const explain = loadFunctions(fs.readFileSync(path.join(__dirname, "../host/mail/remote.js"), "utf8"), ["isYahooAuth", "explain"], {
+    diagnosticMessage: require("../host/mail/gmail-error").diagnosticMessage,
+  }).explain;
   const network = retry.noteFailure("ada", explain(new Error("ETIMEDOUT")));
   assert.equal(network.retry, true);
   assert.equal(network.delayMs, 5000);
@@ -258,9 +260,9 @@ function functionSource(source, name) {
   throw new Error(`unclosed ${name}`);
 }
 
-function loadFunctions(source, names) {
+function loadFunctions(source, names, dependencies = {}) {
   const body = names.map((name) => functionSource(source, name)).join("\n");
-  return new Function(`${body}; return { ${names.join(", ")} };`)();
+  return new Function(...Object.keys(dependencies), `${body}; return { ${names.join(", ")} };`)(...Object.values(dependencies));
 }
 
 function testWiring() {
