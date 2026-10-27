@@ -4,106 +4,134 @@ const path = require("node:path");
 const vm = require("node:vm");
 const flush = () => new Promise(setImmediate);
 
-async function bootControls() {
-  const source = fs.readFileSync(path.join(__dirname, "../host/main.js"), "utf8");
+async function bootControls(source = fs.readFileSync(path.join(__dirname, "../host/main.js"), "utf8")) {
   const { startupIndexProgressScript } = require("../host/startup-error");
-  let currentWindow, progress, now = 1000, unsubscribed = 0, errors = 0, quit = 0, paints = 0;
-  const node = { hidden: true, textContent: "" };
-  const load = deferred(), close = deferred();
-  let closeCalls = 0;
-  const database = { subscribeIndexProgress(callback) { progress = callback; return () => { unsubscribed++; }; },
-    close() { closeCalls++; return close.promise; } };
-  const events = new Map();
-  let quitOptions;
-  const context = {
-    interactiveBoot: true, bootWindow: null, bootFinished: false, bootFailed: false, bootCancelled: false,
-    startupContinued: false,
-    process: { env: {} }, console, Date: { now: () => now }, startupIndexProgressScript,
-    startupStatusHtml: () => "<html>synthetic opening window</html>",
-    initMail: () => load.promise, presentBootFailure: async () => { errors++; },
-    onBootRejection() {}, listScheduledRows() {}, requestQuitChoice() {}, scheduledQuitTime() {},
-    app: { on: (name, listener) => events.set(name, listener), quit() { quit++; }, exit() { throw new Error("Unexpected app exit"); } },
-    quitScheduled: { createQuitController(options) { quitOptions = options; return { onBeforeQuit() {} }; } },
-    BrowserWindow: class {
-      constructor(options) {
-        assert.equal(options.webPreferences.sandbox, true);
-        this.listeners = new Map(); this.destroyed = false; currentWindow = this;
-        this.webContents = { executeJavaScript(script) {
-          paints++;
-          vm.runInNewContext(script, { document: { getElementById: () => node } });
-          return Promise.resolve();
-        } };
-      }
-      on(name, callback) { this.listeners.set(name, callback); }
-      loadURL(url) { assert.match(url, /^data:text\/html/); return Promise.resolve(); }
-      isDestroyed() { return this.destroyed; }
-      show() {}
-    },
-    require(name) {
-      if (name === "./mail/db") return database;
-      if (name === "./bot/server") return { stop: async () => {} };
-      if (name === "./mail/engine") return { stopIdle: async () => {} };
-      throw new Error("Unexpected boot-fixture dependency " + name);
-    },
-  };
-  const ctx = vm.createContext(context);
-  const statusStart = source.indexOf("async function presentBootStatus()");
-  vm.runInContext(source.slice(statusStart, source.indexOf("async function presentBootFailure", statusStart)), ctx);
-  await ctx.presentBootStatus();
-  const flowStart = source.indexOf("  let lastIndexPaint = -Infinity;");
-  const flow = source.slice(flowStart, source.indexOf('  if (process.env.MORROW_MAIL_SELFTEST', flowStart));
-  const start = () => vm.runInContext("(async () => {" + flow + ";globalThis.startupContinued = true;})()", ctx);
-  const pending = start();
-  progress({ phase: "building", completed: 10, total: 100, resumed: false });
-  assert.match(node.textContent, /10 of 100/);
-  progress({ phase: "building", completed: 20, total: 100, resumed: false });
-  assert.equal(paints, 1, "intermediate progress paints are throttled");
-  now += 100;
-  progress({ phase: "building", completed: 20, total: 100, resumed: false });
-  assert.equal(paints, 2);
-  progress({ phase: "ready", completed: 100, total: 100, resumed: false });
-  assert.equal(paints, 3, "final progress bypasses the throttle");
-  assert.equal(node.textContent, "Local search is ready.");
-  currentWindow.destroyed = true; currentWindow.listeners.get("closed")();
-  assert.equal(ctx.bootCancelled, true); assert.equal(quit, 1);
-  progress({ phase: "building", completed: 30, total: 100 });
-  assert.equal(paints, 3, "a closed opening window receives no later paints");
-  load.resolve(); await pending;
-  assert.equal(ctx.startupContinued, false, "late successful initialization cannot continue after startup quit");
-  assert.equal(unsubscribed, 1);
+  const realQuit = require("../host/quit-scheduled");
+  async function fixture(pendingMail = true) {
+    const load = deferred(), choice = deferred(), close = deferred(), events = new Map();
+    const node = { hidden: true, textContent: "" };
+    let window, progress, controller, now = 1000;
+    const calls = { close: 0, quit: 0, errors: 0, paints: 0, prompts: 0, unsubscribed: 0 };
+    const event = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
+    const database = { subscribeIndexProgress(callback) { progress = callback; return () => { calls.unsubscribed++; }; },
+      close() { calls.close++; return close.promise; } };
+    const context = {
+      interactiveBoot: true, bootWindow: null, bootFinished: false, bootFailed: false, bootCancelled: false, startupContinued: false,
+      process: { env: {}, platform: process.platform }, console, Date: { now: () => now }, startupIndexProgressScript,
+      startupStatusHtml: () => "<html>synthetic opening window</html>", initMail: () => load.promise,
+      presentBootFailure: async () => { calls.errors++; context.bootFailed = true; }, onBootRejection() {},
+      listScheduledRows: () => pendingMail ? [{ status: "pending", subject: "Synthetic scheduled mail", sendAt: "2026-11-01T00:00:00Z" }] : [],
+      requestQuitChoice() { calls.prompts++; return choice.promise; }, scheduledQuitTime: () => "synthetic time",
+      app: { on: (name, listener) => events.set(name, listener),
+        quit() { calls.quit++; events.get("before-quit")(event()); }, exit() { throw new Error("Unexpected app exit"); } },
+      quitScheduled: { createQuitController(options) { controller = realQuit.createQuitController(options); return controller; } },
+      BrowserWindow: class {
+        constructor(options) {
+          assert.equal(options.webPreferences.sandbox, true);
+          this.listeners = new Map(); this.destroyed = false; window = this;
+          this.webContents = { executeJavaScript(script) {
+            calls.paints++;
+            vm.runInNewContext(script, { document: { getElementById: () => node } });
+            return Promise.resolve();
+          } };
+        }
+        on(name, callback) { this.listeners.set(name, callback); }
+        loadURL(url) { assert.match(url, /^data:text\/html/); return Promise.resolve(); }
+        isDestroyed() { return this.destroyed; }
+        show() {}
+        close() {
+          if (this.destroyed) return false;
+          const request = event(); this.listeners.get("close")?.(request);
+          if (!request.prevented) { this.destroyed = true; this.listeners.get("closed")?.(); }
+          return request.prevented;
+        }
+      },
+      require(name) {
+        if (name === "./mail/db") return database;
+        if (name === "./bot/server") return { stop: async () => {} };
+        if (name === "./mail/engine") return { stopIdle: async () => {} };
+        throw new Error("Unexpected boot-fixture dependency " + name);
+      },
+    };
+    const ctx = vm.createContext(context);
+    const quitStart = source.indexOf("const quitController = quitScheduled.createQuitController(");
+    vm.runInContext(source.slice(quitStart, source.indexOf('app.on("will-quit"', quitStart)), ctx);
+    const statusStart = source.indexOf("async function presentBootStatus()");
+    vm.runInContext(source.slice(statusStart, source.indexOf("async function presentBootFailure", statusStart)), ctx);
+    await ctx.presentBootStatus();
+    const flowStart = source.indexOf("  let lastIndexPaint = -Infinity;");
+    const flow = source.slice(flowStart, source.indexOf('  if (process.env.MORROW_MAIL_SELFTEST', flowStart));
+    const task = vm.runInContext("(async () => {" + flow + ";globalThis.startupContinued = true;})()", ctx);
+    return { ctx, task, load, choice, close, calls, window, controller, node,
+      paint: value => progress(value), advance: ms => { now += ms; },
+      request(kind) {
+        if (kind === "window-close") return window.close();
+        const request = event(); events.get("before-quit")(request); return request.prevented;
+      } };
+  }
 
-  // The actual startup catch suppresses an intentional cancellation only.
-  const failed = deferred();
-  ctx.initMail = () => failed.promise;
-  const cancelled = start();
-  failed.resolve(Promise.reject(new Error("Synthetic cancelled startup")));
-  await cancelled; assert.equal(errors, 0);
-  ctx.bootCancelled = false;
-  ctx.initMail = () => Promise.reject(new Error("Synthetic real startup failure"));
-  await start();
-  assert.equal(errors, 1); assert.equal(unsubscribed, 3);
-  await ctx.presentBootStatus();
-  ctx.initMail = () => Promise.resolve();
-  await start();
-  assert.equal(ctx.startupContinued, true, "uncancelled startup still continues");
-  assert.equal(unsubscribed, 4);
+  // Delayed initialization represents the credential scan after index readiness.
+  // The real quit controller must not cancel startup while a prompt is undecided,
+  // declined or dismissed, including a close attempt on the opening window.
+  for (const kind of ["before-quit", "window-close"]) {
+    for (const answer of ["stay", undefined, "dismiss-error"]) {
+      const f = await fixture();
+      assert.equal(f.request(kind), true);
+      assert.equal(f.ctx.bootCancelled, false, "an undecided quit request is not startup cancellation");
+      assert.equal(f.window.destroyed, false);
+      await flush(); assert.equal(f.calls.prompts, 1);
+      if (answer === "dismiss-error") f.choice.reject(new Error("Synthetic dismissed dialog")); else f.choice.resolve(answer);
+      await flush();
+      assert.equal(f.ctx.bootCancelled, false); assert.equal(f.controller.cleaning, false);
+      assert.equal(f.calls.quit, 0); assert.equal(f.calls.close, 0);
+      f.load.resolve(); await f.task;
+      assert.equal(f.ctx.startupContinued, true, "Stay open/dismissal must let initialization open the shell");
+      assert.equal(f.calls.errors, 0); assert.equal(f.calls.unsubscribed, 1);
+    }
+  }
+  for (const kind of ["before-quit", "window-close"]) {
+    for (const outcome of ["success", "failure"]) {
+      const f = await fixture();
+      f.request(kind); await flush();
+      assert.equal(f.ctx.bootCancelled, false);
+      f.choice.resolve("quit"); await flush();
+      assert.equal(f.controller.cleaning, true); assert.equal(f.ctx.bootCancelled, true);
+      assert.equal(f.calls.close, 1); assert.equal(f.calls.quit, 1, "final quit waits for owned storage cleanup");
+      if (outcome === "success") f.load.resolve(); else f.load.reject(new Error("Synthetic canceled initialization"));
+      await f.task;
+      assert.equal(f.ctx.startupContinued, false); assert.equal(f.calls.errors, 0);
+      f.close.resolve(); await flush();
+      assert.ok(f.calls.quit >= 2); assert.equal(f.window.close(), false); assert.equal(f.window.destroyed, true);
+    }
+  }
 
-  const quitStart = source.indexOf("const quitController = quitScheduled.createQuitController(");
-  vm.runInContext(source.slice(quitStart, source.indexOf('app.on("will-quit"', quitStart)), ctx);
-  ctx.bootCancelled = false; events.get("before-quit")({});
-  assert.equal(ctx.bootCancelled, true);
-  let settled = false;
-  const cleanup = quitOptions.cleanup().then(() => { settled = true; });
-  await flush(); assert.equal(closeCalls, 1); assert.equal(settled, false);
-  close.resolve(); await cleanup;
-  ctx.bootFinished = true;
-  await quitOptions.cleanup(); assert.equal(closeCalls, 1, "ordinary quit retains its existing cleanup behavior");
+  const progress = await fixture(false);
+  progress.paint({ phase: "building", completed: 10, total: 100, resumed: false });
+  assert.match(progress.node.textContent, /10 of 100/);
+  progress.paint({ phase: "building", completed: 20, total: 100 }); assert.equal(progress.calls.paints, 1);
+  progress.advance(100); progress.paint({ phase: "building", completed: 20, total: 100 });
+  progress.paint({ phase: "ready", completed: 100, total: 100 });
+  assert.equal(progress.calls.paints, 3); assert.equal(progress.node.textContent, "Local search is ready.");
+  progress.request("window-close"); await flush();
+  assert.equal(progress.ctx.bootCancelled, true); assert.equal(progress.calls.close, 1);
+  progress.load.resolve(); await progress.task; assert.equal(progress.ctx.startupContinued, false);
+  progress.close.resolve(); await flush(); progress.window.close();
+  progress.paint({ phase: "building", completed: 30, total: 100 }); assert.equal(progress.calls.paints, 3);
+
+  const failed = await fixture();
+  failed.load.reject(new Error("Synthetic genuine startup failure")); await failed.task;
+  assert.equal(failed.calls.errors, 1); assert.equal(failed.ctx.bootCancelled, false);
+  const ordinary = await fixture();
+  ordinary.load.resolve(); await ordinary.task; ordinary.ctx.bootFinished = true;
+  ordinary.request("before-quit"); await flush(); ordinary.choice.resolve("quit"); await flush();
+  assert.equal(ordinary.ctx.startupContinued, true); assert.equal(ordinary.ctx.bootCancelled, false);
+  assert.equal(ordinary.calls.close, 0, "ordinary quit retains its existing cleanup behavior");
 }
 
 function deferred() {
-  let resolve;
-  const promise = new Promise(done => { resolve = done; });
-  return { promise, resolve };
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 async function run() {
@@ -164,4 +192,4 @@ async function run() {
 }
 
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });
-module.exports = { run };
+module.exports = { run, bootControls };

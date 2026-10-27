@@ -57,11 +57,20 @@ and scheduled-send behavior are unchanged. Features and Search coverage explain
 readiness, restart and remaining single-operation pauses; no CLI/API command is
 added.
 
+Startup cancellation is committed only after the quit controller accepts cleanup,
+never on the initial quit request. Pending, declined or dismissed scheduled-mail
+prompts leave startup active. Opening-window close requests use that same controller
+and are prevented while confirmation is pending. Once accepted, cleanup cancels
+owned initialization before final quit; both late success and cancellation failure
+are prevented from reopening the shell.
+
 ## Validation boundary
 
 `check-index-opening-control.js` exercises actual module lifecycle guards with a
 held synthetic storage load and fixed DOM objects, plus fake-window progress
 throttling, quit cleanup, intentional/genuine failure and late-success guards.
+The real scheduled-mail quit controller additionally covers pending/declined/
+dismissed prompts, opening-window close, accepted cleanup and normal quit.
 Initialization resolving after startup quit cannot continue to open the shell.
 The real SQLite fixture
 `check-search-index-rebuild.js` compares all indexed documents/terms against the

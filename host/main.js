@@ -698,6 +698,7 @@ const quitController = quitScheduled.createQuitController({
   requestChoice: requestQuitChoice,
   quitApp: () => app.quit(),
   cleanup: async () => {
+    if (!bootFinished && !bootFailed) bootCancelled = true;
     try { await require("./bot/server").stop(); } catch { /* the bridge is already stopped */ }
     try { await require("./mail/engine").stopIdle(); } catch { /* mail is not open */ }
     if (!bootFinished) {
@@ -708,10 +709,13 @@ const quitController = quitScheduled.createQuitController({
   format: scheduledQuitTime,
 });
 
-app.on("before-quit", (event) => {
-  if (!bootFinished && !bootFailed) bootCancelled = true;
-  quitController.onBeforeQuit(event);
-});
+function requestAppQuit(event) {
+  const decision = quitController.onBeforeQuit(event);
+  if (!bootFinished && !bootFailed && quitController.cleaning) bootCancelled = true;
+  return decision;
+}
+
+app.on("before-quit", requestAppQuit);
 
 app.on("will-quit", () => {
   try { require("./chatgpt-auth").getAuth().dispose(); } catch { /* no active AI connection */ }
@@ -759,9 +763,12 @@ async function presentBootStatus() {
     },
   });
   bootWindow = win;
+  win.on("close", event => {
+    if (!bootFinished && !bootFailed) requestAppQuit(event);
+  });
   win.on("closed", () => {
     if (bootWindow === win) bootWindow = null;
-    if (!bootFinished && !bootFailed) { bootCancelled = true; app.quit(); }
+    if (!bootFinished && !bootFailed) app.quit();
   });
   await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(startupStatusHtml())}`);
   if (!win.isDestroyed()) win.show();
