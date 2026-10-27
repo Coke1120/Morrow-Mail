@@ -228,7 +228,7 @@ async function uiChecks() {
   assert.equal(get("google-oauth-clear").disabled, false);
   assert.equal(config.loadGoogleClient().clientId, "fixture-a.apps.googleusercontent.com");
   ui.run("paintFeatureCatalog(); showFeaturesTab('catalog')");
-  assert.match(get("features-catalog").textContent, /Bring your own Google OAuth client/);
+  assert.match(get("features-catalog").textContent, /Google sign-in and optional personal client/);
   assert.match(get("features-catalog").textContent, /Environment|environment/);
   assert.match(get("features-catalog").textContent, /unknown client need one-time reauthorization/);
   assert.match(get("features-catalog").textContent, /Finish or cancel Google sign-in/);
