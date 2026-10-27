@@ -199,7 +199,7 @@ async function flagSync(engine, db, remote, secrets) {
 async function discoveryForm() {
   const source = fs.readFileSync(path.join(__dirname, "../renderer/app.js"), "utf8");
   const between = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
-  const elements = Object.fromEntries(["profile", "email", "username", "password", "imap-host", "imap-port", "imap-tls", "smtp-host", "smtp-port", "smtp-tls", "custom-fields", "password-hint", "connect-title", "connect-recovery-note"].map(id => [id, {value: "", checked: true}]));
+  const elements = Object.fromEntries(["profile", "email", "username", "password", "imap-host", "imap-port", "imap-tls", "smtp-host", "smtp-port", "smtp-tls", "custom-fields", "password-hint", "connect-title", "connect-recovery-note", "connect-imap", "connect-gmail-migration"].map(id => [id, {value: "", checked: true}]));
   elements.profile.options = ["custom", "gmail", "yahoo"].map(value => ({value}));
   const calls = [], statuses = [];
   let pendingDiscovery;
@@ -241,6 +241,7 @@ async function discoveryForm() {
   run("customEndpointEdits.add('smtp');applyDiscovery(first)");
   assert.equal(elements["smtp-host"].value, "smtp.second.test", "two manual endpoints opt out of discovery");
   run("openConnectFor(null)");
+  assert.equal(elements["connect-imap"].open, false);
   assert.equal(elements["imap-host"].value, "");
   assert.equal(elements["smtp-host"].value, "");
 
