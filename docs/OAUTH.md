@@ -1,6 +1,10 @@
 # Google / Outlook OAuth
 
-Google login remains **OAuth**. New Google mail connections use **Gmail API**, requesting mail/labels/settings separately from optional Calendar. Existing Google OAuth IMAP accounts switch only after reviewed migration in Accounts. Other providers retain their mail transports. Microsoft coordinates two resource-specific authorization steps: Outlook IMAP/SMTP first, then one Graph bundle for the same mailbox. Existing grants are reused; Microsoft controls whether a browser step needs interaction. Calendar, organize, Out of Office, and inbox rules reuse the granted permissions without another popup. Bot bridge permissions stay separate. No client secret belongs in git.
+## Proposed Google mail path (not shipped)
+
+Leo chose Path 3 on 2026-10-27. The target for Google **mail** is an app password over IMAP/SMTP (`imap.gmail.com` / `smtp.gmail.com`), with no `gmail.modify`, no `gmail.settings.basic`, and no `https://mail.google.com/` on the mail consent. IMAP XOAUTH2 is not that path: it still needs `https://mail.google.com/`, which Google lists as Restricted. Optional Calendar OAuth may stay on its existing separate request. Microsoft mail and Graph are unchanged. The tables and wire-up below still describe the **current app**, which requests Restricted Gmail scopes, until a follow-up changes connect. See [Path 3](adr/2026-10-27-google-mail-app-password.md). This change does not edit Google Cloud Console or the public privacy site.
+
+The current build still signs Google mail in with **OAuth**. New Google mail connections use **Gmail API**, requesting mail/labels/settings separately from optional Calendar. Existing Google OAuth IMAP accounts switch only after reviewed migration in Accounts. Other providers retain their mail transports. Microsoft coordinates two resource-specific authorization steps: Outlook IMAP/SMTP first, then one Graph bundle for the same mailbox. Existing grants are reused; Microsoft controls whether a browser step needs interaction. Calendar, organize, Out of Office, and inbox rules reuse the granted permissions without another popup. Bot bridge permissions stay separate. No client secret belongs in git.
 
 ## Consent and token scopes
 
@@ -69,7 +73,7 @@ Release Actions bake the GitHub secret `GOOGLE_DESKTOP_OAUTH_JSON` into packaged
 
 ### Hard blocker: Testing and verification
 
-`https://mail.google.com/` and `gmail.modify` are restricted scopes. `calendar.events` is sensitive. While the consent screen is in **Testing**, only listed test users can consent, and refresh tokens expire after about seven days. Production use remains subject to Google's OAuth verification and restricted-scope assessment requirements. A narrower request does not prove verification or CASA is unnecessary; Google determines requirements from the actual app/data flow. Until that is done, Google sign-in is limited to test users. The app will not invent labels or events to paper over a missing grant.
+`https://mail.google.com/`, `gmail.modify`, and `gmail.settings.basic` are restricted Gmail scopes on [Google's Gmail scope list](https://developers.google.com/workspace/gmail/api/auth/scopes). `calendar.events` is sensitive. Path 3 is the proposal to stop requesting the Restricted mail scopes; this file's consent table is still what the app sends. While the consent screen is in **Testing**, only listed test users can consent, and refresh tokens expire after about seven days. Production use of the current request remains subject to Google's OAuth verification and restricted-scope assessment requirements. A narrower request, and this proposal, do not prove verification or CASA is unnecessary; Google determines requirements from the actual app and consent screen. Until that is done, Google sign-in is limited to test users. The app will not invent labels or events to paper over a missing grant.
 
 Desktop clients accept loopback redirects on any port. The paths above are what the app sends.
 
