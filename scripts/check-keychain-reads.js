@@ -170,14 +170,14 @@ function engineFixture(oauthAccount = false) {
     oauthConfig: { providerKey: profile => profile === "gmail" ? "google" : "imap", hasPurposeScopes: () => true,
       requireGoogleGrantClient(grant) { if (grant.googleClientId !== context.client) throw Object.assign(new Error("client changed"), { code: "google_client_changed" }); } },
     client: "client-a", oauth: { accessTokenFor: async () => "access", cancelActive() { context.cancelled = true; } },
-    ok: data => ({ success: true, data }), emitAccounts() {},
+    ok: data => ({ success: true, data }), emitAccounts() {}, debugLog: { note() {} },
   };
   const source = fs.readFileSync(path.join(__dirname, "../host/mail/engine.js"), "utf8");
   const bindings = source.slice(source.indexOf("function removedAccountError()"), source.indexOf("function ok(data)"));
   const secret = source.slice(source.indexOf("async function secretFor(account)"), source.indexOf("/** @deprecated sync callers"));
   const missing = source.slice(source.indexOf("async function markMissingOAuthSecrets()"), source.indexOf("function startMailApiPoll"));
   // Keep only the two credential-scan/cancellation functions from that region.
-  const cancellationEnd = missing.indexOf("\n}", missing.indexOf("async function cancelOAuth()")) + 2;
+  const cancellationEnd = missing.indexOf("\n}", missing.indexOf("function cancelOAuth()")) + 2;
   vm.runInNewContext(bindings + secret + missing.slice(0, cancellationEnd), context);
   const explain = source.slice(source.indexOf("function explainSyncError("), source.indexOf("// One schedule per failure."));
   vm.runInNewContext(explain, context);
@@ -233,10 +233,12 @@ async function engineContracts() {
   const cancel = engineFixture(true), waiting = deferred();
   cancel.backend.hook = () => waiting.promise;
   const cancelling = cancel.context.cancelOAuth();
+  assert.equal(cancelling.success, true, "the public cancellation acknowledgment stays synchronous");
   assert.equal(cancel.context.cancelled, true, "OAuth cancels before the storage wait");
   assert.equal(cancel.context.oauthGeneration, 1); await flush();
   cancel.secrets.setPassword("fixture", "new-after-cancel"); waiting.resolve(null);
   assert.equal((await cancelling).success, true);
+  await flush();
   assert.deepEqual(cancel.errors, []);
   assert.equal(cancel.saved.get("fixture"), "new-after-cancel");
 

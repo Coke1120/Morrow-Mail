@@ -1321,10 +1321,14 @@ async function markMissingOAuthSecrets() {
   return changed;
 }
 
-async function cancelOAuth() {
+function cancelOAuth() {
   oauthGeneration += 1;
   try { oauth.cancelActive(); } catch { /* no browser flow is waiting */ }
-  if (await markMissingOAuthSecrets()) emitAccounts();
+  markMissingOAuthSecrets().then(changed => {
+    if (changed) emitAccounts();
+  }).catch(() => {
+    try { debugLog.note("mail", "Credential availability check deferred after sign-in cancellation."); } catch { /* diagnostics are best effort */ }
+  });
   return ok({ canceled: true });
 }
 

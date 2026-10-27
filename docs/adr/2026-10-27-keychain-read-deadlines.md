@@ -40,8 +40,9 @@ This is an incremental read migration, not complete asynchronous credential I/O.
   is no await between the final guards and a synchronous refresh-store attempt.
 - Startup/cancel scans do not mark a removed/recreated/reconnected mailbox as
   missing. OAuth cancellation increments its generation and cancels the browser
-  flow before waiting for the async scan. The acknowledgment still waits for
-  that scan, as the prior synchronous path did. A read timeout never deletes or
+  flow and acknowledges synchronously before its async scan. This preserves the
+  public immediate-cancellation contract; a failed scan records only a fixed
+  deferred-check note and cannot replace cancellation success. A read timeout never deletes or
   replaces credentials; its generic storage error is not treated as a new
   password failure or followed by another synchronous redaction read.
 
