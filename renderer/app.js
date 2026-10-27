@@ -517,7 +517,7 @@ function opensAiWrite(seed, prefs) {
 function oauthButtonState(status, provider) {
   if (provider === "microsoft") return { disabled: false, reason: "" };
   if (status && status.google === true) return { disabled: false, reason: "" };
-  if (status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts." };
+  if (status && status.google === false) return { disabled: true, reason: "Google sign-in is unavailable in this installation. Review Google OAuth status in Settings → Accounts." };
   return { disabled: false, reason: "" };
 }
 
@@ -530,7 +530,7 @@ function googleOauthClientCopy(status) {
       ? "The imported Google OAuth file could not be read. Import a Desktop client JSON again, or clear the imported client."
       : "Google OAuth is not ready. The configured Desktop client JSON could not be read.";
   }
-  if (!status || status.ready !== true) return "Google OAuth is not ready. Import a Desktop client JSON to connect Gmail.";
+  if (!status || status.ready !== true) return "Google OAuth is not ready. Review this installation's Google sign-in configuration. Personal client import is optional.";
   const using = source === "env"
     ? "a developer environment variable"
     : source === "imported"
@@ -547,7 +547,7 @@ function calendarGrantState(status, account) {
   const profile = String((account.imapSmtpProfile || account.profile || "")).toLowerCase();
   const provider = profile === "gmail" || profile === "outlook" ? profile : "";
   if (!provider) return { disabled: true, reason: "Calendar needs a Google or Microsoft account." };
-  if (provider === "gmail" && status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts." };
+  if (provider === "gmail" && status && status.google === false) return { disabled: true, reason: "Google sign-in is unavailable in this installation. Review Google OAuth status in Settings → Accounts." };
   return { disabled: false, reason: "" };
 }
 
@@ -568,7 +568,7 @@ function providerCopy(reason, provider) {
       : "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.";
   }
   if (reason === "password_account") return "This mailbox uses a password. Grant the provider API to manage labels, or keep using IMAP folders.";
-  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so Gmail labels stay on IMAP. Import a Desktop client JSON in Settings → Accounts.";
+  if (reason === "oauth_not_ready") return "Google sign-in is unavailable in this installation, so Gmail labels stay on IMAP. Review Google OAuth status in Settings → Accounts; personal client import is optional.";
   if (reason === "google_client_changed") return "The saved Google grant belongs to a different or unknown Desktop client. Reauthorize Gmail in Settings → Accounts. Cached mail stays available.";
   if (reason === "imap_only") return "Labels stay on IMAP for this account.";
   if (reason === "no_account") return "Connect a mailbox to load provider labels.";
@@ -1463,7 +1463,7 @@ function calendarMode(payload) {
 }
 
 function calendarCopy(reason, email) {
-  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so calendar stays offline. Import a Desktop client JSON in Settings → Accounts.";
+  if (reason === "oauth_not_ready") return "Google sign-in is unavailable in this installation, so calendar stays offline. Review Google OAuth status in Settings → Accounts; personal client import is optional.";
   if (reason === "google_client_changed") return "The saved Calendar grant belongs to a different or unknown Desktop client. Enable Google Calendar to authorize it separately from Gmail.";
   if (reason === "imap_only") return "Calendar needs a Google or Microsoft account.";
   if (reason === "no_account") return "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.";
@@ -1906,7 +1906,11 @@ function envelopeError(result) {
 async function call(channel, payload) {
   const result = await api.invoke(channel, payload);
   const message = envelopeError(result);
-  if (message) throw new Error(message);
+  if (message) {
+    const error = new Error(message);
+    if (typeof result?.error?.code === "string") error.code = result.error.code;
+    throw error;
+  }
   return result.data;
 }
 
@@ -3927,7 +3931,7 @@ function connectButton() {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "primary empty-connect";
-  button.addEventListener("click", () => openDialog("connect"));
+  button.addEventListener("click", () => openConnectFor(null));
   const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   icon.setAttribute("viewBox", "0 0 24 24");
   icon.setAttribute("width", "15");
@@ -10032,6 +10036,14 @@ function connectPayload() {
   return payload;
 }
 
+let connectGmailMigrationAccountId = null;
+
+function clearConnectMigration() {
+  connectGmailMigrationAccountId = null;
+  const button = $("connect-gmail-migration");
+  if (button) button.hidden = true;
+}
+
 function setConnectStatus(text, isError) {
   $("connect-status").textContent = text || "";
   $("connect-status").classList.toggle("error", !!isError);
@@ -10044,10 +10056,11 @@ function paintConnectPending() {
   $("oauth-microsoft").disabled = !!busy;
   if ($("connect-yahoo")) $("connect-yahoo").disabled = !!busy;
   $("connect-submit").disabled = !!busy;
+  if ($("connect-gmail-migration")) $("connect-gmail-migration").disabled = !!busy;
   $("connect-close").textContent = state.oauthPending ? "Cancel sign-in" : "Cancel";
   $("connect-form").setAttribute("aria-busy", busy ? "true" : "false");
   $("oauth-unavailable").textContent = google.disabled
-    ? "Google sign-in needs a Desktop OAuth client. Import one in Settings → Accounts, or use an app password if your provider permits it." : "";
+    ? "Google sign-in is unavailable in this installation. Review Google OAuth status in Settings → Accounts. A personal Desktop client is an optional advanced choice." : "";
   paintGoogleOauthClientButtons();
 }
 
@@ -10083,13 +10096,15 @@ async function connectImap() {
 
 async function connectOAuth(provider) {
   if (state.oauthPending || state.connectPending) return;
+  const expectedAccountId = state.reconnectAccountId || null;
+  clearConnectMigration();
   state.oauthPending = true;
   paintConnectPending();
   setConnectStatus(provider === "microsoft"
     ? "Continue in your browser to connect mail. Morrow then checks calendar, organize, Out of Office, and inbox rules for the same account; approve any missing permissions. Mail stays connected if you decline those features."
     : "Continue with Google OAuth for Gmail API mail, labels, Out of Office and inbox rules. Calendar is enabled separately. Existing legacy OAuth mailboxes require the reviewed migration in Settings → Accounts.");
   try {
-    const view = await call("mail:addAccount", { provider, expectedAccountId: state.reconnectAccountId || undefined });
+    const view = await call("mail:addAccount", { provider, expectedAccountId: expectedAccountId || undefined });
     if (!view || !view.id || !view.email) throw new Error("Sign-in did not return an account.");
     state.oauthPending = false;
     paintConnectPending();
@@ -10098,10 +10113,52 @@ async function connectOAuth(provider) {
     await loadAccounts(view.id);
   } catch (error) {
     const message = error.message || String(error);
-    setConnectStatus(/cancel/i.test(message) ? "Sign-in canceled." : "Could not finish sign-in. " + message + " Try the provider button again.", !/cancel/i.test(message));
+    if (provider === "google" && error.code === "gmail_migration_required") {
+      connectGmailMigrationAccountId = expectedAccountId;
+      $("connect-imap").open = false;
+      $("connect-gmail-migration").hidden = false;
+      setConnectStatus("This Gmail connection needs migration review. Choose Review Gmail API migration to open Settings → Accounts → Permissions & calendar access. Review the migration there, then choose Continue with Google. Cached mail and drafts stay. No password is needed in Morrow.", true);
+    } else {
+      setConnectStatus(/cancel/i.test(message) ? "Sign-in canceled." : "Could not finish sign-in. " + message + " Try the provider button again.", !/cancel/i.test(message));
+    }
   } finally {
     state.oauthPending = false;
     paintConnectPending();
+  }
+}
+
+async function reviewConnectGmailMigration() {
+  if (state.oauthPending || state.connectPending || $("connect-gmail-migration").hidden) return;
+  const accountId = connectGmailMigrationAccountId;
+  const accountEmail = state.accounts.find(row => row.id === accountId)?.email;
+  const targetAvailable = selected => {
+    const account = state.accounts.find(row => row.id === accountId);
+    return account?.email === accountEmail && account?.authKind === "oauth2"
+      && (account.imapSmtpProfile || account.profile) === "gmail" && (!selected || settingsAccount()?.id === accountId);
+  };
+  const cancelReview = () => {
+    paintSettingsMailbox();
+    revealSettingsFold("mailbox");
+    $("account-permissions").open = false;
+    $("settings-account").focus();
+    showStatus("That Gmail connection changed or was removed. Migration review was cancelled. Select the intended mailbox in Accounts to start again.", true);
+  };
+  await closeDialog("connect");
+  openSettings();
+  if (accountId) {
+    if (!targetAvailable(false)) { cancelReview(); return; }
+    if (settingsAccount()?.id !== accountId && !(await changeSettingsMailbox(accountId))) return;
+    if (!targetAvailable(true)) { cancelReview(); return; }
+  }
+  paintSettingsMailbox();
+  revealSettingsFold("mailbox");
+  $("account-permissions").open = true;
+  await loadSettingsFold("mailbox");
+  if (accountId && !targetAvailable(true)) { cancelReview(); return; }
+  if (accountId && !$("settings-gmail-migrate").hidden) $("settings-gmail-migrate").focus();
+  else {
+    $("settings-account").focus();
+    showStatus("Select the Gmail mailbox in Accounts, then review Migrate Gmail to Gmail API under Permissions & calendar access.");
   }
 }
 
@@ -15214,6 +15271,9 @@ async function cancelGmailReauthorization() {
 }
 function openConnectFor(account) {
   if (state.oauthPending || state.connectPending) return;
+  clearConnectMigration();
+  const gmailOAuth = account?.authKind === "oauth2" && (account.imapSmtpProfile || account.profile) === "gmail";
+  $("connect-imap").open = !!account && !gmailOAuth;
   state.reconnectAccountId = account?.id || null;
   $("connect-title").textContent = account ? "Reconnect " + account.email : "Connect account";
   $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Password reconnects update the login type and servers only after saving credentials; a failure attempts to restore the prior credentials. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google mail uses Gmail API scopes with separate Calendar consent; migrate a legacy Google OAuth mailbox from Settings → Accounts. Microsoft asks for mail, then its feature bundle." : "";
@@ -15238,7 +15298,6 @@ function openConnectFor(account) {
       $(kind + "-port").value = custom[kind].port;
       $(kind + "-tls").checked = custom[kind].tls;
     }
-    openImapDetails();
     syncCustomFields();
   } else {
     $("profile").value = "custom";
@@ -20961,13 +21020,14 @@ function wire() {
     });
   });
   $("connect-open").addEventListener("click", () => openConnectFor(null));
-  $("connect").addEventListener("close", () => { state.reconnectAccountId = null; $("email").readOnly = false; $("connect-title").textContent = "Connect account"; $("connect-recovery-note").textContent = ""; });
+  $("connect").addEventListener("close", () => { state.reconnectAccountId = null; clearConnectMigration(); $("email").readOnly = false; $("connect-title").textContent = "Connect account"; $("connect-recovery-note").textContent = ""; });
   $("connect-close").addEventListener("click", () => dismissConnect());
   $("connect-form").addEventListener("submit", (event) => {
     event.preventDefault();
     connectImap();
   });
   $("oauth-google").addEventListener("click", () => connectOAuth("google"));
+  $("connect-gmail-migration").addEventListener("click", () => { reviewConnectGmailMigration().catch(error => showStatus(error.message, true)); });
   $("oauth-microsoft").addEventListener("click", () => connectOAuth("microsoft"));
   $("remove").addEventListener("click", () => guard(removeAccount));
   $("compose-open").addEventListener("click", () => {
