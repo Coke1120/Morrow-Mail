@@ -64,9 +64,10 @@ stores remain non-atomic across a process crash; this change makes no stronger
 atomicity claim. Read revisions track in-app mutation, not an OS-wide transaction
 against unrelated external Keychain edits.
 
-The synchronous full search-index rebuild is separately scoped in
-[the rebuild responsiveness plan](../SEARCH_INDEX_RESPONSIVENESS_PLAN.md).
-No index or storage implementation is changed by this PR.
+This decision covers PR #340's credential-read work. The combined draft also
+includes PR #341's [cooperative startup search repair](2026-10-27-cooperative-search-index.md),
+which implements the first slice of [the original design plan](../SEARCH_INDEX_RESPONSIVENESS_PLAN.md).
+The two changes retain their separate scope and validation evidence.
 
 ## Validation
 

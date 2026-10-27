@@ -1,6 +1,10 @@
-# Local search rebuild responsiveness — plan only
+# Local search rebuild responsiveness — original design plan
 
-Status: deferred implementation; no index behavior or schema changes in this PR.
+Status: original proposal retained for rationale. This combined draft includes
+the cooperative startup implementation from PR #341; see
+[the implementation decision and remaining limits](adr/2026-10-27-cooperative-search-index.md).
+The proposed worker/interactive-search extensions remain deferred. This does not
+describe a published release.
 Source inspected: `163146384267909f527a399891304efd6f1bc0e3` (v0.3.3).
 
 ## Existing path

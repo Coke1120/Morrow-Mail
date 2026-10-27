@@ -47,8 +47,10 @@ limit per `security` command and `SIGKILL` on timeout. Several commands can take
 longer in total. Windows DPAPI is unchanged. This is a partial API migration,
 not a claim that every credential path or native Mac freeze has been fixed.
 See [coverage, concurrency and validation limits](adr/2026-10-27-keychain-read-deadlines.md).
-The [search-index responsiveness plan](SEARCH_INDEX_RESPONSIVENESS_PLAN.md) is
-separate proposed work; no rebuild/storage rewrite is implemented here.
+The separate [cooperative startup search repair](adr/2026-10-27-cooperative-search-index.md)
+now commits durable batches and yields between them, retaining the existing
+storage backend. The [original design plan](SEARCH_INDEX_RESPONSIVENESS_PLAN.md)
+records the proposal and deferred worker/interactive-search extensions.
 
 ## Data-path changes
 

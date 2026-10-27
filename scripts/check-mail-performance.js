@@ -37,7 +37,7 @@ async function diagnosticChecks() {
   assert.match(document.body.textContent,/MORROW_PERF=1 enables bounded local timings/);
   assert.match(document.body.textContent,/Native Mac freezes still need profiling/);
   assert.match(document.body.textContent,/routine mail credential reads and startup checks wait asynchronously/);
-  assert.match(document.body.textContent,/30 seconds per command; search-index rebuilds remain synchronous/);
+  assert.match(document.body.textContent,/30 seconds per command\. Search repair yields between saved batches/);
   const help=new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"),"utf8")).window.document;
   assert.match(help.getElementById("cli-performance").textContent,/MORROW_PERF=1 npm start/);
   assert.match(help.getElementById("performance-diagnostics-note").textContent,/paths and credentials/);

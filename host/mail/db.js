@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const primaryFolderLib = require("../../shared/primary-mailboxes");
 const senderHeader = require("./sender-header");
 const perf = require("../performance-diagnostics");
+const { performance } = require("node:perf_hooks");
 
 let db = null;
 let filePath = "";
@@ -10,8 +11,35 @@ let storage = null;
 let closing = Promise.resolve();
 let writes = null;
 const observedSync = new Map();
+let admitted = false;
+let internalDepth = 0;
+let opening = null;
+let indexState = { phase: "idle", completed: 0, total: 0, resumed: false };
+const indexListeners = new Set();
+
+function openingError(code = "mail_not_ready") {
+  return Object.assign(new Error(code === "mail_open_cancelled" ? "Opening the mailbox was cancelled."
+    : "The mailbox is still opening. Retry when local search is ready."), { code, operationIssued: false, retryable: true });
+}
+
+function assertAdmitted() {
+  if (!db || (!admitted && !internalDepth)) throw openingError();
+}
+
+function internal(work) {
+  internalDepth++;
+  try { return work(); } finally { internalDepth--; }
+}
+
+function reportIndex(next) {
+  indexState = Object.freeze({ ...next });
+  for (const listener of indexListeners) {
+    try { listener({ ...indexState }); } catch { /* UI observers cannot change storage */ }
+  }
+}
 
 function all(sql, params = []) {
+  assertAdmitted();
   const stmt = db.prepare(sql);
   stmt.bind(params);
   const rows = [];
@@ -51,6 +79,7 @@ function changeStamp() {
 }
 
 function transaction(fn) {
+  assertAdmitted();
   if (writes) return fn();
   return perf.sync("db.transaction", () => transact(fn));
 }
@@ -308,29 +337,76 @@ function migrate() {
     PRIMARY KEY (account_id, id)
   )`);
   run(`CREATE INDEX IF NOT EXISTS inbox_rules_account ON inbox_rules(account_id, position)`);
-  ensureSearchIndex();
+  ensureSearchSchema();
 }
 
-async function open(target) {
-  return perf.measure("startup.db", () => openDatabase(target));
+function open(target, options = {}) {
+  if (options.signal?.aborted) return Promise.reject(openingError("mail_open_cancelled"));
+  if (writes) return Promise.reject(openingError("mail_open_busy"));
+  if (opening) {
+    if (opening.target === target && !opening.cancelled && (!options.signal || options.signal === opening.signal)) return opening.promise;
+    return Promise.reject(openingError("mail_open_busy"));
+  }
+  const operation = { target, signal: options.signal, cancelled: !!options.signal?.aborted };
+  const abort = () => { operation.cancelled = true; };
+  operation.signal?.addEventListener("abort", abort, { once: true });
+  admitted = false;
+  opening = operation;
+  operation.promise = Promise.resolve().then(() => perf.measure("startup.db", () => openDatabase(target, operation))).finally(() => {
+    operation.signal?.removeEventListener("abort", abort);
+    if (opening === operation) opening = null;
+  });
+  return operation.promise;
 }
 
-async function openDatabase(target) {
-  if (db) close();
+function assertOpening(operation) {
+  if (opening !== operation || operation.cancelled) throw openingError("mail_open_cancelled");
+}
+
+async function openDatabase(target, operation) {
+  assertOpening(operation);
+  closeStore();
   await closing;
+  assertOpening(operation);
+  reportIndex({ phase: "idle", completed: 0, total: 0, resumed: false });
+  assertOpening(operation);
   filePath = target;
-  storage = new Persistence(target);
+  const ownedStorage = new Persistence(target);
+  let ownedDb;
   try {
-    db = await storage.open();
-    perf.sync("startup.migrate", () => transaction(migrate));
-    if (!storage.initialized) storage.initialize(db);
+    ownedDb = await ownedStorage.open();
+    assertOpening(operation);
+    db = ownedDb;
+    storage = ownedStorage;
+    internal(() => {
+      perf.sync("startup.migrate", () => transaction(migrate));
+      if (!storage.initialized) storage.initialize(db);
+    });
+    await perf.measure("startup.index", () => ensureSearchIndex(operation));
+    assertOpening(operation);
+    admitted = true;
   } catch (error) {
-    close();
+    if (storage === ownedStorage) await closeStore();
+    else {
+      if (ownedDb) ownedDb.close();
+      await ownedStorage.close();
+    }
     throw error;
   }
 }
 
 function close() {
+  admitted = false;
+  if (opening) {
+    opening.cancelled = true;
+    const current = closeStore();
+    return Promise.all([current, opening.promise.catch(() => {})]).then(() => {});
+  }
+  return closeStore();
+}
+
+function closeStore() {
+  admitted = false;
   if (storage) closing = storage.close();
   if (db) db.close();
   db = null;
@@ -340,12 +416,12 @@ function close() {
 }
 
 function hasAccounts() {
-  if (!db) return false;
+  if (!isReady()) return false;
   return get("SELECT COUNT(*) AS n FROM accounts").n > 0;
 }
 
 function isReady() {
-  return !!db;
+  return !!db && admitted;
 }
 
 function listAccountRows() {
@@ -771,7 +847,7 @@ function indexMessageText(messageId) {
   }
 }
 
-function ensureSearchIndex() {
+function ensureSearchSchema() {
   run(`CREATE TABLE IF NOT EXISTS message_fts_meta (
     meta_key TEXT PRIMARY KEY,
     meta_value TEXT NOT NULL
@@ -789,17 +865,102 @@ function ensureSearchIndex() {
     PRIMARY KEY (term, message_id, field)
   )`);
   run("CREATE INDEX IF NOT EXISTS message_fts_message ON message_fts(message_id)");
-  const version = get("SELECT meta_value AS value FROM message_fts_meta WHERE meta_key = 'version'");
-  const messages = get("SELECT COUNT(*) AS n FROM messages").n;
-  const docs = get("SELECT COUNT(*) AS n FROM message_fts_doc").n;
-  if (version && version.value === SEARCH_INDEX_VERSION && messages === docs) return;
-  perf.sync("startup.index", () => transaction(() => {
-    run("DELETE FROM message_fts");
-    run("DELETE FROM message_fts_doc");
-    for (const row of all("SELECT id FROM messages")) indexText(row.id);
-    run("DELETE FROM message_fts_meta WHERE meta_key = 'version'");
-    run("INSERT INTO message_fts_meta (meta_key, meta_value) VALUES ('version', ?)", [SEARCH_INDEX_VERSION]);
+}
+
+const INDEX_BATCH_IDS = 64;
+const INDEX_SLICE_MS = 8;
+
+function indexMeta(key) {
+  return get("SELECT meta_value AS value FROM message_fts_meta WHERE meta_key = ?", [key])?.value;
+}
+
+function saveIndexMeta(key, value) {
+  run("INSERT OR REPLACE INTO message_fts_meta (meta_key, meta_value) VALUES (?, ?)", [key, value]);
+}
+
+function indexDocumentsMatch() {
+  return !get(`SELECT 1 AS missing FROM messages m WHERE NOT EXISTS (
+    SELECT 1 FROM message_fts_doc d WHERE d.message_id = m.id) LIMIT 1`)
+    && !get(`SELECT 1 AS orphan FROM message_fts_doc d WHERE NOT EXISTS (
+      SELECT 1 FROM messages m WHERE m.id = d.message_id) LIMIT 1`);
+}
+
+function indexResume(total) {
+  try {
+    const saved = JSON.parse(indexMeta("rebuild"));
+    if (!saved || saved.target !== SEARCH_INDEX_VERSION || saved.generation !== storage.generation
+        || saved.total !== total || !["messages", "orphan-docs", "orphan-terms"].includes(saved.stage)
+        || !(saved.cursor === null || typeof saved.cursor === "string")
+        || !(saved.orphanCursor === null || typeof saved.orphanCursor === "string")
+        || !Number.isSafeInteger(saved.completed) || saved.completed < 0 || saved.completed > total) return null;
+    const prefix = saved.cursor == null ? 0 : get("SELECT COUNT(*) AS n FROM messages WHERE id <= ?", [saved.cursor]).n;
+    if (prefix !== saved.completed || (saved.stage !== "messages" && prefix !== total)) return null;
+    if (saved.cursor != null && get(`SELECT 1 AS missing FROM messages m WHERE id <= ? AND NOT EXISTS (
+      SELECT 1 FROM message_fts_doc d WHERE d.message_id = m.id) LIMIT 1`, [saved.cursor])) return null;
+    return saved;
+  } catch { return null; }
+}
+
+async function ensureSearchIndex(operation) {
+  assertOpening(operation);
+  const total = internal(() => get("SELECT COUNT(*) AS n FROM messages").n);
+  const current = internal(() => indexMeta("version") === SEARCH_INDEX_VERSION && indexMeta("rebuild") == null && indexDocumentsMatch());
+  if (current) return;
+  const resumed = internal(() => indexResume(total));
+  let state = resumed || { target: SEARCH_INDEX_VERSION, generation: storage.generation, total,
+    completed: 0, cursor: null, orphanCursor: null, stage: "messages" };
+  internal(() => transaction(() => {
+    // Old app versions also see an unfinished index as requiring repair.
+    saveIndexMeta("version", "building:" + SEARCH_INDEX_VERSION);
+    saveIndexMeta("rebuild", JSON.stringify(state));
   }));
+  reportIndex({ phase: "building", completed: state.completed, total, resumed: !!resumed });
+  await new Promise(resolve => setImmediate(resolve));
+  while (true) {
+    assertOpening(operation);
+    const next = { ...state };
+    internal(() => transaction(() => {
+      const began = performance.now();
+      if (state.stage === "messages") {
+        const rows = all(`SELECT id FROM messages ${state.cursor == null ? "" : "WHERE id > ?"}
+          ORDER BY id LIMIT ?`, [...(state.cursor == null ? [] : [state.cursor]), INDEX_BATCH_IDS]);
+        for (const row of rows) {
+          indexText(row.id);
+          next.cursor = row.id;
+          next.completed++;
+          if (performance.now() - began >= INDEX_SLICE_MS) break;
+        }
+        if (!rows.length) next.stage = "orphan-docs";
+      } else {
+        const table = state.stage === "orphan-docs" ? "message_fts_doc" : "message_fts";
+        const rows = all(`SELECT DISTINCT f.message_id AS id FROM ${table} f
+          WHERE ${state.orphanCursor == null ? "" : "f.message_id > ? AND"} NOT EXISTS (
+            SELECT 1 FROM messages m WHERE m.id = f.message_id) ORDER BY f.message_id LIMIT ?`,
+        [...(state.orphanCursor == null ? [] : [state.orphanCursor]), INDEX_BATCH_IDS]);
+        for (const row of rows) {
+          forgetIndex(row.id); next.orphanCursor = row.id;
+          if (performance.now() - began >= INDEX_SLICE_MS) break;
+        }
+        if (!rows.length) {
+          next.stage = state.stage === "orphan-docs" ? "orphan-terms" : "complete";
+          next.orphanCursor = null;
+        }
+      }
+      if (next.stage === "complete") {
+        if (next.completed !== total || !indexDocumentsMatch()
+            || get("SELECT 1 AS orphan FROM message_fts f WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = f.message_id) LIMIT 1")) {
+          throw new Error("The rebuilt local search index could not be verified.");
+        }
+        saveIndexMeta("version", SEARCH_INDEX_VERSION);
+        run("DELETE FROM message_fts_meta WHERE meta_key = 'rebuild'");
+      } else saveIndexMeta("rebuild", JSON.stringify(next));
+    }));
+    state = next;
+    reportIndex({ phase: state.stage === "complete" ? "ready" : "building", completed: state.completed, total, resumed: !!resumed });
+    assertOpening(operation);
+    if (state.stage === "complete") return;
+    await new Promise(resolve => setImmediate(resolve));
+  }
 }
 
 function indexedContentChanged(id, values) {
@@ -2075,6 +2236,12 @@ module.exports = {
   gmailLegacy, applyGmailMessage, gmailCopies, pruneGmailCopies, gmailSyncState, gmailVerifyPage,
   open,
   close,
+  indexProgress: () => ({ ...indexState }),
+  subscribeIndexProgress(listener) {
+    if (typeof listener !== "function") throw new TypeError("Index progress requires a callback.");
+    indexListeners.add(listener);
+    return () => indexListeners.delete(listener);
+  },
   checkpoint: () => storage ? storage.checkpoint() : Promise.resolve(),
   hasAccounts,
   isReady,

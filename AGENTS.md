@@ -89,3 +89,14 @@ Sender display names are Morrow-only preferences keyed by account id and exact n
 Draft hydration must use the separate bare `fromAddress`, never reparse recipient-visible preview text. Provider parsing persists that address independently of display names. Equivalent legacy sender metadata must not invalidate queued draft cleanup proofs; genuine name/content edits must still protect newer work.
 
 Historical provider caches contain decoded `name <address>` display text, including unquoted punctuation, rather than an RFC From header. Recognize equivalent metadata only by the full historical representation plus a validated separate address, or a valid parsed header. Test the production provider formatter/parser path; manually quoted fixture headers alone miss this compatibility case.
+
+## Startup search repair
+
+Search rebuilds commit bounded batches and yield with no open SQL transaction.
+Keep mail data admission closed until index verification; never carry internal
+database admission across an await or invoke UI observers inside it. Progress and
+cursor updates must follow durable commits. Preserve the building/version marker,
+restart recovery and all three consistency tables. Do not drop tables, skip repair
+or weaken journal/fsync. Tests must cover abort/close, concurrent access, journal
+failure and process exit using synthetic stores. See
+`docs/adr/2026-10-27-cooperative-search-index.md`.
