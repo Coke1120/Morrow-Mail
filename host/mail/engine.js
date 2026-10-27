@@ -3311,12 +3311,17 @@ async function submitSmtp(input) {
     const sentResult = await exclusive(account.id, async () => {
       let info;
       let password = "";
-      if (!smtpSenderForTest) password = await secretFor(account);
+      let credentialError;
+      if (!smtpSenderForTest) {
+        try { password = await secretFor(account); } catch (error) { credentialError = error; }
+      }
       // Keep this gate synchronous and adjacent to the transport invocation:
-      // mailbox queueing and OAuth refresh may both outlive a bot grant.
+      // mailbox queueing and failed/successful credential waits can outlive a
+      // bot grant. Revalidation also preserves the authorization error contract.
       if (input.beforeSubmit) {
         try { input.beforeSubmit(); } catch (error) { authorizationError = error; throw error; }
       }
+      if (credentialError) throw credentialError;
       if (smtpSenderForTest) info = await smtpSenderForTest({ account, options, messageId });
       else info = await remote.sendSmtp(account, password, { ...options, messageId });
       accepted = true;

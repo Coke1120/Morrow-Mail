@@ -270,6 +270,26 @@ async function engineContracts() {
   assert.deepEqual(happy.writes, [initial]);
 }
 
+async function submissionContracts() {
+  const source = fs.readFileSync(path.join(__dirname, "../host/mail/engine.js"), "utf8");
+  const fn = source.slice(source.indexOf("async function submitSmtp(input)"), source.indexOf("async function cleanupSubmittedDraft("));
+  const credential = deferred();
+  let authorized = true, submissions = 0, checks = 0;
+  const context = {
+    exclusive: async (_id, work) => work(), smtpSenderForTest: null,
+    secretFor: () => credential.promise,
+    remote: { sendSmtp() { submissions++; throw new Error("No submission expected"); }, explain: () => "synthetic refusal" },
+    provedRefusal: () => "not issued",
+  };
+  vm.runInNewContext(fn, context);
+  const pending = context.submitSmtp({ account: { id: "fixture" }, options: {}, messageId: "fixture",
+    beforeSubmit() { checks++; if (!authorized) throw Object.assign(new Error("grant changed"), { code: "UNAUTHENTICATED" }); } });
+  await flush(); authorized = false;
+  credential.reject(Object.assign(new Error("account removed"), { code: "account_removed", operationIssued: false }));
+  assert.equal((await pending).kind, "not_submitted", "failed credential waits still revalidate authorization");
+  assert.equal(checks, 1); assert.equal(submissions, 0);
+}
+
 function compatibilityContracts() {
   const module = { exports: {} }, calls = [];
   let result = { status: 0, stdout: "synthetic\n" };
@@ -296,6 +316,6 @@ function compatibilityContracts() {
 }
 
 (async () => {
-  await childContracts(); await sharedContracts(); await engineContracts(); compatibilityContracts();
+  await childContracts(); await sharedContracts(); await engineContracts(); await submissionContracts(); compatibilityContracts();
   console.log("keychain-reads-ok: blocked/timeout/queue/output/error/cancel/shared/revision/account/client/scan/compatibility; synthetic children only");
 })().catch(error => { console.error(error); process.exitCode = 1; });
