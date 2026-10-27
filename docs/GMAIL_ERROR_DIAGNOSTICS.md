@@ -26,20 +26,27 @@ and safe codes without guessing a cause, except 401/429. ErrorInfo requires its
 exact Google RPC type and `googleapis.com` domain. Unknown reason/status values
 are replaced with `unknown`; no free-text matching is used. Raw bodies, provider
 messages, metadata, links, request values, IDs, mail content, addresses and tokens
-are never added to errors/logs/UI. Existing mailbox/folder context in other log
-fields remains and needs review before sharing.
+are never added to errors/logs/UI. Gmail sync Debug records also omit the
+mailbox address, folder name and folder id. Sync activity still shows the
+selected mailbox and folder. Other Debug entries may still include account or
+folder context and need review before sharing.
 
 No OAuth scopes, grants, credential storage, automatic reauthentication or write
 retry loops change. HTTP write-issued uncertainty, explicit-send requirements,
 hierarchy partial-result receipts and the existing Retry-After cap are retained.
-Rate evidence reaches the existing account pause; non-credential Gmail 403s can
-use the existing transient **read** retries instead of the sticky sign-in gate.
+Only a parsed quota classification selects the existing account pause. Auth,
+permission and unknown Gmail results keep their existing paths even when the
+allowlisted reason text contains `rateLimitExceeded`. Errors without a Gmail
+diagnostic still use the existing rate-limit heuristic. Non-credential Gmail
+403s can use the existing transient **read** retries instead of the sticky
+sign-in gate.
 The Features catalog and Accounts/Debug help describe these limits. No CLI or
 bot command is added.
 
 `scripts/check-gmail-error-diagnostics.js` covers synthetic legacy/RPC errors,
 unknown/conflicting evidence, privacy, byte/time/abort bounds, static operations,
-write counts, and engine-to-activity/DOM propagation. Existing Gmail transport,
+write counts, cross-status rate text at the sync and sender boundary, and
+engine-to-activity/DOM propagation. Existing Gmail transport,
 engine, sync-retry, migration/UI and the full `npm run check` remain applicable.
 Synthetic results do not establish the user's actual 403 cause, Gmail API
 enablement, Console verification, domain policy or native Mac behavior.

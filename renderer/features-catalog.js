@@ -136,7 +136,7 @@
         id: "gmail-error-diagnostics",
         title: "Gmail API error details",
         category: "Support",
-        blurb: "Gmail sync activity and Debug log show HTTP status, a fixed operation and recognized Google reason/status codes. They distinguish quota or rate limits, missing mail permission, a disabled API and domain policy when Google supplies evidence. Unknown causes stay unknown. Raw error bodies, provider text, URLs, ids, mail content, addresses and tokens are omitted from these diagnostics. Existing log context may still identify a mailbox or folder. Sign-in success alone does not identify a later 403; these details do not prove its cause. No new scopes or automatic write retries are added.",
+        blurb: "Gmail sync activity and Debug log show HTTP status, a fixed operation and recognized Google reason/status codes. They distinguish quota or rate limits, missing mail permission, a disabled API and domain policy when Google supplies evidence. Unknown causes stay unknown. Raw error bodies, provider text, URLs, ids, mail content, addresses and tokens are omitted from these diagnostics. Gmail sync Debug records omit the mailbox address, folder name and folder id; sync activity still shows that mailbox and folder. Other Debug entries may still identify an account or folder. Only a quota classification pauses for quota or rate limits. Sign-in success alone does not identify a later 403; these details do not prove its cause. No new scopes or automatic write retries are added.",
       },
       {
         id: "ipc-diagnostics",

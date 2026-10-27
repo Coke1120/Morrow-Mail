@@ -9,6 +9,7 @@ const vm = require("node:vm");
 const { inspect } = require("node:util");
 const { createRequire } = require("node:module");
 const { gmailError, diagnosticMessage, MAX_ERROR_BYTES, ERROR_READ_MS } = require("../host/mail/gmail-error");
+const http = require("../host/mail/provider-http");
 const { createGmailMailApi } = require("../host/mail/gmail-mail-api");
 const privateText = "PRIVATE_BODY owner@private.invalid https://private.invalid/message/PRIVATE_ID ya29.PRIVATE_TOKEN";
 const reply = (body, status = 403, headers = {}) => new Response(JSON.stringify(body), { status, headers });
@@ -151,6 +152,23 @@ test("transport diagnostics use static operations and never resubmit writes", as
   assert.match(partial.message, /domainPolicy/); privateAbsent(partial); assert.equal(calls, 2);
 });
 
+test("trusted Gmail category decides rate limits; legacy text heuristic stays", async () => {
+  const auth = await gmailError(reply(legacy("rateLimitExceeded"), 401), "messages.get");
+  const unknown = await gmailError(reply(legacy("rateLimitExceeded"), 500), "messages.list");
+  const quota = await gmailError(reply(legacy("rateLimitExceeded")), "messages.list");
+  assert.equal(auth.gmailDiagnostic.category, "auth");
+  assert.equal(unknown.gmailDiagnostic.category, "unknown");
+  assert.equal(quota.gmailDiagnostic.category, "quota");
+  assert.equal(http.isRateLimit(auth), false);
+  assert.equal(http.isRateLimit(unknown), false);
+  assert.equal(http.isRateLimit(quota), true);
+  assert.equal(http.isRateLimit({ message: auth.message }), true, "the same reason text still matches without a Gmail diagnostic");
+  assert.equal(http.isRateLimit({ status: 429, message: "login failed" }), true);
+  assert.equal(http.isRateLimit({ message: "temporary throttle" }), true);
+  assert.equal(http.isRateLimit({ message: "login failed" }), false);
+  privateAbsent(auth); privateAbsent(unknown); privateAbsent(quota);
+});
+
 test("engine sync activity, IPC, Debug log and actual DOM keep safe details without a false auth gate", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-gmail-diagnostics-"));
   const names = ["MORROW_MAIL_DIR", "MORROW_USER_DATA", "MORROW_AI_CONFIG_DIR", "MORROW_MAIL_SECRETS", "MORROW_GOOGLE_OAUTH_FILE", "MORROW_GOOGLE_OAUTH_JSON"];
@@ -162,6 +180,11 @@ test("engine sync activity, IPC, Debug log and actual DOM keep safe details with
   let sockets = 0, signins = 0;
   net.Socket.prototype.connect = function () { sockets++; throw new Error("Socket forbidden in synthetic diagnostics test"); };
   const db = require("../host/mail/db"), secrets = require("../host/mail/secrets"), oauth = require("../host/mail/oauth"), config = require("../host/mail/oauth-config");
+  const sidecar = require("../host/mail/sidecar");
+  const mailbox = "ada.private@mailbox.test";
+  const folderId = "Label_84f0c1";
+  const folderName = "Quarterly Review https://mailbox.example.test/labels/Label_84f0c1 tok-debug-99 ya29.notprivate";
+  const debugSecrets = [mailbox, "Quarterly Review", "https://mailbox.example.test", folderId, "tok-debug-99", "ya29.notprivate"];
   const priorSignIn = oauth.signIn; oauth.signIn = async () => { signins++; throw new Error("Unexpected sign-in"); };
   const debug = require("../host/debug-log"), syncRetry = require("../shared/sync-retry"), events = [], timers = [];
   const filename = require.resolve("../host/mail/engine"), load = createRequire(filename), module = { exports: {} };
@@ -176,6 +199,11 @@ test("engine sync activity, IPC, Debug log and actual DOM keep safe details with
     },
   });
   const engine = module.exports, answer = (channel, params) => engine.answer(channel, [params]);
+  const debugText = () => debug.recent().map(line => line.text).join("\n");
+  const assertDebugOmitsMailbox = () => {
+    const text = debugText();
+    for (const secret of debugSecrets) assert.equal(text.includes(secret), false, secret);
+  };
   const { JSDOM } = require("jsdom"), { renderer } = require("./check-ux-workflows");
   const dom = new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"), "utf8"));
   const ui = renderer({ document: dom.window.document, setTimeout: () => 1, clearTimeout() {} });
@@ -184,29 +212,33 @@ test("engine sync activity, IPC, Debug log and actual DOM keep safe details with
     const bodies = [legacy("rateLimitExceeded"), legacy("insufficientPermissions"), rpc("SERVICE_DISABLED"), legacy("domainPolicy"), legacy(privateText)];
     for (const listing of [true, false]) for (const [index, body] of bodies.entries()) {
       const accountId = "fixture-" + Number(listing) + "-" + index;
-      db.insertAccount({ id: accountId, email: "Synthetic mailbox", username: "Synthetic mailbox", profile: "gmail", authKind: "oauth2", createdAt: 1,
+      db.insertAccount({ id: accountId, email: mailbox, username: mailbox, profile: "gmail", authKind: "oauth2", createdAt: 1,
         imapHost: "imap.invalid", imapPort: 993, imapTls: true, smtpHost: "smtp.invalid", smtpPort: 465, smtpTls: true });
-      db.enableGmail(accountId); db.replaceFolders(accountId, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox", providerId: "INBOX" }]);
+      db.enableGmail(accountId); db.replaceFolders(accountId, [{ path: folderId, name: folderName, wellKnown: "inbox", providerId: folderId }]);
       const credential = JSON.stringify({ provider: "google", purpose: "imap", googleClientId: config.credentials("google").clientId,
         accessToken: "PRIVATE_TOKEN", refreshToken: "PRIVATE_REFRESH", expiresAt: Date.now() + 3600000, grantedScopes: config.SCOPES.google });
       secrets.setPassword(accountId, credential);
       let calls = 0;
       global.fetch = async url => { calls++; return String(url).endsWith("/profile") ? reply({ historyId: "1" }, 200) : reply(body, 403, { "retry-after": "2" }); };
-      const scope = { accountId, ...(listing ? {} : { folderId: "INBOX" }) };
+      const scope = { accountId, ...(listing ? {} : { folderId }) };
       await answer("mail:listFromNetwork", scope);
       const activity = answer("mail:getSyncStatus", scope).data;
       const operation = listing ? "labels.list" : "messages.list";
       assert.ok(activity.message.includes(operation), JSON.stringify(activity)); privateAbsent(activity);
+      assert.equal(activity.accountLabel, mailbox);
+      if (!listing) assert.equal(activity.folderLabel, folderName);
+      assertDebugOmitsMailbox();
       assert.equal(activity.state, index === 0 ? "paused" : "error");
       assert.equal(!!db.accountById(accountId).auth_error, index === 1, "only permission evidence sets the 403 sign-in gate");
       assert.equal(calls, listing ? 1 : 2); assert.equal(secrets.getPassword(accountId), credential);
       assert.ok(events.some(event => event.channel === "mail:syncStatus" && event.payload.message === activity.message));
       assert.ok(debug.recent().some(line => line.text.includes(activity.message))); privateAbsent(debug.recent());
-      ui.context.activity = activity; ui.context.accountId = accountId;
-      ui.run(`state.view='mail'; state.accountId=accountId; state.folderId='INBOX'; state.accounts=[{id:accountId}]; rememberSyncStatus(activity); paintSyncControl();`);
+      ui.context.activity = activity; ui.context.accountId = accountId; ui.context.folderId = activity.folderId || "INBOX";
+      ui.run(`state.view='mail'; state.accountId=accountId; state.folderId=folderId; state.accounts=[{id:accountId}]; rememberSyncStatus(activity); paintSyncControl();`);
       for (const value of [dom.window.document.getElementById("refresh").title, dom.window.document.getElementById("refresh").getAttribute("aria-label"),
         dom.window.document.getElementById("sync-detail").title, ui.run("syncDetail(activity)")]) {
         assert.ok(value.includes(operation)); assert.ok(value.includes("HTTP 403")); privateAbsent(value);
+        assert.ok(value.includes(mailbox));
       }
       if (index === 0) {
         await answer("mail:listFromNetwork", scope);
@@ -215,6 +247,50 @@ test("engine sync activity, IPC, Debug log and actual DOM keep safe details with
       }
     }
     assert.deepEqual(timers, [5000, 5000, 5000, 5000, 5000, 5000], "non-credential 403s use only existing read retries");
+    const priorOrganize = sidecar.organizeToken;
+    sidecar.organizeToken = async () => ({ accessToken: "PRIVATE_TOKEN", provider: "google" });
+    try {
+      const boundaries = [
+        { name: "auth-rate-text", status: 401, sync: "error", auth: true, sender: "auth", gate: false },
+        { name: "unknown-rate-text", status: 500, sync: "error", auth: false, sender: "error", gate: false, retry: true },
+        { name: "quota-rate-text", status: 403, sync: "paused", auth: false, sender: "rate_limit", gate: true },
+      ];
+      for (const item of boundaries) {
+        const accountId = "boundary-" + item.name;
+        db.insertAccount({ id: accountId, email: mailbox, username: mailbox, profile: "gmail", authKind: "oauth2", createdAt: 1,
+          imapHost: "imap.invalid", imapPort: 993, imapTls: true, smtpHost: "smtp.invalid", smtpPort: 465, smtpTls: true });
+        db.enableGmail(accountId);
+        db.replaceFolders(accountId, [{ path: folderId, name: folderName, wellKnown: "inbox", providerId: folderId }]);
+        const credential = JSON.stringify({ provider: "google", purpose: "imap", googleClientId: config.credentials("google").clientId,
+          accessToken: "PRIVATE_TOKEN", refreshToken: "PRIVATE_REFRESH", expiresAt: Date.now() + 3600000, grantedScopes: config.SCOPES.google });
+        secrets.setPassword(accountId, credential);
+        global.fetch = async () => reply(legacy("rateLimitExceeded"), item.status);
+        const sender = await answer("mail:searchSender", { address: "sender@example.com", retryAccountId: accountId });
+        assert.equal(sender.success, true, JSON.stringify(sender));
+        const row = sender.data.accounts.find(account => account.accountId === accountId);
+        assert.equal(row.status, item.sender, JSON.stringify(row));
+        assert.match(row.message, /rateLimitExceeded/);
+        assert.equal(row.message.includes(mailbox), false);
+        assert.equal(secrets.getPassword(accountId), credential);
+        if (item.gate) engine.syncGates.delete(accountId);
+        const before = timers.length;
+        await answer("mail:listFromNetwork", { accountId, folderId });
+        const activity = answer("mail:getSyncStatus", { accountId, folderId }).data;
+        assert.equal(activity.state, item.sync, JSON.stringify(activity));
+        assert.equal(activity.accountLabel, mailbox);
+        assert.equal(activity.folderLabel, folderName);
+        assert.match(activity.message, new RegExp("HTTP " + item.status));
+        assert.match(activity.message, /rateLimitExceeded/);
+        assert.equal(!!db.accountById(accountId).auth_error, item.auth);
+        assert.equal(engine.syncGates.has(accountId), item.gate);
+        assert.equal(timers.length, before + (item.retry ? 1 : 0));
+        assert.equal(secrets.getPassword(accountId), credential);
+        assertDebugOmitsMailbox();
+        assert.ok(debugText().includes(activity.message));
+      }
+    } finally {
+      sidecar.organizeToken = priorOrganize;
+    }
     assert.equal(sockets, 0); assert.equal(signins, 0);
     const remote = require("../host/mail/remote");
     const auth = await gmailError(reply(legacy("authError"), 401), "messages.get");

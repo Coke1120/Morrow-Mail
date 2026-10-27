@@ -29,6 +29,9 @@ function retryAfterMs(source) {
 
 function isRateLimit(error) {
   if (!error) return false;
+  // Parsed Gmail category wins over reason text such as rateLimitExceeded.
+  const diagnostic = error.gmailDiagnostic;
+  if (diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic)) return diagnostic.category === "quota";
   if (error.status === 429 || error.code === "rate_limit") return true;
   const code = String(error.serverResponseCode || error.responseCode || "");
   if (/^(LIMIT|OVERQUOTA|TOOMANY)$/i.test(code)) return true;

@@ -597,6 +597,15 @@ function syncLabels(extra) {
   };
 }
 
+function gmailSyncAccount(accountId) {
+  try {
+    const account = accountId && db.accountById(accountId);
+    return !!(account && (account.profile === "gmail" || account.mail_transport === "gmail_api"));
+  } catch {
+    return false;
+  }
+}
+
 function emitSync(state, extra) {
   const now = Date.now();
   const scopeKey = JSON.stringify([(extra && extra.accountId) || "", (extra && extra.folderId) || ""]);
@@ -630,7 +639,8 @@ function emitSync(state, extra) {
     retryAt: state === "error" && extra && extra.retryAt ? extra.retryAt : null,
   };
   syncScopes.set(scopeKey, syncState);
-  debugLog.note("sync", [state, phase, place.accountLabel, place.folderLabel, message].filter(Boolean).join(" · "));
+  const debugPlace = gmailSyncAccount(place.accountId) ? [] : [place.accountLabel, place.folderLabel];
+  debugLog.note("sync", [state, phase, ...debugPlace, message].filter(Boolean).join(" · "));
   broadcast("mail:syncStatus", syncState);
   const accountId = syncState.accountId;
   if (!accountId) return;

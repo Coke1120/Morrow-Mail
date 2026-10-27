@@ -126,12 +126,17 @@ quota/rate limits, missing mail permission, a disabled API or domain policy.
 `PERMISSION_DENIED` alone remains an unknown cause; `RESOURCE_EXHAUSTED` indicates
 quota/rate pressure. Malformed, oversized, unreadable or unsupported responses
 fall back to unknown. No raw error body, provider message/metadata, URL, id, mail
-content, address or token is retained in these diagnostics. Existing surrounding
-mailbox/folder log context still needs review before sharing.
+content, address or token is retained in these diagnostics. Gmail sync Debug
+records omit the mailbox address, folder name and folder id. Sync activity still
+shows that mailbox and folder. Other Debug entries may still include account or
+folder context and need review before sharing.
 
-Quota/rate evidence uses the existing sync pause. Other non-credential Gmail
-403s use the existing transient read retry schedule rather than marking the
-credential invalid; confirmed missing permission and 401s keep the sign-in gate.
+Only a parsed quota classification uses the existing sync pause. A reason such
+as `rateLimitExceeded` does not reclassify auth, permission or unknown Gmail
+results. Errors without a Gmail diagnostic still use the existing rate-limit
+heuristic. Other non-credential Gmail 403s use the existing transient read retry
+schedule rather than marking the credential invalid; confirmed missing permission
+and 401s keep the sign-in gate.
 Scopes, stored grants/credentials, consent and write retry/submission behavior
 are unchanged. Review the safe diagnostic before choosing an action: wait for
 quota pressure, ask the app owner to review API enablement, contact the domain
