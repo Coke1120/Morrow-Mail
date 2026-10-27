@@ -71,6 +71,7 @@ const state = {
   bodySync: null,
   bodySyncUnavailable: false,
   oauthStatus: null,
+  googleOauthClient: null,
   oauthPending: false,
   view: "mail",
   side: "folders",
@@ -516,8 +517,28 @@ function opensAiWrite(seed, prefs) {
 function oauthButtonState(status, provider) {
   if (provider === "microsoft") return { disabled: false, reason: "" };
   if (status && status.google === true) return { disabled: false, reason: "" };
-  if (status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured." };
+  if (status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts." };
   return { disabled: false, reason: "" };
+}
+
+function googleOauthClientCopy(status) {
+  const source = status && status.source;
+  const imported = !!(status && status.imported);
+  if (source === "invalid") {
+    return imported
+      ? "The imported Google OAuth file could not be read. Import a Desktop client JSON again, or clear the imported client."
+      : "Google OAuth is not ready. The configured Desktop client JSON could not be read.";
+  }
+  if (!status || status.ready !== true) return "Google OAuth is not ready. Import a Desktop client JSON to connect Gmail.";
+  const using = source === "env"
+    ? "a developer environment variable"
+    : source === "imported"
+      ? "your imported Desktop client"
+      : source === "bundled"
+        ? "the bundled Desktop client"
+        : "a Desktop client";
+  const saved = source !== "imported" && imported ? " An imported client is also saved on this computer." : "";
+  return "Google OAuth is ready. This installation is using " + using + "." + saved;
 }
 
 function calendarGrantState(status, account) {
@@ -525,7 +546,7 @@ function calendarGrantState(status, account) {
   const profile = String((account.imapSmtpProfile || account.profile || "")).toLowerCase();
   const provider = profile === "gmail" || profile === "outlook" ? profile : "";
   if (!provider) return { disabled: true, reason: "Calendar needs a Google or Microsoft account." };
-  if (provider === "gmail" && status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured." };
+  if (provider === "gmail" && status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts." };
   return { disabled: false, reason: "" };
 }
 
@@ -546,7 +567,7 @@ function providerCopy(reason, provider) {
       : "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.";
   }
   if (reason === "password_account") return "This mailbox uses a password. Grant the provider API to manage labels, or keep using IMAP folders.";
-  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so Gmail labels stay on IMAP.";
+  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so Gmail labels stay on IMAP. Import a Desktop client JSON in Settings → Accounts.";
   if (reason === "imap_only") return "Labels stay on IMAP for this account.";
   if (reason === "no_account") return "Connect a mailbox to load provider labels.";
   if (reason === "error") return "The provider label list failed. IMAP folders are unchanged.";
@@ -1440,7 +1461,7 @@ function calendarMode(payload) {
 }
 
 function calendarCopy(reason, email) {
-  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so calendar stays offline.";
+  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so calendar stays offline. Import a Desktop client JSON in Settings → Accounts.";
   if (reason === "imap_only") return "Calendar needs a Google or Microsoft account.";
   if (reason === "no_account") return "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.";
   if (reason === "error") return "Calendar could not be loaded.";
@@ -10023,7 +10044,7 @@ function paintConnectPending() {
   $("connect-close").textContent = state.oauthPending ? "Cancel sign-in" : "Cancel";
   $("connect-form").setAttribute("aria-busy", busy ? "true" : "false");
   $("oauth-unavailable").textContent = google.disabled
-    ? "Google sign-in is unavailable in this installation. Use an installation configured for Google sign-in, or use an app password if your provider permits it." : "";
+    ? "Google sign-in needs a Desktop OAuth client. Import one in Settings → Accounts, or use an app password if your provider permits it." : "";
 }
 
 async function connectImap() {
@@ -14163,7 +14184,7 @@ function loadSettingsFold(name) {
     setSettingsFoldLoading(fold, settingsFoldLoadingLabels[name] || "Loading…");
     if (name === "prefs" || name === "mail") await loadSettings();
     else if (name === "ai") { await loadSettings(); if (!aiDirty()) await loadAiSettings(); }
-    else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); }
+    else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); await loadGoogleOauthClient(); }
     else if (name === "compose") await loadComposeSettings();
     else if (name === "ooo" && !oooDirty()) await loadVacation();
     else if (name === "bot") await loadBotAccess();
@@ -15017,6 +15038,55 @@ function paintOooDirty() {
   note.hidden = !dirty;
   note.textContent = dirty ? "Unsaved changes. Review and save to the provider." : "";
   if (dirty && $("ooo-status") && $("ooo-status").textContent === "Saved on the provider.") setOooStatus("", false);
+}
+let googleOauthClientBusy = false;
+function paintGoogleOauthClient() {
+  const node = $("google-oauth-client-status");
+  if (!node) return;
+  node.classList.remove("error");
+  node.textContent = googleOauthClientCopy(state.googleOauthClient);
+  const clear = $("google-oauth-clear");
+  if (clear) clear.disabled = googleOauthClientBusy || !(state.googleOauthClient && state.googleOauthClient.imported);
+  const button = $("google-oauth-import");
+  if (button) button.disabled = googleOauthClientBusy;
+}
+async function loadGoogleOauthClient() {
+  const node = $("google-oauth-client-status");
+  try {
+    state.googleOauthClient = await call("mail:googleOauthStatus");
+    paintGoogleOauthClient();
+  } catch (error) {
+    if (!node) throw error;
+    node.textContent = error instanceof Error ? error.message : String(error);
+    node.classList.add("error");
+  }
+}
+async function changeGoogleOauthClient(channel) {
+  if (googleOauthClientBusy) return;
+  const node = $("google-oauth-client-status");
+  googleOauthClientBusy = true;
+  paintGoogleOauthClient();
+  if (node) {
+    node.classList.remove("error");
+    if (channel === "mail:importGoogleOauth") node.textContent = "Choose a Desktop client JSON…";
+  }
+  try {
+    const result = await call(channel);
+    state.googleOauthClient = result || state.googleOauthClient;
+    paintGoogleOauthClient();
+    await loadOauthStatus();
+  } catch (error) {
+    if (node) {
+      node.textContent = error instanceof Error ? error.message : String(error);
+      node.classList.add("error");
+    }
+  } finally {
+    googleOauthClientBusy = false;
+    const button = $("google-oauth-import");
+    if (button) button.disabled = false;
+    const clear = $("google-oauth-clear");
+    if (clear) clear.disabled = !(state.googleOauthClient && state.googleOauthClient.imported);
+  }
 }
 function paintSettingsMailbox() {
   const select = $("settings-account");
@@ -20611,6 +20681,8 @@ function wire() {
   $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
   $("settings-account").addEventListener("change", () => changeSettingsMailbox($("settings-account").value));
   $("settings-reconnect").addEventListener("click", () => openConnectFor(settingsAccount()));
+  $("google-oauth-import").addEventListener("click", () => changeGoogleOauthClient("mail:importGoogleOauth"));
+  $("google-oauth-clear").addEventListener("click", () => changeGoogleOauthClient("mail:clearGoogleOauth"));
   $("settings-gmail-migrate").addEventListener("click", () => reauthorizeGmail(false));
   $("settings-gmail-calendar").addEventListener("click", () => reauthorizeGmail(true));
   $("settings-gmail-cancel").addEventListener("click", cancelGmailReauthorization);

@@ -108,7 +108,7 @@ function secretKey(account, purpose) {
 }
 
 function gateMessage(reason, provider, purpose) {
-  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured.";
+  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts.";
   if (reason === "imap_only") {
     return purpose === "calendar"
       ? "Calendar needs a Google or Microsoft account."
@@ -300,6 +300,7 @@ function oauthStatus() {
   return ok({
     google: ready.google === true,
     microsoft: ready.microsoft === true,
+    googleClient: config.googleOauthStatus(),
     purposes: {
       bundle: { ...config.BUNDLE_SCOPES },
       imap: { google: config.SCOPES.google, microsoft: config.SCOPES.microsoft },
@@ -390,7 +391,7 @@ async function grantPurpose(params, purpose) {
   if (!account) return fail("no_account", "Connect the mailbox first.");
   const provider = providerOf(account);
   if (provider !== "google" && provider !== "microsoft") return fail("imap_only", "These permissions need a Google or Microsoft account.");
-  if (provider === "google" && !oauth.oauthReady().google) return fail("oauth_not_ready", "Google Desktop OAuth is not configured.");
+  if (provider === "google" && !oauth.oauthReady().google) return fail("oauth_not_ready", "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts.");
   const already = grantResult(account, purpose);
   if (already.data.api && params?.forceReauthorize !== true) return already;
   const identity = secrets.getPassword(account.id);
