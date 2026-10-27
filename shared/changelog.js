@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.4": [
+      "Gmail sync failures after Google login name an allowlisted category when Google supplies evidence: quota or rate limit, missing permission, a disabled API, domain policy, or unknown. Raw provider bodies, URLs, tokens and mail content stay out of these messages.",
+      "Gmail sync Debug records omit the mailbox address, folder name and folder id. The mail UI and sync activity still show that mailbox and folder.",
+      "A parsed Gmail category decides rate pauses. Sign-in, permission and unknown results keep their existing paths even if the reason mentions rateLimitExceeded. Only a quota category uses the quota pause. Errors without a Gmail diagnostic still use the existing rate-limit check.",
+      "This does not identify or fix the live HTTP 403 that can follow a successful Google login. OAuth scopes, saved grants, credential storage and write retries are unchanged.",
+    ],
     "0.3.3": [
       "Continue with Google stays primary. New connections and Gmail OAuth reconnects keep the manual password form collapsed; manual-provider reconnects retain their settings.",
       "Legacy Gmail sign-in offers Review Gmail API migration. It opens the matching Accounts review without starting migration; a changed or removed mailbox cancels the shortcut safely.",
