@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const { Worker } = require("node:worker_threads");
 
 const db = require("../host/mail/db");
+const { Persistence } = require("../host/mail/persistence");
 const account = { id: "persist", email: "persist@example.invalid", username: "persist", profile: "custom",
   createdAt: 1, imapHost: "imap.example.invalid", imapPort: 993, imapTls: true,
   smtpHost: "smtp.example.invalid", smtpPort: 465, smtpTls: true };
@@ -42,6 +43,40 @@ function child(file, mode) {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8", timeout: 30000,
   });
   assert.equal(result.status, 0, result.stderr || String(result.error));
+}
+
+async function observeBackgroundCheckpoint(file, mutate) {
+  const checkpoint = Persistence.prototype.checkpoint;
+  let started;
+  let failed;
+  const scheduled = new Promise((resolve, reject) => { started = resolve; failed = reject; });
+  let timer;
+  Persistence.prototype.checkpoint = function (...args) {
+    const dispatchedAt = process.hrtime.bigint();
+    const completion = checkpoint.apply(this, args);
+    if (this.file === file) started({ completion, dispatchedAt });
+    return completion;
+  };
+  try {
+    mutate();
+    // Bound scheduler startup after synchronous fixture writes. Once dispatched,
+    // use the real worker's bounded completion/error, not a shorter disk deadline.
+    timer = setTimeout(() => failed(new Error("Background checkpoint did not start.")), 10000);
+    const { completion, dispatchedAt } = await scheduled;
+    clearTimeout(timer);
+    const report = await completion;
+    return { report, elapsedMs: Number(process.hrtime.bigint() - dispatchedAt) / 1e6 };
+  } finally {
+    clearTimeout(timer);
+    Persistence.prototype.checkpoint = checkpoint;
+  }
+}
+
+function publishedSequence(file) {
+  const Database = require("better-sqlite3");
+  const published = new Database(file, { readonly: true, fileMustExist: true });
+  try { return published.prepare("SELECT sequence FROM morrow_storage WHERE id = 1").get().sequence; }
+  finally { published.close(); }
 }
 
 async function checkHotPaths(dir) {
@@ -203,25 +238,17 @@ async function checkCheckpoint(file) {
   await db.close();
   await db.open(file);
   assert.equal(db.messageById("p-3").starred, 1);
-  // 300 commits cross the 256-transaction threshold. The one-second timer can
-  // seal that journal while later commits are still fsyncing, which is common
-  // on Windows. Those later commits stay in the new journal. Success is a
-  // published checkpoint, not an empty active journal.
-  const published = fs.statSync(file);
-  for (let i = 0; i < 300; i += 1) db.updateMessage("p-1", { starred: i % 2 });
-  const deadline = Date.now() + 15000;
-  let compacted = false;
-  while (Date.now() < deadline) {
-    let now = null;
-    try { now = fs.statSync(file); } catch { /* atomic replace in progress */ }
-    const advanced = !!now && (now.mtimeMs !== published.mtimeMs || now.size !== published.size);
-    if (advanced && !fs.existsSync(`${file}.journal.pending`)) {
-      compacted = true;
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  assert.ok(compacted, "background checkpoint must compact an accumulated journal");
+  // Cross the 256-transaction threshold without manually requesting a checkpoint.
+  // Await the actual background job: Windows replay can outlast a 15-second poll,
+  // and file timestamps/size do not prove which durable transactions it published.
+  const beforeSequence = publishedSequence(file);
+  const { report: background, elapsedMs } = await observeBackgroundCheckpoint(file, () => {
+    for (let i = 0; i < 300; i += 1) db.updateMessage("p-1", { starred: i % 2 });
+  });
+  assert.ok(background.sequence >= beforeSequence + 300, "background checkpoint must include the accumulated commits");
+  assert.equal(publishedSequence(file), background.sequence, "the published SQLite file must contain that checkpoint");
+  assert.equal(fs.existsSync(`${file}.journal.pending`), false, "completed checkpoint must remove its sealed journal");
+  console.log(`mail-background-checkpoint-ok workerMs=${Math.round(elapsedMs)} sequence=${background.sequence}`);
   await db.close();
 }
 
