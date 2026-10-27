@@ -568,7 +568,7 @@ async function accessTokenFor(account, secretBlob, expectedPurpose) {
     return parsed.accessToken;
   }
   if (provider === "google" && !oauthReady().google) {
-    const error = new Error("Google Desktop OAuth is not configured.");
+    const error = new Error("Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts.");
     error.code = "oauth_not_ready";
     throw error;
   }

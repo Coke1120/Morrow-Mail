@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { userDataDir } = require("../paths");
 
 const MICROSOFT_CLIENT_ID = fs
   .readFileSync(path.join(__dirname, "..", "..", "shared", "microsoft-client-id.txt"), "utf8")
@@ -113,23 +114,103 @@ function googleClientFiles() {
   return files;
 }
 
-function loadGoogleClient() {
+function importedGoogleOauthPath() {
+  return path.join(userDataDir(), "google-oauth.json");
+}
+
+function invalidGoogleOauth(message) {
+  const error = new Error(message);
+  error.code = "invalid_google_oauth";
+  throw error;
+}
+
+function parseLocatedGoogleClient(raw) {
+  try {
+    return parseGoogleDesktopJson(raw);
+  } catch (error) {
+    if (error instanceof SyntaxError) invalidGoogleOauth("Google Desktop OAuth JSON could not be read.");
+    const message = error instanceof Error ? error.message : "";
+    if (
+      message === "Use a Google Desktop OAuth client JSON (installed), not a web client."
+      || message === "Google Desktop OAuth JSON is missing client_id or client_secret."
+    ) invalidGoogleOauth(message);
+    invalidGoogleOauth("That file is not a Google Desktop OAuth client JSON.");
+  }
+}
+
+// Env stays first so a developer machine can override a client imported in Settings.
+// The imported file then wins over the repo copy and the release bake.
+function locateGoogleClientRaw() {
   const file = (process.env.MORROW_GOOGLE_OAUTH_FILE || "").trim();
+  if (file) return { source: "env", raw: fs.readFileSync(file, "utf8") };
   const raw = (
     process.env.MORROW_GOOGLE_OAUTH_JSON ||
     process.env.GOOGLE_DESKTOP_OAUTH_JSON ||
     ""
   ).trim();
-  if (file) {
-    return parseGoogleDesktopJson(fs.readFileSync(file, "utf8"));
-  }
-  if (raw) {
-    return parseGoogleDesktopJson(raw);
-  }
+  if (raw) return { source: "env", raw };
+  const imported = importedGoogleOauthPath();
+  if (fs.existsSync(imported)) return { source: "imported", raw: fs.readFileSync(imported, "utf8") };
   for (const bundled of googleClientFiles()) {
-    if (fs.existsSync(bundled)) return parseGoogleDesktopJson(fs.readFileSync(bundled, "utf8"));
+    if (fs.existsSync(bundled)) return { source: "bundled", raw: fs.readFileSync(bundled, "utf8") };
   }
   return null;
+}
+
+function loadGoogleClient() {
+  const located = locateGoogleClientRaw();
+  if (!located) return null;
+  return parseLocatedGoogleClient(located.raw);
+}
+
+function googleOauthStatus() {
+  let imported = false;
+  try { imported = fs.existsSync(importedGoogleOauthPath()); } catch { imported = false; }
+  try {
+    const located = locateGoogleClientRaw();
+    if (!located) return { ready: false, source: "none", imported };
+    parseLocatedGoogleClient(located.raw);
+    return { ready: true, source: located.source, imported };
+  } catch {
+    return { ready: false, source: "invalid", imported };
+  }
+}
+
+function writePrivateFile(dest, text) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = `${dest}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    try { fs.chmodSync(tmp, 0o600); } catch { /* Windows does not apply Unix modes. */ }
+    fs.renameSync(tmp, dest);
+    try { fs.chmodSync(dest, 0o600); } catch { /* Windows does not apply Unix modes. */ }
+  } catch (error) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* keep the previous import */ }
+    throw error;
+  }
+}
+
+function importGoogleDesktopJson(source) {
+  if (typeof source !== "string" || source.length > 65536) {
+    invalidGoogleOauth(typeof source === "string" && source.length > 65536
+      ? "That file is too large to be a Google Desktop OAuth client JSON."
+      : "That file is not a Google Desktop OAuth client JSON.");
+  }
+  const normalized = source.replace(/^\uFEFF/, "").trim();
+  let value;
+  try { value = JSON.parse(normalized); }
+  catch { invalidGoogleOauth("That file is not valid JSON."); }
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.web || !value.installed || typeof value.installed !== "object" || Array.isArray(value.installed)) {
+    invalidGoogleOauth("Use a Google Desktop OAuth client JSON (installed), not a web client.");
+  }
+  parseLocatedGoogleClient(normalized);
+  writePrivateFile(importedGoogleOauthPath(), `${normalized}\n`);
+  return googleOauthStatus();
+}
+
+function clearImportedGoogleDesktopJson() {
+  fs.rmSync(importedGoogleOauthPath(), { force: true });
+  return googleOauthStatus();
 }
 
 function credentials(provider) {
@@ -145,7 +226,7 @@ function credentials(provider) {
     const google = loadGoogleClient();
     if (!google) {
       throw new Error(
-        "Google Desktop OAuth is not configured. Set GOOGLE_DESKTOP_OAUTH_JSON, MORROW_GOOGLE_OAUTH_JSON, or MORROW_GOOGLE_OAUTH_FILE (same Desktop JSON as Morrow-Mail)."
+        "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts, or set GOOGLE_DESKTOP_OAUTH_JSON, MORROW_GOOGLE_OAUTH_JSON, or MORROW_GOOGLE_OAUTH_FILE."
       );
     }
     return { provider: "google", clientId: google.clientId, clientSecret: google.clientSecret, public: false };
@@ -326,14 +407,15 @@ function authorizeUrl(provider, purpose, fields) {
 }
 
 function oauthReady() {
+  const google = googleOauthStatus();
   return {
     microsoft: Boolean(MICROSOFT_CLIENT_ID),
-    google: Boolean(loadGoogleClient()),
+    google: google.ready === true,
     microsoftClientId: MICROSOFT_CLIENT_ID,
     source: {
       microsoft: "shared/microsoft-client-id.txt (from Morrow-Mail; public desktop client)",
       google:
-        "env GOOGLE_DESKTOP_OAUTH_JSON or MORROW_GOOGLE_OAUTH_JSON|FILE, resources/google-oauth.json, or process.resourcesPath/google-oauth.json (packaged; never commit)",
+        "env MORROW_GOOGLE_OAUTH_FILE, MORROW_GOOGLE_OAUTH_JSON, or GOOGLE_DESKTOP_OAUTH_JSON; else userData google-oauth.json; else resources/google-oauth.json or process.resourcesPath/google-oauth.json (never commit)",
     },
   };
 }
@@ -353,6 +435,10 @@ module.exports = {
   googleClientFiles,
   loadGoogleClient,
   parseGoogleDesktopJson,
+  importedGoogleOauthPath,
+  googleOauthStatus,
+  importGoogleDesktopJson,
+  clearImportedGoogleDesktopJson,
   oauthReady,
   providerKey,
   normalizePurpose,

@@ -2,7 +2,7 @@ const assert=require('node:assert/strict');
 const {renderer}=require('./check-ux-workflows');
 async function run(){
   const nodes=new Map();
-  const get=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',disabled:false,hidden:false,classList:{toggle(){}},appendChild(child){child.parentElement=this;},setAttribute(){}});return nodes.get(id);};
+  const get=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',disabled:false,hidden:false,classList:{toggle(){},remove(){}},appendChild(child){child.parentElement=this;},setAttribute(){}});return nodes.get(id);};
   const ui=renderer({document:{getElementById:get}});
   ui.run(`state.oauthStatus={google:false}; globalThis.calls=[]; globalThis.rejectSignIn=null;
     call=async(channel)=>{calls.push(channel); return new Promise((_,reject)=>{rejectSignIn=reject;});};
@@ -11,7 +11,16 @@ async function run(){
   assert.match(get('connect-status').textContent,/browser/);
   assert.equal(get('oauth-microsoft').disabled,true);
   assert.equal(get('connect-close').textContent,'Cancel sign-in');
-  assert.match(get('oauth-unavailable').textContent,/unavailable/);
+  assert.match(get('oauth-unavailable').textContent, /Import one in Settings → Accounts/);
+  ui.run(`state.googleOauthClient={ready:true,source:'imported',imported:true}; paintGoogleOauthClient();`);
+  assert.match(get('google-oauth-client-status').textContent, /your imported Desktop client/);
+  assert.equal(get('google-oauth-clear').disabled, false);
+  ui.run(`state.googleOauthClient={ready:true,source:'env',imported:true}; paintGoogleOauthClient();`);
+  assert.match(get('google-oauth-client-status').textContent, /developer environment variable/);
+  ui.run(`state.googleOauthClient={ready:true,source:'bundled',imported:false}; paintGoogleOauthClient();`);
+  assert.match(get('google-oauth-client-status').textContent, /bundled Desktop client/);
+  assert.equal(get('google-oauth-clear').disabled, true);
+  assert.equal(get('google-oauth-client-status').textContent.includes('client_secret'), false);
   await ui.run(`connectOAuth('microsoft')`);
   assert.equal(ui.run('calls.length'),1);
   ui.run(`rejectSignIn(new Error('Fixture consent rejected'))`);await signing;

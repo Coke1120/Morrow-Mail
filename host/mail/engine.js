@@ -3470,6 +3470,52 @@ async function pumpScheduledAdmitted() {
   }
 }
 
+const GOOGLE_OAUTH_IMPORT_MESSAGES = new Set([
+  "That file is not valid JSON.",
+  "That file is too large to be a Google Desktop OAuth client JSON.",
+  "That file is not a Google Desktop OAuth client JSON.",
+  "Use a Google Desktop OAuth client JSON (installed), not a web client.",
+  "Google Desktop OAuth JSON is missing client_id or client_secret.",
+  "Google Desktop OAuth JSON could not be read.",
+]);
+
+async function importGoogleOauthClient(event) {
+  let picked;
+  try {
+    const { dialog, BrowserWindow } = require("electron");
+    const owner = event && event.sender;
+    const win = (owner && BrowserWindow.fromWebContents?.(owner))
+      || BrowserWindow.getFocusedWindow()
+      || BrowserWindow.getAllWindows()[0];
+    picked = await dialog.showOpenDialog(win || undefined, {
+      title: "Import Google Desktop OAuth client",
+      filters: [
+        { name: "JSON", extensions: ["json"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+      properties: ["openFile"],
+    });
+  } catch {
+    return fail("invalid_google_oauth", "Could not open the file picker.");
+  }
+  if (!picked || picked.canceled || !picked.filePaths || !picked.filePaths[0]) {
+    return ok({ ...oauthConfig.googleOauthStatus(), cancelled: true });
+  }
+  try {
+    const stat = fs.statSync(picked.filePaths[0]);
+    if (!stat.isFile() || stat.size > 65536) {
+      return fail("invalid_google_oauth", "Choose a Google Desktop OAuth client JSON file.");
+    }
+    oauthConfig.importGoogleDesktopJson(fs.readFileSync(picked.filePaths[0], "utf8"));
+  } catch (error) {
+    const message = error && GOOGLE_OAUTH_IMPORT_MESSAGES.has(error.message)
+      ? error.message
+      : "Could not save the imported Google OAuth client.";
+    return fail("invalid_google_oauth", message);
+  }
+  return ok(oauthConfig.googleOauthStatus());
+}
+
 function answer(channel, args, event) {
   if (!ready) return undefined;
   if (sidecar.handles(channel)) return sidecar.answer(channel, args);
@@ -3504,6 +3550,13 @@ function answer(channel, args, event) {
     else idleOffline();
     return ok({ online });
   }
+  if (channel === "mail:googleOauthStatus") return ok(oauthConfig.googleOauthStatus());
+  if (channel === "mail:clearGoogleOauth") {
+    try { oauthConfig.clearImportedGoogleDesktopJson(); }
+    catch { return fail("invalid_google_oauth", "Could not remove the imported Google OAuth client."); }
+    return ok(oauthConfig.googleOauthStatus());
+  }
+  if (channel === "mail:importGoogleOauth") return importGoogleOauthClient(event);
   if (channel === "mail:addAccount") {
     return (async () => {
       try {

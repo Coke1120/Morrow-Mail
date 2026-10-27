@@ -91,6 +91,12 @@
         blurb: "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail.",
       },
       {
+        id: "google-desktop-oauth",
+        title: "Bring your own Google OAuth client",
+        category: "Accounts",
+        blurb: "Settings → Accounts imports a Google Desktop OAuth client JSON into this computer's app data. That file is used instead of a client bundled with the app. Developer environment variables still override it. Web client JSON is rejected. The client secret is not shown. Clear imported client removes only the imported file. A mailbox connected with another client must be connected again. While the Google consent screen stays in Testing, only test users can connect and refresh tokens expire after about seven days.",
+      },
+      {
         id: "multi-account",
         title: "Multiple mailboxes",
         category: "Accounts",
