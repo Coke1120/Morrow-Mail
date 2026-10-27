@@ -177,7 +177,8 @@ async function ui() {
   const { startupStatusHtml, startupIndexProgressScript } = require("../host/startup-error");
   const dom = new JSDOM(startupStatusHtml(), { runScripts: "outside-only" });
   const node = dom.window.document.getElementById("startup-index-progress");
-  assert.equal(node.hidden, true);
+  assert.equal(node.hidden, false);
+  assert.match(node.textContent, /Your mail stays on this computer/);
   dom.window.eval(startupIndexProgressScript({ phase: "building", total: 160, completed: 64, resumed: true }));
   assert.equal(node.hidden, false); assert.match(node.textContent, /Resuming local search: 64 of 160 saved messages/);
   dom.window.eval(startupIndexProgressScript({ phase: "building", total: 160, completed: 160 }));

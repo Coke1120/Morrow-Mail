@@ -16,6 +16,8 @@ between messages/orphan IDs, commits through the existing transaction/journal
 path, then yields with `setImmediate`. The budget is not a maximum latency: a
 single message, SQL scan, serialization, disk/fsync or replay call can still pause
 the main thread. No native Mac or end-user speed claim is made.
+More durable commits can increase total rebuild time or disk traffic; the goal
+is responsiveness between batches rather than a guaranteed faster startup.
 
 ## Durability and recovery
 
@@ -48,7 +50,9 @@ an already ready store. Errors/cancellation never publish partial search readine
 Startup receives only phase/count/resume progress. The opening window updates at
 most every 100 ms plus final completion. It explains preparation/resumption and
 finishing checks; it does not claim a provider sync percentage. Startup quit closes
-initialization and suppresses an intentional-cancel failure dialog. Ordinary quit
+initialization. Progress reuses the existing explanation paragraph rather than
+adding content to the fixed-size opening window. Intentional startup quit suppresses
+an intentional-cancel failure dialog. Ordinary quit
 and scheduled-send behavior are unchanged. Features and Search coverage explain
 readiness, restart and remaining single-operation pauses; no CLI/API command is
 added.

@@ -86,8 +86,7 @@ function startupStatusHtml() {
   <div class="status" role="status">
     <span class="page-busy-spin" aria-hidden="true"></span>
     <h1>Opening your mailbox</h1>
-    <p>A large mailbox can take a moment. Your mail stays on this computer.</p>
-    <p id="startup-index-progress" hidden></p>
+    <p id="startup-index-progress">A large mailbox can take a moment. Your mail stays on this computer.</p>
   </div>
 </main>
 </body>
