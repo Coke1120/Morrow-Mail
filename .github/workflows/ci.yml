@@ -25,3 +25,18 @@ jobs:
           test ${#files[@]} -gt 0
           for f in "${files[@]}"; do node --check "$f"; done
       - run: node scripts/check-boot-path.js
+
+  windows-check:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Match the release job: node-gyp 9 needs distutils under Python 3.12.
+      - name: Install native module build prerequisite
+        run: python3 -m pip install --upgrade setuptools
+      - run: npm ci
+      - run: npm run check
