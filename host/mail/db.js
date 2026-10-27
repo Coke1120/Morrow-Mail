@@ -2,6 +2,7 @@ const { Persistence } = require("./persistence");
 const crypto = require("crypto");
 const primaryFolderLib = require("../../shared/primary-mailboxes");
 const senderHeader = require("./sender-header");
+const perf = require("../performance-diagnostics");
 
 let db = null;
 let filePath = "";
@@ -50,6 +51,11 @@ function changeStamp() {
 }
 
 function transaction(fn) {
+  if (writes) return fn();
+  return perf.sync("db.transaction", () => transact(fn));
+}
+
+function transact(fn) {
   if (writes) return fn();
   db.run("BEGIN");
   const before = changeStamp();
@@ -306,13 +312,17 @@ function migrate() {
 }
 
 async function open(target) {
+  return perf.measure("startup.db", () => openDatabase(target));
+}
+
+async function openDatabase(target) {
   if (db) close();
   await closing;
   filePath = target;
   storage = new Persistence(target);
   try {
     db = await storage.open();
-    transaction(migrate);
+    perf.sync("startup.migrate", () => transaction(migrate));
     if (!storage.initialized) storage.initialize(db);
   } catch (error) {
     close();
@@ -724,6 +734,10 @@ function forgetIds(rows) {
 }
 
 function indexText(messageId) {
+  return perf.sync("db.index", () => indexMessageText(messageId));
+}
+
+function indexMessageText(messageId) {
   forgetIndex(messageId);
   const row = get(
     "SELECT id, subject, from_addr, text_body, html_body, snippet FROM messages WHERE id = ?",
@@ -779,13 +793,21 @@ function ensureSearchIndex() {
   const messages = get("SELECT COUNT(*) AS n FROM messages").n;
   const docs = get("SELECT COUNT(*) AS n FROM message_fts_doc").n;
   if (version && version.value === SEARCH_INDEX_VERSION && messages === docs) return;
-  transaction(() => {
+  perf.sync("startup.index", () => transaction(() => {
     run("DELETE FROM message_fts");
     run("DELETE FROM message_fts_doc");
     for (const row of all("SELECT id FROM messages")) indexText(row.id);
     run("DELETE FROM message_fts_meta WHERE meta_key = 'version'");
     run("INSERT INTO message_fts_meta (meta_key, meta_value) VALUES ('version', ?)", [SEARCH_INDEX_VERSION]);
-  });
+  }));
+}
+
+function indexedContentChanged(id, values) {
+  const entries = Object.entries(values);
+  return !!get(`SELECT 1 AS changed FROM messages WHERE id = ? AND (
+    ${entries.map(([name]) => `${name} IS NOT ?`).join(" OR ")}
+    OR NOT EXISTS (SELECT 1 FROM message_fts_doc WHERE message_id = ?))`,
+  [id, ...entries.map(([,value]) => value), id]);
 }
 
 function searchResultLimit(value) {
@@ -951,6 +973,8 @@ function applyFolderSync(accountId, folderPath, report) {
         typeof message.fromDisplayName === "string" ? message.fromDisplayName : null,
         senderHeader.bareAddress(message.fromAddress) || senderHeader.bareAddress(message.from) || null,
       ];
+      const reindex = !found || indexedContentChanged(id, { subject: message.subject || "", from_addr: message.from || "",
+        text_body: message.textBody || null, html_body: message.htmlBody || null, snippet: message.snippet || "" });
       if (found) {
         run(
           `UPDATE messages SET
@@ -975,7 +999,7 @@ function applyFolderSync(accountId, folderPath, report) {
           ]
         );
       }
-      indexText(id);
+      if (reindex) indexText(id);
       updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
     }
     for (const flags of Array.isArray(report.flags) ? report.flags : []) {
@@ -1169,11 +1193,11 @@ function messageStats(accountId) {
   return { messages: row ? row.n : 0, bodiesComplete: row ? row.bodies : 0 };
 }
 
-function messagesByThread(accountId, threadId) {
-  return all(
-    "SELECT * FROM messages WHERE account_id = ? AND thread_id = ? ORDER BY list_sort_ts ASC",
+function messagesByThread(accountId, threadId, { headersOnly = false } = {}) {
+  return perf.sync(headersOnly ? "db.thread.headers" : "db.thread.full", () => all(
+    `SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE account_id = ? AND thread_id = ? ORDER BY list_sort_ts ASC`,
     [accountId, threadId]
-  );
+  ));
 }
 
 function updateMessage(id, patch) {
@@ -1322,17 +1346,28 @@ function resolveScope(query) {
   return next;
 }
 
-function selectMessages(query) {
+// Match String.trim() for hasBody without copying message bodies into JS. An
+// explicit projection keeps future body/blob columns out of metadata queries.
+const BODY_SPACE = "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)";
+const METADATA_COLUMNS = ["id", "account_id", "folder_path", "uid", "uid_validity", "thread_id", "rfc_message_id", "in_reply_to", "subject", "snippet",
+  "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "list_sort_ts", "unread", "starred", "is_draft",
+  "has_attachments", "attachments_json", "body_complete", "body_warning", "recipient_headers_json", "draft_pending", "gmail_id"];
+function metadataColumns(table) {
+  return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")},
+    (COALESCE(trim(${table}.html_body, ${BODY_SPACE}), '') != '' OR COALESCE(trim(${table}.text_body, ${BODY_SPACE}), '') != '') AS has_body`;
+}
+
+function selectMessages(query, { headersOnly = false } = {}) {
   const scope = resolveScope(query);
   const { clauses, params } = whereFor(scope);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const limit = Math.min(Math.max(Math.floor(Number(query.limit)) || 2000, 1), 2000);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const join = query.fromMe ? "JOIN accounts a ON a.id = m.account_id" : "";
-  return all(
-    `SELECT m.* FROM messages m ${join} ${where} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?`,
+  return perf.sync(headersOnly ? "db.list.headers" : "db.list.full", () => all(
+    `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join} ${where} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?`,
     [...params, limit, offset]
-  );
+  ));
 }
 
 function countMessages(query) {
@@ -1462,6 +1497,20 @@ function acceptedAccountIds() {
 function maxActionGeneration(messageId) {
   const row = get("SELECT MAX(generation) AS n FROM mail_actions WHERE message_id = ?", [messageId]);
   return row && row.n ? Number(row.n) : 0;
+}
+
+function maxActionGenerations(messageIds) {
+  const ids = [...new Set(messageIds)], result = new Map(ids.map(id => [id, 0]));
+  // Bounded parameter lists also work with SQLite builds using the 999 limit.
+  for (let offset = 0; offset < ids.length; offset += 400) {
+    const page = ids.slice(offset, offset + 400);
+    for (const row of all(`SELECT a.message_id, MAX(a.generation) AS generation
+      FROM mail_actions a JOIN messages m ON m.id = a.message_id AND m.account_id = a.account_id
+      WHERE a.message_id IN (${page.map(() => "?").join(",")}) GROUP BY a.message_id`, page)) {
+      result.set(row.message_id, Number(row.generation) || 0);
+    }
+  }
+  return result;
 }
 
 function messageHeld(id) {
@@ -2087,6 +2136,7 @@ module.exports = {
   publishingMailActions,
   acceptedAccountIds,
   maxActionGeneration,
+  maxActionGenerations,
   messageHeld,
   recentForAi,
   recentInWellKnown,

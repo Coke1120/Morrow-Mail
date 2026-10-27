@@ -11,6 +11,8 @@ async function run() {
   catch (error) { if (process.env.CI) throw error; console.log('gmail-engine-not-run: installed native/parser/MIME dependencies required; existing CI runs this fixture'); return; }
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'morrow-gmail-engine-'));
   Object.assign(process.env, { MORROW_MAIL_DIR: directory, MORROW_USER_DATA: directory, MORROW_AI_CONFIG_DIR: directory, MORROW_MAIL_SECRETS: 'memory' });
+  delete process.env.MORROW_GOOGLE_OAUTH_FILE;
+  process.env.MORROW_GOOGLE_OAUTH_JSON = JSON.stringify({installed:{client_id:'gmail-engine-fixture.apps.googleusercontent.com',client_secret:'fixture-only'}});
   require('node:net').Socket.prototype.connect = function () { throw new Error('Socket forbidden in Gmail fixture'); };
   const { server, message } = require('./gmail-fixture');
   const withFiles=message('attachments'); withFiles.payload={mimeType:'multipart/mixed',headers:withFiles.payload.headers,parts:[
@@ -28,7 +30,7 @@ async function run() {
     if (scenario.wait) await scenario.wait;
     if (scenario.declined) throw Object.assign(new Error('Synthetic declined'), {code:'oauth_cancelled'});
     const scopes = scenario.scopes || (purpose === 'calendar' ? config.CALENDAR_SCOPES.google : config.SCOPES.google);
-    return { provider:'google', profile:'gmail', email:scenario.email || 'owner@fixture.invalid', username:'owner@fixture.invalid',
+    return { provider:'google', googleClientId:config.credentials('google').clientId, profile:'gmail', email:scenario.email || 'owner@fixture.invalid', username:'owner@fixture.invalid',
       displayName:'Synthetic owner', ...config.IMAP_PRESETS.google, accessToken:'synthetic-access', refreshToken:'synthetic-refresh', expiresAt:Date.now()+3600000,
       grantedScopes:scopes, requestedScopes:config.scopesFor('google', purpose) };
   };
@@ -51,7 +53,7 @@ async function run() {
     db.insertAccount({id,email:id === 'gmail' ? 'owner@fixture.invalid' : `${id}@fixture.invalid`, username:'owner',profile:'gmail',authKind:'oauth2',createdAt:1,
       imapHost:'imap.gmail.com',imapPort:993,imapTls:true,smtpHost:'smtp.gmail.com',smtpPort:465,smtpTls:true});
     db.replaceFolders(id,[{path:'INBOX',name:'Inbox',wellKnown:'inbox'},{path:'Drafts',name:'Drafts',wellKnown:'drafts'},{path:'Old cached label',name:'Old cached label'}]);
-    const raw = JSON.stringify({provider:'google',purpose:'imap',accessToken:'legacy-access',refreshToken:'legacy-refresh',expiresAt:Date.now()+3600000,
+    const raw = JSON.stringify({provider:'google',googleClientId:config.credentials('google').clientId,purpose:'imap',accessToken:'legacy-access',refreshToken:'legacy-refresh',expiresAt:Date.now()+3600000,
       grantedScopes:'openid email https://mail.google.com/ '+config.CALENDAR_SCOPES.google});
     secrets.setPassword(id,raw); return raw;
   };

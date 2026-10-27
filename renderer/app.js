@@ -71,6 +71,7 @@ const state = {
   bodySync: null,
   bodySyncUnavailable: false,
   oauthStatus: null,
+  googleOauthClient: null,
   oauthPending: false,
   view: "mail",
   side: "folders",
@@ -93,8 +94,16 @@ let openGen = 0;
 let pendingOpenId = "";
 let pendingOpenBody = false;
 const latestBodies = new Map();
+const BODY_CACHE_LIMITS = Object.freeze({ entries: 32, bytes: 8 * 1024 * 1024, entryBytes: 2 * 1024 * 1024 });
+let latestBodyBytes = 0;
+const bodyNotices = new Map();
+const bodyReadFences = new Map();
+let bodyReadSerial = 0;
+let bodyRefresh = null;
 let peekGen = 0;
 let peekEmail = null;
+let pendingPeekId = "";
+let pendingPeekAccountId = "";
 let reloadTimer = null;
 let undoOpIds = null;
 let undoReceipt = "";
@@ -508,8 +517,29 @@ function opensAiWrite(seed, prefs) {
 function oauthButtonState(status, provider) {
   if (provider === "microsoft") return { disabled: false, reason: "" };
   if (status && status.google === true) return { disabled: false, reason: "" };
-  if (status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured." };
+  if (status && status.google === false) return { disabled: true, reason: "Google sign-in is unavailable in this installation. Review Google OAuth status in Settings → Accounts." };
   return { disabled: false, reason: "" };
+}
+
+function googleOauthClientCopy(status) {
+  const source = status && status.source;
+  const imported = !!(status && status.imported);
+  if (source === "invalid") {
+    if (status.invalidSource === "env") return "Google OAuth is not ready. Fix or remove the developer environment override (MORROW_GOOGLE_OAUTH_FILE, MORROW_GOOGLE_OAUTH_JSON, or GOOGLE_DESKTOP_OAUTH_JSON). Importing or clearing a client does not override it.";
+    return status.invalidSource === "imported" || (!status.invalidSource && imported)
+      ? "The imported Google OAuth file could not be read. Import a Desktop client JSON again, or clear the imported client."
+      : "Google OAuth is not ready. The configured Desktop client JSON could not be read.";
+  }
+  if (!status || status.ready !== true) return "Google OAuth is not ready. Review this installation's Google sign-in configuration. Personal client import is optional.";
+  const using = source === "env"
+    ? "a developer environment variable"
+    : source === "imported"
+      ? "your imported Desktop client"
+      : source === "bundled"
+        ? "the bundled Desktop client"
+        : "a Desktop client";
+  const saved = source !== "imported" && imported ? " An imported client is also saved on this computer." : "";
+  return "Google OAuth is ready. This installation is using " + using + "." + saved;
 }
 
 function calendarGrantState(status, account) {
@@ -517,7 +547,7 @@ function calendarGrantState(status, account) {
   const profile = String((account.imapSmtpProfile || account.profile || "")).toLowerCase();
   const provider = profile === "gmail" || profile === "outlook" ? profile : "";
   if (!provider) return { disabled: true, reason: "Calendar needs a Google or Microsoft account." };
-  if (provider === "gmail" && status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured." };
+  if (provider === "gmail" && status && status.google === false) return { disabled: true, reason: "Google sign-in is unavailable in this installation. Review Google OAuth status in Settings → Accounts." };
   return { disabled: false, reason: "" };
 }
 
@@ -538,7 +568,8 @@ function providerCopy(reason, provider) {
       : "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.";
   }
   if (reason === "password_account") return "This mailbox uses a password. Grant the provider API to manage labels, or keep using IMAP folders.";
-  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so Gmail labels stay on IMAP.";
+  if (reason === "oauth_not_ready") return "Google sign-in is unavailable in this installation, so Gmail labels stay on IMAP. Review Google OAuth status in Settings → Accounts; personal client import is optional.";
+  if (reason === "google_client_changed") return "The saved Google grant belongs to a different or unknown Desktop client. Reauthorize Gmail in Settings → Accounts. Cached mail stays available.";
   if (reason === "imap_only") return "Labels stay on IMAP for this account.";
   if (reason === "no_account") return "Connect a mailbox to load provider labels.";
   if (reason === "error") return "The provider label list failed. IMAP folders are unchanged.";
@@ -548,7 +579,7 @@ function providerCopy(reason, provider) {
 }
 
 function showOrganizeGrant(reason) {
-  return reason === "scope_missing" || reason === "password_account";
+  return reason === "scope_missing" || reason === "password_account" || reason === "google_client_changed";
 }
 
 function grantApiOutcome(saved, successMessage, fallback) {
@@ -1432,7 +1463,8 @@ function calendarMode(payload) {
 }
 
 function calendarCopy(reason, email) {
-  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so calendar stays offline.";
+  if (reason === "oauth_not_ready") return "Google sign-in is unavailable in this installation, so calendar stays offline. Review Google OAuth status in Settings → Accounts; personal client import is optional.";
+  if (reason === "google_client_changed") return "The saved Calendar grant belongs to a different or unknown Desktop client. Enable Google Calendar to authorize it separately from Gmail.";
   if (reason === "imap_only") return "Calendar needs a Google or Microsoft account.";
   if (reason === "no_account") return "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.";
   if (reason === "error") return "Calendar could not be loaded.";
@@ -1874,7 +1906,11 @@ function envelopeError(result) {
 async function call(channel, payload) {
   const result = await api.invoke(channel, payload);
   const message = envelopeError(result);
-  if (message) throw new Error(message);
+  if (message) {
+    const error = new Error(message);
+    if (typeof result?.error?.code === "string") error.code = result.error.code;
+    throw error;
+  }
   return result.data;
 }
 
@@ -3895,7 +3931,7 @@ function connectButton() {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "primary empty-connect";
-  button.addEventListener("click", () => openDialog("connect"));
+  button.addEventListener("click", () => openConnectFor(null));
   const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   icon.setAttribute("viewBox", "0 0 24 24");
   icon.setAttribute("width", "15");
@@ -7984,7 +8020,7 @@ async function loadAccounts(preferredId) {
   const gen = ++accountGen;
   const data = await call("mail:listAccounts");
   if (gen !== accountGen) return;
-  state.accounts = Array.isArray(data) ? data : [];
+  acceptBodyAccounts(Array.isArray(data) ? data : []);
   rememberSelection(preferredId);
   renderAccounts();
   paintBodySyncStatus();
@@ -9623,6 +9659,8 @@ function invalidateReaderOpen() {
   openGen += 1;
   pendingOpenId = "";
   pendingOpenBody = false;
+  const previews = new Set(activeBodyTargets().filter(target => target.peek).map(target => target.identity.key));
+  for (const key of bodyNotices.keys()) if (!previews.has(key)) bodyNotices.delete(key);
 }
 
 function abandonOpen(emailId, message) {
@@ -9654,51 +9692,168 @@ function listedHasBody(email) {
   return email.hasBody === true;
 }
 
-function noteBody(email) {
-  if (!email || email.id == null) return;
-  const id = String(email.id);
-  const previous = latestBodies.get(id);
-  if (!previous || bodyScore(email) >= bodyScore(previous)) latestBodies.set(id, email);
+function bodyIdentity(email, current = false) {
+  if (!email || email.id == null || !email.accountId) return null;
+  const account = state.accounts.find(row => row.id === email.accountId);
+  if (!account) return null;
+  const epoch = Number.isSafeInteger(account.bodyEpoch) ? account.bodyEpoch : 0;
+  if (!current && email.bodyEpoch != null && email.bodyEpoch !== epoch) return null;
+  return { id: String(email.id), accountId: email.accountId, bodyEpoch: epoch,
+    key: JSON.stringify([email.accountId, epoch, String(email.id)]) };
 }
 
-function bodyScore(email) {
-  if (!email) return 0;
-  return (email.bodyComplete ? 100000000 : 0) + String(email.htmlBody || "").length + String(email.textBody || "").length;
+function bodyFields(email, identity) {
+  return { id: identity.id, accountId: identity.accountId, bodyEpoch: identity.bodyEpoch,
+    bodyVersion: Number.isSafeInteger(email.bodyVersion) ? email.bodyVersion : 0,
+    htmlBody: typeof email.htmlBody === "string" ? email.htmlBody : null,
+    textBody: typeof email.textBody === "string" ? email.textBody : null,
+    bodyComplete: email.bodyComplete === true, hasBody: listedHasBody(email), bodyWarning: typeof email.bodyWarning === "string" ? email.bodyWarning : "" };
+}
+
+function dropBody(key) {
+  const entry = latestBodies.get(key);
+  if (entry) latestBodyBytes -= entry.bytes;
+  latestBodies.delete(key);
+}
+
+function noteBody(email, explicit = true) {
+  const identity = bodyIdentity(email);
+  if (!identity) return;
+  if (explicit) {
+    bodyReadFences.delete(identity.key); bodyReadFences.set(identity.key, ++bodyReadSerial);
+    while (bodyReadFences.size > 64) bodyReadFences.delete(bodyReadFences.keys().next().value);
+    const notice = bodyNotices.get(identity.key);
+    if (notice) notice.attempted = -1;
+  }
+  const body = bodyFields(email, identity), previous = latestBodies.get(identity.key);
+  if (previous && previous.body.bodyVersion > body.bodyVersion) return;
+  dropBody(identity.key);
+  const bytes = 2 * (identity.key.length + (body.htmlBody || "").length + (body.textBody || "").length + body.bodyWarning.length);
+  if (bytes > BODY_CACHE_LIMITS.entryBytes) return; // Open views still own their full body.
+  while (latestBodies.size && (latestBodies.size >= BODY_CACHE_LIMITS.entries || latestBodyBytes + bytes > BODY_CACHE_LIMITS.bytes)) dropBody(latestBodies.keys().next().value);
+  latestBodies.set(identity.key, { body, bytes }); latestBodyBytes += bytes;
 }
 
 function preferBody(email) {
-  if (!email || email.id == null) return email;
-  const latest = latestBodies.get(String(email.id));
-  if (!latest || latest === email) return email;
-  if (bodyScore(latest) > bodyScore(email)) return { ...email, ...latest };
+  const identity = bodyIdentity(email);
+  const entry = identity && latestBodies.get(identity.key);
+  if (!entry) return email;
+  latestBodies.delete(identity.key); latestBodies.set(identity.key, entry);
+  if (entry.body.bodyVersion > (Number.isSafeInteger(email.bodyVersion) ? email.bodyVersion : 0)) return {
+    ...email, bodyMetadataVersion: email.bodyMetadataVersion ?? email.bodyVersion ?? 0, ...entry.body };
   return email;
 }
 
+function activeBodyTargets() {
+  const targets = [];
+  if (pendingOpenId) targets.push({ pending: true, email: listedMessage(pendingOpenId) || { id: pendingOpenId, accountId: state.accountId } });
+  else if (state.email) targets.push({ email: state.email });
+  if (pendingPeekId) targets.push({ pending: true, peek: true, email: { id: pendingPeekId, accountId: pendingPeekAccountId || listedMessage(pendingPeekId)?.accountId } });
+  else if (peekEmail && $("agent-peek")?.open) targets.push({ peek: true, email: peekEmail });
+  return targets.map(target => ({ ...target, identity: bodyIdentity(target.email, true) })).filter(target => target.identity);
+}
+
+function pruneBodyNotices() {
+  const keys = new Set(activeBodyTargets().map(target => target.identity.key));
+  for (const key of bodyNotices.keys()) if (!keys.has(key)) bodyNotices.delete(key);
+}
+
+function applyCachedBody(email) {
+  const identity = bodyIdentity(email);
+  if (!identity) return;
+  noteBody(email, false);
+  const body = bodyFields(email, identity);
+  for (const target of activeBodyTargets()) {
+    if (target.pending || target.identity.key !== identity.key) continue;
+    if ((target.email.bodyEpoch ?? 0) === identity.bodyEpoch && (target.email.bodyVersion || 0) > body.bodyVersion) continue;
+    let changed = target.email.htmlBody !== body.htmlBody || target.email.textBody !== body.textBody
+      || target.email.bodyWarning !== body.bodyWarning || target.email.bodyComplete !== body.bodyComplete;
+    const metadata = {};
+    for (const field of ["attachments", "hasAttachments", "draftRevision", "draftPending", "from", "fromAddress", "fromDisplayName", "recipientHeaders", "replyTo",
+      "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft"]) {
+      if (Object.hasOwn(email, field)) metadata[field] = email[field];
+    }
+    changed ||= Object.entries(metadata).some(([field, value]) => JSON.stringify(target.email[field]) !== JSON.stringify(value));
+    // Fresh local snapshots preserve body-associated draft/attachment identity.
+    // Optimistic action flags stay with their own action-generation guards.
+    const next = { ...target.email, ...metadata, ...body, bodyMetadataVersion: body.bodyVersion };
+    if (target.peek) { peekEmail = next; if (changed) paintPeek(next); }
+    else { state.email = next; if (changed) renderReader(false); }
+  }
+}
+
+function pumpBodyRefreshes() {
+  pruneBodyNotices();
+  if (bodyRefresh) return;
+  for (const [key, notice] of bodyNotices) {
+    const targets = activeBodyTargets().filter(target => target.identity.key === key);
+    const cached = latestBodies.get(key)?.body.bodyVersion ?? -1;
+    const needed = targets.some(target => {
+      const current = target.pending || (target.email.bodyEpoch ?? 0) !== notice.bodyEpoch ? -1 : target.email.bodyVersion ?? -1;
+      const metadata = target.pending ? cached : (target.email.bodyMetadataVersion ?? current);
+      return Math.min(Math.max(cached, current), metadata) < notice.bodyVersion;
+    });
+    if (!needed || notice.attempted >= notice.bodyVersion) continue;
+    notice.attempted = notice.bodyVersion;
+    const request = { key, fence: bodyReadFences.get(key) || 0, version: notice.bodyVersion };
+    bodyRefresh = request;
+    Promise.resolve().then(() => call("mail:readCachedBody", { accountId: notice.accountId, emailId: notice.id, bodyEpoch: notice.bodyEpoch }))
+      .then(result => {
+        const email = result?.email, identity = bodyIdentity(email);
+        if (!identity || identity.key !== key || !activeBodyTargets().some(target => target.identity.key === key)) return;
+        if ((bodyReadFences.get(key) || 0) !== request.fence) {
+          const latest = bodyNotices.get(key);
+          if (latest && latest.attempted === request.version) latest.attempted = -1;
+          return;
+        }
+        applyCachedBody(email);
+      }).catch(() => { /* Retry on a newer notice or an explicit reopen, never spin on a failed local read. */ })
+      .finally(() => { if (bodyRefresh === request) bodyRefresh = null; pumpBodyRefreshes(); });
+    return;
+  }
+}
+
+function acceptBodyAccounts(accounts) {
+  const previous = new Map(state.accounts.map(account => [account.id, account.bodyEpoch || 0]));
+  state.accounts = Array.isArray(accounts) ? accounts : [];
+  for (const [key, entry] of latestBodies) if (!bodyIdentity(entry.body)) dropBody(key);
+  for (const key of bodyReadFences.keys()) {
+    const [accountId, epoch] = JSON.parse(key);
+    if (!state.accounts.some(account => account.id === accountId && (account.bodyEpoch || 0) === epoch)) bodyReadFences.delete(key);
+  }
+  pruneBodyNotices();
+  for (const target of activeBodyTargets()) {
+    const account = state.accounts.find(row => row.id === target.identity.accountId);
+    if ((previous.has(account.id) && previous.get(account.id) !== (account.bodyEpoch || 0))
+        || (target.email.bodyEpoch != null && target.email.bodyEpoch !== (account.bodyEpoch || 0))) bodyNotices.set(target.identity.key,
+      { ...target.identity, bodyVersion: account.bodyVersion || 0, attempted: -1 });
+  }
+  pumpBodyRefreshes();
+}
+
 function applyBodyUpdate(payload) {
-  const email = payload && payload.email;
-  if (!email || email.id == null) return;
-  noteBody(email);
-  const id = String(email.id);
-  const known = listedMessage(id);
-  if (known) {
-    known.bodyComplete = email.bodyComplete === true;
-    known.hasBody = !!(email.htmlBody || email.textBody || email.hasBody);
-    known.bodyWarning = email.bodyWarning || "";
+  const full = payload?.email;
+  const incoming = full || { ...payload, id: payload?.emailId };
+  const identity = bodyIdentity(incoming);
+  if (!identity) return;
+  if (incoming.bodyVersion != null && (!Number.isSafeInteger(incoming.bodyVersion) || incoming.bodyVersion < 0)) return;
+  const version = Number.isSafeInteger(incoming.bodyVersion) ? incoming.bodyVersion : 0;
+  const known = listedMessage(identity.id);
+  if (known && known.accountId === identity.accountId && Math.max(known.bodyNoticeVersion ?? -1, known.bodyVersion ?? -1) <= version) {
+    known.bodyNoticeVersion = version;
+    if (known !== state.email && known !== peekEmail) {
+      known.bodyComplete = incoming.bodyComplete === true;
+      known.hasBody = full ? listedHasBody(full) : incoming.hasBody === true;
+      known.bodyWarning = incoming.bodyWarning || "";
+    }
   }
-  if (peekEmail && String(peekEmail.id) === id) {
-    const nextPeek = preferBody(peekEmail);
-    const peekChanged = nextPeek.htmlBody !== peekEmail.htmlBody || nextPeek.textBody !== peekEmail.textBody || nextPeek.bodyWarning !== peekEmail.bodyWarning;
-    peekEmail = nextPeek;
-    const dialog = $("agent-peek");
-    if (peekChanged && dialog && dialog.open) paintPeek(peekEmail);
-  }
-  if (pendingOpenId && String(pendingOpenId) !== id) return;
-  if (pendingOpenBody && pendingOpenId && String(pendingOpenId) === id) return;
-  if (!state.email || String(state.email.id) !== id) return;
-  const next = preferBody(state.email);
-  const contentSame = next.htmlBody === state.email.htmlBody && next.textBody === state.email.textBody && next.bodyWarning === state.email.bodyWarning;
-  state.email = next;
-  if (!contentSame) renderReader(false);
+  if (pendingPeekId === identity.id && !pendingPeekAccountId) pendingPeekAccountId = identity.accountId;
+  const targets = activeBodyTargets().filter(target => target.identity.key === identity.key);
+  if (!targets.length) return; // Unopened body updates retain no body or per-message notice.
+  if (full) { applyCachedBody(full); return; } // Compatibility with already queued full events.
+  const previous = bodyNotices.get(identity.key);
+  if (!previous || previous.bodyVersion < version) bodyNotices.set(identity.key, { ...identity, bodyVersion: version, attempted: previous?.attempted ?? -1 });
+  pumpBodyRefreshes();
 }
 
 function paintReaderPending(email) {
@@ -9767,6 +9922,10 @@ async function openMessage(emailId, focus) {
     }
     if (gen !== openGen) return;
   }
+  if (email.bodyEpoch != null && !bodyIdentity(email)) {
+    const message = "The mailbox connection changed. Reopen the message.";
+    abandonOpen(emailId, message); throw new Error(message);
+  }
   pendingOpenId = "";
   pendingOpenBody = false;
   noteBody(email);
@@ -9774,6 +9933,7 @@ async function openMessage(emailId, focus) {
   state.thread = state.prefs.conversation === false ? [] : threadMembers(fromOpen, listed);
   renderReader(focus !== false);
   renderList();
+  pumpBodyRefreshes();
   if (!email.unread) return;
   try {
     await setRead(email, true);
@@ -9832,7 +9992,7 @@ function onAccountsUpdated(payload) {
   const preferred = preferredAccountId(payload);
   const accounts = payload && Array.isArray(payload.accounts) ? payload.accounts : null;
   if (accounts) {
-    state.accounts = accounts;
+    acceptBodyAccounts(accounts);
     rememberSelection(preferred);
     renderAccounts();
     syncRemove();
@@ -9876,6 +10036,14 @@ function connectPayload() {
   return payload;
 }
 
+let connectGmailMigrationAccountId = null;
+
+function clearConnectMigration() {
+  connectGmailMigrationAccountId = null;
+  const button = $("connect-gmail-migration");
+  if (button) button.hidden = true;
+}
+
 function setConnectStatus(text, isError) {
   $("connect-status").textContent = text || "";
   $("connect-status").classList.toggle("error", !!isError);
@@ -9884,14 +10052,16 @@ function setConnectStatus(text, isError) {
 function paintConnectPending() {
   const busy = state.oauthPending || state.connectPending;
   const google = oauthButtonState(state.oauthStatus, "google");
-  $("oauth-google").disabled = !!busy || google.disabled;
+  $("oauth-google").disabled = !!busy || googleOauthClientBusy || google.disabled;
   $("oauth-microsoft").disabled = !!busy;
   if ($("connect-yahoo")) $("connect-yahoo").disabled = !!busy;
   $("connect-submit").disabled = !!busy;
+  if ($("connect-gmail-migration")) $("connect-gmail-migration").disabled = !!busy;
   $("connect-close").textContent = state.oauthPending ? "Cancel sign-in" : "Cancel";
   $("connect-form").setAttribute("aria-busy", busy ? "true" : "false");
   $("oauth-unavailable").textContent = google.disabled
-    ? "Google sign-in is unavailable in this installation. Use an installation configured for Google sign-in, or use an app password if your provider permits it." : "";
+    ? "Google sign-in is unavailable in this installation. Review Google OAuth status in Settings → Accounts. A personal Desktop client is an optional advanced choice." : "";
+  paintGoogleOauthClientButtons();
 }
 
 async function connectImap() {
@@ -9926,13 +10096,15 @@ async function connectImap() {
 
 async function connectOAuth(provider) {
   if (state.oauthPending || state.connectPending) return;
+  const expectedAccountId = state.reconnectAccountId || null;
+  clearConnectMigration();
   state.oauthPending = true;
   paintConnectPending();
   setConnectStatus(provider === "microsoft"
     ? "Continue in your browser to connect mail. Morrow then checks calendar, organize, Out of Office, and inbox rules for the same account; approve any missing permissions. Mail stays connected if you decline those features."
     : "Continue with Google OAuth for Gmail API mail, labels, Out of Office and inbox rules. Calendar is enabled separately. Existing legacy OAuth mailboxes require the reviewed migration in Settings → Accounts.");
   try {
-    const view = await call("mail:addAccount", { provider, expectedAccountId: state.reconnectAccountId || undefined });
+    const view = await call("mail:addAccount", { provider, expectedAccountId: expectedAccountId || undefined });
     if (!view || !view.id || !view.email) throw new Error("Sign-in did not return an account.");
     state.oauthPending = false;
     paintConnectPending();
@@ -9941,10 +10113,52 @@ async function connectOAuth(provider) {
     await loadAccounts(view.id);
   } catch (error) {
     const message = error.message || String(error);
-    setConnectStatus(/cancel/i.test(message) ? "Sign-in canceled." : "Could not finish sign-in. " + message + " Try the provider button again.", !/cancel/i.test(message));
+    if (provider === "google" && error.code === "gmail_migration_required") {
+      connectGmailMigrationAccountId = expectedAccountId;
+      $("connect-imap").open = false;
+      $("connect-gmail-migration").hidden = false;
+      setConnectStatus("This Gmail connection needs migration review. Choose Review Gmail API migration to open Settings → Accounts → Permissions & calendar access. Review the migration there, then choose Continue with Google. Cached mail and drafts stay. No password is needed in Morrow.", true);
+    } else {
+      setConnectStatus(/cancel/i.test(message) ? "Sign-in canceled." : "Could not finish sign-in. " + message + " Try the provider button again.", !/cancel/i.test(message));
+    }
   } finally {
     state.oauthPending = false;
     paintConnectPending();
+  }
+}
+
+async function reviewConnectGmailMigration() {
+  if (state.oauthPending || state.connectPending || $("connect-gmail-migration").hidden) return;
+  const accountId = connectGmailMigrationAccountId;
+  const accountEmail = state.accounts.find(row => row.id === accountId)?.email;
+  const targetAvailable = selected => {
+    const account = state.accounts.find(row => row.id === accountId);
+    return account?.email === accountEmail && account?.authKind === "oauth2"
+      && (account.imapSmtpProfile || account.profile) === "gmail" && (!selected || settingsAccount()?.id === accountId);
+  };
+  const cancelReview = () => {
+    paintSettingsMailbox();
+    revealSettingsFold("mailbox");
+    $("account-permissions").open = false;
+    $("settings-account").focus();
+    showStatus("That Gmail connection changed or was removed. Migration review was cancelled. Select the intended mailbox in Accounts to start again.", true);
+  };
+  await closeDialog("connect");
+  openSettings();
+  if (accountId) {
+    if (!targetAvailable(false)) { cancelReview(); return; }
+    if (settingsAccount()?.id !== accountId && !(await changeSettingsMailbox(accountId))) return;
+    if (!targetAvailable(true)) { cancelReview(); return; }
+  }
+  paintSettingsMailbox();
+  revealSettingsFold("mailbox");
+  $("account-permissions").open = true;
+  await loadSettingsFold("mailbox");
+  if (accountId && !targetAvailable(true)) { cancelReview(); return; }
+  if (accountId && !$("settings-gmail-migrate").hidden) $("settings-gmail-migrate").focus();
+  else {
+    $("settings-account").focus();
+    showStatus("Select the Gmail mailbox in Accounts, then review Migrate Gmail to Gmail API under Permissions & calendar access.");
   }
 }
 
@@ -11773,7 +11987,7 @@ function finishComposeOpen(fields) {
 
 async function loadComposeAccounts() {
   const data = await call("mail:listAccounts");
-  state.accounts = Array.isArray(data) ? data : [];
+  acceptBodyAccounts(Array.isArray(data) ? data : []);
   if (!state.accountId && state.accounts[0]) state.accountId = state.accounts[0].id;
 }
 
@@ -11789,7 +12003,7 @@ async function bootComposeWindow() {
   api.on("aiDraftWrite:event", onDraftEvent);
   api.on("mail:accountsUpdated", (payload) => {
     const accounts = payload && Array.isArray(payload.accounts) ? payload.accounts : null;
-    if (accounts) state.accounts = accounts;
+    if (accounts) acceptBodyAccounts(accounts);
   });
   wire();
   let seed = {};
@@ -11860,6 +12074,7 @@ function publishReaderTitle(subject) {
 }
 
 function showReaderOpenError(message) {
+  invalidateReaderOpen();
   const pane = $("reader");
   if (!pane) return;
   pane.removeAttribute("aria-busy");
@@ -11881,11 +12096,14 @@ async function bootReaderWindow() {
   wire();
   if (typeof api.on === "function") api.on("mail:translate:event", onTranslateEvent);
   if (typeof api.on === "function") api.on("mail:bodyUpdated", applyBodyUpdate);
+  if (typeof api.on === "function") api.on("mail:accountsUpdated", payload => {
+    if (Array.isArray(payload?.accounts)) acceptBodyAccounts(payload.accounts);
+  });
   await loadLook();
   await loadShellPrefs();
   try {
     const data = await call("mail:listAccounts");
-    state.accounts = Array.isArray(data) ? data : [];
+    acceptBodyAccounts(Array.isArray(data) ? data : []);
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -11904,6 +12122,8 @@ async function bootReaderWindow() {
     showStatus("That message could not be opened.", true);
     return;
   }
+  state.accountId = accountId || state.accountId;
+  pendingOpenId = messageId; pendingOpenBody = true;
   let opened;
   try {
     opened = await call("mail:openEmail", { emailId: messageId, accountId: accountId });
@@ -11919,12 +12139,17 @@ async function bootReaderWindow() {
     showStatus("That message is no longer in the mailbox.", true);
     return;
   }
+  if (email.bodyEpoch != null && !bodyIdentity(email)) {
+    showReaderOpenError("The mailbox connection changed. Reopen the message."); return;
+  }
+  pendingOpenId = ""; pendingOpenBody = false;
   noteBody(email);
   state.email = preferBody(email);
   state.thread = [];
   state.accountId = email.accountId || accountId || state.accountId;
   publishReaderTitle(email.subject || "");
   renderReader(false);
+  pumpBodyRefreshes();
   const openedId = email.id;
   loadSnoozed().then(() => loadProviderFolders(accountGen)).then(() => {
     if (state.email && state.email.id === openedId) renderReader(false);
@@ -14020,7 +14245,7 @@ function loadSettingsFold(name) {
     setSettingsFoldLoading(fold, settingsFoldLoadingLabels[name] || "Loading…");
     if (name === "prefs" || name === "mail") await loadSettings();
     else if (name === "ai") { await loadSettings(); if (!aiDirty()) await loadAiSettings(); }
-    else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); }
+    else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); await loadGoogleOauthClient(); }
     else if (name === "compose") await loadComposeSettings();
     else if (name === "ooo" && !oooDirty()) await loadVacation();
     else if (name === "bot") await loadBotAccess();
@@ -14875,6 +15100,63 @@ function paintOooDirty() {
   note.textContent = dirty ? "Unsaved changes. Review and save to the provider." : "";
   if (dirty && $("ooo-status") && $("ooo-status").textContent === "Saved on the provider.") setOooStatus("", false);
 }
+let googleOauthClientBusy = false;
+function paintGoogleOauthClient() {
+  const node = $("google-oauth-client-status");
+  if (!node) return;
+  node.classList.remove("error");
+  node.textContent = googleOauthClientCopy(state.googleOauthClient);
+  paintGoogleOauthClientButtons();
+}
+function paintGoogleOauthClientButtons() {
+  const busy = googleOauthClientBusy || state.oauthPending;
+  const clear = $("google-oauth-clear");
+  if (clear) clear.disabled = busy || !(state.googleOauthClient && state.googleOauthClient.imported);
+  const button = $("google-oauth-import");
+  if (button) button.disabled = busy;
+  for (const id of ["settings-gmail-migrate", "settings-gmail-calendar"]) {
+    const action = $(id);
+    if (action) action.disabled = busy || gmailMigrationBusy;
+  }
+}
+async function loadGoogleOauthClient() {
+  const node = $("google-oauth-client-status");
+  try {
+    state.googleOauthClient = await call("mail:googleOauthStatus");
+    paintGoogleOauthClient();
+  } catch (error) {
+    if (!node) throw error;
+    node.textContent = error instanceof Error ? error.message : String(error);
+    node.classList.add("error");
+  }
+}
+async function changeGoogleOauthClient(channel) {
+  if (googleOauthClientBusy || state.oauthPending) return;
+  const node = $("google-oauth-client-status");
+  googleOauthClientBusy = true;
+  paintGoogleOauthClient();
+  paintConnectPending();
+  if (node) {
+    node.classList.remove("error");
+    if (channel === "mail:importGoogleOauth") node.textContent = "Choose a Desktop client JSON…";
+  }
+  try {
+    const result = await call(channel);
+    state.googleOauthClient = result || state.googleOauthClient;
+    paintGoogleOauthClient();
+    await loadOauthStatus();
+    await loadSettingsCapabilities();
+  } catch (error) {
+    if (node) {
+      node.textContent = error instanceof Error ? error.message : String(error);
+      node.classList.add("error");
+    }
+  } finally {
+    googleOauthClientBusy = false;
+    paintGoogleOauthClientButtons();
+    paintConnectPending();
+  }
+}
 function paintSettingsMailbox() {
   const select = $("settings-account");
   if (!select) return;
@@ -14889,8 +15171,8 @@ function paintSettingsMailbox() {
     $("settings-gmail-migrate").hidden = !google || account?.authKind !== "oauth2";
     $("settings-gmail-migrate").textContent = account?.mailTransport === "gmail_api" ? "Reauthorize Gmail API mail" : "Migrate Gmail to Gmail API";
     $("settings-gmail-calendar").hidden = !google;
-    $("settings-gmail-migrate").disabled = gmailMigrationBusy;
-    $("settings-gmail-calendar").disabled = gmailMigrationBusy;
+    $("settings-gmail-migrate").disabled = gmailMigrationBusy || googleOauthClientBusy || state.oauthPending;
+    $("settings-gmail-calendar").disabled = gmailMigrationBusy || googleOauthClientBusy || state.oauthPending;
   }
   $("settings-mailbox-note").textContent = account ? "Signatures, rules, and automatic replies use this mailbox." : "Connect an account in Accounts to get started.";
   syncRemove();
@@ -14926,7 +15208,7 @@ async function loadSettingsCapabilities() {
     const grants = status?.accounts?.find(row => row.id === account.id);
     const local = account.authKind !== "oauth2";
     const permission = key => grants ? (grants[key] ? "Permission granted" : "Additional consent needed") : "Unknown — refresh permissions";
-    node.textContent = ["Mail: " + (account.needsReauth ? "Reconnect needed" : "Configured; connection health is shown in Sync"), "Signatures: saved on this computer", "Labels/folders: " + (local ? "IMAP folders" : permission("organize")), "Rules: " + (local ? "Local; runs on new downloads while open" : permission("rules")), "Calendar: " + (local ? "Requires Google or Microsoft browser sign-in" : permission("calendar")), "Out of Office: " + (local ? "Check support in the Out of Office tab" : permission("vacation"))].join("\n");
+    node.textContent = ["Mail: " + (account.needsReauth || grants?.mailClientMatches === false ? "Reconnect needed" : "Configured; connection health is shown in Sync"), "Signatures: saved on this computer", "Labels/folders: " + (local ? "IMAP folders" : permission("organize")), "Rules: " + (local ? "Local; runs on new downloads while open" : permission("rules")), "Calendar: " + (local ? "Requires Google or Microsoft browser sign-in" : permission("calendar")), "Out of Office: " + (local ? "Check support in the Out of Office tab" : permission("vacation"))].join("\n");
     if (grants?.provider === "google") node.textContent += "\nMail transport: " + (grants.mailTransport === "gmail_api" ? "Gmail API (polling)" : "Legacy IMAP/SMTP — review migration")
       + "\nRequested mail scopes: " + (grants.requestedScopes?.mail || "Unknown legacy request")
       + "\nGranted mail scopes: " + (grants.grantedScopes?.imap || "Unknown")
@@ -14938,7 +15220,7 @@ async function loadSettingsCapabilities() {
 let gmailMigrationBusy = false;
 let gmailMigrationOperation = 0;
 async function reauthorizeGmail(calendar = false) {
-  if (gmailMigrationBusy || state.oauthPending || state.connectPending) return;
+  if (gmailMigrationBusy || googleOauthClientBusy || state.oauthPending || state.connectPending) return;
   const account = settingsAccount();
   if (!account || (account.imapSmtpProfile || account.profile) !== "gmail") return;
   const answer = await askConfirm({ title: calendar ? "Reauthorize Google Calendar" : "Migrate or reauthorize Gmail API mail",
@@ -14946,7 +15228,7 @@ async function reauthorizeGmail(calendar = false) {
       ? "Continue with Google OAuth for calendar list and event access only, for " + account.email + ". Mail access stays separate. This replaces the saved Calendar credential only after successful consent. A saved broad grant may remain until you deliberately revoke Morrow access in Google Account connections and reauthorize both features."
       : "Continue with Google OAuth for " + account.email + ". Gmail API replaces Gmail IMAP/SMTP for this account. The request is gmail.modify and gmail.settings.basic: mail, drafts, send, labels, Trash, rules and Out of Office; Calendar is separate. Account id, cached mail and local drafts stay. Pending or uncertain mail actions must be resolved first. Unuploaded draft edits stay local for another Save; an older server copy may remain. Cancel or declined/insufficient mail permission preserves the current connection. Older broad Google grants are not revoked by a narrower request; review the actual granted scopes afterward.",
     confirm: "Continue with Google", cancel: "Keep current connection" });
-  if (!answer?.ok || settingsAccount()?.id !== account.id || gmailMigrationBusy || state.oauthPending) return;
+  if (!answer?.ok || settingsAccount()?.id !== account.id || gmailMigrationBusy || googleOauthClientBusy || state.oauthPending) return;
   const operation = ++gmailMigrationOperation;
   gmailMigrationBusy = true; state.oauthPending = true;
   paintSettingsMailbox(); paintConnectPending();
@@ -14989,6 +15271,9 @@ async function cancelGmailReauthorization() {
 }
 function openConnectFor(account) {
   if (state.oauthPending || state.connectPending) return;
+  clearConnectMigration();
+  const gmailOAuth = account?.authKind === "oauth2" && (account.imapSmtpProfile || account.profile) === "gmail";
+  $("connect-imap").open = !!account && !gmailOAuth;
   state.reconnectAccountId = account?.id || null;
   $("connect-title").textContent = account ? "Reconnect " + account.email : "Connect account";
   $("connect-recovery-note").textContent = account ? "Sign in as " + account.email + ". Cached mail, drafts, rules, signatures, and queued work remain. Password reconnects update the login type and servers only after saving credentials; a failure attempts to restore the prior credentials. Removing this account invalidates a pending reconnect. Start a new connection after removal to add it again. Google mail uses Gmail API scopes with separate Calendar consent; migrate a legacy Google OAuth mailbox from Settings → Accounts. Microsoft asks for mail, then its feature bundle." : "";
@@ -15013,7 +15298,6 @@ function openConnectFor(account) {
       $(kind + "-port").value = custom[kind].port;
       $(kind + "-tls").checked = custom[kind].tls;
     }
-    openImapDetails();
     syncCustomFields();
   } else {
     $("profile").value = "custom";
@@ -17492,23 +17776,38 @@ function paintPeek(email) {
   paintMailBody(pane, email, () => paintPeek(email));
 }
 
+function invalidatePeek() {
+  peekGen += 1;
+  peekEmail = null;
+  pendingPeekId = "";
+  pendingPeekAccountId = "";
+  pruneBodyNotices();
+}
+
 async function peekMessage(messageId) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
   const gen = ++peekGen;
+  pendingPeekId = String(messageId); pendingPeekAccountId = listedMessage(messageId)?.accountId || "";
   let data;
   try {
     data = await call("mail:openEmail", { emailId: messageId });
   } catch (error) {
     if (gen !== peekGen) return;
+    pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
     throw error;
   }
   if (gen !== peekGen) return;
   const email = data && data.email;
-  if (!email) throw new Error("That message is no longer in the mailbox.");
+  if (!email || (email.bodyEpoch != null && !bodyIdentity(email))) {
+    pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
+    throw new Error("That message is no longer available for this mailbox.");
+  }
   noteBody(email);
   peekEmail = preferBody(email);
-  paintPeek(email);
+  pendingPeekId = ""; pendingPeekAccountId = "";
+  paintPeek(peekEmail);
   openDialog("agent-peek");
+  pumpBodyRefreshes();
 }
 
 async function openPeekInMail() {
@@ -20453,6 +20752,8 @@ function wire() {
   $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
   $("settings-account").addEventListener("change", () => changeSettingsMailbox($("settings-account").value));
   $("settings-reconnect").addEventListener("click", () => openConnectFor(settingsAccount()));
+  $("google-oauth-import").addEventListener("click", () => changeGoogleOauthClient("mail:importGoogleOauth"));
+  $("google-oauth-clear").addEventListener("click", () => changeGoogleOauthClient("mail:clearGoogleOauth"));
   $("settings-gmail-migrate").addEventListener("click", () => reauthorizeGmail(false));
   $("settings-gmail-calendar").addEventListener("click", () => reauthorizeGmail(true));
   $("settings-gmail-cancel").addEventListener("click", cancelGmailReauthorization);
@@ -20544,9 +20845,7 @@ function wire() {
   $("agent-peek-mail").addEventListener("click", () => {
     openPeekInMail().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
   });
-  $("agent-peek").addEventListener("close", () => {
-    peekEmail = null;
-  });
+  $("agent-peek").addEventListener("close", invalidatePeek);
   $("confirm").addEventListener("close", () => {
     if (!confirmResult) return;
     const pending = confirmResult;
@@ -20721,13 +21020,14 @@ function wire() {
     });
   });
   $("connect-open").addEventListener("click", () => openConnectFor(null));
-  $("connect").addEventListener("close", () => { state.reconnectAccountId = null; $("email").readOnly = false; $("connect-title").textContent = "Connect account"; $("connect-recovery-note").textContent = ""; });
+  $("connect").addEventListener("close", () => { state.reconnectAccountId = null; clearConnectMigration(); $("email").readOnly = false; $("connect-title").textContent = "Connect account"; $("connect-recovery-note").textContent = ""; });
   $("connect-close").addEventListener("click", () => dismissConnect());
   $("connect-form").addEventListener("submit", (event) => {
     event.preventDefault();
     connectImap();
   });
   $("oauth-google").addEventListener("click", () => connectOAuth("google"));
+  $("connect-gmail-migration").addEventListener("click", () => { reviewConnectGmailMigration().catch(error => showStatus(error.message, true)); });
   $("oauth-microsoft").addEventListener("click", () => connectOAuth("microsoft"));
   $("remove").addEventListener("click", () => guard(removeAccount));
   $("compose-open").addEventListener("click", () => {

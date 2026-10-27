@@ -536,6 +536,8 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
+        <p class="hint" id="cli-performance">For a POSIX development checkout, <code>MORROW_PERF=1 npm start</code> opts into bounded local performance summaries in Debug log every 30 seconds. The flag does not send telemetry or grant access to accounts. Restart without it to disable tracing. The offline benchmark is <code>node --expose-gc scripts/benchmark-mail-responsiveness.js</code>; it always creates synthetic temporary mail data, and does not measure native Mac rendering or a real Keychain.</p>
+        <p class="hint" id="cli-body-updates">The phase-two offline benchmark is <code>node scripts/benchmark-mail-phase-two.js</code>. It measures synthetic list query counts, body-notification size and unopened-body retention. The cached-body refresh is an internal desktop operation; bot capabilities and permissions are unchanged.</p>
         <p class="hint" id="cli-ai-connection">AI authentication and AI data permission are configured in desktop Settings → AI or Morrow Mail → AI Setup. Existing connections require disclosure and affirmative approval before AI transfers. Background AI needs a separate opt-in. Cancel / revoke blocks pending and future AI transfers. ChatGPT sign-in, callback paste-back and credentials are not exposed through the CLI or bot bridge. The existing API key/custom endpoint choice remains available. ChatGPT adds no general-purpose model proxy. Ordinary bot mail operations do not grant AI permission.</p>
         <section class="cli-guide" aria-labelledby="cli-bot-title">
           <h3 id="cli-bot-title">Bot access today</h3>
@@ -548,7 +550,7 @@
             <div><dt>Proposals</dt><dd><code data-bot-operation>agent.proposals.list</code>, <code data-bot-operation>draft.proposals.submit</code>, <code data-bot-operation>draft.proposals.list</code> — inert local proposals for review. Draft lists omit the body; proposals do not send or create mailbox drafts.</dd></div>
             <div><dt>Send plain text</dt><dd><code data-bot-operation>mail.send</code> — separate permission; sends immediately. Optional <code>inReplyToMessageId</code> links a same-account reply; you supply recipients and text.</dd></div>
           </dl>
-          <p id="cli-gmail-transport" class="hint">Google sign-in stays OAuth. New or explicitly migrated Gmail accounts use Gmail API; other providers retain their transports. Gmail desktop Delete moves to Trash, including repeated Delete. Migration and separate Calendar reauthorization are reviewed in desktop Settings → Accounts; they are not bot commands. Requested scopes do not revoke older grants.</p>
+          <p id="cli-gmail-transport" class="hint">Google sign-in stays OAuth. New or explicitly migrated Gmail accounts use Gmail API; other providers retain their transports. Gmail desktop Delete moves to Trash, including repeated Delete. Migration and separate Calendar reauthorization are reviewed in desktop Settings → Accounts; they are not bot commands. Requested scopes do not revoke older grants. Importing a Google Desktop OAuth client is a Settings → Accounts action. It is not a bot command, and the client secret is not shown or sent to the bot bridge.</p>
           <p id="cli-unavailable"><strong>Unavailable to bots:</strong> attachment upload/attach/download, mailbox draft create/edit/delete, full thread retrieval, dedicated reply-all/forward, read/unread changes, move/archive/delete, and calendar actions. The desktop app has additional actions; they are not bot commands.</p>
           <p id="cli-attachment-transfers">Desktop Preview, Open, Save and Cancel use the app's attachment transfers panel. These controls do not add bot commands or file-byte access to <code>mail.attachment.get</code>.</p>
           <p id="cli-provider-semantics"><code>bridge.describe</code> reports whether granted operations may contact providers: <code>providerCalls</code> is true when <code>mail.send</code> is available. Cached reads stay local. This is not a per-request network count: send replay/join or pre-submit denial may still involve From lookup or OAuth refresh. Receipts describe mail-provider submission outcomes and replay status, not absence of provider traffic.</p>
@@ -594,6 +596,8 @@
         <button type="button" class="ghost" id="log-refresh">Refresh</button>
       </div>
       <p class="hint" id="ipc-diagnostics-note">IPC diagnostics keep known channel names/counts and renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries can still contain account/folder context.</p>
+      <p class="hint" id="performance-diagnostics-note">Optional performance timings appear here every 30 seconds when launched with MORROW_PERF=1. These bounded summaries contain fixed stage names, counts and durations for the main loop, startup, database, Keychain waits and mail IPC. They omit request data, mail content, identities, paths and credentials; they create no separate trace file or remote telemetry. Timings can include network waits and are not proof of a Mac freeze's cause. Restart without the flag to turn them off.</p>
+      <p class="hint" id="mail-body-cache-note">Body updates notify availability first. Open readers and previews refresh from downloaded mail; other messages do not retain background body copies. Each window's recent-body cache allows 32 entries, an estimated 8 MiB of strings combined and 2 MiB per entry. An open view can still display a larger body. Eviction never removes saved mail, drafts or attachments. Reconnect and removal invalidate reuse; superseded local reads are ignored.</p>
       <p class="hint">Known credential patterns are redacted. Review before sharing: addresses and diagnostic context may remain. This is a limited recent-session history, not a complete activity record.</p>
       <div class="row"><label for="log-source">Source</label><select id="log-source"><option value="">All sources</option></select><button type="button" class="ghost" id="log-preview">Preview support copy…</button></div>
       <p id="log-status" role="status"></p>
@@ -655,7 +659,7 @@
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
         <p id="connect-recovery-note" class="hint"></p>
-        <p class="hint">Google OAuth connects Gmail API mail, labels, Out of Office and inbox rules. Calendar is requested separately; existing Google OAuth IMAP accounts migrate after review in Settings → Accounts. Microsoft connects mail first, then checks those features for the same account. Approve any missing permissions; you can keep mail if you decline features. Yahoo Mail uses an app password.</p>
+        <p id="connect-google-help" class="hint">Choose Continue with Google for Google browser sign-in; no password is needed in Morrow. The bundled Google client is used by default when present; a personal client is optional under Advanced in Settings → Accounts. Google OAuth connects Gmail API mail, labels, Out of Office and inbox rules. Calendar is separate. Existing Google OAuth IMAP accounts require migration review in Accounts. Microsoft connects mail first, then checks its feature permissions. Yahoo Mail uses an app password.</p>
         <div class="row" role="group" aria-label="Account providers">
           <button type="button" class="primary" id="oauth-google">Continue with Google</button>
           <button type="button" class="ghost" id="oauth-microsoft">Continue with Microsoft</button>
@@ -663,6 +667,10 @@
         </div>
         <p id="oauth-unavailable" class="hint"></p>
         <p id="connect-status" class="hint" role="status" aria-live="polite"></p>
+        <button type="button" class="ghost icon-label" id="connect-gmail-migration" hidden>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"></path></svg>
+          <span>Review Gmail API migration</span>
+        </button>
         <details id="connect-imap"><summary>Other email provider</summary>
         <p class="hint">The password stays in this app's keychain. A typed address fills the servers it can find.</p>
         <label for="profile">Provider</label>
@@ -1170,8 +1178,26 @@
             <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
           </div>
           </div>
+          <details class="settings-disclosure" id="google-oauth-client">
+            <summary>Advanced: personal Google OAuth client (optional)</summary>
+            <p id="google-oauth-client-status" class="hint" role="status">Checking Google OAuth…</p>
+            <p id="google-oauth-default-help" class="hint">Continue with Google uses the bundled Desktop client by default when present. Importing a personal client is optional and replaces the bundled client on this computer; developer environment variables still win. Google controls which users can approve each client. This status checks local configuration, not the Google project's publication or verification status.</p>
+            <p class="hint">If you choose a personal client, follow the linked guide to create a Google Cloud project, enable the APIs you use, configure its test users and download a Desktop client JSON. The secret stays on this computer and is not shown. After changing clients, reauthorize Gmail and Google Calendar separately. Older grants with an unknown client need one-time reauthorization. Cached mail and saved credentials stay. Finish or cancel Google sign-in before importing or clearing; finish the picker before starting Google sign-in. Fix or remove an invalid developer environment override. Clear imported client returns to the bundled client when present. Do not paste the JSON into git, issues, or chat. <a href="https://github.com/Coke1120/Morrow-Mail/blob/dev/docs/bring-your-own-google-oauth.md" target="_blank" rel="noreferrer">Optional personal Desktop client guide</a></p>
+            <div class="row">
+              <button type="button" class="ghost icon-label" id="google-oauth-import">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span>Import Desktop JSON…</span>
+              </button>
+              <button type="button" class="ghost" id="google-oauth-clear" disabled>Clear imported client</button>
+            </div>
+          </details>
           <details class="settings-disclosure" id="account-permissions"><summary>Permissions &amp; calendar access</summary>
             <p id="settings-gmail-migration" class="hint">Google login still uses OAuth. New Google connections use Gmail API mail access; Calendar is requested separately. Existing Google OAuth mailboxes migrate only after review. Account ids, cached mail and drafts stay. A narrower request does not revoke older broad grants. Gmail Delete moves to Trash; deleting again keeps mail there. Microsoft and other IMAP deletion behavior is unchanged.</p>
+            <p id="settings-google-calendar-preservation" class="hint">Enabling another Google feature or reconnecting Gmail preserves a usable Calendar grant for the current Desktop client, even when stale records remain. Changing clients still requires separate Calendar reauthorization.</p>
             <div class="row"><button type="button" class="ghost" id="settings-gmail-migrate" hidden>Migrate Gmail to Gmail API</button><button type="button" class="ghost" id="settings-gmail-calendar" hidden>Reauthorize Google Calendar separately</button><button type="button" class="ghost" id="settings-gmail-cancel" hidden>Cancel Google reauthorization</button></div>
             <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
             <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>

@@ -55,7 +55,7 @@ function publicError(error) {
 function failFrom(error) {
   const code = error && error.code;
   if (code === "provider_network") return fail("provider", publicError(error));
-  if (code === "oauth_not_ready" || code === "scope_missing" || code === "needs_auth" || code === "invalid" || code === "not-found" || code === "too_many" || code === "account_mismatch" || code === "oauth" || code === "imap_only" || code === "no_account" || code === "collision" || code === "partial" || code === "conflict" || code === "unsupported") {
+  if (code === "google_client_changed" || code === "oauth_not_ready" || code === "scope_missing" || code === "needs_auth" || code === "invalid" || code === "not-found" || code === "too_many" || code === "account_mismatch" || code === "oauth" || code === "imap_only" || code === "no_account" || code === "collision" || code === "partial" || code === "conflict" || code === "unsupported") {
     return fail(code, publicError(error));
   }
   return fail("provider", publicError(error));
@@ -102,13 +102,28 @@ function secretKey(account, purpose) {
       : [`${account.id}:bundle`, `${account.id}:${purpose}`, ...(provider === "google" ? [account.id] : [])];
   for (const key of candidates) {
     const grant = readJson(key);
-    if (grant && grant.refreshToken && config.hasPurposeScopes(grant.grantedScopes, provider, purpose)) return key;
+    if (grant && grant.refreshToken && config.hasPurposeScopes(grant.grantedScopes, provider, purpose)
+        && (provider !== "google" || config.googleGrantMatches(grant))) return key;
+  }
+  // Keep stale grants visible for the reconnect explanation and scope history,
+  // but never let one hide a usable grant for the currently configured client.
+  for (const key of candidates) {
+    const grant = readJson(key);
+    if (grant?.refreshToken && config.hasPurposeScopes(grant.grantedScopes, provider, purpose)) return key;
   }
   return `${account.id}:${purpose}`;
 }
 
+function grantForPreservation(account, purpose) {
+  const key = secretKey(account, purpose);
+  const grant = readJson(key);
+  return grant?.refreshToken && config.hasPurposeScopes(grant.grantedScopes, providerOf(account), purpose)
+    ? secrets.getPassword(key) : null;
+}
+
 function gateMessage(reason, provider, purpose) {
-  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured.";
+  if (reason === "google_client_changed") return "This Google grant belongs to a different or unknown Desktop client. Reauthorize this feature in Settings → Accounts. Gmail and Calendar need separate consent; cached work is retained.";
+  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts.";
   if (reason === "imap_only") {
     return purpose === "calendar"
       ? "Calendar needs a Google or Microsoft account."
@@ -163,6 +178,9 @@ function gateAccount(account, purpose) {
   if (provider === "google" && !oauth.oauthReady().google) {
     return { ok: false, reason: "oauth_not_ready", provider, scopes, message: gateMessage("oauth_not_ready", provider, purpose) };
   }
+  if (provider === "google" && !config.googleGrantMatches(readJson(secretKey(account, purpose)))) {
+    return { ok: false, reason: "google_client_changed", provider, scopes, message: gateMessage("google_client_changed", provider, purpose) };
+  }
   return { ok: true, reason: "", provider, scopes, message: "" };
 }
 
@@ -181,6 +199,7 @@ function tokenBlob(signed) {
     expiresAt: signed.expiresAt,
     grantedScopes: signed.grantedScopes || "",
     requestedScopes: signed.requestedScopes || signed.grantedScopes || "",
+    ...(signed.provider === "google" ? { googleClientId: signed.googleClientId } : {}),
   };
 }
 
@@ -266,12 +285,14 @@ function accountGrants() {
     const calendarGate = gateAccount(row, "calendar");
     const rulesGate = gateAccount(row, "rules");
     const vacationGate = gateAccount(row, "vacation");
+    const mailClientMatches = providerOf(row) !== "google" || row.auth_kind !== "oauth2" || config.googleGrantMatches(readJson(row.id));
     return {
       id: row.id,
       email: row.email,
       provider: providerOf(row),
       authKind: row.auth_kind || "password",
       mailTransport: row.mail_transport || "imap",
+      mailClientMatches,
       gmailMigrationAvailable: providerOf(row) === "google" && row.auth_kind === "oauth2" && row.mail_transport !== "gmail_api",
       broadGoogleGrant: providerOf(row) === "google" && [row.id, `${row.id}:bundle`, `${row.id}:calendar`, `${row.id}:organize`, `${row.id}:rules`, `${row.id}:vacation`]
         .some(key => config.hasScopes(readJson(key)?.grantedScopes || "", "https://mail.google.com/")),
@@ -300,6 +321,7 @@ function oauthStatus() {
   return ok({
     google: ready.google === true,
     microsoft: ready.microsoft === true,
+    googleClient: config.googleOauthStatus(),
     purposes: {
       bundle: { ...config.BUNDLE_SCOPES },
       imap: { google: config.SCOPES.google, microsoft: config.SCOPES.microsoft },
@@ -344,6 +366,10 @@ function saveBundle(account, signed, requestedPurpose = "bundle") {
     return fail("account_mismatch", "Sign in with the selected mailbox. Existing credentials are unchanged.");
   }
   if (!signed.refreshToken || !signed.accessToken) return fail("oauth", "Provider did not return offline access. Existing credentials are unchanged.");
+  if (provider === "google") {
+    try { config.requireGoogleGrantClient(signed); }
+    catch (error) { return failFrom(error); }
+  }
   const granted = signed.grantedScopes || "";
   const separateCalendar = provider === "google" && requestedPurpose === "calendar";
   if (separateCalendar && !config.hasPurposeScopes(granted, provider, "calendar")) {
@@ -360,7 +386,8 @@ function saveBundle(account, signed, requestedPurpose = "bundle") {
   // Never claim the union of two grants on either token or overwrite mail here.
   for (const purpose of separateCalendar ? [] : API_PURPOSES) {
     if (previous && config.hasPurposeScopes(previous.grantedScopes, provider, purpose) && !config.hasPurposeScopes(granted, provider, purpose)) {
-      writes.push([`${account.id}:${purpose}`, JSON.stringify(previous)]);
+      const preserved = grantForPreservation(account, purpose);
+      if (preserved && preserved !== secrets.getPassword(`${account.id}:${purpose}`)) writes.push([`${account.id}:${purpose}`, preserved]);
     }
   }
   writes.push([key, JSON.stringify(blob)]);
@@ -386,11 +413,21 @@ function saveBundle(account, signed, requestedPurpose = "bundle") {
 }
 
 async function grantPurpose(params, purpose) {
+  let release;
+  if (providerOf(accountFrom(params)) === "google") {
+    try { release = config.acquireGoogleClient(); }
+    catch (error) { return failFrom(error); }
+  }
+  try { return await grantPurposeAdmitted(params, purpose); }
+  finally { release?.(); }
+}
+
+async function grantPurposeAdmitted(params, purpose) {
   const account = accountFrom(params);
   if (!account) return fail("no_account", "Connect the mailbox first.");
   const provider = providerOf(account);
   if (provider !== "google" && provider !== "microsoft") return fail("imap_only", "These permissions need a Google or Microsoft account.");
-  if (provider === "google" && !oauth.oauthReady().google) return fail("oauth_not_ready", "Google Desktop OAuth is not configured.");
+  if (provider === "google" && !oauth.oauthReady().google) return fail("oauth_not_ready", "Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts.");
   const already = grantResult(account, purpose);
   if (already.data.api && params?.forceReauthorize !== true) return already;
   const identity = secrets.getPassword(account.id);
@@ -831,7 +868,7 @@ async function providerVacation(account, body) {
     if (body) return fail(gate.reason, gate.message);
     return ok(vacationView(account, {
       supported: true,
-      requiresReconnect: gate.reason === "scope_missing",
+      requiresReconnect: gate.reason === "scope_missing" || gate.reason === "google_client_changed",
       detail: gate.message,
     }));
   }
@@ -959,6 +996,12 @@ function rememberVacation(account, signed) {
   if (!signed.refreshToken && !(previous && previous.refreshToken)) {
     return fail("oauth", "Provider did not return a refresh token. Approve offline access and try again.");
   }
+  if (provider === "google") {
+    try {
+      config.requireGoogleGrantClient(signed);
+      if (!signed.refreshToken) config.requireGoogleGrantClient(previous);
+    } catch (error) { return failFrom(error); }
+  }
   const blob = {
     provider,
     purpose: "vacation",
@@ -967,6 +1010,7 @@ function rememberVacation(account, signed) {
     expiresAt: signed.expiresAt || 0,
     grantedScopes: granted,
     requestedScopes: signed.requestedScopes || config.VACATION_SCOPES[provider],
+    ...(provider === "google" ? { googleClientId: signed.googleClientId } : {}),
   };
   const mailboxSecret = secrets.getPassword(account.id);
   try {
@@ -1265,4 +1309,5 @@ module.exports = {
   gmailSendAsToken,
   rememberVacation,
   grantPurpose,
+  grantForPreservation,
 };

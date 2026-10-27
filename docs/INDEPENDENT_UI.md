@@ -1,8 +1,28 @@
 # Independent UI
 
+Phase-two mail responsiveness batches action generations for lists/thread rows
+and reuses account IDs already present in list metadata for prefetch admission.
+Body notifications contain availability and scoped versions; open readers and
+previews pull current snapshots from local mail without provider fetches. The
+per-window body-only cache has 32-entry / estimated 8 MiB string / 2 MiB entry
+limits. Active views and compositions retain their own data; eviction deletes no
+mail, draft or attachment. Stale connection responses and superseded reads are
+ignored, and fresh snapshots retain inline attachment/sender/draft metadata.
+See [phase-two evidence and limits](PERFORMANCE_PHASE_TWO.md).
+
+Mail list and header-only thread queries omit body strings from JavaScript rows,
+and IMAP sync preserves search entries for unchanged indexed content. Full message
+and full-thread responses retain their bodies. Optional `MORROW_PERF=1` local
+timings appear in Debug log every 30 seconds with fixed labels and numeric
+aggregates, no mail/request/identity/path/credential data or telemetry. Keychain
+and durable writes keep their existing semantics. See [performance diagnostics
+and synthetic measurements](PERFORMANCE.md); native Mac freezes remain unverified.
+
 `npm start` loads `renderer/` through the host IPC that already exists. It does not read `resources/ui.asar`, unless you set `MORROW_ASAR` to an `app.asar` path.
 
 ## What this shell does
+
+- Continue with Google stays the primary Google sign-in action and uses the bundled Desktop client when present unless explicitly overridden. New connections and Gmail OAuth reconnects collapse Other email provider; manual reconnects keep their form. All connection entrypoints reset previous form state. A legacy Gmail migration error offers Review Gmail API migration to open the matching Accounts permission section without starting migration or entering a password. Review and confirmation remain required. Personal client import is an optional advanced choice; readiness checks only local configuration.
 
 - Settings → AI can review, allow and revoke AI data permission through the same existing host consent handlers as AI Setup. The exact three invoke channels are allowlisted in the first-party preload; unknown channels stay rejected. A ready saved connection and explicit-action checkbox are required, with separate optional background permission. Regression tests include the actual preload, Settings mount, config/consent validation and in-memory persistence, without native windows or live AI calls.
 
@@ -69,7 +89,7 @@ Not in this slice:
 
 Both settings surfaces include **AI data permission** for API/custom endpoints and ChatGPT. The initially unchecked action and background choices follow a destination/data/purpose disclosure. Existing settings are not grandfathered; key entry, Save, catalog fetch and sign-in are not consent. A changed provider/endpoint/model/account needs fresh permission. Cancel / revoke aborts pending requests and prevents queued work from resuming after reapproval. Automatic reply suggestions on compose open also need background permission. See [AI data use](AI_DATA_USE.md); this draft does not deploy a policy or change Google scopes.
 
-Settings → Accounts → Permissions & calendar access keeps Google OAuth login and offers reviewed Gmail API migration/reauthorization on the existing OAuth account. New Google connections request gmail.modify + gmail.settings.basic; Calendar grants are separate. Account ids, cached mail and local draft edits stay. Requested and actual saved grants are shown separately; a narrower request does not revoke older broad grants. Cancel blocks late pre-commit login results; unconfirmed cancellation keeps another authorization blocked. Migrated mail uses history/polling and never falls back to IMAP/SMTP. Gmail ordinary Delete and batch Delete from Trash preserve Trash; old remote draft cleanup moves to Trash. Other providers retain existing deletion behavior. See [the separate migration draft's coverage](GMAIL_API_MIGRATION.md).
+Settings → Accounts → Advanced: personal Google OAuth client (optional) imports a Desktop client JSON into this computer's app data. That file is preferred over a bundled client. Environment variables still win. The client secret is not shown. Clear removes only the imported file. Changing clients, or an older grant with no recorded client, requires Gmail and separate Calendar reauthorization; cached work and old credentials stay until successful consent. Import/clear and Google sign-in cannot overlap. Invalid environment overrides are identified as environment errors. See [Bring your own Google Desktop client](bring-your-own-google-oauth.md). Settings → Accounts → Permissions & calendar access keeps Google OAuth login and offers reviewed Gmail API migration/reauthorization on the existing OAuth account. New Google connections request gmail.modify + gmail.settings.basic; Calendar grants are separate. Account ids, cached mail and local draft edits stay. Requested and actual saved grants are shown separately; a narrower request does not revoke older broad grants. Cancel blocks late pre-commit login results; unconfirmed cancellation keeps another authorization blocked. Migrated mail uses history/polling and never falls back to IMAP/SMTP. Gmail ordinary Delete and batch Delete from Trash preserve Trash; old remote draft cleanup moves to Trash. Other providers retain existing deletion behavior. See [the separate migration draft's coverage](GMAIL_API_MIGRATION.md).
 
 Settings → AI and Morrow Mail → AI Setup now share an explicit API key/custom endpoint or ChatGPT account choice. Existing API values are retained. Saves apply the submitted snapshot: edits made while saving remain in the form with an unsaved notice, and repeated saves wait for the pending save. Connection tests and model reads discard obsolete results after another operation or a change to the relevant settings/account. Cancelling sign-in retires the old UI operation and aborts its discovery wait; after cancellation returns, a fresh attempt can start immediately and ignores late responses from the old attempt. ChatGPT uses the official open-source registration flow, browser loopback with optional one-time paste-back, account-specific model choices, and a separate Responses adapter. Background use requires express account consent; no API/provider fallback is automatic. Tokens stay in a main-process encrypted record, and the CLI/bot does not expose them. See [the design and synthetic/live validation boundary](adr/2026-10-25-chatgpt-model-provider.md).
 

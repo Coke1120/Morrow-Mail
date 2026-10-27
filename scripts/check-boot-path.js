@@ -22,6 +22,8 @@ const syntax = [
   "host/asar.js",
   "host/ipc.js",
   "host/ipc-diagnostics.js",
+  "host/performance-diagnostics.js",
+  "scripts/check-mail-performance.js",
   "scripts/check-ipc-diagnostics.js",
   "scripts/check-bot-provider-metadata.js",
   "host/mail/engine.js",
@@ -49,6 +51,7 @@ const syntax = [
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
   "scripts/check-mail-calendar-consent.js",
+  "scripts/check-google-client-switching.js",
   "scripts/check-oauth-graph-regressions.js",
   "scripts/check-mail-reader.js",
   "scripts/check-mail-review-regressions.js",
@@ -113,6 +116,7 @@ const syntax = [
   "scripts/bundle-pdf.js",
   "renderer/features-catalog.js",
   "scripts/check-ui-editor-feedback.js",
+  "scripts/check-google-oauth-default-ui.js",
   "scripts/check-calendar-keyboard-followup.js",
   "scripts/check-body-sync-status.js",
   "scripts/check-ai-settings-ownership.js",
@@ -130,7 +134,7 @@ for (const file of syntax) {
 }
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
-for (const name of ["check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-fresh-review-fixes.js"]) {
+for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js"]) {
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(fixture.status, 0, name + " failed");
 }
@@ -522,7 +526,7 @@ assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app pa
 assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
 assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.3.2");
+assert.strictEqual(pkg.version, "0.3.3");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -776,7 +780,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.3.2");
+assert.strictEqual(pkg.version, "0.3.3");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -3096,6 +3100,7 @@ assert.ok(!parity.includes("signatures editor"));
 
 const providerUi = loadFunctions(appJs, [
   "oauthButtonState",
+  "googleOauthClientCopy",
   "calendarGrantState",
   "providerFolderState",
   "providerCopy",
@@ -3130,8 +3135,16 @@ assert.deepStrictEqual(providerUi.oauthButtonState(null, "google"), { disabled: 
 assert.deepStrictEqual(providerUi.oauthButtonState({ google: true }, "google"), { disabled: false, reason: "" });
 assert.deepStrictEqual(providerUi.oauthButtonState({ google: false }, "google"), {
   disabled: true,
-  reason: "Google Desktop OAuth is not configured.",
+  reason: "Google sign-in is unavailable in this installation. Review Google OAuth status in Settings → Accounts.",
 });
+assert.equal(providerUi.googleOauthClientCopy(null), "Google OAuth is not ready. Review this installation's Google sign-in configuration. Personal client import is optional.");
+assert.equal(providerUi.googleOauthClientCopy({ ready: true, source: "imported", imported: true }), "Google OAuth is ready. This installation is using your imported Desktop client.");
+assert.equal(providerUi.googleOauthClientCopy({ ready: true, source: "bundled", imported: false }), "Google OAuth is ready. This installation is using the bundled Desktop client.");
+assert.equal(providerUi.googleOauthClientCopy({ ready: true, source: "env", imported: true }), "Google OAuth is ready. This installation is using a developer environment variable. An imported client is also saved on this computer.");
+assert.equal(providerUi.googleOauthClientCopy({ ready: false, source: "invalid", imported: true }), "The imported Google OAuth file could not be read. Import a Desktop client JSON again, or clear the imported client.");
+assert.equal(JSON.stringify([
+  providerUi.googleOauthClientCopy({ ready: true, source: "imported", imported: true, client_secret: "hidden-secret" }),
+]).includes("hidden-secret"), false);
 assert.deepStrictEqual(providerUi.oauthButtonState({ google: false }, "microsoft"), { disabled: false, reason: "" });
 assert.deepStrictEqual(providerUi.calendarGrantState(null, { platform: "gmail" }), {
   disabled: true,
@@ -3142,7 +3155,7 @@ assert.deepStrictEqual(providerUi.calendarGrantState({ google: false }, {
   imapSmtpProfile: "gmail",
 }), {
   disabled: true,
-  reason: "Google Desktop OAuth is not configured.",
+  reason: "Google sign-in is unavailable in this installation. Review Google OAuth status in Settings → Accounts.",
 });
 assert.deepStrictEqual(providerUi.calendarGrantState({ google: false }, {
   platform: "imap",
@@ -3997,10 +4010,13 @@ const featureSeed = [
   ["imap-recovery", "IMAP connection recovery", "Mail", "Connection timeouts during IMAP sync use the usual connection-error and retry status. Inbox push falls back to polling and reconnects with backoff."],
   ["overnight-body-fill", "Full message bodies", "Mail", "Mail → Bodies shows per-mailbox body activity separately from list sync. Message requests and the listed page download as needed. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Activity has no whole-mailbox total or percentage. IMAP messages can remain incomplete at the 3 MiB source limit; Gmail API handles MIME parts within its response limit; attachment files stay on demand. Gmail decodes legacy mail encodings including cp932 and UTF-7, and retains ISO-2022-JP decoding. Malformed MIME or an unknown charset leaves available content with an incomplete-body warning and does not stop other messages from syncing."],
   ["inbox-rules", "Inbox Automation Rules", "Mail", "Gmail filters and Outlook rules save on the provider after you grant access. Other accounts store the rule here and apply it to new Inbox mail."],
+  ["google-desktop-oauth", "Google sign-in and optional personal client", "Accounts", "Continue with Google uses the bundled Desktop client by default when present. New connections and Gmail OAuth reconnects keep Other email provider collapsed; manual-provider reconnects retain their form. A legacy Gmail connection offers Review Gmail API migration, which opens Accounts without migrating until you review and confirm. Settings → Accounts → Advanced: personal Google OAuth client (optional) imports a Desktop JSON into this computer's app data. An explicit import replaces the bundled client; developer environment variables still win. Web client JSON is rejected and the secret is not shown. Clear imported client removes only that file. Changing clients requires Gmail and separate Calendar reauthorization. Older grants with an unknown client need one-time reauthorization; cached mail and saved credentials stay. Finish or cancel Google sign-in before import or clear; finish the picker before starting Google sign-in. Invalid developer environment overrides must be fixed or removed. Local readiness does not prove Google permits sign-in."],
   ["multi-account", "Multiple mailboxes", "Accounts", "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again. Gmail Delete moves to Trash; deleting again keeps mail there. Conversation Trash acts once per Gmail message across label copies, with one membership snapshot for Undo. Verified copies leave their old labels after Trash; unrelated cached mail and unsaved edits stay. Archive removes Inbox membership even from All Mail or a search copy. Gmail draft cleanup moves old remote copies to Trash. Microsoft and other IMAP deletion behavior is unchanged. Google login remains OAuth. New Google connections use Gmail API polling/history with gmail.modify and gmail.settings.basic; Calendar is separate. Existing Google OAuth accounts migrate after review in Accounts. Cached mail and drafts stay; uncertain actions must be resolved first. A narrower request does not revoke older broad grants; Accounts shows actual saved scopes. Gmail API cannot move mail into Sent or Drafts; use Send or Save draft."],
   ["bot-bridge", "Bot bridge", "Accounts", "An optional loopback API lets a bot read cached mail and propose inert drafts for connected, granted mailboxes. A separate send permission allows immediate plain-text mail. Access starts off; CLI explains capabilities, possible provider calls, Tailscale setup, and revocation limits."],
-  ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Incomplete Google Calendar reauthorization preserves the working Calendar connection. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions. Opening an all-day event or switching between all-day and timed input keeps the dates. All-day ends are exclusive. An unchanged timed → all-day → timed round trip in the same editor restores the original dates and hours. Edited all-day dates or an event opened as all-day use 09:00/10:00 defaults when switched to timed."],
+  ["calendar", "Calendar", "Calendar", "Month view for Google Calendar or Microsoft Graph when that account has calendar access. Incomplete Google Calendar reauthorization preserves the working Calendar connection. Enabling another feature or reconnecting Gmail also preserves a usable current-client Calendar grant ahead of stale records. Create, edit, and delete events. Timed events appear on each local date they overlap. Closing a pending save does not cancel it; confirmed changes refresh the month. Titles over 200 characters and long Google descriptions stay read-only previews; other field edits preserve their complete values. Unchanged titles are kept, including untitled events. Save errors appear in the event dialog and keep your input. Invalid dates are reported before description preview restrictions. Opening an all-day event or switching between all-day and timed input keeps the dates. All-day ends are exclusive. An unchanged timed → all-day → timed round trip in the same editor restores the original dates and hours. Edited all-day dates or an event opened as all-day use 09:00/10:00 defaults when switched to timed."],
   ["in-app-updater", "In-app updates", "Updates", "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed."],
+  ["mail-body-updates", "Mail body updates", "Mail", "Mail lists batch action metadata. Body notifications carry availability instead of full messages; open readers and previews refresh from already downloaded mail. Each window can reuse up to 32 recent bodies within an estimated 8 MiB of strings, at most 2 MiB per entry. Larger bodies remain available in the open view. Reconnect/removal invalidates reuse; cache eviction never deletes saved mail, drafts or attachments. Native Mac responsiveness still needs profiling."],
+  ["mail-responsiveness", "Mail responsiveness", "Support", "Cached lists and thread headers avoid copying message bodies into JavaScript. IMAP sync keeps existing search terms when indexed content is unchanged. MORROW_PERF=1 enables bounded local timings in Debug log every 30 seconds, without mail contents or telemetry. Keychain and durable writes keep their existing behavior. Native Mac freezes still need profiling."],
   ["ipc-diagnostics", "IPC diagnostics", "Support", "IPC trace records known channels and argument counts, plus renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries may retain account/folder context."],
 ];
 assert.deepStrictEqual(featureCatalog.items.map((row) => [row.id, row.title, row.category, row.blurb]), featureSeed);
@@ -4408,7 +4424,8 @@ assert.strictEqual(
   needsAuth.status,
   "Enable calendar and mailbox features. Google requests Calendar separately from mail; Microsoft connects mail first, then checks feature permissions for the same account.",
 );
-assert.strictEqual(providerUi.calendarCopy("oauth_not_ready"), "Google Desktop OAuth is not configured, so calendar stays offline.");
+assert.strictEqual(providerUi.calendarCopy("oauth_not_ready"), "Google sign-in is unavailable in this installation, so calendar stays offline. Review Google OAuth status in Settings → Accounts; personal client import is optional.");
+assert.strictEqual(providerUi.providerCopy("oauth_not_ready", "gmail"), "Google sign-in is unavailable in this installation, so Gmail labels stay on IMAP. Review Google OAuth status in Settings → Accounts; personal client import is optional.");
 assert.strictEqual(providerUi.calendarCopy("no_account"), "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.");
 assert.strictEqual(
   providerUi.calendarCopy("needs_auth", "ada@example.com"),
@@ -4632,6 +4649,9 @@ assert.doesNotMatch(providerUi.vacationConfirm("disable", "ada@example.com", { p
 
 for (const channel of [
   "mail:oauthStatus",
+  "mail:googleOauthStatus",
+  "mail:importGoogleOauth",
+  "mail:clearGoogleOauth",
   "mail:grantOrganize",
   "mail:grantVacation",
   "mail:vacationGet",
@@ -4659,6 +4679,9 @@ for (const channel of [
 }
 for (const channel of [
   "mail:oauthStatus",
+  "mail:googleOauthStatus",
+  "mail:importGoogleOauth",
+  "mail:clearGoogleOauth",
   "mail:grantOrganize",
   "mail:grantVacation",
   "mail:vacationGet",
@@ -4687,6 +4710,9 @@ for (const channel of [
 assert.ok(html.includes('id="rail-calendar"') && html.includes('id="calendar-panel"'));
 assert.ok(html.includes('id="calendar-grant"') && html.includes("Enable mailbox features"));
 assert.ok(html.includes('id="settings-ooo"') && html.includes("Allow Out of Office settings"));
+assert.ok(html.includes('id="google-oauth-import"') && html.includes('id="google-oauth-clear"') && html.includes('id="google-oauth-client-status"'));
+assert.ok(html.includes("bring-your-own-google-oauth.md") && html.includes("Clear imported client"));
+assert.ok(appJs.includes("mail:importGoogleOauth") && appJs.includes("mail:clearGoogleOauth") && appJs.includes("mail:googleOauthStatus"));
 assert.ok(appJs.includes("mail:vacationGet") && appJs.includes("mail:vacationPut") && appJs.includes("mail:grantVacation"));
 assert.ok(appJs.includes("morrow-vacation") && appJs.includes("will not replace a different active Sieve script"));
 assert.ok(html.includes('id="calendar-create"') && html.includes('id="calendar-pick"'));
@@ -7229,7 +7255,15 @@ async function checkProviderApi() {
   };
   try {
     const bundled = path.join(root, "resources", "google-oauth.json");
-    if (!fs.existsSync(bundled)) assert.strictEqual(oauthConfig.oauthReady().google, false);
+    const prevGoogleUserData = process.env.MORROW_USER_DATA;
+    const emptyGoogleUserData = fs.mkdtempSync(path.join(require("os").tmpdir(), "morrow-gempty-"));
+    process.env.MORROW_USER_DATA = emptyGoogleUserData;
+    try {
+      if (!fs.existsSync(bundled)) assert.strictEqual(oauthConfig.oauthReady().google, false);
+    } finally {
+      if (prevGoogleUserData === undefined) delete process.env.MORROW_USER_DATA;
+      else process.env.MORROW_USER_DATA = prevGoogleUserData;
+    }
     assert.strictEqual(oauthConfig.oauthReady().microsoft, true);
     const kept = await oauthMod.refresh(
       "google",
@@ -7250,8 +7284,10 @@ async function checkProviderApi() {
     assert.ok(microsoftRefresh.grantedScopes.includes("Calendars.ReadWrite"));
     assert.ok(seen[1].body.includes("Calendars.ReadWrite"));
     const freshCount = seen.length;
+    process.env.MORROW_GOOGLE_OAUTH_JSON = JSON.stringify({ installed: { client_id: "check-provider.apps.googleusercontent.com", client_secret: "fixture-only" } });
     const fresh = await oauthMod.accessTokenFor({ profile: "gmail" }, JSON.stringify({
       provider: "google",
+      googleClientId: "check-provider.apps.googleusercontent.com",
       refreshToken: "refresh-gmail",
       accessToken: "still-good",
       expiresAt: Date.now() + 5 * 60 * 1000,
@@ -7259,6 +7295,7 @@ async function checkProviderApi() {
     }));
     assert.strictEqual(fresh, "still-good");
     assert.strictEqual(seen.length, freshCount);
+    delete process.env.MORROW_GOOGLE_OAUTH_JSON;
     if (!fs.existsSync(bundled)) {
       await assert.rejects(
         () => oauthMod.accessTokenFor({ profile: "gmail" }, JSON.stringify({
@@ -7812,6 +7849,7 @@ async function checkProviderApi() {
 
     secrets.setPassword("gmail-live:organize", JSON.stringify({
       provider: "google",
+      googleClientId: "check-provider.apps.googleusercontent.com",
       purpose: "organize",
       refreshToken: "refresh-gmail",
       accessToken: "access-gmail",
@@ -8208,6 +8246,7 @@ async function checkProviderApi() {
     assert.strictEqual(secrets.getPassword("gmail-live"), keptMailbox);
     const granted = sidecar.rememberVacation(db.accountById("gmail-live"), {
       provider: "google",
+      googleClientId: "check-provider.apps.googleusercontent.com",
       email: "ada.live@example.com",
       refreshToken: "vacation-refresh",
       grantedScopes: oauthConfig.VACATION_SCOPES.google,
@@ -8492,6 +8531,20 @@ function checkGoogleOauthAlias() {
       client_secret: "desktop-alias-secret",
     },
   });
+  const guide = fs.readFileSync(path.join(root, "docs/bring-your-own-google-oauth.md"), "utf8");
+  assert.match(guide, /Testing/);
+  assert.match(guide, /Test users/);
+  assert.match(guide, /Desktop/);
+  assert.match(guide, /seven days/);
+  assert.match(guide, /Gmail API/);
+  assert.match(guide, /Calendar API/);
+  assert.doesNotMatch(guide, /Publish the app|go to Production/i);
+  assert.equal(guide.includes("ya29."), false);
+  assert.doesNotMatch(guide, /"client_secret"\s*:/);
+  const adr = fs.readFileSync(path.join(root, "docs/adr/2026-10-27-bring-your-own-google-desktop-oauth.md"), "utf8");
+  assert.match(adr, /Testing/);
+  assert.match(adr, /userData/);
+  assert.match(fs.readFileSync(path.join(root, "README.md"), "utf8"), /bring-your-own-google-oauth\.md/);
   try {
     for (const key of keys) delete process.env[key];
     process.env.GOOGLE_DESKTOP_OAUTH_JSON = `  ${desktop}  `;
@@ -8509,6 +8562,9 @@ function checkGoogleOauthAlias() {
     assert.strictEqual(oauth.loadGoogleClient().clientId, "morrow-primary.apps.googleusercontent.com");
     for (const key of keys) delete process.env[key];
     const os = require("os");
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-guser-"));
+    const prevUser = process.env.MORROW_USER_DATA;
+    process.env.MORROW_USER_DATA = userDir;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-gclient-"));
     fs.writeFileSync(path.join(dir, "google-oauth.json"), JSON.stringify({
       installed: {
@@ -8528,8 +8584,91 @@ function checkGoogleOauthAlias() {
       if (!fs.existsSync(files[0])) {
         assert.strictEqual(oauth.loadGoogleClient().clientId, "packaged-desktop.apps.googleusercontent.com");
         assert.strictEqual(oauth.oauthReady().google, true);
+        assert.strictEqual(oauth.googleOauthStatus().source, "bundled");
+      }
+      const importedId = "imported-user.apps.googleusercontent.com";
+      const importedSecret = "imported-desktop-secret";
+      const importedJson = JSON.stringify({
+        installed: {
+          client_id: importedId,
+          client_secret: importedSecret,
+          redirect_uris: ["http://localhost"],
+        },
+      });
+      const imported = oauth.importGoogleDesktopJson(importedJson);
+      assert.strictEqual(imported.ready, true);
+      assert.strictEqual(imported.source, "imported");
+      assert.strictEqual(imported.imported, true);
+      assert.strictEqual(oauth.loadGoogleClient().clientId, importedId);
+      assert.strictEqual(oauth.oauthReady().google, true);
+      assert.strictEqual(JSON.stringify(imported).includes(importedSecret), false);
+      assert.strictEqual(JSON.stringify(imported).includes("client_secret"), false);
+      const importedFile = path.join(userDir, "google-oauth.json");
+      if (process.platform !== "win32") assert.strictEqual(fs.statSync(importedFile).mode & 0o777, 0o600);
+      process.env.GOOGLE_DESKTOP_OAUTH_JSON = `  ${desktop}  `;
+      try {
+        assert.strictEqual(oauth.loadGoogleClient().clientId, "desktop-alias.apps.googleusercontent.com");
+        assert.strictEqual(oauth.googleOauthStatus().source, "env");
+        assert.strictEqual(oauth.googleOauthStatus().imported, true);
+      } finally {
+        delete process.env.GOOGLE_DESKTOP_OAUTH_JSON;
+      }
+      const kept = fs.readFileSync(importedFile, "utf8");
+      assert.throws(() => oauth.importGoogleDesktopJson(JSON.stringify({ web: { client_id: importedId, client_secret: importedSecret } })), /Desktop/);
+      assert.throws(() => oauth.importGoogleDesktopJson(JSON.stringify({ client_id: importedId, client_secret: importedSecret })), /Desktop/);
+      assert.throws(() => oauth.importGoogleDesktopJson("not-json"), /valid JSON/);
+      assert.throws(() => oauth.importGoogleDesktopJson("x".repeat(65537)), /too large/);
+      assert.strictEqual(fs.readFileSync(importedFile, "utf8"), kept);
+      fs.writeFileSync(importedFile, `{"installed":{"client_secret":"${importedSecret}"`);
+      const broken = oauth.googleOauthStatus();
+      assert.strictEqual(broken.ready, false);
+      assert.strictEqual(broken.source, "invalid");
+      assert.strictEqual(broken.imported, true);
+      assert.strictEqual(JSON.stringify(broken).includes(importedSecret), false);
+      let leaked = false;
+      try { oauth.loadGoogleClient(); } catch (error) { leaked = String(error && error.message || "").includes(importedSecret); }
+      assert.strictEqual(leaked, false);
+      assert.strictEqual(oauth.googleOauthStatus().source, "invalid");
+      const cleared = oauth.clearImportedGoogleDesktopJson();
+      assert.strictEqual(cleared.imported, false);
+      assert.strictEqual(fs.existsSync(importedFile), false);
+      if (!fs.existsSync(files[0])) {
+        assert.strictEqual(oauth.loadGoogleClient().clientId, "packaged-desktop.apps.googleusercontent.com");
+        assert.strictEqual(cleared.source, "bundled");
+        assert.strictEqual(oauth.oauthReady().google, true);
+      } else {
+        assert.strictEqual(oauth.googleOauthStatus().source, "bundled");
+        assert.notStrictEqual(oauth.loadGoogleClient().clientId, importedId);
+      }
+      const repoFile = files[0];
+      const repoBackup = fs.existsSync(repoFile) ? fs.readFileSync(repoFile) : null;
+      const repoMode = repoBackup ? fs.statSync(repoFile).mode & 0o777 : 0;
+      if (repoBackup) fs.rmSync(repoFile);
+      const alone = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-gonly-"));
+      process.env.MORROW_USER_DATA = alone;
+      const prevOnly = process.resourcesPath;
+      process.resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-gemptyres-"));
+      try {
+        assert.strictEqual(oauth.oauthReady().google, false);
+        const again = oauth.importGoogleDesktopJson(importedJson);
+        assert.strictEqual(again.ready, true);
+        assert.strictEqual(again.source, "imported");
+        assert.strictEqual(JSON.stringify(again).includes(importedSecret), false);
+        assert.strictEqual(oauth.oauthReady().google, true);
+        oauth.clearImportedGoogleDesktopJson();
+        assert.strictEqual(oauth.oauthReady().google, false);
+        assert.strictEqual(oauth.googleOauthStatus().source, "none");
+      } finally {
+        process.resourcesPath = prevOnly;
+        process.env.MORROW_USER_DATA = userDir;
+        if (repoBackup) {
+          fs.writeFileSync(repoFile, repoBackup, { mode: repoMode || 0o600 });
+          if (repoMode) fs.chmodSync(repoFile, repoMode);
+        }
       }
     } finally {
+      if (prevUser === undefined) delete process.env.MORROW_USER_DATA;
+      else process.env.MORROW_USER_DATA = prevUser;
       if (prevResources === undefined) delete process.resourcesPath;
       else process.resourcesPath = prevResources;
     }
@@ -9405,6 +9544,7 @@ async function checkInboxRules() {
     });
     secrets.setPassword("rules-gmail:rules", JSON.stringify({
       provider: "google",
+      googleClientId: "inbox-rules.apps.googleusercontent.com",
       purpose: "rules",
       refreshToken: "refresh-rules",
       accessToken: "access-rules",

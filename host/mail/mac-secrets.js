@@ -1,8 +1,9 @@
 const { spawnSync } = require("child_process");
 const { SERVICE } = require("./secret-service");
+const perf = require("../performance-diagnostics");
 
 function run(args) {
-  return spawnSync("security", args, { encoding: "utf8" });
+  return perf.sync("keychain.wait", () => spawnSync("security", args, { encoding: "utf8" }));
 }
 
 function write(service, account, password) {

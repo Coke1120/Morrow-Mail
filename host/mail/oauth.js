@@ -19,6 +19,7 @@ const {
   assertResourceScopes,
   tokenScopeText,
   microsoftResourceScopes,
+  requireGoogleGrantClient,
 } = require("./oauth-config");
 
 function b64url(buf) {
@@ -515,6 +516,7 @@ async function signIn(providerInput, purposeInput, options) {
       refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt,
       grantedScopes: tokens.grantedScopes,
+      ...(provider === "google" ? { googleClientId: creds.clientId } : {}),
       complete: (outcome) => pending.complete(outcome),
     };
   } catch (error) {
@@ -552,6 +554,16 @@ async function accessTokenFor(account, secretBlob, expectedPurpose) {
   let requested = parsed.requestedScopes || scope;
   let repair = false;
   const purpose = normalizePurpose(expectedPurpose || parsed.purpose);
+  if (provider === "google") {
+    if (!oauthReady().google) {
+      const error = new Error("Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts.");
+      error.code = "oauth_not_ready";
+      throw error;
+    }
+    // Cached access must respect the same binding as refreshes. Legacy records
+    // cannot safely infer their issuer from whichever client is configured now.
+    requireGoogleGrantClient(parsed);
+  }
   if (provider === "microsoft") {
     const saved = typeof parsed.grantedScopes === "string" ? parsed.grantedScopes : requested;
     scope = microsoftResourceScopes(saved, purpose);
@@ -567,13 +579,9 @@ async function accessTokenFor(account, secretBlob, expectedPurpose) {
   if (!repair && parsed.expiresAt && parsed.accessToken && Date.now() < parsed.expiresAt - 60000) {
     return parsed.accessToken;
   }
-  if (provider === "google" && !oauthReady().google) {
-    const error = new Error("Google Desktop OAuth is not configured.");
-    error.code = "oauth_not_ready";
-    throw error;
-  }
   const creds = credentials(provider);
   const next = await refresh(provider, creds, parsed.refreshToken, scope, scope);
+  if (provider === "google") requireGoogleGrantClient(parsed);
   if (provider === "microsoft" && purpose === "imap") requirePurposeScopes(next, provider, purpose);
   return {
     token: next.accessToken,
