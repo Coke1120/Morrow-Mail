@@ -6,6 +6,7 @@ const { isRateLimit } = require("./provider-http");
 const mailboxRoles = require("../../shared/mailbox-roles");
 const textEncoding = require("./text-encoding");
 const { isGmail } = require("./gmail-policy");
+const { diagnosticMessage } = require("./gmail-error");
 const clientAccounts = new WeakMap();
 const gmail = require("./gmail-session");
 
@@ -49,6 +50,8 @@ function imapAuth(account, secret) {
 }
 
 function explain(error, secret, account) {
+  const diagnostic = diagnosticMessage(error);
+  if (diagnostic) return diagnostic;
   const parts = [error instanceof Error ? error.message : String(error || "")];
   if (error && typeof error === "object") {
     if (error.responseText) parts.push(String(error.responseText));

@@ -118,6 +118,35 @@ Plan My Week and Meeting Prep call `calendar:list` only when that calendar grant
 
 ## Mock validation and live smoke notes
 
+Gmail API mail errors now retain bounded, allowlisted diagnostics in sync activity
+and Debug log: numeric HTTP status, a static operation and recognized Google
+reason/status codes. A 403 alone is not classified as missing scope. Legacy
+`error.errors[].reason` and `google.rpc.ErrorInfo` in `error.details` can establish
+quota/rate limits, missing mail permission, a disabled API or domain policy.
+`PERMISSION_DENIED` alone remains an unknown cause; `RESOURCE_EXHAUSTED` indicates
+quota/rate pressure. Malformed, oversized, unreadable or unsupported responses
+fall back to unknown. No raw error body, provider message/metadata, URL, id, mail
+content, address or token is retained in these diagnostics. Gmail sync Debug
+records omit the mailbox address, folder name and folder id. Sync activity still
+shows that mailbox and folder. Other Debug entries may still include account or
+folder context and need review before sharing.
+
+Only a parsed quota classification uses the existing sync pause. A reason such
+as `rateLimitExceeded` does not reclassify auth, permission or unknown Gmail
+results. Errors without a Gmail diagnostic still use the existing rate-limit
+heuristic. Other non-credential Gmail 403s use the existing transient read retry
+schedule rather than marking the credential invalid; confirmed missing permission
+and 401s keep the sign-in gate.
+Scopes, stored grants/credentials, consent and write retry/submission behavior
+are unchanged. Review the safe diagnostic before choosing an action: wait for
+quota pressure, ask the app owner to review API enablement, contact the domain
+administrator for domain policy, or review mail access for missing permission.
+Do not infer a cause from successful login, a folder label such as
+`CATEGORY_PERSONAL`, or HTTP 403 alone. The reported v0.3.3 failure has not been
+reproduced against a live mailbox or diagnosed by these synthetic tests.
+
+See [Gmail error diagnostic boundaries and fixtures](GMAIL_ERROR_DIAGNOSTICS.md).
+
 `scripts/check-google-client-switching.js` exercises the real preload, Settings/Features DOM, host handlers, OAuth loopback and temporary database. It covers source precedence and diagnostics, rejected/cancelled imports, pending picker/mail/Calendar exclusion, partial consent, same/changed/unknown-client grants, cached-token and refresh gating, normal Calendar recovery, cancellation during exchange, obsolete commits/refreshes and binding after process restart. Provider responses are intercepted; only local callbacks use sockets. Native picker/package and live-provider validation remain pending.
 
 `npm run check` includes `scripts/check-mail-calendar-consent.js`: real local loopback callbacks with fake provider token/profile responses, memory-only secrets, and a temporary database. It checks Google mail and its separate optional Calendar grant, two Microsoft dialogs with separate code exchanges, resource-specific refreshes, no popup for granted features, partial consent, legacy grants, account mismatch, cancellation, storage rollback, and mail sync/calendar availability. It also rejects mixed-resource Microsoft token requests. No live OAuth credentials, Keychain, or mailbox writes are needed.

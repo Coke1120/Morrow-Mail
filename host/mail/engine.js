@@ -28,6 +28,7 @@ const { createBodyProgress } = require("./body-progress");
 const syncRetry = require("../../shared/sync-retry");
 const debugLog = require("../debug-log");
 const perf = require("../performance-diagnostics");
+const { diagnosticMessage: gmailDiagnosticMessage } = require("./gmail-error");
 const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
 const composePolicy = require("../../shared/compose-policy");
@@ -596,6 +597,15 @@ function syncLabels(extra) {
   };
 }
 
+function gmailSyncAccount(accountId) {
+  try {
+    const account = accountId && db.accountById(accountId);
+    return !!(account && (account.profile === "gmail" || account.mail_transport === "gmail_api"));
+  } catch {
+    return false;
+  }
+}
+
 function emitSync(state, extra) {
   const now = Date.now();
   const scopeKey = JSON.stringify([(extra && extra.accountId) || "", (extra && extra.folderId) || ""]);
@@ -629,7 +639,8 @@ function emitSync(state, extra) {
     retryAt: state === "error" && extra && extra.retryAt ? extra.retryAt : null,
   };
   syncScopes.set(scopeKey, syncState);
-  debugLog.note("sync", [state, phase, place.accountLabel, place.folderLabel, message].filter(Boolean).join(" · "));
+  const debugPlace = gmailSyncAccount(place.accountId) ? [] : [place.accountLabel, place.folderLabel];
+  debugLog.note("sync", [state, phase, ...debugPlace, message].filter(Boolean).join(" · "));
   broadcast("mail:syncStatus", syncState);
   const accountId = syncState.accountId;
   if (!accountId) return;
@@ -660,7 +671,7 @@ function publicSync(params) {
   if (!accountId || !folderId) return { ...syncState };
   const saved = syncScopes.get(JSON.stringify([accountId, folderId]));
   const gate = syncGates.get(accountId);
-  if (gate && gate.until > Date.now()) return { ...(saved || {}), ...syncLabels(params), state: "paused", message: "Paused by the provider", retryAt: gate.until, retrying: false };
+  if (gate && gate.until > Date.now()) return { ...(saved || {}), ...syncLabels(params), state: "paused", message: gate.message || "Paused by the provider", retryAt: gate.until, retrying: false };
   if (saved) return { ...saved };
   const folder = db.folderByPath(accountId, folderId);
   const lastSuccessAt = folder && windowOpen(folder) ? folder.synced_at : null;
@@ -723,8 +734,9 @@ function noteRateLimit(accountId, error) {
   const hinted = http.retryAfterMs(error);
   const wait = row.strikes >= 3 ? STORM_MS : (hinted == null ? RATE_LIMIT_MS : hinted);
   row.until = Date.now() + wait;
+  row.message = gmailDiagnosticMessage(error);
   syncGates.set(accountId, row);
-  emitSync("paused", { accountId, message: "Paused for rate limit" });
+  emitSync("paused", { accountId, message: row.message || "Paused for rate limit" });
   pauseIdle(accountId);
   return row;
 }
@@ -758,10 +770,12 @@ function planSyncFailure(account, error, secret) {
   if (!account || !account.id) return { kind: "none", message: remote.explain(error) };
   if (http.isRateLimit(error)) return { kind: "rate", message: "Paused for rate limit" };
   const message = explainSyncError(account, error, secret);
-  if (account.auth_error || syncRetry.isStickyAuthSyncError(message, error)) {
+  const gmailDiagnostic = gmailDiagnosticMessage(error);
+  const stickyAuth = gmailDiagnostic ? error.code === "auth" || error.code === "scope_missing" : syncRetry.isStickyAuthSyncError(message, error);
+  if (account.auth_error || stickyAuth) {
     syncRetryScheduler.clear(account.id);
     if (!account.auth_error) db.setAuthError(account.id, message);
-    return { kind: "auth", message: account.auth_error || message };
+    return { kind: "auth", message: gmailDiagnostic || account.auth_error || message };
   }
   const scheduled = syncRetryScheduler.noteFailure(account.id, message, { stickyAuth: false });
   return {
@@ -783,10 +797,10 @@ function reportSyncFailure(account, error, extra) {
     return plan;
   }
   if (plan.kind !== "error") {
-    if (plan.kind === "auth" && extra && extra.emitAuth && account && account.id && syncState.state !== "paused") {
+    if (plan.kind === "auth" && (extra?.emitAuth || gmailDiagnosticMessage(error)) && account && account.id && syncState.state !== "paused") {
       emitSync("error", {
         accountId: account.id,
-        folderId: extra.folderId,
+        folderId: extra && extra.folderId,
         message: plan.message,
         retrying: false,
       });
@@ -983,7 +997,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
 async function syncFolderPolicy(client, account, folderPath, limits) {
   const days = syncHorizonDays();
   if (!gateOpen(account.id)) {
-    emitSync("paused", { accountId: account.id, folderId: folderPath, message: "Paused for rate limit" });
+    emitSync("paused", { accountId: account.id, folderId: folderPath, message: syncGates.get(account.id)?.message || "Paused for rate limit" });
     return { paused: true, bootstrapped: false };
   }
   let phase = "fetching";
@@ -1081,7 +1095,7 @@ async function syncAccount(account, options) {
 async function syncAccountAdmitted(account, options) {
   assertAccountCurrent(account);
   if (!gateOpen(account.id)) {
-    emitSync("paused", { accountId: account.id, message: "Paused for rate limit" });
+    emitSync("paused", { accountId: account.id, message: syncGates.get(account.id)?.message || "Paused for rate limit" });
     return;
   }
   const password = await secretFor(account);
@@ -1100,7 +1114,7 @@ async function syncAccountAdmitted(account, options) {
     await exclusive(account.id, async () => {
       assertAccountCurrent(account);
       if (!gateOpen(account.id)) {
-        emitSync("paused", { accountId: account.id, message: "Paused for rate limit" });
+        emitSync("paused", { accountId: account.id, message: syncGates.get(account.id)?.message || "Paused for rate limit" });
         paused = true;
         return;
       }
@@ -2408,7 +2422,7 @@ async function searchRemote(params) {
   for (const account of accounts) {
     if (rows.length >= limit) break;
     if (!gateOpen(account.id)) {
-      emitSync("paused", { accountId: account.id, message: "Paused for rate limit" });
+      emitSync("paused", { accountId: account.id, message: syncGates.get(account.id)?.message || "Paused for rate limit" });
       paused = true;
       continue;
     }
@@ -2497,12 +2511,12 @@ function sortSenderHits(rows) {
 function senderFailure(accountId, error) {
   if (http.isRateLimit(error) || (error && error.code === "rate_limit")) {
     noteRateLimit(accountId, error);
-    return { status: "rate_limit", message: "Paused for rate limit", exhausted: false, hits: [], cursor: null };
+    return { status: "rate_limit", message: gmailDiagnosticMessage(error) || "Paused for rate limit", exhausted: false, hits: [], cursor: null };
   }
   const code = error && error.code;
   const status = error && error.status;
-  if (code === "auth" || code === "scope_missing" || status === 401 || status === 403) {
-    return { status: "auth", message: "Sign in again", exhausted: false, hits: [], cursor: null };
+  if (code === "auth" || code === "scope_missing" || (!gmailDiagnosticMessage(error) && (status === 401 || status === 403))) {
+    return { status: "auth", message: gmailDiagnosticMessage(error) || "Sign in again", exhausted: false, hits: [], cursor: null };
   }
   if (code === "search_unsupported" || code === "filter_unsupported") {
     return { status: "unavailable", message: "Unavailable", exhausted: true, hits: [], cursor: null };
