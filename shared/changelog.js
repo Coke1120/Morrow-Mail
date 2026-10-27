@@ -7,6 +7,14 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.3": [
+      "Continue with Google stays primary. New connections and Gmail OAuth reconnects keep the manual password form collapsed; manual-provider reconnects retain their settings.",
+      "Legacy Gmail sign-in offers Review Gmail API migration. It opens the matching Accounts review without starting migration; a changed or removed mailbox cancels the shortcut safely.",
+      "Personal Google Desktop client import is an optional Advanced setting. The bundled client remains the default when present unless explicitly overridden.",
+      "Google grants stay bound to the Desktop client that issued them. Older unknown-client grants need one-time Gmail and separate Calendar reauthorization; cached mail and drafts stay.",
+      "Enabling Out of Office or reconnecting Gmail preserves a usable current-client Calendar grant instead of replacing it with stale credentials.",
+      "Mail and conversation views reuse downloaded content and batch updates during reading and sync. Account changes and newer results invalidate stale work without deleting cached mail or drafts.",
+    ],
     "0.3.2": [
       "Settings → AI data permission can again show status, review Allow and Revoke instead of failing with Unsupported channel.",
       "Save a ready API or ChatGPT connection, review its destination/model/account and explicitly choose manual AI use. Background use stays a separate optional choice.",
