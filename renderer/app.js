@@ -10126,21 +10126,31 @@ async function connectOAuth(provider) {
 async function reviewConnectGmailMigration() {
   if (state.oauthPending || state.connectPending || $("connect-gmail-migration").hidden) return;
   const accountId = connectGmailMigrationAccountId;
+  const accountEmail = state.accounts.find(row => row.id === accountId)?.email;
+  const targetAvailable = selected => {
+    const account = state.accounts.find(row => row.id === accountId);
+    return account?.email === accountEmail && account?.authKind === "oauth2"
+      && (account.imapSmtpProfile || account.profile) === "gmail" && (!selected || settingsAccount()?.id === accountId);
+  };
+  const cancelReview = () => {
+    paintSettingsMailbox();
+    revealSettingsFold("mailbox");
+    $("account-permissions").open = false;
+    $("settings-account").focus();
+    showStatus("That Gmail connection changed or was removed. Migration review was cancelled. Select the intended mailbox in Accounts to start again.", true);
+  };
   await closeDialog("connect");
   openSettings();
   if (accountId) {
-    const account = state.accounts.find(row => row.id === accountId);
-    if (!account || account.authKind !== "oauth2" || (account.imapSmtpProfile || account.profile) !== "gmail") {
-      revealSettingsFold("mailbox");
-      showStatus("That Gmail connection changed or was removed. Select the mailbox in Accounts to review its current connection.", true);
-      return;
-    }
+    if (!targetAvailable(false)) { cancelReview(); return; }
     if (settingsAccount()?.id !== accountId && !(await changeSettingsMailbox(accountId))) return;
+    if (!targetAvailable(true)) { cancelReview(); return; }
   }
   paintSettingsMailbox();
   revealSettingsFold("mailbox");
   $("account-permissions").open = true;
   await loadSettingsFold("mailbox");
+  if (accountId && !targetAvailable(true)) { cancelReview(); return; }
   if (accountId && !$("settings-gmail-migrate").hidden) $("settings-gmail-migrate").focus();
   else {
     $("settings-account").focus();

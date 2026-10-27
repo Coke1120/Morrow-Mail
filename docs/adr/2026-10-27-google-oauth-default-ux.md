@@ -24,6 +24,11 @@ change credentials as part of that navigation. Account removal/replacement and
 unsaved Settings edits retain their existing protections. A connection without a
 pinned mailbox asks the user to select one in Accounts.
 
+Revalidate the pinned mailbox id, address and login type after asynchronous
+Settings mailbox changes and permission loads. Removal during an unsaved-edit
+confirmation cancels the shortcut with a warning; it must not focus the fallback
+mailbox's migration control.
+
 Synthetic tests exercise the actual renderer and DOM events, required password
 validation, repeated connection entrypoints, the host migration-error envelope,
 the review-only handoff and the existing confirmation before migration. Features

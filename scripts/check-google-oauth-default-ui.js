@@ -160,6 +160,43 @@ test("unpinned migration error asks for mailbox selection and closing/reopening 
   assert.equal(f.calls.some(row => row.channel === "mail:migrateGmail"), false);
 });
 
+test("removing the pinned Gmail during discard confirmation or permission loading cancels review instead of focusing another mailbox", async t => {
+  for (const phase of ["confirmation", "permissions"]) {
+    const f = fixture(t, { failure: { code: "gmail_migration_required", message: migrationMessage } });
+    f.ui.run(`state.accounts=[fixtures.gmail, {...fixtures.gmail,id:'gmail-b',email:'other@example.invalid',mailTransport:'gmail_api'}];
+      state.accountId='gmail-b'; state.settingsAccountId='gmail-b'; openSettings();`);
+    await settle();
+    if (phase === "confirmation") {
+      f.ui.run("oooBaseline=oooSnapshot()"); f.get("ooo-subject").value = "Unsaved synthetic edit";
+      assert.equal(f.ui.run("oooDirty()"), true);
+    }
+    f.ui.run("openConnectFor(fixtures.gmail)"); f.get("oauth-google").click(); await settle();
+    let release, entered;
+    if (phase === "permissions") {
+      const original = f.ui.context.window.morrow.invoke;
+      const held = new Promise(resolve => { release = resolve; });
+      entered = new Promise(resolve => {
+        let intercepted = false;
+        f.ui.context.window.morrow.invoke = async (channel, input) => {
+          if (channel === "mail:oauthStatus" && !intercepted) { intercepted = true; resolve(); await held; }
+          return original(channel, input);
+        };
+      });
+    }
+    f.get("connect-gmail-migration").click();
+    if (phase === "confirmation") { await settle(); assert.equal(f.get("confirm").open, true); }
+    else await entered;
+    f.ui.run("state.accounts=state.accounts.filter(row=>row.id!=='gmail')");
+    if (phase === "confirmation") f.get("confirm-ok").click(); else release();
+    await settle();
+    assert.equal(f.ui.run("settingsAccount().id"), "gmail-b");
+    assert.equal(f.get("account-permissions").open, false);
+    assert.equal(f.document.activeElement, f.get("settings-account"));
+    assert.match(f.get("status").textContent, /Migration review was cancelled/);
+    assert.equal(f.calls.some(row => row.channel === "mail:migrateGmail"), false);
+  }
+});
+
 test("other OAuth errors retain their message without migration action or automatic password request", async t => {
   const f = fixture(t, { failure: { code: "oauth", message: "Synthetic Google approval declined" } });
   f.ui.run("openConnectFor(fixtures.gmail)"); f.get("oauth-google").click(); await settle();
