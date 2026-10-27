@@ -61,6 +61,17 @@ Google OAuth mail uses Gmail API with gmail.modify + gmail.settings.basic; Calen
 
 Settings → Out of Office is a reviewed provider write. Gmail uses `gmail.settings.basic` and Microsoft uses `MailboxSettings.ReadWrite`, covered by the provider bundle or an existing legacy token. Do not replace the mailbox secret after partial consent. IMAP may install only the ManageSieve script `morrow-vacation` on port 4190 after STARTTLS. Do not send local automatic replies or replace another active script.
 
+## Mail credential reads
+
+Use the `secrets` facade for mutations so pending reads and opaque revisions are
+invalidated. Routine mail reads use `getPasswordAsync`; recheck account incarnation,
+login/transport, revision and Google client binding after awaits and before token
+use/storage. Share only in-flight reads, never completed credential values. Do not
+replace synchronous credential/SQLite commit-compensation blocks with awaits
+without a separate serialized mutation design and race tests. Compatibility macOS
+commands keep their explicit deadline. Tests must mock child processes and never
+access a real Keychain. See `docs/adr/2026-10-27-keychain-read-deadlines.md`.
+
 ## AI data permission bridge
 
 Settings uses the first-party renderer preload; AI Setup has its own preload.
@@ -78,3 +89,14 @@ Sender display names are Morrow-only preferences keyed by account id and exact n
 Draft hydration must use the separate bare `fromAddress`, never reparse recipient-visible preview text. Provider parsing persists that address independently of display names. Equivalent legacy sender metadata must not invalidate queued draft cleanup proofs; genuine name/content edits must still protect newer work.
 
 Historical provider caches contain decoded `name <address>` display text, including unquoted punctuation, rather than an RFC From header. Recognize equivalent metadata only by the full historical representation plus a validated separate address, or a valid parsed header. Test the production provider formatter/parser path; manually quoted fixture headers alone miss this compatibility case.
+
+## Startup search repair
+
+Search rebuilds commit bounded batches and yield with no open SQL transaction.
+Keep mail data admission closed until index verification; never carry internal
+database admission across an await or invoke UI observers inside it. Progress and
+cursor updates must follow durable commits. Preserve the building/version marker,
+restart recovery and all three consistency tables. Do not drop tables, skip repair
+or weaken journal/fsync. Tests must cover abort/close, concurrent access, journal
+failure and process exit using synthetic stores. See
+`docs/adr/2026-10-27-cooperative-search-index.md`.
