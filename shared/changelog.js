@@ -7,6 +7,13 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.5": [
+      "Settings → AI data permission names why Allow stays unavailable: a missing saved API key or model, or a ChatGPT connection, plan step, or model that is not ready. The Allow tooltip uses that reason while the saved connection is not ready. Saving a key or signing in is still not consent.",
+      "Unsaved connection edits, a save in progress, and a pending permission read keep Allow unavailable and say why. Save & review connection saves without granting permission. Choose permission after reviewing the saved destination.",
+      "Reopening Settings keeps unsaved connection edits and asks for a fresh permission choice. The material disclosure stays visible; secondary detail is in an accordion. Explicit AI actions and background use stay separate choices. A changed destination, model, or account still needs a new review. Revoke stops queued and active requests; data already delivered cannot be recalled.",
+      "Gmail sync and body downloads space reads for each mailbox after full message gets, leaving headroom under Google's per-user quota. A folder pass still fetches at most 20 messages. Writes and sends are not delayed or retried.",
+      "Quota pauses still honor Retry-After, capped at 15 minutes. The first two pauses stay 30 seconds when Google does not say how long; later pauses grow from 2 minutes up to 15 minutes. That spacing is per mailbox in this app. It is not shared across accounts or machines, and Morrow does not show remaining quota.",
+    ],
     "0.3.4": [
       "Gmail sync failures after Google login name an allowlisted category when Google supplies evidence: quota or rate limit, missing permission, a disabled API, domain policy, or unknown. Raw provider bodies, URLs, tokens and mail content stay out of these messages.",
       "Gmail sync Debug records omit the mailbox address, folder name and folder id. The mail UI and sync activity still show that mailbox and folder.",

@@ -14239,24 +14239,30 @@ function loadSettingsFold(name) {
   if (!fold) return Promise.resolve();
   const panel = fold.querySelector(".fold-panel");
   const pending = new Promise(resolve => afterPaint(resolve)).then(async () => {
-    if (!$("settings").open || !fold.classList.contains("is-open") || key !== settingsFoldKey(name)) return;
+    if (settingsFoldPending.get(key) !== pending || !$("settings").open || !fold.classList.contains("is-open") || key !== settingsFoldKey(name)) return;
     panel.inert = true;
     panel.setAttribute("aria-busy", "true");
     setSettingsFoldLoading(fold, settingsFoldLoadingLabels[name] || "Loading…");
     if (name === "prefs" || name === "mail") await loadSettings();
-    else if (name === "ai") { await loadSettings(); if (!aiDirty()) await loadAiSettings(); }
+    else if (name === "ai") {
+      await loadSettings();
+      if (settingsFoldPending.get(key) !== pending || !$("settings").open) return;
+      if (aiDirty()) await resumeAiSettings();
+      else await loadAiSettings();
+    }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); await loadGoogleOauthClient(); }
     else if (name === "compose") await loadComposeSettings();
     else if (name === "ooo" && !oooDirty()) await loadVacation();
     else if (name === "bot") await loadBotAccess();
-    settingsFoldLoaded.add(key);
+    if (settingsFoldPending.get(key) === pending) settingsFoldLoaded.add(key);
   }).catch(error => {
-    if (key !== settingsFoldKey(name)) return;
+    if (settingsFoldPending.get(key) !== pending || key !== settingsFoldKey(name)) return;
     const message = error instanceof Error ? error.message : String(error);
     if (name === "ooo") setOooStatus(message, true);
     else if (name === "bot") setBotStatus(message, true);
     else { $("settings-status").textContent = message; $("settings-status").classList.add("error"); }
   }).finally(() => {
+    if (settingsFoldPending.get(key) !== pending) return;
     settingsFoldPending.delete(key);
     const pendingForFold = [...settingsFoldPending.keys()].some(other => other.startsWith(name + ":"));
     if (!pendingForFold) {
@@ -14515,7 +14521,10 @@ function mountChatgptSettings() {
   const container = $("ai-account-settings");
   if (!chatgptSettings && container && window.morrowChatgptSettings) {
     chatgptSettings = window.morrowChatgptSettings.mount({
-      container, invoke: (channel, input) => api.invoke(channel, input), onChange: paintAiDirty,
+      container, consentContainer: $("ai-data-settings") || container,
+      invoke: (channel, input) => api.invoke(channel, input), onChange: paintAiDirty,
+      onSave: saveAiSettings,
+      onReviewConnection: () => $("ai-base").focus(),
       onContext: () => { aiOperation++; setAiStatus("", false); },
       onMode: (chatgpt) => {
         for (const id of ["ai-api-base-field", "ai-api-model-field", "ai-api-key-field"]) if ($(id)) $(id).hidden = chatgpt;
@@ -14546,10 +14555,30 @@ function paintAiDirty(preserveStatus = false) {
   const note = $("ai-dirty");
   if (!note) return;
   const dirty = aiDirty();
+  chatgptSettings?.setConnectionState({ dirty, saving: aiSaveBusy });
   note.hidden = !dirty;
   note.textContent = dirty ? "Unsaved changes. Save AI to apply them." : "";
   const status = $("ai-status")?.textContent || "";
   if ((dirty && status === "Saved.") || (preserveStatus !== true && status.startsWith("Connected."))) setAiStatus("", false);
+}
+
+function closeAiSettings() {
+  aiViewRevision++;
+  aiOperation++;
+  chatgptSettings?.dispose();
+  // A new dialog session must not join a closed session's pending fold read.
+  const key = settingsFoldKey("ai");
+  settingsFoldLoaded.delete(key);
+  settingsFoldPending.delete(key);
+}
+
+async function resumeAiSettings() {
+  const view = ++aiViewRevision;
+  aiOperation++;
+  const accountSettings = mountChatgptSettings();
+  paintAiDirty(true);
+  if (accountSettings) await accountSettings.resume();
+  if (view === aiViewRevision) paintAiDirty(true);
 }
 
 function clearAiModelChoices() {
@@ -14622,11 +14651,12 @@ async function loadAiSettings() {
     $("ai-base").value = cfg && cfg.baseUrl ? cfg.baseUrl : "";
     $("ai-model").value = cfg && cfg.model ? cfg.model : "";
     $("ai-key").placeholder = aiKeyPlaceholder(cfg);
+    // A later account/permission reply must not replace a newer Save baseline.
+    updateAiBaseline = JSON.stringify([cfg?.baseUrl || "", cfg?.model || ""]);
+    aiBaseline = aiFormState(cfg || {});
     const accountSettings = mountChatgptSettings();
     if (accountSettings) await accountSettings.load(cfg || {});
     if (view !== aiViewRevision) return;
-    updateAiBaseline = JSON.stringify([$("ai-base").value, $("ai-model").value]);
-    aiBaseline = aiFormState();
     paintAiDirty();
   } catch (error) {
     if (view === aiViewRevision) setAiStatus(error instanceof Error ? error.message : String(error), true);
@@ -14639,6 +14669,7 @@ async function saveAiSettings() {
   const operation = ++aiOperation;
   const view = aiViewRevision;
   aiSaveBusy = true;
+  chatgptSettings?.setConnectionState({ dirty: aiDirty(), saving: true });
   $("ai-save").disabled = true;
   setAiStatus("Saving…", false);
   try {
@@ -14660,6 +14691,7 @@ async function saveAiSettings() {
   } finally {
     aiSaveBusy = false;
     $("ai-save").disabled = false;
+    paintAiDirty(true);
   }
 }
 
@@ -20900,9 +20932,7 @@ function wire() {
     guardOoo(() => saveVacation("disable"));
   });
   $("settings").addEventListener("close", () => {
-    aiViewRevision++;
-    aiOperation++;
-    if (chatgptSettings) chatgptSettings.dispose();
+    closeAiSettings();
     clearBotSecret();
     loadShellPrefs().then(() => {
       paintPrefs();

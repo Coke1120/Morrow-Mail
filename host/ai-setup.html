@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <title>AI Setup — Morrow Mail</title>
+    <link rel="stylesheet" href="../renderer/ai-consent.css" />
     <style>
       body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, sans-serif; background: #e7f0e4; color: #102822; }
       main { max-width: 520px; margin: 28px auto; padding: 0 20px 32px; }
@@ -40,8 +41,12 @@
         <button class="ghost" id="fetch" type="button">Fetch models</button>
         <button class="ghost" id="test" type="button">Test connection</button>
       </div>
-      <p class="hint">Save applies the submitted settings; edits made while saving remain unsaved. Test connection sends a short AI request after AI data permission and uses the selected provider's usage. Results from older tests or changed settings are ignored. Save and approve a changed destination/model before testing it. Fetch models sends credentials to read the catalog, without mail context. API settings remain saved when choosing ChatGPT.</p>
+      <p class="hint">Fetch models reads the catalog using your credentials, without mail context. Test sends a short AI request after permission and uses provider usage.</p>
       <div id="status"></div>
+      <div id="ai-data-settings"></div>
+      <details id="ai-connection-details" class="ai-consent-details"><summary>Connection details</summary>
+        <p class="hint">Save applies the submitted settings; edits made while saving remain unsaved. Test connection sends a short AI request after AI data permission and uses the selected provider's usage. Results from older tests or changed settings are ignored. Save and approve a changed destination/model before testing it. Fetch models sends credentials to read the catalog, without mail context. API settings remain saved when choosing ChatGPT.</p>
+      </details>
     </main>
     <script src="../renderer/chatgpt-settings.js"></script>
     <script src="./ai-setup.js"></script>
