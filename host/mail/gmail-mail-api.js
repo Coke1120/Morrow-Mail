@@ -1,5 +1,6 @@
 // Gmail API transport. All ordinary deletion uses Trash; no permanent-delete API.
 const { gmailError } = require("./gmail-error");
+const gmailPace = require("./gmail-pace");
 const provider = require("./provider-api");
 const ROOT = "https://gmail.googleapis.com/gmail/v1/users/me";
 const MAIL_SCOPES = "openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic";
@@ -37,7 +38,7 @@ function page(value, key) {
   return { ...value, [key]: value[key] || [], nextPageToken };
 }
 
-function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...args), check = () => {}, signal } = {}) {
+function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...args), check = () => {}, signal, accountKey } = {}) {
   if (typeof accessToken !== "function") throw invalid("A Gmail access-token supplier is required.");
   function alive() { signal?.throwIfAborted(); check(); }
   async function token() {
@@ -50,6 +51,14 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
   async function request(path, { operation, method = "GET", body, query, signal: readSignal } = {}) {
     alive();
     readSignal?.throwIfAborted();
+    if (method === "GET") {
+      const wait = gmailPace.reserve(accountKey, gmailPace.readUnits(operation, query));
+      if (wait) {
+        await gmailPace.sleep(wait);
+        alive();
+        readSignal?.throwIfAborted();
+      }
+    }
     const url = new URL(`${ROOT}${path}`);
     for (const [name, value] of Object.entries(query || {})) {
       for (const item of Array.isArray(value) ? value : [value]) if (item !== undefined && item !== "") url.searchParams.append(name, String(item));

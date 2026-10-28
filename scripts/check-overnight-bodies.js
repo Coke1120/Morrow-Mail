@@ -279,6 +279,9 @@ async function checkEngine() {
     const paused = await engine.fillOvernightBodies();
     assert.equal(paused.fetched, 0);
     assert.deepEqual(events, [30], "a paused account is not fetched again on the next pass");
+    engine.answer("mail:listFromCache", [{ accountId: "night-rate", folderId: "INBOX", limit: 50 }]);
+    for (let i = 0; i < 5; i += 1) await tick();
+    assert.deepEqual(events, [30], "visible prefetch waits out a rate pause");
     engine.syncGates.delete("night-rate");
 
     remote.fetchSource = async (_client, _folder, uid) => {

@@ -21,6 +21,7 @@ const oauthConfig = require("./oauth-config");
 const sidecar = require("./sidecar");
 const inboxRules = require("./inbox-rules");
 const http = require("./provider-http");
+const gmailPace = require("./gmail-pace");
 const providerApi = require("./provider-api");
 const idle = require("./idle");
 const overnight = require("./overnight");
@@ -58,8 +59,8 @@ const REFRESH_PAGES = [20, 30, 30];
 const PAGE_DELAY_MS = 200;
 const MAX_PAGES = 50;
 const TICK_MS = 25000;
-const RATE_LIMIT_MS = 30000;
-const STORM_MS = 15 * 60 * 1000;
+const RATE_LIMIT_MS = http.RATE_LIMIT_PAUSE_MS;
+const STORM_MS = http.RATE_LIMIT_CAP_MS;
 const POLL_MS = 45000;
 // Due mail is sent on this interval while the process is running.
 // A sendAt that passes while the app is closed is sent the next time the app is open.
@@ -732,7 +733,7 @@ function noteRateLimit(accountId, error) {
   const row = syncGates.get(accountId) || { until: 0, strikes: 0 };
   row.strikes += 1;
   const hinted = http.retryAfterMs(error);
-  const wait = row.strikes >= 3 ? STORM_MS : (hinted == null ? RATE_LIMIT_MS : hinted);
+  const wait = http.quotaPauseMs(row.strikes, hinted);
   row.until = Date.now() + wait;
   row.message = gmailDiagnosticMessage(error);
   syncGates.set(accountId, row);
@@ -1016,7 +1017,9 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
   try {
     const folder = db.folderByPath(account.id, folderPath);
     if (client.gmail) {
-      const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: batchSize(account) });
+      // IMAP still uses HEADER_BATCH. A Gmail page of 100 full reads is the
+      // whole per-user minute, so this pass stays on the smaller paced page.
+      const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: gmailPace.SYNC_PAGE });
       assertAccountCurrent(account);
       clearStrikes(account.id);
       emitFolderSync(account.id, folderPath, result.bootstrapped);
@@ -1801,6 +1804,7 @@ async function removeAccount(params) {
   const lane = lanes.get(id);
   if (lane && !lane.active && !lane.user.length && !lane.background.length) lanes.delete(id);
   syncRetryScheduler.clear(id);
+  gmailPace.reset(id);
   db.removeAccount(id);
   emitAccounts();
   if (idleController) {
@@ -2082,6 +2086,7 @@ async function pumpBodyFills() {
         continue;
       }
       if (priorityWaiting(row.account_id)) return;
+      if (item.kind !== "open" && !gateOpen(row.account_id)) return;
       const outcome = { skipped: false };
       fillQueue.shift();
       await fillBodyInBackground(row, outcome, item.kind === "open" ? "open" : "visible");
@@ -2095,7 +2100,8 @@ async function pumpBodyFills() {
     bodyProgress.changed();
     const next = fillQueue[0];
     const pending = next && db.messageById(next.id);
-    if (next && (!pending || !priorityWaiting(pending.account_id))) pumpBodyFills();
+    const held = next && next.kind !== "open" && !gateOpen(next.accountId);
+    if (!held && next && (!pending || !priorityWaiting(pending.account_id))) pumpBodyFills();
   }
 }
 
@@ -4255,6 +4261,8 @@ module.exports = {
     tickMs: TICK_MS,
     rateLimitMs: RATE_LIMIT_MS,
     stormMs: STORM_MS,
+    gmailSyncPage: gmailPace.SYNC_PAGE,
+    gmailReadUnitsPerMin: gmailPace.READ_UNITS_PER_MIN,
     pollMs: POLL_MS,
     syncRetryDelaysMs: syncRetry.SYNC_RETRY_DELAYS_MS.slice(),
     vacationRetryDelaysMs: syncRetry.OOO_RETRY_DELAYS_MS.slice(),

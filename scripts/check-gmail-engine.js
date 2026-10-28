@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 async function run() {
+  process.env.MORROW_GMAIL_PACE = "0";
   try { require.resolve('better-sqlite3'); require.resolve('nodemailer'); }
   catch (error) { if (process.env.CI) throw error; console.log('gmail-engine-not-run: installed native/parser/MIME dependencies required; existing CI runs this fixture'); return; }
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'morrow-gmail-engine-'));
@@ -82,6 +83,9 @@ async function run() {
     assert.equal(secrets.getPassword('gmail:calendar'),original,'legacy Calendar stays separate and is truthfully broad');
     assert.equal(db.messageById('cached').text_body,'Retained body');
     await engine.syncAccountById('gmail',{background:false});
+    const lists = service.calls.filter(call => call.route === "/messages" && call.method === "GET");
+    assert.ok(lists.length > 0);
+    assert.ok(lists.every(call => Number(call.query.get("maxResults")) <= 20), lists.map(call => call.query.get("maxResults")).join(","));
     assert.equal(db.messageById('cached').gmail_id,'incoming',JSON.stringify({folders:db.foldersFor('gmail'),calls:service.calls.map(({route,method,query})=>({route,method,query:String(query)}))}));
     assert.equal(db.folderByPath('gmail','Old cached label').provider_id,null,'unbound legacy folders stay local without blocking sync');
     assert.equal(db.messageById('legacy-files').text_body,'Retained attachment body');
