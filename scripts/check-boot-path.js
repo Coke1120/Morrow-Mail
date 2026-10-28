@@ -138,7 +138,11 @@ for (const file of syntax) {
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
 for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-keychain-reads.js"]) {
-  const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout: 30000 });
+  // Forty reviewed-flow cases include durable SQLite commits and restarts;
+  // allow their full assertions to finish on the Windows runner's filesystem.
+  const timeout = name === "check-reviewed-mail-flows.js" ? 90000 : 30000;
+  const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout });
+  assert.ifError(fixture.error);
   assert.strictEqual(fixture.status, 0, name + " failed");
 }
 
