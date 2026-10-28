@@ -20,7 +20,7 @@ First-party `renderer/` chrome for the three-pane mail shell. Layout follows the
 
 ## Matched
 
-- Mail's list header includes a compact Bodies disclosure alongside existing coverage/status text. It reports full-body activity across mailboxes separately from the Sync button's folder/list status. Native details/summary keyboard behavior and focus remain intact; updates change text without moving focus or expanding the disclosure. The view uses no percentages, new motion or modal alerts. Details describe the existing 00:00–07:00 local slow fill and its limits; download scheduling is unchanged.
+- Hover and keyboard focus on Sync show a Bodies tooltip: full-body activity across mailboxes, with the folder/list sync sentence above it. Updates change that text without moving focus. The view uses no percentages, new motion or modal alerts. The tooltip describes the existing 00:00–07:00 local slow fill and its limits; download scheduling is unchanged.
 
 - Settings → Compose configures local CC and BCC lists by domain, mailbox aliases and optional alias-to-domain mappings, preferred From, and a new-mail fallback CC domain. The fallback selects only the CC list. BCC and signatures use the alias domain when the alias sets one, and otherwise the host of From. Compose has a From picker. Reply, Reply All, and Forward select an owned received alias before primary Gmail delivery hops. CC and BCC seed on open and on From changes until you edit that field. The two fields lock separately. Resumed drafts retain From and the saved recipients, including empty CC and empty BCC. Save, send, and schedule carry the selected From. See [BRAIN_AGENT.md](BRAIN_AGENT.md#compose-defaults-and-aliases) for recipient precedence and provider limits.
 

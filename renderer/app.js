@@ -5571,8 +5571,14 @@ function bodySyncView(snapshot, accounts, unavailable = false) {
 function paintBodySyncStatus() {
   const root = $("body-sync"), label = $("body-sync-label"), list = $("body-sync-accounts");
   if (!root || !label || !list) return;
-  root.hidden = state.view !== "mail" || !state.accounts.length;
-  if (root.hidden) return;
+  const show = state.view === "mail" && state.accounts.length > 0;
+  root.hidden = !show;
+  const button = $("refresh");
+  if (button && typeof button.setAttribute === "function") {
+    if (show) button.setAttribute("aria-describedby", "body-sync");
+    else if (typeof button.removeAttribute === "function") button.removeAttribute("aria-describedby");
+  }
+  if (!show) return;
   const view = bodySyncView(state.bodySync, state.accounts, state.bodySyncUnavailable);
   if (label.textContent !== view.label) label.textContent = view.label;
   root.setAttribute?.("data-state", view.state);
@@ -5631,11 +5637,31 @@ function paintSyncControl() {
   if (label) label.textContent = word;
   if (button) {
     const busy = mail && !state.outbox && !!(sync && sync.state === "syncing");
+    const nativeTip = !state.accounts.length && mail ? "Connect an account to sync mail." : text;
     button.disabled = mail && (!state.accounts.length || busy);
     button.classList.toggle("is-syncing", busy);
     button.setAttribute("aria-busy", busy ? "true" : "false");
     button.setAttribute("aria-label", `${word}. ${text}`);
-    button.title = !state.accounts.length && mail ? "Connect an account to sync mail." : text;
+    const line = $("sync-tip-line");
+    if (line) line.textContent = nativeTip;
+    if (button.dataset) button.dataset.syncTitle = nativeTip;
+    const bodies = $("body-sync");
+    const bodiesOpen = !!(bodies && !bodies.hidden);
+    const hot = bodiesOpen && typeof button.matches === "function" && button.matches(":hover, :focus");
+    if (hot && typeof button.removeAttribute === "function") button.removeAttribute("title");
+    else button.title = nativeTip;
+    if (button.dataset && typeof button.addEventListener === "function" && !button.dataset.bodiesTip) {
+      button.dataset.bodiesTip = "1";
+      const hideNative = () => {
+        const open = $("body-sync");
+        if (open && !open.hidden && typeof button.removeAttribute === "function") button.removeAttribute("title");
+      };
+      const showNative = () => { if (button.dataset.syncTitle) button.title = button.dataset.syncTitle; };
+      button.addEventListener("pointerenter", hideNative);
+      button.addEventListener("focus", hideNative);
+      button.addEventListener("pointerleave", showNative);
+      button.addEventListener("blur", showNative);
+    }
   }
   if (detail) {
     const active = mail && ["syncing", "error", "paused"].includes(sync?.state);
