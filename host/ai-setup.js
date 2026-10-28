@@ -6,7 +6,11 @@ const bridge = window.aiSetup;
 let operation = 0;
 let viewRevision = 0;
 let saveBusy = false;
-const changed = () => { statusNode.textContent = "Unsaved changes. Save to apply them."; };
+let savedBaseline = "";
+const changed = () => {
+  statusNode.textContent = "Unsaved changes. Save to apply them.";
+  syncConnectionState();
+};
 const authActions = {
   "host:chatgptStatus": bridge.chatgptStatus, "host:chatgptStart": bridge.chatgptStart,
   "host:chatgptCallback": bridge.chatgptCallback, "host:chatgptCancel": bridge.chatgptCancel,
@@ -17,14 +21,20 @@ const authActions = {
 };
 const accountSettings = window.morrowChatgptSettings.mount({
   container: document.getElementById("ai-account-settings"),
+  consentContainer: document.getElementById("ai-data-settings"),
   invoke: (channel, input) => authActions[channel](input),
   onChange: changed,
+  onSave: saveConnection,
+  onReviewConnection: () => baseUrl.focus(),
   onContext: () => { operation++; statusNode.textContent = ""; },
   onMode: chatgpt => { document.getElementById("api-fields").hidden = chatgpt; },
 });
 const draft = () => ({ baseUrl: baseUrl.value, model: model.value, apiKey: apiKey.value, ...accountSettings.draft() });
 const formState = input => JSON.stringify([String(input.baseUrl || "").trim(), String(input.model || "").trim(), !!input.apiKey,
   input.authMode || "api_key", String(input.chatgptModel || "").trim()]);
+function syncConnectionState() {
+  accountSettings.setConnectionState({ dirty: !!savedBaseline && formState(draft()) !== savedBaseline, saving: saveBusy });
+}
 const current = (owner, view, input, context) => owner === operation && view === viewRevision
   && JSON.stringify(input) === JSON.stringify(draft()) && context === accountSettings.context();
 function keyHint(config) { apiKey.placeholder = config.hasKey ? `Saved ${config.keyHint}. Leave blank to keep it.` : "sk-…"; }
@@ -36,7 +46,11 @@ async function load() {
     baseUrl.value = config.baseUrl || "";
     model.value = config.model || "";
     keyHint(config);
+    // Establish the saved snapshot before reads that can outlive a newer Save.
+    savedBaseline = formState(config);
     await accountSettings.load(config);
+    if (view !== viewRevision) return;
+    syncConnectionState();
   } catch (error) {
     if (view === viewRevision) statusNode.textContent = error.message || "AI setup failed.";
   }
@@ -46,10 +60,11 @@ for (const field of [baseUrl, model, apiKey]) {
   field.addEventListener("input", changed);
   field.addEventListener("change", changed);
 }
-document.getElementById("save").onclick = async () => {
+async function saveConnection() {
   if (saveBusy) return;
   const input = draft(), owner = ++operation, view = viewRevision;
   saveBusy = true;
+  syncConnectionState();
   document.getElementById("save").disabled = true;
   statusNode.textContent = "Saving…";
   try {
@@ -59,6 +74,7 @@ document.getElementById("save").onclick = async () => {
     if (baseUrl.value === input.baseUrl) baseUrl.value = saved.baseUrl;
     if (model.value === input.model) model.value = saved.model;
     keyHint(saved);
+    savedBaseline = formState(saved);
     accountSettings.refreshConsent();
     if (owner === operation) statusNode.textContent = formState(draft()) === formState(saved)
       ? "Saved." : "Earlier settings saved. Your newer changes are not saved.";
@@ -67,8 +83,10 @@ document.getElementById("save").onclick = async () => {
   } finally {
     saveBusy = false;
     document.getElementById("save").disabled = false;
+    syncConnectionState();
   }
-};
+}
+document.getElementById("save").onclick = saveConnection;
 document.getElementById("fetch").onclick = async () => {
   const input = draft(), owner = ++operation, view = viewRevision, context = accountSettings.context();
   statusNode.textContent = "Fetching models…";

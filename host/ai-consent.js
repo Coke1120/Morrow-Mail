@@ -7,6 +7,10 @@ const VERSION = 1;
 const DISCLOSURE = "AI can send mail sender addresses, subjects, dates, snippets and message metadata; selected message text and quoted history; draft text, signatures, selections and instructions; Brain profile, identity, categories and writing rules; Agent notes and recent conversation; and, for calendar-enabled skills and Agent questions, event titles, times and locations. It uses the context needed for translation, reply suggestions, writing, profile learning, triage, skills and answers. Attachment files are not included by these AI paths. Mail search, cached reading and ordinary mail/calendar operations do not use the AI provider.";
 const BACKGROUND = "Separately allow automatic Brain profile refresh, triage when Agent opens, reply suggestions when a reply composition opens, and saved scheduled skills while Morrow Mail is open. These can send the same relevant context without another AI button press. Opening Brain may refresh a stale profile. With background permission off, use explicit AI actions instead.";
 const unmet = steps => `${steps[0][0].toUpperCase()}${steps[0].slice(1)}${steps.length > 1 ? ` and ${steps.slice(1).join(" and ")}` : ""}, then review this connection again.`;
+// Compact presentation of the same VERSION 1 disclosure, with material scope visible.
+const DATA_SUMMARY = "As needed: mail sender addresses, subjects, dates, snippets and metadata; selected message text and quoted history; drafts, signatures, selections and instructions; Brain profile, identity, categories and writing rules; Agent notes and recent conversation; and calendar event titles, times and locations for calendar skills/questions. Attachment files are excluded.";
+const PURPOSES = "Explicit AI actions: translation, reply suggestions, writing, profile learning, triage, skills and answers.";
+const BACKGROUND_SUMMARY = "Automatic Brain profile refresh (including stale profiles on opening Brain), Agent-open triage, reply suggestions on reply-compose open, and saved scheduled skills while Morrow Mail is open. May send the same relevant context without another AI button press.";
 const error = message => Object.assign(new Error(message), { code: "ai-consent-required" });
 const hash = value => crypto.createHash("sha256").update(value).digest("hex");
 
@@ -69,6 +73,7 @@ function createConsent({ directory = () => require("./ai-config").userDataDir(),
     const { fingerprint, ...destination } = selected;
     return { ...destination, token, version: VERSION, manual, background: manual && record.background === true,
       disclosure: DISCLOSURE, backgroundDisclosure: BACKGROUND,
+      dataSummary: DATA_SUMMARY, purposes: PURPOSES, backgroundSummary: BACKGROUND_SUMMARY,
       locality: selected.local ? "This endpoint is a service on this computer. It receives AI context and may forward it according to its own configuration; Morrow cannot verify that it stays local."
         : "Remote AI: context leaves this computer and goes directly to the selected destination. The mail cache and ordinary local operations remain on this computer.",
       providerTerms: "Provider retention and training depend on its service, settings and your agreement. Morrow does not verify those terms. ChatGPT requests set store: false; this is not a guarantee of no retention or training.",

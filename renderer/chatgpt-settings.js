@@ -3,7 +3,7 @@
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory;
   else root.morrowChatgptSettings = { mount: factory };
-})(typeof window === "object" ? window : globalThis, function mount({ container, invoke, onChange = () => {}, onMode = () => {}, onContext = () => {} }) {
+})(typeof window === "object" ? window : globalThis, function mount({ container, consentContainer = container, invoke, onChange = () => {}, onMode = () => {}, onContext = () => {}, onSave = () => {}, onReviewConnection = () => {} }) {
   container.innerHTML = `
     <label for="ai-auth-mode">AI authentication</label>
     <select id="ai-auth-mode"><option value="api_key">API key / custom endpoint</option><option value="chatgpt">ChatGPT account</option></select>
@@ -39,27 +39,42 @@
         <p>Eligible AI requests use your ChatGPT plan. Manage usage and app access in ChatGPT settings.</p>
         <button id="chatgpt-got-it" type="button" class="primary">Got it</button>
       </dialog>
-    </section>
-    <section aria-label="AI data permission">
-      <h3>AI data permission</h3>
-      <p class="hint">Existing connections start with AI data use off until you approve this disclosure. Saving an API key, fetching models or signing in does not approve it. Save your provider and model first; the permission applies to the saved connection shown here.</p>
-      <p id="ai-consent-destination"></p>
+    </section>`;
+  const consentMarkup = `
+    <section class="ai-consent" aria-labelledby="ai-consent-title">
+      <h3 id="ai-consent-title">AI data permission</h3>
+      <p class="hint">Save connection → Review destination → Choose permission. Saving or signing in does not allow AI data use.</p>
+      <p id="ai-consent-destination" class="ai-consent-target"></p>
       <p id="ai-consent-locality" class="hint"></p>
-      <p id="ai-consent-data" class="hint"></p>
+      <p id="ai-consent-data"></p>
       <p id="ai-consent-terms" class="hint"></p>
-      <p class="hint">Your explicit AI actions may send relevant context after you allow them. Background processing requires the separate choice below. A provider, endpoint, model, account or material data-use change requires fresh permission. Revocation stops pending work and future requests; data already delivered cannot be recalled from the provider.</p>
-      <label class="check" for="ai-consent-manual"><input id="ai-consent-manual" type="checkbox" /> I allow the disclosed AI data use for my explicit AI actions at this saved destination.</label>
-      <p id="ai-consent-background-data" class="hint"></p>
-      <label class="check" for="ai-consent-background"><input id="ai-consent-background" type="checkbox" /> I separately allow this background AI data use at the same destination.</label>
-      <div class="row">
-        <button id="ai-consent-allow" type="button" class="primary" disabled>Allow selected AI data use</button>
-        <button id="ai-consent-revoke" type="button" class="ghost">Cancel / revoke AI data permission</button>
-        <button id="ai-consent-refresh" type="button" class="ghost">Review saved connection</button>
+      <div class="ai-consent-choice">
+        <label class="check" for="ai-consent-manual"><input id="ai-consent-manual" type="checkbox" aria-describedby="ai-consent-purposes ai-consent-data ai-consent-destination" /> Allow my explicit AI actions at this saved destination</label>
+        <p id="ai-consent-purposes" class="hint"></p>
+      </div>
+      <div class="ai-consent-choice">
+        <label class="check" for="ai-consent-background"><input id="ai-consent-background" type="checkbox" aria-describedby="ai-consent-background-data" /> Also allow background AI (optional)</label>
+        <p id="ai-consent-background-data" class="hint"></p>
+      </div>
+      <p id="ai-consent-revocation" class="hint">Provider, endpoint, model, account or material data-use changes require fresh permission. Cancel / revoke stops pending and future requests; data already delivered cannot be recalled.</p>
+      <p id="ai-consent-reason" class="ai-consent-reason" role="status" aria-live="polite"></p>
+      <div class="row ai-consent-actions">
+        <button id="ai-consent-allow" type="button" class="primary" aria-describedby="ai-consent-reason" disabled>Allow selected AI data use</button>
+        <button id="ai-consent-connection" type="button" class="ghost">Review connection</button>
+        <button id="ai-consent-revoke" type="button" class="ghost">Cancel / revoke</button>
       </div>
       <p id="ai-consent-status" role="status" aria-live="polite"></p>
-      <p><a href="https://hwl-hk.com/en/morrow-mail/privacy" target="_blank" rel="noreferrer">Morrow Mail privacy policy</a></p>
+      <details class="ai-consent-details">
+        <summary>Full disclosure and privacy details</summary>
+        <p id="ai-consent-full-data" class="hint"></p>
+        <p id="ai-consent-full-background" class="hint"></p>
+        <button id="ai-consent-refresh" type="button" class="ghost">Review saved connection again</button>
+        <p><a href="https://hwl-hk.com/en/morrow-mail/privacy" target="_blank" rel="noreferrer">Morrow Mail privacy policy</a></p>
+      </details>
     </section>`;
-  const $ = id => container.querySelector(`#${id}`);
+  if (consentContainer === container) container.innerHTML += consentMarkup;
+  else consentContainer.innerHTML = consentMarkup;
+  const $ = id => container.querySelector(`#${id}`) || consentContainer.querySelector(`#${id}`);
   let timer;
   let snapshot = {};
   let selectedModel = "";
@@ -72,23 +87,54 @@
   let consentRevision = 0;
   let permission = null;
   let consentBusy = false;
+  let consentLoading = false;
   let consentRefreshPending = false;
+  let connectionDirty = false;
+  let connectionSaving = false;
+  let consentError = "";
+  function clearConsentChoices() {
+    $("ai-consent-manual").checked = false;
+    $("ai-consent-background").checked = false;
+  }
+  function consentReason() {
+    if (disposed) return "Reopen AI settings to review permission.";
+    if (connectionSaving) return "Saving connection. Review the saved destination when it finishes.";
+    if (connectionDirty) return "Unsaved connection changes. Save & review connection before allowing AI data use.";
+    if (consentBusy) return "Updating permission. Cancel / revoke remains available.";
+    if (consentLoading) return "Reading saved connection and permission…";
+    if (consentError) return consentError;
+    if (!permission) return "Review the saved connection to load AI data permission.";
+    if (!permission.ready) return permission.blocker || "Complete and save the AI connection, then review again.";
+    if (!permission.token) return "Review the saved connection again before allowing AI data use.";
+    return $("ai-consent-manual").checked ? "Ready to allow the selected AI data use." : "Select explicit AI actions above to enable Allow. Background AI is optional.";
+  }
   function consentControls() {
-    $("ai-consent-allow").disabled = disposed || consentBusy || !permission?.ready || !$("ai-consent-manual").checked;
+    $("ai-consent-allow").disabled = disposed || consentBusy || consentLoading || connectionSaving || connectionDirty || !permission?.ready || !permission?.token || !$("ai-consent-manual").checked;
     $("ai-consent-allow").title = permission?.ready === false ? (permission.blocker || "Save a ready connection, then review it again.") : "";
-    $("ai-consent-background").disabled = disposed || consentBusy || !$("ai-consent-manual").checked;
+    $("ai-consent-manual").disabled = disposed || consentBusy || consentLoading || connectionSaving;
+    $("ai-consent-background").disabled = $("ai-consent-manual").disabled || !$("ai-consent-manual").checked;
+    $("ai-consent-connection").disabled = disposed || connectionSaving || consentBusy;
+    $("ai-consent-connection").textContent = connectionDirty ? "Save & review connection" : "Review connection";
+    $("ai-consent-reason").textContent = consentReason();
+  }
+  function setConnectionState({ dirty = false, saving = false } = {}) {
+    if (connectionDirty !== dirty || connectionSaving !== saving) clearConsentChoices();
+    connectionDirty = dirty; connectionSaving = saving;
+    consentControls();
   }
   function paintConsent(value) {
     if (permission?.token !== value?.token) {
-      $("ai-consent-manual").checked = false;
-      $("ai-consent-background").checked = false;
+      clearConsentChoices();
     }
     permission = value;
     $("ai-consent-destination").textContent = value?.destination ? `Saved destination: ${value.label} · ${value.destination} · model ${value.model || "not selected"}` : "Save and review an AI connection first.";
     $("ai-consent-locality").textContent = value?.locality || "";
-    $("ai-consent-data").textContent = value?.disclosure || "";
+    $("ai-consent-data").textContent = value?.dataSummary || value?.disclosure || "";
+    $("ai-consent-purposes").textContent = value?.purposes || "";
     $("ai-consent-terms").textContent = value?.providerTerms || "";
-    $("ai-consent-background-data").textContent = value?.backgroundDisclosure || "";
+    $("ai-consent-background-data").textContent = value?.backgroundSummary || value?.backgroundDisclosure || "";
+    $("ai-consent-full-data").textContent = value?.disclosure || "";
+    $("ai-consent-full-background").textContent = value?.backgroundDisclosure || "";
     $("ai-consent-status").textContent = value?.manual
       ? `Explicit AI actions allowed. Background AI ${value.background ? "allowed" : "off"}.`
       : value?.ready === false
@@ -97,16 +143,23 @@
     consentControls();
   }
   async function refreshConsent() {
+    if (disposed) return;
     if (consentBusy) { consentRefreshPending = true; return; }
     const revision = ++consentRevision;
+    consentLoading = true; consentError = ""; consentControls();
     try {
       const result = await invoke("host:aiConsentStatus");
       if (!disposed && revision === consentRevision) paintConsent(result);
     } catch (error) {
       if (!disposed && revision === consentRevision) {
-        permission = null; consentControls();
+        permission = null; clearConsentChoices();
+        consentError = /Unsupported channel/.test(error.message || "")
+          ? "Unsupported channel. Update Morrow Mail, reopen Settings and review permission again."
+          : "Could not read permission. Review the saved connection again.";
         $("ai-consent-status").textContent = error.message || "Could not read AI permission. Review again.";
       }
+    } finally {
+      if (!disposed && revision === consentRevision) { consentLoading = false; consentControls(); }
     }
   }
   $("ai-consent-manual").addEventListener("change", () => {
@@ -114,11 +167,19 @@
     consentControls();
   });
   $("ai-consent-refresh").addEventListener("click", refreshConsent);
+  $("ai-consent-connection").addEventListener("click", async () => {
+    if (disposed || connectionSaving || consentBusy) return;
+    if (connectionDirty) await onSave();
+    else if (consentError || !permission) await refreshConsent();
+    else if ($("ai-auth-mode").value === "chatgpt") {
+      $(snapshot.connected ? (snapshot.planEnabled ? "chatgpt-model" : "chatgpt-enable") : "chatgpt-login").focus();
+    } else onReviewConnection();
+  });
   async function consentAction(allow) {
-    if (disposed || (allow && (consentBusy || !permission?.ready || !$("ai-consent-manual").checked))) return;
+    if (disposed || (allow && (consentBusy || consentLoading || connectionSaving || connectionDirty || !permission?.ready || !permission?.token || !$("ai-consent-manual").checked))) return;
     const revision = ++consentRevision;
     const input = allow ? { token: permission.token, manual: true, background: $("ai-consent-background").checked } : undefined;
-    consentBusy = true; consentControls();
+    consentBusy = true; consentLoading = false; consentError = ""; consentControls();
     $("ai-consent-status").textContent = allow ? "Saving AI data permission…" : "Stopping AI data use…";
     onContext();
     try {
@@ -127,8 +188,8 @@
     } catch (error) {
       if (!disposed && revision === consentRevision) {
         permission = null;
-        $("ai-consent-manual").checked = false;
-        $("ai-consent-background").checked = false;
+        clearConsentChoices();
+        consentError = "Permission was not confirmed. Review the saved connection again.";
         $("ai-consent-status").textContent = error.message || "Could not save AI permission. Review again.";
       }
     } finally {
@@ -285,24 +346,34 @@
   $("chatgpt-resume").addEventListener("click", () => action("host:chatgptResumeUsage"));
   $("chatgpt-got-it").addEventListener("click", () => action("host:chatgptPreferences", { welcomeSeen: true }));
   $("chatgpt-welcome").addEventListener("cancel", () => action("host:chatgptPreferences", { welcomeSeen: true }));
+  async function resume() {
+    disposed = false;
+    consentRevision++; consentBusy = false; consentLoading = false; consentRefreshPending = false;
+    permission = null; consentError = ""; clearConsentChoices(); consentControls();
+    const owner = ++actionRevision; statusRevision++; modelRevision++;
+    busy = false; cancelling = false;
+    clearTimeout(timer);
+    mode();
+    await refresh(owner);
+    if (disposed || owner !== actionRevision) return;
+    await refreshConsent();
+  }
   return {
     async load(config) {
-      disposed = false;
-      actionRevision++; statusRevision++; modelRevision++;
-      busy = false; cancelling = false;
-      clearTimeout(timer);
       $("ai-auth-mode").value = config.authMode || "api_key";
       selectedModel = config.chatgptModel || "";
       const option = document.createElement("option"); option.value = selectedModel; option.textContent = selectedModel || "Fetch models and choose one";
       $("chatgpt-model").replaceChildren(option);
-      mode();
-      await refresh();
-      await refreshConsent();
+      $("chatgpt-model").value = selectedModel;
+      await resume();
     },
+    // Reopen a preserved draft without replacing its authentication/model fields.
+    resume,
     draft: () => ({ authMode: $("ai-auth-mode").value, chatgptModel: $("chatgpt-model").value }),
     context,
     refresh,
     refreshConsent,
+    setConnectionState,
     async fetchModels() {
       const revision = ++modelRevision;
       const accountId = snapshot.activeId;
@@ -315,7 +386,7 @@
     dispose: () => {
       disposed = true;
       actionRevision++; statusRevision++; modelRevision++;
-      consentRevision++; consentBusy = false; permission = null;
+      consentRevision++; consentBusy = false; consentLoading = false; consentRefreshPending = false; permission = null;
       $("ai-consent-manual").checked = false;
       $("ai-consent-background").checked = false;
       consentControls();
