@@ -2100,6 +2100,7 @@ button.inline-link:focus-visible { color: var(--ink); }
 
 #settings-compose-panel { display: flex; flex-direction: column; gap: 12px; }
 #brain-compose-form { display: grid; gap: 8px; padding: 0; }
+#brain-compose-form .settings-disclosure { display: grid; gap: 8px; }
 #brain-compose-form textarea { min-height: 80px; }
 #brain-compose-status.error { color: var(--danger); }
 #brain-compose-senders { display: grid; gap: 10px; }

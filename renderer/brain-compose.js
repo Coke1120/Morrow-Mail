@@ -67,7 +67,7 @@
     container.replaceChildren();
     get("brain-compose-identities").textContent = identities.length
       ? "Names are saved per mailbox and exact From address. Gmail states reflect the last successful lookup."
-      : "Connect a mailbox to configure sender identities.";
+      : "Connect a mailbox to set a display name.";
     const preferred = account ? policy.preferredFrom(account, normalized) : "";
     for (const [index, row] of identities.entries()) {
       const card = document.createElement("section"); card.className = "sender-identity";
@@ -161,6 +161,7 @@
       get("brain-compose-domains").value = domainLines(settings.ccByDomain);
       get("brain-compose-bcc").value = domainLines(settings.bccByDomain);
       paintAccount();
+      revealAdvanced();
       ready = true;
       status("Saved on this computer. No AI key is required.");
     } catch (error) { status(error.message, true); }
@@ -217,5 +218,20 @@
     try { syncAccounts(); }
     catch (error) { status(error.message, true); }
   }
-  window.morrowBrainCompose = { load, wire, parseDomainLines, sync };
+  function advancedHasRules(value) {
+    const cc = value && value.ccByDomain;
+    const bcc = value && value.bccByDomain;
+    if (cc && typeof cc === "object" && Object.keys(cc).length) return true;
+    if (bcc && typeof bcc === "object" && Object.keys(bcc).length) return true;
+    const accounts = value && value.accounts;
+    if (!accounts || typeof accounts !== "object") return false;
+    return Object.values(accounts).some((row) => row && ((row.aliases && row.aliases.length) || String(row.defaultDomain || "").trim()));
+  }
+  function revealAdvanced() {
+    const node = get("brain-compose-advanced");
+    if (!node || node.dataset.ready) return;
+    node.open = advancedHasRules(settings);
+    node.dataset.ready = "1";
+  }
+  window.morrowBrainCompose = { load, wire, parseDomainLines, sync, advancedHasRules };
 })();

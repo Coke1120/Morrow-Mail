@@ -34,7 +34,7 @@
         id: "sender-identities",
         title: "Sender identities",
         category: "Mail",
-        blurb: "Settings → Compose previews each exact From address and its Morrow-only display name. Verified Gmail send-as names are the default; local overrides survive refresh. Clear a name for address-only sending or reset to the default. Drafts and scheduled mail retain the selected name and address, including punctuation and Unicode in names. Bot mail.send uses these defaults. Provider sending permissions still apply; Gmail settings and OAuth scopes stay unchanged. Providers or recipient contacts may affect the delivered display.",
+        blurb: "Settings → Compose previews each exact From address and its Morrow-only display name. Verified Gmail send-as names are the default; local overrides survive refresh. Clear a name for address-only sending or reset to the default. Most people only need a display name. Domain CC/BCC, aliases, and the fallback CC domain stay under Advanced, collapsed until one of those rules is saved. Compose From lists authorized addresses for every connected mailbox; choosing another mailbox sends and saves drafts there. Drafts and scheduled mail retain the selected name and address, including punctuation and Unicode in names. Bot mail.send uses these defaults on the granted account only. Provider sending permissions still apply; Gmail settings and OAuth scopes stay unchanged. Providers or recipient contacts may affect the delivered display.",
       },
       {
         id: "signatures",
