@@ -78,7 +78,7 @@ async function fixture(kind) {
     save: () => native ? $("save").onclick() : run("saveAiSettings()"),
     test: () => native ? $("test").onclick() : run("testAiConnection()"),
     fetch: () => native ? $("fetch").onclick() : run("fetchAiModels()"),
-    dirty: () => native ? /not saved|Unsaved/.test($("status").textContent) : run("aiDirty()"),
+    dirty: () => run(native ? "!!savedBaseline && formState(draft()) !== savedBaseline" : "aiDirty()"),
     settings: () => run(native ? "accountSettings" : "chatgptSettings"),
     close: () => native ? events.pagehide() : run("aiViewRevision++; aiOperation++; chatgptSettings.dispose()"),
     setStatus(value) { status = value; },
@@ -87,6 +87,56 @@ async function fixture(kind) {
 }
 
 for (const kind of ["settings", "setup"]) {
+  test(`${kind}: unsaved connection edits, saves and fresh permission reads require a new review`, async () => {
+    const f = await fixture(kind);
+    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
+    assert.equal(f.$("ai-consent-allow").disabled, false);
+    await f.edit("model", "new-synthetic-model");
+    assert.equal(f.$("ai-consent-manual").checked, false);
+    assert.equal(f.$("ai-consent-allow").disabled, true);
+    assert.match(f.$("ai-consent-reason").textContent, /Unsaved.*Save.*review/);
+    const read = f.wait("host:aiConsentStatus");
+    await f.$("ai-consent-connection").fire("click"); await tick();
+    assert.equal(f.config.model, "new-synthetic-model");
+    assert.equal(f.$("ai-consent-allow").disabled, true, "earlier readiness cannot authorize the new saved configuration");
+    assert.match(f.$("ai-consent-reason").textContent, /Reading saved connection/);
+    read.resolve({ ready: true, token: "new-synthetic-target", model: "new-synthetic-model", manual: false, background: false }); await tick();
+    assert.equal(f.$("ai-consent-manual").checked, false);
+    assert.equal(f.$("ai-consent-allow").disabled, true);
+    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
+    assert.equal(f.$("ai-consent-allow").disabled, false);
+    assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant" || row.channel === "host:aiTest"), false);
+    await f.edit("base", "https://unsaved.synthetic.invalid/v1");
+    const save = f.wait("host:aiSaveConfig"), saving = f.save();
+    assert.equal(f.$("ai-consent-manual").disabled, true);
+    assert.match(f.$("ai-consent-reason").textContent, /Saving connection/);
+    save.reject(Error("Synthetic validation failure")); await saving;
+    assert.equal(f.dirty(), true);
+    assert.equal(f.$("ai-consent-allow").disabled, true);
+    assert.match(f.statusText, /Synthetic validation failure/);
+    f.close();
+  });
+
+  test(`${kind}: revoke supersedes a pending permission read and reopen ignores an old load`, async () => {
+    const f = await fixture(kind);
+    const read = f.wait("host:aiConsentStatus"), reading = f.settings().refreshConsent();
+    assert.equal(f.$("ai-consent-allow").disabled, true);
+    await f.$("ai-consent-revoke").fire("click");
+    const afterRevoke = f.$("ai-consent-status").textContent;
+    read.resolve({ ready: true, manual: true, background: true, token: "stale-read" }); await reading;
+    assert.equal(f.$("ai-consent-status").textContent, afterRevoke);
+    assert.equal(f.$("ai-consent-background").checked, false);
+    const old = f.wait("host:aiConsentStatus"), loading = f.settings().load(f.config);
+    await tick(); f.settings().dispose();
+    f.setPermission({ token: "reopened-target", label: "Reopened synthetic connection" });
+    await f.settings().load(f.config);
+    old.resolve({ ready: true, manual: true, background: true, token: "closed-read" }); await loading;
+    assert.match(f.$("ai-consent-destination").textContent, /Reopened synthetic connection/);
+    assert.equal(f.$("ai-consent-manual").checked, false);
+    assert.equal(f.$("ai-consent-allow").disabled, true);
+    f.close();
+  });
+
   test(`${kind}: data consent is affirmative, background is separate, revoke wins over late grants and reads`, async () => {
     const f = await fixture(kind);
     assert.equal(f.$("ai-consent-manual").checked, false);

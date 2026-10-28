@@ -1,0 +1,27 @@
+/* Shared Settings / AI Setup permission controls. Material disclosure stays open. */
+.ai-consent {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line, #bfd2c5);
+  border-radius: 12px;
+  color: var(--ink, #102822);
+}
+.ai-consent h3 { margin: 0 0 8px; font-size: 17px; }
+.ai-consent p { margin: 8px 0; color: inherit; line-height: 1.5; overflow-wrap: anywhere; }
+.ai-consent .hint { color: var(--muted, #435c50); }
+.ai-consent .ai-consent-target { padding: 8px 10px; background: var(--hover, #dbe7d9); border-radius: 6px; font-weight: 600; }
+.ai-consent .ai-consent-choice { margin: 12px 0; }
+.ai-consent label.check { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-weight: 600; cursor: pointer; }
+.ai-consent label.check input { flex: 0 0 auto; width: auto; margin: 3px 0 0; accent-color: var(--accent, #193c34); }
+.ai-consent .ai-consent-choice > p { margin: 4px 0 0 22px; }
+.ai-consent .ai-consent-reason { font-weight: 600; }
+.ai-consent-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ai-consent button, .ai-consent-details summary { min-height: 36px; }
+.ai-consent button:disabled { opacity: 0.55; cursor: default; }
+.ai-consent-details { margin: 12px 0 0; }
+.ai-consent-details summary { display: list-item; list-style-position: inside; align-content: center; cursor: pointer; font-weight: 600; }
+.ai-consent :is(button, input):focus-visible, .ai-consent-details summary:focus-visible { outline: 2px solid var(--accent-ink, #193c34); outline-offset: 3px; }
+@media (max-width: 480px) {
+  .ai-consent { padding: 12px; }
+  .ai-consent-actions button { width: 100%; }
+}
