@@ -210,6 +210,7 @@ async function main() {
   await assertReaderKeepsTheSelectedMessage();
   await assertCachedIncompleteSkipsTheSpinner();
   await assertThreadStripCollapsesOlderMessages();
+  await assertThreadStripCollapsesLabelCopies();
   assertReaderWindowMatchesShellActions();
   console.log('mail reader synthetic checks passed');
 }
@@ -589,6 +590,58 @@ function threadMember(id, snippet) {
     textBody: 'body ' + id,
     htmlBody: null,
   };
+}
+
+async function assertThreadStripCollapsesLabelCopies() {
+  const ui = loadReader();
+  const when = '2026-10-28T14:14:24.000Z';
+  const copy = (id, messageId, date, snippet) => ({
+    id: id,
+    accountId: 'gmail',
+    threadId: 'thr-label',
+    messageId: messageId,
+    providerId: 'provider-' + id,
+    subject: 'Testing attachment from morrow',
+    snippet: snippet,
+    from: 'Leo Ho <sender@fixture.invalid>',
+    date: date,
+    textBody: 'body ' + id,
+    htmlBody: null,
+  });
+  const clones = [
+    copy('inbox', '<one@fixture.invalid>', when, 'same snippet'),
+    copy('category', '<ONE@fixture.invalid>', when, 'same snippet'),
+    copy('all-mail', 'one@fixture.invalid', when, 'same snippet'),
+  ];
+  ui.state.thread = clones;
+  ui.state.email = { ...clones[2], textBody: 'opened body' };
+  ui.renderReader(false);
+  assert.doesNotMatch(readerText(ui.reader), /Earlier in this conversation/);
+  assert.equal(threadNodes(ui.reader, 'thread-item').length, 0);
+  assert.match(readerText(ui.reader), /opened body/);
+
+  const mixed = [
+    copy('old-inbox', '<old@fixture.invalid>', '2026-10-28T14:00:00.000Z', 'older snippet'),
+    copy('old-all', '<old@fixture.invalid>', '2026-10-28T14:00:00.000Z', 'older snippet'),
+    copy('old-category', 'old@fixture.invalid', '2026-10-28T14:00:00.000Z', 'older snippet'),
+    copy('mid', '<mid@fixture.invalid>', '2026-10-28T14:10:00.000Z', 'middle snippet'),
+    copy('new-inbox', '<new@fixture.invalid>', when, 'newest snippet'),
+    copy('new-all', '<new@fixture.invalid>', when, 'newest snippet'),
+  ];
+  ui.state.thread = mixed;
+  ui.state.email = { ...mixed[5], textBody: 'newest body' };
+  ui.renderReader(false);
+  assert.match(readerText(ui.reader), /Earlier in this conversation \(1\)/);
+  assert.equal(threadNodes(ui.reader, 'thread-item').length, 2);
+  assert.doesNotMatch(readerText(ui.reader), /older snippet/);
+  threadNodes(ui.reader, 'thread-earlier')[0].click();
+  const shown = readerText(ui.reader);
+  assert.match(shown, /Earlier in this conversation \(1\)/);
+  assert.match(shown, /Showing 1 earlier message/);
+  assert.equal(threadNodes(ui.reader, 'thread-item').length, 3);
+  assert.match(shown, /older snippet/);
+  assert.match(shown, /middle snippet/);
+  assert.match(shown, /newest snippet/);
 }
 
 async function assertThreadStripCollapsesOlderMessages() {

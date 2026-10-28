@@ -6871,6 +6871,40 @@ function threadListLabel(total, count, expanded) {
   return messages + " in this conversation, " + earlier;
 }
 
+function threadMessageId(value) {
+  let text = String(value == null ? "" : value).trim();
+  if (text.startsWith("<") && text.endsWith(">") && text.length >= 2) text = text.slice(1, -1).trim();
+  return text.toLowerCase();
+}
+
+// One RFC Message-ID is one conversation row. Label copies share that id.
+// Without one, the same account's provider id is the fallback. Anything else stays.
+function threadMemberKey(row) {
+  const rfc = threadMessageId(row && row.messageId);
+  if (rfc) return "rfc:" + rfc;
+  const provider = row && row.providerId != null ? String(row.providerId).trim() : "";
+  if (provider) return "provider:" + String(row.accountId || "") + ":" + provider;
+  return "local:" + String(row && row.id || "");
+}
+
+function uniqueThreadMembers(members, preferId) {
+  const prefer = String(preferId || "");
+  const chosen = new Map();
+  const order = [];
+  for (const row of Array.isArray(members) ? members : []) {
+    if (!row || !row.id) continue;
+    const key = threadMemberKey(row);
+    const prev = chosen.get(key);
+    if (!prev) {
+      order.push(key);
+      chosen.set(key, row);
+      continue;
+    }
+    if (prefer && String(row.id) === prefer && String(prev.id) !== prefer) chosen.set(key, row);
+  }
+  return order.map((key) => chosen.get(key));
+}
+
 // Latest two stay visible. The open message stays visible when it is older than those two.
 // count is how many rows the Earlier control hides until it is expanded.
 function threadStripPlan(members, currentId, expanded) {
@@ -6967,9 +7001,10 @@ function threadMessageButton(member, email) {
 }
 
 function buildThreadStrip(email, members) {
-  const plan = threadStripPlan(members, email && email.id, threadEarlierOpen);
+  const rows = uniqueThreadMembers(members, email && email.id);
+  const plan = threadStripPlan(rows, email && email.id, threadEarlierOpen);
   const byId = new Map();
-  for (const member of Array.isArray(members) ? members : []) {
+  for (const member of rows) {
     if (member && member.id) byId.set(String(member.id), member);
   }
   const list = document.createElement("div");
@@ -7011,7 +7046,7 @@ function paintThreadStrip(announce) {
   const pane = $("reader");
   const email = state.email;
   if (!pane || !email || state.prefs.conversation === false) return;
-  const members = Array.isArray(state.thread) ? state.thread : [];
+  const members = uniqueThreadMembers(state.thread, email.id);
   const list = buildThreadStrip(email, members);
   const existing = pane.querySelector(".thread");
   if (existing) existing.replaceWith(list);
@@ -7034,11 +7069,9 @@ function renderThread(pane, email) {
     resetThreadStrip();
     return;
   }
-  const members = Array.isArray(state.thread) ? state.thread : [];
-  let count = 0;
-  for (const row of members) if (row && row.id) count += 1;
-  if (count < 2) {
-    if (threadStripKey(email, members) !== threadEarlierKey) resetThreadStrip();
+  const members = uniqueThreadMembers(state.thread, email.id);
+  if (members.length < 2) {
+    if (threadStripKey(email, state.thread) !== threadEarlierKey) resetThreadStrip();
     return;
   }
   rememberThreadStrip(email, members);

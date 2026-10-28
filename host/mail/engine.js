@@ -320,6 +320,7 @@ function listRow(row, generations) {
     platform: "imap",
     attachments,
     messageId: row.rfc_message_id || null,
+    providerId: row.gmail_id || "",
     inReplyTo: row.in_reply_to || null,
     recipientHeaders,
     replyTo: recipientHeaders.replyTo || [],

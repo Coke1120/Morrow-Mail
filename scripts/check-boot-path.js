@@ -55,6 +55,7 @@ const syntax = [
   "scripts/check-google-client-switching.js",
   "scripts/check-oauth-graph-regressions.js",
   "scripts/check-mail-reader.js",
+  "scripts/check-conversation-duplicates.js",
   "scripts/check-mail-review-regressions.js",
   "scripts/check-confirmed-identity.js",
   "scripts/check-move-calendar-patches.js",
@@ -136,7 +137,7 @@ for (const file of syntax) {
 }
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
-for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-keychain-reads.js"]) {
+for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-keychain-reads.js", "check-conversation-duplicates.js"]) {
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout: 30000 });
   assert.strictEqual(fixture.status, 0, name + " failed");
 }
