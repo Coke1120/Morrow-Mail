@@ -1417,6 +1417,7 @@ function startBackgroundSync() {
 function startSchedulePump() {
   if (scheduleTimer) return;
   const tick = () => { pumpScheduled().catch(() => {}); };
+  armPendingOutboxWakes();
   setTimeout(tick, 800);
   scheduleTimer = setInterval(tick, SCHEDULE_TICK_MS);
 }
@@ -3082,6 +3083,55 @@ function hasRecipient(to, cc, bcc) {
 }
 
 const scheduledDelivering = new Set();
+const outboxWakes = new Map();
+
+function clearOutboxWake(id) {
+  const timer = outboxWakes.get(id);
+  if (timer) clearTimeout(timer);
+  outboxWakes.delete(id);
+}
+
+function armOutboxWake(id, sendAt) {
+  clearOutboxWake(id);
+  const delay = Math.max(0, Number(sendAt) - Date.now());
+  const timer = setTimeout(() => {
+    outboxWakes.delete(id);
+    pumpScheduled().catch(() => {});
+  }, delay);
+  if (typeof timer.unref === "function") timer.unref();
+  outboxWakes.set(id, timer);
+}
+
+function armPendingOutboxWakes() {
+  let rows = [];
+  try { rows = db.listScheduled(""); } catch { return; }
+  for (const row of rows) {
+    if (!row || row.status !== "pending") continue;
+    let payload = {};
+    try { payload = JSON.parse(row.payload_json) || {}; } catch { continue; }
+    if (payload.outbox === true) armOutboxWake(row.id, row.send_at);
+  }
+}
+
+function outboxNoticeSeed(row, payload, presented) {
+  const html = presented && typeof presented.htmlBody === "string" ? presented.htmlBody : (typeof payload.body === "string" ? payload.body : "");
+  return {
+    accountId: row.account_id,
+    to: payload.to,
+    cc: payload.cc,
+    bcc: payload.bcc,
+    subject: (presented && presented.subject) || payload.subject || "",
+    body: html,
+    htmlBody: html,
+    fromAddress: payload.fromAddress,
+    fromDisplayName: typeof payload.fromDisplayName === "string" ? payload.fromDisplayName : "",
+    attachments: payload.attachments,
+    draftId: payload.draftId,
+    draftRevision: payload.draftRevision,
+    inReplyTo: payload.inReplyTo || "",
+    threadId: payload.threadId || "",
+  };
+}
 
 function publicScheduled(row) {
   let payload = {};
@@ -3104,6 +3154,17 @@ function publicScheduled(row) {
   if (cc) out.cc = cc;
   if (bcc) out.bcc = bcc;
   if (row.error) out.error = row.error;
+  if (payload.outbox === true) {
+    out.outbox = true;
+    if (payload.fromAddress) out.fromAddress = payload.fromAddress;
+    if (typeof payload.fromDisplayName === "string") out.fromDisplayName = payload.fromDisplayName;
+    out.htmlBody = typeof payload.body === "string" ? payload.body : "";
+    if (payload.draftId) out.draftId = payload.draftId;
+    if (typeof payload.draftRevision === "string") out.draftRevision = payload.draftRevision;
+    if (payload.inReplyTo) out.inReplyTo = payload.inReplyTo;
+    if (payload.threadId) out.threadId = payload.threadId;
+    if (Array.isArray(payload.attachments) && payload.attachments.length) out.attachments = payload.attachments;
+  }
   return out;
 }
 
@@ -3118,8 +3179,13 @@ function scheduleSend(params) {
   const cc = storedAddress(input.cc);
   const bcc = storedAddress(input.bcc);
   if (!hasRecipient(to, cc, bcc)) return fail("invalid", "Add a recipient.");
+  const outbox = input.outbox === true;
   const when = Date.parse(input.sendAt);
-  if (!Number.isFinite(when) || when <= Date.now() + 1000) {
+  if (outbox) {
+    if (!Number.isFinite(when) || when < Date.now()) return fail("send_at_in_past", "Undo send could not be queued.");
+    // shortcut: 31s absorbs a slow IPC hop, the setting max stays 30 seconds
+    if (when > Date.now() + 31000) return fail("invalid", "Undo send waits at most 30 seconds.");
+  } else if (!Number.isFinite(when) || when <= Date.now() + 1000) {
     return fail("send_at_in_past", "Pick a time in the future.");
   }
   const presented = textEncoding.presentMessage({
@@ -3141,6 +3207,8 @@ function scheduleSend(params) {
   if (input.inReplyTo) payload.inReplyTo = input.inReplyTo;
   if (input.threadId) payload.threadId = input.threadId;
   if (Array.isArray(input.references)) payload.references = input.references;
+  // Outbox is the undo delay on the scheduled queue, not a second send path.
+  if (outbox) payload.outbox = true;
   const resolved = resolveAttachments(input.attachments, account);
   if (resolved.error) return fail(resolved.error.code, resolved.error.message);
   if (resolved.meta.length) payload.attachments = resolved.meta;
@@ -3151,6 +3219,10 @@ function scheduleSend(params) {
     sendAt: when,
     createdAt: Date.now(),
   });
+  if (outbox) {
+    armOutboxWake(saved.id, when);
+    try { emitAccounts({ scheduledUpdated: true }); } catch { /* the row is queued even if the shell missed the refresh */ }
+  }
   return ok(publicScheduled(saved));
 }
 
@@ -3178,8 +3250,14 @@ function cancelScheduled(params) {
   if (scheduledDelivering.has(id)) return fail("sending", "Delivery has started. It can no longer be canceled or edited. Check Sent before retrying.");
   const row = db.scheduledById(id);
   if (!row) return fail("not-found", "That scheduled send is gone.");
+  clearOutboxWake(id);
   const snapshot = scheduledSnapshot(row);
+  let outbox = false;
+  try { outbox = JSON.parse(row.payload_json).outbox === true; } catch { outbox = false; }
   if (!db.deleteScheduled(id)) return fail("not-found", "That scheduled send is gone.");
+  if (outbox) {
+    try { emitAccounts({ scheduledUpdated: true }); } catch { /* the row is already gone */ }
+  }
   return ok({ id, snapshot });
 }
 
@@ -3513,8 +3591,9 @@ async function pumpScheduled() {
 }
 
 async function pumpScheduledAdmitted() {
-  if (!ready || pumping) return;
+  if (!ready || pumping) return [];
   pumping = true;
+  const notices = [];
   try {
     const due = db.dueScheduled(Date.now());
     for (const candidate of due) {
@@ -3527,12 +3606,16 @@ async function pumpScheduledAdmitted() {
       const row = db.claimScheduled(current.id, rfcMessageId(account?.email || "morrow.local"));
       if (!row) continue;
       scheduledDelivering.add(row.id);
+      clearOutboxWake(row.id);
       let payload = {};
       try { payload = JSON.parse(row.payload_json) || {}; } catch { payload = {}; }
       const presented = textEncoding.presentMessage({
         subject: payload.subject || "",
         htmlBody: typeof payload.body === "string" ? payload.body : "",
       });
+      const outbox = payload.outbox === true;
+      const seed = outbox ? outboxNoticeSeed(row, payload, presented) : null;
+      delete payload.outbox;
       let result;
       try {
         result = await deliver({
@@ -3548,6 +3631,7 @@ async function pumpScheduledAdmitted() {
         result = fail("send", error instanceof Error ? error.message : String(error));
         result.error.delivery = "unknown";
       }
+      let extra = null;
       try {
         const status = db.scheduledById(row.id)?.status;
         if (status === "sent") {
@@ -3560,14 +3644,24 @@ async function pumpScheduledAdmitted() {
         } else if (status !== "partial") {
           db.failScheduled(row.id, result?.error?.message || result?.data?.warning, result?.error?.delivery === "unknown", result?.data?.receipt);
         }
+        if (outbox && status === "partial") {
+          extra = { outboxReceipt: { message: result?.data?.warning || "Partly sent. Review rejected recipients in Scheduled delivery review; accepted recipients will not be resent automatically.", seed } };
+        } else if (outbox && status !== "sent" && status !== "partial") {
+          // A failed undo-send becomes the draft again. Leaving the row would also offer Scheduled review.
+          try { db.deleteScheduled(row.id); } catch { /* the restore still opens the draft */ }
+          const detail = result?.error?.message || result?.data?.warning || "";
+          extra = { outboxRestore: { message: "Delivery was not confirmed. Your draft is ready to edit. Check Sent before retrying." + (detail ? " " + detail : ""), seed } };
+        }
+        if (extra) notices.push(extra);
       } finally {
         scheduledDelivering.delete(row.id);
-        emitAccounts({ scheduledUpdated: true });
+        try { emitAccounts({ scheduledUpdated: true, ...(extra || {}) }); } catch { /* the delivery outcome is already stored */ }
       }
     }
   } finally {
     pumping = false;
   }
+  return notices;
 }
 
 const GOOGLE_OAUTH_IMPORT_MESSAGES = new Set([

@@ -1078,7 +1078,8 @@
               <h4>Reading &amp; sending</h4>
               <div class="field settings-short-field">
                 <label for="pref-undo">Undo send (seconds)</label>
-                <input id="pref-undo" type="number" min="0" max="30" step="1" value="30" />
+                <input id="pref-undo" type="number" min="0" max="30" step="1" value="30" aria-describedby="pref-undo-help" />
+                <p class="hint" id="pref-undo-help">0 sends immediately. Any other value closes compose and keeps the message in Outbox under All Account Mail until that delay ends. Undo there cancels the send.</p>
               </div>
               <div class="schedule-delay-field" id="pref-schedule-delay">
                 <span id="pref-schedule-delay-label">Default schedule delay</span>

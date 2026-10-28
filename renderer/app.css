@@ -5574,3 +5574,4 @@ html[data-window="translate"] #reader .translate-column h2 {
 #chatgpt-panel a { color: var(--accent, currentColor); text-decoration: underline; }
 #chatgpt-manual { margin: 12px 0; }
 #chatgpt-welcome { margin: 12px 0; padding: 12px; border: 1px solid currentColor; border-radius: 8px; }
+pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }

@@ -71,7 +71,7 @@ function testWiring() {
   const loadList = functionSource(app, "loadList");
   const body = loadList.slice(0, loadList.lastIndexOf("finally"));
   const tail = loadList.slice(loadList.lastIndexOf("finally"));
-  assert.equal(body.split("noteMailListLoaded(").length - 1, 3);
+  assert.equal(body.split("noteMailListLoaded(").length - 1, 4);
   assert.equal(tail.includes("noteMailListLoaded"), false);
   assert.ok(app.includes('"morrow:configGetChangelogSeen"'));
   assert.ok(app.includes('"morrow:configSetChangelogSeen"'));

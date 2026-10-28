@@ -250,10 +250,10 @@ async function uiChecks() {
   ui.run("state.accounts=[{id:'a',email:'a@example.test',platform:'imap'}];state.accountId='a';state.composeMeta={accountId:'a'};state.composeSession=1;" +
     "state.prefs.undoSend=30;syncCompose=()=>{};scheduleComposeLayout=()=>{};showStatus=()=>{};composePayload=()=>({body:'original'});" +
     "composeHasRecipient=()=>true;composeSnapshot=()=> 'receipt';loadScheduled=async()=>{};loadList=async()=>{};" +
-    "globalThis.sendCalls=0;call=async()=>{sendCalls++;return {partial:true,warning:'Partly sent; rejected bad@example.test'};}");
+    "globalThis.sendCalls=0;globalThis.channels=[];call=async(channel)=>{sendCalls++;channels.push(channel);return {partial:true,warning:'Partly sent; rejected bad@example.test'};}");
   get("compose").open = true; await ui.run("sendMail()"); assert.equal(get("compose").open, false);
-  timers.at(-1)(); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(get("compose").open, true); assert.equal(ui.run("state.composePartialReceipt"), true);
+  assert.deepEqual([...ui.run("channels")], ["mail:scheduleSend"]);
+  assert.equal(ui.run("state.composeQueued"), true);
   await ui.run("sendMail()"); assert.equal(ui.run("sendCalls"), 1);
   ui.run("state.composeQueued=false;state.composePartialReceipt=false;state.composeSession=2;globalThis.resolveSend=null;" +
     "globalThis.receipts=[];separatePartialReceipt=async(p,m)=>receipts.push({p,m});" +
