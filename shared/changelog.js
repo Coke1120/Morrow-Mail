@@ -7,6 +7,13 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.6": [
+      "Settings → Compose opens on display names, Preferred From, and a Signatures shortcut. Domain CC/BCC, aliases, the alias mailbox, and the fallback CC domain stay in Advanced.",
+      "Advanced stays collapsed until a saved CC rule, BCC rule, alias, or fallback domain exists. Preferred From and display-name overrides do not open it. Longer policy notes sit in How this works. Existing rules and storage are unchanged.",
+      "Compose From lists authorized addresses for every connected mailbox, grouped by account. Reply and forward still start on the mailbox that received the message.",
+      "Choosing another mailbox reloads that mailbox's send-as list, CC/BCC defaults, and signature domain. Draft save and send use the selected mailbox. If the reloaded context does not authorize the address, the switch is discarded and the original mailbox stays selected. An existing draft on the previous mailbox is left there. The same address on two mailboxes stays with the current mailbox.",
+      "Bot mail.send still sends only for the granted account and an address that account authorizes.",
+    ],
     "0.3.5": [
       "Settings → AI data permission names why Allow stays unavailable: a missing saved API key or model, or a ChatGPT connection, plan step, or model that is not ready. The Allow tooltip uses that reason while the saved connection is not ready. Saving a key or signing in is still not consent.",
       "Unsaved connection edits, a save in progress, and a pending permission read keep Allow unavailable and say why. Save & review connection saves without granting permission. Choose permission after reviewing the saved destination.",

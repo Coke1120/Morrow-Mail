@@ -528,7 +528,7 @@ assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app pa
 assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
 assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.3.5");
+assert.strictEqual(pkg.version, "0.3.6");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -782,7 +782,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.3.5");
+assert.strictEqual(pkg.version, "0.3.6");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -2806,6 +2806,11 @@ assert.ok(!brainProfileHtml.includes('id="brain-compose-form"') && !brainProfile
 assert.ok(brainProfileHtml.includes('id="brain-open-compose-settings"'));
 const composePanelHtml = html.slice(html.indexOf('id="settings-compose"'), html.indexOf('id="settings-ooo"'));
 assert.ok(composePanelHtml.includes('id="brain-compose-form"') && composePanelHtml.includes('id="brain-compose-bcc"') && composePanelHtml.includes('id="brain-compose-from"') && composePanelHtml.includes('id="brain-compose-aliases"'));
+assert.ok(composePanelHtml.includes('id="brain-compose-basic"') && composePanelHtml.includes("Most people only need a display name."));
+assert.ok(composePanelHtml.includes('id="brain-compose-signatures"') && composePanelHtml.includes('id="brain-compose-how"') && composePanelHtml.includes(">How this works<"));
+assert.ok(composePanelHtml.indexOf('id="brain-compose-from"') < composePanelHtml.indexOf('id="brain-compose-advanced"'));
+assert.ok(composePanelHtml.indexOf('id="brain-compose-advanced"') < composePanelHtml.indexOf('id="brain-compose-aliases"'));
+assert.doesNotMatch(composePanelHtml, /id="brain-compose-advanced"[^>]*\sopen\b/);
 assert.ok(html.indexOf('id="settings-tab-mailbox"') < html.indexOf('id="settings-tab-compose"') && html.indexOf('id="settings-tab-compose"') < html.indexOf('id="settings-tab-ai"'));
 assert.ok(!functionSource(appJs, "paintBrainSkillList").includes("appendSkillSchedule"), "Brain skill cards do not inline the schedule editor");
 assert.ok(functionSource(appJs, "paintBrainSkillDialog").includes("appendSkillSchedule"));
@@ -4002,7 +4007,7 @@ const featureSeed = [
   ["email-brain", "Email Brain", "Agent", "Profile, categories, skills, and inbox rules built from your mail. Skills can draft a reply or propose a move. You still press Send."],
   ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. Reply opens a compose window. Done and Dismiss stay on this computer."],
   ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send. Reply and Reply All prefer Reply-To addresses when supplied, exclude your own addresses, and avoid duplicate recipients. Replies to locally sent mail, including historical bot mail from aliases, remain available while the Sent copy is waiting to sync. Finish or cancel AI writing before Save, Send or Schedule. Confirmation uses the reviewed message; changes require a new preview."],
-  ["sender-identities", "Sender identities", "Mail", "Settings → Compose previews each exact From address and its Morrow-only display name. Verified Gmail send-as names are the default; local overrides survive refresh. Clear a name for address-only sending or reset to the default. Drafts and scheduled mail retain the selected name and address, including punctuation and Unicode in names. Bot mail.send uses these defaults. Provider sending permissions still apply; Gmail settings and OAuth scopes stay unchanged. Providers or recipient contacts may affect the delivered display."],
+  ["sender-identities", "Sender identities", "Mail", "Settings → Compose previews each exact From address and its Morrow-only display name. Verified Gmail send-as names are the default; local overrides survive refresh. Clear a name for address-only sending or reset to the default. Most people only need a display name. Domain CC/BCC, aliases, and the fallback CC domain stay under Advanced, collapsed until one of those rules is saved. Compose From lists authorized addresses for every connected mailbox; choosing another mailbox sends and saves drafts there. Drafts and scheduled mail retain the selected name and address, including punctuation and Unicode in names. Bot mail.send uses these defaults on the granted account only. Provider sending permissions still apply; Gmail settings and OAuth scopes stay unchanged. Providers or recipient contacts may affect the delivered display."],
   ["signatures", "Signatures", "Mail", "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target."],
   ["mail-keyboard", "Mail list keyboard navigation", "Mail", "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus."],
   ["attachment-downloads", "Attachment downloads", "Mail", "Preview, Open and Save share downloads. Complete files up to 32 MiB can be reused for five minutes while Morrow is open; larger files remain on demand. Save asks for a location first. Attachment transfers show progress and individual Cancel controls; closing Preview keeps another Save or Open running. Downloads allow 64 MiB per file and 128 MiB per ZIP, with existing provider limits. Changed identities stop reuse; reopen legacy Gmail selections. Resuming a server draft prepares every attachment before editing, within the 25 MiB outgoing limit. Preparation shares the download cache and Cancel controls. Failure keeps the saved draft for retry. Inline file identities are retained. Bot access remains metadata only."],
