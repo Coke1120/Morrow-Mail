@@ -7,6 +7,13 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.7": [
+      "If a foreground download fails before any body is available, the reader shows Retry download and leaves the message unread. A server response without the requested message is the same failure. Partial cached content stays visible with a download warning, and Retry can finish it. A complete cached body stays readable.",
+      "Gmail sync reads at most 20 full messages per folder pass, counting history, first sync, and cache checks together. Unfinished pages resume from the saved position. A waiting message open goes ahead after the current read. Writes, sends, and sign-in permissions stay as they are.",
+      "Switching Compose From to another mailbox keeps formatting and links, and keeps a signature you edited. Only an untouched automatic signature, including a multiline HTML signature, follows the new mailbox, or is removed when that mailbox has none.",
+      "Changing From to another alias on the same mailbox still follows signatures as plain text. A markup-only signature edit on that path can still be replaced.",
+      "Gmail label copies appear once in a conversation, using the provider message id within the same account. The copy you opened stays selected, and the stored folder copies remain. Distinct messages, other accounts, rows without a provider id, and drafts stay separate, including when the RFC Message-ID matches. One message has no Earlier section.",
+    ],
     "0.3.6": [
       "Settings → Compose opens on display names, Preferred From, and a Signatures shortcut. Domain CC/BCC, aliases, the alias mailbox, and the fallback CC domain stay in Advanced.",
       "Advanced stays collapsed until a saved CC rule, BCC rule, alias, or fallback domain exists. Preferred From and display-name overrides do not open it. Longer policy notes sit in How this works. Existing rules and storage are unchanged.",
