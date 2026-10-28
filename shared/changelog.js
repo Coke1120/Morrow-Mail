@@ -7,6 +7,13 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.7": [
+      "Send with an undo delay closes compose and keeps the message in Outbox under All Account Mail until that delay ends. The wait is 30 seconds unless a shorter one is set. Outbox is local and lists every mailbox. Undo cancels the send and reopens the draft. Opening a waiting message does not send it. When the delay ends, send works as before and the message leaves Outbox. A zero delay sends immediately and skips Outbox.",
+      "A partial delivery receipt stays open for review and is not a normal Outbox close. Quitting with a message still in Outbox asks first. Quit anyway sends it the next time Morrow is open, and it can no longer be undone. Restart and install waits while Outbox still has a message.",
+      "Hover or focus Sync to see body activity for each mailbox, separately from list sync. If a foreground download fails before any body is available, the reader shows Retry download and leaves the message unread. A server response without the requested message is a failed download. Partial cached content stays visible with a download warning and retry.",
+      "Switching mailboxes keeps body formatting, links, and a signature you edited. Only an untouched automatic signature follows the new mailbox. Gmail label copies of one message appear once in a conversation. Gmail folder sync keeps saved page progress, lets an open message go ahead, and still fetches at most 20 messages per pass.",
+      "Notes for Agent learning, todo completion, FYI/Other batch read, card view, and holding an opened unread row are proposed only. Those behaviors are not in this version.",
+    ],
     "0.3.6": [
       "Settings → Compose opens on display names, Preferred From, and a Signatures shortcut. Domain CC/BCC, aliases, the alias mailbox, and the fallback CC domain stay in Advanced.",
       "Advanced stays collapsed until a saved CC rule, BCC rule, alias, or fallback domain exists. Preferred From and display-name overrides do not open it. Longer policy notes sit in How this works. Existing rules and storage are unchanged.",
