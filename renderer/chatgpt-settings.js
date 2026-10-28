@@ -75,6 +75,7 @@
   let consentRefreshPending = false;
   function consentControls() {
     $("ai-consent-allow").disabled = disposed || consentBusy || !permission?.ready || !$("ai-consent-manual").checked;
+    $("ai-consent-allow").title = permission?.ready === false ? (permission.blocker || "Save a ready connection, then review it again.") : "";
     $("ai-consent-background").disabled = disposed || consentBusy || !$("ai-consent-manual").checked;
   }
   function paintConsent(value) {
@@ -90,7 +91,9 @@
     $("ai-consent-background-data").textContent = value?.backgroundDisclosure || "";
     $("ai-consent-status").textContent = value?.manual
       ? `Explicit AI actions allowed. Background AI ${value.background ? "allowed" : "off"}.`
-      : "AI data use is off. Review the disclosure and make an explicit choice before using AI.";
+      : value?.ready === false
+        ? `AI data use is off. ${value.blocker || "Save a ready connection, then review it again."}`
+        : "AI data use is off. Review the disclosure and make an explicit choice before using AI.";
     consentControls();
   }
   async function refreshConsent() {
