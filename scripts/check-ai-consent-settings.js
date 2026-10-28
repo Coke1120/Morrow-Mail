@@ -116,6 +116,8 @@ test("actual preload and Settings read saved consent; affirmative manual and sep
   assert.equal(f.get("ai-consent-allow").disabled, true); assert.equal(f.get("ai-consent-background").disabled, true);
   await f.get("ai-consent-allow").fire("click"); assert.equal(f.writes, 0);
   await f.checkManual(true); assert.equal(f.get("ai-consent-allow").disabled, false);
+  assert.match(f.get("ai-consent-status").textContent, /make an explicit choice/);
+  assert.equal(f.get("ai-consent-allow").title || "", "");
   await f.get("ai-consent-allow").fire("click");
   assert.equal(f.consent.status().manual, true); assert.equal(f.consent.status().background, false);
   assert.throws(() => f.consent.acquire(f.config.loadConfig(), { background: true }), /Background AI is off/);
@@ -131,18 +133,29 @@ test("actual preload and Settings read saved consent; affirmative manual and sep
 });
 
 test("unready saved API/ChatGPT connections cannot enable Allow through the real bridge", async () => {
-  const cases = [{ config: { apiKey: "" } },
-    { config: { authMode: "chatgpt", chatgptModel: "fixture-chat" }, account: { connected: false } },
-    { config: { authMode: "chatgpt", chatgptModel: "fixture-chat" }, account: { planEnabled: false } },
-    { config: { authMode: "chatgpt", chatgptModel: "" } }];
+  const cases = [
+    { config: { apiKey: "" }, status: /Save an API key, then review this connection again/ },
+    { config: { authMode: "chatgpt", chatgptModel: "fixture-chat" }, account: { connected: false }, status: /Connect ChatGPT, then review this connection again/ },
+    { config: { authMode: "chatgpt", chatgptModel: "fixture-chat" }, account: { planEnabled: false }, status: /Enable ChatGPT plan usage, then review this connection again/ },
+    { config: { authMode: "chatgpt", chatgptModel: "" }, status: /Save a ChatGPT model, then review this connection again/ },
+    { config: { authMode: "chatgpt", chatgptModel: "" }, account: { connected: false }, status: /Connect ChatGPT and save a ChatGPT model, then review this connection again/ },
+    { config: { authMode: "chatgpt", chatgptModel: "" }, account: { planEnabled: false }, status: /Enable ChatGPT plan usage and save a ChatGPT model, then review this connection again/ },
+  ];
   for (const options of cases) {
     const f = fixture(options); await f.load(); await f.checkManual(true);
-    assert.equal(f.consent.status().ready, false); assert.equal(f.get("ai-consent-allow").disabled, true);
+    f.get("ai-consent-background").checked = true;
+    assert.equal(f.consent.status().ready, false);
+    assert.match(f.consent.status().blocker, options.status);
+    assert.doesNotMatch(f.consent.status().blocker, /synthetic-not-real|fixture-account/);
+    assert.equal(f.get("ai-consent-allow").disabled, true);
+    assert.match(f.get("ai-consent-allow").title, options.status);
+    assert.match(f.get("ai-consent-status").textContent, new RegExp(`AI data use is off\\. ${options.status.source}`));
+    assert.doesNotMatch(f.get("ai-consent-status").textContent, /make an explicit choice/);
     await f.get("ai-consent-allow").fire("click");
     assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false); assert.equal(f.writes, 0);
     const status = await f.bridge.invoke("host:aiConsentStatus");
     await assert.rejects(f.bridge.invoke("host:aiConsentGrant", { token: status.token, manual: true, background: false }), /permission changed/);
-    assert.equal(f.writes, 0);
+    assert.equal(f.writes, 0); assert.equal(f.consent.status().manual, false);
     assert.doesNotMatch(f.get("ai-consent-status").textContent, /Unsupported channel/); f.assertNoModelCalls();
   }
 });
@@ -243,6 +256,8 @@ test("Features and Settings help render the same explicit consent prerequisites"
   f.ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
   f.ui.run("paintFeatureCatalog()");
   assert.match(f.get("features-catalog").textContent, /Settings → AI and AI Setup support review, allow and revoke; Allow requires a ready saved connection and the explicit-action checkbox/);
+  assert.match(f.get("features-catalog").textContent, /If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step/);
   assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>Review the saved connection[\s\S]*?Background use is optional/);
+  assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>[\s\S]*If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step/);
   f.assertNoModelCalls();
 });
