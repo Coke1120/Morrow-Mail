@@ -21,6 +21,14 @@ Three signals, each from an explicit action:
 - Opening a suggestion class versus dismissing that same class. The class is
   the suggestion label the UI already shows.
 
+Command repetitions count only after confirmed success. Failed sends, draft
+saves, and queueing or cancelling a scheduled send do not count. A scheduled
+send may count once when it succeeds, not when it is queued.
+
+One explicit action contributes at most one observation to the same pattern,
+even when it touches a batch. Automatic read-on-open, event retries, and
+actions applied by learning do not add observations.
+
 Message bodies, drafts, and mailbox-wide statistics are not training data.
 
 ## Threshold
@@ -30,11 +38,16 @@ times. Below three, classification and actions stay as they are. At three,
 the pattern may apply. Applying it adds a Learned entry. It does not rewrite
 Brain categories, triage prompt text, Gmail filters, or Outlook rules.
 
+A learned pattern cannot authorize a send or change the completion,
+batch-selection, or unread-hold contracts linked below.
+
 ## Learned list
 
-Settings shows the Learned list. Each entry can be deleted on its own. Delete
-removes that entry and its count. The pattern has to reach three again before
-it can apply. There is no silent rewrite of rules.
+Settings shows pending observations and Learned entries. Each pattern can be
+deleted on its own, including before it reaches three. Delete removes that
+pattern and its count. In-flight counts or applications begun before deletion
+must not recreate or reapply it. Only later explicit actions start a new
+count, which must reach three again. There is no silent rewrite of rules.
 
 ## Storage and consent
 

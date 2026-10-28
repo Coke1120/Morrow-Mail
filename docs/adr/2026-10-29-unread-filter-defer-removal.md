@@ -12,13 +12,16 @@ while the user is reading it.
 ## Hold
 
 While the Unread filter is showing, opening unread message A may mark A read.
-A stays listed. A is the held row. One row is held.
+A stays listed. A is the held row. At most one row is held; there is no hold
+until an unread message opens.
 
 The row may show its read flag and remain in the list. The hold is list
 membership, not a second copy of the flag.
 
-Opening a different message B that is unread at the moment of open drops A.
-B becomes the held row under the same rule, including mark-read-on-open.
+Opening a different message B that is unread at the moment of open releases
+A's hold. A leaves the list only if it is read; if opening did not mark it
+read, it still matches Unread. B becomes the sole held row under the same
+rule, including mark-read-on-open.
 Opening a message that is already read, or opening the held row again, leaves
 the hold where it is. Highlighting a row without opening it does not start
 or move the hold.
@@ -51,10 +54,16 @@ is still unread until a new open creates a new hold.
 ## Batch mark read
 
 Multi-select Mark as read on the mail list removes every selected row
-immediately, including the held row when it is selected, and clears the hold
-for those rows. A held row outside the selection stays.
+immediately, including the held row when it is selected. When that command
+includes the held row, it clears the sole hold; a held row outside the
+selection stays. Unlike the single-message toolbar or shortcut command,
+this batch clears a selected hold even with only one selected row.
 
 Agent category mark-read is a different surface. See
 [FYI and Other batch read](./2026-10-29-agent-fyi-other-batch-read.md).
+
+The hold changes list membership, not completion of the Agent reply pile
+(Todo in the related issues; Needs You today). See
+[todo completion](./2026-10-29-agent-todo-completion.md).
 
 Related: [learning](./2026-10-29-agent-learning.md).
