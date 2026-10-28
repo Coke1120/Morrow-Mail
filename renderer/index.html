@@ -555,7 +555,7 @@
           <p id="cli-unavailable"><strong>Unavailable to bots:</strong> attachment upload/attach/download, mailbox draft create/edit/delete, full thread retrieval, dedicated reply-all/forward, read/unread changes, move/archive/delete, and calendar actions. The desktop app has additional actions; they are not bot commands.</p>
           <p id="cli-attachment-transfers">Desktop Preview, Open, Save and Cancel use the app's attachment transfers panel. These controls do not add bot commands or file-byte access to <code>mail.attachment.get</code>.</p>
           <p id="cli-provider-semantics"><code>bridge.describe</code> reports whether granted operations may contact providers: <code>providerCalls</code> is true when <code>mail.send</code> is available. Cached reads stay local. This is not a per-request network count: send replay/join or pre-submit denial may still involve From lookup or OAuth refresh. Receipts describe mail-provider submission outcomes and replay status, not absence of provider traffic.</p>
-          <p id="cli-sender-names"><code>mail.send</code> uses the selected identity's Morrow display name from Settings → Compose, including Gmail names when discovered. Optional <code>fromAddress</code> selects an authorized exact address; the bridge has no display-name parameter. A name override does not grant send-as permission. Changing Settings does not resubmit a matching request ID. The desktop can reply to historical bot Sent copies from aliases while they are waiting to sync.</p>
+          <p id="cli-sender-names"><code>mail.send</code> uses the selected identity's Morrow display name from Settings → Compose, including Gmail names when discovered. Optional <code>fromAddress</code> selects an authorized exact address on that granted account; the bridge has no display-name parameter and cannot switch mailboxes. A name override does not grant send-as permission. Changing Settings does not resubmit a matching request ID. Desktop compose can choose an authorized From on another connected mailbox, which changes the mailbox used for that draft and send. The desktop can reply to historical bot Sent copies from aliases while they are waiting to sync.</p>
         </section>
         <details class="cli-guide" id="cli-connection">
           <summary>Connect another device with Tailscale</summary>
@@ -1227,30 +1227,36 @@
         </section>
         <section class="fold" id="settings-compose" data-fold="compose" role="tabpanel" aria-labelledby="settings-tab-compose" tabindex="0" hidden>
           <div class="fold-panel" id="settings-compose-panel" hidden>
-            <h3 id="settings-compose-title">Compose defaults</h3>
+            <h3 id="settings-compose-title">How you look when sending</h3>
+            <p class="hint" id="brain-compose-basic">Most people only need a display name.</p>
             <form id="brain-compose-form">
-              <p class="hint">Default CC is chosen from your received alias for replies and forwards, or your From address for new mail. Review recipients before sending.</p>
-              <label for="brain-compose-domains">Default CC by domain — one domain per line</label>
-              <textarea id="brain-compose-domains" rows="4" placeholder="@example.com = colleague@example.com, team@example.org" spellcheck="false" disabled></textarea>
-              <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
-              <textarea id="brain-compose-bcc" rows="4" placeholder="@example.org = records@example.org, audit@example.com" spellcheck="false" disabled></textarea>
-              <label for="brain-compose-account">Mailbox for alias settings</label>
-              <select id="brain-compose-account" disabled></select>
               <h4>Sender identities</h4>
-              <p class="hint">Names below are used only by Morrow. Gmail names are the default when discovered; refreshing addresses keeps your Morrow overrides. This does not change Gmail settings or list every domain or plus address.</p>
               <p id="brain-compose-identities" class="hint"></p>
               <div id="brain-compose-senders" aria-label="Sender identities"></div>
-              <p class="hint">Names can include punctuation and Unicode. A resumed draft keeps its exact From address independently of the displayed name.</p>
-              <p class="hint">Scheduled delivery removes an unchanged source draft; later edits remain saved.</p>
-              <p class="hint">Edit a name and save compose defaults. Clear the name for address-only sending, or use the default name to remove an override. Changes apply to future compositions. Saved drafts and scheduled mail keep their selected name; switching From selects that identity's current name. Your provider or the recipient's contacts may change the final display.</p>
-              <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
-              <textarea id="brain-compose-aliases" rows="3" placeholder="ada@example.com&#10;ada@example.org = example.com" spellcheck="false" disabled></textarea>
-              <p class="hint">Add only addresses belonging to this mailbox. Gmail must verify send-as aliases; Outlook needs send-as permission. Your SMTP provider may restrict the From address.</p>
               <label for="brain-compose-from">Preferred From for new mail (optional)</label>
               <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
-              <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
-              <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
-              <p class="hint">This fallback is only the CC list. BCC and signatures still use the From domain. Clearing or editing CC keeps that choice for the rest of the composition. Clearing or editing BCC does the same for BCC. The two fields lock separately. Resumed drafts keep their saved recipients.</p>
+              <div class="row">
+                <button type="button" class="ghost" id="brain-compose-signatures">Signatures</button>
+              </div>
+              <details class="settings-disclosure" id="brain-compose-advanced">
+                <summary>Advanced</summary>
+                <p class="hint">Default CC/BCC by domain, aliases, and a fallback CC domain.</p>
+                <label for="brain-compose-domains">Default CC by domain — one domain per line</label>
+                <textarea id="brain-compose-domains" rows="4" placeholder="@example.com = colleague@example.com, team@example.org" spellcheck="false" disabled></textarea>
+                <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
+                <textarea id="brain-compose-bcc" rows="4" placeholder="@example.org = records@example.org, audit@example.com" spellcheck="false" disabled></textarea>
+                <label for="brain-compose-account">Mailbox for alias settings</label>
+                <select id="brain-compose-account" disabled></select>
+                <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
+                <textarea id="brain-compose-aliases" rows="3" placeholder="ada@example.com&#10;ada@example.org = example.com" spellcheck="false" disabled></textarea>
+                <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
+                <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
+              </details>
+              <details class="settings-disclosure" id="brain-compose-how">
+                <summary>How this works</summary>
+                <p class="hint">Default CC comes from the address that received a reply or forward, or from From on new mail. Review recipients before sending. Names are used only by Morrow. Gmail names are the default when discovered; refreshing addresses keeps your overrides and does not change Gmail settings or list every domain or plus address. Names can include punctuation and Unicode. A resumed draft keeps its exact From address. Scheduled delivery removes an unchanged source draft; later edits remain saved. Clear a name for address-only sending, or use the default name to remove an override. Saved drafts and scheduled mail keep the name they were given. Switching From selects that identity's current name. Your provider or the recipient's contacts may change the final display.</p>
+                <p class="hint">Add only addresses belonging to the mailbox selected above. Gmail must verify send-as aliases; Outlook needs send-as permission. Your SMTP provider may restrict the From address. The fallback domain is only the CC list. BCC and signatures still use the From domain. Clearing or editing CC keeps that choice for the rest of the composition. Clearing or editing BCC does the same for BCC. The two fields lock separately. Resumed drafts keep their saved recipients.</p>
+              </details>
               <div class="row">
                 <button type="submit" class="primary" disabled>Save compose defaults</button>
                 <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>

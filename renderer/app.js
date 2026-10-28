@@ -11178,8 +11178,9 @@ async function loadSignatureEditor() {
   return pack;
 }
 
-function openSignatures() {
-  signatureEditorAccountId = ($("settings").open ? settingsAccount() : composeAccount())?.id || settingsAccount()?.id || "";
+function openSignatures(accountId) {
+  const explicit = typeof accountId === "string" ? accountId : "";
+  signatureEditorAccountId = explicit || ($("settings").open ? settingsAccount() : composeAccount())?.id || settingsAccount()?.id || "";
   $("signatures-title").textContent = "Signatures · " + (signatureAccount()?.email || "No mailbox");
   clearSignatureForm();
   showSignatureStatus("");
@@ -11767,6 +11768,64 @@ function toggleComposeQuoteCollapse() {
   if (motion && motion.fadePane) motion.fadePane($("compose-quote-body"), "y");
 }
 
+// shortcut: the same address on two mailboxes stays with the current one; give options distinct values if both copies must be selectable.
+function composeFromChoices(activeSendAs) {
+  const activeId = state.composeMeta && state.composeMeta.accountId;
+  const live = [];
+  for (const account of state.accounts) if (isLive(account)) live.push(account);
+  live.sort((a, b) => (a.id === activeId ? 0 : 1) - (b.id === activeId ? 0 : 1));
+  const seen = new Set();
+  const groups = [];
+  for (const account of live) {
+    const source = account.id === activeId && Array.isArray(activeSendAs) ? activeSendAs : (account.sendAs || []);
+    const options = [];
+    for (const row of source) {
+      const email = row && row.email;
+      if (!email || seen.has(email)) continue;
+      seen.add(email);
+      options.push(row);
+    }
+    if (options.length) groups.push({ id: account.id, label: account.email || account.id, options });
+  }
+  return groups;
+}
+
+function composeFromAccountId(email) {
+  const activeId = state.composeMeta && state.composeMeta.accountId;
+  const identity = state.composeIdentity && state.composeIdentity.sendAs;
+  if ((identity || []).some((row) => row && row.email === email)) return activeId;
+  for (const account of state.accounts) {
+    if (!isLive(account) || account.id === activeId) continue;
+    if ((account.sendAs || []).some((row) => row && row.email === email)) return account.id;
+  }
+  return activeId;
+}
+
+function paintComposeFromPicker(context) {
+  const picker = $("compose-from");
+  const rows = context && context.sendAs || [];
+  picker.replaceChildren();
+  const listed = new Set();
+  for (const group of composeFromChoices(rows)) {
+    const shell = document.createElement("optgroup");
+    shell.label = group.label;
+    const nested = typeof shell.appendChild === "function";
+    const parent = nested ? shell : picker;
+    for (const row of group.options) {
+      listed.add(row.email);
+      const node = option(row.email, window.morrowComposePolicy.senderPreview(row.email, row.displayName || ""));
+      if (node.dataset) node.dataset.accountId = group.id;
+      if (typeof parent.appendChild === "function") parent.appendChild(node);
+    }
+    if (nested && typeof picker.appendChild === "function") picker.appendChild(shell);
+  }
+  const selected = context && context.fromAddress;
+  if (selected && !listed.has(selected)) {
+    picker.appendChild(option(selected, selected + " (saved address — configure in Brain)"));
+  }
+  if (selected) picker.value = selected;
+}
+
 async function initializeComposeIdentity(fields) {
   const account = composeAccount();
   const picker = $("compose-from");
@@ -11780,12 +11839,6 @@ async function initializeComposeIdentity(fields) {
   state.composeMeta.fromAddress = context.fromAddress;
   state.composeMeta.fromDisplayName = typeof fields.fromDisplayName === "string"
     ? window.morrowComposePolicy.displayName(fields.fromDisplayName) : context.fromDisplayName || "";
-  const choices = context.sendAs || [];
-  for (const row of choices) picker.appendChild(option(row.email, window.morrowComposePolicy.senderPreview(row.email, row.displayName || "")));
-  if (!choices.some((row) => row.email === context.fromAddress)) {
-    picker.appendChild(option(context.fromAddress, context.fromAddress + " (saved address — configure in Brain)"));
-  }
-  picker.value = context.fromAddress;
   if ((fields.kind === "reply" || fields.kind === "all") && fields.quoteEmail && !fields.draftId && !fields.botDraft) {
     const parties = replyParties({ ...fields.quoteEmail, ...(Array.isArray(context.replyTo) ? { replyTo: context.replyTo } : {}) }, context.selfAddresses, fields.kind === "all");
     $("compose-to").value = parties.to;
@@ -11794,6 +11847,7 @@ async function initializeComposeIdentity(fields) {
   const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt;
   state.composeIdentity = { ...context, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
+  paintComposeFromPicker(state.composeIdentity);
   applyComposeRecipients();
   paintComposeIdentity();
 }
@@ -11821,6 +11875,8 @@ function paintComposeIdentity() {
   }
   const text = [];
   text.push("Recipients see: " + window.morrowComposePolicy.senderPreview(state.composeMeta.fromAddress, state.composeMeta.fromDisplayName) + ".");
+  const mailbox = composeAccount();
+  if (mailbox && state.accounts.filter(isLive).length > 1) text.push("Mailbox: " + mailbox.email + ".");
   if (context.receivedAddress) text.push("Received as " + context.receivedAddress + ".");
   else if (context.fallback) text.push("No received address matched this mailbox's known aliases. Add a missing alias in Email Brain or choose From.");
   text.push("CC domain: " + (context.domain || "none") + ".");
@@ -11832,8 +11888,10 @@ function paintComposeIdentity() {
 
 function changeComposeFrom() {
   if (!state.composeIdentity || state.composePending || state.composeQueued || state.composeInitializing) return;
-  const context = state.composeIdentity;
   const fromAddress = $("compose-from").value;
+  const nextId = composeFromAccountId(fromAddress);
+  if (nextId && state.composeMeta && nextId !== state.composeMeta.accountId) return switchComposeMailbox(nextId, fromAddress);
+  const context = state.composeIdentity;
   state.composeMeta.fromAddress = fromAddress;
   state.composeMeta.fromDisplayName = context.sendAs.find((row) => row.email === fromAddress)?.displayName || "";
   const account = composeAccount();
@@ -11862,6 +11920,72 @@ function changeComposeFrom() {
   }
   paintComposeIdentity();
   paintComposeNote();
+}
+
+async function switchComposeMailbox(accountId, fromAddress) {
+  const session = state.composeSession;
+  const previous = {
+    accountId: state.composeMeta.accountId,
+    draftId: state.draftId,
+    draftRevision: state.draftRevision,
+    threadId: state.composeMeta.threadId,
+    fromAddress: state.composeMeta.fromAddress,
+    fromDisplayName: state.composeMeta.fromDisplayName,
+    identity: state.composeIdentity,
+  };
+  state.composeInitializing = true;
+  syncCompose();
+  state.composeMeta.accountId = accountId;
+  // The previous draft id belongs to the other mailbox. Leave that draft where it is.
+  state.draftId = null;
+  state.draftRevision = null;
+  state.composeMeta.threadId = "";
+  let switched = false;
+  try {
+    const context = await call("mail:getComposeContext", {
+      accountId, kind: previous.identity.kind || "new", fromAddress,
+    });
+    if (session !== state.composeSession) return;
+    const rows = context && context.sendAs || [];
+    if (!rows.some((row) => row && row.email === fromAddress)) throw new Error("That address is not authorized for this mailbox.");
+    const follows = !!previous.identity.signatureFollowsFrom;
+    state.composeMeta.fromAddress = fromAddress;
+    state.composeMeta.fromDisplayName = rows.find((row) => row.email === fromAddress).displayName || "";
+    state.composeIdentity = {
+      ...context,
+      kind: previous.identity.kind || "new",
+      seeds: previous.identity.seeds,
+      signatureFollowsFrom: follows,
+    };
+    paintComposeFromPicker(state.composeIdentity);
+    $("compose-from").value = fromAddress;
+    applyComposeRecipients();
+    await fillSignatures(!follows);
+    if (session !== state.composeSession) return;
+    paintComposeIdentity();
+    paintComposeNote();
+    switched = true;
+    if (previous.draftId) setComposeStatus("The earlier draft stays in the original mailbox. Save draft stores a new copy here.");
+  } catch (error) {
+    if (session !== state.composeSession) return;
+    state.composeMeta.accountId = previous.accountId;
+    state.draftId = previous.draftId;
+    state.draftRevision = previous.draftRevision;
+    state.composeMeta.threadId = previous.threadId;
+    state.composeMeta.fromAddress = previous.fromAddress;
+    state.composeMeta.fromDisplayName = previous.fromDisplayName;
+    state.composeIdentity = previous.identity;
+    paintComposeFromPicker(previous.identity);
+    $("compose-from").value = previous.fromAddress || "";
+    paintComposeIdentity();
+    $("compose-from-note").textContent = "Could not switch mailbox. " + (error.message || String(error));
+  } finally {
+    if (session === state.composeSession) {
+      state.composeInitializing = false;
+      syncCompose();
+      if (switched) paintComposeNote();
+    }
+  }
 }
 
 function isReaderWindow() {
@@ -20967,6 +21091,8 @@ function wire() {
     });
   }
   $("signatures-open").addEventListener("click", openSignatures);
+  const composeSignatures = $("brain-compose-signatures");
+  if (composeSignatures) composeSignatures.addEventListener("click", () => openSignatures(($("brain-compose-account") && $("brain-compose-account").value) || ""));
   $("signatures-close").addEventListener("click", () => closeDialog("signatures"));
   $("signatures").addEventListener("close", () => {
     if ($("signatures").open) return; // ignore a queued close from a previous editor

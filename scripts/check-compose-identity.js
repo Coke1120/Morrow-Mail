@@ -473,8 +473,134 @@ function brainLines() {
   assert.throws(() => parse("@hkbscl.com = a@hkbscl.com\nhkbscl.com = b@hkbscl.com", "BCC"), /Each BCC domain can appear only once/);
   assert.throws(() => parse("@hkbscl.com = a@hkbscl.com\n@hkbscl.com = b@hkbscl.com", "CC"), /Each CC domain can appear only once/);
   assert.throws(() => parse("not a domain = a@hkbscl.com", "BCC"), /each BCC line/);
+  const advanced = context.window.morrowBrainCompose.advancedHasRules;
+  assert.equal(advanced({}), false);
+  assert.equal(advanced({ accounts: { a: { preferredFromAddress: "a@b.co", senderNames: { "a@b.co": "A" } } } }), false);
+  assert.equal(advanced({ ccByDomain: { "ex.com": ["a@ex.com"] } }), true);
+  assert.equal(advanced({ bccByDomain: { "ex.com": ["a@ex.com"] } }), true);
+  assert.equal(advanced({ accounts: { a: { aliases: [{ address: "a@ex.com" }] } } }), true);
+  assert.equal(advanced({ accounts: { a: { defaultDomain: " ex.com " } } }), true);
 }
 
-async function run() { decisions(); brainLines(); await hostRoundTrips(); await rendererFlows(); console.log("compose-identity-ok"); }
+function disclosureDocument() {
+  const nodes = new Map();
+  function make() {
+    return { value: "", textContent: "", disabled: false, open: false, dataset: {}, className: "",
+      classList: { toggle() {} }, children: [],
+      setAttribute() {}, addEventListener() {}, appendChild(child) { this.children.push(child); return child; },
+      replaceChildren() { this.children = []; }, querySelectorAll() { return []; } };
+  }
+  return { getElementById(id) { if (!nodes.has(id)) nodes.set(id, make()); return nodes.get(id); }, createElement: make, nodes };
+}
+
+async function advancedDisclosure() {
+  const closed = disclosureDocument();
+  const open = disclosureDocument();
+  async function load(document, settings) {
+    const context = vm.createContext({ window: { morrowComposePolicy: policy }, document });
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "../renderer/brain-compose.js"), "utf8"), context);
+    await context.window.morrowBrainCompose.load({
+      accounts: () => [{ id: "a", email: "a@one.test" }],
+      selectedId: () => "a",
+      call: async () => settings,
+    });
+    return document.getElementById("brain-compose-advanced").open;
+  }
+  assert.equal(await load(closed, { ccByDomain: {}, bccByDomain: {}, accounts: {} }), false);
+  assert.equal(await load(open, { ccByDomain: { "ex.com": ["a@ex.com"] }, bccByDomain: {}, accounts: {} }), true);
+}
+
+async function crossAccountFrom() {
+  const nodes = new Map();
+  function make(tag) {
+    return { tag, value: "", textContent: "", label: "", hidden: false, disabled: false, open: false, dataset: {},
+      classList: { toggle() {} }, children: [], style: {},
+      appendChild(child) { this.children.push(child); return child; },
+      replaceChildren() { this.children = []; },
+      focus() {}, setSelectionRange() {}, close() { this.open = false; }, showModal() { this.open = true; },
+      addEventListener() {}, setAttribute() {}, querySelector() { return null; }, querySelectorAll() { return []; } };
+  }
+  const document = {
+    getElementById(id) { if (!nodes.has(id)) nodes.set(id, make(id)); return nodes.get(id); },
+    createElement: make, querySelector: () => null, addEventListener() {},
+  };
+  const { renderer } = require("./check-ux-workflows");
+  const ui = renderer({ document });
+  const other = { id: "other", email: "ada@other.test", platform: "imap", sendAs: [
+    { email: "ada@other.test", name: "Ada", displayName: "Ada", source: "account", verified: true },
+    { email: "leo@gmail.com", name: "Shared", displayName: "Shared", verified: true },
+  ] };
+  ui.context.other = other;
+  ui.context.fixtureAccount = account;
+  ui.context.fixturePrefs = prefs;
+  ui.run(`
+    state.accounts = [{...fixtureAccount, platform:'imap'}, other, {id:'dead', email:'dead@x.test', sendAs:[{email:'ghost@x.test', verified:true}]}];
+    state.accountId = 'aliases'; state.prefs.undoSend = 0;
+    resetDraftWrite = () => {}; syncScheduleFields = () => {}; paintComposeChrome = () => {};
+    paintQuoteBody = () => {}; scheduleComposeLayout = () => {};
+    globalThis.signatureLoads = []; globalThis.calls = []; globalThis.denySwitch = false;
+    fillSignatures = async (preserve) => { signatureLoads.push({ preserve, accountId: state.composeMeta.accountId }); };
+    loadScheduled = async () => {};
+    globalThis.original = {id:'source', accountId:'aliases', from:'client@client.example', to:['leo@hkbscl.com','leo@gmail.com'],
+      cc:['other@other.example'], subject:'Hello', messageId:'<msg@test>', threadId:'thread-a'};
+    call = async (channel, payload) => {
+      calls.push({ channel, payload });
+      if (channel !== 'mail:getComposeContext') return {};
+      if (denySwitch && payload.accountId === 'other') return { sendAs: [], fromAddress: payload.fromAddress, settings: fixturePrefs };
+      const owner = payload.accountId === 'other' ? other : fixtureAccount;
+      return { ...window.morrowComposePolicy.resolve(owner, payload.sourceMessageId ? original : null, fixturePrefs, payload.kind, payload.fromAddress), settings: fixturePrefs };
+    };
+  `);
+  await ui.run("openCompose(composeSeed(original, 'reply', fixtureAccount.email))");
+  const from = document.getElementById("compose-from");
+  assert.equal(ui.run("state.composeMeta.accountId"), "aliases");
+  assert.equal(from.value, "leo@hkbscl.com");
+  assert.match(document.getElementById("compose-to").value, /client@client.example/);
+  assert.match(document.getElementById("compose-from-note").textContent, /Mailbox: leo@gmail.com/);
+  assert.deepEqual(from.children.map((group) => group.label), ["leo@gmail.com", "ada@other.test"]);
+  const emails = from.children.flatMap((group) => group.children.map((option) => option.value));
+  assert.equal(emails.filter((email) => email === "leo@gmail.com").length, 1);
+  assert.ok(emails.includes("ada@other.test") && emails.includes("leo@hkbscl.com"));
+  assert.ok(!emails.includes("ghost@x.test"));
+  assert.equal(from.children[1].children[0].dataset.accountId, "other");
+  from.value = "leo@second.example"; ui.run("changeComposeFrom()");
+  assert.equal(ui.run("state.composeMeta.accountId"), "aliases");
+  assert.match(document.getElementById("compose-cc").value, /ops@second.example/);
+  assert.equal(ui.run("calls.filter(row => row.channel === 'mail:getComposeContext').length"), 1);
+  ui.run("state.draftId = 'draft-a'; state.draftRevision = 'rev'; denySwitch = true;");
+  from.value = "ada@other.test";
+  await ui.run("changeComposeFrom()");
+  assert.equal(ui.run("state.composeMeta.accountId"), "aliases");
+  assert.equal(ui.run("state.draftId"), "draft-a");
+  assert.equal(ui.run("state.composeMeta.threadId"), "thread-a");
+  assert.match(document.getElementById("compose-from-note").textContent, /Could not switch mailbox/);
+  ui.run("state.composeIdentity.signatureFollowsFrom = true; denySwitch = false;");
+  from.value = "ada@other.test";
+  await ui.run("changeComposeFrom()");
+  assert.equal(ui.run("state.composeMeta.accountId"), "other");
+  assert.equal(ui.run("state.draftId"), null);
+  assert.equal(ui.run("state.composeMeta.threadId"), "");
+  assert.equal(ui.run("state.composeMeta.inReplyTo"), "<msg@test>");
+  assert.equal(ui.run("composePayload(composeAccount()).accountId"), "other");
+  assert.equal(ui.run("composePayload(composeAccount()).fromAddress"), "ada@other.test");
+  assert.equal(ui.run("composePayload(composeAccount()).draftId"), undefined);
+  assert.doesNotMatch(document.getElementById("compose-cc").value, /manager@hkbscl.com|ops@second.example/);
+  assert.match(document.getElementById("compose-to").value, /client@client.example/);
+  assert.match(document.getElementById("compose-from-note").textContent, /Mailbox: ada@other.test/);
+  const switched = ui.run("calls.filter(row => row.channel === 'mail:getComposeContext')").at(-1);
+  assert.equal(switched.payload.accountId, "other");
+  assert.equal(switched.payload.fromAddress, "ada@other.test");
+  assert.equal(switched.payload.kind, "reply");
+  assert.equal(switched.payload.sourceMessageId, undefined);
+  assert.equal(ui.run("signatureLoads.at(-1).accountId"), "other");
+  assert.equal(ui.run("signatureLoads.at(-1).preserve"), false);
+  from.value = "leo@hkbscl.com";
+  await ui.run("changeComposeFrom()");
+  assert.equal(ui.run("state.composeMeta.accountId"), "aliases");
+  assert.match(document.getElementById("compose-cc").value, /manager@hkbscl.com/);
+  assert.equal(ui.run("composePayload(composeAccount()).accountId"), "aliases");
+}
+
+async function run() { decisions(); brainLines(); await advancedDisclosure(); await hostRoundTrips(); await rendererFlows(); await crossAccountFrom(); console.log("compose-identity-ok"); }
 module.exports = { run, rendererFlows };
 if (require.main === module) run().catch((error) => { console.error(error); process.exitCode = 1; });
