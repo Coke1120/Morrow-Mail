@@ -336,6 +336,25 @@ function listRows(rows, details = false) {
   return rows.map(row => details ? detailOf(row, generations) : listRow(row, generations));
 }
 
+function conversationRows(rows, selectedId) {
+  const unique = [], positions = new Map();
+  for (const row of rows) {
+    // Gmail folder copies share a provider message ID. RFC Message-ID, UID
+    // alone and missing IDs cannot prove that two deliveries are the same.
+    const providerId = row.gmail_id;
+    if (!row.account_id || row.draft_pending || typeof providerId !== "string"
+        || !providerId || providerId.length > 512 || /[\s\x00-\x1f]/.test(providerId)) {
+      unique.push(row);
+      continue;
+    }
+    const key = JSON.stringify([row.account_id, providerId]);
+    const index = positions.get(key);
+    if (index === undefined) { positions.set(key, unique.length); unique.push(row); }
+    else if (row.id === selectedId) unique[index] = row;
+  }
+  return unique;
+}
+
 function detailOf(row, generations) {
   const presented = textEncoding.presentMessage({
     subject: row.subject || "",
@@ -1019,7 +1038,8 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
     if (client.gmail) {
       // IMAP still uses HEADER_BATCH. A Gmail page of 100 full reads is the
       // whole per-user minute, so this pass stays on the smaller paced page.
-      const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: gmailPace.SYNC_PAGE });
+      const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: gmailPace.SYNC_PAGE,
+        deadline: bounds.deadline, shouldYield: () => priorityWaiting(account.id) });
       assertAccountCurrent(account);
       clearStrikes(account.id);
       emitFolderSync(account.id, folderPath, result.bootstrapped);
@@ -2200,6 +2220,7 @@ async function ensureBody(row, options) {
   if (!row || row.draft_pending || !row.uid) return row;
   const account = db.accountById(row.account_id);
   if (!account) return row;
+  const generation = accountEpochs.get(account.id) || 0;
   const completeHeaders = value => {
     if (!options?.replyHeaders) return value.recipient_headers_json != null;
     try { return Array.isArray(JSON.parse(value.recipient_headers_json).replyTo); } catch { return false; }
@@ -2263,7 +2284,19 @@ async function ensureBody(row, options) {
       noteRateLimit(account.id, error);
       if (outcome) outcome.rateLimited = true;
     }
-    return row;
+    if (!db.isReady()) return row;
+    const current = db.messageById(row.id);
+    if (!current || generation !== (accountEpochs.get(account.id) || 0)
+        || current.account_id !== row.account_id || current.folder_path !== row.folder_path
+        || current.uid !== row.uid || current.uid_validity !== row.uid_validity || current.draft_pending) return current || row;
+    if (current.body_complete !== 1) {
+      if (!background && !usableStoredBody(current)) {
+        throw Object.assign(new Error("This message could not be downloaded. Check the mailbox connection and choose Retry download."), { code: "body_download_failed" });
+      }
+      db.updateMessage(row.id, { body_warning: "The complete message could not be downloaded. The cached content is shown. Choose Retry download to try again." });
+      return db.messageById(row.id);
+    }
+    return current;
   } finally {
     bodyProgress.finish(bodyTask, bodyResult);
   }
@@ -3788,7 +3821,7 @@ function answer(channel, args, event) {
         row = db.messageById(row.id);
         if (!row || row.account_id !== stored.account_id) return fail("email-gone", "That message is no longer in the mailbox.");
         if (paintFirst) queueOpenFill(stored);
-        const members = listRows(db.messagesByThread(row.account_id, row.thread_id, { headersOnly: true }));
+        const members = listRows(conversationRows(db.messagesByThread(row.account_id, row.thread_id, { headersOnly: true }), row.id));
         return ok({
           email: detailOf(row),
           isThread: members.length > 1,
@@ -3820,7 +3853,7 @@ function answer(channel, args, event) {
       const rows = accountId
         ? db.messagesByThread(accountId, threadId, { headersOnly })
         : db.selectMessages({ tokens: [], limit: 50 }, { headersOnly }).filter((row) => row.thread_id === threadId);
-      return ok(listRows(rows, !headersOnly));
+      return ok(listRows(conversationRows(rows, params?.emailId), !headersOnly));
     }
     case "mail:markRead":
     case "mail:markReadBatch":

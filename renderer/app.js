@@ -6515,6 +6515,7 @@ function renderReader(focus) {
     error.textContent = email.bodyError;
     if (isReaderWindow()) pane.appendChild(readerCloseBar());
     pane.append(heading, from, when, error);
+    pane.appendChild(bodyRetryButton(email));
     if (focus) {
       heading.tabIndex = -1;
       heading.focus();
@@ -6579,11 +6580,26 @@ function appendMessageBody(parent, email, imagesOn) {
   return wrap;
 }
 
+function bodyRetryButton(email) {
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "ghost";
+  retry.dataset.action = "retry-body";
+  retry.textContent = "Retry download";
+  retry.addEventListener("click", () => guard(async () => {
+    retry.disabled = true;
+    try { await openMessage(email.id, false, true); }
+    finally { retry.disabled = false; }
+  }));
+  return retry;
+}
+
 function renderBody(pane, email) {
   if (email?.bodyWarning) {
     const warning = document.createElement("p");
     warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = email.bodyWarning;
     pane.appendChild(warning);
+    pane.appendChild(bodyRetryButton(email));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
   appendMessageBody(pane, email, remoteVisible(state.prefs.images, allowed));
@@ -9883,7 +9899,7 @@ function paintReaderPending(email) {
   pane.append(heading, from, when, pending);
 }
 
-async function openMessage(emailId, focus) {
+async function openMessage(emailId, focus, full = false) {
   const gen = ++openGen;
   const known = listedMessage(emailId);
   const showing = state.email && String(state.email.id) === String(emailId)
@@ -9895,7 +9911,7 @@ async function openMessage(emailId, focus) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId });
+    data = await call("mail:openEmail", { emailId, ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -9915,6 +9931,7 @@ async function openMessage(emailId, focus) {
       listed = await call("mail:listThreadMessages", {
         threadId: email.threadId,
         accountId: email.accountId,
+        emailId: email.id,
         headersOnly: true,
       });
     } catch {
@@ -10264,6 +10281,13 @@ function commitComposeSignature(previous, next, html) {
     return;
   }
   paintComposeEditor(committed.body, "");
+}
+
+function composeSignatureUntouched() {
+  if (!signatureUntouched($("compose-body").value, state.signatureText)) return false;
+  if (!composeEditorLive() || !state.signatureText) return true;
+  const node = $("compose-editor").querySelector("[data-compose-signature]");
+  return !!node && node.innerHTML === sanitizeComposeHtml(state.signatureHtml || toHtml(state.signatureText));
 }
 
 function syncComposePlainFromEditor() {
@@ -10974,7 +10998,7 @@ function showSignatureEmpty(message) {
   empty.textContent = message;
 }
 
-async function fillSignatures(preserveBody) {
+async function fillSignatures(preserveBody, fromChange = false) {
   const gen = signatureGen += 1;
   const accountId = composeAccount()?.id;
   let pack = null;
@@ -10991,10 +11015,14 @@ async function fillSignatures(preserveBody) {
   state.signaturePack = pack;
   state.signatures = rows;
   const identity = state.composeIdentity;
+  const replaceBody = !preserveBody && (!fromChange || composeSignatureUntouched());
   if (!rows.length) {
     showSignatureEmpty("No signatures.");
-    commitComposeSignature(state.signatureText, "");
-    if (identity) identity.signatureFollowsFrom = !preserveBody;
+    if (replaceBody) {
+      commitComposeSignature(state.signatureText, "");
+      if (fromChange) state.signatureText = "";
+    }
+    if (identity) identity.signatureFollowsFrom = replaceBody;
     return;
   }
   const select = $("signature");
@@ -11003,7 +11031,7 @@ async function fillSignatures(preserveBody) {
   select.replaceChildren();
   select.append(option("", "No signature"));
   for (const row of rows) select.append(option(String(row.id), signatureName(row)));
-  if (preserveBody) {
+  if (!replaceBody) {
     select.value = "";
     if (identity) identity.signatureFollowsFrom = false;
     return;
@@ -11013,6 +11041,7 @@ async function fillSignatures(preserveBody) {
   select.value = match ? String(match.id) : "";
   const text = signaturePlain(match);
   commitComposeSignature(state.signatureText, text, match ? signatureMarkup(match) : "");
+  if (fromChange) state.signatureText = text;
   if (identity) identity.signatureFollowsFrom = true;
 }
 
@@ -11960,7 +11989,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
     paintComposeFromPicker(state.composeIdentity);
     $("compose-from").value = fromAddress;
     applyComposeRecipients();
-    await fillSignatures(!follows);
+    await fillSignatures(!follows, true);
     if (session !== state.composeSession) return;
     paintComposeIdentity();
     paintComposeNote();
@@ -12197,7 +12226,7 @@ function publishReaderTitle(subject) {
   document.title = title.slice(0, 180) + " — Morrow Mail";
 }
 
-function showReaderOpenError(message) {
+function showReaderOpenError(message, emailId) {
   invalidateReaderOpen();
   const pane = $("reader");
   if (!pane) return;
@@ -12209,6 +12238,7 @@ function showReaderOpenError(message) {
   error.className = "hint error";
   error.textContent = message || "That message could not be opened.";
   pane.append(readerCloseBar(), heading, error);
+  if (emailId) pane.appendChild(bodyRetryButton({ id: emailId }));
 }
 
 async function bootReaderWindow() {
@@ -12253,7 +12283,7 @@ async function bootReaderWindow() {
     opened = await call("mail:openEmail", { emailId: messageId, accountId: accountId });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    showReaderOpenError(message);
+    showReaderOpenError(message, messageId);
     showStatus(message, true);
     return;
   }

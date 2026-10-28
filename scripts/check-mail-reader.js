@@ -765,7 +765,7 @@ function assertReaderWindowMatchesShellActions() {
   broken.state.email = { ...email, bodyError: 'Could not download this message.' };
   broken.state.thread = rows;
   broken.renderReader(false);
-  assert.deepEqual(actionNames(broken.reader), ['close-reader']);
+  assert.deepEqual(actionNames(broken.reader), ['close-reader', 'retry-body']);
   assert.match(readerText(broken.reader), /Could not download this message/);
   assert.doesNotMatch(readerText(broken.reader), /Reply All/);
   broken.reader.querySelector('[data-action="close-reader"]').click();
