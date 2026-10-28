@@ -171,9 +171,9 @@ test("trusted Gmail category decides rate limits; legacy text heuristic stays", 
 
 test("engine sync activity, IPC, Debug log and actual DOM keep safe details without a false auth gate", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-gmail-diagnostics-"));
-  const names = ["MORROW_MAIL_DIR", "MORROW_USER_DATA", "MORROW_AI_CONFIG_DIR", "MORROW_MAIL_SECRETS", "MORROW_GOOGLE_OAUTH_FILE", "MORROW_GOOGLE_OAUTH_JSON"];
+  const names = ["MORROW_MAIL_DIR", "MORROW_USER_DATA", "MORROW_AI_CONFIG_DIR", "MORROW_MAIL_SECRETS", "MORROW_GOOGLE_OAUTH_FILE", "MORROW_GOOGLE_OAUTH_JSON", "MORROW_GMAIL_PACE"];
   const originalEnv = Object.fromEntries(names.map(name => [name, process.env[name]]));
-  Object.assign(process.env, { MORROW_MAIL_DIR: directory, MORROW_USER_DATA: directory, MORROW_AI_CONFIG_DIR: directory, MORROW_MAIL_SECRETS: "memory",
+  Object.assign(process.env, { MORROW_MAIL_DIR: directory, MORROW_USER_DATA: directory, MORROW_AI_CONFIG_DIR: directory, MORROW_MAIL_SECRETS: "memory", MORROW_GMAIL_PACE: "0",
     MORROW_GOOGLE_OAUTH_JSON: JSON.stringify({ installed: { client_id: "diagnostics.apps.googleusercontent.com", client_secret: "synthetic-only" } }) });
   delete process.env.MORROW_GOOGLE_OAUTH_FILE;
   const priorFetch = global.fetch, net = require("node:net"), priorConnect = net.Socket.prototype.connect;
@@ -299,7 +299,7 @@ test("engine sync activity, IPC, Debug log and actual DOM keep safe details with
     ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog"); ui.run("paintFeatureCatalog()");
     for (const id of ["features-catalog", "settings-gmail-error-help", "gmail-error-diagnostics-note"]) {
       const text = dom.window.document.getElementById(id).textContent;
-      for (const pattern of [/403/, /permission/i, /domain policy/i, /unknown/i]) assert.match(text, pattern);
+      for (const pattern of [/403/, /permission/i, /domain policy/i, /unknown/i, /per-user quota/, /20 Gmail messages per folder pass/, /first two pauses are 30 seconds/]) assert.match(text, pattern);
     }
   } finally {
     await engine.stopIdle(); require("../host/mail/actions").resetForTests(); await db.close(); dom.window.close();

@@ -1,3 +1,6 @@
+const RATE_LIMIT_PAUSE_MS = 30 * 1000;
+const RATE_LIMIT_CAP_MS = 15 * 60 * 1000;
+
 function providerFailure(status) {
   if (status === 400) return "The provider rejected the request format (HTTP 400). Check for an app update.";
   if (status === 401) return "Authorization expired. Grant access again.";
@@ -15,16 +18,27 @@ function headerValue(headers, name) {
 function retryAfterMs(source) {
   if (!source) return null;
   if (Number.isFinite(source.retryAfterMs) && source.retryAfterMs >= 0) {
-    return Math.min(source.retryAfterMs, 15 * 60 * 1000);
+    return Math.min(source.retryAfterMs, RATE_LIMIT_CAP_MS);
   }
   const header = source.headers ? headerValue(source.headers, "retry-after") : "";
   const raw = header || source.retryAfter || "";
   if (raw == null || String(raw).trim() === "") return null;
   const text = String(raw).trim();
-  if (/^\d+(\.\d+)?$/.test(text)) return Math.min(Number(text) * 1000, 15 * 60 * 1000);
+  if (/^\d+(\.\d+)?$/.test(text)) return Math.min(Number(text) * 1000, RATE_LIMIT_CAP_MS);
   const when = Date.parse(text);
-  if (Number.isFinite(when)) return Math.min(Math.max(when - Date.now(), 0), 15 * 60 * 1000);
+  if (Number.isFinite(when)) return Math.min(Math.max(when - Date.now(), 0), RATE_LIMIT_CAP_MS);
   return null;
+}
+
+// First two quota hits stay a short blip. Later hits grow and still honor a
+// longer Retry-After, but they do not jump straight to the 15 minute cap.
+function quotaPauseMs(strikes, hinted) {
+  const count = Math.max(1, Math.floor(Number(strikes) || 1));
+  const hint = hinted == null || !Number.isFinite(Number(hinted)) ? null : Math.min(Math.max(0, Number(hinted)), RATE_LIMIT_CAP_MS);
+  if (count < 3) return hint == null ? RATE_LIMIT_PAUSE_MS : hint;
+  const step = Math.min(RATE_LIMIT_CAP_MS, RATE_LIMIT_PAUSE_MS * 2 ** Math.min(count - 1, 8));
+  if (hint == null) return step;
+  return Math.min(RATE_LIMIT_CAP_MS, Math.max(step, hint));
 }
 
 function isRateLimit(error) {
@@ -133,6 +147,9 @@ module.exports = {
   apiJson,
   providerFailure,
   retryAfterMs,
+  quotaPauseMs,
+  RATE_LIMIT_PAUSE_MS,
+  RATE_LIMIT_CAP_MS,
   isRateLimit,
   safeId,
   cleanName,
