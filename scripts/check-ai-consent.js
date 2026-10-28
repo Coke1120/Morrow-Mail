@@ -45,6 +45,22 @@ function fixture(t) {
     allow: (background = false) => consent.grant({ token: consent.status().token, manual: true, background }) };
 }
 
+test("an unready saved target names the missing step and still refuses grant", () => {
+  const consent = createConsent({
+    directory: () => "/synthetic-unready-consent",
+    config: () => ({ authMode: "api_key", baseUrl: "https://synthetic.invalid/v1", model: "", apiKey: "" }),
+    account: () => ({ connected: false, planEnabled: false, activeId: "", accounts: [] }),
+    background() { throw new Error("background must not run"); },
+  });
+  const status = consent.status();
+  assert.equal(status.ready, false);
+  assert.equal(status.manual, false);
+  assert.match(status.blocker, /Save an API key and a model, then review this connection again/);
+  assert.doesNotMatch(status.blocker, /synthetic/);
+  assert.throws(() => consent.grant({ token: status.token, manual: true, background: false }), /permission changed/);
+  assert.equal(consent.status().manual, false);
+});
+
 test("existing API/ChatGPT/background settings, corrupt files and old disclosures never grandfather permission", async t => {
   const f = fixture(t);
   assert.equal(f.consent.status().manual, false);

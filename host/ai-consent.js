@@ -6,6 +6,7 @@ const crypto = require("node:crypto");
 const VERSION = 1;
 const DISCLOSURE = "AI can send mail sender addresses, subjects, dates, snippets and message metadata; selected message text and quoted history; draft text, signatures, selections and instructions; Brain profile, identity, categories and writing rules; Agent notes and recent conversation; and, for calendar-enabled skills and Agent questions, event titles, times and locations. It uses the context needed for translation, reply suggestions, writing, profile learning, triage, skills and answers. Attachment files are not included by these AI paths. Mail search, cached reading and ordinary mail/calendar operations do not use the AI provider.";
 const BACKGROUND = "Separately allow automatic Brain profile refresh, triage when Agent opens, reply suggestions when a reply composition opens, and saved scheduled skills while Morrow Mail is open. These can send the same relevant context without another AI button press. Opening Brain may refresh a stale profile. With background permission off, use explicit AI actions instead.";
+const unmet = steps => `${steps[0][0].toUpperCase()}${steps[0].slice(1)}${steps.length > 1 ? ` and ${steps.slice(1).join(" and ")}` : ""}, then review this connection again.`;
 const error = message => Object.assign(new Error(message), { code: "ai-consent-required" });
 const hash = value => crypto.createHash("sha256").update(value).digest("hex");
 
@@ -27,26 +28,35 @@ function createConsent({ directory = () => require("./ai-config").userDataDir(),
     fs.renameSync(temporary, location());
   }
   function target(cfg = config()) {
-    let destination, model, registration = "", label, ready;
+    let destination, model, registration = "", label, ready, blocker = "";
     if (cfg.authMode === "chatgpt") {
       const status = account();
       registration = status.activeId || "";
       destination = "https://api.openai.com/v1/responses";
       model = cfg.chatgptModel || "";
       label = `OpenAI · ChatGPT · ${(status.accounts || []).find(row => row.id === registration)?.label || "no account connected"}`;
-      ready = !!status.connected && !!status.planEnabled && !!model;
+      const steps = [];
+      if (!status.connected) steps.push("connect ChatGPT");
+      else if (!status.planEnabled) steps.push("enable ChatGPT plan usage");
+      if (!model) steps.push("save a ChatGPT model");
+      ready = steps.length === 0;
+      if (!ready) blocker = unmet(steps);
     } else {
       const url = new URL(require("./ai-config").completionsUrl(cfg.baseUrl));
       if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.hash) throw error("Use an HTTP(S) AI endpoint without embedded login credentials or a fragment.");
       destination = url.href;
       model = cfg.model || "";
       label = `API / custom endpoint · ${url.host}`;
-      ready = !!cfg.apiKey && !!model;
+      const steps = [];
+      if (!cfg.apiKey) steps.push("save an API key");
+      if (!model) steps.push(steps.length ? "a model" : "save a model");
+      ready = steps.length === 0;
+      if (!ready) blocker = unmet(steps);
     }
     const url = new URL(destination);
     const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
     return { fingerprint: hash(JSON.stringify([VERSION, cfg.authMode || "api_key", destination, model, registration, cfg.authMode === "chatgpt" ? "" : cfg.apiKey || ""])),
-      destination: `${url.origin}${url.pathname}${url.search ? " (with query parameters)" : ""}`, model, label, ready, local };
+      destination: `${url.origin}${url.pathname}${url.search ? " (with query parameters)" : ""}`, model, label, ready, blocker, local };
   }
   function state() {
     const selected = target(), record = read();

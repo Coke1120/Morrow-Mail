@@ -35,7 +35,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     const current = db.accountById(account.id);
     if (!migrated(current) || current.gmail_generation !== incarnation) throw Object.assign(new Error("This Gmail connection changed. Start the action again."), { code: "account_removed", operationIssued: false });
   }
-  api ||= createGmailMailApi({ accessToken: async () => token, check: alive, signal });
+  api ||= createGmailMailApi({ accessToken: async () => token, check: alive, signal, accountKey: account.id });
   const rfcChecks = new Map();
   async function folders() {
     alive();
