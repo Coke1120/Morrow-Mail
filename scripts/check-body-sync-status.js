@@ -51,7 +51,8 @@ function fixture() {
   const nodes = new Map();
   const element = () => ({ textContent: "", children: [], hidden: false, open: false, attrs: {}, dataset: {},
     classList: { add() {}, remove() {}, toggle() {} },
-    setAttribute(k,v) { this.attrs[k] = v; }, replaceChildren(...items) { this.children = items; },
+    setAttribute(k,v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; },
+    replaceChildren(...items) { this.children = items; },
     append(...items) { this.children.push(...items); }, appendChild(item) { this.children.push(item); },
     querySelectorAll() { return []; }, closest() { return null; } });
   const node = id => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
@@ -67,16 +68,18 @@ async function rendererChecks() {
     accounts: [{ accountId: "a", state: "running", source: "visible" }, { accountId: "b", state: "paused", reason: "rate-limit" }] };
   ui.context.snapshot = payload;
   assert.equal(ui.run("rememberBodySync(snapshot)"), true);
-  node("body-sync").open = true; document.activeElement = node("body-sync-label");
+  document.activeElement = node("refresh");
   ui.run("paintBodySyncStatus()");
   const text = n => [n.textContent, ...n.children.map(text)].join(" ");
   assert.match(node("body-sync-label").textContent, /Bodies.*Downloading/);
   assert.match(text(node("body-sync-accounts")), /Alpha.*Message list.*Beta.*rate limit/);
   assert.match(node("body-sync-help").textContent, /365 days/);
   assert.doesNotMatch(text(node("body-sync")), /100%|all bodies cached|remaining/i);
-  assert.equal(node("body-sync").open, true);
-  assert.equal(document.activeElement, node("body-sync-label"));
+  assert.equal(node("body-sync").hidden, false);
+  assert.equal(node("refresh").attrs["aria-describedby"], "body-sync");
+  assert.equal(document.activeElement, node("refresh"), "painting the tooltip leaves focus on Sync");
   ui.run("state.view='calendar';paintBodySyncStatus()"); assert.equal(node("body-sync").hidden, true);
+  assert.equal(node("refresh").attrs["aria-describedby"], undefined);
   ui.run("state.view='mail';state.accounts=[state.accounts[1]];paintBodySyncStatus()");
   assert.doesNotMatch(text(node("body-sync-accounts")), /Alpha/, "removed accounts never survive in display");
   ui.context.snapshot = { ...payload, sequence: 1 };
@@ -99,18 +102,30 @@ async function rendererChecks() {
   ui.run("rememberBodySync(snapshot);paintBodySyncStatus()");
   assert.match(text(node("body-sync-accounts")), /Last body download finished/);
   assert.match(node("body-sync-label").textContent, /Idle/);
+  ui.run("state.view='mail';state.accountId='b';state.folderId='Inbox';rememberSyncStatus({accountId:'b',folderId:'Inbox',accountLabel:'Beta',folderLabel:'Inbox',state:'done',lastSuccessAt:1});paintSyncControl();paintBodySyncStatus()");
+  assert.match(node("sync-tip-line").textContent, /Beta/);
+  assert.match(node("refresh").title, /Beta/, "sync detail stays on the title until hover");
   const root = path.join(__dirname, "..");
   const html = fs.readFileSync(path.join(root,"renderer/index.html"),"utf8");
-  assert.match(html, /<details id="body-sync"/);
+  const head = html.slice(html.indexOf('id="list-head"'), html.indexOf('id="message-list"'));
+  const sync = html.slice(html.indexOf('id="sync-control"'), html.indexOf('id="search-form"'));
+  assert.doesNotMatch(head, /body-sync/, "list chrome has no Bodies disclosure");
+  assert.doesNotMatch(html, /<details id="body-sync"/);
+  assert.match(sync, /id="refresh"[^>]*aria-describedby="body-sync"/);
+  assert.match(sync, /id="body-sync" class="body-sync" role="tooltip"/);
+  assert.match(sync, /id="sync-tip-line"[^>]*aria-hidden="true"/);
   assert.match(html, /id="body-sync-label" role="status" aria-live="polite"/);
   assert.match(html, /All mailboxes.*separate from list sync/);
+  const css = fs.readFileSync(path.join(root,"renderer/app.css"),"utf8");
+  assert.match(css, /\.sync-slot:hover > \.body-sync:not\(\[hidden\]\)/);
+  assert.match(css, /#refresh:focus-visible ~ \.body-sync:not\(\[hidden\]\)/);
   const preload = fs.readFileSync(path.join(root,"renderer/preload.js"),"utf8");
   assert.match(preload, /"mail:getBodySyncStatus"/); assert.match(preload, /"mail:bodySyncStatus"/);
   const catalog = require("../renderer/features-catalog");
   ui.context.window.morrowFeaturesCatalog = catalog;
   ui.run("paintFeatureCatalog()");
-  assert.match(text(node("features-catalog")), /Full message bodies.*Mail → Bodies.*no whole-mailbox total or percentage.*3 MiB source limit/);
+  assert.match(text(node("features-catalog")), /Full message bodies.*Hover or focus Sync.*no whole-mailbox total or percentage.*3 MiB source limit/);
 }
-async function run() { trackerChecks(); await rendererChecks(); console.log("body-sync-status-ok (sessions, ownership, states, privacy, synthetic disclosure; no live I/O)"); }
+async function run() { trackerChecks(); await rendererChecks(); console.log("body-sync-status-ok (sessions, ownership, states, privacy, sync tooltip; no live I/O)"); }
 module.exports = { run };
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });

@@ -146,7 +146,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
       hasAttachments: attachments.some(row => !row.isInlineFromApi || !row.mimeType.startsWith("image/")), attachments,
       htmlBody: presented.htmlBody, textBody: presented.textBody, bodyComplete: complete, bodyWarning };
   }
-  async function adopt(data, { full = false, after = null, cache = true } = {}) {
+  async function adopt(data, { full = false, after = null, cache = true, committed } = {}) {
     const value = await normalize(data, full);
     const legacy = db.gmailLegacy(account.id, value.rfcMessageId);
     if (legacy.some(row => !row.draft_pending)) {
@@ -154,13 +154,16 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
       value.legacyVerified = true;
     }
     alive();
-    const mapping = db.rememberGmail(account.id, value);
-    const paths = pathsFor(value.labelIds);
-    if (cache && (after == null || value.listSortTs >= after || db.gmailCopies(account.id, data.id).length)) {
-      db.applyGmailMessage(account.id, paths, value);
-      db.pruneGmailCopies(account.id, value.providerId, paths);
-    }
-    return { ...value, uid: mapping.local_uid, validity: incarnation };
+    return db.transaction(() => {
+      const mapping = db.rememberGmail(account.id, value);
+      const paths = pathsFor(value.labelIds);
+      if (cache && (after == null || value.listSortTs >= after || db.gmailCopies(account.id, data.id).length)) {
+        db.applyGmailMessage(account.id, paths, value);
+        db.pruneGmailCopies(account.id, value.providerId, paths);
+      }
+      committed?.();
+      return { ...value, uid: mapping.local_uid, validity: incarnation };
+    });
   }
   async function resolve(path, uid, validity, localMessageId, { readOnly = false } = {}) {
     alive();
@@ -180,20 +183,66 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     db.bindGmailAlias(row, providerId);
     return mapping;
   }
-  async function sync(path, { horizonDays = null, limit = 40 } = {}) {
+  async function sync(path, { horizonDays = null, limit = 20, deadline = Infinity, shouldYield = () => false } = {}) {
     alive();
     const selected = folder(path), after = Number(horizonDays) > 0 ? Date.now() - Number(horizonDays) * 86400000 : null;
     let state = db.gmailSyncState(account.id, path);
     if (state.horizonDays !== horizonDays) state = { verifyNeeded: true };
+    limit = Math.max(1, Math.min(20, Math.floor(Number(limit) || 20)));
+    let reads = 0;
+    const stop = () => reads >= limit || Date.now() >= deadline || shouldYield();
+    const save = () => { alive(); db.gmailSyncState(account.id, path, state); };
+    async function read(providerId, committed) {
+      reads += 1;
+      let data;
+      try { data = await api.getMessage(providerId); }
+      catch (error) {
+        if (error.status !== 404) throw error;
+        alive();
+        db.transaction(() => { db.pruneGmailCopies(account.id, providerId, []); committed(); });
+        return;
+      }
+      // Message data and its resume position commit together, with no await in
+      // the transaction. A failed checkpoint cannot skip unapplied changes.
+      await adopt(data, { after, committed });
+    }
     async function verifyCached() {
       if (!state.verifyNeeded) return;
       const rows = db.gmailVerifyPage(account.id, path, state.verifyBefore || 0);
       for (const row of rows) {
-        try { await adopt(await api.getMessage(row.gmail_id), { after }); }
-        catch (error) { if (error.status === 404) db.pruneGmailCopies(account.id, row.gmail_id, []); else throw error; }
+        if (stop()) return;
+        await read(row.gmail_id, () => { state.verifyBefore = row.uid; save(); });
       }
-      state.verifyBefore = rows.at(-1)?.uid || 0;
       if (rows.length < 20) { state.verifyNeeded = false; state.verifyBefore = 0; }
+      save();
+    }
+    async function drainPage() {
+      const pending = state.pending;
+      while (pending.offset < pending.ids.length) {
+        if (stop()) return;
+        await read(pending.ids[pending.offset], () => { pending.offset += 1; save(); });
+      }
+      if (pending.kind === "history") {
+        state.historyPageToken = pending.nextPageToken;
+        if (!pending.nextPageToken && pending.historyId) state.historyId = pending.historyId;
+      } else {
+        state.pageToken = pending.nextPageToken;
+        state.complete = !pending.nextPageToken;
+      }
+      delete state.pending;
+      save();
+    }
+    const result = () => ({ paused: false, bootstrapped: !!state.complete && !state.pending && !state.verifyNeeded && !state.historyPageToken });
+    if (state.pending) {
+      await drainPage();
+      if (!state.pending) await verifyCached();
+      return result();
+    }
+    // Finish cache verification before admitting another history page, so a
+    // busy mailbox cannot starve verification with a fresh page every pass.
+    if (state.complete && state.verifyNeeded) {
+      await verifyCached();
+      if (state.verifyNeeded || stop()) return result();
     }
     const filter = { labelIds: selected.provider_id === ALL ? [] : [selected.provider_id],
       includeSpamTrash: ["TRASH", "SPAM"].includes(selected.provider_id), query: after == null ? "" : `after:${Math.floor(after / 1000)}`, limit };
@@ -206,32 +255,23 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
           for (const item of [...(event.messagesAdded || []), ...(event.labelsAdded || []), ...(event.labelsRemoved || [])]) changed.add(item.message.id);
           for (const item of event.messages || []) changed.add(item.id);
         }
-        for (const providerId of deleted) db.pruneGmailCopies(account.id, providerId, []);
-        for (const providerId of changed) {
-          if (deleted.has(providerId)) continue;
-          try { await adopt(await api.getMessage(providerId), { after }); }
-          catch (error) { if (error.status === 404) db.pruneGmailCopies(account.id, providerId, []); else throw error; }
-        }
-        await verifyCached();
+        state.pending = { kind: "history", ids: [...changed].filter(id => !deleted.has(id)), offset: 0,
+          nextPageToken: page.nextPageToken || "", historyId: page.historyId || "" };
         alive();
-        state = { ...state, historyPageToken: page.nextPageToken || "", ...(!page.nextPageToken && page.historyId ? { historyId: page.historyId } : {}) };
-        db.gmailSyncState(account.id, path, state);
-        return { paused: false, bootstrapped: true };
+        db.transaction(() => { for (const providerId of deleted) db.pruneGmailCopies(account.id, providerId, []); save(); });
+        await drainPage();
+        return result();
       } catch (error) { if (error.code !== "history_expired") throw error; state = { verifyNeeded: true }; }
     }
     if (!state.historyId) state = { ...state, horizonDays, historyId: String((await api.profile()).historyId || ""), pageToken: "", complete: false };
     const page = await api.listMessages({ ...filter, pageToken: state.pageToken || "" });
     const ids = new Set(page.messages.map(row => row.id));
     if (state.pageToken) for (const row of (await api.listMessages({ ...filter, limit: Math.min(limit, 20) })).messages) ids.add(row.id);
-    for (const providerId of ids) {
-      try { await adopt(await api.getMessage(providerId), { after }); }
-      catch (error) { if (error.status !== 404) throw error; }
-    }
-    await verifyCached();
-    alive();
-    state = { ...state, horizonDays, pageToken: page.nextPageToken || "", complete: !page.nextPageToken };
-    db.gmailSyncState(account.id, path, state);
-    return { paused: false, bootstrapped: state.complete };
+    state.pending = { kind: "bootstrap", ids: [...ids], offset: 0, nextPageToken: page.nextPageToken || "" };
+    save();
+    await drainPage();
+    if (!state.pending) await verifyCached();
+    return result();
   }
   async function source(path, uid, validity, { metadataOnly = false } = {}) {
     const mapped = await resolve(path, uid, validity, undefined, { readOnly: true });

@@ -661,6 +661,7 @@ button.icon-label {
 button.icon-label svg { display: block; flex: none; }
 
 .sync-slot {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -679,12 +680,62 @@ button.icon-label svg { display: block; flex: none; }
   white-space: nowrap;
 }
 
-.body-sync { margin: 2px 0 4px; color: var(--muted); font-size: 11px; }
-.body-sync summary { display: list-item; list-style-position: inside; width: fit-content; max-width: 100%; padding: 4px 0; cursor: pointer; }
-.body-sync summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; border-radius: 4px; }
-.body-sync summary svg { vertical-align: -2px; margin-right: 4px; }
-.body-sync[data-state="running"] summary { color: var(--accent-ink); }
-.body-sync > div { max-height: 180px; overflow: auto; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; }
+/* Bodies status rides on Sync. Clipped until hover or keyboard focus so aria-describedby still works. */
+.body-sync {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  right: 0;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+  pointer-events: none;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: left;
+}
+.body-sync[hidden] { display: none !important; }
+.sync-slot:hover > .body-sync:not([hidden]),
+#refresh:focus-visible ~ .body-sync:not([hidden]) {
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(340px, calc(var(--list, 360px) - 28px));
+  height: auto;
+  max-height: 220px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  clip: auto;
+  clip-path: none;
+  white-space: normal;
+  pointer-events: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: var(--shadow-card);
+}
+.sync-slot:hover > .body-sync:not([hidden])::before,
+#refresh:focus-visible ~ .body-sync:not([hidden])::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -6px;
+  height: 6px;
+}
+#list-refresh-slot .sync-slot { z-index: 5; }
+.body-sync p { margin: 4px 0; }
+.body-sync .sync-tip-line { margin: 0 0 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); color: var(--ink-mid); }
+.body-sync .sync-tip-line:empty { display: none; margin: 0; padding: 0; border: 0; }
+#body-sync-label { color: var(--ink); font-weight: 600; }
+.body-sync[data-state="running"] #body-sync-label { color: var(--accent-ink); }
 .body-sync ul { display: grid; gap: 5px; list-style: none; margin: 6px 0; padding: 0; }
 .body-sync li { overflow-wrap: anywhere; }
 .body-sync strong { color: var(--ink); font-weight: 600; }
@@ -5574,3 +5625,4 @@ html[data-window="translate"] #reader .translate-column h2 {
 #chatgpt-panel a { color: var(--accent, currentColor); text-decoration: underline; }
 #chatgpt-manual { margin: 12px 0; }
 #chatgpt-welcome { margin: 12px 0; padding: 12px; border: 1px solid currentColor; border-radius: 8px; }
+pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }

@@ -241,6 +241,7 @@ async function assertDownloadedBodyStaysOnTheRequestedUid() {
   const withBody = { uid: 9, envelope: { subject: 'Chosen' }, source: source('Chosen', 'Chosen body'), flags: new Set(['\\Seen']) };
   const merged = await remote.fetchSource(fakeImap([flagsOnly, withBody]), 'INBOX', 9, 4);
   assert.match(merged.textBody || '', /Chosen body/);
+  assert.equal(await remote.fetchSource(fakeImap([flagsOnly]), 'INBOX', 9, 4), null);
 
   const stored = new Map();
   stored.set('a', {
@@ -248,8 +249,9 @@ async function assertDownloadedBodyStaysOnTheRequestedUid() {
     body_complete: 0, subject: 'Alpha', html_body: null, text_body: null, recipient_headers_json: null,
   });
   const mismatch = vm.createContext({
-    bodyProgress: createBodyProgress(), accountEpochs: new Map(),
+    bodyProgress: createBodyProgress(), accountEpochs: new Map(), http: require('../host/mail/provider-http'),
     db: {
+      isReady: () => true,
       accountById: () => ({ id: 'acct' }),
       messageById: (id) => stored.get(id) || null,
       updateMessage(id, patch) { Object.assign(stored.get(id), patch); },
@@ -266,10 +268,11 @@ async function assertDownloadedBodyStaysOnTheRequestedUid() {
       }),
     },
   });
+  vm.runInContext(between(engine, 'function storedBodyText', '// Visible-list prefetch only.'), mismatch);
   vm.runInContext(between(engine, 'function needsGmailMetadata', 'function pushRows'), mismatch);
-  const opened = await mismatch.ensureBody(stored.get('a'));
-  assert.equal(opened.subject, 'Alpha');
-  assert.equal(opened.html_body, null);
+  await assert.rejects(mismatch.ensureBody(stored.get('a')), { code: 'body_download_failed' });
+  assert.equal(stored.get('a').subject, 'Alpha');
+  assert.equal(stored.get('a').html_body, null);
   assert.equal(stored.get('a').text_body, null);
 }
 
@@ -765,7 +768,7 @@ function assertReaderWindowMatchesShellActions() {
   broken.state.email = { ...email, bodyError: 'Could not download this message.' };
   broken.state.thread = rows;
   broken.renderReader(false);
-  assert.deepEqual(actionNames(broken.reader), ['close-reader']);
+  assert.deepEqual(actionNames(broken.reader), ['close-reader', 'retry-body']);
   assert.match(readerText(broken.reader), /Could not download this message/);
   assert.doesNotMatch(readerText(broken.reader), /Reply All/);
   broken.reader.querySelector('[data-action="close-reader"]').click();

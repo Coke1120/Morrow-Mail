@@ -60,6 +60,7 @@ const composeContext = {
 };
 
 const sentChannels = [];
+const sentPayloads = [];
 
 function envelope(data) {
   return { success: true, data };
@@ -67,6 +68,7 @@ function envelope(data) {
 
 function answer(channel, payload) {
   sentChannels.push(channel);
+  sentPayloads.push({ channel, payload });
   if (channel === "app:getVersion") return "0.2.23-test";
   if (channel === "host:updateGetState" || channel === "host:updateCheck" || channel === "host:updateInstall" || channel === "host:updateManual") return { enabled: false };
   if (channel === "config:getTheme" || channel === "config:setTheme") return "light";
@@ -328,13 +330,15 @@ app.whenReady().then(async () => {
   `, true);
   await waitFor(reply, `document.getElementById("compose-preview").open === true`, "send preview");
   await reply.webContents.executeJavaScript(`document.getElementById("compose-preview-confirm").click()`, true);
-  await waitFor(reply, `document.getElementById("undo-send").hidden === false && document.getElementById("compose").open === false`, "undo send");
-  const undoShot = await shot(reply, "compose-window-undo");
-  await reply.webContents.executeJavaScript(`document.getElementById("undo-send").click()`, true);
-  await waitFor(reply, `document.getElementById("compose").open === true && document.getElementById("undo-send").hidden === true`, "undo restores the draft");
+  const undoStart = Date.now();
+  while (!reply.isDestroyed() && Date.now() - undoStart < 15000) await sleep(50);
+  assert.equal(reply.isDestroyed(), true, "undo delay closes the compose window");
+  const queued = sentPayloads.filter((item) => item.channel === "mail:scheduleSend");
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].payload.outbox, true);
   assert.equal(sentChannels.filter((channel) => channel === "mail:send").length, 0);
 
-  console.log(JSON.stringify({ ok: true, shots: [shellShot, discardShot, replyShot, undoShot], consoleNotes }));
+  console.log(JSON.stringify({ ok: true, shots: [shellShot, discardShot, replyShot], consoleNotes }));
   app.exit(0);
 }).catch((error) => {
   console.error(error);
