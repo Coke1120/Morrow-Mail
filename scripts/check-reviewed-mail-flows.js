@@ -44,6 +44,7 @@ async function fixture(messages, work) {
 
 function readerUi(f, target, native = false) {
   const dom = new JSDOM(fs.readFileSync(path.join(root, "renderer/index.html"), "utf8"));
+  const accountId = target.account_id || target.accountId || "gmail";
   const calls = [];
   async function invoke(channel, input) {
     calls.push({ channel, input });
@@ -52,16 +53,108 @@ function readerUi(f, target, native = false) {
     return result.data;
   }
   const ui = renderer({ document: dom.window.document, crypto: require("node:crypto"), requestAnimationFrame: () => 0,
-    window: { morrow: { on() {}, invoke, pullReaderSeed: async () => ({ messageId: target.id, accountId: "gmail" }) },
+    window: { morrow: { on() {}, invoke, pullReaderSeed: async () => ({ messageId: target.id, accountId }) },
       location: { search: native ? "?role=reader" : "" }, addEventListener() {} } });
-  ui.context.askHost = invoke; ui.context.accounts = f.engine.accountViews(); ui.context.targetId = target.id;
-  ui.run(`state.accounts=accounts; state.accountId='gmail'; state.folderId='INBOX'; state.view='mail';
+  ui.context.askHost = invoke; ui.context.accounts = f.engine.accountViews(); ui.context.targetId = target.id; ui.context.targetAccountId = accountId;
+  ui.run(`state.accounts=accounts; state.accountId=targetAccountId; state.folderId='INBOX'; state.view='mail';
     state.prefs.conversation=false; state.prefs.aiReply=false;
-    state.emails=[{id:targetId,accountId:'gmail',subject:'Synthetic read',snippet:'Cached summary only.',bodyComplete:false,unread:true}];
+    state.emails=[{id:targetId,accountId:targetAccountId,subject:'Synthetic read',snippet:'Cached summary only.',bodyComplete:false,unread:true}];
     renderList=()=>{}; settleOpenView=async()=>{}; call=askHost;
     wire=()=>{}; loadLook=async()=>{}; loadShellPrefs=async()=>{}; loadSnoozed=async()=>{}; loadProviderFolders=async()=>{};`);
   return { dom, ui, calls, pane: dom.window.document.getElementById("reader") };
 }
+
+async function imapFixture(mode, cached, work) {
+  await fixture([], async f => {
+    const accountId = "imap", id = "imap-source-missing";
+    f.db.insertAccount({ id: accountId, email: "owner@imap.fixture.invalid", username: "owner@imap.fixture.invalid", profile: "custom", createdAt: 2,
+      imapHost: "imap.fixture.invalid", imapPort: 993, imapTls: true, smtpHost: "smtp.fixture.invalid", smtpPort: 465, smtpTls: true });
+    f.db.replaceFolders(accountId, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox", uidValidity: 1 }], "/");
+    f.db.insertMessage({ id, accountId, folderPath: "INBOX", threadId: "imap-thread", uid: 7, uidValidity: 1,
+      subject: "Synthetic IMAP read", snippet: "Cached summary only.", unread: true, bodyComplete: cached === "complete",
+      ...(cached ? { textBody: "Available cached body", htmlBody: "<p>Available <strong>cached body</strong></p>" } : {}),
+      date: "2026-10-25T00:00:00.000Z", listSortTs: 1 });
+    // Complete bodies still need a header refresh in this scenario.
+    f.db.updateMessage(id, { recipient_headers_json: null });
+    const remote = load("./host/mail/remote"), withClient = remote.withClient, secrets = load("./host/mail/secrets");
+    secrets.setPassword(accountId, "synthetic-password");
+    let failing = true;
+    const writes = [], fetches = [];
+    const source = Buffer.from("From: sender@fixture.invalid\r\nTo: owner@imap.fixture.invalid\r\nSubject: Synthetic IMAP read\r\nMessage-ID: <imap-source@fixture.invalid>\r\nDate: Sun, 25 Oct 2026 00:00:00 +0000\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nRecovered IMAP body.");
+    const client = {
+      mailbox: { uidValidity: 1 }, getMailboxLock: async () => ({ release() {} }),
+      fetch: async function* (uid) {
+        fetches.push(uid);
+        if (!failing) yield { uid: 7, source, flags: new Set(), internalDate: new Date("2026-10-25T00:00:00.000Z") };
+        else if (mode !== "empty") yield { uid: mode === "other-uid" ? 8 : 7, flags: new Set(), ...(mode === "other-uid" ? { source } : {}) };
+      },
+      messageFlagsAdd: async (uid, flags) => { writes.push({ uid, flags }); },
+      messageFlagsRemove: async () => {},
+    };
+    remote.withClient = async (account, password, action) => {
+      assert.equal(account.id, accountId); assert.equal(password, "synthetic-password");
+      return action(client);
+    };
+    try { await work({ ...f, target: f.db.messageById(id), writes, fetches, recover() { failing = false; } }); }
+    finally { await f.engine.settleAccount(accountId); remote.withClient = withClient; secrets.deletePassword(accountId); }
+  });
+}
+
+for (const mode of ["flags-only", "empty", "other-uid"]) for (const native of [false, true]) {
+  test(`IMAP ${mode} response without usable body keeps unread and Retry recovers ${native ? "reader window" : "mail pane"}`, async () => {
+    await imapFixture(mode, null, async f => {
+      const view = readerUi(f, f.target, native);
+      try {
+        if (native) await view.ui.run("bootReaderWindow()");
+        else await assert.rejects(view.ui.run("openMessage(targetId,false)"), /could not be downloaded/);
+        await f.engine.settleAccount("imap");
+        assert.equal(f.db.messageById(f.target.id).unread, 1);
+        assert.equal(f.writes.length, 0);
+        assert.equal(view.calls.filter(row => row.channel === "mail:markRead").length, 0);
+        assert.equal(view.pane.querySelector(".body"), null);
+        assert.ok(view.pane.querySelector(".hint.error"));
+        assert.doesNotMatch(view.pane.textContent, /Cached summary only/);
+        f.recover();
+        view.pane.querySelector('[data-action="retry-body"]').click();
+        await until(() => f.db.messageById(f.target.id).unread === 0);
+        await f.engine.settleAccount("imap");
+        assert.match(view.pane.querySelector(".body").textContent, /Recovered IMAP body/);
+        assert.equal(view.pane.querySelector('[data-action="retry-body"]'), null);
+        assert.equal(f.writes.length, 1);
+        assert.deepEqual(f.writes[0].flags, ["\\Seen"]);
+      } finally { view.dom.window.close(); }
+    });
+  });
+}
+
+for (const cached of ["partial", "complete"]) test(`IMAP flags-only refresh preserves ${cached} cached body`, async () => {
+  await imapFixture("flags-only", cached, async f => {
+    const result = await f.engine.answer("mail:openEmail", [{ emailId: f.target.id, full: true }]);
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(result.data.email.textBody, "Available cached body");
+    assert.equal(result.data.email.htmlBody, "<p>Available <strong>cached body</strong></p>");
+    assert.equal(result.data.email.bodyComplete, cached === "complete");
+    const view = readerUi(f, f.target);
+    try {
+      view.ui.context.cached = result.data.email;
+      view.ui.run("state.email=cached; renderReader(false)");
+      assert.equal(view.pane.querySelector(".body strong").textContent, "cached body");
+      if (cached === "complete") {
+        assert.equal(result.data.email.bodyWarning, "");
+        assert.equal(view.pane.querySelector('[data-action="retry-body"]'), null);
+      } else {
+        assert.match(result.data.email.bodyWarning, /Retry download/);
+        f.recover();
+        view.pane.querySelector('[data-action="retry-body"]').click();
+        await until(() => f.db.messageById(f.target.id).body_complete === 1);
+        await f.engine.settleAccount("imap"); await tick();
+        assert.equal(f.db.messageById(f.target.id).body_warning, null);
+        assert.equal(view.pane.querySelector('[data-action="retry-body"]'), null);
+        assert.match(view.pane.querySelector(".body").textContent, /Recovered IMAP body/);
+      }
+    } finally { view.dom.window.close(); }
+  });
+});
 
 for (const native of [false, true]) test(`failed body GET keeps unread and Retry recovers ${native ? "reader window" : "mail pane"}`, async () => {
   const source = message("read-fails", ["INBOX", "UNREAD"]);
@@ -377,7 +470,9 @@ test("Features and Settings describe the tested read, sync, signature and conver
     for (const pattern of [/Retry download/, /leaves the message unread/, /actual message reads/, /saved positions/, /preserves body formatting and links/, /Gmail label copies appear once/]) assert.match(text, pattern);
     assert.match(dom.window.document.getElementById("conversation-copy-help").textContent, /same account/);
     assert.match(dom.window.document.getElementById("compose-signature-switch-help").textContent, /signature you edited/);
+    assert.match(dom.window.document.getElementById("compose-signature-switch-help").textContent, /multiline HTML signatures/);
     assert.match(dom.window.document.getElementById("mail-body-cache-note").textContent, /Retry download/);
+    assert.match(dom.window.document.getElementById("mail-body-cache-note").textContent, /without the requested message/);
   } finally { dom.window.close(); }
 });
 
@@ -427,4 +522,62 @@ for (const edit of ["text", "markup", "none"]) for (const hasSignature of [true,
       }
     } finally { dom.window.close(); }
   });
+}
+
+for (const [kind, html] of Object.entries({ divs: "<div>Alpha</div><div>Team</div>", entities: "<p>&quot;Alpha&quot; &amp; Team</p>" })) {
+  for (const edit of ["none", "text", "markup"]) for (const hasSignature of [true, false]) {
+    test(`HTML automatic ${kind} signature follows From (${edit} edit; destination signature ${hasSignature})`, async () => {
+      const dom = new JSDOM(fs.readFileSync(path.join(root, "renderer/index.html"), "utf8"));
+      const document = dom.window.document;
+      for (const node of document.querySelectorAll("dialog")) { node.showModal = () => node.setAttribute("open", ""); node.close = () => node.removeAttribute("open"); }
+      const ui = renderer({ document, crypto: require("node:crypto"), requestAnimationFrame: () => 0 });
+      ui.context.initialHtml = html; ui.context.destHasSignature = hasSignature;
+      ui.run(`state.accounts=[{id:'alpha',platform:'imap',email:'owner@alpha.test'}, {id:'beta',platform:'imap',email:'owner@beta.test'}]
+        .map(account=>({...account,sendAs:window.morrowComposePolicy.identities(account,window.morrowComposePolicy.emptySettings())}));
+        state.accountId='alpha'; state.prefs.undoSend=0; state.prefs.scheduleDelay=0;
+        scheduleComposeLayout=()=>{}; paintComposeChrome=()=>{}; paintQuoteBody=()=>{}; syncScheduleFields=()=>{}; loadScheduled=async()=>{};
+        call=async(channel,input)=>{
+          const id=input.accountId;
+          if(channel==='mail:getComposeContext') {
+            const settings=window.morrowComposePolicy.emptySettings();
+            return {...window.morrowComposePolicy.resolve(state.accounts.find(row=>row.id===id),null,settings,'new',input.fromAddress),settings};
+          }
+          if(channel==='mail:listSignatures') return {signatures:id==='beta'&&!destHasSignature?[]:[{id:id+'-sig',name:id,...(id==='alpha'?{html:initialHtml}:{text:'beta signature'})}],defaultSignaturePerAccount:{[id]:id+'-sig'}};
+          throw new Error('Unexpected IPC '+channel);
+        };`);
+      try {
+        await ui.run("openCompose({accountId:'alpha',to:'recipient@fixture.invalid'})");
+        const editor = document.getElementById("compose-editor"), signature = editor.querySelector("[data-compose-signature]");
+        const originalSignature = signature.innerHTML;
+        editor.insertAdjacentHTML("afterbegin", '<p>Keep <strong>bold</strong> and <a href="https://example.test/body">this link</a>.</p><br>');
+        if (edit === "text") signature.append(" user edit");
+        if (edit === "markup") signature.innerHTML = '<a href="https://example.test/edited-signature">' + signature.innerHTML + "</a>";
+        ui.run("syncComposePlainFromEditor()");
+        const before = editor.innerHTML;
+        for (const address of ["owner@beta.test", "owner@alpha.test", "owner@beta.test", "owner@alpha.test"]) {
+          document.getElementById("compose-from").value = address;
+          await ui.run("changeComposeFrom()");
+          assert.equal(ui.run("state.composeMeta.accountId"), address.includes("alpha") ? "alpha" : "beta");
+          assert.ok(editor.querySelector("p strong"));
+          assert.equal(editor.querySelector('a[href="https://example.test/body"]').textContent, "this link");
+          const outbound = ui.run("composePayload(composeAccount()).body");
+          assert.match(outbound, /<strong>bold<\/strong>/);
+          assert.match(outbound, /https:\/\/example.test\/body/);
+          if (edit !== "none") {
+            assert.equal(editor.innerHTML, before, "genuine signature edits survive every switch without duplicates");
+            assert.equal(ui.run("state.composeIdentity.signatureFollowsFrom"), false);
+          } else {
+            const expectSignature = address.includes("alpha") || hasSignature;
+            assert.equal(editor.querySelectorAll("[data-compose-signature]").length, expectSignature ? 1 : 0);
+            assert.equal(ui.run("state.composeIdentity.signatureFollowsFrom"), true);
+            if (address.includes("alpha")) assert.equal(editor.querySelector("[data-compose-signature]").innerHTML, originalSignature);
+            else {
+              assert.equal(/beta signature/.test(editor.textContent), hasSignature);
+              assert.doesNotMatch(editor.textContent, /Alpha|Team/);
+            }
+          }
+        }
+      } finally { dom.window.close(); }
+    });
+  }
 }

@@ -18,6 +18,10 @@ Existing partial bodies still paint immediately. A failed fill retains those
 bodies and publishes a persisted download warning; Retry can finish the body
 and clear the warning. A changed account/message cannot receive a stale warning.
 Complete cached bodies remain available if a metadata-only refresh fails.
+An IMAP FETCH that returns no requested source (including flags-only, empty or
+unrelated-UID results) enters this same failure path. A summary alone cannot
+authorize a successful open or automatic mark-read; partial and complete usable
+cached bodies retain the existing recovery behavior.
 
 ## Durable read budget
 
@@ -47,11 +51,22 @@ it does not advance past unapplied history.
 ## Signature ownership
 
 Cross-mailbox From changes reload the destination's signature choices while
-checking the current signature's text and DOM. Only an unchanged automatic
+checking the live signature DOM against its sanitized original markup. Without a
+live editor, the existing text ownership check applies. Only an unchanged automatic
 signature is replaced or removed. An edited signature, including markup-only
 edits, stays with the body and stops following From. The same rule applies when
 the destination has no signatures. The rest of the rich body is never rebuilt
 for this change. An explicit picker selection retains its existing behavior.
+
+HTML-only signatures can have different plaintext forms in the stored signature
+and the live editor, especially div boundaries and entities. After proving the
+DOM is unchanged, synchronize the prior signature and body through the same DOM
+plaintext conversion before committing the node replacement. This keeps repeated
+switches, including a mailbox without a signature, on the rich-editor path.
+
+Known pre-existing limit: changing an alias within the same mailbox still uses
+text-only signature following and can overwrite a markup-only signature edit.
+This cross-mailbox fix leaves that separate path for follow-up work.
 
 ## Conversation identity
 
@@ -70,6 +85,10 @@ retry/mark-read boundaries, large history records, restart/checkpoint recovery,
 foreground queue priority, shared bootstrap/verification budgets and real
 signature application with edited or unedited rich bodies, and multi-label
 conversation identity/counts without deleting folder copies. The full check runner
-includes it. Native macOS/Windows windows, real providers and native latency
+includes it. IMAP fixtures exercise the production FETCH parser, host, renderer,
+Retry and mark-read journal with a fake transport, including no-source responses
+and usable cached bodies. HTML-only div/entity signatures are checked with main
+body edits, genuine signature edits, repeated switches and absent destination
+signatures. Native macOS/Windows windows, real providers and native latency
 remain separate validation; prior administratively blocked browser navigation
 is not retried or bypassed.

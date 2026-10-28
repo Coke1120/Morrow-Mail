@@ -2247,8 +2247,9 @@ async function ensureBody(row, options) {
     const metadataOnly = account.mail_transport === "gmail_api" && row.body_complete === 1;
     const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity, { metadataOnly }));
     bodyResult = "incomplete";
-    // A FETCH row for another UID must not be written onto this message.
-    if (!fetched || Number(fetched.uid) !== Number(row.uid)) return row;
+    // Flags-only/empty FETCH results are unsuccessful body reads too. Keep
+    // mismatched UID data out of the cache and use the recoverable failure path.
+    if (!fetched || Number(fetched.uid) !== Number(row.uid)) throw new Error("The requested message source was not returned.");
     const current = db.messageById(row.id);
     if (current?.draft_pending) return current;
     actions.assertIdentityReady(row.id);

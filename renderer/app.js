@@ -10284,9 +10284,11 @@ function commitComposeSignature(previous, next, html) {
 }
 
 function composeSignatureUntouched() {
-  if (!signatureUntouched($("compose-body").value, state.signatureText)) return false;
-  if (!composeEditorLive() || !state.signatureText) return true;
+  if (!composeEditorLive()) return signatureUntouched($("compose-body").value, state.signatureText);
   const node = $("compose-editor").querySelector("[data-compose-signature]");
+  if (!state.signatureText && !state.signatureHtml) return !node;
+  // The live node is authoritative: HTML-only signatures can have different
+  // plain-text forms (block boundaries and entities) without any user edit.
   return !!node && node.innerHTML === sanitizeComposeHtml(state.signatureHtml || toHtml(state.signatureText));
 }
 
@@ -11016,6 +11018,13 @@ async function fillSignatures(preserveBody, fromChange = false) {
   state.signatures = rows;
   const identity = state.composeIdentity;
   const replaceBody = !preserveBody && (!fromChange || composeSignatureUntouched());
+  if (replaceBody && fromChange && composeEditorLive()) {
+    const signature = $("compose-editor").querySelector("[data-compose-signature]");
+    // Align both text baselines before commitComposeSignature so an intact
+    // HTML signature uses the node update rather than rebuilding the body.
+    state.signatureText = signature ? plainFromComposeHtml(signature.innerHTML) : "";
+    syncComposePlainFromEditor();
+  }
   if (!rows.length) {
     showSignatureEmpty("No signatures.");
     if (replaceBody) {
