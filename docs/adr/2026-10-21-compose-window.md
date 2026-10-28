@@ -10,7 +10,7 @@ Several compose windows may be open. There is no cap. Each window has its own re
 
 Close matches the discard / keep-editing confirm. Close does not call `mail:upsertDraft`. Save draft stays its own button. A clean compose window, including a scheduled receipt, closes without that confirm. Quitting while a compose window refuses to close (the draft is still dirty, or the page has not answered) aborts the quit and focuses that confirm. Preventing close is required; destroying the window would drop the draft, and allowing the quit to proceed would do the same.
 
-Undo send stays in the compose window. The editor dialog closes, the Undo send chip remains in that window, and the delay is not moved to the mail shell. Closing during the delay cancels the timer and then runs the discard confirm. Keep editing reopens the draft. Discard closes the window. The message is not sent.
+Undo send no longer stays in the compose window. See [Compose closes into Outbox](2026-10-28-compose-outbox-undo.md). Closing a compose window that has not queued a send still confirms before discarding unsaved edits and does not send.
 
 The in-window dialog remains the compose window's surface. If `openComposeWindow` is missing, `presentCompose` still calls `openCompose` in the same page. That is the offline check path. The product preload always has the API, so the mail shell does not show compose as a modal.
 

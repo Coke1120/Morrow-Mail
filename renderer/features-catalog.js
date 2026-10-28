@@ -28,7 +28,7 @@
         id: "compose-window",
         title: "Compose in its own window",
         category: "Mail",
-        blurb: "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send. Reply and Reply All prefer Reply-To addresses when supplied, exclude your own addresses, and avoid duplicate recipients. Replies to locally sent mail, including historical bot mail from aliases, remain available while the Sent copy is waiting to sync. Finish or cancel AI writing before Save, Send or Schedule. Confirmation uses the reviewed message; changes require a new preview.",
+        blurb: "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send. Send with an undo delay closes it and waits in Outbox. Reply and Reply All prefer Reply-To addresses when supplied, exclude your own addresses, and avoid duplicate recipients. Replies to locally sent mail, including historical bot mail from aliases, remain available while the Sent copy is waiting to sync. Finish or cancel AI writing before Save, Send or Schedule. Confirmation uses the reviewed message; changes require a new preview.",
       },
       {
         id: "conversation-members",
@@ -71,6 +71,12 @@
         title: "Send later",
         category: "Mail",
         blurb: "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved.",
+      },
+      {
+        id: "outbox",
+        title: "Outbox",
+        category: "Mail",
+        blurb: "Send closes compose and keeps the message in Outbox under All Account Mail until the undo delay ends (30 seconds unless a shorter one is set). Local only, every mailbox. Undo cancels and reopens the draft. Opening a waiting message does not send it. After the delay, send works as before and the message leaves Outbox. A partial delivery receipt stays open for review and is not a normal Outbox close. Quitting with a message still in Outbox asks first; it sends the next time Morrow is open. Restart and install waits while a message is still in Outbox. Zero undo delay sends immediately and skips Outbox.",
       },
       {
         id: "out-of-office",
@@ -124,7 +130,7 @@
         id: "in-app-updater",
         title: "In-app updates",
         category: "Updates",
-        blurb: "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed.",
+        blurb: "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed and Outbox is empty.",
       },
       {
         id: "mail-body-updates",
