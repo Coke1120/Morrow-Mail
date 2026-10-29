@@ -396,6 +396,13 @@ function threadMeta(rows) {
   return threads;
 }
 
+function oneRetainId(value) {
+  if (!Array.isArray(value) || !value.length) return null;
+  const id = value[0];
+  if (typeof id !== "string" || !id || id.length > 200) return null;
+  return [id];
+}
+
 function queryFrom(params) {
   const query = params || {};
   let out = {
@@ -405,6 +412,7 @@ function queryFrom(params) {
     mailboxes: Array.isArray(query.mailboxes) ? query.mailboxes : null,
     category: query.category || "all",
     filterUnread: query.filterUnread === true,
+    retainIds: oneRetainId(query.retainIds),
     filterFlagged: query.filterFlagged === true,
     filterAttachments: query.filterAttachments,
     limit: query.limit,
@@ -459,7 +467,21 @@ function synced(query, days) {
 
 function listPayload(params) {
   const query = queryFrom(params);
-  const rows = listRows(db.selectMessages(query, { headersOnly: true }));
+  let stored = db.selectMessages(query, { headersOnly: true });
+  const retainId = query.retainIds && query.retainIds[0];
+  // A read row can fall outside this page and still belong in the Unread list.
+  if (retainId && query.filterUnread === true && !stored.some((row) => row.id === retainId)) {
+    const extra = db.selectMessages({
+      ...query,
+      offset: 0,
+      limit: 1,
+      filterUnread: false,
+      retainIds: null,
+      retainOnly: retainId,
+    }, { headersOnly: true });
+    if (extra.length) stored = stored.concat(extra);
+  }
+  const rows = listRows(stored);
   const total = db.countMessages(query);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const days = syncHorizonDays();

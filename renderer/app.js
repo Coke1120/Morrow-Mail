@@ -68,6 +68,7 @@ const state = {
   dragFolder: null,
   selectedIds: [],
   selectionAnchor: "",
+  unreadHold: null,
   sync: null,
   syncScopes: new Map(),
   bodySync: null,
@@ -392,12 +393,68 @@ function storableFolders(folders) {
   return (Array.isArray(folders) ? folders : []).filter((folder) => folder && !isVirtualMailbox(folder));
 }
 
-function visibleList(emails, query, folder) {
+function unreadListActive(view) {
+  const source = view || {};
+  if (source.query || source.outbox) return false;
+  if (source.allInbox === true) return source.unreadOnly === true;
+  const folder = source.folder;
+  return !!(folder && folder.view && folder.view.unread === true);
+}
+
+function unreadHoldKey(view) {
+  if (!unreadListActive(view)) return "";
+  if (view.allInbox === true) return "all";
+  const folderId = (view.folder && view.folder.id) || view.folderId || "";
+  return String(view.accountId || "") + "\0" + String(folderId);
+}
+
+// List membership for one opened unread row. The read flag itself is unchanged.
+function applyUnreadHold(hold, action) {
+  const current = hold && hold.id
+    ? { id: String(hold.id), accountId: String(hold.accountId || ""), key: String(hold.key || "") }
+    : null;
+  const kind = action && action.kind;
+  if (kind === "scope") {
+    const key = unreadHoldKey(action.view);
+    if (!current || current.key !== key) return null;
+    return current;
+  }
+  if (kind === "open") {
+    const key = unreadHoldKey(action.view);
+    if (!key) return null;
+    if (!action.unread) return current && current.key === key ? current : null;
+    const id = String(action.id || "");
+    if (!id) return current && current.key === key ? current : null;
+    if (current && current.id === id && current.key === key) return current;
+    return { id, accountId: String(action.accountId || ""), key };
+  }
+  if (kind === "mark") {
+    if (!current) return null;
+    const ids = action.batch
+      ? (Array.isArray(action.selected) ? action.selected : []).map((id) => String(id || "")).filter(Boolean)
+      : [String(action.id || "")];
+    if (!ids.includes(current.id)) return current;
+    if (action.isRead === false) return null;
+    if (action.batch || action.mailList === false) return null;
+    return current;
+  }
+  if (kind === "refresh") {
+    if (!current) return null;
+    const ids = new Set((Array.isArray(action.ids) ? action.ids : []).map((id) => String(id || "")));
+    return ids.has(current.id) ? current : null;
+  }
+  return current;
+}
+
+function visibleList(emails, query, folder, holdId) {
   const rows = filteredEmails(emails, query);
   const view = folder && folder.view;
   if (!view) return rows;
+  const kept = holdId == null ? "" : String(holdId);
   return rows.filter((email) => {
-    if (view.unread === true && !(email && email.unread)) return false;
+    if (view.unread === true && !(email && email.unread)) {
+      return !!(kept && email && String(email.id) === kept);
+    }
     if (view.flagged === true && !(email && email.isStarred)) return false;
     return true;
   });
@@ -480,6 +537,8 @@ function mailListRequest(view) {
     if (source.searchAccountId) params.accountId = source.searchAccountId;
     return { channel: "mail:searchLocal", params };
   }
+  const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
+  const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
   if (source.allInbox) {
     const params = { folderKey: "primary", limit, offset };
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
@@ -488,11 +547,14 @@ function mailListRequest(view) {
       if (mailboxes.length) params.mailboxes = mailboxes;
     }
     if (source.unreadOnly) params.filterUnread = true;
+    if (retainId) params.retainIds = [retainId];
     return { channel: "mail:listFromCache", params };
   }
+  const params = { accountId: source.accountId, folderId: source.folderId, limit, offset };
+  if (retainId) params.retainIds = [retainId];
   return {
     channel: source.fromNetwork ? "mail:listFromNetwork" : "mail:listFromCache",
-    params: { accountId: source.accountId, folderId: source.folderId, limit, offset },
+    params,
   };
 }
 
@@ -5980,13 +6042,37 @@ function messageRow(email) {
   return row;
 }
 
+function currentUnreadView() {
+  return {
+    query: state.query,
+    outbox: state.outbox,
+    allInbox: state.allInbox,
+    unreadOnly: state.allInboxUnreadOnly,
+    accountId: state.accountId,
+    folderId: state.folderId,
+    folder: state.allInbox || state.outbox ? null : selectedFolderNode(),
+  };
+}
+
+function noteUnreadScope() {
+  state.unreadHold = applyUnreadHold(state.unreadHold, { kind: "scope", view: currentUnreadView() });
+}
+
+function unreadRetainIds() {
+  const hold = state.unreadHold;
+  if (!hold || !hold.id || !unreadListActive(currentUnreadView())) return [];
+  return [String(hold.id)];
+}
+
 function shownEmails() {
   const input = $("list-filter");
-  if (state.outbox) return visibleList(state.emails, input ? input.value : "", null);
+  const query = input ? input.value : "";
+  if (state.outbox) return visibleList(state.emails, query, null);
   const folder = state.allInbox
     ? (state.allInboxUnreadOnly ? { view: { unread: true } } : null)
     : selectedFolderNode();
-  return visibleList(state.emails, input ? input.value : "", folder);
+  const holdId = unreadListActive(currentUnreadView()) && state.unreadHold ? state.unreadHold.id : "";
+  return visibleList(state.emails, query, folder, holdId);
 }
 
 function rememberLoadedSelection() {
@@ -7898,6 +7984,17 @@ async function setRead(email, isRead) {
     return setRead(email, isRead);
   }
   const previous = !!email.unread;
+  const priorHold = state.unreadHold || null;
+  // check-mail-reader evals setRead without the hold helpers.
+  if (typeof applyUnreadHold === "function") {
+    state.unreadHold = applyUnreadHold(priorHold, {
+      kind: "mark",
+      id: email.id,
+      isRead: !!isRead,
+      batch: false,
+      mailList: state.view === "mail",
+    });
+  }
   const paint = (unread) => {
     eachStarRow(email, (row) => { row.unread = unread; row.isRead = !unread; });
     renderList();
@@ -7913,7 +8010,11 @@ async function setRead(email, isRead) {
     }
     paint(!isRead);
   }
-  catch (error) { paint(previous); throw error; }
+  catch (error) {
+    if (typeof applyUnreadHold === "function") state.unreadHold = priorHold;
+    paint(previous);
+    throw error;
+  }
   finally { if (readWrites.get(email.id) === write) readWrites.delete(email.id); }
   await settleOpenView();
 }
@@ -8183,6 +8284,7 @@ function noteMailListLoaded(gen) {
 
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
+  noteUnreadScope();
   const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
   if (state.listScope !== scope) {
     state.listScope = scope;
@@ -8217,6 +8319,7 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
+    const retainIds = unreadRetainIds();
     const request = mailListRequest({
       allInbox: state.allInbox,
       unreadOnly: state.allInbox && state.allInboxUnreadOnly,
@@ -8224,6 +8327,7 @@ async function loadList(fromNetwork, requestedOffset) {
       accountId: account && account.id,
       folderId: state.folderId,
       accounts: state.accounts,
+      retainIds,
       limit: LIST_PAGE_SIZE,
       offset,
     });
@@ -8238,6 +8342,7 @@ async function loadList(fromNetwork, requestedOffset) {
         accountId: account && account.id,
         folderId: state.folderId,
         accounts: state.accounts,
+        retainIds,
         limit: LIST_PAGE_SIZE,
         offset,
       });
@@ -8246,6 +8351,12 @@ async function loadList(fromNetwork, requestedOffset) {
     }
     state.listOffset = offset;
     state.emails = takeEmails((data && data.emails) || []);
+    if (unreadListActive(currentUnreadView())) {
+      state.unreadHold = applyUnreadHold(state.unreadHold, {
+        kind: "refresh",
+        ids: state.emails.map((row) => row && row.id),
+      });
+    }
     state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
     state.listSyncDone = data?.initialSyncDone !== false;
     if (!state.allInbox && data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
@@ -9245,6 +9356,15 @@ async function bulkTrash() {
 async function bulkSetRead(isRead) {
   const messages = selectedMessages();
   if (!messages.length || refusePaused(messages)) return;
+  const priorHold = state.unreadHold || null;
+  if (typeof applyUnreadHold === "function") {
+    state.unreadHold = applyUnreadHold(priorHold, {
+      kind: "mark",
+      batch: true,
+      isRead: !!isRead,
+      selected: messages.map((row) => row && row.id),
+    });
+  }
   const previous = new Map(messages.map((email) => [email.id, !!email.unread]));
   for (const email of messages) {
     eachStarRow(email, (row) => { row.unread = !isRead; row.isRead = !!isRead; });
@@ -9257,6 +9377,7 @@ async function bulkSetRead(isRead) {
     const unread = previous.get(email.id) === true;
     eachStarRow(email, (row) => { row.unread = unread; row.isRead = !unread; });
   }
+  if (priorHold && priorHold.id && !completed.has(String(priorHold.id))) state.unreadHold = priorHold;
   renderList();
   renderReader(false);
   showStatus(receiptText(isRead ? "Mark read" : "Mark unread", outcome), !!outcome.error);
@@ -9836,6 +9957,7 @@ async function selectOutbox() {
   state.outbox = true;
   state.allInbox = false;
   state.allInboxUnreadOnly = false;
+  noteUnreadScope();
   state.query = "";
   const search = $("search-query");
   if (search) search.value = "";
@@ -10159,6 +10281,7 @@ function paintReaderPending(email) {
 
 async function openMessage(emailId, focus, full = false) {
   const known = listedMessage(emailId);
+  const openedUnread = !!(known && known.unread);
   if (known && known.outbox) {
     invalidateReaderOpen();
     state.email = known;
@@ -10214,6 +10337,13 @@ async function openMessage(emailId, focus, full = false) {
   noteBody(email);
   state.email = preferBody(email);
   state.thread = state.prefs.conversation === false ? [] : threadMembers(fromOpen, listed);
+  state.unreadHold = applyUnreadHold(state.unreadHold, {
+    kind: "open",
+    view: currentUnreadView(),
+    id: email.id,
+    accountId: email.accountId,
+    unread: openedUnread,
+  });
   renderReader(focus !== false);
   renderList();
   pumpBodyRefreshes();
