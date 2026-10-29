@@ -24,6 +24,7 @@ const state = {
   draftRevision: null,
   composeSession: 0,
   agentReplyTodo: null,
+  agentReplySource: null,
   agentLearning: null,
   composeAttachments: [],
   composeSuggestions: null,
@@ -8469,10 +8470,12 @@ function applyActionSettlement(batch) {
   let moved = false;
   for (const outcome of outcomes) {
     if (!outcome || !outcome.id) continue;
+    if (typeof settleAgentReadOutcome === "function") settleAgentReadOutcome(outcome).catch((error) => showStatus(error.message || String(error), true));
     const memory = actionGeneration.get(outcome.id) || 0;
     if (typeof outcome.generation === "number" && outcome.generation < memory) continue;
     if (typeof outcome.generation === "number") actionGeneration.set(outcome.id, outcome.generation);
     const projection = outcome.projection;
+    if (projection && typeof paintAgentReadProjection === "function") paintAgentReadProjection(outcome.id, !!projection.unread);
     if ((outcome.status === "failed" || outcome.status === "not_attempted") && projection) {
       paintStars([{ id: outcome.id }], !!projection.isStarred);
       eachStarRow({ id: outcome.id }, (row) => {
@@ -8548,8 +8551,9 @@ async function setRead(email, isRead) {
   paint(!isRead);
   const write = call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead });
   readWrites.set(email.id, write);
+  let data;
   try {
-    const data = await write;
+    data = await write;
     if (typeof rememberActionGeneration === "function") {
       rememberActionGeneration(data && data.pending);
       rememberActionGeneration(data && data.outcomes);
@@ -8563,6 +8567,7 @@ async function setRead(email, isRead) {
   }
   finally { if (readWrites.get(email.id) === write) readWrites.delete(email.id); }
   await settleOpenView();
+  return data;
 }
 
 async function deleteFromList(email) {
@@ -8669,6 +8674,11 @@ async function undoReadBatch() {
     }
     for (const row of (data && data.pending) || []) {
       if (row && row.id) restored.add(row.id);
+    }
+    for (const messageId of restored) {
+      const pending = agentPendingReads.get(String(messageId));
+      if (pending) pending.item.unread = true;
+      agentPendingReads.delete(String(messageId));
     }
     for (const section of agentSections(agentPaintPayload)) {
       for (const item of section.items || []) {
@@ -13472,6 +13482,7 @@ async function openCompose(seed) {
   state.composeSession = (state.composeSession || 0) + 1;
   const replySession = state.composeSession;
   state.agentReplyTodo = explicitAgentTodo(fields.agentTodo);
+  state.agentReplySource = freshReplyLearningSource(fields);
   state.composeInitializing = true;
   state.composeIdentityError = false;
   state.composeIdentity = null;
@@ -13942,6 +13953,7 @@ async function scheduleMail(whenOverride, reviewedPayload) {
     setComposeStatus("Scheduling…");
     await call("mail:scheduleSend", { ...withAgentReplyTodo(reviewedPayload || composePayload(account)), sendAt: when.toISOString() });
     state.agentReplyTodo = null;
+    state.agentReplySource = null;
     state.composeQueued = true;
     $("compose-title").textContent = "Scheduled receipt";
     // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
@@ -14244,6 +14256,7 @@ async function sendMail(reviewedPayload) {
     await call("mail:scheduleSend", { ...payload, sendAt: new Date(Date.now() + delay).toISOString(), outbox: true });
     queued = true;
     state.agentReplyTodo = null;
+    state.agentReplySource = null;
     state.composeQueued = true;
     state.composeBaseline = composeSnapshot();
   } catch (error) {
@@ -17792,7 +17805,7 @@ function openBrain(pane) {
   skillStatus.textContent = "";
   skillStatus.classList.remove("error");
   const skillResult = $("brain-skill-result");
-  if (skillResult) skillResult.replaceChildren();
+  if (skillResult) paintSkillBlocks(skillResult, null);
   loadBrainSkills().catch((error) => {
     if (brainIsOpen()) paintBrainSkills({}, error instanceof Error ? error.message : String(error));
   });
@@ -18088,19 +18101,27 @@ function freshReplyTodoSeed(fields) {
   return { messageId, accountId: String(fields.accountId || "").trim() };
 }
 
+function freshReplyLearningSource(fields) {
+  const source = freshReplyTodoSeed(fields);
+  if (!source) return null;
+  const quoted = fields.quoteEmail;
+  if (quoted && quoted.id === source.messageId && (!quoted.accountId || quoted.accountId === source.accountId)) {
+    if (quoted.from) source.from = String(quoted.from);
+  }
+  if (fields.threadId) source.threadId = String(fields.threadId);
+  return source;
+}
+
 function withAgentReplyTodo(payload) {
+  if (!payload) return payload;
   const todo = explicitAgentTodo(state.agentReplyTodo);
-  if (!todo || !payload) return payload;
-  const next = { ...payload, agentTodo: todo };
+  const next = { ...payload };
+  if (todo) next.agentTodo = todo;
   const kind = state.composeIdentity && state.composeIdentity.kind;
   const action = kind === "all" ? "reply-all" : kind === "reply" ? "reply" : "";
-  if (!action) return next;
-  const item = { messageId: todo.messageId, accountId: todo.accountId };
-  const email = state.email;
-  if (email && String(email.id || "") === todo.messageId) {
-    if (email.from) item.from = String(email.from);
-    if (email.threadId) item.threadId = String(email.threadId);
-  }
+  const source = state.agentReplySource;
+  if (!action || !source) return next;
+  const item = { ...source };
   next.agentLearning = { kind: "action", action, begunAt: Date.now(), items: [item] };
   return next;
 }
@@ -18109,6 +18130,7 @@ async function finishAgentReplyTodo(session) {
   if (session !== state.composeSession) return;
   const todo = explicitAgentTodo(state.agentReplyTodo);
   state.agentReplyTodo = null;
+  state.agentReplySource = null;
   if (!todo) return;
   try {
     const data = await call("nativeAgent:home:todoUpdate", {
@@ -18204,6 +18226,15 @@ function applyAgentLearning(view) {
     agentPaintPayload.learning = next;
     paintAgentHome(agentPaintPayload);
   }
+  if (changed) {
+    for (const [root, surface] of agentSuggestionSurfaces) {
+      if (!root.isConnected) agentSuggestionSurfaces.delete(root);
+      else if (surface.kind === "run") paintStoredRun(surface.data);
+      else if (surface.kind === "skill") paintSkillBlocks(root, surface.data);
+      else paintProposals(root, surface.data);
+    }
+    paintThread();
+  }
   const settings = $("settings");
   if (settings && settings.open && $("agent-learned-list")) renderAgentLearned(next);
 }
@@ -18235,7 +18266,7 @@ async function moveAgentCategory(item, toCategoryId, toName, fromName) {
     fromName,
     begunAt: Date.now(),
   });
-  if (data && data.learning) state.agentLearning = data.learning;
+  if (data && data.learning) applyAgentLearning(data.learning);
   if (state.view === "agent" && data) paintAgent(data, "");
 }
 
@@ -18310,7 +18341,7 @@ function agentUnreadSnapshot(items) {
   for (const item of items || []) {
     if (agentReadIntent(item) !== "mark") continue;
     const context = agentMessageContext(item);
-    if (!context || seen.has(context.messageId) || agentMarkedRead.has(context.messageId)) continue;
+    if (!context || seen.has(context.messageId) || agentMarkedRead.has(context.messageId) || agentPendingReads.has(context.messageId)) continue;
     seen.add(context.messageId);
     rows.push({ messageId: context.messageId, accountId: context.accountId });
   }
@@ -18608,8 +18639,11 @@ function followButton(follow, draft) {
   return button;
 }
 
+const agentSuggestionSurfaces = new Map();
+
 function paintSkillBlocks(root, data) {
   if (!root) return;
+  if (root.isConnected) agentSuggestionSurfaces.set(root, { kind: "skill", data });
   root.replaceChildren();
   if (!data || data.accepted === false) return;
   for (const block of skillBlocks(data)) {
@@ -18662,6 +18696,7 @@ function paintSkillBlocks(root, data) {
 
 function paintProposals(root, proposals, append) {
   if (!root) return;
+  if (!append && root.isConnected) agentSuggestionSurfaces.set(root, { kind: "proposal", data: proposals });
   if (!append) root.replaceChildren();
   const rows = Array.isArray(proposals) ? proposals.filter((item) => item && item.status !== "dismissed" && item.status !== "confirmed" && !suggestionSuppressed(item.labelName || "Filing")) : [];
   if (!rows.length) {
@@ -18738,6 +18773,7 @@ const AGENT_ICON = {
 };
 
 const agentMarkedRead = new Set();
+const agentPendingReads = new Map();
 
 function iconShapes(spec) {
   if (!spec) return [];
@@ -18887,6 +18923,7 @@ function paintStoredRun(run) {
   const view = historyRunView(run);
   const root = $("agent-result");
   if (!root || !view) return;
+  if (root.isConnected) agentSuggestionSurfaces.set(root, { kind: "run", data: run });
   if (!view.accepted) setAgentSkillStatus(view.summary || "That run did not finish.", true);
   else setAgentSkillStatus(view.summary || view.name, false);
   const mailSections = view.sections.filter(sectionItemsAreMail);
@@ -19357,7 +19394,7 @@ function openCustomSkillCreator() {
   const actions = $("brain-skill-dialog-actions");
   if (actions) actions.replaceChildren();
   const result = $("brain-skill-dialog-result");
-  if (result) result.replaceChildren();
+  if (result) paintSkillBlocks(result, null);
   const status = $("brain-skill-dialog-status");
   if (status) {
     status.textContent = "";
@@ -19378,7 +19415,7 @@ function openBrainSkillDialog(row, mode) {
   paintBrainSkillDialog(row, mode);
   if (switching) {
     const result = $("brain-skill-dialog-result");
-    if (result) result.replaceChildren();
+    if (result) paintSkillBlocks(result, null);
     const status = $("brain-skill-dialog-status");
     if (status) {
       status.textContent = "";
@@ -19648,6 +19685,7 @@ async function confirmProposal(proposal) {
   if (!answer?.ok) return null;
   const data = await call("emailBrain:confirmProposal", { proposalId: proposal && proposal.id });
   if (data && data.accepted === false) throw new Error(data.error || "That move was not applied.");
+  if (proposal) proposal.status = "confirmed";
   showStatus((data && data.detail) || "Move confirmed.", false);
   paintProposals($("agent-proposals"), data && data.proposals);
   if ($("agent-panel") && !$("agent-panel").hidden) await loadAgent();
@@ -19656,6 +19694,7 @@ async function confirmProposal(proposal) {
 
 async function dismissProposal(proposal) {
   const data = await call("emailBrain:dismissProposal", { proposalId: proposal && proposal.id });
+  if (proposal) proposal.status = "dismissed";
   paintProposals($("agent-proposals"), data && data.proposals);
   if ($("agent-panel") && !$("agent-panel").hidden) await loadAgent();
 }
@@ -19830,7 +19869,7 @@ function paintThread() {
   const root = $("agent-sections");
   if (!root) return;
   const turnsKey = JSON.stringify(agentTurns);
-  const key = turnsKey + "\n" + JSON.stringify(agentProposalIds);
+  const key = turnsKey + "\n" + JSON.stringify(agentProposalIds) + "\n" + learningApplyStamp(state.agentLearning);
   if (key === agentThreadKey) return;
   const followEnd = turnsKey !== agentThreadTurns;
   agentThreadKey = key;
@@ -19849,7 +19888,7 @@ function paintThread() {
 
 function paintAgent(payload, errorText) {
   if (payload && typeof payload === "object") agentPaintPayload = payload;
-  if (payload && payload.learning) state.agentLearning = payload.learning;
+  if (payload && payload.learning) applyAgentLearning(payload.learning);
   const status = $("agent-status");
   const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
   if (status) {
@@ -19953,7 +19992,7 @@ function paintAgentHome(payload) {
   const note = document.createElement("p");
   note.id = "agent-todo-note";
   note.className = "agent-note";
-  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. FYI and Other can mark the listed messages read, with Undo, and do not complete todos. Settings → Learned keeps a correction after the same pattern happens 3 times. Delete removes that one pattern.";
+  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. Both wait for mailbox confirmation before completing a todo or counting a read for Learned. FYI and Other can mark the listed messages read, with Undo, and do not complete todos. Successful replies in any category can count for Learned without an open todo. Settings → Learned keeps a correction after the same pattern happens 3 times. Delete removes that one pattern and refreshes suggestions in open views.";
   root.appendChild(note);
   paintReplySelectionLabels(root);
   paintMotionRows("agent", root.querySelectorAll(".agent-section"));
@@ -20055,28 +20094,109 @@ function agentCategoryReadButton(role, items) {
   return button;
 }
 
-async function markAgentMessageRead(item, card, mode) {
+function paintAgentReadProjection(messageId, unread, original) {
+  eachStarRow({ id: messageId }, (row) => { row.unread = unread; row.isRead = !unread; });
+  if (state.view === "mail" && $("messages") && $("message-list")) renderList();
+  const rows = original ? [original] : [];
+  for (const section of agentPaintPayload && agentPaintPayload.sections || []) rows.push(...section.items || []);
+  for (const item of rows) {
+    if (item && String(item.messageId || "") === messageId) item.unread = unread;
+  }
+  if (unread) agentMarkedRead.delete(messageId);
+  else agentMarkedRead.add(messageId);
+  if (state.view === "agent" && agentPaintPayload) paintAgentHome(agentPaintPayload);
+}
+
+function beginAgentRead(item, begunAt, complete) {
+  const entry = { item, begunAt, complete, signal: learningSignalItem(item), receipt: null, early: [] };
+  agentPendingReads.set(String(item.messageId), entry);
+  return entry;
+}
+
+async function settleAgentReadOutcome(outcome) {
+  if (outcome.kind && outcome.kind !== "read") return;
+  const entry = agentPendingReads.get(String(outcome.id));
+  if (!entry) return;
+  if (!entry.receipt) {
+    entry.early.push(outcome);
+    return;
+  }
+  const receipt = entry.receipt;
+  if (!Number.isFinite(outcome.generation) || outcome.generation < receipt.generation) return;
+  agentPendingReads.delete(String(outcome.id));
+  const same = outcome.generation === receipt.generation && (!receipt.actionId || outcome.actionId === receipt.actionId);
+  const completed = same && outcome.status === "completed" && (!outcome.kind || outcome.kind === "read") && (!outcome.projection || outcome.projection.unread === false);
+  const unread = outcome.projection ? !!outcome.projection.unread : !completed;
+  // Record the confirmation before painting. A list repaint must not drop it.
+  if (completed && entry.signal) await learnAgent({ kind: "action", action: "mark-read", begunAt: entry.begunAt, items: [entry.signal] });
+  if (completed && entry.complete) {
+    const context = agentMessageContext(entry.item);
+    await updateTodo(context.messageId, "done", context.accountId);
+  }
+  if (outcome.generation >= (actionGeneration.get(outcome.id) || 0)) paintAgentReadProjection(String(outcome.id), unread, entry.item);
+  if (!completed) {
+    showStatus("Mark as read was not confirmed.", true);
+    return same && outcome.status !== "completed" ? outcome.status : "superseded";
+  }
+  showStatus(entry.complete ? "Marked as read; todo completed." : "Marked as read.");
+  return "completed";
+}
+
+async function acceptAgentRead(entry, data) {
+  const messageId = String(entry.item.messageId);
+  if (agentPendingReads.get(messageId) !== entry) return "superseded";
+  const outcomes = data && Array.isArray(data.outcomes) ? data.outcomes : [];
+  const pending = data && Array.isArray(data.pending) ? data.pending : [];
+  const receipt = outcomes.find((row) => row.id === messageId) || pending.find((row) => row.id === messageId);
+  if (!receipt || !Number.isFinite(receipt.generation)) {
+    agentPendingReads.delete(messageId);
+    paintAgentReadProjection(messageId, true, entry.item);
+    return "not_attempted";
+  }
+  entry.receipt = receipt;
+  const early = entry.early.filter((row) => Number.isFinite(row.generation) && row.generation >= receipt.generation).sort((first, second) => second.generation - first.generation)[0];
+  const outcome = early || outcomes.find((row) => row.id === messageId);
+  if (outcome) {
+    return await settleAgentReadOutcome(outcome);
+  }
+  paintAgentReadProjection(messageId, false, entry.item);
+  return "pending";
+}
+
+function abandonAgentRead(entry) {
+  const messageId = String(entry.item.messageId);
+  if (agentPendingReads.get(messageId) !== entry) return;
+  agentPendingReads.delete(messageId);
+  paintAgentReadProjection(messageId, true, entry.item);
+}
+
+async function markAgentMessageRead(item, card, mode, begunAt = Date.now()) {
   const context = agentMessageContext(item);
   if (!context) return;
-  const begunAt = Date.now();
   const reply = agentPileRole(item) === "reply";
   const already = agentReadIntent(item) === "already" || agentMarkedRead.has(context.messageId);
   const complete = mode === "done" || (reply && state.prefs.markReadCompletesTodos === true);
+  const pending = agentPendingReads.get(context.messageId);
+  if (pending) {
+    pending.complete = pending.complete || complete;
+    showStatus("Mark as read is waiting for mailbox confirmation.");
+    return "pending";
+  }
   if (already && !complete) {
     showStatus("Already read.");
-    return;
+    return "already";
   }
   if (!already) {
-    await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
-    item.unread = false;
-    agentMarkedRead.add(context.messageId);
-    if (card && card.classList) {
-      card.classList.remove("unread");
-      const dot = card.querySelector(".unread-dot");
-      if (dot) dot.remove();
+    const entry = beginAgentRead(item, begunAt, complete);
+    try {
+      const data = await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
+      const status = await acceptAgentRead(entry, data);
+      showStatus(status === "pending" ? "Mark as read is waiting for mailbox confirmation." : status === "completed" ? "Marked as read." : "Mark as read was not confirmed.", status !== "pending" && status !== "completed");
+      return status;
+    } catch (error) {
+      abandonAgentRead(entry);
+      throw error;
     }
-    const signal = learningSignalItem(item);
-    if (signal) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: [signal] });
   }
   if (complete) {
     await updateTodo(context.messageId, "done", context.accountId);
@@ -20096,62 +20216,42 @@ async function applyReplySelection(items, mode) {
     showStatus(captured.length === 1 ? "Todo completed." : "Todos completed.");
     return;
   }
-  const optIn = state.prefs.markReadCompletesTodos === true;
   const begunAt = Date.now();
-  const learned = [];
-  let marked = 0;
   for (const item of captured) {
-    const context = agentMessageContext(item);
-    const unread = agentReadIntent(item) === "mark" && !agentMarkedRead.has(context.messageId);
-    if (unread) {
-      await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
-      item.unread = false;
-      agentMarkedRead.add(context.messageId);
-      marked += 1;
-      const signal = learningSignalItem(item);
-      if (signal) learned.push(signal);
-    }
-    if (optIn) await updateTodo(context.messageId, "done", context.accountId);
+    await markAgentMessageRead(item, null, undefined, begunAt);
   }
-  if (learned.length) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: learned });
   if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
-  if (!marked && !optIn) showStatus("Already read.");
-  else showStatus(marked ? "Marked as read." : "Todo completed.");
 }
 
 async function markAgentCategoryRead(items) {
   const begunAt = Date.now();
   const snapshot = agentUnreadSnapshot(items);
   if (!snapshot.length) return;
-  const data = await call("mail:markReadBatch", {
-    isRead: true,
-    items: snapshot.map((row) => ({ emailId: row.messageId, accountId: row.accountId })),
-  });
+  const entries = snapshot.map((row) => beginAgentRead(items.find((item) => item.messageId === row.messageId), begunAt, false));
+  let data;
+  try {
+    data = await call("mail:markReadBatch", {
+      isRead: true,
+      items: snapshot.map((row) => ({ emailId: row.messageId, accountId: row.accountId })),
+    });
+  } catch (error) {
+    for (const entry of entries) abandonAgentRead(entry);
+    throw error;
+  }
   if (typeof rememberActionGeneration === "function") {
     rememberActionGeneration(data && data.pending);
     rememberActionGeneration(data && data.outcomes);
   }
   const undoRows = readUndoRows(snapshot, data);
-  const touched = new Set(undoRows.map((row) => row.emailId));
-  for (const item of items || []) {
-    if (!item || !touched.has(String(item.messageId || ""))) continue;
-    item.unread = false;
-    agentMarkedRead.add(String(item.messageId));
-  }
+  await Promise.all(entries.map((entry) => acceptAgentRead(entry, data)));
   if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
-  const learned = [];
-  for (const item of items || []) {
-    if (!item || !touched.has(String(item.messageId || ""))) continue;
-    const signal = learningSignalItem(item);
-    if (signal) learned.push(signal);
-  }
-  if (learned.length) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: learned });
   if (!undoRows.length) {
-    showStatus("Marked as read.");
+    showStatus("Mark as read was not confirmed.", true);
     return;
   }
   const noun = undoRows.length === 1 ? "message" : "messages";
-  showReadUndo("Marked " + undoRows.length + " " + noun + " as read.", undoRows);
+  const waiting = entries.some((entry) => agentPendingReads.get(String(entry.item.messageId)) === entry);
+  showReadUndo(waiting ? "Mark as read requested for " + undoRows.length + " " + noun + "." : "Marked " + undoRows.length + " " + noun + " as read.", undoRows);
 }
 
 function agentTodoActions(item, section) {
