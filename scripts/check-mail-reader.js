@@ -379,7 +379,7 @@ function loadReader(role) {
     getElementById(id) {
       if (!nodes.has(id)) {
         const node = domNode('div');
-        if (id === 'organize-menu') node.hidden = true;
+        if (id === 'organize-menu' || id === 'undo-details-popover') node.hidden = true;
         nodes.set(id, node);
       }
       return nodes.get(id);
