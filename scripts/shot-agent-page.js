@@ -293,7 +293,7 @@ app.whenReady().then(async () => {
     const row = document.querySelector('[data-testid="agent-todo-actions"]');
     return [...row.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"));
   })()`, true);
-  const expected = ["Open", "Reply", "Reply All", "Mark as read", "Mark todo done", "Dismiss"];
+  const expected = ["Open", "Reply", "Reply All", "Mark as read", "Mark read & done", "Mark todo done", "Dismiss"];
   if (JSON.stringify(labels) !== JSON.stringify(expected)) {
     throw new Error("action labels " + JSON.stringify(labels));
   }

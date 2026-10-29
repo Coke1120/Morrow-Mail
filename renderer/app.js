@@ -23,6 +23,7 @@ const state = {
   draftId: null,
   draftRevision: null,
   composeSession: 0,
+  agentReplyTodo: null,
   composeAttachments: [],
   composeSuggestions: null,
   composeMeta: null,
@@ -45,6 +46,7 @@ const state = {
   prefs: {
     chips: true,
     aiReply: true,
+    markReadCompletesTodos: false,
     gmailOpen: true,
     outlookOpen: false,
     theme: "light",
@@ -108,9 +110,13 @@ let peekEmail = null;
 let pendingPeekId = "";
 let pendingPeekAccountId = "";
 let reloadTimer = null;
+let undoKind = "";
 let undoOpIds = null;
+let readUndoItems = null;
+let readUndoTimer = 0;
 let undoReceipt = "";
 let undoReceiptError = false;
+const agentReplySelection = new Set();
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
@@ -267,7 +273,8 @@ function expandStatus(pin) {
 function showStatus(text, isError) {
   const el = $("status");
   if (!el) return;
-  const kept = undoOpIds && undoReceipt;
+  if (undoKind === "read" && text !== undoReceipt) clearUndo();
+  const kept = undoKind === "removal" && undoOpIds && undoReceipt;
   el.textContent = kept && text !== undoReceipt ? undoReceipt + (text ? "\n" + text : "") : (text || "");
   statusIsError = !!(isError || (kept && undoReceiptError)) && !!el.textContent;
   if (el.classList) el.classList.toggle("error", statusIsError);
@@ -2718,7 +2725,7 @@ function outboxComposeSeed(row, payload) {
   const source = payload && typeof payload === "object" ? payload : {};
   const html = typeof source.body === "string" ? source.body : (row && row.htmlBody) || "";
   const subject = source.subject || (row && row.subject) || "";
-  return {
+  const seed = {
     title: subject || "Message",
     accountId: source.accountId || (row && row.accountId),
     fromAddress: source.fromAddress || (row && row.fromAddress),
@@ -2736,6 +2743,9 @@ function outboxComposeSeed(row, payload) {
     threadId: source.threadId || (row && row.threadId) || "",
     status: "Send canceled. Your draft is ready to edit.",
   };
+  const todo = explicitAgentTodo(source.agentTodo);
+  if (todo) seed.agentTodo = todo;
+  return seed;
 }
 
 function scheduledEmptyCopy() {
@@ -7838,20 +7848,59 @@ async function useAttachment(channel, email, file) {
   showStatus(channel === "mail:downloadAttachment" ? "Saved." : "Opened.");
 }
 
+function clearReadUndoTimer() {
+  if (!readUndoTimer) return;
+  clearTimeout(readUndoTimer);
+  readUndoTimer = 0;
+}
+
 function showUndo(text, opIds, isError) {
+  clearReadUndoTimer();
+  undoKind = "removal";
+  readUndoItems = null;
   undoReceipt = text;
   undoReceiptError = !!isError;
   undoOpIds = opIds && opIds.length ? opIds.slice() : null;
-  $("undo").hidden = !undoOpIds;
-  $("undo").textContent = "Undo " + (undoOpIds ? undoOpIds.length : 0) + " completed changes";
+  const undo = $("undo");
+  if (undo) {
+    undo.hidden = !undoOpIds;
+    undo.textContent = "Undo " + (undoOpIds ? undoOpIds.length : 0) + " completed changes";
+  }
   showStatus(text, isError);
 }
 
-function clearUndo() {
+function showReadUndo(text, items) {
+  if (undoKind === "removal" && undoOpIds && undoOpIds.length) {
+    showStatus(text);
+    return;
+  }
+  clearReadUndoTimer();
+  undoKind = "read";
   undoOpIds = null;
+  readUndoItems = (items || []).slice();
+  undoReceipt = text || "";
+  undoReceiptError = false;
+  const undo = $("undo");
+  if (undo) {
+    undo.hidden = !readUndoItems.length;
+    undo.textContent = "Undo";
+  }
+  showStatus(text);
+  readUndoTimer = armStatusTimer(() => {
+    readUndoTimer = 0;
+    if (undoKind === "read") clearUndo();
+  }, STATUS_SUCCESS_DWELL_MS);
+}
+
+function clearUndo() {
+  clearReadUndoTimer();
+  undoKind = "";
+  undoOpIds = null;
+  readUndoItems = null;
   undoReceipt = "";
   undoReceiptError = false;
-  $("undo").hidden = true;
+  const undo = $("undo");
+  if (undo) undo.hidden = true;
 }
 
 function focusAction(name) {
@@ -8096,7 +8145,43 @@ async function moveOpen(email, targetFolderId) {
   }));
 }
 
+async function undoReadBatch() {
+  const items = readUndoItems && readUndoItems.slice();
+  if (undoKind !== "read" || !items || !items.length) return;
+  clearUndo();
+  try {
+    const data = await call("mail:markReadBatch", {
+      isRead: false,
+      restoreRead: true,
+      items: items.map((row) => ({ emailId: row.emailId, accountId: row.accountId, generation: row.generation })),
+    });
+    if (typeof rememberActionGeneration === "function") {
+      rememberActionGeneration(data && data.pending);
+      rememberActionGeneration(data && data.outcomes);
+    }
+    const restored = new Set();
+    for (const row of (data && data.outcomes) || []) {
+      if (row && row.id && row.status === "completed") restored.add(row.id);
+    }
+    for (const row of (data && data.pending) || []) {
+      if (row && row.id) restored.add(row.id);
+    }
+    for (const section of agentSections(agentPaintPayload)) {
+      for (const item of section.items || []) {
+        if (!item || !restored.has(item.messageId)) continue;
+        item.unread = true;
+        agentMarkedRead.delete(String(item.messageId));
+      }
+    }
+    if (restored.size && state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
+    showStatus(restored.size ? "Restored unread." : "Those messages changed later. Unread was left as it is.");
+  } catch (error) {
+    showStatus("Restore outcome is unknown. " + (error.message || String(error)) + " Refresh before retrying.", true);
+  }
+}
+
 async function undoRemoval() {
+  if (undoKind === "read") return undoReadBatch();
   const opIds = undoOpIds;
   if (!opIds || !opIds.length) return;
   const prior = undoReceipt || $("status").textContent;
@@ -10446,6 +10531,7 @@ function onAccountsUpdated(payload) {
       inReplyTo: seed.inReplyTo || "",
       threadId: seed.threadId || "",
       status: message,
+      ...(explicitAgentTodo(seed.agentTodo) ? { agentTodo: explicitAgentTodo(seed.agentTodo) } : {}),
     }).catch(() => {});
     showStatus(message, true);
   }
@@ -12761,6 +12847,8 @@ async function openCompose(seed) {
   hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
+  const replySession = state.composeSession;
+  state.agentReplyTodo = explicitAgentTodo(fields.agentTodo);
   state.composeInitializing = true;
   state.composeIdentityError = false;
   state.composeIdentity = null;
@@ -12823,6 +12911,12 @@ async function openCompose(seed) {
   }
   const initial = composeSnapshot();
   await Promise.all([fields.partialReceipt ? Promise.resolve() : fillSignatures(!!fields.draftId), loadScheduled()]);
+  if (replySession === state.composeSession && !state.agentReplyTodo && freshReplyTodoSeed(fields)) {
+    try {
+      const target = await call("nativeAgent:home:replyTarget", freshReplyTodoSeed(fields));
+      if (replySession === state.composeSession) state.agentReplyTodo = explicitAgentTodo(target);
+    } catch { /* the reply can still send; this todo stays open */ }
+  }
   state.composeInitializing = false;
   if (fields.partialReceipt) {
     state.composeQueued = true;
@@ -13183,6 +13277,7 @@ async function editScheduledMail(row) {
     schedulePreset: "custom",
     scheduleAt: vacationLocalValue(draft.sendAt),
     status: draft.warning || "Removed from queue; local draft saved. Review and choose a future time, then Schedule send.",
+    ...(explicitAgentTodo(draft.agentTodo) ? { agentTodo: explicitAgentTodo(draft.agentTodo) } : {}),
   };
   try {
     await resumeDraft({ id: draft.emailId, accountId: draft.accountId }, handoff);
@@ -13222,7 +13317,8 @@ async function scheduleMail(whenOverride, reviewedPayload) {
   if (!when || when.getTime() <= Date.now() + 1000) { setComposeStatus("Pick a time in the future.", true); $("schedule-at").focus(); return false; }
   return composeOperation(async () => {
     setComposeStatus("Scheduling…");
-    await call("mail:scheduleSend", { ...(reviewedPayload || composePayload(account)), sendAt: when.toISOString() });
+    await call("mail:scheduleSend", { ...withAgentReplyTodo(reviewedPayload || composePayload(account)), sendAt: when.toISOString() });
+    state.agentReplyTodo = null;
     state.composeQueued = true;
     $("compose-title").textContent = "Scheduled receipt";
     // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
@@ -13448,6 +13544,7 @@ async function deliverMail(payload, session = state.composeSession) {
       return;
     }
     if (!ownsCompose()) { showStatus(result?.warning || "Sent.", !!result?.warning); return; }
+    await finishAgentReplyTodo(session);
     state.draftId = null;
     state.draftRevision = null;
     state.composeBaseline = composeSnapshot();
@@ -13513,7 +13610,7 @@ async function sendMail(reviewedPayload) {
     $("compose-to").focus();
     return;
   }
-  const payload = reviewedPayload || composePayload(account);
+  const payload = withAgentReplyTodo(reviewedPayload || composePayload(account));
   const session = state.composeSession;
   const delay = sendDelayMs(state.prefs.undoSend);
   if (!delay) { await deliverMail(payload, session); return; }
@@ -13523,6 +13620,7 @@ async function sendMail(reviewedPayload) {
   try {
     await call("mail:scheduleSend", { ...payload, sendAt: new Date(Date.now() + delay).toISOString(), outbox: true });
     queued = true;
+    state.agentReplyTodo = null;
     state.composeQueued = true;
     state.composeBaseline = composeSnapshot();
   } catch (error) {
@@ -14489,6 +14587,7 @@ const SHELL_PREFS = {
   "morrow:configGetCompactMessageList": "compactList",
   "morrow:configGetShowFolderChips": "chips",
   "morrow:configGetAiWriteAutoOpenOnReply": "aiReply",
+  "morrow:configGetMarkReadCompletesAgentTodos": "markReadCompletesTodos",
   "morrow:configGetSidebarGmailFoldersExpanded": "gmailOpen",
   "morrow:configGetSidebarOutlookFoldersExpanded": "outlookOpen",
 };
@@ -14740,6 +14839,7 @@ function prefRows() {
     ["pref-compact-list", "morrow:configGetCompactMessageList", "morrow:configSetCompactMessageList", "bool"],
     ["pref-snooze", "morrow:configGetSnoozeEffective", "morrow:configSetSnoozeEffective", "bool"],
     ["pref-ai-reply", "morrow:configGetAiWriteAutoOpenOnReply", "morrow:configSetAiWriteAutoOpenOnReply", "bool"],
+    ["pref-agent-read-done", "morrow:configGetMarkReadCompletesAgentTodos", "morrow:configSetMarkReadCompletesAgentTodos", "bool"],
     ["pref-folder-chips", "morrow:configGetShowFolderChips", "morrow:configSetShowFolderChips", "bool"],
     ["pref-gmail-folders", "morrow:configGetSidebarGmailFoldersExpanded", "morrow:configSetSidebarGmailFoldersExpanded", "bool"],
     ["pref-outlook-folders", "morrow:configGetSidebarOutlookFoldersExpanded", "morrow:configSetSidebarOutlookFoldersExpanded", "bool"],
@@ -17349,9 +17449,103 @@ function agentReadIntent(item) {
   return "mark";
 }
 
-function agentTodoActionNames(item) {
+function explicitAgentTodo(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const messageId = String(value.messageId || "").trim();
+  if (!messageId) return null;
+  return { messageId, accountId: String(value.accountId || "").trim() };
+}
+
+function freshReplyTodoSeed(fields) {
+  if (!fields || fields.draftId || fields.botDraft || fields.partialReceipt) return null;
+  if (fields.kind !== "reply" && fields.kind !== "all") return null;
+  const messageId = String(fields.sourceMessageId || "").trim();
+  if (!messageId) return null;
+  return { messageId, accountId: String(fields.accountId || "").trim() };
+}
+
+function withAgentReplyTodo(payload) {
+  const todo = explicitAgentTodo(state.agentReplyTodo);
+  if (!todo || !payload) return payload;
+  return { ...payload, agentTodo: todo };
+}
+
+async function finishAgentReplyTodo(session) {
+  if (session !== state.composeSession) return;
+  const todo = explicitAgentTodo(state.agentReplyTodo);
+  state.agentReplyTodo = null;
+  if (!todo) return;
+  try {
+    const data = await call("nativeAgent:home:todoUpdate", {
+      messageId: todo.messageId,
+      accountId: todo.accountId,
+      status: "done",
+    });
+    if (state.view === "agent" && data) paintAgent(data, "");
+  } catch { /* confirmed send stands; the todo can still be marked done */ }
+}
+
+function agentPileRole(section) {
+  const source = section && typeof section === "object" ? section : {};
+  const id = String(source.id || source.categoryId || "").trim();
+  const name = String(source.name || source.title || "").trim();
+  if (id === "needs-you" || /^needs you$/i.test(name)) return "reply";
+  if (id === "fyi" || /^fyi$/i.test(name)) return "fyi";
+  if (id === "other" || /^other$/i.test(name)) return "other";
+  return "";
+}
+
+function agentSelectionLabels(selectedCount, listedCount) {
+  const selected = Number(selectedCount) || 0;
+  const listed = Number(listedCount) || 0;
+  const all = listed > 0 && selected === listed;
+  return {
+    read: all ? "Mark all as read" : "Mark selected as read",
+    done: all ? "Complete all" : "Complete selected",
+  };
+}
+
+function agentUnreadSnapshot(items) {
+  const rows = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    if (agentReadIntent(item) !== "mark") continue;
+    const context = agentMessageContext(item);
+    if (!context || seen.has(context.messageId) || agentMarkedRead.has(context.messageId)) continue;
+    seen.add(context.messageId);
+    rows.push({ messageId: context.messageId, accountId: context.accountId });
+  }
+  return rows;
+}
+
+function readUndoRows(snapshot, data) {
+  const accounts = new Map();
+  for (const row of snapshot || []) {
+    const context = agentMessageContext(row);
+    if (context) accounts.set(context.messageId, context.accountId || "");
+  }
+  const rows = [];
+  const seen = new Set();
+  const take = (entry, requireCompleted) => {
+    if (!entry || !entry.id || seen.has(entry.id)) return;
+    if (requireCompleted && entry.status !== "completed") return;
+    if (typeof entry.generation !== "number" || !Number.isFinite(entry.generation)) return;
+    if (!accounts.has(entry.id)) return;
+    seen.add(entry.id);
+    rows.push({ emailId: entry.id, accountId: accounts.get(entry.id), generation: entry.generation });
+  };
+  const packet = data && typeof data === "object" ? data : {};
+  for (const row of packet.outcomes || []) take(row, true);
+  for (const row of packet.pending || []) take(row, false);
+  return rows;
+}
+
+function agentTodoActionNames(item, section) {
   if (!agentMessageContext(item)) return [];
-  return ["Open", "Reply", "Reply All", "Mark as read", "Mark todo done", "Dismiss"];
+  const names = ["Open", "Reply", "Reply All", "Mark as read"];
+  if (agentPileRole(section || item) === "reply") names.push("Mark read & done");
+  names.push("Mark todo done", "Dismiss");
+  return names;
 }
 
 function agentFollowUps(item) {
@@ -17740,6 +17934,7 @@ function agentIconSpec(action) {
   if (action === "reply") return ROW_ICON.Reply;
   if (action === "reply-all") return ROW_ICON["Reply All"];
   if (action === "read") return ROW_ICON["Mark read"];
+  if (action === "read-done") return AGENT_ICON.done;
   return AGENT_ICON[action] || "";
 }
 
@@ -18897,6 +19092,11 @@ function paintAgentHome(payload) {
       titles.appendChild(desc);
     }
     head.appendChild(titles);
+    const tools = document.createElement("div");
+    tools.className = "agent-section-tools";
+    const role = agentPileRole(section);
+    if ((role === "fyi" || role === "other") && items.length) tools.appendChild(agentCategoryReadButton(role, items));
+    if (role === "reply" && items.length) tools.appendChild(agentReplySelectionTools(block, items));
     if (section.collapseView && items.length) {
       const toggle = document.createElement("button");
       toggle.type = "button";
@@ -18908,8 +19108,9 @@ function paintAgentHome(payload) {
         toggle.textContent = collapsed ? "Show" : "Hide";
         toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
       });
-      head.appendChild(toggle);
+      tools.appendChild(toggle);
     }
+    if (tools.childNodes.length) head.appendChild(tools);
     block.appendChild(head);
     const empty = sectionEmptyCopy(reason);
     if (!items.length && empty) {
@@ -18919,15 +19120,16 @@ function paintAgentHome(payload) {
       block.appendChild(emptyNote);
     }
     for (const item of items) {
-      if (item && typeof item === "object") block.appendChild(agentTodoCard(item));
+      if (item && typeof item === "object") block.appendChild(agentTodoCard(item, section));
     }
     root.appendChild(block);
   }
   const note = document.createElement("p");
   note.id = "agent-todo-note";
   note.className = "agent-note";
-  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. Reply, Reply All, and Mark as read use the linked message and leave this list in place.";
+  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. FYI and Other can mark the listed messages read, with Undo, and do not complete todos.";
   root.appendChild(note);
+  paintReplySelectionLabels(root);
   paintMotionRows("agent", root.querySelectorAll(".agent-section"));
 }
 
@@ -18943,25 +19145,174 @@ async function replyToAgentItem(item, kind) {
   await presentCompose(composeSeed(email, kind === "all" ? "all" : "reply", self));
 }
 
-async function markAgentMessageRead(item, card) {
+function agentSelectBox(item) {
+  const context = agentMessageContext(item);
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.className = "agent-select";
+  if (context) box.dataset.messageId = context.messageId;
+  const subject = String((item && item.subject) || "").trim() || "(no subject)";
+  box.setAttribute("aria-label", "Select " + subject);
+  box.checked = !!(context && agentReplySelection.has(context.messageId));
+  box.addEventListener("click", (event) => event.stopPropagation());
+  box.addEventListener("change", () => {
+    if (!context) return;
+    if (box.checked) agentReplySelection.add(context.messageId);
+    else agentReplySelection.delete(context.messageId);
+    paintReplySelectionLabels();
+  });
+  return box;
+}
+
+function paintReplySelectionLabels(root) {
+  const home = root || $("agent-home");
+  if (!home || typeof home.querySelectorAll !== "function") return;
+  for (const block of home.querySelectorAll(".agent-section")) {
+    const tools = block.querySelector(".agent-section-tools");
+    if (!tools) continue;
+    const boxes = [...block.querySelectorAll(".agent-select")];
+    if (!boxes.length) continue;
+    const labels = agentSelectionLabels(boxes.filter((box) => box.checked).length, boxes.length);
+    const read = tools.querySelector(".agent-mark-selected");
+    const done = tools.querySelector(".agent-complete-selected");
+    if (read) read.textContent = labels.read;
+    if (done) done.textContent = labels.done;
+  }
+}
+
+function selectedReplyItems(block, items) {
+  const wanted = new Set();
+  for (const box of block.querySelectorAll(".agent-select")) {
+    if (box.checked && box.dataset.messageId) wanted.add(box.dataset.messageId);
+  }
+  return (items || []).filter((item) => wanted.has(String(item && item.messageId || "")));
+}
+
+function agentReplySelectionTools(block, items) {
+  const wrap = document.createElement("div");
+  wrap.className = "agent-reply-tools";
+  wrap.dataset.pile = "reply";
+  const labels = agentSelectionLabels(0, items.length);
+  const read = document.createElement("button");
+  read.type = "button";
+  read.className = "ghost agent-mark-selected";
+  read.dataset.testid = "agent-mark-selected";
+  read.textContent = labels.read;
+  const done = document.createElement("button");
+  done.type = "button";
+  done.className = "ghost agent-complete-selected";
+  done.dataset.testid = "agent-complete-selected";
+  done.textContent = labels.done;
+  read.addEventListener("click", () => {
+    const captured = selectedReplyItems(block, items);
+    if (!captured.length) return;
+    guard(() => applyReplySelection(captured, "read"));
+  });
+  done.addEventListener("click", () => {
+    const captured = selectedReplyItems(block, items);
+    if (!captured.length) return;
+    guard(() => applyReplySelection(captured, "done"));
+  });
+  wrap.append(read, done);
+  return wrap;
+}
+
+function agentCategoryReadButton(role, items) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost agent-category-read";
+  button.dataset.testid = "agent-category-read";
+  button.dataset.pile = role;
+  button.textContent = "Mark category as read";
+  const snapshot = items.slice();
+  button.addEventListener("click", () => guard(() => markAgentCategoryRead(snapshot)));
+  return button;
+}
+
+async function markAgentMessageRead(item, card, mode) {
   const context = agentMessageContext(item);
   if (!context) return;
-  if (agentReadIntent(item) === "already" || agentMarkedRead.has(context.messageId)) {
+  const reply = agentPileRole(item) === "reply";
+  const already = agentReadIntent(item) === "already" || agentMarkedRead.has(context.messageId);
+  const complete = mode === "done" || (reply && state.prefs.markReadCompletesTodos === true);
+  if (already && !complete) {
     showStatus("Already read.");
     return;
   }
-  await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
-  item.unread = false;
-  agentMarkedRead.add(context.messageId);
-  if (card && card.classList) {
-    card.classList.remove("unread");
-    const dot = card.querySelector(".unread-dot");
-    if (dot) dot.remove();
+  if (!already) {
+    await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
+    item.unread = false;
+    agentMarkedRead.add(context.messageId);
+    if (card && card.classList) {
+      card.classList.remove("unread");
+      const dot = card.querySelector(".unread-dot");
+      if (dot) dot.remove();
+    }
+  }
+  if (complete) {
+    await updateTodo(context.messageId, "done", context.accountId);
+    return;
   }
   showStatus("Marked as read.");
 }
 
-function agentTodoActions(item) {
+async function applyReplySelection(items, mode) {
+  const captured = (items || []).filter((item) => agentMessageContext(item));
+  if (!captured.length) return;
+  if (mode === "done") {
+    for (const item of captured) {
+      const context = agentMessageContext(item);
+      await updateTodo(context.messageId, "done", context.accountId);
+    }
+    showStatus(captured.length === 1 ? "Todo completed." : "Todos completed.");
+    return;
+  }
+  const optIn = state.prefs.markReadCompletesTodos === true;
+  let marked = 0;
+  for (const item of captured) {
+    const context = agentMessageContext(item);
+    const unread = agentReadIntent(item) === "mark" && !agentMarkedRead.has(context.messageId);
+    if (unread) {
+      await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
+      item.unread = false;
+      agentMarkedRead.add(context.messageId);
+      marked += 1;
+    }
+    if (optIn) await updateTodo(context.messageId, "done", context.accountId);
+  }
+  if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
+  if (!marked && !optIn) showStatus("Already read.");
+  else showStatus(marked ? "Marked as read." : "Todo completed.");
+}
+
+async function markAgentCategoryRead(items) {
+  const snapshot = agentUnreadSnapshot(items);
+  if (!snapshot.length) return;
+  const data = await call("mail:markReadBatch", {
+    isRead: true,
+    items: snapshot.map((row) => ({ emailId: row.messageId, accountId: row.accountId })),
+  });
+  if (typeof rememberActionGeneration === "function") {
+    rememberActionGeneration(data && data.pending);
+    rememberActionGeneration(data && data.outcomes);
+  }
+  const undoRows = readUndoRows(snapshot, data);
+  const touched = new Set(undoRows.map((row) => row.emailId));
+  for (const item of items || []) {
+    if (!item || !touched.has(String(item.messageId || ""))) continue;
+    item.unread = false;
+    agentMarkedRead.add(String(item.messageId));
+  }
+  if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
+  if (!undoRows.length) {
+    showStatus("Marked as read.");
+    return;
+  }
+  const noun = undoRows.length === 1 ? "message" : "messages";
+  showReadUndo("Marked " + undoRows.length + " " + noun + " as read.", undoRows);
+}
+
+function agentTodoActions(item, section) {
   const context = agentMessageContext(item);
   if (!context) return null;
   const actions = document.createElement("div");
@@ -18976,6 +19327,9 @@ function agentTodoActions(item) {
     agentActionButton("reply-all", "Reply All", () => replyToAgentItem(item, "all")),
     agentActionButton("read", "Mark as read", () => markAgentMessageRead(item, card())),
   );
+  if (agentPileRole(section || item) === "reply") {
+    mail.append(agentActionButton("read-done", "Mark read & done", () => markAgentMessageRead(item, card(), "done")));
+  }
   for (const follow of agentFollowUps(item)) {
     if (!follow || follow.kind === "open") continue;
     mail.appendChild(styleFollowButton(follow));
@@ -18983,23 +19337,30 @@ function agentTodoActions(item) {
   const local = document.createElement("div");
   local.className = "agent-action-group agent-action-local";
   local.append(
-    agentActionButton("done", "Mark todo done", () => updateTodo(context.messageId, "done")),
-    agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed")),
+    agentActionButton("done", "Mark todo done", () => updateTodo(context.messageId, "done", context.accountId)),
+    agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed", context.accountId)),
   );
   actions.append(mail, local);
   return actions;
 }
 
-function agentTodoCard(item) {
+function agentTodoCard(item, section) {
+  if (section && item && typeof item === "object" && !item.categoryId) item.categoryId = section.id || "";
   if (!agentMessageContext(item)) return agentCard(item);
   const card = agentCard(item, { actions: false });
-  const actions = agentTodoActions(item);
+  if (agentPileRole(section || item) === "reply") {
+    const main = card.querySelector(".agent-item-main");
+    if (main) main.prepend(agentSelectBox(item));
+  }
+  const actions = agentTodoActions(item, section);
   if (actions) card.appendChild(actions);
   return card;
 }
 
-async function updateTodo(messageId, status) {
-  const data = await call("nativeAgent:home:todoUpdate", { messageId, status });
+async function updateTodo(messageId, status, accountId) {
+  const payload = { messageId, status };
+  if (accountId) payload.accountId = accountId;
+  const data = await call("nativeAgent:home:todoUpdate", payload);
   paintAgent(data, "");
 }
 
@@ -22239,6 +22600,11 @@ async function boot() {
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
+  api.on("nativeAgent:homeUpdated", (payload) => {
+    if (!payload || typeof payload !== "object") return;
+    agentPaintPayload = payload;
+    if (state.view === "agent") paintAgent(payload, "");
+  });
   api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:bodyUpdated", applyBodyUpdate);
   api.on("mail:bodySyncStatus", acceptBodySync);

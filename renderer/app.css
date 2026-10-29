@@ -2121,13 +2121,37 @@ button.inline-link:focus-visible { color: var(--ink); }
   letter-spacing: 0;
 }
 
-.agent-section-toggle {
+.agent-section-tools {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.agent-reply-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-section-toggle,
+.agent-section-tools .ghost {
   flex: none;
   height: 28px;
   padding: 0 12px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 650;
+}
+
+.agent-select {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 10px;
 }
 
 #agent-home .agent-section.is-collapsed .agent-item,

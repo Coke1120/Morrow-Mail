@@ -1042,17 +1042,66 @@ function refreshTaxonomy() {
   return ok(homePayload());
 }
 
+function publishHome(payload) {
+  try {
+    const electron = require("electron");
+    const BrowserWindow = electron && electron.BrowserWindow;
+    if (!BrowserWindow || typeof BrowserWindow.getAllWindows !== "function") return;
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) continue;
+      if (win.webContents && typeof win.webContents.send === "function") {
+        win.webContents.send("nativeAgent:homeUpdated", payload);
+      }
+    }
+  } catch {
+    // Headless checks have no windows. The stored todo still stands.
+  }
+}
+
+function replyPileSection(section) {
+  if (!section) return false;
+  return section.id === "needs-you" || /^needs you$/i.test(String(section.name || ""));
+}
+
+function replyTodoTarget(params) {
+  const messageId = clip(params && params.messageId, 120);
+  const accountId = clip(params && params.accountId, 120);
+  if (!messageId) return ok(null);
+  // The reply pile is the stored triage, including when the Agent page is
+  // gated. Done and dismissed rows are already omitted.
+  const store = readStore();
+  const sections = projectSections(taxonomy(), triageItems(store.triage), store.todos);
+  for (const section of sections) {
+    if (!replyPileSection(section)) continue;
+    for (const item of section.items || []) {
+      if (!item || item.messageId !== messageId) continue;
+      const itemAccount = clip(item.accountId, 120);
+      if (accountId && itemAccount && accountId !== itemAccount) return ok(null);
+      return ok({ messageId, accountId: itemAccount || accountId });
+    }
+  }
+  return ok(null);
+}
+
 function setTodo(params) {
   const messageId = clip(params && params.messageId, 120);
   const status = String(params && params.status || "");
+  const accountId = clip(params && params.accountId, 120);
   if (!messageId || (status !== "open" && status !== "done" && status !== "dismissed")) {
     return fail(new Error("That todo needs a message and a status."));
+  }
+  if (accountId) {
+    const item = triageItems(readStore().triage).find((row) => row && row.messageId === messageId);
+    const itemAccount = item ? clip(item.accountId, 120) : "";
+    if (itemAccount && itemAccount !== accountId) return ok(homePayload());
   }
   const store = readStore();
   if (status === "open") delete store.todos[messageId];
   else store.todos[messageId] = { status, at: new Date().toISOString() };
   writeStore(store);
-  return ok(homePayload());
+  const payload = homePayload();
+  publishHome(payload);
+  return ok(payload);
 }
 
 function history() {
@@ -2287,6 +2336,8 @@ function answer(channel, args) {
       return refreshTaxonomy();
     case "nativeAgent:home:todoUpdate":
       return setTodo(params);
+    case "nativeAgent:home:replyTarget":
+      return replyTodoTarget(params);
     case "nativeAgent:triage":
       return params?.source === "open" ? require("./ai-context").background(() => triage()) : triage();
     case "nativeAgent:history":

@@ -616,9 +616,35 @@ function undoCommands(opIds) {
   return commands;
 }
 
+function laterRead(messageId, generation) {
+  const cap = Number(generation);
+  if (!Number.isFinite(cap)) return true;
+  return db.mailActionsForMessage(messageId).some((row) => {
+    if (!(row.generation > cap)) return false;
+    return parse(row.intent_json, {}).kind === "read";
+  });
+}
+
 function handle(channel, params) {
   const single = !channel.endsWith("Batch") && !channel.startsWith("mail:thread");
   if (channel === "mail:markRead" || channel === "mail:markReadBatch") {
+    if (channel === "mail:markReadBatch" && params && params.restoreRead === true) {
+      const commands = [];
+      for (const item of Array.isArray(params.items) ? params.items : []) {
+        const messageId = item && (item.emailId || item.id);
+        const row = messageId && db.messageById(messageId);
+        if (!row) continue;
+        if (item.accountId && row.account_id !== item.accountId) continue;
+        if (laterRead(messageId, item.generation)) continue;
+        commands.push({
+          messageId,
+          single: false,
+          intent: { kind: "read", unread: 1 },
+          stopBatch: true,
+        });
+      }
+      return ok(acceptAll(commands));
+    }
     if (channel === "mail:markRead" && typeof (params && params.isRead) !== "boolean") return ok({ pending: [], outcomes: [], opIds: [] });
     const isRead = channel === "mail:markRead" ? params.isRead : params && params.isRead !== false;
     const ids = channel === "mail:markRead" ? [params && params.emailId] : idsFrom(params, channel);
