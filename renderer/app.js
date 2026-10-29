@@ -19679,6 +19679,8 @@ function paintAgent(payload, errorText) {
 function paintAgentHome(payload) {
   const root = $("agent-home");
   if (!root) return;
+  agentDetailSeq = 0;
+  syncAgentTodoViewControls();
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
   root.replaceChildren();
@@ -19741,8 +19743,17 @@ function paintAgentHome(payload) {
       emptyNote.textContent = empty;
       block.appendChild(emptyNote);
     }
-    for (const item of items) {
-      if (item && typeof item === "object") block.appendChild(agentTodoCard(item, section));
+    if (agentTodoView === "card") {
+      const grid = document.createElement("div");
+      grid.className = "agent-card-grid";
+      for (const item of items) {
+        if (item && typeof item === "object") grid.appendChild(agentTodoCard(item, section));
+      }
+      if (grid.childNodes.length) block.appendChild(grid);
+    } else {
+      for (const item of items) {
+        if (item && typeof item === "object") block.appendChild(agentTodoCard(item, section));
+      }
     }
     root.appendChild(block);
   }
@@ -19966,9 +19977,289 @@ function agentTodoActions(item, section) {
   return actions;
 }
 
+let agentTodoView = "list";
+let agentDetailSeq = 0;
+let agentCardOutsideWired = false;
+
+function agentPlain(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function agentReasonLine(item) {
+  return agentPlain(item && item.summary) || "No Agent reason for this message.";
+}
+
+function agentClassification(item, section) {
+  const source = section && typeof section === "object" ? section : {};
+  const name = String(source.name || source.title || (item && item.categoryId) || "Category").trim() || "Category";
+  const description = agentPlain(source.description || (item && item.reason));
+  return description ? name + " — " + description : name;
+}
+
+function agentThreadLine(item) {
+  const explicit = agentPlain(item && (item.threadLine || item.threadSnippet));
+  if (explicit) return explicit;
+  const snippet = agentPlain(item && item.snippet);
+  const summary = agentPlain(item && item.summary);
+  if (snippet && snippet !== summary) return snippet;
+  const subject = agentPlain(item && item.subject) || "(no subject)";
+  return "Thread · " + subject;
+}
+
+function nextAgentDetailId(messageId) {
+  agentDetailSeq += 1;
+  const safe = String(messageId || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+  return "agent-detail-" + agentDetailSeq + (safe ? "-" + safe : "");
+}
+
+function syncAgentTodoViewControls() {
+  const view = agentTodoView === "card" ? "card" : "list";
+  agentTodoView = view;
+  const home = $("agent-home");
+  if (home && home.dataset) home.dataset.todoView = view;
+  const listBtn = $("agent-view-list");
+  const cardBtn = $("agent-view-card");
+  if (listBtn) listBtn.setAttribute("aria-pressed", view === "list" ? "true" : "false");
+  if (cardBtn) cardBtn.setAttribute("aria-pressed", view === "card" ? "true" : "false");
+}
+
+function setAgentTodoView(next, options) {
+  agentTodoView = next === "card" ? "card" : "list";
+  try { localStorage.setItem("morrow.agentTodoView", agentTodoView); } catch { /* this window only */ }
+  syncAgentTodoViewControls();
+  if (options && options.paint === false) return;
+  if (agentPaintPayload) paintAgentHome(agentPaintPayload);
+}
+
+function wireAgentTodoView() {
+  let stored = "list";
+  try {
+    const value = localStorage.getItem("morrow.agentTodoView");
+    if (value === "card" || value === "list") stored = value;
+  } catch { /* list */ }
+  const bar = $("agent-view-switch");
+  if (bar && bar.dataset && !bar.dataset.wired) {
+    bar.dataset.wired = "1";
+    bar.addEventListener("click", (event) => {
+      const button = event.target && event.target.closest ? event.target.closest("[data-agent-view]") : null;
+      if (!button || !button.dataset) return;
+      setAgentTodoView(button.dataset.agentView);
+    });
+  }
+  setAgentTodoView(stored, { paint: false });
+}
+
+function agentHoverNone() {
+  try {
+    return !!(window.matchMedia && window.matchMedia("(hover: none)").matches);
+  } catch {
+    return false;
+  }
+}
+
+function agentPointerCoarse(event) {
+  const type = event && event.pointerType;
+  if (type === "touch" || type === "pen") return true;
+  return agentHoverNone();
+}
+
+function syncAgentCardDisclosure(card) {
+  const face = card && card.querySelector ? card.querySelector("[data-agent-face]") : null;
+  if (!face) return;
+  const summaryId = card.dataset ? card.dataset.summaryId || "" : "";
+  const open = card.classList.contains("is-open");
+  const ids = String(face.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== summaryId);
+  if (open && summaryId) ids.push(summaryId);
+  if (ids.length) face.setAttribute("aria-describedby", ids.join(" "));
+  else face.removeAttribute("aria-describedby");
+  face.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) face.removeAttribute("title");
+  else if (face.dataset && face.dataset.agentTitle) face.setAttribute("title", face.dataset.agentTitle);
+  else face.removeAttribute("title");
+  const detail = card.querySelector(".agent-card-detail");
+  if (detail) detail.hidden = !open;
+}
+
+function openAgentCardDetail(card) {
+  if (!card || (card.dataset && card.dataset.detailBlock === "1") || card.classList.contains("is-open")) return;
+  const home = $("agent-home");
+  if (home && typeof home.querySelectorAll === "function") {
+    for (const other of home.querySelectorAll(".agent-card.is-open")) {
+      if (other !== card) closeAgentCardDetail(other);
+    }
+  }
+  card.classList.add("is-open");
+  syncAgentCardDisclosure(card);
+}
+
+function closeAgentCardDetail(card, options) {
+  if (!card) return;
+  const opts = options || {};
+  card.classList.remove("is-open");
+  if (opts.block && card.dataset) card.dataset.detailBlock = "1";
+  syncAgentCardDisclosure(card);
+  if (!opts.focus) return;
+  const face = card.querySelector("[data-agent-face]");
+  if (face && typeof face.focus === "function") face.focus();
+}
+
+function wireAgentCardOutside() {
+  if (agentCardOutsideWired || !document || typeof document.addEventListener !== "function") return;
+  agentCardOutsideWired = true;
+  document.addEventListener("pointerdown", (event) => {
+    const home = $("agent-home");
+    if (!home || typeof home.querySelectorAll !== "function") return;
+    for (const card of home.querySelectorAll(".agent-card.is-open")) {
+      if (event && typeof card.contains === "function" && card.contains(event.target)) continue;
+      closeAgentCardDetail(card);
+      if (card.dataset) delete card.dataset.detailBlock;
+    }
+  });
+}
+
+function bindAgentCardDetail(card) {
+  const face = card.querySelector("[data-agent-face]");
+  card.addEventListener("pointerenter", (event) => {
+    const coarse = agentPointerCoarse(event);
+    if (card.dataset) {
+      if (coarse) card.dataset.coarse = "1";
+      else delete card.dataset.coarse;
+      if (!coarse) card.dataset.hover = "1";
+    }
+    if (coarse) return;
+    openAgentCardDetail(card);
+  });
+  card.addEventListener("pointerleave", (event) => {
+    if (event && event.relatedTarget && card.contains(event.relatedTarget)) return;
+    if (card.dataset) delete card.dataset.hover;
+    const blocked = !!(card.dataset && card.dataset.detailBlock === "1");
+    if (card.dataset) delete card.dataset.detailBlock;
+    if (blocked) return;
+    if (card.dataset && card.dataset.coarse === "1") return;
+    if (document.activeElement && card.contains(document.activeElement)) return;
+    closeAgentCardDetail(card);
+  });
+  card.addEventListener("focusin", () => openAgentCardDetail(card));
+  card.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (!card.isConnected || (document.activeElement && card.contains(document.activeElement))) return;
+      closeAgentCardDetail(card);
+      if (card.dataset) delete card.dataset.detailBlock;
+    }, 0);
+  });
+  card.addEventListener("keydown", (event) => {
+    if (!event || event.key !== "Escape" || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+    if (!card.classList.contains("is-open")) return;
+    if (typeof document.querySelector === "function" && document.querySelector("dialog[open]")) return;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    if (typeof event.stopPropagation === "function") event.stopPropagation();
+    closeAgentCardDetail(card, { block: true, focus: true });
+  });
+  card.addEventListener("pointerdown", (event) => {
+    const coarse = agentPointerCoarse(event);
+    if (card.dataset) {
+      if (coarse) card.dataset.coarse = "1";
+      else delete card.dataset.coarse;
+    }
+    if (!coarse || card.classList.contains("is-open")) return;
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+    if (card.dataset) {
+      delete card.dataset.detailBlock;
+      card.dataset.suppressClick = "1";
+    }
+    openAgentCardDetail(card);
+    if (face && typeof face.focus === "function") face.focus();
+  }, true);
+  card.addEventListener("click", (event) => {
+    if (!card.dataset || card.dataset.suppressClick !== "1") return;
+    delete card.dataset.suppressClick;
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+  }, true);
+}
+
+function agentSkimCard(item, section) {
+  const context = agentMessageContext(item);
+  const card = document.createElement("article");
+  card.className = "agent-item agent-card";
+  card.setAttribute("data-testid", "agent-card");
+  if (agentLooksUnread(item)) card.classList.add("unread");
+  const messageId = String(item.messageId || "");
+  if (messageId) card.dataset.messageId = messageId;
+  const detailId = nextAgentDetailId(messageId);
+  const summaryId = detailId + "-summary";
+  card.dataset.summaryId = summaryId;
+  const reason = agentReasonLine(item);
+  const face = document.createElement("div");
+  face.className = "agent-card-face";
+  face.tabIndex = 0;
+  face.dataset.agentFace = "1";
+  face.dataset.agentTitle = reason;
+  face.setAttribute("aria-controls", detailId);
+  const top = document.createElement("div");
+  top.className = "agent-card-top";
+  if (agentPileRole(section || item) === "reply") top.appendChild(agentSelectBox(item));
+  const sender = document.createElement("p");
+  sender.className = "agent-card-sender";
+  if (agentLooksUnread(item)) {
+    const dot = document.createElement("span");
+    dot.className = "unread-dot";
+    dot.setAttribute("aria-hidden", "true");
+    sender.appendChild(dot);
+  }
+  const senderText = document.createElement("span");
+  senderText.textContent = senderName(item && item.from);
+  sender.appendChild(senderText);
+  top.appendChild(sender);
+  const subject = document.createElement("p");
+  subject.className = "agent-card-subject";
+  subject.textContent = agentPlain(item && item.subject) || "(no subject)";
+  const line = document.createElement("p");
+  line.className = "agent-card-line";
+  line.textContent = reason;
+  face.append(top, subject, line);
+  const chips = document.createElement("div");
+  chips.className = "agent-card-chips";
+  chips.append(
+    agentActionButton("reply", "Reply", () => replyToAgentItem(item, "reply")),
+    agentActionButton("done", "Done", () => updateTodo(context.messageId, "done", context.accountId)),
+  );
+  const detail = document.createElement("div");
+  detail.className = "agent-card-detail";
+  detail.id = detailId;
+  detail.hidden = true;
+  detail.setAttribute("role", "group");
+  detail.setAttribute("aria-label", "Message detail");
+  const summary = document.createElement("p");
+  summary.className = "agent-card-summary";
+  summary.id = summaryId;
+  summary.textContent = reason;
+  const classification = document.createElement("p");
+  classification.className = "agent-card-class";
+  classification.textContent = agentClassification(item, section);
+  const thread = document.createElement("p");
+  thread.className = "agent-card-thread";
+  thread.textContent = agentThreadLine(item);
+  const quick = document.createElement("div");
+  quick.className = "agent-card-quick";
+  quick.append(
+    agentActionButton("reply", "Reply", () => replyToAgentItem(item, "reply")),
+    agentActionButton("done", "Done", () => updateTodo(context.messageId, "done", context.accountId)),
+    agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed", context.accountId)),
+  );
+  detail.append(summary, classification, thread, quick);
+  card.append(face, chips, detail);
+  syncAgentCardDisclosure(card);
+  bindAgentCardDetail(card);
+  wireAgentCardOutside();
+  return card;
+}
+
 function agentTodoCard(item, section) {
   if (section && item && typeof item === "object" && !item.categoryId) item.categoryId = section.id || "";
   if (!agentMessageContext(item)) return agentCard(item);
+  if (agentTodoView === "card") return agentSkimCard(item, section);
   const card = agentCard(item, { actions: false });
   if (agentPileRole(section || item) === "reply") {
     const main = card.querySelector(".agent-item-main");
@@ -22408,6 +22699,7 @@ function wire() {
   if (motion) motion.bindChrome(document);
   wireSettingsFolds();
   wireAgentTabs();
+  wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
       if (dialog.id === "quit-scheduled") {
