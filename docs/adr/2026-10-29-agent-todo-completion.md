@@ -1,9 +1,8 @@
 # Complete an Agent todo after a successful reply send
 
-Status: Proposed for [#372](https://github.com/Coke1120/Morrow-Mail/issues/372).
-This note records the completion contract. It does not change the Agent page,
-and it is not merge or release authorization. Features help stays unchanged
-until an implementation ships.
+Status: Accepted and implemented for [#372](https://github.com/Coke1120/Morrow-Mail/issues/372).
+The Agent page and the Features catalog follow this contract. This note is
+not merge or release authorization.
 
 Mark as read is an inbox flag. A successful reply send is the completion
 signal for that Agent todo. Todo here is the Agent reply pile (Needs You in
@@ -29,15 +28,15 @@ These leave the todo open:
 Mark as read by itself leaves the Agent todo open. Automatic mark-read-on-open
 never completes it.
 
-Two optional controls may ship later. Both stay off until the user chooses
-them:
+Two controls ship with this contract:
 
-- Mark read & done marks the message read and completes the todo, because the
-  user asked for done.
-- A Settings opt-in, "Mark as read also completes Agent todos", makes a plain
-  explicit Mark as read on a reply-pile item complete the todo. With the opt-in
-  off, Mark as read still leaves the todo open. This opt-in does not cover
-  automatic reads or the FYI/Other category action.
+- Mark read & done, on a reply-pile row, marks the message read and completes
+  the todo, because the user asked for done.
+- A Settings opt-in, "Mark as read also completes Agent todos", is off by
+  default. When it is on, a plain explicit Mark as read on a reply-pile item
+  completes the todo. With the opt-in off, Mark as read still leaves the todo
+  open. This opt-in does not cover automatic reads or the FYI/Other category
+  action.
 
 Selected and batch actions on this pile use the same contract. The pile has
 no Mark-all primary; see

@@ -1,9 +1,8 @@
 # Mark FYI and Other read in one step, with Undo
 
-Status: Proposed for [#373](https://github.com/Coke1120/Morrow-Mail/issues/373).
-This note records the batch-read contract. It does not add the control, and
-it is not merge or release authorization. Features help stays unchanged until
-an implementation ships.
+Status: Accepted and implemented for [#373](https://github.com/Coke1120/Morrow-Mail/issues/373).
+The Agent page and the Features catalog follow this contract. This note is
+not merge or release authorization.
 
 FYI and Other are skim-and-dismiss piles. The Agent reply pile (Todo in this
 issue; Needs You in the current category list) stays off this batch action.
