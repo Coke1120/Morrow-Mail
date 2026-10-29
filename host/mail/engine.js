@@ -2294,7 +2294,7 @@ async function ensureBody(row, options) {
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
       from_address: fetched.fromAddress || row.from_address || null,
     });
-    bodyResult = metadataOnly || fetched.bodyComplete ? "done" : "incomplete";
+    bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
   } catch (error) {

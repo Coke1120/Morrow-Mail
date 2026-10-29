@@ -713,33 +713,33 @@ button.icon-label svg { display: block; flex: none; }
 }
 .body-sync[hidden] { display: none !important; }
 .sync-slot:hover > .body-sync:not([hidden]),
-#refresh:focus-visible ~ .body-sync:not([hidden]) {
-  top: calc(100% + 6px);
+#refresh:focus-visible ~ .body-sync:not([hidden]),
+.body-sync:not([hidden]):focus-within {
+  top: 100%;
   right: 0;
   width: min(340px, calc(var(--list, 360px) - 28px));
   height: auto;
-  max-height: 220px;
   margin: 0;
-  padding: 8px 10px;
-  overflow: auto;
+  /* The gap belongs to the hover surface, outside the inner scrollport. */
+  padding: 6px 0 0;
+  overflow: visible;
   clip: auto;
   clip-path: none;
   white-space: normal;
   pointer-events: auto;
+}
+.body-sync-scroll {
+  max-height: min(220px, calc(100dvh - 180px));
+  padding: 8px 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
   box-shadow: var(--shadow-card);
 }
-.sync-slot:hover > .body-sync:not([hidden])::before,
-#refresh:focus-visible ~ .body-sync:not([hidden])::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: -6px;
-  height: 6px;
-}
+.body-sync-scroll:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 #list-refresh-slot .sync-slot { z-index: 5; }
 .body-sync p { margin: 4px 0; }
 .body-sync .sync-tip-line { margin: 0 0 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); color: var(--ink-mid); }
@@ -1658,14 +1658,13 @@ button.inline-link:focus-visible { color: var(--ink); }
 #notice {
   position: fixed;
   z-index: 30;
-  left: calc(var(--rail-w, 52px) + (100% - var(--rail-w, 52px)) / 2);
-  bottom: 24px;
-  transform: translateX(-50%);
+  right: 16px;
+  bottom: 16px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  max-width: min(420px, calc(100vw - 80px));
+  max-width: min(420px, calc(100vw - 32px));
   padding: 10px 14px;
   border-radius: 12px;
   background: var(--rail);
@@ -1737,7 +1736,7 @@ button.inline-link:focus-visible { color: var(--ink); }
   right: 16px;
   bottom: 16px;
   transform: none;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 6px;
   max-width: min(420px, calc(100vw - 32px));
   padding: 6px;
@@ -1798,6 +1797,7 @@ button.inline-link:focus-visible { color: var(--ink); }
   flex-direction: column;
   gap: 8px;
   width: min(360px, calc(100vw - 24px));
+  max-height: min(32rem, calc(100dvh - 220px));
   padding: 10px 12px;
   border-radius: 12px;
   background: var(--paper);
@@ -1824,6 +1824,8 @@ button.inline-link:focus-visible { color: var(--ink); }
   margin: 0;
   padding: 0;
   overflow: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
   max-height: 22rem;
 }
 
@@ -5494,7 +5496,6 @@ textarea { min-height: 140px; resize: vertical; }
     padding: 0 8px 8px;
   }
   .split { display: none; }
-  #notice { left: 50%; }
 }
 
 #search-scope { display: grid; gap: 6px; margin: 6px 0; }
@@ -5637,7 +5638,7 @@ textarea { min-height: 140px; resize: vertical; }
 #provider-account { max-width: 100%; }
 
 /* Fixed list chrome leaves one scroll surface for message rows. */
-#messages { display: flex; flex-direction: column; overflow: hidden; }
+#messages { display: flex; flex-direction: column; overflow: visible; }
 #message-list { flex: 1 1 auto; min-height: 64px; overflow: auto; }
 .list-head { position: static; flex: 0 0 auto; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); }
 .list-tools { gap: 4px; flex-wrap: wrap; }
@@ -5697,7 +5698,6 @@ html[data-window="compose"] .workspace {
 
 html[data-window="compose"] body { overflow: hidden; }
 
-html[data-window="compose"] #notice { left: 50%; }
 
 html[data-window="compose"] #compose[open] {
   inset: 0;

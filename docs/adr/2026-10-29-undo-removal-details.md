@@ -28,6 +28,16 @@ Undo all and Undo selected both call the existing `mail:undoRemoval({ opIds, kin
 
 An immediate response with an empty `outcomes` list is still pending. Those rows stay in the session and are not submitted again until `mail:actionsSettled` says they completed or failed. That settlement is applied even while the undo call is still busy, including during the list reload. Each removal session has a generation. A retry from an older generation does not join or revive a newer session.
 
+### Interaction and settlement follow-up (2026-10-30)
+
+Keep the notice anchored at the bottom-right in both expanded and collapsed forms. Its dwell timer pauses during hover, focus or Details interaction. Details preserves checked rows, scroll position and checkbox focus during updates; hiding it returns focus to a visible control. Escape returns to Details, while Tab away dismisses the nonmodal popover without taking focus back. The checklist stays bounded by the window height.
+
+Serialize restore requests until all requested rows settle, including after an empty immediate response. The controls show Restoring while waiting. A partial settlement removes only confirmed completions; absent rows remain pending, and failed rows remain available to retry afterward. This preserves the single in-flight tracker and avoids replacing it with a second subset request. A late rejected invoke cannot resurrect settled rows or overwrite a replacement session's receipt.
+
+Match settlement rows against still-outstanding tickets. An explicit retry ticket must match exactly; a completed message row must be newer than the generation captured before its restore request. Repeated completion rows and earlier restores of the same message cannot consume another pending ticket. Later unrelated read/star generations do not invalidate the captured restore boundary.
+
+Scheduled cancellation retains its separate eight-second Undo offer. Restore consumes only the snapshot it captured; a newer cancellation owns its own offer and status. Outbox cancellation continues to use its durable queue and remains outside this checklist.
+
 ## Non-goals
 
 Multi-batch history, opening Details automatically, Outbox Undo send, and Agent todo undo are out of scope.
