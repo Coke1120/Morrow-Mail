@@ -1,9 +1,13 @@
 # Agent card view and one detail popover
 
-Status: Proposed for [#374](https://github.com/Coke1120/Morrow-Mail/issues/374).
-This note records the view contract. It does not add the view, and it is not
-merge or release authorization. Features help stays unchanged until an
-implementation ships.
+Status: Accepted and implemented for [#374](https://github.com/Coke1120/Morrow-Mail/issues/374).
+The Agent page and the Features catalog follow this contract. This note is
+not merge or release authorization.
+
+The switcher is List and Card. List stays the default and keeps the current
+row actions. Card is the skim view. The choice is `localStorage`
+(`morrow.agentTodoView`) for this profile, not a host setting. The page
+header carries the switcher only. It does not repeat the card detail.
 
 The Agent page keeps its list. Card is another view in the view switcher. It
 is not a permanent Bodies-style panel. The reply pile remains Needs You

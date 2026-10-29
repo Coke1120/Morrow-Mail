@@ -1,9 +1,8 @@
 # Learn only revocable Agent corrections
 
-Status: Proposed for [#371](https://github.com/Coke1120/Morrow-Mail/issues/371).
-This note records the contract. It does not implement learning, and it is not
-merge or release authorization. Features help stays unchanged until an
-implementation ships.
+Status: Accepted and implemented for [#371](https://github.com/Coke1120/Morrow-Mail/issues/371).
+Settings → Learned, the Agent page, and the Features catalog follow this
+contract. This note is not merge or release authorization.
 
 Agent triage classifies a message and then forgets how the user corrected it.
 The next similar message starts again. Learning stays a small local list of
@@ -41,6 +40,35 @@ Brain categories, triage prompt text, Gmail filters, or Outlook rules.
 A learned pattern cannot authorize a send or change the completion,
 batch-selection, or unread-hold contracts linked below.
 
+## Application
+
+Reaching three sets `learned` on that row. That is the audit trail. Stored
+triage assignments, Brain categories, triage prompt text, Gmail filters, and
+Outlook rules stay as written.
+
+- Category: the row records the pair and the senders in those moves. A later
+  message that is still stored in the source category, from one of those
+  senders, shows “Learned: move to …”. It stays in the source pile until the
+  user moves it. Delete does not put an already moved message back.
+- Action: a matching sender or thread shows “Learned: Mark as read”,
+  “Learned: Reply”, or “Learned: Reply All”. The row does not mark read,
+  reply, or complete a todo.
+- Suggestion: a learned Dismiss hides that suggestion label until Delete,
+  unless a later learned Open of the same label is newer. Open does not
+  open the suggestion or send.
+
+Undo of Mark as read does not erase the observation. Delete does.
+
+An observation carries `begunAt` from the click or from Send. Delete records
+that moment. An observation that started earlier does not recreate the row.
+The same `begunAt` does not count twice. A batch is one observation for each
+distinct pattern it touches. Automatic read-on-open, and any action whose
+source is learning itself, does not count.
+
+Reply and Reply All count only after confirmed send success, including one
+successful scheduled or undo-delay send. Queueing, cancelling, a failed send,
+and a partial delivery do not count.
+
 ## Learned list
 
 Settings shows pending observations and Learned entries. Each pattern can be
@@ -51,10 +79,13 @@ count, which must reach three again. There is no silent rewrite of rules.
 
 ## Storage and consent
 
-Rows stay on this computer with other Morrow preferences. A row is the signal
-kind, the match (category pair, sender, thread, or suggestion class), the
-count, and whether the threshold has been reached. Rows are not written into
-`brain.json` categories or provider rules.
+Rows live in `agent-learning.json` beside `agent.json` in the AI config
+directory (the same userData directory as other Morrow preferences). A row is
+the signal kind, the match (category pair, sender, thread, or suggestion
+class), the count, and whether the threshold has been reached. Category rows
+also keep the sender addresses from those moves, capped, so the hint stays
+on that mail. Rows are not written into `brain.json` categories or provider
+rules. A damaged file is left in place and is not replaced with an empty list.
 
 Counting these actions adds no cloud mailbox export and no new scope. A later
 model call stays inside the existing AI consent and the saved target.

@@ -171,6 +171,8 @@ const css = fs.readFileSync(require.resolve('../renderer/app.css'), 'utf8');
 assert(css.includes('.body.is-html') && css.includes('white-space: normal'));
 assert(css.includes('.body.is-plain { white-space: pre-wrap; }'));
 assert(!css.includes('max-width: min(100%, 330px)'));
+assert.match(css, /\.reader-from\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/);
+assert.match(css, /\.reader-from\s*>\s*\.when\s*\{[^}]*margin-left:\s*auto[^}]*text-align:\s*right/);
 const hostMain = fs.readFileSync(require.resolve('../host/main.js'), 'utf8');
 assert(hostMain.includes('setWindowOpenHandler') && hostMain.includes('shell.openExternal'));
 async function main() {
@@ -431,6 +433,26 @@ function actionNames(node) {
   };
   walk(node);
   return names;
+}
+
+function assertReaderDateOnFromRow(root, sender) {
+  const rows = threadNodes(root, 'reader-from');
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.tag, 'div');
+  assert.equal(row.children.length, 2);
+  const from = row.children[0];
+  const when = row.children[1];
+  assert.equal(from.tag, 'p');
+  assert.ok(String(from.className).split(/\s+/).includes('meta'));
+  assert.match(readerText(from), sender);
+  assert.equal(when.tag, 'time');
+  assert.ok(String(when.className).split(/\s+/).includes('meta'));
+  assert.ok(String(when.className).split(/\s+/).includes('when'));
+  assert.ok(String(when.textContent || '').trim());
+  assert.notEqual(when.getAttribute('aria-hidden'), 'true');
+  assert.ok(when.getAttribute('datetime'));
+  assert.equal(when.parentNode, row);
 }
 
 function hasClass(node, name) {
@@ -745,6 +767,7 @@ function assertReaderWindowMatchesShellActions() {
   ui.state.email = email;
   ui.state.snoozed = new Map([[email.threadId, '2026-10-22T18:00:00.000Z']]);
   ui.renderReader(false);
+  assertReaderDateOnFromRow(ui.reader, /Sender r3/);
   const shown = readerText(ui.reader);
   assert.deepEqual(actionNames(ui.reader), [
     'reply', 'reply-all', 'suggest', 'forward',
@@ -768,6 +791,7 @@ function assertReaderWindowMatchesShellActions() {
   broken.state.email = { ...email, bodyError: 'Could not download this message.' };
   broken.state.thread = rows;
   broken.renderReader(false);
+  assertReaderDateOnFromRow(broken.reader, /Sender r3/);
   assert.deepEqual(actionNames(broken.reader), ['close-reader', 'retry-body']);
   assert.match(readerText(broken.reader), /Could not download this message/);
   assert.doesNotMatch(readerText(broken.reader), /Reply All/);
@@ -778,6 +802,7 @@ function assertReaderWindowMatchesShellActions() {
   pending.state.emails = [email];
   pending.setPending('r3');
   pending.renderReader(false);
+  assertReaderDateOnFromRow(pending.reader, /Sender r3/);
   assert.deepEqual(actionNames(pending.reader), ['close-reader']);
   assert.match(readerText(pending.reader), /Loading message/);
   assert.doesNotMatch(readerText(pending.reader), /reader body/);
@@ -799,6 +824,7 @@ function assertReaderWindowMatchesShellActions() {
   shell.state.email = email;
   shell.state.snoozed = ui.state.snoozed;
   shell.renderReader(false);
+  assertReaderDateOnFromRow(shell.reader, /Sender r3/);
   assert.equal(actionNames(shell.reader).includes('close-reader'), false);
   assert.equal(actionNames(shell.reader).includes('reply'), true);
   assert.match(readerText(shell.reader), /Earlier in this conversation/);

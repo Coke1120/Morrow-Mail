@@ -24,6 +24,7 @@ const state = {
   draftRevision: null,
   composeSession: 0,
   agentReplyTodo: null,
+  agentLearning: null,
   composeAttachments: [],
   composeSuggestions: null,
   composeMeta: null,
@@ -526,9 +527,35 @@ function allAccountMailMatches(query) {
   return !q || "all account mail".includes(q);
 }
 
+function inboxMatches(query) {
+  const q = String(query || "").trim().toLowerCase();
+  return !q || "inbox".includes(q);
+}
+
 function outboxMatches(query) {
   const q = String(query || "").trim().toLowerCase();
   return !q || "outbox".includes(q);
+}
+
+function allAccountSectionKey() {
+  const collapse = folderCollapse();
+  if (!collapse || !collapse.ALL_ACCOUNT_MAIL_ACCOUNT || !collapse.ALL_ACCOUNT_MAIL_ID) return null;
+  return { accountId: collapse.ALL_ACCOUNT_MAIL_ACCOUNT, folderId: collapse.ALL_ACCOUNT_MAIL_ID };
+}
+
+function allAccountSectionOpen() {
+  const collapse = folderCollapse();
+  if (!collapse || typeof collapse.allAccountMailCollapsed !== "function") return true;
+  return !collapse.allAccountMailCollapsed(state.prefs.collapsedFolders);
+}
+
+function toggleAllAccountSection() {
+  const key = allAccountSectionKey();
+  if (!key) {
+    folderNavRestore = false;
+    return Promise.resolve();
+  }
+  return toggleSidebarFolder(key.accountId, key.folderId);
 }
 
 function allAccountUnreadChip(count, pressed) {
@@ -4166,14 +4193,12 @@ function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
 }
 
 function applyAllAccountMailChrome(root) {
-  if (!root) return;
+  if (!root || typeof root.querySelector !== "function") return;
   const current = !!state.allInbox;
-  root.classList.toggle("is-current", current);
-  const all = root.querySelector("button.all-inbox");
-  if (all) {
-    if (current) all.setAttribute("aria-current", "true");
-    else all.removeAttribute("aria-current");
-    all.setAttribute("aria-label", allAccountMailLabel());
+  const inbox = root.querySelector("button.all-inbox");
+  if (inbox) {
+    if (current) inbox.setAttribute("aria-current", "true");
+    else inbox.removeAttribute("aria-current");
   }
   const chip = root.querySelector("button.all-account-unread");
   if (!chip) return;
@@ -4184,22 +4209,66 @@ function applyAllAccountMailChrome(root) {
   chip.setAttribute("aria-pressed", model.pressed ? "true" : "false");
 }
 
-function allAccountMailRow() {
-  const row = document.createElement("div");
-  row.className = "all-account-mail";
-  row.setAttribute("role", "group");
-  row.setAttribute("aria-label", allAccountMailLabel());
+function allAccountMailRow(open, hasChild, filtering) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "account all-inbox";
+  button.className = "account all-account-mail";
   button.setAttribute("data-testid", "all-account-mail");
+  const expanded = !!(hasChild && open);
+  if (hasChild) {
+    const mark = document.createElement("span");
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = expanded ? "▾ " : "▸ ";
+    button.appendChild(mark);
+  }
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = allAccountMailLabel();
   button.appendChild(name);
-  markFolderNav(button, { key: "all", kind: "all", hasChild: false, expanded: false });
+  const key = allAccountSectionKey();
+  markFolderNav(button, {
+    key: "all",
+    kind: "all",
+    accountId: key ? key.accountId : "",
+    id: key ? key.folderId : "",
+    hasChild: !!hasChild,
+    expanded: expanded,
+    lock: !!filtering,
+  });
+  button.title = hasChild ? ((expanded ? "Collapse " : "Expand ") + allAccountMailLabel()) : allAccountMailLabel();
   button.addEventListener("click", () => {
     folderNavKey = "all";
+    folderNavRestore = true;
+    toggleAllAccountSection().catch((error) => showStatus(error.message, true));
+  });
+  return button;
+}
+
+function allAccountInboxRow() {
+  const line = document.createElement("div");
+  line.className = "folder-line all-account-inbox";
+  const indent = document.createElement("span");
+  indent.className = "folder-indent";
+  indent.style.width = "14px";
+  indent.setAttribute("aria-hidden", "true");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "folder all-inbox";
+  button.setAttribute("data-testid", "all-account-inbox");
+  const label = document.createElement("span");
+  label.className = "folder-label";
+  const icon = document.createElement("span");
+  icon.className = "folder-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = folderIcon("inbox");
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = "Inbox";
+  label.append(icon, name);
+  button.appendChild(label);
+  markFolderNav(button, { key: "inbox", kind: "inbox", parent: "all" });
+  button.addEventListener("click", () => {
+    folderNavKey = "inbox";
     const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "mail");
     selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
@@ -4210,12 +4279,13 @@ function allAccountMailRow() {
   chip.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    folderNavKey = "inbox";
     const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "unread");
     selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
-  row.append(button, chip);
-  applyAllAccountMailChrome(row);
-  return row;
+  line.append(indent, button, chip);
+  applyAllAccountMailChrome(line);
+  return line;
 }
 
 function applyOutboxChrome(root) {
@@ -4440,6 +4510,10 @@ function onFolderNavKey(event) {
   }
   folderNavKey = node.dataset.navKey || "";
   folderNavRestore = true;
+  if (node.dataset.navKind === "all") {
+    toggleAllAccountSection().catch((error) => showStatus(error.message, true));
+    return;
+  }
   if (node.dataset.navKind === "account") {
     const provider = node.dataset.navId || "";
     if (provider === "gmail" || provider === "outlook") {
@@ -4469,12 +4543,12 @@ function renderAccounts() {
     folderQuery,
   ]);
   if (key === folderRenderKey) {
-    applyAllAccountMailChrome(nav.querySelector(".all-account-mail"));
     for (const button of nav.querySelectorAll("button.folder")) {
       const current = !state.allInbox && !state.outbox && button.dataset.accountId === state.accountId && button.dataset.folderId === state.folderId;
       if (current) button.setAttribute("aria-current", "true");
       else button.removeAttribute("aria-current");
     }
+    applyAllAccountMailChrome(nav);
     applyOutboxChrome(nav.querySelector(".outbox-mail"));
     return;
   }
@@ -4488,11 +4562,19 @@ function renderAccounts() {
     applyFolderNavFocus(nav);
     return;
   }
-  const showAllAccountMail = allAccountMailMatches(folderQuery);
-  const showOutbox = outboxMatches(folderQuery);
-  let shownFolder = showAllAccountMail || showOutbox;
-  if (showAllAccountMail) nav.appendChild(allAccountMailRow());
-  if (showOutbox) nav.appendChild(outboxMailRow());
+  const filtering = !!folderQuery;
+  const inboxMatch = inboxMatches(folderQuery);
+  const outboxMatch = outboxMatches(folderQuery);
+  const sectionHasChild = filtering ? (inboxMatch || outboxMatch) : true;
+  const sectionOpen = filtering ? sectionHasChild : allAccountSectionOpen();
+  const showSection = allAccountMailMatches(folderQuery) || (filtering && sectionHasChild);
+  let shownFolder = false;
+  if (showSection) {
+    shownFolder = true;
+    nav.appendChild(allAccountMailRow(sectionOpen, sectionHasChild, filtering));
+    if (sectionOpen && inboxMatch) nav.appendChild(allAccountInboxRow());
+    if (sectionOpen && outboxMatch) nav.appendChild(outboxMailRow());
+  }
   for (const account of state.accounts) {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
@@ -6777,6 +6859,25 @@ function renderOutboxReader(pane, email, focus) {
   if (focus !== false) undo.focus();
 }
 
+function readerFromLine(email) {
+  const row = document.createElement("div");
+  row.className = "reader-from";
+  const from = document.createElement("p");
+  from.className = "meta";
+  paintSenderAddress(from, (email && email.from) || "");
+  row.appendChild(from);
+  const raw = email && email.date;
+  const date = raw ? new Date(raw) : null;
+  const text = shownWhen(date);
+  if (!text) return row;
+  const when = document.createElement("time");
+  when.className = "meta when";
+  when.setAttribute("datetime", typeof raw === "string" ? raw : date.toISOString());
+  when.textContent = text;
+  row.appendChild(when);
+  return row;
+}
+
 function renderReader(focus) {
   if (pendingOpenBody && pendingOpenId) {
     paintReaderPending(listedMessage(pendingOpenId));
@@ -6826,19 +6927,12 @@ function renderReader(focus) {
   if (email.bodyError) {
     const heading = document.createElement("h2");
     heading.textContent = email.subject || "(no subject)";
-    const from = document.createElement("p");
-    from.className = "meta";
-    paintSenderAddress(from, email.from || "");
-    const when = document.createElement("p");
-    when.className = "meta";
-    const failedAt = email.date ? new Date(email.date) : null;
-    when.textContent = shownWhen(failedAt);
     const error = document.createElement("p");
     error.className = "hint error";
     error.setAttribute("role", "status");
     error.textContent = email.bodyError;
     if (isReaderWindow()) pane.appendChild(readerCloseBar());
-    pane.append(heading, from, when, error);
+    pane.append(heading, readerFromLine(email), error);
     pane.appendChild(bodyRetryButton(email));
     if (focus) {
       heading.tabIndex = -1;
@@ -6857,14 +6951,7 @@ function renderReader(focus) {
   paintTranslation();
   const heading = document.createElement("h2");
   heading.textContent = email.subject || "(no subject)";
-  const from = document.createElement("p");
-  from.className = "meta";
-  paintSenderAddress(from, email.from || "");
-  const when = document.createElement("p");
-  when.className = "meta";
-  const date = email.date ? new Date(email.date) : null;
-  when.textContent = shownWhen(date);
-  pane.append(heading, from, when);
+  pane.append(heading, readerFromLine(email));
   const until = snoozedUntilOf(email);
   const untilDate = until ? new Date(until) : null;
   if (state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
@@ -10887,13 +10974,6 @@ function paintReaderPending(email) {
   pane.setAttribute("aria-busy", "true");
   const heading = document.createElement("h2");
   heading.textContent = (email && email.subject) || "(no subject)";
-  const from = document.createElement("p");
-  from.className = "meta";
-  from.textContent = (email && email.from) || "";
-  const when = document.createElement("p");
-  when.className = "meta";
-  const date = email && email.date ? new Date(email.date) : null;
-  when.textContent = shownWhen(date);
   const pending = document.createElement("div");
   pending.className = "body-pending";
   pending.setAttribute("role", "status");
@@ -10904,7 +10984,7 @@ function paintReaderPending(email) {
   label.className = "body-pending-label";
   label.textContent = "Loading message…";
   pending.append(spin, label);
-  pane.append(heading, from, when, pending);
+  pane.append(heading, readerFromLine(email), pending);
 }
 
 async function openMessage(emailId, focus, full = false) {
@@ -15433,6 +15513,7 @@ async function loadSettings() {
   }
   syncAccentPicker(state.prefs.accent);
   paintScheduleDelay(state.prefs.scheduleDelay);
+  await paintAgentLearned();
 }
 
 function paintScheduleDelay(minutes) {
@@ -18010,7 +18091,18 @@ function freshReplyTodoSeed(fields) {
 function withAgentReplyTodo(payload) {
   const todo = explicitAgentTodo(state.agentReplyTodo);
   if (!todo || !payload) return payload;
-  return { ...payload, agentTodo: todo };
+  const next = { ...payload, agentTodo: todo };
+  const kind = state.composeIdentity && state.composeIdentity.kind;
+  const action = kind === "all" ? "reply-all" : kind === "reply" ? "reply" : "";
+  if (!action) return next;
+  const item = { messageId: todo.messageId, accountId: todo.accountId };
+  const email = state.email;
+  if (email && String(email.id || "") === todo.messageId) {
+    if (email.from) item.from = String(email.from);
+    if (email.threadId) item.threadId = String(email.threadId);
+  }
+  next.agentLearning = { kind: "action", action, begunAt: Date.now(), items: [item] };
+  return next;
 }
 
 async function finishAgentReplyTodo(session) {
@@ -18036,6 +18128,170 @@ function agentPileRole(section) {
   if (id === "fyi" || /^fyi$/i.test(name)) return "fyi";
   if (id === "other" || /^other$/i.test(name)) return "other";
   return "";
+}
+
+function agentMoveTargets(role) {
+  if (role === "reply") return [["fyi", "FYI"], ["other", "Other"]];
+  if (role === "fyi") return [["needs-you", "Needs You"], ["other", "Other"]];
+  if (role === "other") return [["needs-you", "Needs You"], ["fyi", "FYI"]];
+  return [];
+}
+
+function suggestionClass(value) {
+  return String(value || "").replace(/[\u0000-\u001F\u007F]/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function suggestionSuppressed(label) {
+  const name = suggestionClass(label);
+  if (!name) return false;
+  const learning = state.agentLearning;
+  const list = learning && Array.isArray(learning.suppressed) ? learning.suppressed : [];
+  return list.includes(name);
+}
+
+function agentAddress(value) {
+  const match = String(value || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return match ? match[0].toLowerCase() : "";
+}
+
+function agentLearnedNotes(item) {
+  const learning = state.agentLearning;
+  const patterns = learning && Array.isArray(learning.patterns) ? learning.patterns : [];
+  const email = agentAddress(item && item.from);
+  const thread = String(item && item.threadId || "").trim();
+  const role = agentPileRole(item);
+  const pile = role === "reply" ? "needs-you" : role === "fyi" || role === "other" ? role : "";
+  const notes = [];
+  const seen = new Set();
+  for (const row of patterns) {
+    if (!row || row.learned !== true || !row.match) continue;
+    let text = "";
+    if (row.kind === "category" && pile && row.match.fromCategoryId === pile && email && Array.isArray(row.senders) && row.senders.includes(email)) {
+      text = "Learned: move to " + (row.match.toName || "the other category");
+    } else if (row.kind === "action" && row.match.scope === "sender" && email && row.match.key === email) {
+      text = "Learned: " + (row.actionLabel || "this action");
+    } else if (row.kind === "action" && row.match.scope === "thread" && thread && row.match.key === thread) {
+      text = "Learned: " + (row.actionLabel || "this action");
+    }
+    if (text && !seen.has(text)) {
+      seen.add(text);
+      notes.push(text);
+    }
+  }
+  return notes;
+}
+
+function agentLearnedLine(item) {
+  const notes = agentLearnedNotes(item);
+  if (!notes.length) return null;
+  const line = document.createElement("p");
+  line.className = "agent-learned";
+  line.textContent = notes.join(" · ");
+  return line;
+}
+
+function learningApplyStamp(view) {
+  const patterns = view && Array.isArray(view.patterns) ? view.patterns : [];
+  const suppressed = view && Array.isArray(view.suppressed) ? view.suppressed : [];
+  return JSON.stringify([suppressed, patterns.filter((row) => row && row.learned).map((row) => [row.id, row.senders || null, row.match || null])]);
+}
+
+function applyAgentLearning(view) {
+  const next = view && typeof view === "object" ? view : null;
+  const changed = learningApplyStamp(state.agentLearning) !== learningApplyStamp(next);
+  state.agentLearning = next;
+  if (changed && state.view === "agent" && agentPaintPayload) {
+    agentPaintPayload.learning = next;
+    paintAgentHome(agentPaintPayload);
+  }
+  const settings = $("settings");
+  if (settings && settings.open && $("agent-learned-list")) renderAgentLearned(next);
+}
+
+function learnAgent(body) {
+  const payload = Object.assign({ begunAt: Date.now() }, body || {});
+  return call("nativeAgent:learning:observe", payload).then((view) => {
+    applyAgentLearning(view);
+  }).catch(() => {});
+}
+
+function learningSignalItem(item) {
+  const context = agentMessageContext(item);
+  if (!context) return null;
+  const signal = { messageId: context.messageId, accountId: context.accountId };
+  if (item && item.from) signal.from = String(item.from);
+  if (item && item.threadId) signal.threadId = String(item.threadId);
+  return signal;
+}
+
+async function moveAgentCategory(item, toCategoryId, toName, fromName) {
+  const context = agentMessageContext(item);
+  if (!context) return;
+  const data = await call("nativeAgent:learning:moveCategory", {
+    messageId: context.messageId,
+    accountId: context.accountId,
+    toCategoryId,
+    toName,
+    fromName,
+    begunAt: Date.now(),
+  });
+  if (data && data.learning) state.agentLearning = data.learning;
+  if (state.view === "agent" && data) paintAgent(data, "");
+}
+
+function renderAgentLearned(view) {
+  const list = $("agent-learned-list");
+  if (!list) return;
+  list.replaceChildren();
+  const patterns = view && Array.isArray(view.patterns) ? view.patterns : [];
+  if (!patterns.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = "Nothing learned yet. Category moves, repeated actions, and suggestion choices show up here.";
+    list.appendChild(empty);
+    return;
+  }
+  const threshold = view && view.threshold || 3;
+  for (const row of patterns) {
+    if (!row || !row.id) continue;
+    const item = document.createElement("li");
+    item.className = "settings-account";
+    const name = document.createElement("span");
+    name.className = "name";
+    const count = Number(row.count) || 0;
+    name.textContent = (row.label || "Pattern") + " — " + (row.learned ? "Learned" : count + " of " + threshold);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ghost";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", "Delete " + (row.label || "pattern"));
+    del.addEventListener("click", () => {
+      call("nativeAgent:learning:forget", { id: row.id }).then((next) => {
+        applyAgentLearning(next);
+        renderAgentLearned(next);
+      }).catch((error) => {
+        showStatus(error instanceof Error ? error.message : String(error), true);
+      });
+    });
+    item.append(name, del);
+    list.appendChild(item);
+  }
+}
+
+async function paintAgentLearned() {
+  const list = $("agent-learned-list");
+  if (!list) return;
+  try {
+    const view = await call("nativeAgent:learning:list");
+    if (view) state.agentLearning = view;
+    renderAgentLearned(view);
+  } catch (error) {
+    list.replaceChildren();
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = error instanceof Error ? error.message : "Learned patterns could not be loaded.";
+    list.appendChild(empty);
+  }
 }
 
 function agentSelectionLabels(selectedCount, listedCount) {
@@ -18088,6 +18344,7 @@ function agentTodoActionNames(item, section) {
   const names = ["Open", "Reply", "Reply All", "Mark as read"];
   if (agentPileRole(section || item) === "reply") names.push("Mark read & done");
   names.push("Mark todo done", "Dismiss");
+  for (const target of agentMoveTargets(agentPileRole(section || item))) names.push("Move to " + target[1]);
   return names;
 }
 
@@ -18330,7 +18587,8 @@ function followButton(follow, draft) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "ghost";
-  button.textContent = (follow && follow.label) || (draft ? "Review draft" : "Open");
+  const label = suggestionClass((follow && follow.label) || (draft ? "Review draft" : "Open"));
+  button.textContent = label || (draft ? "Review draft" : "Open");
   button.addEventListener("click", () => {
     const source = draft || follow || {};
     const body = String(source.body || source.text || "").trim();
@@ -18340,7 +18598,10 @@ function followButton(follow, draft) {
       : draftFollow
         ? openReplyCompose(source.messageId || "")
         : peekMessage(source.messageId || "");
-    Promise.resolve(run).catch((error) => {
+    const begunAt = Date.now();
+    Promise.resolve(run).then(() => {
+      learnAgent({ kind: "suggestion", choice: "open", className: button.textContent, begunAt });
+    }).catch((error) => {
       showStatus(error instanceof Error ? error.message : String(error), true);
     });
   });
@@ -18381,7 +18642,7 @@ function paintSkillBlocks(root, data) {
     wrap.appendChild(line);
     const row = document.createElement("div");
     row.className = "row";
-    row.appendChild(followButton(null, draft));
+    if (!suggestionSuppressed("Review draft")) row.appendChild(followButton(null, draft));
     wrap.appendChild(row);
     root.appendChild(wrap);
   }
@@ -18389,7 +18650,11 @@ function paintSkillBlocks(root, data) {
   if (follows.length) {
     const row = document.createElement("div");
     row.className = "row";
-    for (const follow of follows) row.appendChild(followButton(follow));
+    for (const follow of follows) {
+      const label = suggestionClass(follow && follow.label) || "Open";
+      if (suggestionSuppressed(label)) continue;
+      row.appendChild(followButton(follow));
+    }
     root.appendChild(row);
   }
   paintProposals(root, data.proposals, true);
@@ -18398,7 +18663,7 @@ function paintSkillBlocks(root, data) {
 function paintProposals(root, proposals, append) {
   if (!root) return;
   if (!append) root.replaceChildren();
-  const rows = Array.isArray(proposals) ? proposals.filter((item) => item && item.status !== "dismissed" && item.status !== "confirmed") : [];
+  const rows = Array.isArray(proposals) ? proposals.filter((item) => item && item.status !== "dismissed" && item.status !== "confirmed" && !suggestionSuppressed(item.labelName || "Filing")) : [];
   if (!rows.length) {
     if (append) return;
     const note = document.createElement("p");
@@ -18421,8 +18686,12 @@ function paintProposals(root, proposals, append) {
     confirm.className = "primary";
     confirm.textContent = "Review filing…";
     confirm.addEventListener("click", () => {
+      const begunAt = Date.now();
       confirmProposal(proposal).then((data) => {
         if (!data) return;
+        if (data.accepted !== false) {
+          learnAgent({ kind: "suggestion", choice: "open", className: proposal.labelName || "Filing", begunAt });
+        }
         wrap.remove();
         if (brainIsOpen()) setSkillStatus((data && data.detail) || "Move confirmed.", false);
       }).catch((error) => {
@@ -18436,7 +18705,9 @@ function paintProposals(root, proposals, append) {
     dismiss.className = "ghost";
     dismiss.textContent = "Dismiss";
     dismiss.addEventListener("click", () => {
+      const begunAt = Date.now();
       dismissProposal(proposal).then(() => {
+        learnAgent({ kind: "suggestion", choice: "dismiss", className: proposal.labelName || "Filing", begunAt });
         wrap.remove();
         if (brainIsOpen()) setSkillStatus("Move dismissed.", false);
       }).catch((error) => {
@@ -19578,6 +19849,7 @@ function paintThread() {
 
 function paintAgent(payload, errorText) {
   if (payload && typeof payload === "object") agentPaintPayload = payload;
+  if (payload && payload.learning) state.agentLearning = payload.learning;
   const status = $("agent-status");
   const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
   if (status) {
@@ -19600,6 +19872,8 @@ function paintAgent(payload, errorText) {
 function paintAgentHome(payload) {
   const root = $("agent-home");
   if (!root) return;
+  agentDetailSeq = 0;
+  syncAgentTodoViewControls();
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
   root.replaceChildren();
@@ -19662,15 +19936,24 @@ function paintAgentHome(payload) {
       emptyNote.textContent = empty;
       block.appendChild(emptyNote);
     }
-    for (const item of items) {
-      if (item && typeof item === "object") block.appendChild(agentTodoCard(item, section));
+    if (agentTodoView === "card") {
+      const grid = document.createElement("div");
+      grid.className = "agent-card-grid";
+      for (const item of items) {
+        if (item && typeof item === "object") grid.appendChild(agentTodoCard(item, section));
+      }
+      if (grid.childNodes.length) block.appendChild(grid);
+    } else {
+      for (const item of items) {
+        if (item && typeof item === "object") block.appendChild(agentTodoCard(item, section));
+      }
     }
     root.appendChild(block);
   }
   const note = document.createElement("p");
   note.id = "agent-todo-note";
   note.className = "agent-note";
-  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. FYI and Other can mark the listed messages read, with Undo, and do not complete todos.";
+  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. FYI and Other can mark the listed messages read, with Undo, and do not complete todos. Settings → Learned keeps a correction after the same pattern happens 3 times. Delete removes that one pattern.";
   root.appendChild(note);
   paintReplySelectionLabels(root);
   paintMotionRows("agent", root.querySelectorAll(".agent-section"));
@@ -19775,6 +20058,7 @@ function agentCategoryReadButton(role, items) {
 async function markAgentMessageRead(item, card, mode) {
   const context = agentMessageContext(item);
   if (!context) return;
+  const begunAt = Date.now();
   const reply = agentPileRole(item) === "reply";
   const already = agentReadIntent(item) === "already" || agentMarkedRead.has(context.messageId);
   const complete = mode === "done" || (reply && state.prefs.markReadCompletesTodos === true);
@@ -19791,6 +20075,8 @@ async function markAgentMessageRead(item, card, mode) {
       const dot = card.querySelector(".unread-dot");
       if (dot) dot.remove();
     }
+    const signal = learningSignalItem(item);
+    if (signal) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: [signal] });
   }
   if (complete) {
     await updateTodo(context.messageId, "done", context.accountId);
@@ -19811,6 +20097,8 @@ async function applyReplySelection(items, mode) {
     return;
   }
   const optIn = state.prefs.markReadCompletesTodos === true;
+  const begunAt = Date.now();
+  const learned = [];
   let marked = 0;
   for (const item of captured) {
     const context = agentMessageContext(item);
@@ -19820,15 +20108,19 @@ async function applyReplySelection(items, mode) {
       item.unread = false;
       agentMarkedRead.add(context.messageId);
       marked += 1;
+      const signal = learningSignalItem(item);
+      if (signal) learned.push(signal);
     }
     if (optIn) await updateTodo(context.messageId, "done", context.accountId);
   }
+  if (learned.length) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: learned });
   if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
   if (!marked && !optIn) showStatus("Already read.");
   else showStatus(marked ? "Marked as read." : "Todo completed.");
 }
 
 async function markAgentCategoryRead(items) {
+  const begunAt = Date.now();
   const snapshot = agentUnreadSnapshot(items);
   if (!snapshot.length) return;
   const data = await call("mail:markReadBatch", {
@@ -19847,6 +20139,13 @@ async function markAgentCategoryRead(items) {
     agentMarkedRead.add(String(item.messageId));
   }
   if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
+  const learned = [];
+  for (const item of items || []) {
+    if (!item || !touched.has(String(item.messageId || ""))) continue;
+    const signal = learningSignalItem(item);
+    if (signal) learned.push(signal);
+  }
+  if (learned.length) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: learned });
   if (!undoRows.length) {
     showStatus("Marked as read.");
     return;
@@ -19875,7 +20174,20 @@ function agentTodoActions(item, section) {
   }
   for (const follow of agentFollowUps(item)) {
     if (!follow || follow.kind === "open") continue;
-    mail.appendChild(styleFollowButton(follow));
+    const label = suggestionClass(follow.label) || (follow.kind === "draft" ? "Review reply" : "Attachment");
+    if (suggestionSuppressed(label)) continue;
+    const followControl = styleFollowButton(Object.assign({}, follow, { label }));
+    const dismissFollow = agentActionButton("dismiss", "Dismiss " + label, () => {
+      followControl.remove();
+      dismissFollow.remove();
+      return learnAgent({
+        kind: "suggestion",
+        choice: "dismiss",
+        className: label,
+        begunAt: Date.now(),
+      });
+    });
+    mail.append(followControl, dismissFollow);
   }
   const local = document.createElement("div");
   local.className = "agent-action-group agent-action-local";
@@ -19883,13 +20195,309 @@ function agentTodoActions(item, section) {
     agentActionButton("done", "Mark todo done", () => updateTodo(context.messageId, "done", context.accountId)),
     agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed", context.accountId)),
   );
+  for (const button of agentMoveButtons(item, section)) local.appendChild(button);
+  const learned = agentLearnedLine(item);
+  if (learned) actions.appendChild(learned);
   actions.append(mail, local);
   return actions;
+}
+
+function agentMoveButtons(item, section) {
+  const targets = agentMoveTargets(agentPileRole(section || item));
+  if (!agentMessageContext(item) || !targets.length) return [];
+  const fromName = String((section && (section.name || section.title)) || "").trim();
+  return targets.map(([id, name]) => agentActionButton("move", "Move to " + name, () => moveAgentCategory(item, id, name, fromName)));
+}
+
+let agentTodoView = "list";
+let agentDetailSeq = 0;
+let agentCardOutsideWired = false;
+
+function agentPlain(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function agentReasonLine(item) {
+  return agentPlain(item && item.summary) || "No Agent reason for this message.";
+}
+
+function agentClassification(item, section) {
+  const source = section && typeof section === "object" ? section : {};
+  const name = String(source.name || source.title || (item && item.categoryId) || "Category").trim() || "Category";
+  const description = agentPlain(source.description || (item && item.reason));
+  return description ? name + " — " + description : name;
+}
+
+function agentThreadLine(item) {
+  const explicit = agentPlain(item && (item.threadLine || item.threadSnippet));
+  if (explicit) return explicit;
+  const snippet = agentPlain(item && item.snippet);
+  const summary = agentPlain(item && item.summary);
+  if (snippet && snippet !== summary) return snippet;
+  const subject = agentPlain(item && item.subject) || "(no subject)";
+  return "Thread · " + subject;
+}
+
+function nextAgentDetailId(messageId) {
+  agentDetailSeq += 1;
+  const safe = String(messageId || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+  return "agent-detail-" + agentDetailSeq + (safe ? "-" + safe : "");
+}
+
+function syncAgentTodoViewControls() {
+  const view = agentTodoView === "card" ? "card" : "list";
+  agentTodoView = view;
+  const home = $("agent-home");
+  if (home && home.dataset) home.dataset.todoView = view;
+  const listBtn = $("agent-view-list");
+  const cardBtn = $("agent-view-card");
+  if (listBtn) listBtn.setAttribute("aria-pressed", view === "list" ? "true" : "false");
+  if (cardBtn) cardBtn.setAttribute("aria-pressed", view === "card" ? "true" : "false");
+}
+
+function setAgentTodoView(next, options) {
+  agentTodoView = next === "card" ? "card" : "list";
+  try { localStorage.setItem("morrow.agentTodoView", agentTodoView); } catch { /* this window only */ }
+  syncAgentTodoViewControls();
+  if (options && options.paint === false) return;
+  if (agentPaintPayload) paintAgentHome(agentPaintPayload);
+}
+
+function wireAgentTodoView() {
+  let stored = "list";
+  try {
+    const value = localStorage.getItem("morrow.agentTodoView");
+    if (value === "card" || value === "list") stored = value;
+  } catch { /* list */ }
+  const bar = $("agent-view-switch");
+  if (bar && bar.dataset && !bar.dataset.wired) {
+    bar.dataset.wired = "1";
+    bar.addEventListener("click", (event) => {
+      const button = event.target && event.target.closest ? event.target.closest("[data-agent-view]") : null;
+      if (!button || !button.dataset) return;
+      setAgentTodoView(button.dataset.agentView);
+    });
+  }
+  setAgentTodoView(stored, { paint: false });
+}
+
+function agentHoverNone() {
+  try {
+    return !!(window.matchMedia && window.matchMedia("(hover: none)").matches);
+  } catch {
+    return false;
+  }
+}
+
+function agentPointerCoarse(event) {
+  const type = event && event.pointerType;
+  if (type === "touch" || type === "pen") return true;
+  return agentHoverNone();
+}
+
+function syncAgentCardDisclosure(card) {
+  const face = card && card.querySelector ? card.querySelector("[data-agent-face]") : null;
+  if (!face) return;
+  const summaryId = card.dataset ? card.dataset.summaryId || "" : "";
+  const open = card.classList.contains("is-open");
+  const ids = String(face.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== summaryId);
+  if (open && summaryId) ids.push(summaryId);
+  if (ids.length) face.setAttribute("aria-describedby", ids.join(" "));
+  else face.removeAttribute("aria-describedby");
+  face.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) face.removeAttribute("title");
+  else if (face.dataset && face.dataset.agentTitle) face.setAttribute("title", face.dataset.agentTitle);
+  else face.removeAttribute("title");
+  const detail = card.querySelector(".agent-card-detail");
+  if (detail) detail.hidden = !open;
+}
+
+function openAgentCardDetail(card) {
+  if (!card || (card.dataset && card.dataset.detailBlock === "1") || card.classList.contains("is-open")) return;
+  const home = $("agent-home");
+  if (home && typeof home.querySelectorAll === "function") {
+    for (const other of home.querySelectorAll(".agent-card.is-open")) {
+      if (other !== card) closeAgentCardDetail(other);
+    }
+  }
+  card.classList.add("is-open");
+  syncAgentCardDisclosure(card);
+}
+
+function closeAgentCardDetail(card, options) {
+  if (!card) return;
+  const opts = options || {};
+  card.classList.remove("is-open");
+  if (opts.block && card.dataset) card.dataset.detailBlock = "1";
+  syncAgentCardDisclosure(card);
+  if (!opts.focus) return;
+  const face = card.querySelector("[data-agent-face]");
+  if (face && typeof face.focus === "function") face.focus();
+}
+
+function wireAgentCardOutside() {
+  if (agentCardOutsideWired || !document || typeof document.addEventListener !== "function") return;
+  agentCardOutsideWired = true;
+  document.addEventListener("pointerdown", (event) => {
+    const home = $("agent-home");
+    if (!home || typeof home.querySelectorAll !== "function") return;
+    for (const card of home.querySelectorAll(".agent-card.is-open")) {
+      if (event && typeof card.contains === "function" && card.contains(event.target)) continue;
+      closeAgentCardDetail(card);
+      if (card.dataset) delete card.dataset.detailBlock;
+    }
+  });
+}
+
+function bindAgentCardDetail(card) {
+  const face = card.querySelector("[data-agent-face]");
+  card.addEventListener("pointerenter", (event) => {
+    const coarse = agentPointerCoarse(event);
+    if (card.dataset) {
+      if (coarse) card.dataset.coarse = "1";
+      else delete card.dataset.coarse;
+      if (!coarse) card.dataset.hover = "1";
+    }
+    if (coarse) return;
+    openAgentCardDetail(card);
+  });
+  card.addEventListener("pointerleave", (event) => {
+    if (event && event.relatedTarget && card.contains(event.relatedTarget)) return;
+    if (card.dataset) delete card.dataset.hover;
+    const blocked = !!(card.dataset && card.dataset.detailBlock === "1");
+    if (card.dataset) delete card.dataset.detailBlock;
+    if (blocked) return;
+    if (card.dataset && card.dataset.coarse === "1") return;
+    if (document.activeElement && card.contains(document.activeElement)) return;
+    closeAgentCardDetail(card);
+  });
+  card.addEventListener("focusin", () => openAgentCardDetail(card));
+  card.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (!card.isConnected || (document.activeElement && card.contains(document.activeElement))) return;
+      closeAgentCardDetail(card);
+      if (card.dataset) delete card.dataset.detailBlock;
+    }, 0);
+  });
+  card.addEventListener("keydown", (event) => {
+    if (!event || event.key !== "Escape" || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+    if (!card.classList.contains("is-open")) return;
+    if (typeof document.querySelector === "function" && document.querySelector("dialog[open]")) return;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    if (typeof event.stopPropagation === "function") event.stopPropagation();
+    closeAgentCardDetail(card, { block: true, focus: true });
+  });
+  card.addEventListener("pointerdown", (event) => {
+    const coarse = agentPointerCoarse(event);
+    if (card.dataset) {
+      if (coarse) card.dataset.coarse = "1";
+      else delete card.dataset.coarse;
+    }
+    if (!coarse || card.classList.contains("is-open")) return;
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+    if (card.dataset) {
+      delete card.dataset.detailBlock;
+      card.dataset.suppressClick = "1";
+    }
+    openAgentCardDetail(card);
+    if (face && typeof face.focus === "function") face.focus();
+  }, true);
+  card.addEventListener("click", (event) => {
+    if (!card.dataset || card.dataset.suppressClick !== "1") return;
+    delete card.dataset.suppressClick;
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+  }, true);
+}
+
+function agentSkimCard(item, section) {
+  const context = agentMessageContext(item);
+  const card = document.createElement("article");
+  card.className = "agent-item agent-card";
+  card.setAttribute("data-testid", "agent-card");
+  if (agentLooksUnread(item)) card.classList.add("unread");
+  const messageId = String(item.messageId || "");
+  if (messageId) card.dataset.messageId = messageId;
+  const detailId = nextAgentDetailId(messageId);
+  const summaryId = detailId + "-summary";
+  card.dataset.summaryId = summaryId;
+  const reason = agentReasonLine(item);
+  const face = document.createElement("div");
+  face.className = "agent-card-face";
+  face.tabIndex = 0;
+  face.dataset.agentFace = "1";
+  face.dataset.agentTitle = reason;
+  face.setAttribute("aria-controls", detailId);
+  const top = document.createElement("div");
+  top.className = "agent-card-top";
+  if (agentPileRole(section || item) === "reply") top.appendChild(agentSelectBox(item));
+  const sender = document.createElement("p");
+  sender.className = "agent-card-sender";
+  if (agentLooksUnread(item)) {
+    const dot = document.createElement("span");
+    dot.className = "unread-dot";
+    dot.setAttribute("aria-hidden", "true");
+    sender.appendChild(dot);
+  }
+  const senderText = document.createElement("span");
+  senderText.textContent = senderName(item && item.from);
+  sender.appendChild(senderText);
+  top.appendChild(sender);
+  const subject = document.createElement("p");
+  subject.className = "agent-card-subject";
+  subject.textContent = agentPlain(item && item.subject) || "(no subject)";
+  const line = document.createElement("p");
+  line.className = "agent-card-line";
+  line.textContent = reason;
+  face.append(top, subject, line);
+  const learned = agentLearnedLine(item);
+  if (learned) face.appendChild(learned);
+  const chips = document.createElement("div");
+  chips.className = "agent-card-chips";
+  chips.append(
+    agentActionButton("reply", "Reply", () => replyToAgentItem(item, "reply")),
+    agentActionButton("done", "Done", () => updateTodo(context.messageId, "done", context.accountId)),
+  );
+  const detail = document.createElement("div");
+  detail.className = "agent-card-detail";
+  detail.id = detailId;
+  detail.hidden = true;
+  detail.setAttribute("role", "group");
+  detail.setAttribute("aria-label", "Message detail");
+  const summary = document.createElement("p");
+  summary.className = "agent-card-summary";
+  summary.id = summaryId;
+  summary.textContent = reason;
+  const classification = document.createElement("p");
+  classification.className = "agent-card-class";
+  classification.textContent = agentClassification(item, section);
+  const thread = document.createElement("p");
+  thread.className = "agent-card-thread";
+  thread.textContent = agentThreadLine(item);
+  const quick = document.createElement("div");
+  quick.className = "agent-card-quick";
+  quick.append(
+    agentActionButton("reply", "Reply", () => replyToAgentItem(item, "reply")),
+    agentActionButton("done", "Done", () => updateTodo(context.messageId, "done", context.accountId)),
+    agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed", context.accountId)),
+  );
+  const moves = document.createElement("div");
+  moves.className = "agent-card-moves";
+  for (const button of agentMoveButtons(item, section)) moves.appendChild(button);
+  detail.append(summary, classification, thread, quick);
+  if (moves.childNodes.length) detail.appendChild(moves);
+  card.append(face, chips, detail);
+  syncAgentCardDisclosure(card);
+  bindAgentCardDetail(card);
+  wireAgentCardOutside();
+  return card;
 }
 
 function agentTodoCard(item, section) {
   if (section && item && typeof item === "object" && !item.categoryId) item.categoryId = section.id || "";
   if (!agentMessageContext(item)) return agentCard(item);
+  if (agentTodoView === "card") return agentSkimCard(item, section);
   const card = agentCard(item, { actions: false });
   if (agentPileRole(section || item) === "reply") {
     const main = card.querySelector(".agent-item-main");
@@ -22329,6 +22937,7 @@ function wire() {
   if (motion) motion.bindChrome(document);
   wireSettingsFolds();
   wireAgentTabs();
+  wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
       if (dialog.id === "quit-scheduled") {

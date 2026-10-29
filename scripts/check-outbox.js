@@ -150,6 +150,7 @@ function rendererChecks() {
     <div id="list-chips"></div>
     <div id="reader"></div>
     <button id="refresh"></button>
+    <button id="remove"></button>
     <span id="sync-label"></span>
     <span id="sync-detail"></span>
     <div id="sync-control"></div>
@@ -190,12 +191,62 @@ function rendererChecks() {
   `);
   assert.deepEqual(ui.run("scheduledRows(rows).map(row => row.id)"), ["s3", "s4"]);
   assert.deepEqual(ui.run("outboxRowsFrom(rows).map(row => row.id)"), ["s1", "s2"]);
+  ui.context.morrowFolderCollapse = require("../shared/folder-collapse");
+  ui.context.window.morrow.invoke = async (channel, payload) => {
+    if (channel === "morrow:configSetSidebarCollapsedFolders") return payload;
+    return {};
+  };
   ui.run("renderAccounts()");
   const nav = document.getElementById("folders");
-  const ids = [...nav.querySelectorAll("[data-testid]")].map((node) => node.getAttribute("data-testid"));
-  assert.deepEqual(ids, ["all-account-mail", "all-account-unread", "outbox"]);
+  const testIds = () => [...nav.querySelectorAll("[data-testid]")].map((node) => node.getAttribute("data-testid"));
+  assert.deepEqual(testIds(), ["all-account-mail", "all-account-inbox", "all-account-unread", "outbox"]);
+  const header = nav.querySelector("[data-testid=all-account-mail]");
+  assert.equal(header.getAttribute("aria-expanded"), "true");
+  assert.equal(header.querySelector(".name").textContent, "All Account Mail");
+  assert.equal(nav.querySelector("[data-testid=all-account-inbox] .name").textContent, "Inbox");
   assert.equal(nav.querySelector("[data-testid=outbox] .outbox-count").hidden, true);
-  return ui.run("selectOutbox()").then(() => {
+  header.click();
+  return ui.run("new Promise((resolve) => setTimeout(resolve, 0))").then(() => {
+    assert.equal(ui.run("state.allInbox"), false);
+    assert.equal(ui.run("state.outbox"), false);
+    assert.deepEqual(testIds(), ["all-account-mail"]);
+    assert.equal(nav.querySelector("[data-testid=all-account-mail]").getAttribute("aria-expanded"), "false");
+    assert.deepEqual(ui.run("state.prefs.collapsedFolders"), { "*": ["all-account-mail"] });
+    assert.equal(ui.run("calls.some((item) => item.channel === 'mail:listFromCache')"), false);
+    ui.run(`onFolderNavKey({ key: "ArrowRight", target: document.querySelector("[data-testid=all-account-mail]"), preventDefault() {}, stopPropagation() {} })`);
+    return ui.run("new Promise((resolve) => setTimeout(resolve, 0))");
+  }).then(() => {
+    assert.equal(nav.querySelector("[data-testid=all-account-mail]").getAttribute("aria-expanded"), "true");
+    assert.deepEqual(testIds(), ["all-account-mail", "all-account-inbox", "all-account-unread", "outbox"]);
+    assert.deepEqual(ui.run("state.prefs.collapsedFolders"), {});
+    ui.run(`onFolderNavKey({ key: "ArrowLeft", target: document.querySelector("[data-testid=all-account-mail]"), preventDefault() {}, stopPropagation() {} })`);
+    return ui.run("new Promise((resolve) => setTimeout(resolve, 0))");
+  }).then(() => {
+    assert.equal(nav.querySelector("[data-testid=all-account-mail]").getAttribute("aria-expanded"), "false");
+    assert.deepEqual(testIds(), ["all-account-mail"]);
+    ui.run(`onFolderNavKey({ key: "ArrowRight", target: document.querySelector("[data-testid=all-account-mail]"), preventDefault() {}, stopPropagation() {} })`);
+    return ui.run("new Promise((resolve) => setTimeout(resolve, 0))");
+  }).then(() => {
+    document.getElementById("folder-filter").value = "outbox";
+    ui.run("renderAccounts()");
+    assert.deepEqual(testIds(), ["all-account-mail", "outbox"]);
+    assert.equal(nav.querySelector("[data-testid=all-account-mail]").dataset.navLock, "1");
+    document.getElementById("folder-filter").value = "account";
+    ui.run("renderAccounts()");
+    assert.deepEqual(testIds(), ["all-account-mail"]);
+    assert.equal(nav.querySelector("[data-testid=all-account-mail]").hasAttribute("aria-expanded"), false);
+    document.getElementById("folder-filter").value = "";
+    ui.run("renderAccounts()");
+    nav.querySelector("[data-testid=all-account-inbox]").click();
+    return ui.run("new Promise((resolve) => setTimeout(resolve, 0))");
+  }).then(() => {
+    assert.equal(ui.run("state.allInbox"), true);
+    assert.equal(ui.run("state.outbox"), false);
+    assert.equal(document.getElementById("list-title").textContent, "All Account Mail");
+    assert.equal(nav.querySelector("[data-testid=all-account-inbox]").getAttribute("aria-current"), "true");
+    assert.equal(nav.querySelector("[data-testid=all-account-mail]").hasAttribute("aria-current"), false);
+    return ui.run("selectOutbox()");
+  }).then(() => {
     assert.equal(document.getElementById("list-title").textContent, "Outbox");
     const list = document.getElementById("message-list").textContent;
     assert.match(list, /Ada note/);

@@ -22,7 +22,7 @@
         id: "agent-triage",
         title: "Agent triage",
         category: "Agent",
-        blurb: "Files recent inbox mail into your Brain categories and stacks todos. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Forward, a new message, a saved draft, a canceled compose, a failed send, and a queued or scheduled send leave that todo open until the send succeeds. Mark as read leaves it open. The Settings opt-in \"Mark as read also completes Agent todos\" is off by default. Mark read & done marks the message read and completes the todo. FYI and Other offer Mark category as read for the messages listed there, with Undo, and do not complete todos. Needs You has no Mark-all. Select rows, then Mark selected as read or Complete selected. The label says all only after every listed row is selected. Done and Dismiss stay on this computer.",
+        blurb: "Files recent inbox mail into your Brain categories and stacks todos. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Forward, a new message, a saved draft, a canceled compose, a failed send, and a queued or scheduled send leave that todo open until the send succeeds. Mark as read leaves it open. The Settings opt-in \"Mark as read also completes Agent todos\" is off by default. Mark read & done marks the message read and completes the todo. FYI and Other offer Mark category as read for the messages listed there, with Undo, and do not complete todos. Needs You has no Mark-all. Select rows, then Mark selected as read or Complete selected. The label says all only after every listed row is selected. Done and Dismiss stay on this computer. The Todos switcher includes List and Card. Card shows the sender, subject, one Agent reason line, and Reply and Done. Hover, Tab focus, or a tap opens the same detail: a fuller summary, the classification reason, one thread line, and Reply, Done, and Dismiss. Escape or leaving the card dismisses it. The page header does not repeat that detail. Opening the detail does not open the message or complete the todo. Settings → Learned lists explicit moves among Needs You, FYI, and Other, repeated Mark as read or a successful reply for one sender or thread, and opened or dismissed suggestion labels. The same pattern is Learned after 3 times. Delete removes that pattern and its count. Learned rows stay on this computer and do not rewrite Brain categories, triage prompts, or mailbox rules, and they do not send mail.",
       },
       {
         id: "compose-window",
@@ -35,6 +35,12 @@
         title: "Conversation messages",
         category: "Mail",
         blurb: "Gmail label copies appear once in a conversation, using the provider message ID within the same account. The selected folder copy stays selected. Folder records remain stored. Distinct provider messages and rows without a reliable provider ID stay separate, even when RFC Message-ID matches. A single message has no Earlier section.",
+      },
+      {
+        id: "reading-header",
+        title: "Reading header",
+        category: "Mail",
+        blurb: "The open message shows its date and time on the From row, right-aligned, in the main reading pane and in a separate reader window. That text uses the reader's existing date and time format. To and Cc stay on the lines below.",
       },
       {
         id: "sender-identities",
@@ -88,7 +94,7 @@
         id: "outbox",
         title: "Outbox",
         category: "Mail",
-        blurb: "Send closes compose and keeps the message in Outbox under All Account Mail until the undo delay ends (30 seconds unless a shorter one is set). Local only, every mailbox. Undo cancels and reopens the draft. Opening a waiting message does not send it. After the delay, send works as before and the message leaves Outbox. A partial delivery receipt stays open for review and is not a normal Outbox close. Quitting with a message still in Outbox asks first; it sends the next time Morrow is open. Restart and install waits while a message is still in Outbox. Zero undo delay sends immediately and skips Outbox.",
+        blurb: "Send closes compose and keeps the message in Outbox, a child of the collapsible All Account Mail section beside Inbox, until the undo delay ends (30 seconds unless a shorter one is set). Choosing the All Account Mail header only expands or collapses. Inbox opens the same merged list and keeps the Unread chip. Local only, every mailbox. Undo cancels and reopens the draft. Opening a waiting message does not send it. After the delay, send works as before and the message leaves Outbox. A partial delivery receipt stays open for review and is not a normal Outbox close. Quitting with a message still in Outbox asks first; it sends the next time Morrow is open. Restart and install waits while a message is still in Outbox. Zero undo delay sends immediately and skips Outbox.",
       },
       {
         id: "out-of-office",
@@ -124,7 +130,7 @@
         id: "multi-account",
         title: "Multiple mailboxes",
         category: "Accounts",
-        blurb: "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again. Gmail Delete moves to Trash; deleting again keeps mail there. Conversation Trash acts once per Gmail message across label copies, with one membership snapshot for Undo. Verified copies leave their old labels after Trash; unrelated cached mail and unsaved edits stay. Archive removes Inbox membership even from All Mail or a search copy. Gmail draft cleanup moves old remote copies to Trash. Microsoft and other IMAP deletion behavior is unchanged. Google login remains OAuth. New Google connections use Gmail API polling/history with gmail.modify and gmail.settings.basic; Calendar is separate. Existing Google OAuth accounts migrate after review in Accounts. Cached mail and drafts stay; uncertain actions must be resolved first. A narrower request does not revoke older broad grants; Accounts shows actual saved scopes. Gmail API cannot move mail into Sent or Drafts; use Send or Save draft.",
+        blurb: "Connect Google, Microsoft, and IMAP mailboxes. Password reconnects save the matching login type and servers after credentials are saved; failures attempt to restore prior credentials. Inbox under All Account Mail lists downloaded Gmail All Mail, or Inbox for other accounts. Disconnect invalidates queued sync and pending reconnects; server mail stays. Start a new connection after removal to add it again. Gmail Delete moves to Trash; deleting again keeps mail there. Conversation Trash acts once per Gmail message across label copies, with one membership snapshot for Undo. Verified copies leave their old labels after Trash; unrelated cached mail and unsaved edits stay. Archive removes Inbox membership even from All Mail or a search copy. Gmail draft cleanup moves old remote copies to Trash. Microsoft and other IMAP deletion behavior is unchanged. Google login remains OAuth. New Google connections use Gmail API polling/history with gmail.modify and gmail.settings.basic; Calendar is separate. Existing Google OAuth accounts migrate after review in Accounts. Cached mail and drafts stay; uncertain actions must be resolved first. A narrower request does not revoke older broad grants; Accounts shows actual saved scopes. Gmail API cannot move mail into Sent or Drafts; use Send or Save draft.",
       },
       {
         id: "bot-bridge",

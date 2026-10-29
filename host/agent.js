@@ -791,6 +791,7 @@ function homePayload(extra) {
     sections,
     proposals: store.proposals.filter((item) => item.status === "pending"),
     runs: store.runs.slice(0, 30),
+    learning: agentLearningView(),
   };
   return Object.assign(base, extra || {});
 }
@@ -1081,6 +1082,73 @@ function replyTodoTarget(params) {
     }
   }
   return ok(null);
+}
+
+function agentLearningView() {
+  try {
+    const view = require("./agent-learning").list();
+    if (view) return view;
+  } catch {
+    // A damaged learning file stays put. Home still paints.
+  }
+  return { threshold: 3, patterns: [], suppressed: [] };
+}
+
+function moveCategory(params) {
+  const learning = require("./agent-learning");
+  const messageId = clip(params && params.messageId, 120);
+  const to = learning.pileId(params && (params.toCategoryId || params.to));
+  const accountId = clip(params && params.accountId, 120);
+  if (!messageId || !to) return fail(new Error("That move needs a message and Needs You, FYI, or Other."));
+  const store = readStore();
+  const triage = store.triage;
+  if (!triage || typeof triage !== "object") return fail(new Error("That message is not in the current triage."));
+  let stored = null;
+  let from = "";
+  if (Array.isArray(triage.items)) {
+    stored = triage.items.find((item) => item && item.messageId === messageId) || null;
+    if (stored) from = learning.pileId(stored.categoryId);
+  }
+  for (const section of triage.sections || []) {
+    for (const item of section.items || []) {
+      if (!item || item.messageId !== messageId) continue;
+      if (!stored) stored = item;
+      if (!from) from = learning.pileId(item.categoryId) || learning.pileId(section.id) || learning.pileId(section.name);
+    }
+  }
+  if (!stored || !from || from === to) return fail(new Error("Move between Needs You, FYI, and Other."));
+  const itemAccount = clip(stored.accountId, 120);
+  if (accountId && itemAccount && accountId !== itemAccount) return ok(homePayload());
+  const fromName = clip(params && params.fromName, 40) || (from === "needs-you" ? "Needs You" : from === "fyi" ? "FYI" : "Other");
+  const toName = clip(params && params.toName, 40);
+  stored.categoryId = to;
+  for (const section of triage.sections || []) {
+    for (const item of section.items || []) {
+      if (item && item.messageId === messageId) item.categoryId = to;
+    }
+  }
+  if (Array.isArray(triage.items)) {
+    for (const item of triage.items) {
+      if (item && item.messageId === messageId) item.categoryId = to;
+    }
+  }
+  writeStore(store);
+  try {
+    learning.observe({
+      kind: "category",
+      fromCategoryId: from,
+      toCategoryId: to,
+      fromName,
+      toName,
+      begunAt: params && params.begunAt,
+      items: [{ messageId, accountId: itemAccount, from: stored.from || "" }],
+    });
+  } catch {
+    // The explicit move is already stored. The pattern can be recorded later.
+  }
+  const payload = homePayload();
+  publishHome(payload);
+  return ok(payload);
 }
 
 function setTodo(params) {
@@ -2336,6 +2404,20 @@ function answer(channel, args) {
       return refreshTaxonomy();
     case "nativeAgent:home:todoUpdate":
       return setTodo(params);
+    case "nativeAgent:learning:list": {
+      const view = require("./agent-learning").list();
+      return view ? ok(view) : fail(new Error("Learned patterns could not be read."));
+    }
+    case "nativeAgent:learning:forget": {
+      const view = require("./agent-learning").forget(params);
+      return view ? ok(view) : fail(new Error("Learned patterns could not be read."));
+    }
+    case "nativeAgent:learning:observe": {
+      const view = require("./agent-learning").observe(params);
+      return view ? ok(view) : fail(new Error("Learned patterns could not be read."));
+    }
+    case "nativeAgent:learning:moveCategory":
+      return moveCategory(params);
     case "nativeAgent:home:replyTarget":
       return replyTodoTarget(params);
     case "nativeAgent:triage":
@@ -2377,6 +2459,7 @@ module.exports = {
   groupTriage,
   refreshTaxonomy,
   setTodo,
+  moveCategory,
   normalizeSkillResult,
   setSkillSchedule,
   deleteSkillSchedule,
