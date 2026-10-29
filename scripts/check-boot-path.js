@@ -42,6 +42,7 @@ const syntax = [
   "scripts/check-reviewed-mail-flows.js",
   "host/mail/idle.js",
   "shared/sync-retry.js",
+  "shared/recipient-suggest.js",
   "shared/primary-mailboxes.js",
   "shared/display-format.js",
   "shared/changelog.js",
@@ -63,6 +64,7 @@ const syntax = [
   "scripts/check-draft-partial-delivery.js",
   "scripts/check-draft-revisions.js",
   "scripts/check-outbox.js",
+  "scripts/check-agent-todos.js",
   "scripts/check-account-calendar-attachments.js",
   "scripts/check-account-liveness.js",
   "scripts/check-reconnect-calendar-preservation.js",
@@ -122,6 +124,8 @@ const syntax = [
   "scripts/check-google-oauth-default-ui.js",
   "scripts/check-calendar-keyboard-followup.js",
   "scripts/check-body-sync-status.js",
+  "scripts/check-recipient-suggest.js",
+  "host/mail/recipient-suggest.js",
   "scripts/check-ai-settings-ownership.js",
   "renderer/motion-ui.js",
   "scripts/check-vacation.js",
@@ -138,7 +142,7 @@ for (const file of syntax) {
 }
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
-for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-keychain-reads.js", "check-outbox.js"]) {
+for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-keychain-reads.js", "check-outbox.js", "check-agent-todos.js"]) {
   // Forty reviewed-flow cases include durable SQLite commits and restarts;
   // allow their full assertions to finish on the Windows runner's filesystem.
   const timeout = name === "check-reviewed-mail-flows.js" ? 90000 : 30000;
@@ -153,6 +157,10 @@ const calendarKeyboardFollowup = spawnSync(process.execPath, [path.join(__dirnam
 if (calendarKeyboardFollowup.status !== 0) process.exit(calendarKeyboardFollowup.status || 1);
 const bodySyncStatus = spawnSync(process.execPath, [path.join(__dirname, "check-body-sync-status.js")], { stdio: "inherit", timeout: 15000 });
 if (bodySyncStatus.status !== 0) process.exit(bodySyncStatus.status || 1);
+const unreadHold = spawnSync(process.execPath, [path.join(__dirname, "check-unread-hold.js")], { stdio: "inherit", timeout: 15000 });
+if (unreadHold.status !== 0) process.exit(unreadHold.status || 1);
+const recipientSuggest = spawnSync(process.execPath, [path.join(__dirname, "check-recipient-suggest.js")], { stdio: "inherit", timeout: 30000 });
+if (recipientSuggest.status !== 0) process.exit(recipientSuggest.status || 1);
 
 for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js", "check-mail-discovery.js"]) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
@@ -534,7 +542,7 @@ assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app pa
 assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
 assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.3.7");
+assert.strictEqual(pkg.version, "0.3.8");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -788,7 +796,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.3.7");
+assert.strictEqual(pkg.version, "0.3.8");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -1377,6 +1385,10 @@ for (const channel of [
 }
 assert.ok(appJs.includes('"Unstar"') && appJs.includes('"Archive"') && appJs.includes('"Trash"') && appJs.includes('"Unsnooze"'));
 assert.ok(html.includes('id="undo"') && html.includes('class="split"'), "shell is missing undo or resize handles");
+assert.ok(html.includes('id="undo-details"') && html.includes('id="undo-details-popover"') && html.includes('role="dialog"') && html.includes('aria-label="Undo details"'), "undo details popover is missing");
+assert.ok(html.includes('id="undo-details-all"') && html.includes('id="undo-details-clear"') && html.includes("Undo selected (0)"), "undo details actions are missing");
+assert.ok(css.includes("#undo-details-list") && css.includes("max-height: 22rem"), "undo details list does not scroll");
+assert.ok(appJs.includes("function openUndoDetails(") && appJs.includes("function retainedUndoOpIds(") && appJs.includes('kind: "move"'), "undo details runtime is missing");
 assert.ok(html.includes('id="status-chip"') && html.includes('aria-controls="status"'), "status chip is missing");
 assert.ok(css.includes("#notice.collapsed") && css.includes("#status-chip"), "status chip styles are missing");
 assert.ok(appJs.includes("STATUS_SUCCESS_DWELL_MS") && appJs.includes("STATUS_ERROR_DWELL_MS") && appJs.includes("function wireStatusNotice("), "status collapse lifecycle is missing");
@@ -1676,7 +1688,7 @@ assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
 const settingsSrc = fs.readFileSync(path.join(root, "host/settings.js"), "utf8");
 const prefs = prefRows();
-assert.strictEqual(prefs.length, 15);
+assert.strictEqual(prefs.length, 16);
 const prefKinds = new Set();
 for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(html.includes('id="' + id + '"'), `settings control missing ${id}`);
@@ -1747,6 +1759,7 @@ assert.ok(settingsCall < ipcSrc.indexOf("/Effective$|Enabled$/"));
 assert.ok(!ipcSrc.includes('"config:getTheme"'));
 for (const channel of [
   "morrow:configGetAiWriteAutoOpenOnReply",
+  "morrow:configGetMarkReadCompletesAgentTodos",
   "morrow:configGetShowFolderChips",
   "morrow:configGetSidebarGmailFoldersExpanded",
   "morrow:configGetSidebarOutlookFoldersExpanded",
@@ -1784,6 +1797,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetSyncHorizonDays", []), 0);
     assert.strictEqual(answer("morrow:configGetCompactMessageList", []), true);
     assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), true);
+    assert.strictEqual(answer("morrow:configGetMarkReadCompletesAgentTodos", []), false);
     assert.strictEqual(answer("morrow:configGetShowFolderChips", []), true);
     assert.strictEqual(answer("morrow:configGetSidebarGmailFoldersExpanded", []), true);
     assert.strictEqual(answer("morrow:configGetSidebarOutlookFoldersExpanded", []), false);
@@ -1803,6 +1817,10 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configSetAiWriteAutoOpenOnReply", [false]), false);
     assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), false);
     assert.strictEqual(answer("morrow:configSetAiWriteAutoOpenOnReply", [true]), true);
+    assert.strictEqual(answer("morrow:configSetMarkReadCompletesAgentTodos", [true]), true);
+    assert.strictEqual(answer("morrow:configGetMarkReadCompletesAgentTodos", []), true);
+    assert.strictEqual(answer("morrow:configSetMarkReadCompletesAgentTodos", [false]), false);
+    assert.strictEqual(answer("morrow:configGetMarkReadCompletesAgentTodos", []), false);
     assert.strictEqual(answer("morrow:configSetShowFolderChips", [false]), false);
     assert.strictEqual(answer("morrow:configSetSidebarGmailFoldersExpanded", [false]), false);
     assert.strictEqual(answer("morrow:configSetSidebarOutlookFoldersExpanded", [true]), true);
@@ -1828,6 +1846,7 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 0);
     assert.strictEqual(answer("morrow:configGetSnoozeEffective", []), false);
     assert.strictEqual(answer("morrow:configGetAiWriteAutoOpenOnReply", []), true);
+    assert.strictEqual(answer("morrow:configGetMarkReadCompletesAgentTodos", []), false);
     assert.strictEqual(answer("morrow:configGetShowFolderChips", []), false);
     assert.strictEqual(answer("morrow:configGetSidebarGmailFoldersExpanded", []), false);
     assert.strictEqual(answer("morrow:configGetSidebarOutlookFoldersExpanded", []), true);
@@ -1845,6 +1864,7 @@ function checkSettingsRoundTrip() {
         undo: answer("morrow:configGetUndoSendDelaySeconds", []),
         snooze: answer("morrow:configGetSnoozeEffective", []),
         aiReply: answer("morrow:configGetAiWriteAutoOpenOnReply", []),
+        markReadCompletesAgentTodos: answer("morrow:configGetMarkReadCompletesAgentTodos", []),
         chips: answer("morrow:configGetShowFolderChips", []),
         gmailFolders: answer("morrow:configGetSidebarGmailFoldersExpanded", []),
         outlookFolders: answer("morrow:configGetSidebarOutlookFoldersExpanded", []),
@@ -1864,6 +1884,7 @@ function checkSettingsRoundTrip() {
       undo: 0,
       snooze: false,
       aiReply: true,
+      markReadCompletesAgentTodos: false,
       chips: false,
       gmailFolders: false,
       outlookFolders: true,
@@ -1881,6 +1902,8 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 0);
     assert.throws(() => answer("morrow:configSetSnoozeEffective", ["yes"]), /on or off/);
     assert.strictEqual(answer("morrow:configGetSnoozeEffective", []), false);
+    assert.throws(() => answer("morrow:configSetMarkReadCompletesAgentTodos", ["yes"]), /on or off/);
+    assert.strictEqual(answer("morrow:configGetMarkReadCompletesAgentTodos", []), false);
     assert.throws(() => answer("morrow:configSetShowFolderChips", ["yes"]), /on or off/);
     assert.strictEqual(answer("morrow:configGetShowFolderChips", []), false);
     assert.throws(() => answer("morrow:configSetComposeQuoteWidth", [10]), /220 to 720/);
@@ -2609,6 +2632,7 @@ assert.ok(html.includes("Attach files") && html.includes("Suggested replies"));
 assert.ok(appJs.includes("mail:uploadAttachment") && preload.includes("mail:uploadAttachment"));
 assert.ok(engineSrc.includes("resolveAttachments") && engineSrc.includes("Could not read"));
 assert.ok(settingsSrc.includes("aiWriteAutoOpenOnReply: true"));
+assert.ok(settingsSrc.includes("markReadCompletesAgentTodos: false"));
 const attachUi = loadFunctions(appJs, [
   "composeFileMeta",
   "composeAttachmentList",
@@ -2916,6 +2940,11 @@ const requestUi = loadFunctions(appJs, [
   "agentContextCopy",
   "agentMessageContext",
   "agentReadIntent",
+  "agentPileRole",
+  "agentSelectionLabels",
+  "explicitAgentTodo",
+  "freshReplyTodoSeed",
+  "readUndoRows",
   "agentTodoActionNames",
   "agentFollowUps",
   "agentWhen",
@@ -2955,6 +2984,27 @@ assert.deepStrictEqual(requestUi.agentTodoActionNames({ summary: "Note" }), []);
 assert.deepStrictEqual(requestUi.agentTodoActionNames({ messageId: "m1" }), [
   "Open", "Reply", "Reply All", "Mark as read", "Mark todo done", "Dismiss",
 ]);
+assert.deepStrictEqual(requestUi.agentTodoActionNames({ messageId: "m1" }, { id: "needs-you", name: "Needs You" }), [
+  "Open", "Reply", "Reply All", "Mark as read", "Mark read & done", "Mark todo done", "Dismiss",
+]);
+assert.strictEqual(requestUi.agentPileRole({ id: "fyi", name: "News" }), "fyi");
+assert.strictEqual(requestUi.agentPileRole({ id: "custom", name: "Other" }), "other");
+assert.strictEqual(requestUi.agentPileRole({ id: "worth-a-look", name: "Worth a look" }), "");
+assert.deepStrictEqual(requestUi.agentSelectionLabels(2, 4), { read: "Mark selected as read", done: "Complete selected" });
+assert.deepStrictEqual(requestUi.agentSelectionLabels(4, 4), { read: "Mark all as read", done: "Complete all" });
+assert.strictEqual(requestUi.explicitAgentTodo({ messageId: " m1 ", accountId: " ada " }).messageId, "m1");
+assert.strictEqual(requestUi.explicitAgentTodo(null), null);
+assert.deepStrictEqual(requestUi.freshReplyTodoSeed({ kind: "reply", sourceMessageId: "m1", accountId: "ada" }), { messageId: "m1", accountId: "ada" });
+assert.strictEqual(requestUi.freshReplyTodoSeed({ kind: "forward", sourceMessageId: "m1" }), null);
+assert.strictEqual(requestUi.freshReplyTodoSeed({ kind: "reply", sourceMessageId: "m1", draftId: "d1" }), null);
+assert.deepStrictEqual(requestUi.readUndoRows(
+  [{ messageId: "m1", accountId: "ada" }],
+  { outcomes: [{ id: "m1", status: "completed", generation: 4 }, { id: "m2", status: "completed", generation: 5 }], pending: [] },
+), [{ emailId: "m1", accountId: "ada", generation: 4 }]);
+assert.deepStrictEqual(requestUi.readUndoRows(
+  [{ messageId: "m1", accountId: "ada" }],
+  { outcomes: [{ id: "m1", status: "completed" }], pending: [] },
+), []);
 assert.strictEqual(requestUi.agentFollowUps({ messageId: "m1", followUps: [] }).length, 1);
 assert.strictEqual(requestUi.agentFollowUps({
   messageId: "m1",
@@ -4011,12 +4061,14 @@ const featureCatalog = require("../renderer/features-catalog.js");
 const featureSeed = [
   ["ai-connection", "ChatGPT or API key", "Agent", "AI settings preserve API keys and custom endpoints, and add Continue with ChatGPT for eligible plans. Browser sign-in uses Morrow Mail's own registered client, automatic loopback and optional one-time paste-back. Cancel, timeout, account selection, reauthorization and sign-out are available. Cancellation permits a fresh retry without waiting for an old discovery response; obsolete attempts cannot change the new one. Save keeps newer edits unsaved, and connection test results apply only to the current settings. Fetch account-specific models before choosing one. AI data permission discloses mail, calendar, drafts, profile and conversation context and the saved destination before an affirmative choice. Settings → AI and AI Setup support review, allow and revoke; Allow requires a ready saved connection and the explicit-action checkbox. If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step. Unsaved edits, saves and pending permission reads block Allow with an actionable reason. Save & review connection saves without approving; choose permission after reviewing the saved destination. Reopening Settings preserves unsaved connection edits and requires a fresh permission choice. Material disclosure stays visible, with full details in an accessible accordion. Existing API and ChatGPT connections start with AI data use off. Saving a key or signing in is not consent. Explicit AI actions need approval; Background profile refresh, page-open triage, compose-open reply suggestions and scheduled skills need separate background opt-in. Destination, model, account and material data-use changes need fresh permission. Cancel / revoke stops queued and active AI requests; data already delivered cannot be recalled. ChatGPT requests set store: false; no retention or training guarantee is made. Plan, app and workspace limits apply; Manage usage opens ChatGPT settings. No automatic billing fallback, provider switching, extra allowance, hosted tools or general proxy. Credentials stay encrypted on this computer; unlocked OS secure storage is required. Native and live sign-in validation remains pending."],
   ["email-brain", "Email Brain", "Agent", "Profile, categories, skills, and inbox rules built from your mail. Skills can draft a reply or propose a move. You still press Send."],
-  ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. Reply opens a compose window. Done and Dismiss stay on this computer."],
-  ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send. Send with an undo delay closes it and waits in Outbox. Reply and Reply All prefer Reply-To addresses when supplied, exclude your own addresses, and avoid duplicate recipients. Replies to locally sent mail, including historical bot mail from aliases, remain available while the Sent copy is waiting to sync. Finish or cancel AI writing before Save, Send or Schedule. Confirmation uses the reviewed message; changes require a new preview."],
+  ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Forward, a new message, a saved draft, a canceled compose, a failed send, and a queued or scheduled send leave that todo open until the send succeeds. Mark as read leaves it open. The Settings opt-in \"Mark as read also completes Agent todos\" is off by default. Mark read & done marks the message read and completes the todo. FYI and Other offer Mark category as read for the messages listed there, with Undo, and do not complete todos. Needs You has no Mark-all. Select rows, then Mark selected as read or Complete selected. The label says all only after every listed row is selected. Done and Dismiss stay on this computer."],
+  ["compose-window", "Compose in its own window", "Mail", "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send. Send with an undo delay closes it and waits in Outbox. Reply and Reply All prefer Reply-To addresses when supplied, exclude your own addresses, and avoid duplicate recipients. Replies to locally sent mail, including historical bot mail from aliases, remain available while the Sent copy is waiting to sync. Finish or cancel AI writing before Save, Send or Schedule. Confirmation uses the reviewed message; changes require a new preview. To, Cc, and Bcc suggest up to eight addresses already in synced mail on this computer, ranked by how recent and how often they appear. Arrow keys then Enter, or a click, inserts one. Enter without a highlighted suggestion still previews the send, and an address you type is kept. Suggestions do not read a contacts directory or add a provider scope."],
   ["conversation-members", "Conversation messages", "Mail", "Gmail label copies appear once in a conversation, using the provider message ID within the same account. The selected folder copy stays selected. Folder records remain stored. Distinct provider messages and rows without a reliable provider ID stay separate, even when RFC Message-ID matches. A single message has no Earlier section."],
   ["sender-identities", "Sender identities", "Mail", "Settings → Compose previews each exact From address and its Morrow-only display name. Verified Gmail send-as names are the default; local overrides survive refresh. Clear a name for address-only sending or reset to the default. Most people only need a display name. Domain CC/BCC, aliases, and the fallback CC domain stay under Advanced, collapsed until one of those rules is saved. Compose From lists authorized addresses for every connected mailbox; choosing another mailbox sends and saves drafts there. Switching mailboxes preserves body formatting and links, and keeps a signature you edited. Only untouched automatic signatures, including multiline HTML signatures, follow the new mailbox. Drafts and scheduled mail retain the selected name and address, including punctuation and Unicode in names. Bot mail.send uses these defaults on the granted account only. Provider sending permissions still apply; Gmail settings and OAuth scopes stay unchanged. Providers or recipient contacts may affect the delivered display."],
   ["signatures", "Signatures", "Mail", "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target."],
   ["mail-keyboard", "Mail list keyboard navigation", "Mail", "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus."],
+  ["unread-filter", "Unread filter", "Mail", "The sidebar Unread filter and the All Account Mail Unread chip list downloaded unread mail. Opening an unread message may mark it read and keeps that one row in the list until a different unread message is opened. Opening a message that is already read, opening the held row again, or highlighting a row without opening it leaves the hold. Mark read on the held row from the row button leaves it listed. Mark unread clears the hold and the row stays because it is unread. Mark read on a row that is not held removes it immediately. Multi-select Mark read removes every selected row immediately, including the held row when it is selected, even when only that row is selected. A held row outside the selection stays. Leaving Unread, switching folder or account, searching, or turning the filter off clears the hold, and coming back does not restore it. Refresh and Sync keep the held row unless the message is gone from that filtered mail. Other filters do not keep a read row this way."],
+  ["undo-removal", "Undo removal details", "Mail", "Archive, Trash, and Move keep Undo for every completed change in the current removal. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Select all or Clear, then Undo selected. The status chip only shows or hides the notice. Mark as read keeps its own Undo and does not replace a removal Undo. A newer removal replaces that list. Outbox undo send is separate and is not in this checklist."],
   ["attachment-downloads", "Attachment downloads", "Mail", "Preview, Open and Save share downloads. Complete files up to 32 MiB can be reused for five minutes while Morrow is open; larger files remain on demand. Save asks for a location first. Attachment transfers show progress and individual Cancel controls; closing Preview keeps another Save or Open running. Downloads allow 64 MiB per file and 128 MiB per ZIP, with existing provider limits. Changed identities stop reuse; reopen legacy Gmail selections. Resuming a server draft prepares every attachment before editing, within the 25 MiB outgoing limit. Preparation shares the download cache and Cancel controls. Failure keeps the saved draft for retry. Inline file identities are retained. Bot access remains metadata only."],
   ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer. When the local index needs repair, opening shows preparation progress and works in saved batches, yielding between them. Mail and search become available after verification. Quitting keeps committed progress for the next open. No mail is downloaded by rebuilding. A large individual message or disk call can still cause a pause."],
   ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved."],
@@ -6043,7 +6095,7 @@ async function checkComposeMailbox() {
   }).map(([id, value]) => [id, { value }]));
   const calls = [];
   const call = async (channel, payload) => { calls.push({ channel, payload }); return {draftId:"saved"}; };
-  const syncNames = ["selectedAccount", "composeAccount", "isLive", "composeFileMeta", "composeAttachmentList", "attachmentPayload", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml", "joinComposeHtml", "blankComposeHtml", "readComposeEditorHtml"];
+  const syncNames = ["selectedAccount", "composeAccount", "isLive", "composeFileMeta", "composeAttachmentList", "attachmentPayload", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml", "joinComposeHtml", "blankComposeHtml", "readComposeEditorHtml", "explicitAgentTodo", "withAgentReplyTodo"];
   const asyncNames = ["saveDraft", "scheduleMail", "sendMail"];
   const methods = new Function("state", "$", "call", "showStatus", "scheduleAt", "loadScheduled", "sendDelayMs", "hideUndoSend", "deliverMail", `
     const composeOperation = async work => { await work(); return true; };

@@ -1,9 +1,8 @@
 # Keep the opened unread row until the next unread open
 
-Status: Proposed for [#375](https://github.com/Coke1120/Morrow-Mail/issues/375).
-This note records the Unread-filter hold. It does not change the mail list,
-and it is not merge or release authorization. Features help stays unchanged
-until an implementation ships.
+Status: Accepted and implemented for [#375](https://github.com/Coke1120/Morrow-Mail/issues/375).
+The Unread list keeps one opened row, as described below. This note is not
+merge or release authorization.
 
 Opening a message under the Unread filter may still mark it read, using the
 existing open-to-read policy. The opened row stays in that filtered list

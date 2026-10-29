@@ -1419,8 +1419,17 @@ function whereFor(query) {
   if (query.category && query.category !== "all" && query.category !== "primary") {
     clauses.push("0 = 1");
   }
-  if (query.filterUnread) {
-    clauses.push("m.unread = 1");
+  if (typeof query.retainOnly === "string" && query.retainOnly) {
+    clauses.push("m.id = ?");
+    params.push(query.retainOnly);
+  } else if (query.filterUnread) {
+    const retainId = Array.isArray(query.retainIds) ? query.retainIds[0] : "";
+    if (typeof retainId === "string" && retainId) {
+      clauses.push("(m.unread = 1 OR m.id = ?)");
+      params.push(retainId);
+    } else {
+      clauses.push("m.unread = 1");
+    }
   }
   if (query.filterFlagged) {
     clauses.push("m.starred = 1");
@@ -2225,6 +2234,16 @@ function gmailSyncState(accountId, folderPath, next) {
   observedSync.set(JSON.stringify([accountId, folderPath, accountById(accountId).gmail_generation]), Date.now());
 }
 
+function recipientHeaderRows() {
+  return all(`SELECT account_id, id, gmail_id, from_addr, from_address, from_display_name, to_json, cc_json, bcc_json, list_sort_ts, is_draft
+    FROM messages WHERE is_draft = 0`);
+}
+
+function recipientHeaderStamp() {
+  const row = get("SELECT COUNT(*) AS n, COALESCE(MAX(list_sort_ts), 0) AS ts FROM messages");
+  return `${changeStamp()}:${row.n}:${row.ts}`;
+}
+
 function gmailVerifyPage(accountId, folderPath, beforeUid = 0) {
   return all(`SELECT DISTINCT gmail_id, uid FROM messages WHERE account_id = ? AND folder_path = ?
     AND gmail_id IS NOT NULL AND uid > 0 ${beforeUid > 0 ? "AND uid < ?" : ""} ORDER BY uid DESC LIMIT 20`,
@@ -2276,6 +2295,8 @@ module.exports = {
   selectBotHeaders,
   messageStats,
   messageById,
+  recipientHeaderRows,
+  recipientHeaderStamp,
   draftRevision,
   messagesByThread,
   updateMessage,

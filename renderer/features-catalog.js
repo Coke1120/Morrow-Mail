@@ -22,13 +22,13 @@
         id: "agent-triage",
         title: "Agent triage",
         category: "Agent",
-        blurb: "Files recent inbox mail into your Brain categories and stacks todos. Reply opens a compose window. Done and Dismiss stay on this computer.",
+        blurb: "Files recent inbox mail into your Brain categories and stacks todos. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Forward, a new message, a saved draft, a canceled compose, a failed send, and a queued or scheduled send leave that todo open until the send succeeds. Mark as read leaves it open. The Settings opt-in \"Mark as read also completes Agent todos\" is off by default. Mark read & done marks the message read and completes the todo. FYI and Other offer Mark category as read for the messages listed there, with Undo, and do not complete todos. Needs You has no Mark-all. Select rows, then Mark selected as read or Complete selected. The label says all only after every listed row is selected. Done and Dismiss stay on this computer.",
       },
       {
         id: "compose-window",
         title: "Compose in its own window",
         category: "Mail",
-        blurb: "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send. Send with an undo delay closes it and waits in Outbox. Reply and Reply All prefer Reply-To addresses when supplied, exclude your own addresses, and avoid duplicate recipients. Replies to locally sent mail, including historical bot mail from aliases, remain available while the Sent copy is waiting to sync. Finish or cancel AI writing before Save, Send or Schedule. Confirmation uses the reviewed message; changes require a new preview.",
+        blurb: "New mail, reply, forward, and drafts open in a separate window, so the mailbox stays usable. Closing that window does not send. Send with an undo delay closes it and waits in Outbox. Reply and Reply All prefer Reply-To addresses when supplied, exclude your own addresses, and avoid duplicate recipients. Replies to locally sent mail, including historical bot mail from aliases, remain available while the Sent copy is waiting to sync. Finish or cancel AI writing before Save, Send or Schedule. Confirmation uses the reviewed message; changes require a new preview. To, Cc, and Bcc suggest up to eight addresses already in synced mail on this computer, ranked by how recent and how often they appear. Arrow keys then Enter, or a click, inserts one. Enter without a highlighted suggestion still previews the send, and an address you type is kept. Suggestions do not read a contacts directory or add a provider scope.",
       },
       {
         id: "conversation-members",
@@ -53,6 +53,18 @@
         title: "Mail list keyboard navigation",
         category: "Mail",
         blurb: "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus.",
+      },
+      {
+        id: "unread-filter",
+        title: "Unread filter",
+        category: "Mail",
+        blurb: "The sidebar Unread filter and the All Account Mail Unread chip list downloaded unread mail. Opening an unread message may mark it read and keeps that one row in the list until a different unread message is opened. Opening a message that is already read, opening the held row again, or highlighting a row without opening it leaves the hold. Mark read on the held row from the row button leaves it listed. Mark unread clears the hold and the row stays because it is unread. Mark read on a row that is not held removes it immediately. Multi-select Mark read removes every selected row immediately, including the held row when it is selected, even when only that row is selected. A held row outside the selection stays. Leaving Unread, switching folder or account, searching, or turning the filter off clears the hold, and coming back does not restore it. Refresh and Sync keep the held row unless the message is gone from that filtered mail. Other filters do not keep a read row this way.",
+      },
+      {
+        id: "undo-removal",
+        title: "Undo removal details",
+        category: "Mail",
+        blurb: "Archive, Trash, and Move keep Undo for every completed change in the current removal. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Select all or Clear, then Undo selected. The status chip only shows or hides the notice. Mark as read keeps its own Undo and does not replace a removal Undo. A newer removal replaces that list. Outbox undo send is separate and is not in this checklist.",
       },
       {
         id: "attachment-downloads",

@@ -2,7 +2,9 @@
 
 Issue: https://github.com/Coke1120/Morrow-Mail/issues/362
 
-Not implemented in the change that added this record. Compose does not suggest addresses yet.
+Status: Accepted. Phase 1 is implemented. Phase 2 is not.
+
+Compose asks `mail:suggestRecipients` with the address being typed in To, Cc, or Bcc. The host reads From, To, Cc, and Bcc on non-draft messages already stored on this computer, skips message bodies, and returns at most eight addresses. The same address on one message, including Gmail label copies that share a provider id, counts once. Each extra sighting is worth seven days against the latest time that address was seen. Arrow keys then Enter, or a click, inserts the address. Enter without a highlighted suggestion still previews send. An address you type is kept. This does not read a contacts directory and does not add a provider scope.
 
 ## Decision
 

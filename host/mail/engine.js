@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const db = require("./db");
+const recipientSuggest = require("./recipient-suggest");
 const actions = require("./actions");
 const virtuals = require("./virtual-folders");
 const presets = require("./presets");
@@ -396,6 +397,13 @@ function threadMeta(rows) {
   return threads;
 }
 
+function oneRetainId(value) {
+  if (!Array.isArray(value) || !value.length) return null;
+  const id = value[0];
+  if (typeof id !== "string" || !id || id.length > 200) return null;
+  return [id];
+}
+
 function queryFrom(params) {
   const query = params || {};
   let out = {
@@ -405,6 +413,7 @@ function queryFrom(params) {
     mailboxes: Array.isArray(query.mailboxes) ? query.mailboxes : null,
     category: query.category || "all",
     filterUnread: query.filterUnread === true,
+    retainIds: oneRetainId(query.retainIds),
     filterFlagged: query.filterFlagged === true,
     filterAttachments: query.filterAttachments,
     limit: query.limit,
@@ -459,7 +468,21 @@ function synced(query, days) {
 
 function listPayload(params) {
   const query = queryFrom(params);
-  const rows = listRows(db.selectMessages(query, { headersOnly: true }));
+  let stored = db.selectMessages(query, { headersOnly: true });
+  const retainId = query.retainIds && query.retainIds[0];
+  // A read row can fall outside this page and still belong in the Unread list.
+  if (retainId && query.filterUnread === true && !stored.some((row) => row.id === retainId)) {
+    const extra = db.selectMessages({
+      ...query,
+      offset: 0,
+      limit: 1,
+      filterUnread: false,
+      retainIds: null,
+      retainOnly: retainId,
+    }, { headersOnly: true });
+    if (extra.length) stored = stored.concat(extra);
+  }
+  const rows = listRows(stored);
   const total = db.countMessages(query);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const days = syncHorizonDays();
@@ -3093,9 +3116,16 @@ function clearOutboxWake(id) {
 
 function armOutboxWake(id, sendAt) {
   clearOutboxWake(id);
-  const delay = Math.max(0, Number(sendAt) - Date.now());
+  const dueAt = Number(sendAt);
+  const delay = Math.max(0, dueAt - Date.now());
   const timer = setTimeout(() => {
     outboxWakes.delete(id);
+    // The timer clock can lead Date.now() by 1ms. Pumping then misses send_at,
+    // and this one-shot wake would not run again until the 15s schedule poll.
+    if (Date.now() < dueAt) {
+      armOutboxWake(id, dueAt);
+      return;
+    }
     pumpScheduled().catch(() => {});
   }, delay);
   if (typeof timer.unref === "function") timer.unref();
@@ -3113,9 +3143,17 @@ function armPendingOutboxWakes() {
   }
 }
 
+function agentTodoOf(input) {
+  const todo = input && input.agentTodo;
+  if (!todo || typeof todo !== "object" || Array.isArray(todo)) return null;
+  const messageId = String(todo.messageId || "").trim().slice(0, 120);
+  if (!messageId) return null;
+  return { messageId, accountId: String(todo.accountId || "").trim().slice(0, 120) };
+}
+
 function outboxNoticeSeed(row, payload, presented) {
   const html = presented && typeof presented.htmlBody === "string" ? presented.htmlBody : (typeof payload.body === "string" ? payload.body : "");
-  return {
+  const seed = {
     accountId: row.account_id,
     to: payload.to,
     cc: payload.cc,
@@ -3131,6 +3169,9 @@ function outboxNoticeSeed(row, payload, presented) {
     inReplyTo: payload.inReplyTo || "",
     threadId: payload.threadId || "",
   };
+  const todo = agentTodoOf(payload);
+  if (todo) seed.agentTodo = todo;
+  return seed;
 }
 
 function publicScheduled(row) {
@@ -3207,6 +3248,8 @@ function scheduleSend(params) {
   if (input.inReplyTo) payload.inReplyTo = input.inReplyTo;
   if (input.threadId) payload.threadId = input.threadId;
   if (Array.isArray(input.references)) payload.references = input.references;
+  const agentTodo = agentTodoOf(input);
+  if (agentTodo) payload.agentTodo = agentTodo;
   // Outbox is the undo delay on the scheduled queue, not a second send path.
   if (outbox) payload.outbox = true;
   const resolved = resolveAttachments(input.attachments, account);
@@ -3339,7 +3382,9 @@ function editScheduled(params) {
     recipientHeaders: { replyTo: [] },
   });
   emitAccounts();
+  const agentTodo = agentTodoOf(payload);
   return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString(),
+    ...(agentTodo ? { agentTodo } : {}),
     warning: partialWarning || (needsReview ? "This message may already have been delivered. Check Sent before explicitly sending or scheduling this recovered draft." : "") });
 }
 
@@ -3504,6 +3549,9 @@ async function cleanupSubmittedDraft(account, proof) {
 }
 
 async function deliver(params, lifecycle) {
+  params = params && typeof params === "object" ? { ...params } : {};
+  delete params.agentTodo;
+  delete params.outbox;
   let account = db.accountById(params && params.accountId);
   if (!account) return fail("not-found", "Choose an account before sending.");
   const draftId = params && (params.draftId || params.emailId);
@@ -3614,8 +3662,10 @@ async function pumpScheduledAdmitted() {
         htmlBody: typeof payload.body === "string" ? payload.body : "",
       });
       const outbox = payload.outbox === true;
+      const agentTodo = agentTodoOf(payload);
       const seed = outbox ? outboxNoticeSeed(row, payload, presented) : null;
       delete payload.outbox;
+      delete payload.agentTodo;
       let result;
       try {
         result = await deliver({
@@ -3638,6 +3688,15 @@ async function pumpScheduledAdmitted() {
           if (result && result.success) {
             if (result.data?.warning) db.noteScheduledWarning(row.id, result.data.warning);
             else db.deleteScheduled(row.id);
+            if (!(result.data && result.data.partial) && agentTodo) {
+              try {
+                require("../agent").setTodo({
+                  messageId: agentTodo.messageId,
+                  accountId: agentTodo.accountId,
+                  status: "done",
+                });
+              } catch { /* the send stands; the todo stays open if the list cannot be saved */ }
+            }
           }
         } else if (status === "partial" && result?.data?.warning) {
           db.noteScheduledWarning(row.id, result.data.warning);
@@ -3899,6 +3958,8 @@ function answer(channel, args, event) {
       })();
     case "mail:searchSender":
       return searchSender(params || {});
+    case "mail:suggestRecipients":
+      return ok({ suggestions: recipientSuggest.list(params && params.query) });
     case "mail:openEmail":
       return (async () => {
         const stored = db.messageById(params && params.emailId);

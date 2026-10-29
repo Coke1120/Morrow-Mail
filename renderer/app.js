@@ -23,6 +23,7 @@ const state = {
   draftId: null,
   draftRevision: null,
   composeSession: 0,
+  agentReplyTodo: null,
   composeAttachments: [],
   composeSuggestions: null,
   composeMeta: null,
@@ -45,6 +46,7 @@ const state = {
   prefs: {
     chips: true,
     aiReply: true,
+    markReadCompletesTodos: false,
     gmailOpen: true,
     outlookOpen: false,
     theme: "light",
@@ -68,6 +70,7 @@ const state = {
   dragFolder: null,
   selectedIds: [],
   selectionAnchor: "",
+  unreadHold: null,
   sync: null,
   syncScopes: new Map(),
   bodySync: null,
@@ -107,9 +110,22 @@ let peekEmail = null;
 let pendingPeekId = "";
 let pendingPeekAccountId = "";
 let reloadTimer = null;
+let undoKind = "";
 let undoOpIds = null;
+let undoItems = null;
+let undoBusy = false;
+let undoEpoch = 0;
+const undoEpochByOp = new Map();
+const undoPending = new Set();
+let undoInflight = null;
+let undoFlightSerial = 0;
+const undoSettleQueue = [];
+const undoSnapshots = new Map();
+let readUndoItems = null;
+let readUndoTimer = 0;
 let undoReceipt = "";
 let undoReceiptError = false;
+const agentReplySelection = new Set();
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
@@ -266,7 +282,8 @@ function expandStatus(pin) {
 function showStatus(text, isError) {
   const el = $("status");
   if (!el) return;
-  const kept = undoOpIds && undoReceipt;
+  if (undoKind === "read" && text !== undoReceipt) clearUndo();
+  const kept = undoKind === "removal" && undoOpIds && undoReceipt;
   el.textContent = kept && text !== undoReceipt ? undoReceipt + (text ? "\n" + text : "") : (text || "");
   statusIsError = !!(isError || (kept && undoReceiptError)) && !!el.textContent;
   if (el.classList) el.classList.toggle("error", statusIsError);
@@ -287,6 +304,9 @@ function statusToggleTarget(event) {
 }
 
 function statusControl(event) {
+  const pop = $("undo-details-popover");
+  const target = event && event.target;
+  if (pop && pop.hidden === false && target && target.nodeType && typeof pop.contains === "function" && pop.contains(target)) return false;
   const button = statusToggleTarget(event);
   if (button && button.id !== "status-chip") return false;
   const status = $("status");
@@ -301,6 +321,7 @@ function statusControl(event) {
 }
 
 function statusDismissPointer(event) {
+  if (undoPopoverOpen() && !eventInsideUndoDetails(event)) closeUndoDetails(false);
   if (!statusExpanded) return false;
   if (event && event.button !== undefined && event.button !== 0) return false;
   const status = $("status");
@@ -312,13 +333,19 @@ function statusDismissPointer(event) {
 }
 
 function statusDismissKey(event) {
-  if (!event || event.key !== "Escape" || !statusExpanded) return false;
+  if (!event || event.key !== "Escape") return false;
   if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return false;
-  const target = event.target;
-  if (target && typeof target.closest === "function" && target.closest("input, textarea, select, [contenteditable='true']")) return false;
   if (typeof document.querySelector === "function" && document.querySelector("dialog[open]")) return false;
   const menu = typeof document.getElementById === "function" ? document.getElementById("organize-menu") : null;
   if (menu && !menu.hidden) return false;
+  if (undoPopoverOpen()) {
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    closeUndoDetails(true);
+    return true;
+  }
+  if (!statusExpanded) return false;
+  const target = event.target;
+  if (target && typeof target.closest === "function" && target.closest("input, textarea, select, [contenteditable='true']")) return false;
   if (typeof event.preventDefault === "function") event.preventDefault();
   collapseStatus();
   return true;
@@ -392,12 +419,68 @@ function storableFolders(folders) {
   return (Array.isArray(folders) ? folders : []).filter((folder) => folder && !isVirtualMailbox(folder));
 }
 
-function visibleList(emails, query, folder) {
+function unreadListActive(view) {
+  const source = view || {};
+  if (source.query || source.outbox) return false;
+  if (source.allInbox === true) return source.unreadOnly === true;
+  const folder = source.folder;
+  return !!(folder && folder.view && folder.view.unread === true);
+}
+
+function unreadHoldKey(view) {
+  if (!unreadListActive(view)) return "";
+  if (view.allInbox === true) return "all";
+  const folderId = (view.folder && view.folder.id) || view.folderId || "";
+  return String(view.accountId || "") + "\0" + String(folderId);
+}
+
+// List membership for one opened unread row. The read flag itself is unchanged.
+function applyUnreadHold(hold, action) {
+  const current = hold && hold.id
+    ? { id: String(hold.id), accountId: String(hold.accountId || ""), key: String(hold.key || "") }
+    : null;
+  const kind = action && action.kind;
+  if (kind === "scope") {
+    const key = unreadHoldKey(action.view);
+    if (!current || current.key !== key) return null;
+    return current;
+  }
+  if (kind === "open") {
+    const key = unreadHoldKey(action.view);
+    if (!key) return null;
+    if (!action.unread) return current && current.key === key ? current : null;
+    const id = String(action.id || "");
+    if (!id) return current && current.key === key ? current : null;
+    if (current && current.id === id && current.key === key) return current;
+    return { id, accountId: String(action.accountId || ""), key };
+  }
+  if (kind === "mark") {
+    if (!current) return null;
+    const ids = action.batch
+      ? (Array.isArray(action.selected) ? action.selected : []).map((id) => String(id || "")).filter(Boolean)
+      : [String(action.id || "")];
+    if (!ids.includes(current.id)) return current;
+    if (action.isRead === false) return null;
+    if (action.batch || action.mailList === false) return null;
+    return current;
+  }
+  if (kind === "refresh") {
+    if (!current) return null;
+    const ids = new Set((Array.isArray(action.ids) ? action.ids : []).map((id) => String(id || "")));
+    return ids.has(current.id) ? current : null;
+  }
+  return current;
+}
+
+function visibleList(emails, query, folder, holdId) {
   const rows = filteredEmails(emails, query);
   const view = folder && folder.view;
   if (!view) return rows;
+  const kept = holdId == null ? "" : String(holdId);
   return rows.filter((email) => {
-    if (view.unread === true && !(email && email.unread)) return false;
+    if (view.unread === true && !(email && email.unread)) {
+      return !!(kept && email && String(email.id) === kept);
+    }
     if (view.flagged === true && !(email && email.isStarred)) return false;
     return true;
   });
@@ -480,6 +563,8 @@ function mailListRequest(view) {
     if (source.searchAccountId) params.accountId = source.searchAccountId;
     return { channel: "mail:searchLocal", params };
   }
+  const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
+  const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
   if (source.allInbox) {
     const params = { folderKey: "primary", limit, offset };
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
@@ -488,11 +573,14 @@ function mailListRequest(view) {
       if (mailboxes.length) params.mailboxes = mailboxes;
     }
     if (source.unreadOnly) params.filterUnread = true;
+    if (retainId) params.retainIds = [retainId];
     return { channel: "mail:listFromCache", params };
   }
+  const params = { accountId: source.accountId, folderId: source.folderId, limit, offset };
+  if (retainId) params.retainIds = [retainId];
   return {
     channel: source.fromNetwork ? "mail:listFromNetwork" : "mail:listFromCache",
-    params: { accountId: source.accountId, folderId: source.folderId, limit, offset },
+    params,
   };
 }
 
@@ -2656,7 +2744,7 @@ function outboxComposeSeed(row, payload) {
   const source = payload && typeof payload === "object" ? payload : {};
   const html = typeof source.body === "string" ? source.body : (row && row.htmlBody) || "";
   const subject = source.subject || (row && row.subject) || "";
-  return {
+  const seed = {
     title: subject || "Message",
     accountId: source.accountId || (row && row.accountId),
     fromAddress: source.fromAddress || (row && row.fromAddress),
@@ -2674,6 +2762,9 @@ function outboxComposeSeed(row, payload) {
     threadId: source.threadId || (row && row.threadId) || "",
     status: "Send canceled. Your draft is ready to edit.",
   };
+  const todo = explicitAgentTodo(source.agentTodo);
+  if (todo) seed.agentTodo = todo;
+  return seed;
 }
 
 function scheduledEmptyCopy() {
@@ -5980,13 +6071,37 @@ function messageRow(email) {
   return row;
 }
 
+function currentUnreadView() {
+  return {
+    query: state.query,
+    outbox: state.outbox,
+    allInbox: state.allInbox,
+    unreadOnly: state.allInboxUnreadOnly,
+    accountId: state.accountId,
+    folderId: state.folderId,
+    folder: state.allInbox || state.outbox ? null : selectedFolderNode(),
+  };
+}
+
+function noteUnreadScope() {
+  state.unreadHold = applyUnreadHold(state.unreadHold, { kind: "scope", view: currentUnreadView() });
+}
+
+function unreadRetainIds() {
+  const hold = state.unreadHold;
+  if (!hold || !hold.id || !unreadListActive(currentUnreadView())) return [];
+  return [String(hold.id)];
+}
+
 function shownEmails() {
   const input = $("list-filter");
-  if (state.outbox) return visibleList(state.emails, input ? input.value : "", null);
+  const query = input ? input.value : "";
+  if (state.outbox) return visibleList(state.emails, query, null);
   const folder = state.allInbox
     ? (state.allInboxUnreadOnly ? { view: { unread: true } } : null)
     : selectedFolderNode();
-  return visibleList(state.emails, input ? input.value : "", folder);
+  const holdId = unreadListActive(currentUnreadView()) && state.unreadHold ? state.unreadHold.id : "";
+  return visibleList(state.emails, query, folder, holdId);
 }
 
 function rememberLoadedSelection() {
@@ -7752,20 +7867,437 @@ async function useAttachment(channel, email, file) {
   showStatus(channel === "mail:downloadAttachment" ? "Saved." : "Opened.");
 }
 
-function showUndo(text, opIds, isError) {
+function clearReadUndoTimer() {
+  if (!readUndoTimer) return;
+  clearTimeout(readUndoTimer);
+  readUndoTimer = 0;
+}
+
+function removalAction(label) {
+  const text = String(label || "").toLowerCase();
+  if (text.includes("trash")) return "trash";
+  if (text.includes("archive")) return "archive";
+  return "move";
+}
+
+function destinationFor(action, explicit) {
+  if (explicit) return String(explicit);
+  if (action === "archive") return "Archive";
+  if (action === "trash") return "Trash";
+  return "";
+}
+
+function emailById(id) {
+  if (id == null || id === "") return null;
+  const key = String(id);
+  const lists = [state.emails, state.thread];
+  if (state.email) lists.push([state.email]);
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    const found = list.find((row) => row && String(row.id) === key);
+    if (found) return found;
+  }
+  return null;
+}
+
+function rememberUndoSnapshots(messages, action, destinationLabel) {
+  const dest = destinationFor(action, destinationLabel);
+  for (const email of messages || []) {
+    if (!email || email.id == null || email.id === "") continue;
+    undoSnapshots.set(String(email.id), {
+      messageId: String(email.id),
+      accountId: email.accountId || "",
+      subject: email.subject || "(No subject)",
+      from: email.from || email.fromAddress || "",
+      action: action || "move",
+      destinationLabel: dest,
+    });
+  }
+}
+
+function snapshotEmails(ids, extra) {
+  const out = [];
+  const seen = new Set();
+  const add = (email) => {
+    if (!email || email.id == null || email.id === "") return;
+    const key = String(email.id);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(email);
+  };
+  for (const email of (extra && extra.messages) || []) add(email);
+  for (const id of ids || []) add(emailById(id));
+  return out;
+}
+
+function normalizeUndoItem(item) {
+  const source = item || {};
+  const snap = source.messageId ? undoSnapshots.get(String(source.messageId)) : null;
+  const action = source.action || (snap && snap.action) || "move";
+  return {
+    opId: source.opId,
+    messageId: source.messageId || (snap && snap.messageId) || "",
+    accountId: source.accountId || (snap && snap.accountId) || "",
+    subject: source.subject || (snap && snap.subject) || "(No subject)",
+    from: source.from || (snap && snap.from) || "",
+    action,
+    destinationLabel: source.destinationLabel || (snap && snap.destinationLabel) || destinationFor(action, ""),
+  };
+}
+
+function undoListFor(opIds, items) {
+  if (!opIds) return null;
+  const byOp = new Map();
+  const source = Array.isArray(items) ? items : (undoItems || []);
+  for (const item of source) {
+    if (item && item.opId) byOp.set(item.opId, item);
+  }
+  return opIds.map((opId) => normalizeUndoItem(byOp.get(opId) || { opId }));
+}
+
+function undoItemsForOutcomes(outcome) {
+  const items = [];
+  const seen = new Set();
+  for (const row of (outcome && outcome.outcomes) || []) {
+    if (!row || row.status !== "completed" || !row.opId || seen.has(row.opId)) continue;
+    if (row.kind && row.kind !== "remove") continue;
+    seen.add(row.opId);
+    const snap = undoSnapshots.get(String(row.id)) || {};
+    items.push(normalizeUndoItem({
+      opId: row.opId,
+      messageId: row.id || snap.messageId || "",
+      accountId: snap.accountId || "",
+      subject: snap.subject || "",
+      from: snap.from || "",
+      action: snap.action || "",
+      destinationLabel: snap.destinationLabel || "",
+    }));
+  }
+  return items;
+}
+
+function undoRetriesByEpoch(batch) {
+  const live = [];
+  const stale = [];
+  for (const item of undoRetryItems(batch)) {
+    if (undoEpochByOp.get(item.opId) === undoEpoch) live.push(item);
+    else stale.push(item);
+  }
+  return { live, stale };
+}
+
+function rememberUndoEpoch(opIds) {
+  for (const id of opIds || []) {
+    if (id && !undoEpochByOp.has(id)) undoEpochByOp.set(id, undoEpoch);
+  }
+}
+
+function startRemovalSession(text, opIds, isError, items) {
+  undoEpoch += 1;
+  undoInflight = null;
+  undoPending.clear();
+  showUndo(text, opIds, isError, items);
+}
+
+function showRemovalUndo(text, opIds, isError, items) {
+  const ids = opIds || [];
+  const sameEpoch = ids.length > 0 && ids.every((id) => undoEpochByOp.get(id) === undoEpoch);
+  if (sameEpoch) showUndo(text, ids, isError, items);
+  else startRemovalSession(text, ids, isError, items);
+}
+
+function inflightUndoRow(row) {
+  if (!undoInflight || !row) return false;
+  if (row.retryOpId && undoInflight.opIds.has(row.retryOpId)) return true;
+  return row.kind === "undo" && row.id != null && undoInflight.messages.has(String(row.id));
+}
+
+function settleUndoInflight(batch) {
+  if (!undoInflight || undoInflight.epoch !== undoEpoch) return false;
+  const rows = ((batch && batch.outcomes) || []).filter(inflightUndoRow);
+  if (!rows.length) return false;
+  const requested = [...undoInflight.opIds];
+  const retained = new Set(retainedUndoOpIds(requested, rows, undoItems));
+  const resolved = new Set();
+  for (const row of rows) {
+    const opId = row.retryOpId || ((undoItems || []).find((item) => item && String(item.messageId) === String(row.id)) || {}).opId;
+    if (opId && undoInflight.opIds.has(opId)) resolved.add(opId);
+  }
+  for (const id of resolved) undoPending.delete(id);
+  for (const id of resolved) undoInflight.opIds.delete(id);
+  if (!undoInflight.opIds.size) undoInflight = null;
+  else undoInflight.settled = true;
+  const kept = (undoItems || []).filter((item) => !requested.includes(item.opId) || retained.has(item.opId));
+  const receipt = receiptText("Restore", { outcomes: rows });
+  const incomplete = rows.some((row) => row && row.status !== "completed");
+  if (!kept.length) {
+    clearUndo();
+    showStatus(receipt, incomplete);
+  } else {
+    undoKind = "removal";
+    undoOpIds = kept.map((item) => item.opId);
+    undoItems = kept;
+    undoReceiptError = undoReceiptError || incomplete;
+    paintUndoControls();
+    showStatus(receipt, incomplete);
+  }
+  return true;
+}
+
+function applyRemovalSettlement(batch, receipt, bad) {
+  if (!batch || !Array.isArray(batch.opIds) || !batch.opIds.length) {
+    if (bad) showStatus(receipt, true);
+    return;
+  }
+  const current = $("status") && $("status").textContent;
+  const text = bad || !current ? receipt : current;
+  const { live } = undoRetriesByEpoch(batch);
+  if (live.length && undoKind === "removal" && undoOpIds && undoOpIds.length) {
+    const merged = (undoItems || []).slice();
+    const have = new Set(merged.map((item) => item.opId));
+    for (const item of live) if (!have.has(item.opId)) merged.push(item);
+    showUndo(text, merged.map((item) => item.opId), true, merged);
+  } else if (live.length) {
+    showUndo(text, live.map((item) => item.opId), true, live);
+  } else {
+    const built = undoItemsForOutcomes(batch);
+    showRemovalUndo(text, batch.opIds, bad, built.length ? built : undefined);
+  }
+}
+
+function flushUndoSettleQueue() {
+  const queued = undoSettleQueue.splice(0);
+  for (const batch of queued) applyActionSettlement(batch);
+}
+
+function undoRetryItems(batch) {
+  const items = [];
+  const seen = new Set();
+  for (const row of (batch && batch.outcomes) || []) {
+    if (!row || !row.retryOpId || seen.has(row.retryOpId)) continue;
+    if (row.kind && row.kind !== "undo") continue;
+    seen.add(row.retryOpId);
+    const prior = (undoItems || []).find((item) => item && item.opId === row.retryOpId);
+    if (prior) {
+      items.push(prior);
+      continue;
+    }
+    const snap = undoSnapshots.get(String(row.id)) || {};
+    items.push(normalizeUndoItem({
+      opId: row.retryOpId,
+      messageId: snap.messageId || "",
+      accountId: snap.accountId || "",
+      subject: snap.subject || "",
+      from: snap.from || "",
+      action: snap.action || "",
+      destinationLabel: snap.destinationLabel || "",
+    }));
+  }
+  return items;
+}
+
+function rememberUndoItems(items) {
+  for (const item of items || []) {
+    if (!item || !item.messageId) continue;
+    undoSnapshots.set(String(item.messageId), {
+      messageId: String(item.messageId),
+      accountId: item.accountId || "",
+      subject: item.subject || "(No subject)",
+      from: item.from || "",
+      action: item.action || "move",
+      destinationLabel: item.destinationLabel || "",
+    });
+  }
+}
+
+function undoPopoverOpen() {
+  const pop = $("undo-details-popover");
+  return !!(pop && pop.hidden === false);
+}
+
+function eventInsideUndoDetails(event) {
+  const target = event && event.target;
+  if (!target || !target.nodeType) return false;
+  const pop = $("undo-details-popover");
+  const button = $("undo-details");
+  if (pop && typeof pop.contains === "function" && pop.contains(target)) return true;
+  if (button && typeof button.contains === "function" && button.contains(target)) return true;
+  return target === button;
+}
+
+function closeUndoDetails(restoreFocus) {
+  const pop = $("undo-details-popover");
+  if (pop) pop.hidden = true;
+  const button = $("undo-details");
+  if (!button) return;
+  if (typeof button.setAttribute === "function") button.setAttribute("aria-expanded", "false");
+  if (restoreFocus && typeof button.focus === "function") button.focus();
+}
+
+function paintUndoSelectedCount() {
+  const button = $("undo-details-selected");
+  const list = $("undo-details-list");
+  if (!button) return;
+  const boxes = list && typeof list.querySelectorAll === "function" ? list.querySelectorAll('input[type="checkbox"]') : [];
+  let count = 0;
+  for (const box of boxes) if (box.checked) count += 1;
+  button.textContent = "Undo selected (" + count + ")";
+  button.disabled = count === 0 || !!undoBusy;
+}
+
+function paintUndoDetails() {
+  const list = $("undo-details-list");
+  if (!list || typeof list.replaceChildren !== "function" || typeof document.createElement !== "function") return;
+  list.replaceChildren();
+  for (const item of undoItems || []) {
+    const li = document.createElement("li");
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = item.opId;
+    box.setAttribute("aria-label", item.subject || "(No subject)");
+    box.addEventListener("change", paintUndoSelectedCount);
+    const text = document.createElement("span");
+    text.className = "undo-details-copy";
+    const subject = document.createElement("span");
+    subject.className = "undo-details-subject";
+    subject.textContent = item.subject || "(No subject)";
+    const meta = document.createElement("span");
+    meta.className = "undo-details-meta";
+    const action = item.action || "move";
+    const where = item.destinationLabel ? " → " + item.destinationLabel : "";
+    meta.textContent = [item.from, action + where].filter(Boolean).join(" · ");
+    text.append(subject, meta);
+    label.append(box, text);
+    li.appendChild(label);
+    list.appendChild(li);
+  }
+  paintUndoSelectedCount();
+}
+
+function setUndoDetailChecks(on) {
+  const list = $("undo-details-list");
+  if (!list || typeof list.querySelectorAll !== "function") return;
+  for (const box of list.querySelectorAll('input[type="checkbox"]')) box.checked = !!on;
+  paintUndoSelectedCount();
+}
+
+function selectedUndoOpIds() {
+  const list = $("undo-details-list");
+  if (!list || typeof list.querySelectorAll !== "function") return [];
+  const ids = [];
+  for (const box of list.querySelectorAll('input[type="checkbox"]')) {
+    if (box.checked && box.value) ids.push(box.value);
+  }
+  return ids;
+}
+
+function openUndoDetails() {
+  if (undoBusy || undoKind !== "removal" || !undoOpIds || !undoOpIds.length) return;
+  const pop = $("undo-details-popover");
+  if (!pop) return;
+  if (pop.hidden === false) {
+    closeUndoDetails(true);
+    return;
+  }
+  paintUndoDetails();
+  pop.hidden = false;
+  const button = $("undo-details");
+  if (button && typeof button.setAttribute === "function") button.setAttribute("aria-expanded", "true");
+  const first = typeof pop.querySelector === "function" ? pop.querySelector("button, input") : null;
+  if (first && typeof first.focus === "function") first.focus();
+}
+
+function paintUndoControls() {
+  const undo = $("undo");
+  const details = $("undo-details");
+  const count = undoKind === "removal" && undoOpIds ? undoOpIds.length : 0;
+  const pendingAll = count > 0 && undoOpIds.every((id) => undoPending.has(id));
+  if (undo && undoKind === "removal") {
+    undo.hidden = !count;
+    undo.disabled = !!undoBusy || pendingAll;
+    undo.textContent = "Undo " + count + " completed changes";
+  }
+  if (details) {
+    details.hidden = !count;
+    details.disabled = !!undoBusy || !count;
+    if (!count && typeof details.setAttribute === "function") details.setAttribute("aria-expanded", "false");
+  }
+  if (!count) closeUndoDetails(false);
+  else if (undoPopoverOpen()) paintUndoDetails();
+}
+
+function showUndo(text, opIds, isError, items) {
+  clearReadUndoTimer();
+  const nextIds = opIds && opIds.length ? opIds.slice() : null;
+  const same = undoKind === "removal" && undoOpIds && nextIds && undoOpIds.join("\0") === nextIds.join("\0");
+  if (!same) closeUndoDetails(false);
+  undoKind = "removal";
+  readUndoItems = null;
   undoReceipt = text;
   undoReceiptError = !!isError;
-  undoOpIds = opIds && opIds.length ? opIds.slice() : null;
-  $("undo").hidden = !undoOpIds;
-  $("undo").textContent = "Undo " + (undoOpIds ? undoOpIds.length : 0) + " completed changes";
+  undoOpIds = nextIds;
+  undoItems = undoListFor(nextIds, items);
+  rememberUndoEpoch(nextIds);
+  rememberUndoItems(undoItems);
+  paintUndoControls();
   showStatus(text, isError);
 }
 
-function clearUndo() {
+function showReadUndo(text, items) {
+  if (undoKind === "removal" && undoOpIds && undoOpIds.length) {
+    showStatus(text);
+    return;
+  }
+  clearReadUndoTimer();
+  closeUndoDetails(false);
+  undoKind = "read";
   undoOpIds = null;
+  undoItems = null;
+  readUndoItems = (items || []).slice();
+  undoReceipt = text || "";
+  undoReceiptError = false;
+  const undo = $("undo");
+  if (undo) {
+    undo.hidden = !readUndoItems.length;
+    undo.disabled = false;
+    undo.textContent = "Undo";
+  }
+  const details = $("undo-details");
+  if (details) {
+    details.hidden = true;
+    details.disabled = false;
+  }
+  showStatus(text);
+  readUndoTimer = armStatusTimer(() => {
+    readUndoTimer = 0;
+    if (undoKind === "read") clearUndo();
+  }, STATUS_SUCCESS_DWELL_MS);
+}
+
+function clearUndo() {
+  clearReadUndoTimer();
+  undoKind = "";
+  undoOpIds = null;
+  undoItems = null;
+  undoPending.clear();
+  undoInflight = null;
+  readUndoItems = null;
   undoReceipt = "";
   undoReceiptError = false;
-  $("undo").hidden = true;
+  closeUndoDetails(false);
+  const undo = $("undo");
+  if (undo) {
+    undo.hidden = true;
+    undo.disabled = false;
+  }
+  const details = $("undo-details");
+  if (details) {
+    details.hidden = true;
+    details.disabled = false;
+    if (typeof details.setAttribute === "function") details.setAttribute("aria-expanded", "false");
+  }
 }
 
 function focusAction(name) {
@@ -7866,10 +8398,23 @@ function applyActionSettlement(batch) {
   }
   const bad = outcomes.some((row) => row.status && row.status !== "completed");
   const receipt = receiptText("Mailbox", { outcomes });
-  if (batch && Array.isArray(batch.opIds) && batch.opIds.length) {
-    const current = $("status") && $("status").textContent;
-    showUndo(bad || !current ? receipt : current, batch.opIds, bad);
-  } else if (bad) showStatus(receipt, true);
+  if (settleUndoInflight(batch)) {
+    if (moved) loadList(false).catch(() => {});
+    return;
+  }
+  const retrySplit = undoRetriesByEpoch(batch);
+  // A retry from an older removal must not join or revive the current session.
+  if (retrySplit.stale.length && !retrySplit.live.length) {
+    if (bad && !undoBusy) showStatus(receipt, true);
+    if (moved) loadList(false).catch(() => {});
+    return;
+  }
+  if (undoBusy) {
+    undoSettleQueue.push(batch);
+    if (moved) loadList(false).catch(() => {});
+    return;
+  }
+  applyRemovalSettlement(batch, receipt, bad);
   if (moved) loadList(false).catch(() => {});
 }
 
@@ -7898,6 +8443,17 @@ async function setRead(email, isRead) {
     return setRead(email, isRead);
   }
   const previous = !!email.unread;
+  const priorHold = state.unreadHold || null;
+  // check-mail-reader evals setRead without the hold helpers.
+  if (typeof applyUnreadHold === "function") {
+    state.unreadHold = applyUnreadHold(priorHold, {
+      kind: "mark",
+      id: email.id,
+      isRead: !!isRead,
+      batch: false,
+      mailList: state.view === "mail",
+    });
+  }
   const paint = (unread) => {
     eachStarRow(email, (row) => { row.unread = unread; row.isRead = !unread; });
     renderList();
@@ -7913,7 +8469,11 @@ async function setRead(email, isRead) {
     }
     paint(!isRead);
   }
-  catch (error) { paint(previous); throw error; }
+  catch (error) {
+    if (typeof applyUnreadHold === "function") state.unreadHold = priorHold;
+    paint(previous);
+    throw error;
+  }
   finally { if (readWrites.get(email.id) === write) readWrites.delete(email.id); }
   await settleOpenView();
 }
@@ -7936,13 +8496,17 @@ async function replyFromList(email, kind) {
   await presentCompose(composeSeed(opened, kind, self));
 }
 
-async function finishRemoval(email, label, data) {
+async function finishRemoval(email, label, data, destinationLabel) {
   const outcomes = receiptRows(data, { params: { emailId: email.id } });
   return finishBulkRemoval(label, {
     outcomes,
     opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId),
     error: outcomes.some((row) => row.status !== "completed") ? "Some changes could not be verified." : "",
-  }, [email.id]);
+  }, [email.id], {
+    messages: [email],
+    action: removalAction(label),
+    destinationLabel,
+  });
 }
 
 
@@ -7951,7 +8515,10 @@ async function removeOpen(email, channel, label) {
   const review = await reviewedRemoval([withSelectionMembers(email)], kind);
   const answer = await askConfirm(bulkConfirmCopy(kind, review.rows.length, review.detail));
   if (!answer || !answer.ok) return;
-  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls), review.rows.map((row) => row.id));
+  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls), review.rows.map((row) => row.id), {
+    messages: review.rows,
+    action: kind === "trash" ? "trash" : "archive",
+  });
 }
 
 async function archiveOpen(email) {
@@ -7992,23 +8559,170 @@ async function moveOpen(email, targetFolderId) {
     accountId: email.accountId,
     targetFolderId,
     folderId: email.folderId,
-  }));
+  }), target);
 }
 
-async function undoRemoval() {
-  const opIds = undoOpIds;
-  if (!opIds || !opIds.length) return;
-  const prior = undoReceipt || $("status").textContent;
+async function undoReadBatch() {
+  const items = readUndoItems && readUndoItems.slice();
+  if (undoKind !== "read" || !items || !items.length) return;
   clearUndo();
   try {
+    const data = await call("mail:markReadBatch", {
+      isRead: false,
+      restoreRead: true,
+      items: items.map((row) => ({ emailId: row.emailId, accountId: row.accountId, generation: row.generation })),
+    });
+    if (typeof rememberActionGeneration === "function") {
+      rememberActionGeneration(data && data.pending);
+      rememberActionGeneration(data && data.outcomes);
+    }
+    const restored = new Set();
+    for (const row of (data && data.outcomes) || []) {
+      if (row && row.id && row.status === "completed") restored.add(row.id);
+    }
+    for (const row of (data && data.pending) || []) {
+      if (row && row.id) restored.add(row.id);
+    }
+    for (const section of agentSections(agentPaintPayload)) {
+      for (const item of section.items || []) {
+        if (!item || !restored.has(item.messageId)) continue;
+        item.unread = true;
+        agentMarkedRead.delete(String(item.messageId));
+      }
+    }
+    if (restored.size && state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
+    showStatus(restored.size ? "Restored unread." : "Those messages changed later. Unread was left as it is.");
+  } catch (error) {
+    showStatus("Restore outcome is unknown. " + (error.message || String(error)) + " Refresh before retrying.", true);
+  }
+}
+
+function retainedUndoOpIds(requested, outcomes, items) {
+  const rows = Array.isArray(outcomes) ? outcomes : [];
+  if (!rows.length) return [];
+  const itemByMessage = new Map();
+  for (const item of items || []) {
+    if (item && item.opId && item.messageId) itemByMessage.set(String(item.messageId), item.opId);
+  }
+  const failed = new Set();
+  const completed = new Set();
+  for (const row of rows) {
+    if (!row) continue;
+    if (row.status === "completed") {
+      if (row.id && itemByMessage.has(String(row.id))) completed.add(itemByMessage.get(String(row.id)));
+      continue;
+    }
+    const opId = row.retryOpId
+      || (row.id && itemByMessage.get(String(row.id)))
+      || (requested.length === 1 ? requested[0] : "");
+    if (opId) failed.add(opId);
+  }
+  if (failed.size) return requested.filter((opId) => failed.has(opId));
+  const completedCount = rows.filter((row) => row && row.status === "completed").length;
+  if (completedCount === rows.length && (completed.size === requested.length || (!completed.size && rows.length === requested.length) || requested.length === 1)) {
+    return [];
+  }
+  if (completed.size) return requested.filter((opId) => !completed.has(opId));
+  return requested.slice();
+}
+
+async function undoRemoval(requested) {
+  if (undoBusy) return;
+  if (undoKind === "read") return undoReadBatch();
+  const opIds = (Array.isArray(requested) && requested.length
+    ? requested.filter((id) => (undoOpIds || []).includes(id))
+    : (undoOpIds || []).slice()
+  ).filter((id) => !undoPending.has(id));
+  if (!opIds.length) return;
+  const prior = undoReceipt || (($("status") && $("status").textContent) || "");
+  const previousItems = (undoItems || []).slice();
+  const previousError = undoReceiptError;
+  const epoch = undoEpoch;
+  const serial = ++undoFlightSerial;
+  const messages = new Set();
+  for (const item of previousItems) {
+    if (item && opIds.includes(item.opId) && item.messageId) messages.add(String(item.messageId));
+  }
+  for (const id of opIds) undoPending.add(id);
+  undoInflight = { epoch, serial, opIds: new Set(opIds), messages };
+  undoBusy = true;
+  closeUndoDetails(false);
+  paintUndoControls();
+  let applied = false;
+  try {
     const data = await call("mail:undoRemoval", { opIds, kind: "move" });
-    const outcomes = data && Array.isArray(data.outcomes) ? data.outcomes : [{ status: "unknown" }];
-    const incomplete = outcomes.some((row) => row.status !== "completed");
-    showStatus(prior + " " + receiptText("Restore", { outcomes }), incomplete);
+    if (epoch !== undoEpoch) return;
+    const stillPending = undoInflight && undoInflight.serial === serial && !undoInflight.settled;
+    const hasOutcomes = !!(data && Array.isArray(data.outcomes));
+    const outcomes = hasOutcomes ? data.outcomes : null;
+    // An empty outcome list is still in flight. mail:actionsSettled decides which rows remain.
+    if (stillPending && hasOutcomes && !outcomes.length) {
+      applied = true;
+      undoKind = "removal";
+      undoOpIds = previousItems.map((item) => item.opId);
+      undoItems = previousItems;
+      undoReceipt = prior;
+      undoReceiptError = previousError;
+      paintUndoControls();
+      showStatus(prior);
+    } else if (stillPending && !hasOutcomes) {
+      for (const id of opIds) undoPending.delete(id);
+      undoInflight = null;
+      applied = true;
+      undoKind = "removal";
+      undoOpIds = previousItems.map((item) => item.opId);
+      undoItems = previousItems;
+      undoReceipt = prior;
+      undoReceiptError = true;
+      paintUndoControls();
+      showStatus(prior + " Restore outcome is unknown. Refresh before retrying.", true);
+    } else if (stillPending) {
+      for (const id of opIds) undoPending.delete(id);
+      undoInflight = null;
+      const failed = new Set(retainedUndoOpIds(opIds, outcomes, previousItems));
+      const kept = previousItems.filter((item) => !opIds.includes(item.opId) || failed.has(item.opId));
+      const receipt = receiptText("Restore", { outcomes });
+      const incomplete = outcomes.some((row) => row && row.status !== "completed");
+      applied = true;
+      if (!kept.length) {
+        clearUndo();
+        showStatus(prior + " " + receipt, incomplete);
+      } else {
+        undoKind = "removal";
+        undoOpIds = kept.map((item) => item.opId);
+        undoItems = kept;
+        undoReceipt = prior;
+        undoReceiptError = previousError || incomplete;
+        paintUndoControls();
+        showStatus(receipt, incomplete);
+      }
+    } else applied = true;
     await loadList();
   } catch (error) {
-    showStatus(prior + " Restore outcome is unknown. " + error.message + " Refresh before retrying.", true);
+    if (epoch === undoEpoch && !applied) {
+      for (const id of opIds) undoPending.delete(id);
+      if (undoInflight && undoInflight.serial === serial) undoInflight = null;
+      undoKind = "removal";
+      undoOpIds = previousItems.map((item) => item.opId);
+      undoItems = previousItems;
+      undoReceipt = prior;
+      undoReceiptError = previousError;
+      paintUndoControls();
+    }
+    const message = error && error.message ? error.message : String(error);
+    showStatus(prior + " Restore outcome is unknown. " + message + " Refresh before retrying.", true);
+  } finally {
+    undoBusy = false;
+    flushUndoSettleQueue();
+    paintUndoControls();
   }
+}
+
+async function undoSelected() {
+  if (undoBusy) return;
+  const ids = selectedUndoOpIds();
+  if (!ids.length) return;
+  await undoRemoval(ids);
 }
 
 async function snoozeOpen(email, preset) {
@@ -8183,6 +8897,7 @@ function noteMailListLoaded(gen) {
 
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
+  noteUnreadScope();
   const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
   if (state.listScope !== scope) {
     state.listScope = scope;
@@ -8217,6 +8932,7 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
+    const retainIds = unreadRetainIds();
     const request = mailListRequest({
       allInbox: state.allInbox,
       unreadOnly: state.allInbox && state.allInboxUnreadOnly,
@@ -8224,6 +8940,7 @@ async function loadList(fromNetwork, requestedOffset) {
       accountId: account && account.id,
       folderId: state.folderId,
       accounts: state.accounts,
+      retainIds,
       limit: LIST_PAGE_SIZE,
       offset,
     });
@@ -8238,6 +8955,7 @@ async function loadList(fromNetwork, requestedOffset) {
         accountId: account && account.id,
         folderId: state.folderId,
         accounts: state.accounts,
+        retainIds,
         limit: LIST_PAGE_SIZE,
         offset,
       });
@@ -8246,6 +8964,12 @@ async function loadList(fromNetwork, requestedOffset) {
     }
     state.listOffset = offset;
     state.emails = takeEmails((data && data.emails) || []);
+    if (unreadListActive(currentUnreadView())) {
+      state.unreadHold = applyUnreadHold(state.unreadHold, {
+        kind: "refresh",
+        ids: state.emails.map((row) => row && row.id),
+      });
+    }
     state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
     state.listSyncDone = data?.initialSyncDone !== false;
     if (!state.allInbox && data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
@@ -8894,7 +9618,7 @@ async function applyLabelPlans(snapshot) {
     if (!completed.has(String(plan.email.id))) continue;
     stampLabelIds(plan.email, snapshot.labels, plan.addLabelIds, plan.removeLabelIds);
   }
-  if (removes) await finishBulkRemoval("Labels", outcome, messages.map((row) => row.id));
+  if (removes) await finishBulkRemoval("Labels", outcome, messages.map((row) => row.id), { messages, action: "move" });
   else showStatus(receiptText("Labels", outcome), !!outcome.error);
 }
 
@@ -9203,7 +9927,9 @@ async function runBulk(calls) {
   return outcome;
 }
 
-async function finishBulkRemoval(label, outcome, ids) {
+async function finishBulkRemoval(label, outcome, ids, extra) {
+  const action = (extra && extra.action) || removalAction(label);
+  rememberUndoSnapshots(snapshotEmails(ids, extra), action, extra && extra.destinationLabel);
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => row.id));
   if (state.email && completed.has(state.email.id)) {
     state.email = null;
@@ -9213,7 +9939,7 @@ async function finishBulkRemoval(label, outcome, ids) {
   state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
   const text = receiptText(label, outcome);
   const waiting = (outcome.outcomes || []).some((row) => row.phase === "accepted");
-  if (outcome.opIds.length) showUndo(text, outcome.opIds, !!outcome.error);
+  if (outcome.opIds.length) showRemovalUndo(text, outcome.opIds, !!outcome.error, undoItemsForOutcomes(outcome));
   else if (waiting) showStatus(text, !!outcome.error);
   else { clearUndo(); showStatus(text, !!outcome.error); }
   if (completed.size) await loadList();
@@ -9228,7 +9954,10 @@ async function bulkArchive() {
   const gated = confirmedCalls("archive", answer, review.calls, review.detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  await finishBulkRemoval("Archive", outcome, messages.map((item) => item.id));
+  await finishBulkRemoval("Archive", outcome, review.rows.map((item) => item.id), {
+    messages: review.rows,
+    action: "archive",
+  });
 }
 
 async function bulkTrash() {
@@ -9239,12 +9968,24 @@ async function bulkTrash() {
   const gated = confirmedCalls("trash", answer, review.calls, review.detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  await finishBulkRemoval("Move to Trash", outcome, messages.map((item) => item.id));
+  await finishBulkRemoval("Move to Trash", outcome, review.rows.map((item) => item.id), {
+    messages: review.rows,
+    action: "trash",
+  });
 }
 
 async function bulkSetRead(isRead) {
   const messages = selectedMessages();
   if (!messages.length || refusePaused(messages)) return;
+  const priorHold = state.unreadHold || null;
+  if (typeof applyUnreadHold === "function") {
+    state.unreadHold = applyUnreadHold(priorHold, {
+      kind: "mark",
+      batch: true,
+      isRead: !!isRead,
+      selected: messages.map((row) => row && row.id),
+    });
+  }
   const previous = new Map(messages.map((email) => [email.id, !!email.unread]));
   for (const email of messages) {
     eachStarRow(email, (row) => { row.unread = !isRead; row.isRead = !!isRead; });
@@ -9257,6 +9998,7 @@ async function bulkSetRead(isRead) {
     const unread = previous.get(email.id) === true;
     eachStarRow(email, (row) => { row.unread = unread; row.isRead = !unread; });
   }
+  if (priorHold && priorHold.id && !completed.has(String(priorHold.id))) state.unreadHold = priorHold;
   renderList();
   renderReader(false);
   showStatus(receiptText(isRead ? "Mark read" : "Mark unread", outcome), !!outcome.error);
@@ -9328,7 +10070,11 @@ async function applyBulkMove(messages, target, targetName) {
   }
   const count = callCount(gated);
   const label = action === "move" ? "Move" : "Remove label";
-  await finishBulkRemoval(label, outcome, acted);
+  await finishBulkRemoval(label, outcome, acted, {
+    messages: rows,
+    action: "move",
+    destinationLabel: name,
+  });
 }
 
 async function applyPickedMove(messages, kind, destinationId, name) {
@@ -9445,6 +10191,9 @@ function onSelectionKey(event) {
   const menuOpen = menu && !menu.hidden;
   if (event.key === "Escape") {
     if (menuOpen || document.querySelector("dialog[open]")) return;
+    // Details is a role=dialog popover, not a <dialog>. Close it without clearing the mailbox selection.
+    if (undoPopoverOpen()) return;
+    if (event.target && typeof event.target.closest === "function" && event.target.closest("[role='dialog']")) return;
     const typing = event.target && event.target.closest && event.target.closest("input, textarea, select");
     if (selectionShortcut({ key: "Escape" }, !!typing) !== "clear") return;
     if (!state.selectedIds.length) return;
@@ -9836,6 +10585,7 @@ async function selectOutbox() {
   state.outbox = true;
   state.allInbox = false;
   state.allInboxUnreadOnly = false;
+  noteUnreadScope();
   state.query = "";
   const search = $("search-query");
   if (search) search.value = "";
@@ -10159,6 +10909,7 @@ function paintReaderPending(email) {
 
 async function openMessage(emailId, focus, full = false) {
   const known = listedMessage(emailId);
+  const openedUnread = !!(known && known.unread);
   if (known && known.outbox) {
     invalidateReaderOpen();
     state.email = known;
@@ -10214,6 +10965,13 @@ async function openMessage(emailId, focus, full = false) {
   noteBody(email);
   state.email = preferBody(email);
   state.thread = state.prefs.conversation === false ? [] : threadMembers(fromOpen, listed);
+  state.unreadHold = applyUnreadHold(state.unreadHold, {
+    kind: "open",
+    view: currentUnreadView(),
+    id: email.id,
+    accountId: email.accountId,
+    unread: openedUnread,
+  });
   renderReader(focus !== false);
   renderList();
   pumpBodyRefreshes();
@@ -10316,6 +11074,7 @@ function onAccountsUpdated(payload) {
       inReplyTo: seed.inReplyTo || "",
       threadId: seed.threadId || "",
       status: message,
+      ...(explicitAgentTodo(seed.agentTodo) ? { agentTodo: explicitAgentTodo(seed.agentTodo) } : {}),
     }).catch(() => {});
     showStatus(message, true);
   }
@@ -10942,6 +11701,7 @@ function syncCompose() {
   paintComposeAttachments();
   paintComposeNote();
   paintComposeAi();
+  if (recipientSuggestInput && (recipientSuggestInput.disabled || recipientSuggestInput.readOnly)) hideRecipientSuggest();
 }
 
 function paintComposeNote() {
@@ -12627,8 +13387,11 @@ async function openCompose(seed) {
     return;
   }
   if ($("compose").open && !(await requestComposeClose())) return;
+  hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
+  const replySession = state.composeSession;
+  state.agentReplyTodo = explicitAgentTodo(fields.agentTodo);
   state.composeInitializing = true;
   state.composeIdentityError = false;
   state.composeIdentity = null;
@@ -12691,6 +13454,12 @@ async function openCompose(seed) {
   }
   const initial = composeSnapshot();
   await Promise.all([fields.partialReceipt ? Promise.resolve() : fillSignatures(!!fields.draftId), loadScheduled()]);
+  if (replySession === state.composeSession && !state.agentReplyTodo && freshReplyTodoSeed(fields)) {
+    try {
+      const target = await call("nativeAgent:home:replyTarget", freshReplyTodoSeed(fields));
+      if (replySession === state.composeSession) state.agentReplyTodo = explicitAgentTodo(target);
+    } catch { /* the reply can still send; this todo stays open */ }
+  }
   state.composeInitializing = false;
   if (fields.partialReceipt) {
     state.composeQueued = true;
@@ -13051,6 +13820,7 @@ async function editScheduledMail(row) {
     schedulePreset: "custom",
     scheduleAt: vacationLocalValue(draft.sendAt),
     status: draft.warning || "Removed from queue; local draft saved. Review and choose a future time, then Schedule send.",
+    ...(explicitAgentTodo(draft.agentTodo) ? { agentTodo: explicitAgentTodo(draft.agentTodo) } : {}),
   };
   try {
     await resumeDraft({ id: draft.emailId, accountId: draft.accountId }, handoff);
@@ -13090,7 +13860,8 @@ async function scheduleMail(whenOverride, reviewedPayload) {
   if (!when || when.getTime() <= Date.now() + 1000) { setComposeStatus("Pick a time in the future.", true); $("schedule-at").focus(); return false; }
   return composeOperation(async () => {
     setComposeStatus("Scheduling…");
-    await call("mail:scheduleSend", { ...(reviewedPayload || composePayload(account)), sendAt: when.toISOString() });
+    await call("mail:scheduleSend", { ...withAgentReplyTodo(reviewedPayload || composePayload(account)), sendAt: when.toISOString() });
+    state.agentReplyTodo = null;
     state.composeQueued = true;
     $("compose-title").textContent = "Scheduled receipt";
     // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
@@ -13316,6 +14087,7 @@ async function deliverMail(payload, session = state.composeSession) {
       return;
     }
     if (!ownsCompose()) { showStatus(result?.warning || "Sent.", !!result?.warning); return; }
+    await finishAgentReplyTodo(session);
     state.draftId = null;
     state.draftRevision = null;
     state.composeBaseline = composeSnapshot();
@@ -13381,7 +14153,7 @@ async function sendMail(reviewedPayload) {
     $("compose-to").focus();
     return;
   }
-  const payload = reviewedPayload || composePayload(account);
+  const payload = withAgentReplyTodo(reviewedPayload || composePayload(account));
   const session = state.composeSession;
   const delay = sendDelayMs(state.prefs.undoSend);
   if (!delay) { await deliverMail(payload, session); return; }
@@ -13391,6 +14163,7 @@ async function sendMail(reviewedPayload) {
   try {
     await call("mail:scheduleSend", { ...payload, sendAt: new Date(Date.now() + delay).toISOString(), outbox: true });
     queued = true;
+    state.agentReplyTodo = null;
     state.composeQueued = true;
     state.composeBaseline = composeSnapshot();
   } catch (error) {
@@ -14357,6 +15130,7 @@ const SHELL_PREFS = {
   "morrow:configGetCompactMessageList": "compactList",
   "morrow:configGetShowFolderChips": "chips",
   "morrow:configGetAiWriteAutoOpenOnReply": "aiReply",
+  "morrow:configGetMarkReadCompletesAgentTodos": "markReadCompletesTodos",
   "morrow:configGetSidebarGmailFoldersExpanded": "gmailOpen",
   "morrow:configGetSidebarOutlookFoldersExpanded": "outlookOpen",
 };
@@ -14608,6 +15382,7 @@ function prefRows() {
     ["pref-compact-list", "morrow:configGetCompactMessageList", "morrow:configSetCompactMessageList", "bool"],
     ["pref-snooze", "morrow:configGetSnoozeEffective", "morrow:configSetSnoozeEffective", "bool"],
     ["pref-ai-reply", "morrow:configGetAiWriteAutoOpenOnReply", "morrow:configSetAiWriteAutoOpenOnReply", "bool"],
+    ["pref-agent-read-done", "morrow:configGetMarkReadCompletesAgentTodos", "morrow:configSetMarkReadCompletesAgentTodos", "bool"],
     ["pref-folder-chips", "morrow:configGetShowFolderChips", "morrow:configSetShowFolderChips", "bool"],
     ["pref-gmail-folders", "morrow:configGetSidebarGmailFoldersExpanded", "morrow:configSetSidebarGmailFoldersExpanded", "bool"],
     ["pref-outlook-folders", "morrow:configGetSidebarOutlookFoldersExpanded", "morrow:configSetSidebarOutlookFoldersExpanded", "bool"],
@@ -17217,9 +17992,103 @@ function agentReadIntent(item) {
   return "mark";
 }
 
-function agentTodoActionNames(item) {
+function explicitAgentTodo(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const messageId = String(value.messageId || "").trim();
+  if (!messageId) return null;
+  return { messageId, accountId: String(value.accountId || "").trim() };
+}
+
+function freshReplyTodoSeed(fields) {
+  if (!fields || fields.draftId || fields.botDraft || fields.partialReceipt) return null;
+  if (fields.kind !== "reply" && fields.kind !== "all") return null;
+  const messageId = String(fields.sourceMessageId || "").trim();
+  if (!messageId) return null;
+  return { messageId, accountId: String(fields.accountId || "").trim() };
+}
+
+function withAgentReplyTodo(payload) {
+  const todo = explicitAgentTodo(state.agentReplyTodo);
+  if (!todo || !payload) return payload;
+  return { ...payload, agentTodo: todo };
+}
+
+async function finishAgentReplyTodo(session) {
+  if (session !== state.composeSession) return;
+  const todo = explicitAgentTodo(state.agentReplyTodo);
+  state.agentReplyTodo = null;
+  if (!todo) return;
+  try {
+    const data = await call("nativeAgent:home:todoUpdate", {
+      messageId: todo.messageId,
+      accountId: todo.accountId,
+      status: "done",
+    });
+    if (state.view === "agent" && data) paintAgent(data, "");
+  } catch { /* confirmed send stands; the todo can still be marked done */ }
+}
+
+function agentPileRole(section) {
+  const source = section && typeof section === "object" ? section : {};
+  const id = String(source.id || source.categoryId || "").trim();
+  const name = String(source.name || source.title || "").trim();
+  if (id === "needs-you" || /^needs you$/i.test(name)) return "reply";
+  if (id === "fyi" || /^fyi$/i.test(name)) return "fyi";
+  if (id === "other" || /^other$/i.test(name)) return "other";
+  return "";
+}
+
+function agentSelectionLabels(selectedCount, listedCount) {
+  const selected = Number(selectedCount) || 0;
+  const listed = Number(listedCount) || 0;
+  const all = listed > 0 && selected === listed;
+  return {
+    read: all ? "Mark all as read" : "Mark selected as read",
+    done: all ? "Complete all" : "Complete selected",
+  };
+}
+
+function agentUnreadSnapshot(items) {
+  const rows = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    if (agentReadIntent(item) !== "mark") continue;
+    const context = agentMessageContext(item);
+    if (!context || seen.has(context.messageId) || agentMarkedRead.has(context.messageId)) continue;
+    seen.add(context.messageId);
+    rows.push({ messageId: context.messageId, accountId: context.accountId });
+  }
+  return rows;
+}
+
+function readUndoRows(snapshot, data) {
+  const accounts = new Map();
+  for (const row of snapshot || []) {
+    const context = agentMessageContext(row);
+    if (context) accounts.set(context.messageId, context.accountId || "");
+  }
+  const rows = [];
+  const seen = new Set();
+  const take = (entry, requireCompleted) => {
+    if (!entry || !entry.id || seen.has(entry.id)) return;
+    if (requireCompleted && entry.status !== "completed") return;
+    if (typeof entry.generation !== "number" || !Number.isFinite(entry.generation)) return;
+    if (!accounts.has(entry.id)) return;
+    seen.add(entry.id);
+    rows.push({ emailId: entry.id, accountId: accounts.get(entry.id), generation: entry.generation });
+  };
+  const packet = data && typeof data === "object" ? data : {};
+  for (const row of packet.outcomes || []) take(row, true);
+  for (const row of packet.pending || []) take(row, false);
+  return rows;
+}
+
+function agentTodoActionNames(item, section) {
   if (!agentMessageContext(item)) return [];
-  return ["Open", "Reply", "Reply All", "Mark as read", "Mark todo done", "Dismiss"];
+  const names = ["Open", "Reply", "Reply All", "Mark as read"];
+  if (agentPileRole(section || item) === "reply") names.push("Mark read & done");
+  names.push("Mark todo done", "Dismiss");
+  return names;
 }
 
 function agentFollowUps(item) {
@@ -17608,6 +18477,7 @@ function agentIconSpec(action) {
   if (action === "reply") return ROW_ICON.Reply;
   if (action === "reply-all") return ROW_ICON["Reply All"];
   if (action === "read") return ROW_ICON["Mark read"];
+  if (action === "read-done") return AGENT_ICON.done;
   return AGENT_ICON[action] || "";
 }
 
@@ -18765,6 +19635,11 @@ function paintAgentHome(payload) {
       titles.appendChild(desc);
     }
     head.appendChild(titles);
+    const tools = document.createElement("div");
+    tools.className = "agent-section-tools";
+    const role = agentPileRole(section);
+    if ((role === "fyi" || role === "other") && items.length) tools.appendChild(agentCategoryReadButton(role, items));
+    if (role === "reply" && items.length) tools.appendChild(agentReplySelectionTools(block, items));
     if (section.collapseView && items.length) {
       const toggle = document.createElement("button");
       toggle.type = "button";
@@ -18776,8 +19651,9 @@ function paintAgentHome(payload) {
         toggle.textContent = collapsed ? "Show" : "Hide";
         toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
       });
-      head.appendChild(toggle);
+      tools.appendChild(toggle);
     }
+    if (tools.childNodes.length) head.appendChild(tools);
     block.appendChild(head);
     const empty = sectionEmptyCopy(reason);
     if (!items.length && empty) {
@@ -18787,15 +19663,16 @@ function paintAgentHome(payload) {
       block.appendChild(emptyNote);
     }
     for (const item of items) {
-      if (item && typeof item === "object") block.appendChild(agentTodoCard(item));
+      if (item && typeof item === "object") block.appendChild(agentTodoCard(item, section));
     }
     root.appendChild(block);
   }
   const note = document.createElement("p");
   note.id = "agent-todo-note";
   note.className = "agent-note";
-  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. Reply, Reply All, and Mark as read use the linked message and leave this list in place.";
+  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. FYI and Other can mark the listed messages read, with Undo, and do not complete todos.";
   root.appendChild(note);
+  paintReplySelectionLabels(root);
   paintMotionRows("agent", root.querySelectorAll(".agent-section"));
 }
 
@@ -18811,25 +19688,174 @@ async function replyToAgentItem(item, kind) {
   await presentCompose(composeSeed(email, kind === "all" ? "all" : "reply", self));
 }
 
-async function markAgentMessageRead(item, card) {
+function agentSelectBox(item) {
+  const context = agentMessageContext(item);
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.className = "agent-select";
+  if (context) box.dataset.messageId = context.messageId;
+  const subject = String((item && item.subject) || "").trim() || "(no subject)";
+  box.setAttribute("aria-label", "Select " + subject);
+  box.checked = !!(context && agentReplySelection.has(context.messageId));
+  box.addEventListener("click", (event) => event.stopPropagation());
+  box.addEventListener("change", () => {
+    if (!context) return;
+    if (box.checked) agentReplySelection.add(context.messageId);
+    else agentReplySelection.delete(context.messageId);
+    paintReplySelectionLabels();
+  });
+  return box;
+}
+
+function paintReplySelectionLabels(root) {
+  const home = root || $("agent-home");
+  if (!home || typeof home.querySelectorAll !== "function") return;
+  for (const block of home.querySelectorAll(".agent-section")) {
+    const tools = block.querySelector(".agent-section-tools");
+    if (!tools) continue;
+    const boxes = [...block.querySelectorAll(".agent-select")];
+    if (!boxes.length) continue;
+    const labels = agentSelectionLabels(boxes.filter((box) => box.checked).length, boxes.length);
+    const read = tools.querySelector(".agent-mark-selected");
+    const done = tools.querySelector(".agent-complete-selected");
+    if (read) read.textContent = labels.read;
+    if (done) done.textContent = labels.done;
+  }
+}
+
+function selectedReplyItems(block, items) {
+  const wanted = new Set();
+  for (const box of block.querySelectorAll(".agent-select")) {
+    if (box.checked && box.dataset.messageId) wanted.add(box.dataset.messageId);
+  }
+  return (items || []).filter((item) => wanted.has(String(item && item.messageId || "")));
+}
+
+function agentReplySelectionTools(block, items) {
+  const wrap = document.createElement("div");
+  wrap.className = "agent-reply-tools";
+  wrap.dataset.pile = "reply";
+  const labels = agentSelectionLabels(0, items.length);
+  const read = document.createElement("button");
+  read.type = "button";
+  read.className = "ghost agent-mark-selected";
+  read.dataset.testid = "agent-mark-selected";
+  read.textContent = labels.read;
+  const done = document.createElement("button");
+  done.type = "button";
+  done.className = "ghost agent-complete-selected";
+  done.dataset.testid = "agent-complete-selected";
+  done.textContent = labels.done;
+  read.addEventListener("click", () => {
+    const captured = selectedReplyItems(block, items);
+    if (!captured.length) return;
+    guard(() => applyReplySelection(captured, "read"));
+  });
+  done.addEventListener("click", () => {
+    const captured = selectedReplyItems(block, items);
+    if (!captured.length) return;
+    guard(() => applyReplySelection(captured, "done"));
+  });
+  wrap.append(read, done);
+  return wrap;
+}
+
+function agentCategoryReadButton(role, items) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost agent-category-read";
+  button.dataset.testid = "agent-category-read";
+  button.dataset.pile = role;
+  button.textContent = "Mark category as read";
+  const snapshot = items.slice();
+  button.addEventListener("click", () => guard(() => markAgentCategoryRead(snapshot)));
+  return button;
+}
+
+async function markAgentMessageRead(item, card, mode) {
   const context = agentMessageContext(item);
   if (!context) return;
-  if (agentReadIntent(item) === "already" || agentMarkedRead.has(context.messageId)) {
+  const reply = agentPileRole(item) === "reply";
+  const already = agentReadIntent(item) === "already" || agentMarkedRead.has(context.messageId);
+  const complete = mode === "done" || (reply && state.prefs.markReadCompletesTodos === true);
+  if (already && !complete) {
     showStatus("Already read.");
     return;
   }
-  await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
-  item.unread = false;
-  agentMarkedRead.add(context.messageId);
-  if (card && card.classList) {
-    card.classList.remove("unread");
-    const dot = card.querySelector(".unread-dot");
-    if (dot) dot.remove();
+  if (!already) {
+    await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
+    item.unread = false;
+    agentMarkedRead.add(context.messageId);
+    if (card && card.classList) {
+      card.classList.remove("unread");
+      const dot = card.querySelector(".unread-dot");
+      if (dot) dot.remove();
+    }
+  }
+  if (complete) {
+    await updateTodo(context.messageId, "done", context.accountId);
+    return;
   }
   showStatus("Marked as read.");
 }
 
-function agentTodoActions(item) {
+async function applyReplySelection(items, mode) {
+  const captured = (items || []).filter((item) => agentMessageContext(item));
+  if (!captured.length) return;
+  if (mode === "done") {
+    for (const item of captured) {
+      const context = agentMessageContext(item);
+      await updateTodo(context.messageId, "done", context.accountId);
+    }
+    showStatus(captured.length === 1 ? "Todo completed." : "Todos completed.");
+    return;
+  }
+  const optIn = state.prefs.markReadCompletesTodos === true;
+  let marked = 0;
+  for (const item of captured) {
+    const context = agentMessageContext(item);
+    const unread = agentReadIntent(item) === "mark" && !agentMarkedRead.has(context.messageId);
+    if (unread) {
+      await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
+      item.unread = false;
+      agentMarkedRead.add(context.messageId);
+      marked += 1;
+    }
+    if (optIn) await updateTodo(context.messageId, "done", context.accountId);
+  }
+  if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
+  if (!marked && !optIn) showStatus("Already read.");
+  else showStatus(marked ? "Marked as read." : "Todo completed.");
+}
+
+async function markAgentCategoryRead(items) {
+  const snapshot = agentUnreadSnapshot(items);
+  if (!snapshot.length) return;
+  const data = await call("mail:markReadBatch", {
+    isRead: true,
+    items: snapshot.map((row) => ({ emailId: row.messageId, accountId: row.accountId })),
+  });
+  if (typeof rememberActionGeneration === "function") {
+    rememberActionGeneration(data && data.pending);
+    rememberActionGeneration(data && data.outcomes);
+  }
+  const undoRows = readUndoRows(snapshot, data);
+  const touched = new Set(undoRows.map((row) => row.emailId));
+  for (const item of items || []) {
+    if (!item || !touched.has(String(item.messageId || ""))) continue;
+    item.unread = false;
+    agentMarkedRead.add(String(item.messageId));
+  }
+  if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
+  if (!undoRows.length) {
+    showStatus("Marked as read.");
+    return;
+  }
+  const noun = undoRows.length === 1 ? "message" : "messages";
+  showReadUndo("Marked " + undoRows.length + " " + noun + " as read.", undoRows);
+}
+
+function agentTodoActions(item, section) {
   const context = agentMessageContext(item);
   if (!context) return null;
   const actions = document.createElement("div");
@@ -18844,6 +19870,9 @@ function agentTodoActions(item) {
     agentActionButton("reply-all", "Reply All", () => replyToAgentItem(item, "all")),
     agentActionButton("read", "Mark as read", () => markAgentMessageRead(item, card())),
   );
+  if (agentPileRole(section || item) === "reply") {
+    mail.append(agentActionButton("read-done", "Mark read & done", () => markAgentMessageRead(item, card(), "done")));
+  }
   for (const follow of agentFollowUps(item)) {
     if (!follow || follow.kind === "open") continue;
     mail.appendChild(styleFollowButton(follow));
@@ -18851,23 +19880,30 @@ function agentTodoActions(item) {
   const local = document.createElement("div");
   local.className = "agent-action-group agent-action-local";
   local.append(
-    agentActionButton("done", "Mark todo done", () => updateTodo(context.messageId, "done")),
-    agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed")),
+    agentActionButton("done", "Mark todo done", () => updateTodo(context.messageId, "done", context.accountId)),
+    agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed", context.accountId)),
   );
   actions.append(mail, local);
   return actions;
 }
 
-function agentTodoCard(item) {
+function agentTodoCard(item, section) {
+  if (section && item && typeof item === "object" && !item.categoryId) item.categoryId = section.id || "";
   if (!agentMessageContext(item)) return agentCard(item);
   const card = agentCard(item, { actions: false });
-  const actions = agentTodoActions(item);
+  if (agentPileRole(section || item) === "reply") {
+    const main = card.querySelector(".agent-item-main");
+    if (main) main.prepend(agentSelectBox(item));
+  }
+  const actions = agentTodoActions(item, section);
   if (actions) card.appendChild(actions);
   return card;
 }
 
-async function updateTodo(messageId, status) {
-  const data = await call("nativeAgent:home:todoUpdate", { messageId, status });
+async function updateTodo(messageId, status, accountId) {
+  const payload = { messageId, status };
+  if (accountId) payload.accountId = accountId;
+  const data = await call("nativeAgent:home:todoUpdate", payload);
   paintAgent(data, "");
 }
 
@@ -21043,8 +22079,236 @@ function wireSenderHistory() {
   }
 }
 
+let recipientSuggestGen = 0;
+let recipientSuggestTimer = 0;
+let recipientSuggestIndex = -1;
+let recipientSuggestRows = [];
+let recipientSuggestInput = null;
+let recipientSuggestEscape = false;
+
+function recipientSuggestApi() {
+  return typeof window !== "undefined" ? window.morrowRecipientSuggest : null;
+}
+
+function hideRecipientSuggest() {
+  if (!document || typeof document.getElementById !== "function") return false;
+  const box = document.getElementById("recipient-suggest");
+  const open = !!(box && box.hidden === false);
+  if (box) {
+    box.hidden = true;
+    if (typeof box.replaceChildren === "function") box.replaceChildren();
+  }
+  const input = recipientSuggestInput;
+  recipientSuggestIndex = -1;
+  recipientSuggestRows = [];
+  recipientSuggestInput = null;
+  if (input && typeof input.setAttribute === "function") {
+    input.setAttribute("aria-expanded", "false");
+    if (typeof input.removeAttribute === "function") input.removeAttribute("aria-activedescendant");
+  }
+  if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
+  recipientSuggestTimer = 0;
+  recipientSuggestGen += 1;
+  return open;
+}
+
+function scheduleRecipientSuggest(input) {
+  const api = recipientSuggestApi();
+  const query = api && input ? api.activeQuery(input.value) : "";
+  if (!api || !input || input.disabled || input.readOnly || !query) {
+    hideRecipientSuggest();
+    return;
+  }
+  const gen = ++recipientSuggestGen;
+  if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
+  recipientSuggestTimer = setTimeout(() => {
+    recipientSuggestTimer = 0;
+    loadRecipientSuggest(input, gen);
+  }, 80);
+}
+
+async function loadRecipientSuggest(input, gen) {
+  const api = recipientSuggestApi();
+  if (!api) return;
+  const query = api.activeQuery(input.value);
+  let result;
+  try {
+    result = await call("mail:suggestRecipients", { query });
+  } catch {
+    if (gen === recipientSuggestGen) hideRecipientSuggest();
+    return;
+  }
+  if (gen !== recipientSuggestGen) return;
+  const active = document.activeElement;
+  if (active && active !== input && active !== document.body && active !== document.documentElement) return;
+  if (api.activeQuery(input.value) !== query) return;
+  const used = api.usedAddresses(input.value);
+  const rows = ((result && result.suggestions) || []).filter((row) => row && row.email && !used.has(row.email));
+  if (!rows.length) {
+    hideRecipientSuggest();
+    return;
+  }
+  paintRecipientSuggest(input, rows);
+}
+
+function recipientSuggestIcon() {
+  const svg = strokeIcon(["M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"], 16);
+  if (!document.createElementNS) return svg;
+  const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  circle.setAttribute("cx", "12");
+  circle.setAttribute("cy", "7");
+  circle.setAttribute("r", "4");
+  svg.appendChild(circle);
+  return svg;
+}
+
+function paintRecipientSuggest(input, rows) {
+  const box = document.getElementById("recipient-suggest");
+  if (!box || typeof box.replaceChildren !== "function") return;
+  const host = input.closest ? input.closest(".field-row") : input.parentElement;
+  if (host && typeof host.appendChild === "function") host.appendChild(box);
+  box.replaceChildren();
+  recipientSuggestRows = rows;
+  recipientSuggestInput = input;
+  recipientSuggestIndex = -1;
+  for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
+    const node = document.getElementById(id);
+    if (!node || node === input || typeof node.setAttribute !== "function") continue;
+    node.setAttribute("aria-expanded", "false");
+    if (typeof node.removeAttribute === "function") node.removeAttribute("aria-activedescendant");
+  }
+  rows.forEach((item, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "recipient-suggest-" + index;
+    button.className = "recipient-suggest-option";
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", "false");
+    button.dataset.email = item.email;
+    const label = ((item.name ? item.name + " " : "") + item.email).trim();
+    button.setAttribute("aria-label", label);
+    button.appendChild(recipientSuggestIcon());
+    const text = document.createElement("span");
+    text.className = "recipient-suggest-copy";
+    const name = document.createElement("span");
+    name.className = "recipient-suggest-name";
+    name.textContent = item.name || item.email;
+    const email = document.createElement("span");
+    email.className = "recipient-suggest-email";
+    email.textContent = item.email;
+    if (!item.name) email.hidden = true;
+    text.appendChild(name);
+    text.appendChild(email);
+    button.appendChild(text);
+    box.appendChild(button);
+  });
+  box.hidden = false;
+  if (typeof input.setAttribute === "function") {
+    input.setAttribute("aria-expanded", "true");
+    if (typeof input.removeAttribute === "function") input.removeAttribute("aria-activedescendant");
+  }
+}
+
+function moveRecipientSuggest(delta) {
+  const box = document.getElementById("recipient-suggest");
+  if (!box || !recipientSuggestRows.length) return;
+  const last = recipientSuggestRows.length - 1;
+  if (recipientSuggestIndex < 0) recipientSuggestIndex = delta > 0 ? 0 : last;
+  else recipientSuggestIndex = Math.max(0, Math.min(last, recipientSuggestIndex + delta));
+  const buttons = box.querySelectorAll('[role="option"]');
+  buttons.forEach((button, index) => {
+    const on = index === recipientSuggestIndex;
+    button.setAttribute("aria-selected", on ? "true" : "false");
+    if (!on) return;
+    if (recipientSuggestInput && typeof recipientSuggestInput.setAttribute === "function") {
+      recipientSuggestInput.setAttribute("aria-activedescendant", button.id);
+    }
+    try { button.scrollIntoView({ block: "nearest" }); } catch { /* synthetic documents have no layout */ }
+  });
+}
+
+function chooseRecipientSuggest(email) {
+  const api = recipientSuggestApi();
+  const input = recipientSuggestInput;
+  const choice = recipientSuggestRows.find((row) => row.email === email);
+  if (!api || !input || !choice) return;
+  input.value = api.applyChoice(input.value, choice);
+  hideRecipientSuggest();
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  if (typeof input.focus === "function") input.focus();
+  if (typeof input.setSelectionRange === "function") {
+    const end = input.value.length;
+    try { input.setSelectionRange(end, end); } catch { /* some fields reject a range while hidden */ }
+  }
+}
+
+function onRecipientSuggestKey(event) {
+  const api = recipientSuggestApi();
+  if (!api || !event) return;
+  const box = document.getElementById("recipient-suggest");
+  const open = !!(box && box.hidden === false && recipientSuggestInput === event.currentTarget);
+  const action = api.keyAction(event.key, open, recipientSuggestIndex);
+  if (!action) return;
+  event.preventDefault();
+  if (typeof event.stopPropagation === "function") event.stopPropagation();
+  if (action === "close") {
+    recipientSuggestEscape = true;
+    hideRecipientSuggest();
+    return;
+  }
+  if (action === "next") moveRecipientSuggest(1);
+  else if (action === "prev") moveRecipientSuggest(-1);
+  else if (action === "choose") {
+    const row = recipientSuggestRows[recipientSuggestIndex];
+    if (row) chooseRecipientSuggest(row.email);
+  }
+}
+
+function takeRecipientSuggestEscape() {
+  if (recipientSuggestEscape) {
+    recipientSuggestEscape = false;
+    return true;
+  }
+  const box = document && typeof document.getElementById === "function" ? document.getElementById("recipient-suggest") : null;
+  if (box && box.hidden === false) {
+    hideRecipientSuggest();
+    return true;
+  }
+  return false;
+}
+
+function wireRecipientSuggest() {
+  for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
+    const input = $(id);
+    if (!input || typeof input.addEventListener !== "function") continue;
+    input.addEventListener("input", () => scheduleRecipientSuggest(input));
+    input.addEventListener("keydown", onRecipientSuggestKey);
+    input.addEventListener("blur", () => {
+      const gen = recipientSuggestGen;
+      setTimeout(() => {
+        if (gen !== recipientSuggestGen || recipientSuggestInput !== input) return;
+        if (document.activeElement === input) return;
+        const box = document.getElementById("recipient-suggest");
+        if (box && typeof box.contains === "function" && box.contains(document.activeElement)) return;
+        hideRecipientSuggest();
+      }, 0);
+    });
+  }
+  const box = $("recipient-suggest");
+  if (!box || typeof box.addEventListener !== "function") return;
+  box.addEventListener("mousedown", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest("button") : null;
+    if (button) event.preventDefault();
+  });
+  box.addEventListener("click", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest("button") : null;
+    if (button && button.dataset) chooseRecipientSuggest(button.dataset.email);
+  });
+}
+
 function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
+  wireRecipientSuggest();
   wireComposeFormat();
   $("compose-from").addEventListener("change", changeComposeFrom);
   $("compose-cc").addEventListener("input", () => {
@@ -21081,6 +22345,7 @@ function wire() {
       }
       if (dialog.id === "compose") {
         event.preventDefault();
+        if (takeRecipientSuggestEscape()) return;
         if (composeAiOpen()) {
           dismissComposeAi().catch(() => {});
           return;
@@ -21199,6 +22464,14 @@ function wire() {
   wireSplits();
   wireQuoteSplit();
   $("undo").addEventListener("click", () => guard(undoRemoval));
+  const undoDetailsButton = $("undo-details");
+  if (undoDetailsButton) undoDetailsButton.addEventListener("click", () => openUndoDetails());
+  const undoDetailsAll = $("undo-details-all");
+  if (undoDetailsAll) undoDetailsAll.addEventListener("click", () => setUndoDetailChecks(true));
+  const undoDetailsClear = $("undo-details-clear");
+  if (undoDetailsClear) undoDetailsClear.addEventListener("click", () => setUndoDetailChecks(false));
+  const undoDetailsSelected = $("undo-details-selected");
+  if (undoDetailsSelected) undoDetailsSelected.addEventListener("click", () => guard(() => undoSelected()));
   $("undo-send").addEventListener("click", cancelUndoSend);
   $("profile").addEventListener("change", () => {
     cancelDiscovery();
@@ -21878,6 +23151,11 @@ async function boot() {
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
+  api.on("nativeAgent:homeUpdated", (payload) => {
+    if (!payload || typeof payload !== "object") return;
+    agentPaintPayload = payload;
+    if (state.view === "agent") paintAgent(payload, "");
+  });
   api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:bodyUpdated", applyBodyUpdate);
   api.on("mail:bodySyncStatus", acceptBodySync);

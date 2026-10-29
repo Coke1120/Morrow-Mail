@@ -169,10 +169,14 @@ async function uiChecks() {
   assert.match(line({ status: "failed" }), /not sent; edit to retry/);
   const editStart = source.indexOf("async function editScheduledMail("), editEnd = source.indexOf("\nasync function composeOperation", editStart);
   const calls = [], confirmations = [], handoffs = [];
+  const todoStart = source.indexOf("function explicitAgentTodo(");
+  const todoEnd = source.indexOf("\nfunction freshReplyTodoSeed(", todoStart);
+  const explicitAgentTodo = vm.runInNewContext("(" + source.slice(todoStart, todoEnd).trim() + ")", {});
   const context = vm.createContext({ state: { accounts: [] }, scheduledLine: line, $: () => ({}),
     askConfirm: async copy => { confirmations.push(copy); return { ok: true }; },
     call: async (channel, data) => { calls.push({ channel, data }); return { emailId: "recovered", accountId: "a", warning: "Check Sent before sending this recovered draft." }; },
     loadScheduled: async () => {}, closeDialog: async () => {}, vacationLocalValue: () => "", api: { openComposeWindow() {} },
+    explicitAgentTodo,
     resumeDraft: async (_draft, handoff) => { handoffs.push(handoff); } });
   vm.runInContext(source.slice(editStart, editEnd), context);
   await vm.runInContext("editScheduledMail({id:'uncertain',accountId:'a',status:'unknown'})", context);
