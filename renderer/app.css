@@ -4146,6 +4146,28 @@ button.attachment-name:hover { text-decoration: underline; }
 
 .meta { color: var(--muted); font-size: 13px; }
 
+.reader-from {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 20px;
+}
+
+.reader-from > .meta {
+  padding: 0;
+  min-width: 0;
+}
+
+.reader-from > .meta:first-child { flex: 1 1 auto; overflow-wrap: anywhere; }
+
+.reader-from > .when {
+  flex: none;
+  margin-left: auto;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .body {
   font: inherit;
   padding-top: 12px;

@@ -6777,6 +6777,25 @@ function renderOutboxReader(pane, email, focus) {
   if (focus !== false) undo.focus();
 }
 
+function readerFromLine(email) {
+  const row = document.createElement("div");
+  row.className = "reader-from";
+  const from = document.createElement("p");
+  from.className = "meta";
+  paintSenderAddress(from, (email && email.from) || "");
+  row.appendChild(from);
+  const raw = email && email.date;
+  const date = raw ? new Date(raw) : null;
+  const text = shownWhen(date);
+  if (!text) return row;
+  const when = document.createElement("time");
+  when.className = "meta when";
+  when.setAttribute("datetime", typeof raw === "string" ? raw : date.toISOString());
+  when.textContent = text;
+  row.appendChild(when);
+  return row;
+}
+
 function renderReader(focus) {
   if (pendingOpenBody && pendingOpenId) {
     paintReaderPending(listedMessage(pendingOpenId));
@@ -6826,19 +6845,12 @@ function renderReader(focus) {
   if (email.bodyError) {
     const heading = document.createElement("h2");
     heading.textContent = email.subject || "(no subject)";
-    const from = document.createElement("p");
-    from.className = "meta";
-    paintSenderAddress(from, email.from || "");
-    const when = document.createElement("p");
-    when.className = "meta";
-    const failedAt = email.date ? new Date(email.date) : null;
-    when.textContent = shownWhen(failedAt);
     const error = document.createElement("p");
     error.className = "hint error";
     error.setAttribute("role", "status");
     error.textContent = email.bodyError;
     if (isReaderWindow()) pane.appendChild(readerCloseBar());
-    pane.append(heading, from, when, error);
+    pane.append(heading, readerFromLine(email), error);
     pane.appendChild(bodyRetryButton(email));
     if (focus) {
       heading.tabIndex = -1;
@@ -6857,14 +6869,7 @@ function renderReader(focus) {
   paintTranslation();
   const heading = document.createElement("h2");
   heading.textContent = email.subject || "(no subject)";
-  const from = document.createElement("p");
-  from.className = "meta";
-  paintSenderAddress(from, email.from || "");
-  const when = document.createElement("p");
-  when.className = "meta";
-  const date = email.date ? new Date(email.date) : null;
-  when.textContent = shownWhen(date);
-  pane.append(heading, from, when);
+  pane.append(heading, readerFromLine(email));
   const until = snoozedUntilOf(email);
   const untilDate = until ? new Date(until) : null;
   if (state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
@@ -10887,13 +10892,6 @@ function paintReaderPending(email) {
   pane.setAttribute("aria-busy", "true");
   const heading = document.createElement("h2");
   heading.textContent = (email && email.subject) || "(no subject)";
-  const from = document.createElement("p");
-  from.className = "meta";
-  from.textContent = (email && email.from) || "";
-  const when = document.createElement("p");
-  when.className = "meta";
-  const date = email && email.date ? new Date(email.date) : null;
-  when.textContent = shownWhen(date);
   const pending = document.createElement("div");
   pending.className = "body-pending";
   pending.setAttribute("role", "status");
@@ -10904,7 +10902,7 @@ function paintReaderPending(email) {
   label.className = "body-pending-label";
   label.textContent = "Loading message…";
   pending.append(spin, label);
-  pane.append(heading, from, when, pending);
+  pane.append(heading, readerFromLine(email), pending);
 }
 
 async function openMessage(emailId, focus, full = false) {
