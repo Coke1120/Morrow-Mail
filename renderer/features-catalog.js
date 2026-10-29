@@ -61,6 +61,12 @@
         blurb: "The sidebar Unread filter and the All Account Mail Unread chip list downloaded unread mail. Opening an unread message may mark it read and keeps that one row in the list until a different unread message is opened. Opening a message that is already read, opening the held row again, or highlighting a row without opening it leaves the hold. Mark read on the held row from the row button leaves it listed. Mark unread clears the hold and the row stays because it is unread. Mark read on a row that is not held removes it immediately. Multi-select Mark read removes every selected row immediately, including the held row when it is selected, even when only that row is selected. A held row outside the selection stays. Leaving Unread, switching folder or account, searching, or turning the filter off clears the hold, and coming back does not restore it. Refresh and Sync keep the held row unless the message is gone from that filtered mail. Other filters do not keep a read row this way.",
       },
       {
+        id: "undo-removal",
+        title: "Undo removal details",
+        category: "Mail",
+        blurb: "Archive, Trash, and Move keep Undo for every completed change in the current removal. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Select all or Clear, then Undo selected. The status chip only shows or hides the notice. Mark as read keeps its own Undo and does not replace a removal Undo. A newer removal replaces that list. Outbox undo send is separate and is not in this checklist.",
+      },
+      {
         id: "attachment-downloads",
         title: "Attachment downloads",
         category: "Mail",

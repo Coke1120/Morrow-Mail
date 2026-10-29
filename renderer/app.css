@@ -1663,7 +1663,7 @@ button.inline-link:focus-visible { color: var(--ink); }
   box-shadow: var(--shadow-pop);
 }
 
-#notice:not(:has(#status:not(:empty), #undo:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) { display: none; }
+#notice:not(:has(#status:not(:empty), #undo:not([hidden]), #undo-details:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) { display: none; }
 
 #notice #status {
   flex: 1 1 auto;
@@ -1742,14 +1742,14 @@ button.inline-link:focus-visible { color: var(--ink); }
   box-shadow: 0 0 0 3px rgba(254, 205, 211, 0.9), var(--shadow-pop);
 }
 
-#notice.collapsed:not(:has(#undo:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) {
+#notice.collapsed:not(:has(#undo:not([hidden]), #undo-details:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) {
   width: 44px;
   height: 44px;
   padding: 0;
   justify-content: center;
 }
 
-#notice.collapsed:not(:has(#undo:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) #status-chip {
+#notice.collapsed:not(:has(#undo:not([hidden]), #undo-details:not([hidden]), #undo-send:not([hidden]), #undo-schedule:not([hidden]))) #status-chip {
   width: 44px;
   height: 44px;
 }
@@ -1777,7 +1777,72 @@ button.inline-link:focus-visible { color: var(--ink); }
   #notice.collapsed { animation: none; }
 }
 
-#undo, #undo-send, #undo-schedule { padding: 2px 8px; }
+#undo, #undo-send, #undo-schedule, #undo-details { padding: 2px 8px; }
+
+#undo-details-popover {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: calc(100% + 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: var(--shadow-pop);
+  text-align: left;
+}
+
+#undo-details-popover .undo-details-tools,
+#undo-details-popover .undo-details-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+#undo-details-popover button.ghost {
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+#undo-details-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  max-height: 22rem;
+}
+
+#undo-details-list label.check {
+  align-items: flex-start;
+  margin: 0;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+.undo-details-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-weight: 400;
+}
+
+.undo-details-subject {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.undo-details-meta {
+  color: var(--ink-mid);
+  font-size: 12px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
 
 #calendar-panel {
   position: relative;
