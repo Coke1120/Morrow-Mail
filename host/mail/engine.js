@@ -3116,9 +3116,16 @@ function clearOutboxWake(id) {
 
 function armOutboxWake(id, sendAt) {
   clearOutboxWake(id);
-  const delay = Math.max(0, Number(sendAt) - Date.now());
+  const dueAt = Number(sendAt);
+  const delay = Math.max(0, dueAt - Date.now());
   const timer = setTimeout(() => {
     outboxWakes.delete(id);
+    // The timer clock can lead Date.now() by 1ms. Pumping then misses send_at,
+    // and this one-shot wake would not run again until the 15s schedule poll.
+    if (Date.now() < dueAt) {
+      armOutboxWake(id, dueAt);
+      return;
+    }
     pumpScheduled().catch(() => {});
   }, delay);
   if (typeof timer.unref === "function") timer.unref();
