@@ -330,6 +330,54 @@ async function undoDetails() {
   ui.run("releaseUndo({ outcomes: [{ id: 'one', status: 'completed' }] })");
   await pending;
   assert.equal(get("undo").hidden, true);
+  await ui.run(archive);
+  ui.run(`state.selectedIds = ['one', 'two']; openUndoDetails(); onSelectionKey({ key: 'Escape', target: document.body, preventDefault() {} });`);
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(state.selectedIds)")), ["one", "two"]);
+  ui.run(`statusDismissKey({ key: 'Escape', preventDefault() {} });`);
+  assert.equal(get("undo-details-popover").hidden, true);
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(state.selectedIds)")), ["one", "two"]);
+  ui.run(`onSelectionKey({ key: 'Escape', target: document.body, preventDefault() {} });`);
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(state.selectedIds)")), []);
+  ui.run(`
+    globalThis.settleOnLoad = false;
+    globalThis.settledUndo = false;
+    loadList = async () => {
+      if (!settleOnLoad || settledUndo) return;
+      settledUndo = true;
+      applyActionSettlement({
+        outcomes: [
+          { id: 'one', kind: 'undo', status: 'completed' },
+          { id: 'two', kind: 'undo', status: 'failed', retryOpId: 'op-b', error: 'kept' },
+        ],
+        opIds: ['op-b'],
+      });
+    };
+    call = async () => ({ outcomes: [], pending: [{ id: 'one' }, { id: 'two' }] });
+  `);
+  await ui.run(archive);
+  ui.run("settleOnLoad = true;");
+  await ui.run("undoRemoval()");
+  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  assert.equal(get("undo").disabled, false);
+  ui.run("openUndoDetails()");
+  assert.match(get("undo-details-list").textContent, /Beta report/);
+  assert.doesNotMatch(get("undo-details-list").textContent, /Alpha report/);
+  ui.run(`
+    loadList = async () => {};
+    call = async () => ({ outcomes: [], pending: [{ id: 'one' }] });
+  `);
+  await ui.run(`finishBulkRemoval('Move', { opIds: ['op-m'], outcomes: [{ id: 'one', status: 'completed', opId: 'op-m' }] }, ['one'], { messages: state.emails, action: 'move', destinationLabel: 'Projects' })`);
+  const epoch = ui.run("undoEpoch");
+  await ui.run("undoRemoval()");
+  assert.equal(get("undo").disabled, true, "pending undo waits for settlement");
+  await ui.run(`finishBulkRemoval('Archive', { opIds: ['op-new'], outcomes: [{ id: 'two', status: 'completed', opId: 'op-new' }] }, ['two'])`);
+  assert.notEqual(ui.run("undoEpoch"), epoch);
+  ui.run(`applyActionSettlement({ outcomes: [{ id: 'one', kind: 'undo', status: 'failed', retryOpId: 'op-m', error: 'old removal' }], opIds: ['op-m'] })`);
+  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  ui.run("openUndoDetails()");
+  assert.match(get("undo-details-list").textContent, /Beta report/);
+  assert.doesNotMatch(get("undo-details-list").textContent, /Alpha report/);
+  assert.doesNotMatch(get("undo-details-list").textContent, /old removal/);
 }
 module.exports={run};
 if(require.main===module)run().catch(e=>{console.error(e);process.exitCode=1;});

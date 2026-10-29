@@ -26,6 +26,8 @@ Only completed rows that have an `opId` are included. Subject and sender are cap
 
 Undo all and Undo selected both call the existing `mail:undoRemoval({ opIds, kind: "move" })`. The host already undoes exactly the `opIds` it is given, so a subset uses that same channel. No new IPC channel.
 
+An immediate response with an empty `outcomes` list is still pending. Those rows stay in the session and are not submitted again until `mail:actionsSettled` says they completed or failed. That settlement is applied even while the undo call is still busy, including during the list reload. Each removal session has a generation. A retry from an older generation does not join or revive a newer session.
+
 ## Non-goals
 
 Multi-batch history, opening Details automatically, Outbox Undo send, and Agent todo undo are out of scope.

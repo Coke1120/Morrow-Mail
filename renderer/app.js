@@ -114,6 +114,12 @@ let undoKind = "";
 let undoOpIds = null;
 let undoItems = null;
 let undoBusy = false;
+let undoEpoch = 0;
+const undoEpochByOp = new Map();
+const undoPending = new Set();
+let undoInflight = null;
+let undoFlightSerial = 0;
+const undoSettleQueue = [];
 const undoSnapshots = new Map();
 let readUndoItems = null;
 let readUndoTimer = 0;
@@ -7970,6 +7976,100 @@ function undoItemsForOutcomes(outcome) {
   return items;
 }
 
+function undoRetriesByEpoch(batch) {
+  const live = [];
+  const stale = [];
+  for (const item of undoRetryItems(batch)) {
+    if (undoEpochByOp.get(item.opId) === undoEpoch) live.push(item);
+    else stale.push(item);
+  }
+  return { live, stale };
+}
+
+function rememberUndoEpoch(opIds) {
+  for (const id of opIds || []) {
+    if (id && !undoEpochByOp.has(id)) undoEpochByOp.set(id, undoEpoch);
+  }
+}
+
+function startRemovalSession(text, opIds, isError, items) {
+  undoEpoch += 1;
+  undoInflight = null;
+  undoPending.clear();
+  showUndo(text, opIds, isError, items);
+}
+
+function showRemovalUndo(text, opIds, isError, items) {
+  const ids = opIds || [];
+  const sameEpoch = ids.length > 0 && ids.every((id) => undoEpochByOp.get(id) === undoEpoch);
+  if (sameEpoch) showUndo(text, ids, isError, items);
+  else startRemovalSession(text, ids, isError, items);
+}
+
+function inflightUndoRow(row) {
+  if (!undoInflight || !row) return false;
+  if (row.retryOpId && undoInflight.opIds.has(row.retryOpId)) return true;
+  return row.kind === "undo" && row.id != null && undoInflight.messages.has(String(row.id));
+}
+
+function settleUndoInflight(batch) {
+  if (!undoInflight || undoInflight.epoch !== undoEpoch) return false;
+  const rows = ((batch && batch.outcomes) || []).filter(inflightUndoRow);
+  if (!rows.length) return false;
+  const requested = [...undoInflight.opIds];
+  const retained = new Set(retainedUndoOpIds(requested, rows, undoItems));
+  const resolved = new Set();
+  for (const row of rows) {
+    const opId = row.retryOpId || ((undoItems || []).find((item) => item && String(item.messageId) === String(row.id)) || {}).opId;
+    if (opId && undoInflight.opIds.has(opId)) resolved.add(opId);
+  }
+  for (const id of resolved) undoPending.delete(id);
+  for (const id of resolved) undoInflight.opIds.delete(id);
+  if (!undoInflight.opIds.size) undoInflight = null;
+  else undoInflight.settled = true;
+  const kept = (undoItems || []).filter((item) => !requested.includes(item.opId) || retained.has(item.opId));
+  const receipt = receiptText("Restore", { outcomes: rows });
+  const incomplete = rows.some((row) => row && row.status !== "completed");
+  if (!kept.length) {
+    clearUndo();
+    showStatus(receipt, incomplete);
+  } else {
+    undoKind = "removal";
+    undoOpIds = kept.map((item) => item.opId);
+    undoItems = kept;
+    undoReceiptError = undoReceiptError || incomplete;
+    paintUndoControls();
+    showStatus(receipt, incomplete);
+  }
+  return true;
+}
+
+function applyRemovalSettlement(batch, receipt, bad) {
+  if (!batch || !Array.isArray(batch.opIds) || !batch.opIds.length) {
+    if (bad) showStatus(receipt, true);
+    return;
+  }
+  const current = $("status") && $("status").textContent;
+  const text = bad || !current ? receipt : current;
+  const { live } = undoRetriesByEpoch(batch);
+  if (live.length && undoKind === "removal" && undoOpIds && undoOpIds.length) {
+    const merged = (undoItems || []).slice();
+    const have = new Set(merged.map((item) => item.opId));
+    for (const item of live) if (!have.has(item.opId)) merged.push(item);
+    showUndo(text, merged.map((item) => item.opId), true, merged);
+  } else if (live.length) {
+    showUndo(text, live.map((item) => item.opId), true, live);
+  } else {
+    const built = undoItemsForOutcomes(batch);
+    showRemovalUndo(text, batch.opIds, bad, built.length ? built : undefined);
+  }
+}
+
+function flushUndoSettleQueue() {
+  const queued = undoSettleQueue.splice(0);
+  for (const batch of queued) applyActionSettlement(batch);
+}
+
 function undoRetryItems(batch) {
   const items = [];
   const seen = new Set();
@@ -8113,9 +8213,10 @@ function paintUndoControls() {
   const undo = $("undo");
   const details = $("undo-details");
   const count = undoKind === "removal" && undoOpIds ? undoOpIds.length : 0;
+  const pendingAll = count > 0 && undoOpIds.every((id) => undoPending.has(id));
   if (undo && undoKind === "removal") {
     undo.hidden = !count;
-    undo.disabled = !!undoBusy;
+    undo.disabled = !!undoBusy || pendingAll;
     undo.textContent = "Undo " + count + " completed changes";
   }
   if (details) {
@@ -8138,6 +8239,7 @@ function showUndo(text, opIds, isError, items) {
   undoReceiptError = !!isError;
   undoOpIds = nextIds;
   undoItems = undoListFor(nextIds, items);
+  rememberUndoEpoch(nextIds);
   rememberUndoItems(undoItems);
   paintUndoControls();
   showStatus(text, isError);
@@ -8179,6 +8281,8 @@ function clearUndo() {
   undoKind = "";
   undoOpIds = null;
   undoItems = null;
+  undoPending.clear();
+  undoInflight = null;
   readUndoItems = null;
   undoReceipt = "";
   undoReceiptError = false;
@@ -8294,23 +8398,23 @@ function applyActionSettlement(batch) {
   }
   const bad = outcomes.some((row) => row.status && row.status !== "completed");
   const receipt = receiptText("Mailbox", { outcomes });
-  // mail:undoRemoval applies its own receipt; a settlement in that window must not replace the list.
-  if (!undoBusy && batch && Array.isArray(batch.opIds) && batch.opIds.length) {
-    const current = $("status") && $("status").textContent;
-    const text = bad || !current ? receipt : current;
-    const retries = undoRetryItems(batch);
-    if (retries.length && undoKind === "removal" && undoOpIds && undoOpIds.length) {
-      const merged = (undoItems || []).slice();
-      const have = new Set(merged.map((item) => item.opId));
-      for (const item of retries) if (!have.has(item.opId)) merged.push(item);
-      showUndo(text, merged.map((item) => item.opId), true, merged);
-    } else if (retries.length) {
-      showUndo(text, retries.map((item) => item.opId), true, retries);
-    } else {
-      const built = undoItemsForOutcomes(batch);
-      showUndo(text, batch.opIds, bad, built.length ? built : undefined);
-    }
-  } else if (bad) showStatus(receipt, true);
+  if (settleUndoInflight(batch)) {
+    if (moved) loadList(false).catch(() => {});
+    return;
+  }
+  const retrySplit = undoRetriesByEpoch(batch);
+  // A retry from an older removal must not join or revive the current session.
+  if (retrySplit.stale.length && !retrySplit.live.length) {
+    if (bad && !undoBusy) showStatus(receipt, true);
+    if (moved) loadList(false).catch(() => {});
+    return;
+  }
+  if (undoBusy) {
+    undoSettleQueue.push(batch);
+    if (moved) loadList(false).catch(() => {});
+    return;
+  }
+  applyRemovalSettlement(batch, receipt, bad);
   if (moved) loadList(false).catch(() => {});
 }
 
@@ -8525,40 +8629,79 @@ function retainedUndoOpIds(requested, outcomes, items) {
 async function undoRemoval(requested) {
   if (undoBusy) return;
   if (undoKind === "read") return undoReadBatch();
-  const opIds = Array.isArray(requested) && requested.length
+  const opIds = (Array.isArray(requested) && requested.length
     ? requested.filter((id) => (undoOpIds || []).includes(id))
-    : (undoOpIds || []).slice();
+    : (undoOpIds || []).slice()
+  ).filter((id) => !undoPending.has(id));
   if (!opIds.length) return;
   const prior = undoReceipt || (($("status") && $("status").textContent) || "");
   const previousItems = (undoItems || []).slice();
   const previousError = undoReceiptError;
+  const epoch = undoEpoch;
+  const serial = ++undoFlightSerial;
+  const messages = new Set();
+  for (const item of previousItems) {
+    if (item && opIds.includes(item.opId) && item.messageId) messages.add(String(item.messageId));
+  }
+  for (const id of opIds) undoPending.add(id);
+  undoInflight = { epoch, serial, opIds: new Set(opIds), messages };
   undoBusy = true;
   closeUndoDetails(false);
   paintUndoControls();
   let applied = false;
   try {
     const data = await call("mail:undoRemoval", { opIds, kind: "move" });
-    const outcomes = data && Array.isArray(data.outcomes) ? data.outcomes : [{ status: "unknown" }];
-    const failed = new Set(retainedUndoOpIds(opIds, outcomes, previousItems));
-    const kept = previousItems.filter((item) => !opIds.includes(item.opId) || failed.has(item.opId));
-    const receipt = receiptText("Restore", { outcomes });
-    const incomplete = outcomes.some((row) => row && row.status !== "completed");
-    applied = true;
-    if (!kept.length) {
-      clearUndo();
-      showStatus(prior + " " + receipt, incomplete);
-    } else {
+    if (epoch !== undoEpoch) return;
+    const stillPending = undoInflight && undoInflight.serial === serial && !undoInflight.settled;
+    const hasOutcomes = !!(data && Array.isArray(data.outcomes));
+    const outcomes = hasOutcomes ? data.outcomes : null;
+    // An empty outcome list is still in flight. mail:actionsSettled decides which rows remain.
+    if (stillPending && hasOutcomes && !outcomes.length) {
+      applied = true;
       undoKind = "removal";
-      undoOpIds = kept.map((item) => item.opId);
-      undoItems = kept;
+      undoOpIds = previousItems.map((item) => item.opId);
+      undoItems = previousItems;
       undoReceipt = prior;
-      undoReceiptError = previousError || incomplete;
+      undoReceiptError = previousError;
       paintUndoControls();
-      showStatus(receipt, incomplete);
-    }
+      showStatus(prior);
+    } else if (stillPending && !hasOutcomes) {
+      for (const id of opIds) undoPending.delete(id);
+      undoInflight = null;
+      applied = true;
+      undoKind = "removal";
+      undoOpIds = previousItems.map((item) => item.opId);
+      undoItems = previousItems;
+      undoReceipt = prior;
+      undoReceiptError = true;
+      paintUndoControls();
+      showStatus(prior + " Restore outcome is unknown. Refresh before retrying.", true);
+    } else if (stillPending) {
+      for (const id of opIds) undoPending.delete(id);
+      undoInflight = null;
+      const failed = new Set(retainedUndoOpIds(opIds, outcomes, previousItems));
+      const kept = previousItems.filter((item) => !opIds.includes(item.opId) || failed.has(item.opId));
+      const receipt = receiptText("Restore", { outcomes });
+      const incomplete = outcomes.some((row) => row && row.status !== "completed");
+      applied = true;
+      if (!kept.length) {
+        clearUndo();
+        showStatus(prior + " " + receipt, incomplete);
+      } else {
+        undoKind = "removal";
+        undoOpIds = kept.map((item) => item.opId);
+        undoItems = kept;
+        undoReceipt = prior;
+        undoReceiptError = previousError || incomplete;
+        paintUndoControls();
+        showStatus(receipt, incomplete);
+      }
+    } else applied = true;
     await loadList();
   } catch (error) {
-    if (!applied) {
+    if (epoch === undoEpoch && !applied) {
+      for (const id of opIds) undoPending.delete(id);
+      if (undoInflight && undoInflight.serial === serial) undoInflight = null;
       undoKind = "removal";
       undoOpIds = previousItems.map((item) => item.opId);
       undoItems = previousItems;
@@ -8570,6 +8713,7 @@ async function undoRemoval(requested) {
     showStatus(prior + " Restore outcome is unknown. " + message + " Refresh before retrying.", true);
   } finally {
     undoBusy = false;
+    flushUndoSettleQueue();
     paintUndoControls();
   }
 }
@@ -9795,7 +9939,7 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
   const text = receiptText(label, outcome);
   const waiting = (outcome.outcomes || []).some((row) => row.phase === "accepted");
-  if (outcome.opIds.length) showUndo(text, outcome.opIds, !!outcome.error, undoItemsForOutcomes(outcome));
+  if (outcome.opIds.length) showRemovalUndo(text, outcome.opIds, !!outcome.error, undoItemsForOutcomes(outcome));
   else if (waiting) showStatus(text, !!outcome.error);
   else { clearUndo(); showStatus(text, !!outcome.error); }
   if (completed.size) await loadList();
@@ -10047,6 +10191,9 @@ function onSelectionKey(event) {
   const menuOpen = menu && !menu.hidden;
   if (event.key === "Escape") {
     if (menuOpen || document.querySelector("dialog[open]")) return;
+    // Details is a role=dialog popover, not a <dialog>. Close it without clearing the mailbox selection.
+    if (undoPopoverOpen()) return;
+    if (event.target && typeof event.target.closest === "function" && event.target.closest("[role='dialog']")) return;
     const typing = event.target && event.target.closest && event.target.closest("input, textarea, select");
     if (selectionShortcut({ key: "Escape" }, !!typing) !== "clear") return;
     if (!state.selectedIds.length) return;

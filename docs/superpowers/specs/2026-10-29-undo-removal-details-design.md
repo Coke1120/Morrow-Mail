@@ -39,6 +39,8 @@ Undo all and Undo selected call `mail:undoRemoval({ opIds, kind: "move" })`. Und
 
 After a successful subset, drop those items and refresh N. If none remain, clear the undo session and leave the popover closed. Rows that do not complete stay in the list.
 
+An empty immediate `outcomes` list is pending, not success. `mail:actionsSettled` is applied while that undo is still busy. A later retry belongs to the removal generation that created it and does not join a newer removal. Escape while Details is open closes the popover and leaves the mailbox selection as it is.
+
 ## Non-goals
 
 - Multi-batch undo history
