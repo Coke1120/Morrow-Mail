@@ -6,7 +6,9 @@ This supersedes the undo-in-compose-window paragraph of [Compose opens in its ow
 
 ## Decision
 
-Send with an undo delay closes the compose window as soon as the send is queued. The message waits in a local **Outbox** under **All Account Mail** until that delay ends or the user undoes it. Outbox lists every mailbox. It is not an IMAP, Gmail, or Graph folder.
+Send with an undo delay closes the compose window as soon as the send is queued. The message waits in a local **Outbox** until that delay ends or the user undoes it. Outbox lists every mailbox. It is not an IMAP, Gmail, or Graph folder.
+
+The sidebar places Outbox as a child of the All Account Mail section, beside Inbox. Choosing that section header only expands or collapses it. See [All Account Mail is a collapsible section](2026-10-29-all-account-mail-section.md). The queue and the undo delay are unchanged.
 
 The wait is the existing `scheduled_sends` row with `payload.outbox === true` and `send_at` set to now plus the undo delay. There is no second queue. An exact wake calls the same `pumpScheduled` path that already delivers scheduled mail, so the in-app delay stays about 30 seconds. The 15 second pump and the next launch are the backstop if the wake does not run. The setting stays 0–30 seconds, default 30. Zero still calls `mail:send` immediately and skips Outbox.
 

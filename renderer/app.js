@@ -526,9 +526,35 @@ function allAccountMailMatches(query) {
   return !q || "all account mail".includes(q);
 }
 
+function inboxMatches(query) {
+  const q = String(query || "").trim().toLowerCase();
+  return !q || "inbox".includes(q);
+}
+
 function outboxMatches(query) {
   const q = String(query || "").trim().toLowerCase();
   return !q || "outbox".includes(q);
+}
+
+function allAccountSectionKey() {
+  const collapse = folderCollapse();
+  if (!collapse || !collapse.ALL_ACCOUNT_MAIL_ACCOUNT || !collapse.ALL_ACCOUNT_MAIL_ID) return null;
+  return { accountId: collapse.ALL_ACCOUNT_MAIL_ACCOUNT, folderId: collapse.ALL_ACCOUNT_MAIL_ID };
+}
+
+function allAccountSectionOpen() {
+  const collapse = folderCollapse();
+  if (!collapse || typeof collapse.allAccountMailCollapsed !== "function") return true;
+  return !collapse.allAccountMailCollapsed(state.prefs.collapsedFolders);
+}
+
+function toggleAllAccountSection() {
+  const key = allAccountSectionKey();
+  if (!key) {
+    folderNavRestore = false;
+    return Promise.resolve();
+  }
+  return toggleSidebarFolder(key.accountId, key.folderId);
 }
 
 function allAccountUnreadChip(count, pressed) {
@@ -4166,14 +4192,12 @@ function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
 }
 
 function applyAllAccountMailChrome(root) {
-  if (!root) return;
+  if (!root || typeof root.querySelector !== "function") return;
   const current = !!state.allInbox;
-  root.classList.toggle("is-current", current);
-  const all = root.querySelector("button.all-inbox");
-  if (all) {
-    if (current) all.setAttribute("aria-current", "true");
-    else all.removeAttribute("aria-current");
-    all.setAttribute("aria-label", allAccountMailLabel());
+  const inbox = root.querySelector("button.all-inbox");
+  if (inbox) {
+    if (current) inbox.setAttribute("aria-current", "true");
+    else inbox.removeAttribute("aria-current");
   }
   const chip = root.querySelector("button.all-account-unread");
   if (!chip) return;
@@ -4184,22 +4208,66 @@ function applyAllAccountMailChrome(root) {
   chip.setAttribute("aria-pressed", model.pressed ? "true" : "false");
 }
 
-function allAccountMailRow() {
-  const row = document.createElement("div");
-  row.className = "all-account-mail";
-  row.setAttribute("role", "group");
-  row.setAttribute("aria-label", allAccountMailLabel());
+function allAccountMailRow(open, hasChild, filtering) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "account all-inbox";
+  button.className = "account all-account-mail";
   button.setAttribute("data-testid", "all-account-mail");
+  const expanded = !!(hasChild && open);
+  if (hasChild) {
+    const mark = document.createElement("span");
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = expanded ? "▾ " : "▸ ";
+    button.appendChild(mark);
+  }
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = allAccountMailLabel();
   button.appendChild(name);
-  markFolderNav(button, { key: "all", kind: "all", hasChild: false, expanded: false });
+  const key = allAccountSectionKey();
+  markFolderNav(button, {
+    key: "all",
+    kind: "all",
+    accountId: key ? key.accountId : "",
+    id: key ? key.folderId : "",
+    hasChild: !!hasChild,
+    expanded: expanded,
+    lock: !!filtering,
+  });
+  button.title = hasChild ? ((expanded ? "Collapse " : "Expand ") + allAccountMailLabel()) : allAccountMailLabel();
   button.addEventListener("click", () => {
     folderNavKey = "all";
+    folderNavRestore = true;
+    toggleAllAccountSection().catch((error) => showStatus(error.message, true));
+  });
+  return button;
+}
+
+function allAccountInboxRow() {
+  const line = document.createElement("div");
+  line.className = "folder-line all-account-inbox";
+  const indent = document.createElement("span");
+  indent.className = "folder-indent";
+  indent.style.width = "14px";
+  indent.setAttribute("aria-hidden", "true");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "folder all-inbox";
+  button.setAttribute("data-testid", "all-account-inbox");
+  const label = document.createElement("span");
+  label.className = "folder-label";
+  const icon = document.createElement("span");
+  icon.className = "folder-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = folderIcon("inbox");
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = "Inbox";
+  label.append(icon, name);
+  button.appendChild(label);
+  markFolderNav(button, { key: "inbox", kind: "inbox", parent: "all" });
+  button.addEventListener("click", () => {
+    folderNavKey = "inbox";
     const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "mail");
     selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
@@ -4210,12 +4278,13 @@ function allAccountMailRow() {
   chip.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    folderNavKey = "inbox";
     const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "unread");
     selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
-  row.append(button, chip);
-  applyAllAccountMailChrome(row);
-  return row;
+  line.append(indent, button, chip);
+  applyAllAccountMailChrome(line);
+  return line;
 }
 
 function applyOutboxChrome(root) {
@@ -4440,6 +4509,10 @@ function onFolderNavKey(event) {
   }
   folderNavKey = node.dataset.navKey || "";
   folderNavRestore = true;
+  if (node.dataset.navKind === "all") {
+    toggleAllAccountSection().catch((error) => showStatus(error.message, true));
+    return;
+  }
   if (node.dataset.navKind === "account") {
     const provider = node.dataset.navId || "";
     if (provider === "gmail" || provider === "outlook") {
@@ -4469,12 +4542,12 @@ function renderAccounts() {
     folderQuery,
   ]);
   if (key === folderRenderKey) {
-    applyAllAccountMailChrome(nav.querySelector(".all-account-mail"));
     for (const button of nav.querySelectorAll("button.folder")) {
       const current = !state.allInbox && !state.outbox && button.dataset.accountId === state.accountId && button.dataset.folderId === state.folderId;
       if (current) button.setAttribute("aria-current", "true");
       else button.removeAttribute("aria-current");
     }
+    applyAllAccountMailChrome(nav);
     applyOutboxChrome(nav.querySelector(".outbox-mail"));
     return;
   }
@@ -4488,11 +4561,19 @@ function renderAccounts() {
     applyFolderNavFocus(nav);
     return;
   }
-  const showAllAccountMail = allAccountMailMatches(folderQuery);
-  const showOutbox = outboxMatches(folderQuery);
-  let shownFolder = showAllAccountMail || showOutbox;
-  if (showAllAccountMail) nav.appendChild(allAccountMailRow());
-  if (showOutbox) nav.appendChild(outboxMailRow());
+  const filtering = !!folderQuery;
+  const inboxMatch = inboxMatches(folderQuery);
+  const outboxMatch = outboxMatches(folderQuery);
+  const sectionHasChild = filtering ? (inboxMatch || outboxMatch) : true;
+  const sectionOpen = filtering ? sectionHasChild : allAccountSectionOpen();
+  const showSection = allAccountMailMatches(folderQuery) || (filtering && sectionHasChild);
+  let shownFolder = false;
+  if (showSection) {
+    shownFolder = true;
+    nav.appendChild(allAccountMailRow(sectionOpen, sectionHasChild, filtering));
+    if (sectionOpen && inboxMatch) nav.appendChild(allAccountInboxRow());
+    if (sectionOpen && outboxMatch) nav.appendChild(outboxMailRow());
+  }
   for (const account of state.accounts) {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
