@@ -1,4 +1,5 @@
 const assert=require('node:assert/strict');
+const {JSDOM}=require('jsdom');
 const {renderer}=require('./check-ux-workflows');
 async function run(){
   const nodes=new Map();
@@ -63,6 +64,7 @@ async function run(){
   ui.run(`showUndo('Archive: 1 completed; 1 unknown. Provider error.', ['verified-op'], true);showStatus('Marked read.');`);
   assert.match(get('status').textContent,/Provider error.*[\s\S]*Marked read/);
   statusChip();
+  await undoDetails();
   console.log('dialog-feedback-ok');
 }
 function statusChip() {
@@ -196,6 +198,138 @@ function statusChip() {
   assert.equal(nodes.get('status-chip').hidden, true);
   assert.equal(classes.get('notice').has('collapsed'), false);
   assert.equal(classes.get('notice').has('error'), false);
+}
+async function undoDetails() {
+  const dom = new JSDOM(`<!doctype html><body>
+    <div id="notice">
+      <button type="button" id="status-chip" aria-expanded="false"></button>
+      <p id="status"></p>
+      <button type="button" id="undo" hidden></button>
+      <button type="button" id="undo-details" hidden aria-expanded="false"></button>
+      <div id="undo-details-popover" role="dialog" aria-label="Undo details" hidden>
+        <button type="button" id="undo-details-all">Select all</button>
+        <button type="button" id="undo-details-clear">Clear</button>
+        <ul id="undo-details-list"></ul>
+        <button type="button" id="undo-details-selected" disabled>Undo selected (0)</button>
+      </div>
+    </div>
+  </body>`);
+  dom.window.morrow = { invoke: async () => ({ success: true, data: {} }), on() { return () => {}; } };
+  const ui = renderer({
+    document: dom.window.document,
+    window: dom.window,
+    Node: dom.window.Node,
+    HTMLElement: dom.window.HTMLElement,
+    Element: dom.window.Element,
+    Event: dom.window.Event,
+  });
+  const doc = dom.window.document;
+  const get = (id) => doc.getElementById(id);
+  ui.run(`
+    loadList = async () => {};
+    renderList = () => {};
+    renderReader = () => {};
+    globalThis.undoCalls = [];
+    globalThis.undoMode = 'ok';
+    call = async (channel, payload) => {
+      undoCalls.push({ channel, payload });
+      if (channel !== 'mail:undoRemoval') return {};
+      return {
+        outcomes: (payload.opIds || []).map((id) => ({
+          id: id === 'op-b' ? 'two' : 'one',
+          status: undoMode === 'partial' && id === 'op-b' ? 'unknown' : 'completed',
+          error: undoMode === 'partial' && id === 'op-b' ? 'kept' : undefined,
+        })),
+      };
+    };
+    state.emails = [
+      { id: 'one', accountId: 'a', subject: 'Alpha report', from: 'Ada <ada@example.test>' },
+      { id: 'two', accountId: 'b', subject: 'Beta report', from: 'Ben <ben@example.test>' },
+    ];
+  `);
+  const archive = `finishBulkRemoval('Archive', { opIds: ['op-a', 'op-b'], outcomes: [
+    { id: 'one', status: 'completed', opId: 'op-a' },
+    { id: 'two', status: 'completed', opId: 'op-b' },
+  ] }, ['one', 'two'])`;
+  await ui.run(archive);
+  assert.equal(get("undo").hidden, false);
+  assert.equal(get("undo").textContent, "Undo 2 completed changes");
+  assert.equal(get("undo-details").hidden, false);
+  assert.equal(get("undo-details-popover").hidden, true);
+  ui.run(`statusControl({ target: { nodeType: 1, closest(sel) { return sel === "button" ? { id: "status-chip" } : null; } } })`);
+  assert.equal(get("undo-details-popover").hidden, true, "status chip does not open Details");
+  assert.equal(get("undo-details").getAttribute("aria-expanded"), "false");
+  ui.run("openUndoDetails()");
+  assert.equal(get("undo-details-popover").hidden, false);
+  assert.equal(get("undo-details-popover").getAttribute("role"), "dialog");
+  assert.equal(get("undo-details").getAttribute("aria-expanded"), "true");
+  assert.match(get("undo-details-list").textContent, /Alpha report/);
+  assert.match(get("undo-details-list").textContent, /Ada/);
+  assert.match(get("undo-details-list").textContent, /archive/);
+  assert.match(get("undo-details-list").textContent, /Archive/);
+  assert.match(get("undo-details-list").textContent, /Beta report/);
+  const boxes = [...get("undo-details-list").querySelectorAll("input")];
+  assert.equal(boxes.length, 2);
+  assert.equal(boxes[0].getAttribute("aria-label"), "Alpha report");
+  assert.equal(get("undo-details-selected").disabled, true);
+  ui.run("setUndoDetailChecks(true)");
+  assert.equal(get("undo-details-selected").textContent, "Undo selected (2)");
+  assert.equal(get("undo-details-selected").disabled, false);
+  ui.run("setUndoDetailChecks(false)");
+  assert.equal(get("undo-details-selected").textContent, "Undo selected (0)");
+  assert.equal(get("undo-details-selected").disabled, true);
+  await ui.run("undoRemoval(['op-a'])");
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(undoCalls[0].payload)")), { opIds: ["op-a"], kind: "move" });
+  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  assert.equal(get("undo-details-popover").hidden, true);
+  ui.run("openUndoDetails()");
+  assert.match(get("undo-details-list").textContent, /Beta report/);
+  assert.doesNotMatch(get("undo-details-list").textContent, /Alpha report/);
+  ui.run("undoCalls.length = 0; undoMode = 'partial';");
+  await ui.run(archive);
+  await ui.run("undoRemoval()");
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(undoCalls[0].payload.opIds)")), ["op-a", "op-b"]);
+  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  assert.match(get("status").textContent, /Restore/);
+  assert.match(get("status").textContent, /unknown/);
+  assert.match(get("status").textContent, /kept/);
+  ui.run("openUndoDetails()");
+  assert.match(get("undo-details-list").textContent, /Beta report/);
+  assert.doesNotMatch(get("undo-details-list").textContent, /Alpha report/);
+  ui.run("undoMode = 'ok';");
+  await ui.run("undoRemoval()");
+  assert.equal(get("undo").hidden, true);
+  assert.equal(get("undo-details").hidden, true);
+  await ui.run(archive);
+  ui.run("showReadUndo('Marked read.', [{ emailId: 'm', accountId: 'a' }])");
+  assert.equal(ui.run("undoKind"), "removal");
+  assert.equal(get("undo").textContent, "Undo 2 completed changes");
+  assert.equal(get("undo-details").hidden, false);
+  assert.match(get("status").textContent, /Marked read/);
+  await ui.run(`finishBulkRemoval('Move', { opIds: ['op-m'], outcomes: [{ id: 'one', status: 'completed', opId: 'op-m' }] }, ['one'], { messages: state.emails, action: 'move', destinationLabel: 'Projects' })`);
+  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  ui.run("openUndoDetails()");
+  assert.match(get("undo-details-list").textContent, /Alpha report/);
+  assert.match(get("undo-details-list").textContent, /move/);
+  assert.match(get("undo-details-list").textContent, /Projects/);
+  assert.doesNotMatch(get("undo-details-list").textContent, /Beta report/);
+  ui.run("prevented = false; statusDismissKey({ key: 'Escape', preventDefault() { prevented = true; } });");
+  assert.equal(ui.run("prevented"), true);
+  assert.equal(get("undo-details-popover").hidden, true);
+  assert.equal(doc.activeElement, get("undo-details"));
+  ui.run("openUndoDetails()");
+  ui.run("statusDismissPointer({ button: 0, target: document.body })");
+  assert.equal(get("undo-details-popover").hidden, true);
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(retainedUndoOpIds(['op-a','op-b'], [{status:'completed'},{status:'completed'}], [{opId:'op-a',messageId:'one'},{opId:'op-b',messageId:'two'}]))")), []);
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(retainedUndoOpIds(['op-a'], [{id:'one', status:'unknown'}], [{opId:'op-a', messageId:'one'}]))")), ["op-a"]);
+  ui.run("call = () => new Promise((resolve) => { globalThis.releaseUndo = resolve; });");
+  const pending = ui.run("undoRemoval()");
+  ui.run("openUndoDetails()");
+  assert.equal(get("undo-details-popover").hidden, true, "Details stays closed while Undo is running");
+  assert.equal(get("undo-details").disabled, true);
+  ui.run("releaseUndo({ outcomes: [{ id: 'one', status: 'completed' }] })");
+  await pending;
+  assert.equal(get("undo").hidden, true);
 }
 module.exports={run};
 if(require.main===module)run().catch(e=>{console.error(e);process.exitCode=1;});

@@ -112,6 +112,9 @@ let pendingPeekAccountId = "";
 let reloadTimer = null;
 let undoKind = "";
 let undoOpIds = null;
+let undoItems = null;
+let undoBusy = false;
+const undoSnapshots = new Map();
 let readUndoItems = null;
 let readUndoTimer = 0;
 let undoReceipt = "";
@@ -295,6 +298,9 @@ function statusToggleTarget(event) {
 }
 
 function statusControl(event) {
+  const pop = $("undo-details-popover");
+  const target = event && event.target;
+  if (pop && pop.hidden === false && target && target.nodeType && typeof pop.contains === "function" && pop.contains(target)) return false;
   const button = statusToggleTarget(event);
   if (button && button.id !== "status-chip") return false;
   const status = $("status");
@@ -309,6 +315,7 @@ function statusControl(event) {
 }
 
 function statusDismissPointer(event) {
+  if (undoPopoverOpen() && !eventInsideUndoDetails(event)) closeUndoDetails(false);
   if (!statusExpanded) return false;
   if (event && event.button !== undefined && event.button !== 0) return false;
   const status = $("status");
@@ -320,13 +327,19 @@ function statusDismissPointer(event) {
 }
 
 function statusDismissKey(event) {
-  if (!event || event.key !== "Escape" || !statusExpanded) return false;
+  if (!event || event.key !== "Escape") return false;
   if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return false;
-  const target = event.target;
-  if (target && typeof target.closest === "function" && target.closest("input, textarea, select, [contenteditable='true']")) return false;
   if (typeof document.querySelector === "function" && document.querySelector("dialog[open]")) return false;
   const menu = typeof document.getElementById === "function" ? document.getElementById("organize-menu") : null;
   if (menu && !menu.hidden) return false;
+  if (undoPopoverOpen()) {
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    closeUndoDetails(true);
+    return true;
+  }
+  if (!statusExpanded) return false;
+  const target = event.target;
+  if (target && typeof target.closest === "function" && target.closest("input, textarea, select, [contenteditable='true']")) return false;
   if (typeof event.preventDefault === "function") event.preventDefault();
   collapseStatus();
   return true;
@@ -7854,18 +7867,279 @@ function clearReadUndoTimer() {
   readUndoTimer = 0;
 }
 
-function showUndo(text, opIds, isError) {
+function removalAction(label) {
+  const text = String(label || "").toLowerCase();
+  if (text.includes("trash")) return "trash";
+  if (text.includes("archive")) return "archive";
+  return "move";
+}
+
+function destinationFor(action, explicit) {
+  if (explicit) return String(explicit);
+  if (action === "archive") return "Archive";
+  if (action === "trash") return "Trash";
+  return "";
+}
+
+function emailById(id) {
+  if (id == null || id === "") return null;
+  const key = String(id);
+  const lists = [state.emails, state.thread];
+  if (state.email) lists.push([state.email]);
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    const found = list.find((row) => row && String(row.id) === key);
+    if (found) return found;
+  }
+  return null;
+}
+
+function rememberUndoSnapshots(messages, action, destinationLabel) {
+  const dest = destinationFor(action, destinationLabel);
+  for (const email of messages || []) {
+    if (!email || email.id == null || email.id === "") continue;
+    undoSnapshots.set(String(email.id), {
+      messageId: String(email.id),
+      accountId: email.accountId || "",
+      subject: email.subject || "(No subject)",
+      from: email.from || email.fromAddress || "",
+      action: action || "move",
+      destinationLabel: dest,
+    });
+  }
+}
+
+function snapshotEmails(ids, extra) {
+  const out = [];
+  const seen = new Set();
+  const add = (email) => {
+    if (!email || email.id == null || email.id === "") return;
+    const key = String(email.id);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(email);
+  };
+  for (const email of (extra && extra.messages) || []) add(email);
+  for (const id of ids || []) add(emailById(id));
+  return out;
+}
+
+function normalizeUndoItem(item) {
+  const source = item || {};
+  const snap = source.messageId ? undoSnapshots.get(String(source.messageId)) : null;
+  const action = source.action || (snap && snap.action) || "move";
+  return {
+    opId: source.opId,
+    messageId: source.messageId || (snap && snap.messageId) || "",
+    accountId: source.accountId || (snap && snap.accountId) || "",
+    subject: source.subject || (snap && snap.subject) || "(No subject)",
+    from: source.from || (snap && snap.from) || "",
+    action,
+    destinationLabel: source.destinationLabel || (snap && snap.destinationLabel) || destinationFor(action, ""),
+  };
+}
+
+function undoListFor(opIds, items) {
+  if (!opIds) return null;
+  const byOp = new Map();
+  const source = Array.isArray(items) ? items : (undoItems || []);
+  for (const item of source) {
+    if (item && item.opId) byOp.set(item.opId, item);
+  }
+  return opIds.map((opId) => normalizeUndoItem(byOp.get(opId) || { opId }));
+}
+
+function undoItemsForOutcomes(outcome) {
+  const items = [];
+  const seen = new Set();
+  for (const row of (outcome && outcome.outcomes) || []) {
+    if (!row || row.status !== "completed" || !row.opId || seen.has(row.opId)) continue;
+    if (row.kind && row.kind !== "remove") continue;
+    seen.add(row.opId);
+    const snap = undoSnapshots.get(String(row.id)) || {};
+    items.push(normalizeUndoItem({
+      opId: row.opId,
+      messageId: row.id || snap.messageId || "",
+      accountId: snap.accountId || "",
+      subject: snap.subject || "",
+      from: snap.from || "",
+      action: snap.action || "",
+      destinationLabel: snap.destinationLabel || "",
+    }));
+  }
+  return items;
+}
+
+function undoRetryItems(batch) {
+  const items = [];
+  const seen = new Set();
+  for (const row of (batch && batch.outcomes) || []) {
+    if (!row || !row.retryOpId || seen.has(row.retryOpId)) continue;
+    if (row.kind && row.kind !== "undo") continue;
+    seen.add(row.retryOpId);
+    const prior = (undoItems || []).find((item) => item && item.opId === row.retryOpId);
+    if (prior) {
+      items.push(prior);
+      continue;
+    }
+    const snap = undoSnapshots.get(String(row.id)) || {};
+    items.push(normalizeUndoItem({
+      opId: row.retryOpId,
+      messageId: snap.messageId || "",
+      accountId: snap.accountId || "",
+      subject: snap.subject || "",
+      from: snap.from || "",
+      action: snap.action || "",
+      destinationLabel: snap.destinationLabel || "",
+    }));
+  }
+  return items;
+}
+
+function rememberUndoItems(items) {
+  for (const item of items || []) {
+    if (!item || !item.messageId) continue;
+    undoSnapshots.set(String(item.messageId), {
+      messageId: String(item.messageId),
+      accountId: item.accountId || "",
+      subject: item.subject || "(No subject)",
+      from: item.from || "",
+      action: item.action || "move",
+      destinationLabel: item.destinationLabel || "",
+    });
+  }
+}
+
+function undoPopoverOpen() {
+  const pop = $("undo-details-popover");
+  return !!(pop && pop.hidden === false);
+}
+
+function eventInsideUndoDetails(event) {
+  const target = event && event.target;
+  if (!target || !target.nodeType) return false;
+  const pop = $("undo-details-popover");
+  const button = $("undo-details");
+  if (pop && typeof pop.contains === "function" && pop.contains(target)) return true;
+  if (button && typeof button.contains === "function" && button.contains(target)) return true;
+  return target === button;
+}
+
+function closeUndoDetails(restoreFocus) {
+  const pop = $("undo-details-popover");
+  if (pop) pop.hidden = true;
+  const button = $("undo-details");
+  if (!button) return;
+  if (typeof button.setAttribute === "function") button.setAttribute("aria-expanded", "false");
+  if (restoreFocus && typeof button.focus === "function") button.focus();
+}
+
+function paintUndoSelectedCount() {
+  const button = $("undo-details-selected");
+  const list = $("undo-details-list");
+  if (!button) return;
+  const boxes = list && typeof list.querySelectorAll === "function" ? list.querySelectorAll('input[type="checkbox"]') : [];
+  let count = 0;
+  for (const box of boxes) if (box.checked) count += 1;
+  button.textContent = "Undo selected (" + count + ")";
+  button.disabled = count === 0 || !!undoBusy;
+}
+
+function paintUndoDetails() {
+  const list = $("undo-details-list");
+  if (!list || typeof list.replaceChildren !== "function" || typeof document.createElement !== "function") return;
+  list.replaceChildren();
+  for (const item of undoItems || []) {
+    const li = document.createElement("li");
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = item.opId;
+    box.setAttribute("aria-label", item.subject || "(No subject)");
+    box.addEventListener("change", paintUndoSelectedCount);
+    const text = document.createElement("span");
+    text.className = "undo-details-copy";
+    const subject = document.createElement("span");
+    subject.className = "undo-details-subject";
+    subject.textContent = item.subject || "(No subject)";
+    const meta = document.createElement("span");
+    meta.className = "undo-details-meta";
+    const action = item.action || "move";
+    const where = item.destinationLabel ? " → " + item.destinationLabel : "";
+    meta.textContent = [item.from, action + where].filter(Boolean).join(" · ");
+    text.append(subject, meta);
+    label.append(box, text);
+    li.appendChild(label);
+    list.appendChild(li);
+  }
+  paintUndoSelectedCount();
+}
+
+function setUndoDetailChecks(on) {
+  const list = $("undo-details-list");
+  if (!list || typeof list.querySelectorAll !== "function") return;
+  for (const box of list.querySelectorAll('input[type="checkbox"]')) box.checked = !!on;
+  paintUndoSelectedCount();
+}
+
+function selectedUndoOpIds() {
+  const list = $("undo-details-list");
+  if (!list || typeof list.querySelectorAll !== "function") return [];
+  const ids = [];
+  for (const box of list.querySelectorAll('input[type="checkbox"]')) {
+    if (box.checked && box.value) ids.push(box.value);
+  }
+  return ids;
+}
+
+function openUndoDetails() {
+  if (undoBusy || undoKind !== "removal" || !undoOpIds || !undoOpIds.length) return;
+  const pop = $("undo-details-popover");
+  if (!pop) return;
+  if (pop.hidden === false) {
+    closeUndoDetails(true);
+    return;
+  }
+  paintUndoDetails();
+  pop.hidden = false;
+  const button = $("undo-details");
+  if (button && typeof button.setAttribute === "function") button.setAttribute("aria-expanded", "true");
+  const first = typeof pop.querySelector === "function" ? pop.querySelector("button, input") : null;
+  if (first && typeof first.focus === "function") first.focus();
+}
+
+function paintUndoControls() {
+  const undo = $("undo");
+  const details = $("undo-details");
+  const count = undoKind === "removal" && undoOpIds ? undoOpIds.length : 0;
+  if (undo && undoKind === "removal") {
+    undo.hidden = !count;
+    undo.disabled = !!undoBusy;
+    undo.textContent = "Undo " + count + " completed changes";
+  }
+  if (details) {
+    details.hidden = !count;
+    details.disabled = !!undoBusy || !count;
+    if (!count && typeof details.setAttribute === "function") details.setAttribute("aria-expanded", "false");
+  }
+  if (!count) closeUndoDetails(false);
+  else if (undoPopoverOpen()) paintUndoDetails();
+}
+
+function showUndo(text, opIds, isError, items) {
   clearReadUndoTimer();
+  const nextIds = opIds && opIds.length ? opIds.slice() : null;
+  const same = undoKind === "removal" && undoOpIds && nextIds && undoOpIds.join("\0") === nextIds.join("\0");
+  if (!same) closeUndoDetails(false);
   undoKind = "removal";
   readUndoItems = null;
   undoReceipt = text;
   undoReceiptError = !!isError;
-  undoOpIds = opIds && opIds.length ? opIds.slice() : null;
-  const undo = $("undo");
-  if (undo) {
-    undo.hidden = !undoOpIds;
-    undo.textContent = "Undo " + (undoOpIds ? undoOpIds.length : 0) + " completed changes";
-  }
+  undoOpIds = nextIds;
+  undoItems = undoListFor(nextIds, items);
+  rememberUndoItems(undoItems);
+  paintUndoControls();
   showStatus(text, isError);
 }
 
@@ -7875,15 +8149,23 @@ function showReadUndo(text, items) {
     return;
   }
   clearReadUndoTimer();
+  closeUndoDetails(false);
   undoKind = "read";
   undoOpIds = null;
+  undoItems = null;
   readUndoItems = (items || []).slice();
   undoReceipt = text || "";
   undoReceiptError = false;
   const undo = $("undo");
   if (undo) {
     undo.hidden = !readUndoItems.length;
+    undo.disabled = false;
     undo.textContent = "Undo";
+  }
+  const details = $("undo-details");
+  if (details) {
+    details.hidden = true;
+    details.disabled = false;
   }
   showStatus(text);
   readUndoTimer = armStatusTimer(() => {
@@ -7896,11 +8178,22 @@ function clearUndo() {
   clearReadUndoTimer();
   undoKind = "";
   undoOpIds = null;
+  undoItems = null;
   readUndoItems = null;
   undoReceipt = "";
   undoReceiptError = false;
+  closeUndoDetails(false);
   const undo = $("undo");
-  if (undo) undo.hidden = true;
+  if (undo) {
+    undo.hidden = true;
+    undo.disabled = false;
+  }
+  const details = $("undo-details");
+  if (details) {
+    details.hidden = true;
+    details.disabled = false;
+    if (typeof details.setAttribute === "function") details.setAttribute("aria-expanded", "false");
+  }
 }
 
 function focusAction(name) {
@@ -8001,9 +8294,22 @@ function applyActionSettlement(batch) {
   }
   const bad = outcomes.some((row) => row.status && row.status !== "completed");
   const receipt = receiptText("Mailbox", { outcomes });
-  if (batch && Array.isArray(batch.opIds) && batch.opIds.length) {
+  // mail:undoRemoval applies its own receipt; a settlement in that window must not replace the list.
+  if (!undoBusy && batch && Array.isArray(batch.opIds) && batch.opIds.length) {
     const current = $("status") && $("status").textContent;
-    showUndo(bad || !current ? receipt : current, batch.opIds, bad);
+    const text = bad || !current ? receipt : current;
+    const retries = undoRetryItems(batch);
+    if (retries.length && undoKind === "removal" && undoOpIds && undoOpIds.length) {
+      const merged = (undoItems || []).slice();
+      const have = new Set(merged.map((item) => item.opId));
+      for (const item of retries) if (!have.has(item.opId)) merged.push(item);
+      showUndo(text, merged.map((item) => item.opId), true, merged);
+    } else if (retries.length) {
+      showUndo(text, retries.map((item) => item.opId), true, retries);
+    } else {
+      const built = undoItemsForOutcomes(batch);
+      showUndo(text, batch.opIds, bad, built.length ? built : undefined);
+    }
   } else if (bad) showStatus(receipt, true);
   if (moved) loadList(false).catch(() => {});
 }
@@ -8086,13 +8392,17 @@ async function replyFromList(email, kind) {
   await presentCompose(composeSeed(opened, kind, self));
 }
 
-async function finishRemoval(email, label, data) {
+async function finishRemoval(email, label, data, destinationLabel) {
   const outcomes = receiptRows(data, { params: { emailId: email.id } });
   return finishBulkRemoval(label, {
     outcomes,
     opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId),
     error: outcomes.some((row) => row.status !== "completed") ? "Some changes could not be verified." : "",
-  }, [email.id]);
+  }, [email.id], {
+    messages: [email],
+    action: removalAction(label),
+    destinationLabel,
+  });
 }
 
 
@@ -8101,7 +8411,10 @@ async function removeOpen(email, channel, label) {
   const review = await reviewedRemoval([withSelectionMembers(email)], kind);
   const answer = await askConfirm(bulkConfirmCopy(kind, review.rows.length, review.detail));
   if (!answer || !answer.ok) return;
-  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls), review.rows.map((row) => row.id));
+  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls), review.rows.map((row) => row.id), {
+    messages: review.rows,
+    action: kind === "trash" ? "trash" : "archive",
+  });
 }
 
 async function archiveOpen(email) {
@@ -8142,7 +8455,7 @@ async function moveOpen(email, targetFolderId) {
     accountId: email.accountId,
     targetFolderId,
     folderId: email.folderId,
-  }));
+  }), target);
 }
 
 async function undoReadBatch() {
@@ -8180,21 +8493,92 @@ async function undoReadBatch() {
   }
 }
 
-async function undoRemoval() {
+function retainedUndoOpIds(requested, outcomes, items) {
+  const rows = Array.isArray(outcomes) ? outcomes : [];
+  if (!rows.length) return [];
+  const itemByMessage = new Map();
+  for (const item of items || []) {
+    if (item && item.opId && item.messageId) itemByMessage.set(String(item.messageId), item.opId);
+  }
+  const failed = new Set();
+  const completed = new Set();
+  for (const row of rows) {
+    if (!row) continue;
+    if (row.status === "completed") {
+      if (row.id && itemByMessage.has(String(row.id))) completed.add(itemByMessage.get(String(row.id)));
+      continue;
+    }
+    const opId = row.retryOpId
+      || (row.id && itemByMessage.get(String(row.id)))
+      || (requested.length === 1 ? requested[0] : "");
+    if (opId) failed.add(opId);
+  }
+  if (failed.size) return requested.filter((opId) => failed.has(opId));
+  const completedCount = rows.filter((row) => row && row.status === "completed").length;
+  if (completedCount === rows.length && (completed.size === requested.length || (!completed.size && rows.length === requested.length) || requested.length === 1)) {
+    return [];
+  }
+  if (completed.size) return requested.filter((opId) => !completed.has(opId));
+  return requested.slice();
+}
+
+async function undoRemoval(requested) {
+  if (undoBusy) return;
   if (undoKind === "read") return undoReadBatch();
-  const opIds = undoOpIds;
-  if (!opIds || !opIds.length) return;
-  const prior = undoReceipt || $("status").textContent;
-  clearUndo();
+  const opIds = Array.isArray(requested) && requested.length
+    ? requested.filter((id) => (undoOpIds || []).includes(id))
+    : (undoOpIds || []).slice();
+  if (!opIds.length) return;
+  const prior = undoReceipt || (($("status") && $("status").textContent) || "");
+  const previousItems = (undoItems || []).slice();
+  const previousError = undoReceiptError;
+  undoBusy = true;
+  closeUndoDetails(false);
+  paintUndoControls();
+  let applied = false;
   try {
     const data = await call("mail:undoRemoval", { opIds, kind: "move" });
     const outcomes = data && Array.isArray(data.outcomes) ? data.outcomes : [{ status: "unknown" }];
-    const incomplete = outcomes.some((row) => row.status !== "completed");
-    showStatus(prior + " " + receiptText("Restore", { outcomes }), incomplete);
+    const failed = new Set(retainedUndoOpIds(opIds, outcomes, previousItems));
+    const kept = previousItems.filter((item) => !opIds.includes(item.opId) || failed.has(item.opId));
+    const receipt = receiptText("Restore", { outcomes });
+    const incomplete = outcomes.some((row) => row && row.status !== "completed");
+    applied = true;
+    if (!kept.length) {
+      clearUndo();
+      showStatus(prior + " " + receipt, incomplete);
+    } else {
+      undoKind = "removal";
+      undoOpIds = kept.map((item) => item.opId);
+      undoItems = kept;
+      undoReceipt = prior;
+      undoReceiptError = previousError || incomplete;
+      paintUndoControls();
+      showStatus(receipt, incomplete);
+    }
     await loadList();
   } catch (error) {
-    showStatus(prior + " Restore outcome is unknown. " + error.message + " Refresh before retrying.", true);
+    if (!applied) {
+      undoKind = "removal";
+      undoOpIds = previousItems.map((item) => item.opId);
+      undoItems = previousItems;
+      undoReceipt = prior;
+      undoReceiptError = previousError;
+      paintUndoControls();
+    }
+    const message = error && error.message ? error.message : String(error);
+    showStatus(prior + " Restore outcome is unknown. " + message + " Refresh before retrying.", true);
+  } finally {
+    undoBusy = false;
+    paintUndoControls();
   }
+}
+
+async function undoSelected() {
+  if (undoBusy) return;
+  const ids = selectedUndoOpIds();
+  if (!ids.length) return;
+  await undoRemoval(ids);
 }
 
 async function snoozeOpen(email, preset) {
@@ -9090,7 +9474,7 @@ async function applyLabelPlans(snapshot) {
     if (!completed.has(String(plan.email.id))) continue;
     stampLabelIds(plan.email, snapshot.labels, plan.addLabelIds, plan.removeLabelIds);
   }
-  if (removes) await finishBulkRemoval("Labels", outcome, messages.map((row) => row.id));
+  if (removes) await finishBulkRemoval("Labels", outcome, messages.map((row) => row.id), { messages, action: "move" });
   else showStatus(receiptText("Labels", outcome), !!outcome.error);
 }
 
@@ -9399,7 +9783,9 @@ async function runBulk(calls) {
   return outcome;
 }
 
-async function finishBulkRemoval(label, outcome, ids) {
+async function finishBulkRemoval(label, outcome, ids, extra) {
+  const action = (extra && extra.action) || removalAction(label);
+  rememberUndoSnapshots(snapshotEmails(ids, extra), action, extra && extra.destinationLabel);
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => row.id));
   if (state.email && completed.has(state.email.id)) {
     state.email = null;
@@ -9409,7 +9795,7 @@ async function finishBulkRemoval(label, outcome, ids) {
   state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
   const text = receiptText(label, outcome);
   const waiting = (outcome.outcomes || []).some((row) => row.phase === "accepted");
-  if (outcome.opIds.length) showUndo(text, outcome.opIds, !!outcome.error);
+  if (outcome.opIds.length) showUndo(text, outcome.opIds, !!outcome.error, undoItemsForOutcomes(outcome));
   else if (waiting) showStatus(text, !!outcome.error);
   else { clearUndo(); showStatus(text, !!outcome.error); }
   if (completed.size) await loadList();
@@ -9424,7 +9810,10 @@ async function bulkArchive() {
   const gated = confirmedCalls("archive", answer, review.calls, review.detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  await finishBulkRemoval("Archive", outcome, messages.map((item) => item.id));
+  await finishBulkRemoval("Archive", outcome, review.rows.map((item) => item.id), {
+    messages: review.rows,
+    action: "archive",
+  });
 }
 
 async function bulkTrash() {
@@ -9435,7 +9824,10 @@ async function bulkTrash() {
   const gated = confirmedCalls("trash", answer, review.calls, review.detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  await finishBulkRemoval("Move to Trash", outcome, messages.map((item) => item.id));
+  await finishBulkRemoval("Move to Trash", outcome, review.rows.map((item) => item.id), {
+    messages: review.rows,
+    action: "trash",
+  });
 }
 
 async function bulkSetRead(isRead) {
@@ -9534,7 +9926,11 @@ async function applyBulkMove(messages, target, targetName) {
   }
   const count = callCount(gated);
   const label = action === "move" ? "Move" : "Remove label";
-  await finishBulkRemoval(label, outcome, acted);
+  await finishBulkRemoval(label, outcome, acted, {
+    messages: rows,
+    action: "move",
+    destinationLabel: name,
+  });
 }
 
 async function applyPickedMove(messages, kind, destinationId, name) {
@@ -21921,6 +22317,14 @@ function wire() {
   wireSplits();
   wireQuoteSplit();
   $("undo").addEventListener("click", () => guard(undoRemoval));
+  const undoDetailsButton = $("undo-details");
+  if (undoDetailsButton) undoDetailsButton.addEventListener("click", () => openUndoDetails());
+  const undoDetailsAll = $("undo-details-all");
+  if (undoDetailsAll) undoDetailsAll.addEventListener("click", () => setUndoDetailChecks(true));
+  const undoDetailsClear = $("undo-details-clear");
+  if (undoDetailsClear) undoDetailsClear.addEventListener("click", () => setUndoDetailChecks(false));
+  const undoDetailsSelected = $("undo-details-selected");
+  if (undoDetailsSelected) undoDetailsSelected.addEventListener("click", () => guard(() => undoSelected()));
   $("undo-send").addEventListener("click", cancelUndoSend);
   $("profile").addEventListener("change", () => {
     cancelDiscovery();

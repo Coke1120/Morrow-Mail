@@ -141,6 +141,17 @@
       </button>
       <p id="status" role="status"></p>
       <button type="button" class="ghost" id="undo" hidden>Undo</button>
+      <button type="button" class="ghost" id="undo-details" hidden aria-expanded="false" aria-haspopup="dialog" aria-controls="undo-details-popover">Details</button>
+      <div id="undo-details-popover" class="undo-details-popover" role="dialog" aria-label="Undo details" hidden>
+        <div class="undo-details-tools">
+          <button type="button" class="ghost" id="undo-details-all">Select all</button>
+          <button type="button" class="ghost" id="undo-details-clear">Clear</button>
+        </div>
+        <ul id="undo-details-list" aria-label="Completed changes"></ul>
+        <div class="undo-details-foot">
+          <button type="button" class="ghost" id="undo-details-selected" disabled>Undo selected (0)</button>
+        </div>
+      </div>
       <button type="button" class="ghost" id="undo-send" hidden>Undo send</button>
       <button type="button" class="ghost" id="undo-schedule" hidden>Undo cancel</button>
     </div>
