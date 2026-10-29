@@ -37,6 +37,12 @@
         blurb: "Gmail label copies appear once in a conversation, using the provider message ID within the same account. The selected folder copy stays selected. Folder records remain stored. Distinct provider messages and rows without a reliable provider ID stay separate, even when RFC Message-ID matches. A single message has no Earlier section.",
       },
       {
+        id: "reading-header",
+        title: "Reading header",
+        category: "Mail",
+        blurb: "The open message shows its date and time on the From row, right-aligned, in the main reading pane and in a separate reader window. That text uses the reader's existing date and time format. To and Cc stay on the lines below.",
+      },
+      {
         id: "sender-identities",
         title: "Sender identities",
         category: "Mail",
