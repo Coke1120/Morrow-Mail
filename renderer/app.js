@@ -20096,7 +20096,7 @@ function agentCategoryReadButton(role, items) {
 
 function paintAgentReadProjection(messageId, unread, original) {
   eachStarRow({ id: messageId }, (row) => { row.unread = unread; row.isRead = !unread; });
-  if (state.view === "mail") renderList();
+  if (state.view === "mail" && $("messages") && $("message-list")) renderList();
   const rows = original ? [original] : [];
   for (const section of agentPaintPayload && agentPaintPayload.sections || []) rows.push(...section.items || []);
   for (const item of rows) {
@@ -20127,15 +20127,16 @@ async function settleAgentReadOutcome(outcome) {
   const same = outcome.generation === receipt.generation && (!receipt.actionId || outcome.actionId === receipt.actionId);
   const completed = same && outcome.status === "completed" && (!outcome.kind || outcome.kind === "read") && (!outcome.projection || outcome.projection.unread === false);
   const unread = outcome.projection ? !!outcome.projection.unread : !completed;
+  // Record the confirmation before painting. A list repaint must not drop it.
+  if (completed && entry.signal) await learnAgent({ kind: "action", action: "mark-read", begunAt: entry.begunAt, items: [entry.signal] });
+  if (completed && entry.complete) {
+    const context = agentMessageContext(entry.item);
+    await updateTodo(context.messageId, "done", context.accountId);
+  }
   if (outcome.generation >= (actionGeneration.get(outcome.id) || 0)) paintAgentReadProjection(String(outcome.id), unread, entry.item);
   if (!completed) {
     showStatus("Mark as read was not confirmed.", true);
     return same && outcome.status !== "completed" ? outcome.status : "superseded";
-  }
-  if (entry.signal) await learnAgent({ kind: "action", action: "mark-read", begunAt: entry.begunAt, items: [entry.signal] });
-  if (entry.complete) {
-    const context = agentMessageContext(entry.item);
-    await updateTodo(context.messageId, "done", context.accountId);
   }
   showStatus(entry.complete ? "Marked as read; todo completed." : "Marked as read.");
   return "completed";

@@ -27,7 +27,8 @@ send may count once when it succeeds, not when it is queued.
 Read acceptance is not provider success. The renderer retains the click's
 `begunAt`, action id and generation until a completed journal settlement.
 Failed, unknown, superseded and unattempted reads do not count or complete
-todos. Split settlements from one batch reuse that click identity. Undo can
+todos. A confirmed read is stored before the mail list is repainted, including
+when that list is not mounted. Split settlements from one batch reuse that click identity. Undo can
 cancel a pending read observation; it does not remove a confirmed observation.
 Reply source identity is frozen separately from the optional Needs You todo,
 so successful FYI, Other and already-completed-source replies can also count.

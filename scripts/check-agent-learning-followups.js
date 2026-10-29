@@ -218,6 +218,19 @@ async function run() {
     await ui.run("markAgentMessageRead(item)");
     assert.equal(learning.list().patterns[0].count, 1);
 
+    reset();
+    ui.run("globalThis.savedPaintProjection = paintAgentReadProjection; paintAgentReadProjection = () => { throw new Error('list chrome missing'); };");
+    try {
+      receipt = (id) => ({ pending: [], outcomes: [outcome(id, "completed")] });
+      ui.context.item = seed("paint-fails");
+      await ui.run("markAgentMessageRead(item)").catch((error) => {
+        if (!/list chrome missing/.test(String(error && error.message))) throw error;
+      });
+      assert.equal(learning.list().patterns[0].count, 1);
+    } finally {
+      ui.run("paintAgentReadProjection = savedPaintProjection;");
+    }
+
     for (const category of ["fyi", "other", "done"]) {
       for (const kind of ["reply", "all"]) {
         ui.context.source = { id: category, accountId: "synthetic", from: category + "@example.test", threadId: category + "-thread", subject: "Source" };
