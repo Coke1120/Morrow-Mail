@@ -3250,25 +3250,17 @@ button.account { display: block; width: 100%; border-radius: 6px; }
 
 button.account:hover { background: rgba(255, 255, 255, 0.1); }
 
-.all-account-mail {
+button.all-account-mail {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 10px 0 2px;
+  gap: 0;
   min-width: 0;
-  max-width: 100%;
-  border-radius: 6px;
 }
 
-.all-account-mail:hover,
-.all-account-mail:focus-within {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.all-account-mail.is-current,
-.all-account-mail.is-current:hover,
-.all-account-mail.is-current:focus-within {
-  background: rgba(255, 255, 255, 0.16);
+button.all-account-mail .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 button.all-inbox {
@@ -3285,10 +3277,6 @@ button.all-inbox {
 button.all-inbox:hover,
 button.all-inbox:focus-visible {
   background: transparent;
-}
-
-.all-account-mail.is-current button.all-inbox {
-  color: #fff;
 }
 
 button.all-inbox .name {

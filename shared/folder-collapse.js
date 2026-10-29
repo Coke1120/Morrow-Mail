@@ -7,6 +7,9 @@
   const MAX_IDS = 300;
   const MAX_ACCOUNT = 200;
   const MAX_FOLDER = 500;
+  // sidebarCollapsedFolders["*"] holds "all-account-mail" when that section is collapsed.
+  const ALL_ACCOUNT_MAIL_ACCOUNT = "*";
+  const ALL_ACCOUNT_MAIL_ID = "all-account-mail";
 
   function cleanId(value, max) {
     if (typeof value !== "string") return "";
@@ -54,6 +57,10 @@
     const map = normalize(store);
     const id = cleanId(String(accountId || ""), MAX_ACCOUNT);
     return id && map[id] ? map[id].slice() : [];
+  }
+
+  function allAccountMailCollapsed(store) {
+    return idsFor(store, ALL_ACCOUNT_MAIL_ACCOUNT).indexOf(ALL_ACCOUNT_MAIL_ID) >= 0;
   }
 
   function toggle(store, accountId, folderId) {
@@ -153,9 +160,12 @@
   }
 
   return {
+    ALL_ACCOUNT_MAIL_ACCOUNT: ALL_ACCOUNT_MAIL_ACCOUNT,
+    ALL_ACCOUNT_MAIL_ID: ALL_ACCOUNT_MAIL_ID,
     normalize: normalize,
     cast: cast,
     idsFor: idsFor,
+    allAccountMailCollapsed: allAccountMailCollapsed,
     toggle: toggle,
     collapseIds: collapseIds,
     folderTreeKey: folderTreeKey,
