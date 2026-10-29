@@ -42,5 +42,10 @@ Selected and batch actions on this pile use the same contract. The pile has
 no Mark-all primary; see
 [FYI and Other batch read](./2026-10-29-agent-fyi-other-batch-read.md).
 
+The opt-in and Mark read & done wait for the matching read journal operation's
+completed settlement, not its pending acceptance. Failure restores the Agent
+unread projection without completing the todo. Unknown, superseded and
+unattempted operations also leave it open.
+
 Related: [learning](./2026-10-29-agent-learning.md),
 [unread-filter hold](./2026-10-29-unread-filter-defer-removal.md).

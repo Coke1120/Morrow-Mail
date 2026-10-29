@@ -612,7 +612,12 @@ function projectSections(categories, items, todos) {
     const mark = hidden[item.messageId];
     if (mark && (mark.status === "done" || mark.status === "dismissed")) continue;
     const bucket = byId.get(item.categoryId) || other;
-    if (bucket) bucket.items.push(item);
+    if (bucket) {
+      const threadId = triageThreadId(item.threadId);
+      const message = threadId ? null : cachedMessage(item.messageId);
+      const cachedThread = message && (!item.accountId || item.accountId === message.accountId) ? triageThreadId(message.threadId) : "";
+      bucket.items.push(Object.assign({}, item, { threadId: threadId || cachedThread }));
+    }
   }
   return sections;
 }
@@ -640,10 +645,15 @@ function sanitizeFollowUps(list, allowed) {
   }).filter(Boolean);
 }
 
+function triageThreadId(value) {
+  return typeof value === "string" && !/[\u0000-\u001F\u007F]/.test(value) ? value.trim().slice(0, 120) : "";
+}
+
 function triageItem(message, summary, followUps) {
   return {
     messageId: message.id,
     accountId: message.accountId || "",
+    threadId: triageThreadId(message.threadId),
     from: message.from || "",
     subject: message.subject || "",
     summary: summary || "",
