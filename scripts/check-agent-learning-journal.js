@@ -37,7 +37,12 @@ async function run() {
     let uid = 1;
     const item = (id, categoryId = "needs-you", from = "shared@example.test") => {
       const source = { messageId: id, accountId: "synthetic", categoryId, from, threadId: "shared-thread", unread: true };
-      database.insertMessage({ id, accountId: "synthetic", folderPath: "INBOX", uid: uid++, uidValidity: 1, from, threadId: source.threadId, date: new Date().toISOString(), unread: true, bodyComplete: true });
+      const when = new Date();
+      database.insertMessage({
+        id, accountId: "synthetic", folderPath: "INBOX", uid: uid++, uidValidity: 1, from, threadId: source.threadId,
+        date: when.toISOString(), listSortTs: when.getTime(), unread: true, bodyComplete: true,
+        recipientHeaders: { replyTo: [] },
+      });
       return source;
     };
     const writeAgent = (items, todos = {}) => fs.writeFileSync(path.join(directory, "agent.json"), JSON.stringify({ installedSkillIds: null, triage: { reason: "ready", updatedAt: new Date().toISOString(), items }, todos, proposals: [], runs: [], schedules: [] }));
@@ -130,7 +135,7 @@ async function run() {
     assert.equal(JSON.stringify(learning.list()), before);
     engine.setSmtpSenderForTest(success);
     await new Promise((resolve) => setTimeout(resolve, 2));
-    const queued = await ui.run("call('mail:scheduleSend', { ...withAgentReplyTodo(base), sendAt: '2099-01-01T00:00:00.000Z', outbox: true })");
+    const queued = await ui.run("call('mail:scheduleSend', { ...withAgentReplyTodo(base), sendAt: '2099-01-01T00:00:00.000Z' })");
     assert.equal(JSON.stringify(learning.list()), before);
     database.setScheduledSendAt(queued.id, 0);
     await engine.pumpScheduled();
