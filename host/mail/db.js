@@ -1419,8 +1419,17 @@ function whereFor(query) {
   if (query.category && query.category !== "all" && query.category !== "primary") {
     clauses.push("0 = 1");
   }
-  if (query.filterUnread) {
-    clauses.push("m.unread = 1");
+  if (typeof query.retainOnly === "string" && query.retainOnly) {
+    clauses.push("m.id = ?");
+    params.push(query.retainOnly);
+  } else if (query.filterUnread) {
+    const retainId = Array.isArray(query.retainIds) ? query.retainIds[0] : "";
+    if (typeof retainId === "string" && retainId) {
+      clauses.push("(m.unread = 1 OR m.id = ?)");
+      params.push(retainId);
+    } else {
+      clauses.push("m.unread = 1");
+    }
   }
   if (query.filterFlagged) {
     clauses.push("m.starred = 1");
