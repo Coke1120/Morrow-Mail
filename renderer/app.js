@@ -11072,6 +11072,7 @@ function syncCompose() {
   paintComposeAttachments();
   paintComposeNote();
   paintComposeAi();
+  if (recipientSuggestInput && (recipientSuggestInput.disabled || recipientSuggestInput.readOnly)) hideRecipientSuggest();
 }
 
 function paintComposeNote() {
@@ -12757,6 +12758,7 @@ async function openCompose(seed) {
     return;
   }
   if ($("compose").open && !(await requestComposeClose())) return;
+  hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
   state.composeInitializing = true;
@@ -21173,8 +21175,236 @@ function wireSenderHistory() {
   }
 }
 
+let recipientSuggestGen = 0;
+let recipientSuggestTimer = 0;
+let recipientSuggestIndex = -1;
+let recipientSuggestRows = [];
+let recipientSuggestInput = null;
+let recipientSuggestEscape = false;
+
+function recipientSuggestApi() {
+  return typeof window !== "undefined" ? window.morrowRecipientSuggest : null;
+}
+
+function hideRecipientSuggest() {
+  if (!document || typeof document.getElementById !== "function") return false;
+  const box = document.getElementById("recipient-suggest");
+  const open = !!(box && box.hidden === false);
+  if (box) {
+    box.hidden = true;
+    if (typeof box.replaceChildren === "function") box.replaceChildren();
+  }
+  const input = recipientSuggestInput;
+  recipientSuggestIndex = -1;
+  recipientSuggestRows = [];
+  recipientSuggestInput = null;
+  if (input && typeof input.setAttribute === "function") {
+    input.setAttribute("aria-expanded", "false");
+    if (typeof input.removeAttribute === "function") input.removeAttribute("aria-activedescendant");
+  }
+  if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
+  recipientSuggestTimer = 0;
+  recipientSuggestGen += 1;
+  return open;
+}
+
+function scheduleRecipientSuggest(input) {
+  const api = recipientSuggestApi();
+  const query = api && input ? api.activeQuery(input.value) : "";
+  if (!api || !input || input.disabled || input.readOnly || !query) {
+    hideRecipientSuggest();
+    return;
+  }
+  const gen = ++recipientSuggestGen;
+  if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
+  recipientSuggestTimer = setTimeout(() => {
+    recipientSuggestTimer = 0;
+    loadRecipientSuggest(input, gen);
+  }, 80);
+}
+
+async function loadRecipientSuggest(input, gen) {
+  const api = recipientSuggestApi();
+  if (!api) return;
+  const query = api.activeQuery(input.value);
+  let result;
+  try {
+    result = await call("mail:suggestRecipients", { query });
+  } catch {
+    if (gen === recipientSuggestGen) hideRecipientSuggest();
+    return;
+  }
+  if (gen !== recipientSuggestGen) return;
+  const active = document.activeElement;
+  if (active && active !== input && active !== document.body && active !== document.documentElement) return;
+  if (api.activeQuery(input.value) !== query) return;
+  const used = api.usedAddresses(input.value);
+  const rows = ((result && result.suggestions) || []).filter((row) => row && row.email && !used.has(row.email));
+  if (!rows.length) {
+    hideRecipientSuggest();
+    return;
+  }
+  paintRecipientSuggest(input, rows);
+}
+
+function recipientSuggestIcon() {
+  const svg = strokeIcon(["M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"], 16);
+  if (!document.createElementNS) return svg;
+  const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  circle.setAttribute("cx", "12");
+  circle.setAttribute("cy", "7");
+  circle.setAttribute("r", "4");
+  svg.appendChild(circle);
+  return svg;
+}
+
+function paintRecipientSuggest(input, rows) {
+  const box = document.getElementById("recipient-suggest");
+  if (!box || typeof box.replaceChildren !== "function") return;
+  const host = input.closest ? input.closest(".field-row") : input.parentElement;
+  if (host && typeof host.appendChild === "function") host.appendChild(box);
+  box.replaceChildren();
+  recipientSuggestRows = rows;
+  recipientSuggestInput = input;
+  recipientSuggestIndex = -1;
+  for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
+    const node = document.getElementById(id);
+    if (!node || node === input || typeof node.setAttribute !== "function") continue;
+    node.setAttribute("aria-expanded", "false");
+    if (typeof node.removeAttribute === "function") node.removeAttribute("aria-activedescendant");
+  }
+  rows.forEach((item, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "recipient-suggest-" + index;
+    button.className = "recipient-suggest-option";
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", "false");
+    button.dataset.email = item.email;
+    const label = ((item.name ? item.name + " " : "") + item.email).trim();
+    button.setAttribute("aria-label", label);
+    button.appendChild(recipientSuggestIcon());
+    const text = document.createElement("span");
+    text.className = "recipient-suggest-copy";
+    const name = document.createElement("span");
+    name.className = "recipient-suggest-name";
+    name.textContent = item.name || item.email;
+    const email = document.createElement("span");
+    email.className = "recipient-suggest-email";
+    email.textContent = item.email;
+    if (!item.name) email.hidden = true;
+    text.appendChild(name);
+    text.appendChild(email);
+    button.appendChild(text);
+    box.appendChild(button);
+  });
+  box.hidden = false;
+  if (typeof input.setAttribute === "function") {
+    input.setAttribute("aria-expanded", "true");
+    if (typeof input.removeAttribute === "function") input.removeAttribute("aria-activedescendant");
+  }
+}
+
+function moveRecipientSuggest(delta) {
+  const box = document.getElementById("recipient-suggest");
+  if (!box || !recipientSuggestRows.length) return;
+  const last = recipientSuggestRows.length - 1;
+  if (recipientSuggestIndex < 0) recipientSuggestIndex = delta > 0 ? 0 : last;
+  else recipientSuggestIndex = Math.max(0, Math.min(last, recipientSuggestIndex + delta));
+  const buttons = box.querySelectorAll('[role="option"]');
+  buttons.forEach((button, index) => {
+    const on = index === recipientSuggestIndex;
+    button.setAttribute("aria-selected", on ? "true" : "false");
+    if (!on) return;
+    if (recipientSuggestInput && typeof recipientSuggestInput.setAttribute === "function") {
+      recipientSuggestInput.setAttribute("aria-activedescendant", button.id);
+    }
+    try { button.scrollIntoView({ block: "nearest" }); } catch { /* synthetic documents have no layout */ }
+  });
+}
+
+function chooseRecipientSuggest(email) {
+  const api = recipientSuggestApi();
+  const input = recipientSuggestInput;
+  const choice = recipientSuggestRows.find((row) => row.email === email);
+  if (!api || !input || !choice) return;
+  input.value = api.applyChoice(input.value, choice);
+  hideRecipientSuggest();
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  if (typeof input.focus === "function") input.focus();
+  if (typeof input.setSelectionRange === "function") {
+    const end = input.value.length;
+    try { input.setSelectionRange(end, end); } catch { /* some fields reject a range while hidden */ }
+  }
+}
+
+function onRecipientSuggestKey(event) {
+  const api = recipientSuggestApi();
+  if (!api || !event) return;
+  const box = document.getElementById("recipient-suggest");
+  const open = !!(box && box.hidden === false && recipientSuggestInput === event.currentTarget);
+  const action = api.keyAction(event.key, open, recipientSuggestIndex);
+  if (!action) return;
+  event.preventDefault();
+  if (typeof event.stopPropagation === "function") event.stopPropagation();
+  if (action === "close") {
+    recipientSuggestEscape = true;
+    hideRecipientSuggest();
+    return;
+  }
+  if (action === "next") moveRecipientSuggest(1);
+  else if (action === "prev") moveRecipientSuggest(-1);
+  else if (action === "choose") {
+    const row = recipientSuggestRows[recipientSuggestIndex];
+    if (row) chooseRecipientSuggest(row.email);
+  }
+}
+
+function takeRecipientSuggestEscape() {
+  if (recipientSuggestEscape) {
+    recipientSuggestEscape = false;
+    return true;
+  }
+  const box = document && typeof document.getElementById === "function" ? document.getElementById("recipient-suggest") : null;
+  if (box && box.hidden === false) {
+    hideRecipientSuggest();
+    return true;
+  }
+  return false;
+}
+
+function wireRecipientSuggest() {
+  for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
+    const input = $(id);
+    if (!input || typeof input.addEventListener !== "function") continue;
+    input.addEventListener("input", () => scheduleRecipientSuggest(input));
+    input.addEventListener("keydown", onRecipientSuggestKey);
+    input.addEventListener("blur", () => {
+      const gen = recipientSuggestGen;
+      setTimeout(() => {
+        if (gen !== recipientSuggestGen || recipientSuggestInput !== input) return;
+        if (document.activeElement === input) return;
+        const box = document.getElementById("recipient-suggest");
+        if (box && typeof box.contains === "function" && box.contains(document.activeElement)) return;
+        hideRecipientSuggest();
+      }, 0);
+    });
+  }
+  const box = $("recipient-suggest");
+  if (!box || typeof box.addEventListener !== "function") return;
+  box.addEventListener("mousedown", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest("button") : null;
+    if (button) event.preventDefault();
+  });
+  box.addEventListener("click", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest("button") : null;
+    if (button && button.dataset) chooseRecipientSuggest(button.dataset.email);
+  });
+}
+
 function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
+  wireRecipientSuggest();
   wireComposeFormat();
   $("compose-from").addEventListener("change", changeComposeFrom);
   $("compose-cc").addEventListener("input", () => {
@@ -21211,6 +21441,7 @@ function wire() {
       }
       if (dialog.id === "compose") {
         event.preventDefault();
+        if (takeRecipientSuggestEscape()) return;
         if (composeAiOpen()) {
           dismissComposeAi().catch(() => {});
           return;

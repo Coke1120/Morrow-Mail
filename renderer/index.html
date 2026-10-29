@@ -762,7 +762,7 @@
           <p id="compose-from-note" class="hint" role="status"></p>
           <div class="field-row field-row-to">
             <label for="compose-to">To</label>
-            <input id="compose-to" type="text" autocomplete="email" spellcheck="false" />
+            <input id="compose-to" type="text" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="recipient-suggest" />
             <div class="field-row-toggles">
               <button type="button" class="ghost field-toggle" id="compose-show-cc" aria-controls="compose-cc-row" aria-expanded="false">Cc</button>
               <button type="button" class="ghost field-toggle" id="compose-show-bcc" aria-controls="compose-bcc-row" aria-expanded="false">Bcc</button>
@@ -770,17 +770,18 @@
           </div>
           <div class="field-row" id="compose-cc-row" hidden>
             <label for="compose-cc">Cc</label>
-            <input id="compose-cc" type="text" autocomplete="email" spellcheck="false" />
+            <input id="compose-cc" type="text" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="recipient-suggest" />
           </div>
           <div class="field-row" id="compose-bcc-row" hidden>
             <label for="compose-bcc">Bcc</label>
-            <input id="compose-bcc" type="text" autocomplete="email" spellcheck="false" />
+            <input id="compose-bcc" type="text" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="recipient-suggest" />
           </div>
           <div class="field-row">
             <label for="compose-subject">Subject</label>
             <input id="compose-subject" type="text" />
           </div>
         </div>
+        <ul id="recipient-suggest" class="recipient-suggest" role="listbox" hidden></ul>
         <div class="compose-format-wrap">
         <div id="compose-format" class="compose-format" role="toolbar" aria-label="Formatting" aria-controls="compose-editor">
           <button type="button" data-command="bold" aria-label="Bold" aria-pressed="false" title="Bold">
@@ -1632,6 +1633,7 @@
     <aside id="attachment-transfer-activity" class="attachment-task-list" data-attachment-tasks="all" aria-label="Attachment transfers" hidden></aside>
     <script src="./motion.bundle.js"></script>
     <script src="../shared/compose-policy.js"></script>
+    <script src="../shared/recipient-suggest.js"></script>
     <script src="../shared/mailbox-roles.js"></script>
     <script src="../shared/primary-mailboxes.js"></script>
     <script src="../shared/folder-collapse.js"></script>
