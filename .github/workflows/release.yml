@@ -56,7 +56,8 @@ jobs:
 
   macos:
     needs: windows
-    runs-on: macos-latest
+    # Mac mini self-hosted runner. Pull requests and CI stay on GitHub-hosted runners.
+    runs-on: [self-hosted, macOS, mac-mini]
     permissions:
       contents: write
     steps:
