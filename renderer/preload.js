@@ -115,6 +115,7 @@ const INVOKE = [
   "mail:search",
   "mail:searchLocal",
   "mail:searchSender",
+  "mail:suggestRecipients",
   "mail:listThreadMessages",
   "mail:downloadAttachment",
   "mail:downloadAttachmentsZip",

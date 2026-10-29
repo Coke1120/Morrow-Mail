@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const db = require("./db");
+const recipientSuggest = require("./recipient-suggest");
 const actions = require("./actions");
 const virtuals = require("./virtual-folders");
 const presets = require("./presets");
@@ -3921,6 +3922,8 @@ function answer(channel, args, event) {
       })();
     case "mail:searchSender":
       return searchSender(params || {});
+    case "mail:suggestRecipients":
+      return ok({ suggestions: recipientSuggest.list(params && params.query) });
     case "mail:openEmail":
       return (async () => {
         const stored = db.messageById(params && params.emailId);
