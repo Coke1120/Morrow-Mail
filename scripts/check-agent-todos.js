@@ -304,7 +304,11 @@ async function rendererChecks() {
   needs.querySelector(".agent-mark-selected").click();
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual([...ui.run("readIds")], ["m1"]);
-  assert.equal(calls.length, 0);
+  assert.deepEqual(calls.map((row) => row.channel), ["nativeAgent:learning:observe"]);
+  assert.equal(calls[0].payload.kind, "action");
+  assert.equal(calls[0].payload.action, "mark-read");
+  assert.equal(calls[0].payload.items.length, 1);
+  assert.equal(calls[0].payload.items[0].messageId, "m1");
 
   ui.run("state.prefs.markReadCompletesTodos = true; readIds = [];");
   calls.length = 0;

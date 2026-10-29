@@ -24,6 +24,7 @@ const state = {
   draftRevision: null,
   composeSession: 0,
   agentReplyTodo: null,
+  agentLearning: null,
   composeAttachments: [],
   composeSuggestions: null,
   composeMeta: null,
@@ -15512,6 +15513,7 @@ async function loadSettings() {
   }
   syncAccentPicker(state.prefs.accent);
   paintScheduleDelay(state.prefs.scheduleDelay);
+  await paintAgentLearned();
 }
 
 function paintScheduleDelay(minutes) {
@@ -18089,7 +18091,18 @@ function freshReplyTodoSeed(fields) {
 function withAgentReplyTodo(payload) {
   const todo = explicitAgentTodo(state.agentReplyTodo);
   if (!todo || !payload) return payload;
-  return { ...payload, agentTodo: todo };
+  const next = { ...payload, agentTodo: todo };
+  const kind = state.composeIdentity && state.composeIdentity.kind;
+  const action = kind === "all" ? "reply-all" : kind === "reply" ? "reply" : "";
+  if (!action) return next;
+  const item = { messageId: todo.messageId, accountId: todo.accountId };
+  const email = state.email;
+  if (email && String(email.id || "") === todo.messageId) {
+    if (email.from) item.from = String(email.from);
+    if (email.threadId) item.threadId = String(email.threadId);
+  }
+  next.agentLearning = { kind: "action", action, begunAt: Date.now(), items: [item] };
+  return next;
 }
 
 async function finishAgentReplyTodo(session) {
@@ -18115,6 +18128,170 @@ function agentPileRole(section) {
   if (id === "fyi" || /^fyi$/i.test(name)) return "fyi";
   if (id === "other" || /^other$/i.test(name)) return "other";
   return "";
+}
+
+function agentMoveTargets(role) {
+  if (role === "reply") return [["fyi", "FYI"], ["other", "Other"]];
+  if (role === "fyi") return [["needs-you", "Needs You"], ["other", "Other"]];
+  if (role === "other") return [["needs-you", "Needs You"], ["fyi", "FYI"]];
+  return [];
+}
+
+function suggestionClass(value) {
+  return String(value || "").replace(/[\u0000-\u001F\u007F]/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function suggestionSuppressed(label) {
+  const name = suggestionClass(label);
+  if (!name) return false;
+  const learning = state.agentLearning;
+  const list = learning && Array.isArray(learning.suppressed) ? learning.suppressed : [];
+  return list.includes(name);
+}
+
+function agentAddress(value) {
+  const match = String(value || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return match ? match[0].toLowerCase() : "";
+}
+
+function agentLearnedNotes(item) {
+  const learning = state.agentLearning;
+  const patterns = learning && Array.isArray(learning.patterns) ? learning.patterns : [];
+  const email = agentAddress(item && item.from);
+  const thread = String(item && item.threadId || "").trim();
+  const role = agentPileRole(item);
+  const pile = role === "reply" ? "needs-you" : role === "fyi" || role === "other" ? role : "";
+  const notes = [];
+  const seen = new Set();
+  for (const row of patterns) {
+    if (!row || row.learned !== true || !row.match) continue;
+    let text = "";
+    if (row.kind === "category" && pile && row.match.fromCategoryId === pile && email && Array.isArray(row.senders) && row.senders.includes(email)) {
+      text = "Learned: move to " + (row.match.toName || "the other category");
+    } else if (row.kind === "action" && row.match.scope === "sender" && email && row.match.key === email) {
+      text = "Learned: " + (row.actionLabel || "this action");
+    } else if (row.kind === "action" && row.match.scope === "thread" && thread && row.match.key === thread) {
+      text = "Learned: " + (row.actionLabel || "this action");
+    }
+    if (text && !seen.has(text)) {
+      seen.add(text);
+      notes.push(text);
+    }
+  }
+  return notes;
+}
+
+function agentLearnedLine(item) {
+  const notes = agentLearnedNotes(item);
+  if (!notes.length) return null;
+  const line = document.createElement("p");
+  line.className = "agent-learned";
+  line.textContent = notes.join(" · ");
+  return line;
+}
+
+function learningApplyStamp(view) {
+  const patterns = view && Array.isArray(view.patterns) ? view.patterns : [];
+  const suppressed = view && Array.isArray(view.suppressed) ? view.suppressed : [];
+  return JSON.stringify([suppressed, patterns.filter((row) => row && row.learned).map((row) => [row.id, row.senders || null, row.match || null])]);
+}
+
+function applyAgentLearning(view) {
+  const next = view && typeof view === "object" ? view : null;
+  const changed = learningApplyStamp(state.agentLearning) !== learningApplyStamp(next);
+  state.agentLearning = next;
+  if (changed && state.view === "agent" && agentPaintPayload) {
+    agentPaintPayload.learning = next;
+    paintAgentHome(agentPaintPayload);
+  }
+  const settings = $("settings");
+  if (settings && settings.open && $("agent-learned-list")) renderAgentLearned(next);
+}
+
+function learnAgent(body) {
+  const payload = Object.assign({ begunAt: Date.now() }, body || {});
+  return call("nativeAgent:learning:observe", payload).then((view) => {
+    applyAgentLearning(view);
+  }).catch(() => {});
+}
+
+function learningSignalItem(item) {
+  const context = agentMessageContext(item);
+  if (!context) return null;
+  const signal = { messageId: context.messageId, accountId: context.accountId };
+  if (item && item.from) signal.from = String(item.from);
+  if (item && item.threadId) signal.threadId = String(item.threadId);
+  return signal;
+}
+
+async function moveAgentCategory(item, toCategoryId, toName, fromName) {
+  const context = agentMessageContext(item);
+  if (!context) return;
+  const data = await call("nativeAgent:learning:moveCategory", {
+    messageId: context.messageId,
+    accountId: context.accountId,
+    toCategoryId,
+    toName,
+    fromName,
+    begunAt: Date.now(),
+  });
+  if (data && data.learning) state.agentLearning = data.learning;
+  if (state.view === "agent" && data) paintAgent(data, "");
+}
+
+function renderAgentLearned(view) {
+  const list = $("agent-learned-list");
+  if (!list) return;
+  list.replaceChildren();
+  const patterns = view && Array.isArray(view.patterns) ? view.patterns : [];
+  if (!patterns.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = "Nothing learned yet. Category moves, repeated actions, and suggestion choices show up here.";
+    list.appendChild(empty);
+    return;
+  }
+  const threshold = view && view.threshold || 3;
+  for (const row of patterns) {
+    if (!row || !row.id) continue;
+    const item = document.createElement("li");
+    item.className = "settings-account";
+    const name = document.createElement("span");
+    name.className = "name";
+    const count = Number(row.count) || 0;
+    name.textContent = (row.label || "Pattern") + " — " + (row.learned ? "Learned" : count + " of " + threshold);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ghost";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", "Delete " + (row.label || "pattern"));
+    del.addEventListener("click", () => {
+      call("nativeAgent:learning:forget", { id: row.id }).then((next) => {
+        applyAgentLearning(next);
+        renderAgentLearned(next);
+      }).catch((error) => {
+        showStatus(error instanceof Error ? error.message : String(error), true);
+      });
+    });
+    item.append(name, del);
+    list.appendChild(item);
+  }
+}
+
+async function paintAgentLearned() {
+  const list = $("agent-learned-list");
+  if (!list) return;
+  try {
+    const view = await call("nativeAgent:learning:list");
+    if (view) state.agentLearning = view;
+    renderAgentLearned(view);
+  } catch (error) {
+    list.replaceChildren();
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = error instanceof Error ? error.message : "Learned patterns could not be loaded.";
+    list.appendChild(empty);
+  }
 }
 
 function agentSelectionLabels(selectedCount, listedCount) {
@@ -18167,6 +18344,7 @@ function agentTodoActionNames(item, section) {
   const names = ["Open", "Reply", "Reply All", "Mark as read"];
   if (agentPileRole(section || item) === "reply") names.push("Mark read & done");
   names.push("Mark todo done", "Dismiss");
+  for (const target of agentMoveTargets(agentPileRole(section || item))) names.push("Move to " + target[1]);
   return names;
 }
 
@@ -18409,7 +18587,8 @@ function followButton(follow, draft) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "ghost";
-  button.textContent = (follow && follow.label) || (draft ? "Review draft" : "Open");
+  const label = suggestionClass((follow && follow.label) || (draft ? "Review draft" : "Open"));
+  button.textContent = label || (draft ? "Review draft" : "Open");
   button.addEventListener("click", () => {
     const source = draft || follow || {};
     const body = String(source.body || source.text || "").trim();
@@ -18419,7 +18598,10 @@ function followButton(follow, draft) {
       : draftFollow
         ? openReplyCompose(source.messageId || "")
         : peekMessage(source.messageId || "");
-    Promise.resolve(run).catch((error) => {
+    const begunAt = Date.now();
+    Promise.resolve(run).then(() => {
+      learnAgent({ kind: "suggestion", choice: "open", className: button.textContent, begunAt });
+    }).catch((error) => {
       showStatus(error instanceof Error ? error.message : String(error), true);
     });
   });
@@ -18460,7 +18642,7 @@ function paintSkillBlocks(root, data) {
     wrap.appendChild(line);
     const row = document.createElement("div");
     row.className = "row";
-    row.appendChild(followButton(null, draft));
+    if (!suggestionSuppressed("Review draft")) row.appendChild(followButton(null, draft));
     wrap.appendChild(row);
     root.appendChild(wrap);
   }
@@ -18468,7 +18650,11 @@ function paintSkillBlocks(root, data) {
   if (follows.length) {
     const row = document.createElement("div");
     row.className = "row";
-    for (const follow of follows) row.appendChild(followButton(follow));
+    for (const follow of follows) {
+      const label = suggestionClass(follow && follow.label) || "Open";
+      if (suggestionSuppressed(label)) continue;
+      row.appendChild(followButton(follow));
+    }
     root.appendChild(row);
   }
   paintProposals(root, data.proposals, true);
@@ -18477,7 +18663,7 @@ function paintSkillBlocks(root, data) {
 function paintProposals(root, proposals, append) {
   if (!root) return;
   if (!append) root.replaceChildren();
-  const rows = Array.isArray(proposals) ? proposals.filter((item) => item && item.status !== "dismissed" && item.status !== "confirmed") : [];
+  const rows = Array.isArray(proposals) ? proposals.filter((item) => item && item.status !== "dismissed" && item.status !== "confirmed" && !suggestionSuppressed(item.labelName || "Filing")) : [];
   if (!rows.length) {
     if (append) return;
     const note = document.createElement("p");
@@ -18500,8 +18686,12 @@ function paintProposals(root, proposals, append) {
     confirm.className = "primary";
     confirm.textContent = "Review filing…";
     confirm.addEventListener("click", () => {
+      const begunAt = Date.now();
       confirmProposal(proposal).then((data) => {
         if (!data) return;
+        if (data.accepted !== false) {
+          learnAgent({ kind: "suggestion", choice: "open", className: proposal.labelName || "Filing", begunAt });
+        }
         wrap.remove();
         if (brainIsOpen()) setSkillStatus((data && data.detail) || "Move confirmed.", false);
       }).catch((error) => {
@@ -18515,7 +18705,9 @@ function paintProposals(root, proposals, append) {
     dismiss.className = "ghost";
     dismiss.textContent = "Dismiss";
     dismiss.addEventListener("click", () => {
+      const begunAt = Date.now();
       dismissProposal(proposal).then(() => {
+        learnAgent({ kind: "suggestion", choice: "dismiss", className: proposal.labelName || "Filing", begunAt });
         wrap.remove();
         if (brainIsOpen()) setSkillStatus("Move dismissed.", false);
       }).catch((error) => {
@@ -19657,6 +19849,7 @@ function paintThread() {
 
 function paintAgent(payload, errorText) {
   if (payload && typeof payload === "object") agentPaintPayload = payload;
+  if (payload && payload.learning) state.agentLearning = payload.learning;
   const status = $("agent-status");
   const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
   if (status) {
@@ -19760,7 +19953,7 @@ function paintAgentHome(payload) {
   const note = document.createElement("p");
   note.id = "agent-todo-note";
   note.className = "agent-note";
-  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. FYI and Other can mark the listed messages read, with Undo, and do not complete todos.";
+  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. FYI and Other can mark the listed messages read, with Undo, and do not complete todos. Settings → Learned keeps a correction after the same pattern happens 3 times. Delete removes that one pattern.";
   root.appendChild(note);
   paintReplySelectionLabels(root);
   paintMotionRows("agent", root.querySelectorAll(".agent-section"));
@@ -19865,6 +20058,7 @@ function agentCategoryReadButton(role, items) {
 async function markAgentMessageRead(item, card, mode) {
   const context = agentMessageContext(item);
   if (!context) return;
+  const begunAt = Date.now();
   const reply = agentPileRole(item) === "reply";
   const already = agentReadIntent(item) === "already" || agentMarkedRead.has(context.messageId);
   const complete = mode === "done" || (reply && state.prefs.markReadCompletesTodos === true);
@@ -19881,6 +20075,8 @@ async function markAgentMessageRead(item, card, mode) {
       const dot = card.querySelector(".unread-dot");
       if (dot) dot.remove();
     }
+    const signal = learningSignalItem(item);
+    if (signal) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: [signal] });
   }
   if (complete) {
     await updateTodo(context.messageId, "done", context.accountId);
@@ -19901,6 +20097,8 @@ async function applyReplySelection(items, mode) {
     return;
   }
   const optIn = state.prefs.markReadCompletesTodos === true;
+  const begunAt = Date.now();
+  const learned = [];
   let marked = 0;
   for (const item of captured) {
     const context = agentMessageContext(item);
@@ -19910,15 +20108,19 @@ async function applyReplySelection(items, mode) {
       item.unread = false;
       agentMarkedRead.add(context.messageId);
       marked += 1;
+      const signal = learningSignalItem(item);
+      if (signal) learned.push(signal);
     }
     if (optIn) await updateTodo(context.messageId, "done", context.accountId);
   }
+  if (learned.length) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: learned });
   if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
   if (!marked && !optIn) showStatus("Already read.");
   else showStatus(marked ? "Marked as read." : "Todo completed.");
 }
 
 async function markAgentCategoryRead(items) {
+  const begunAt = Date.now();
   const snapshot = agentUnreadSnapshot(items);
   if (!snapshot.length) return;
   const data = await call("mail:markReadBatch", {
@@ -19937,6 +20139,13 @@ async function markAgentCategoryRead(items) {
     agentMarkedRead.add(String(item.messageId));
   }
   if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
+  const learned = [];
+  for (const item of items || []) {
+    if (!item || !touched.has(String(item.messageId || ""))) continue;
+    const signal = learningSignalItem(item);
+    if (signal) learned.push(signal);
+  }
+  if (learned.length) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: learned });
   if (!undoRows.length) {
     showStatus("Marked as read.");
     return;
@@ -19965,7 +20174,20 @@ function agentTodoActions(item, section) {
   }
   for (const follow of agentFollowUps(item)) {
     if (!follow || follow.kind === "open") continue;
-    mail.appendChild(styleFollowButton(follow));
+    const label = suggestionClass(follow.label) || (follow.kind === "draft" ? "Review reply" : "Attachment");
+    if (suggestionSuppressed(label)) continue;
+    const followControl = styleFollowButton(Object.assign({}, follow, { label }));
+    const dismissFollow = agentActionButton("dismiss", "Dismiss " + label, () => {
+      followControl.remove();
+      dismissFollow.remove();
+      return learnAgent({
+        kind: "suggestion",
+        choice: "dismiss",
+        className: label,
+        begunAt: Date.now(),
+      });
+    });
+    mail.append(followControl, dismissFollow);
   }
   const local = document.createElement("div");
   local.className = "agent-action-group agent-action-local";
@@ -19973,8 +20195,18 @@ function agentTodoActions(item, section) {
     agentActionButton("done", "Mark todo done", () => updateTodo(context.messageId, "done", context.accountId)),
     agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed", context.accountId)),
   );
+  for (const button of agentMoveButtons(item, section)) local.appendChild(button);
+  const learned = agentLearnedLine(item);
+  if (learned) actions.appendChild(learned);
   actions.append(mail, local);
   return actions;
+}
+
+function agentMoveButtons(item, section) {
+  const targets = agentMoveTargets(agentPileRole(section || item));
+  if (!agentMessageContext(item) || !targets.length) return [];
+  const fromName = String((section && (section.name || section.title)) || "").trim();
+  return targets.map(([id, name]) => agentActionButton("move", "Move to " + name, () => moveAgentCategory(item, id, name, fromName)));
 }
 
 let agentTodoView = "list";
@@ -20219,6 +20451,8 @@ function agentSkimCard(item, section) {
   line.className = "agent-card-line";
   line.textContent = reason;
   face.append(top, subject, line);
+  const learned = agentLearnedLine(item);
+  if (learned) face.appendChild(learned);
   const chips = document.createElement("div");
   chips.className = "agent-card-chips";
   chips.append(
@@ -20248,7 +20482,11 @@ function agentSkimCard(item, section) {
     agentActionButton("done", "Done", () => updateTodo(context.messageId, "done", context.accountId)),
     agentActionButton("dismiss", "Dismiss", () => updateTodo(context.messageId, "dismissed", context.accountId)),
   );
+  const moves = document.createElement("div");
+  moves.className = "agent-card-moves";
+  for (const button of agentMoveButtons(item, section)) moves.appendChild(button);
   detail.append(summary, classification, thread, quick);
+  if (moves.childNodes.length) detail.appendChild(moves);
   card.append(face, chips, detail);
   syncAgentCardDisclosure(card);
   bindAgentCardDetail(card);

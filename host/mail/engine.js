@@ -3250,6 +3250,8 @@ function scheduleSend(params) {
   if (Array.isArray(input.references)) payload.references = input.references;
   const agentTodo = agentTodoOf(input);
   if (agentTodo) payload.agentTodo = agentTodo;
+  const agentLearning = require("../agent-learning").sanitize(input.agentLearning);
+  if (agentLearning) payload.agentLearning = agentLearning;
   // Outbox is the undo delay on the scheduled queue, not a second send path.
   if (outbox) payload.outbox = true;
   const resolved = resolveAttachments(input.attachments, account);
@@ -3548,8 +3550,15 @@ async function cleanupSubmittedDraft(account, proof) {
   });
 }
 
+function noteReplyLearning(signal, partial) {
+  if (!signal || partial) return;
+  try { require("../agent-learning").observe(signal); } catch { /* the send stands */ }
+}
+
 async function deliver(params, lifecycle) {
   params = params && typeof params === "object" ? { ...params } : {};
+  const agentLearning = require("../agent-learning").sanitize(params.agentLearning);
+  delete params.agentLearning;
   delete params.agentTodo;
   delete params.outbox;
   let account = db.accountById(params && params.accountId);
@@ -3624,6 +3633,7 @@ async function deliver(params, lifecycle) {
       warning += " SMTP accepted the submission, but local cleanup could not finish. Check Sent before any retry.";
     }
     try { emitAccounts(); } catch { warning += " Saved mail could not be refreshed. Keep this receipt and check storage before closing."; }
+    noteReplyLearning(agentLearning, partial);
     return ok({ emailId: submitted.emailId, messageId: receipt?.messageId || submitted.messageId, platform: "imap",
       ...(warning ? { warning } : {}), ...(partial ? { partial: true, receipt, recoveryId, recoverySaved: !!recoveryId || !!lifecycle } : {}) });
   } finally {
