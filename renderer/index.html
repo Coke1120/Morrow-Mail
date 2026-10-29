@@ -120,11 +120,13 @@
         </button>
         <p id="sync-detail" class="sync-detail" role="status" hidden></p>
         <div id="body-sync" class="body-sync" role="tooltip" hidden>
-          <p id="sync-tip-line" class="sync-tip-line" aria-hidden="true"></p>
-          <p id="body-sync-label" role="status" aria-live="polite">Bodies · Checking activity…</p>
-          <p class="hint">All mailboxes · full message bodies, separate from list sync.</p>
-          <ul id="body-sync-accounts" aria-label="Body download activity by mailbox"></ul>
-          <p id="body-sync-help" class="hint"></p>
+          <div class="body-sync-scroll" tabindex="0" role="region" aria-label="Body download activity">
+            <p id="sync-tip-line" class="sync-tip-line" aria-hidden="true"></p>
+            <p id="body-sync-label" role="status" aria-live="polite">Bodies · Checking activity…</p>
+            <p class="hint">All mailboxes · full message bodies, separate from list sync.</p>
+            <ul id="body-sync-accounts" aria-label="Body download activity by mailbox"></ul>
+            <p id="body-sync-help" class="hint"></p>
+          </div>
         </div>
         </div>
         </div>

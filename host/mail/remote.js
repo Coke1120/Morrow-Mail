@@ -409,6 +409,8 @@ async function readFetched(msg, validity, cap) {
     textBody: presented.textBody,
     attachments,
     bodyComplete: !!(parsed && parsed.complete),
+    // Keep the intentional full-source bound distinct from MIME/download failures.
+    bodySourceLimited: truncated && limit === FULL_CAP,
   };
 }
 

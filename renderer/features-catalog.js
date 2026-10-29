@@ -70,7 +70,7 @@
         id: "undo-removal",
         title: "Undo removal details",
         category: "Mail",
-        blurb: "Archive, Trash, and Move keep Undo for every completed change in the current removal. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Select all or Clear, then Undo selected. The status chip only shows or hides the notice. Mark as read keeps its own Undo and does not replace a removal Undo. A newer removal replaces that list. Outbox undo send is separate and is not in this checklist.",
+        blurb: "Archive, Trash, and Move keep Undo for every completed change in the current removal. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Select all or Clear, then Undo selected. The status chip only shows or hides the notice, anchored at the bottom-right. Details keeps its selection and stays open while you use it; Escape closes it and returns focus. Restore controls wait until pending changes settle, and unreported rows stay available. Mark as read keeps its own Undo and does not replace a removal Undo. A newer removal replaces that list. Outbox undo send is separate and is not in this checklist.",
       },
       {
         id: "attachment-downloads",
@@ -88,7 +88,7 @@
         id: "schedule-send",
         title: "Send later",
         category: "Mail",
-        blurb: "Schedule send keeps the message on this computer and delivers it while Morrow is open. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved.",
+        blurb: "Schedule send keeps the message on this computer and delivers it while Morrow is open. Cancel asks twice, then Undo cancel is available for about eight seconds to restore that record. A newer cancellation replaces the Undo offer, and an older restore cannot consume it. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved.",
       },
       {
         id: "outbox",
@@ -112,7 +112,7 @@
         id: "overnight-body-fill",
         title: "Full message bodies",
         category: "Mail",
-        blurb: "Hover or focus Sync to see per-mailbox body activity, separately from list sync. Message requests and the listed page download as needed. If a foreground download fails before any body is available, the reader shows Retry download and leaves the message unread. A server response without the requested message is treated as a failed download. Partial cached content stays visible with a download warning and retry. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Gmail API body downloads use the same per-user read spacing as sync. Activity has no whole-mailbox total or percentage. IMAP messages can remain incomplete at the 3 MiB source limit; Gmail API handles MIME parts within its response limit; attachment files stay on demand. Gmail decodes legacy mail encodings including cp932 and UTF-7, and retains ISO-2022-JP decoding. Malformed MIME or an unknown charset leaves available content with an incomplete-body warning and does not stop other messages from syncing.",
+        blurb: "Hover or focus Sync to see per-mailbox body activity, separately from list sync. Move into the panel to scroll, or Tab into it and use the arrow keys; it stays open while hovered or focused. Message requests and the listed page download as needed. If a foreground download fails before any body is available, the reader shows Retry download and leaves the message unread. A server response without the requested message is treated as a failed download. Partial cached content stays visible with a download warning and retry. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Gmail API body downloads use the same per-user read spacing as sync. Activity has no whole-mailbox total or percentage. IMAP messages can remain incomplete at the 3 MiB source limit; this shows Limited with No action needed and keeps available content. Download and decoding failures still show Needs attention; Gmail API handles MIME parts within its response limit; attachment files stay on demand. Gmail decodes legacy mail encodings including cp932 and UTF-7, and retains ISO-2022-JP decoding. Malformed MIME or an unknown charset leaves available content with an incomplete-body warning and does not stop other messages from syncing.",
       },
       {
         id: "inbox-rules",

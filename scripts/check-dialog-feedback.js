@@ -275,6 +275,12 @@ async function undoDetails() {
   ui.run("setUndoDetailChecks(true)");
   assert.equal(get("undo-details-selected").textContent, "Undo selected (2)");
   assert.equal(get("undo-details-selected").disabled, false);
+  boxes[0].focus();
+  ui.run("paintUndoControls()");
+  assert.equal(get("undo-details-selected").textContent, "Undo selected (2)", "repaint keeps the checklist selection");
+  assert.equal(doc.activeElement.value, "op-a", "repaint keeps checkbox focus");
+  ui.run("scheduleStatusCollapse()");
+  assert.equal(ui.run("statusCollapseTimer"), 0, "Details interaction prevents timed collapse");
   ui.run("setUndoDetailChecks(false)");
   assert.equal(get("undo-details-selected").textContent, "Undo selected (0)");
   assert.equal(get("undo-details-selected").disabled, true);
@@ -323,10 +329,12 @@ async function undoDetails() {
   assert.deepEqual(JSON.parse(ui.run("JSON.stringify(retainedUndoOpIds(['op-a','op-b'], [{status:'completed'},{status:'completed'}], [{opId:'op-a',messageId:'one'},{opId:'op-b',messageId:'two'}]))")), []);
   assert.deepEqual(JSON.parse(ui.run("JSON.stringify(retainedUndoOpIds(['op-a'], [{id:'one', status:'unknown'}], [{opId:'op-a', messageId:'one'}]))")), ["op-a"]);
   ui.run("call = () => new Promise((resolve) => { globalThis.releaseUndo = resolve; });");
+  ui.run("openUndoDetails()");
   const pending = ui.run("undoRemoval()");
   ui.run("openUndoDetails()");
   assert.equal(get("undo-details-popover").hidden, true, "Details stays closed while Undo is running");
   assert.equal(get("undo-details").disabled, true);
+  assert.equal(doc.activeElement, get("status-chip"), "closing a busy popover focuses visible chrome");
   ui.run("releaseUndo({ outcomes: [{ id: 'one', status: 'completed' }] })");
   await pending;
   assert.equal(get("undo").hidden, true);
