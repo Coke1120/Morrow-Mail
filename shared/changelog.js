@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.11": [
+      "Compose Signatures is one Settings entry. The dialog lists Account default and each send-as or domain on the left, and edits that identity's signature on the right. An optional Edit signature link still opens the same dialog for the active From.",
+      "The status chip and Undo Details keep the active session while restores finish, preserve scheduled-restore feedback, and keep focus and selection stable when the offer changes.",
+      "Outbox Undo resumes a draft with its validated Agent todo intact. Outlook Calendar description compares use trimmed text on both sides; revision and if-match stay as before.",
+      "The Electron/Node security bump is not in this version.",
+    ],
     "0.3.10": [
       "Learned waits for matching completed read settlements before counting a pattern, keeps validated thread identity across triage refreshes, and refreshes already-open suggestion surfaces when a pattern is learned or deleted. Reply learning no longer depends on a Needs You todo target.",
       "Undo Details keeps pending rows, checkbox state, and focus while restores finish, and late restores do not affect a replacement Undo offer. The Bodies Sync tooltip keeps a hover bridge and keyboard scroll, and confirmed IMAP source-limit results show as Limited with No action needed.",
