@@ -914,6 +914,7 @@
       <div class="settings-layout">
         <div>
           <p class="hint">Saved on this computer for the selected account. They are not stored on the mail server.</p>
+          <p class="hint" id="signature-identity-help">Account default is used when From has no domain signature. A domain row applies only to that From domain and does not replace the account default.</p>
           <p id="signatures-status" role="status"></p>
           <div id="signature-list"></div>
         </div>
@@ -951,10 +952,6 @@
           <div id="signature-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="signature-body-label" data-placeholder="Signature" spellcheck="true"></div>
           <textarea id="signature-body" aria-labelledby="signature-body-label" hidden></textarea>
           <label class="check" for="signature-html"><input id="signature-html" type="checkbox" checked /> HTML</label>
-          <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default for this account</label>
-          <label for="signature-domains">Domains</label>
-          <input id="signature-domains" type="text" autocomplete="off" spellcheck="false" placeholder="example.com, example.org" />
-          <p class="hint">Compose uses this signature when From is one of these domains, and otherwise uses the account default. Enter the exact domain. A leading @ is optional. Subdomains do not match.</p>
           <div class="row">
             <button type="submit" class="primary" id="signature-save">Add</button>
             <button type="button" class="ghost" id="signature-cancel" hidden>Cancel</button>

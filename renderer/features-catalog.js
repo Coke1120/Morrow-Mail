@@ -70,7 +70,7 @@
         id: "signatures",
         title: "Signatures",
         category: "Mail",
-        blurb: "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target.",
+        blurb: "Settings → Signatures lists an Account default and one row per send-as domain. Saving a domain row does not replace the account default. Compose uses that domain signature, then the account default, then no signature. Saving… shows while a save waits, and switching identities keeps the new editing target. Edit signature on a From card opens the same dialog.",
       },
       {
         id: "mail-keyboard",

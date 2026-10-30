@@ -1629,6 +1629,34 @@ button.inline-link:focus-visible { color: var(--ink); }
   margin: 4px 0;
 }
 
+#signature-list .signature-group { margin: 10px 0 2px; }
+
+#signature-list .signature-row { align-items: center; }
+
+button.signature-pick {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.signature-pick:hover,
+button.signature-pick:focus-visible { background: var(--hover); }
+
+.signature-row.is-selected button.signature-pick { background: var(--selected); }
+
+.signature-label { display: block; font-weight: 650; }
+
+button.signature-pick .hint { display: block; font-weight: 400; }
+
 .brain-row p,
 .signature-row p,
 .inbox-rule-row p { flex: 1; margin: 0; overflow-wrap: anywhere; }

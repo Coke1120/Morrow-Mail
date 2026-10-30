@@ -152,7 +152,41 @@ async function signatureListOrder() {
     reads[1]({signatures:[sigB]});`);
   await ui.run("newRead");
   ui.run("reads[0]({signatures:[sigA]})"); await ui.run("oldRead");
-  assert.equal(node("signature-list").children[0].children[0].textContent, "Signature B");
+  const row = node("signature-list").children[0];
+  const pick = row.children[0];
+  assert.equal(pick.children[0].textContent, "Account default");
+  assert.match(pick.children[1].textContent, /Signature B/);
+  assert.doesNotMatch(pick.children[1].textContent, /Signature A/);
+}
+
+async function signatureIdentitySave() {
+  const { ui, node, event } = signatures();
+  ui.context.submit = event();
+  ui.run(`
+    state.accounts = [{id:'box', email:'leo@gmail.com', platform:'imap', sendAs:[
+      {email:'leo@gmail.com', verified:true},
+      {email:'leo@hkbscl.com', verified:true}
+    ]}];
+    signatureEditorAccountId = 'box';
+    paintSignatures({signatures:[{id:'def', name:'Account line', text:'Account line', accountId:'box'}],
+      defaultSignaturePerAccount:{box:'def'}, signatureByDomainPerAccount:{box:{}}});
+  `);
+  const domain = node("signature-list").children.find((row) => row.dataset && row.dataset.signatureKey === "domain:hkbscl.com");
+  domain.children[0].events.click();
+  node("signature-html").checked = false;
+  node("signature-name").value = "";
+  node("signature-body").value = "Domain only";
+  ui.run("globalThis.saving=submitSignature(submit)");
+  const payload = JSON.parse(ui.run("JSON.stringify(calls.at(-1).payload)"));
+  assert.equal(payload.id, undefined);
+  assert.equal(payload.accountId, "box");
+  assert.equal(payload.isDefault, false);
+  assert.deepEqual(payload.domains, ["hkbscl.com"]);
+  assert.equal(payload.name, "hkbscl.com");
+  assert.equal(payload.text, "Domain only");
+  assert.equal(ui.run("calls.filter(row => row.channel === 'mail:upsertSignature').length"), 1);
+  ui.run("pending[0].resolve({id:'dom'})");
+  await ui.run("saving");
 }
 
 function keyboard() {
@@ -287,7 +321,7 @@ function help() {
 
 async function run() {
   const checks = [signatureSwitch, signatureReordered, signatureRepeatedAdd, signatureStaleFailureAndClose,
-    signatureListOrder, keyboard, calendarErrors, calendarStaleError, help];
+    signatureListOrder, signatureIdentitySave, keyboard, calendarErrors, calendarStaleError, help];
   const failures = [];
   let timer;
   try {
