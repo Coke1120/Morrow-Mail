@@ -21,8 +21,15 @@ window.fixture={state,paint:()=>{renderList();renderReader();},sync:kind=>{state
 window.fixtureReady=true;
 `;
 let browser, socket;
+const trackingRequests = [];
 const server = http.createServer((req,res)=>{
   const pathname = new URL(req.url,'http://localhost').pathname;
+  if (pathname.startsWith('/wave1-tracker/')) {
+    trackingRequests.push(pathname);
+    res.setHeader('Content-Type','image/png');
+    res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64'));
+    return;
+  }
   if (!/^\/(renderer|shared)\/[\w./-]+$/.test(pathname) || pathname.includes('..')) {res.writeHead(404);res.end();return;}
   try { let data=fs.readFileSync(path.join(root,pathname));
     if(pathname==='/renderer/app.js')data=fixture+data.toString().replace(/boot\(\)\.catch\([^\n]+\);\s*$/,'')+setup;
@@ -50,6 +57,17 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
  assert(await evaluate('window.fixtureReady===true'),JSON.stringify(errors));await shot('wide');
  const revised=await evaluate('!!document.getElementById("message-list")');
  if(revised){
+  const trackerOrigin='http://127.0.0.1:'+server.address().port;
+  await evaluate(`globalThis.wave1Original=state.email; globalThis.wave1OriginalImages=state.prefs.images; state.prefs.images=false; state.remoteAllowed={};
+    state.email={...state.email,id:'wave1-privacy',htmlBody:${JSON.stringify('<img src="'+trackerOrigin+'/wave1-tracker/img" width="20" height="20"><table background="'+trackerOrigin+'/wave1-tracker/table"><tr><td style="width:30px;height:30px;background-image:url('+trackerOrigin+'/wave1-tracker/css)">Synthetic</td></tr></table><div style=\'width:30px;height:30px;background-image:image-set("'+trackerOrigin+'/wave1-tracker/image-set" 1x)\'>Blocked image function</div>')}}; renderReader();`);
+  await delay(300);
+  assert.deepEqual(trackingRequests,[], 'remote opt-out blocks img, CSS URL, table background and image-set');
+  assert(await evaluate(`!!$('reader').querySelector('[data-action="remote"]')`));
+  await evaluate(`$('reader').querySelector('[data-action="remote"]').click()`);
+  for(let attempt=0;attempt<30&&trackingRequests.length<3;attempt++)await delay(50);
+  assert.deepEqual([...new Set(trackingRequests)].sort(),['/wave1-tracker/css','/wave1-tracker/img','/wave1-tracker/table']);
+  assert(!trackingRequests.includes('/wave1-tracker/image-set'),'unsupported image functions remain discarded after opt-in');
+  await evaluate(`state.email=wave1Original;state.prefs.images=wave1OriginalImages;state.remoteAllowed={};renderReader();`);
   assert.equal(await evaluate('document.getElementById("list-page-status").textContent'),'1–200 / 4,479 downloaded');
   assert(await evaluate('document.getElementById("list-coverage").hidden'));
   // Real hit testing across the Sync gap, wheel containment, and keyboard scrolling.

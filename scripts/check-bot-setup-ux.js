@@ -10,7 +10,7 @@ function run() {
     return nodes.get(id);
   };
   const state = {};
-  const ctx = vm.createContext({ $, state, botListenerStatus: () => 'fixture listener',
+  const ctx = vm.createContext({ $, state, botAccessVersion: 0, botListenerStatus: () => 'fixture listener',
     paintBotAccounts() {}, paintBotGrants() {}, paintBotDrafts() {} });
   vm.runInContext(source.slice(source.indexOf('function paintBotAccess('), source.indexOf('async function openBotDraft(')), ctx);
   ctx.paintBotAccess({ enabled: false, grants: [], accounts: [] });

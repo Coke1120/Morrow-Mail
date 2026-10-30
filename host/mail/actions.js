@@ -268,6 +268,9 @@ function applyClose(action, receipt, error, dest, skipWrite) {
 
 function emit(outcomes) {
   if (!outcomes.length) return;
+  if (outcomes.some((row) => row.kind === "remove")) {
+    try { require("../agent").settleFilingOutcomes(outcomes); } catch { }
+  }
   settledLog.push(...outcomes);
   const opIds = [...new Set(outcomes.flatMap((row) => row.retryOpId ? [row.retryOpId] : row.status === "completed" && row.opId ? [row.opId] : []))];
   hooks.emitAccounts();

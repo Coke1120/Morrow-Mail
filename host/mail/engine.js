@@ -3715,6 +3715,8 @@ async function pumpScheduledAdmitted() {
         }
         if (outbox && status === "partial") {
           extra = { outboxReceipt: { message: result?.data?.warning || "Partly sent. Review rejected recipients in Scheduled delivery review; accepted recipients will not be resent automatically.", seed } };
+        } else if (outbox && db.scheduledById(row.id)?.status === "unknown") {
+          extra = { outboxReceipt: { uncertain: true, message: "Delivery is uncertain. Check Sent, then review this message in Scheduled delivery review before recovering it. The durable record has been kept." } };
         } else if (outbox && status !== "sent" && status !== "partial") {
           // A failed undo-send becomes the draft again. Leaving the row would also offer Scheduled review.
           try { db.deleteScheduled(row.id); } catch { /* the restore still opens the draft */ }

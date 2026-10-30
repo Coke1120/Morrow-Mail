@@ -108,6 +108,27 @@ async function engineChecks() {
     assert.match(failedNotices[0].outboxRestore.message, /Delivery was not confirmed/);
     assert.match(failedNotices[0].outboxRestore.seed.body, /Failed note/);
 
+    const uncertain = queue(engine, "grace", "Uncertain note", later);
+    let uncertainAttempts = 0;
+    engine.setSmtpSenderForTest(async () => {
+      uncertainAttempts += 1;
+      throw Object.assign(new Error("Connection closed after DATA"), { code: "ECONNRESET" });
+    });
+    db.setScheduledSendAt(uncertain.data.id, 0);
+    const uncertainNotices = await engine.pumpScheduled();
+    const recovery = db.scheduledById(uncertain.data.id);
+    assert.equal(recovery.status, "unknown");
+    assert.ok(recovery.message_id);
+    assert.match(recovery.payload_json, /Uncertain note/);
+    assert.equal(uncertainNotices[0].outboxRestore, undefined);
+    assert.equal(uncertainNotices[0].outboxReceipt.uncertain, true);
+    await db.close();
+    await engine.init();
+    assert.equal(db.scheduledById(uncertain.data.id).message_id, recovery.message_id);
+    assert.equal(db.scheduledById(uncertain.data.id).status, "unknown");
+    await engine.pumpScheduled();
+    assert.equal(uncertainAttempts, 1);
+
     let woke = 0;
     engine.setSmtpSenderForTest(async () => {
       woke += 1;

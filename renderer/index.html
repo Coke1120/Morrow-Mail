@@ -589,7 +589,7 @@
         <details class="cli-guide" id="cli-send-safety">
           <summary>Sending, revocation and retries</summary>
           <p>Send permission allows mail without waiting for you to press Send. Morrow rechecks the grant, expiry, installation, enabled flag, mailbox/send scopes and connected account after From resolution, before claiming the request, and again after mailbox/credential waits immediately before mail-provider submission.</p>
-          <p>Revoking or disabling access stops a pending send before that boundary. Once mail-provider submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
+          <p>Revoking or disabling access stops a pending send before that boundary. Disable and Revoke remain actionable during connection checks; access changes keep user order and show acknowledged state. Once mail-provider submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
           <p><code>mail.send</code> requires a UUID in <code>--request-id</code>. Retry the same ID and content; the client never retries automatically. <code>SEND_OUTCOME_UNKNOWN</code> means do not send the same message under a new ID. For partial delivery, review rejected recipients separately; do not resend the original list.</p>
         </details>
         <details class="cli-guide" id="cli-json-examples">
@@ -1128,7 +1128,7 @@
                 <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
                 <p id="conversation-copy-help" class="hint">Gmail label copies appear once per conversation within the same account. The selected folder copy stays selected; folder records remain stored. Different provider messages and messages without a reliable provider ID stay separate. A single message has no Earlier section.</p>
                 <label class="check" for="pref-images"><input id="pref-images" type="checkbox" checked aria-describedby="pref-images-help" /> Load remote images</label>
-                <p class="hint check-hint" id="pref-images-help">Remote images can include tracking pixels that report when and where you opened a message and may identify your device to the sender. Morrow keeps them blocked until you turn this on.</p>
+                <p class="hint check-hint" id="pref-images-help">Remote images can include tracking pixels that report when and where you opened a message and may identify your device to the sender. This is on for new profiles. Turn it off to block remote images, including CSS and table backgrounds; Load remote content allows them for one message.</p>
                 <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
               </div>
             </div>
@@ -1260,6 +1260,8 @@
             <h3 id="settings-compose-title">How you look when sending</h3>
             <p class="hint" id="brain-compose-basic">Most people only need a display name.</p>
             <form id="brain-compose-form">
+              <label for="brain-compose-account">Compose mailbox</label>
+              <select id="brain-compose-account" disabled></select>
               <h4>Sender identities</h4>
               <p id="brain-compose-identities" class="hint"></p>
               <div id="brain-compose-senders" aria-label="Sender identities"></div>
@@ -1275,8 +1277,6 @@
                 <textarea id="brain-compose-domains" rows="4" placeholder="@example.com = colleague@example.com, team@example.org" spellcheck="false" disabled></textarea>
                 <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
                 <textarea id="brain-compose-bcc" rows="4" placeholder="@example.org = records@example.org, audit@example.com" spellcheck="false" disabled></textarea>
-                <label for="brain-compose-account">Mailbox for alias settings</label>
-                <select id="brain-compose-account" disabled></select>
                 <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
                 <textarea id="brain-compose-aliases" rows="3" placeholder="ada@example.com&#10;ada@example.org = example.com" spellcheck="false" disabled></textarea>
                 <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
@@ -1447,7 +1447,7 @@
           </div>
           <div id="bot-panel-grants" role="tabpanel" aria-labelledby="bot-tab-grants" hidden>
           <h4>Your bots</h4>
-          <p class="hint">Each bot has its own secret and access. Revoke stops its access and keeps the row. Delete removes the row after you confirm. Turning access off on this computer stops every bot without revoking it.</p>
+          <p class="hint">Each bot has its own secret and access. Revoke stops its access and keeps the row. Delete removes the row after you confirm. Turning access off on this computer stops new calls from every bot without revoking it. Disable and Revoke still work during a connection check; an already-submitted send cannot be recalled.</p>
           <ul id="bot-grants" aria-label="Your bots"></ul>
           <details class="settings-disclosure" id="bot-add-client" open>
           <summary>Add a bot</summary>
