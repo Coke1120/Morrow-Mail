@@ -22113,7 +22113,12 @@ async function submitCalendarEvent(event) {
       throw new Error("The earlier creation may already exist. Restore the submitted fields to retry safely, or check the provider before starting another event.");
     }
     if (!calendarCreateAttempt) {
-      const operationId = window.crypto?.randomUUID?.().replace(/-/g, "")
+      const uuid = (typeof globalThis !== "undefined" && globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : (typeof window !== "undefined" && window.crypto && typeof window.crypto.randomUUID === "function"
+          ? window.crypto.randomUUID()
+          : ""));
+      const operationId = (uuid && String(uuid).replace(/-/g, ""))
         || Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
       calendarCreateAttempt = { operationId, fingerprint };
     }
