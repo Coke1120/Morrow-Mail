@@ -302,14 +302,23 @@ async function listEvents(provider, accessToken, calendarId, range, fetchImpl) {
   return { events: [], truncated: false };
 }
 
-// Sequential so a rate limit stops the rest. Each calendar keeps listEvents' MAX_EVENTS cap.
 async function listEventsForIds(provider, accessToken, calendarIds, range, fetchImpl) {
   const events = [];
   let truncated = false;
   const fetched = [];
-  for (const calendarId of Array.isArray(calendarIds) ? calendarIds : []) {
-    const listed = await listEvents(provider, accessToken, calendarId, range, fetchImpl);
-    fetched.push(calendarId);
+  const ids = Array.isArray(calendarIds) ? calendarIds : [];
+  const results = new Array(ids.length);
+  let cursor = 0, failure = null;
+  await Promise.all(Array.from({ length: Math.min(2, ids.length) }, async () => {
+    while (!failure && cursor < ids.length) {
+      const index = cursor++;
+      try { results[index] = await listEvents(provider, accessToken, ids[index], range, fetchImpl); }
+      catch (error) { failure ||= error; }
+    }
+  }));
+  if (failure) throw failure;
+  for (const [index, listed] of results.entries()) {
+    fetched.push(ids[index]);
     if (listed.events.length) events.push(...listed.events);
     if (listed.truncated) truncated = true;
   }

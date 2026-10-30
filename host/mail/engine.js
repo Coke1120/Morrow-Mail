@@ -1,4 +1,5 @@
 const { gate: updateGate } = require("../update-quiescence");
+const { AsyncLocalStorage } = require("node:async_hooks");
 const crypto = require("crypto");
 const deliveryReceipt = require("./delivery-receipt");
 const fs = require("fs");
@@ -132,6 +133,7 @@ async function init() {
 
 async function initializeMail() {
   await db.open(dataFile());
+  mailNoticeRevision = -1;
   db.recoverScheduled();
   ready = true;
   await markMissingOAuthSecrets();
@@ -141,7 +143,7 @@ async function initializeMail() {
 function laneFor(accountId) {
   let lane = lanes.get(accountId);
   if (!lane) {
-    lane = { user: [], background: [], active: false };
+    lane = { user: [], background: [], active: false, revision: 0, reads: new Map() };
     lanes.set(accountId, lane);
   }
   return lane;
@@ -174,6 +176,16 @@ function exclusive(accountId, fn, options) {
   // Pass { background: true } for the rotating folder walk and for body fills
   // that must wait behind an open. That work yields while user work is queued.
   const lane = laneFor(accountId);
+  const readKey = options?.readKey == null ? null : `${accountEpochs.get(accountId) || 0}:${lane.revision}:${options.readKey}`;
+  if (readKey != null && lane.reads.has(readKey)) {
+    const shared = lane.reads.get(readKey);
+    if (!options?.background) {
+      const at = lane.background.indexOf(shared.job);
+      if (at >= 0) lane.user.push(...lane.background.splice(at, 1));
+    }
+    return shared.done;
+  }
+  if (readKey == null) lane.revision++;
   let settle;
   let fail;
   const done = new Promise((resolve, reject) => {
@@ -184,7 +196,9 @@ function exclusive(accountId, fn, options) {
   const job = { fn() {
     if (epoch !== (accountEpochs.get(accountId) || 0)) throw removedAccountError();
     return fn();
-  }, settle, fail };
+  }, settle(value) { if (readKey != null) lane.reads.delete(readKey); settle(value); },
+  fail(error) { if (readKey != null) lane.reads.delete(readKey); fail(error); } };
+  if (readKey != null) lane.reads.set(readKey, { done, job });
   if (options && options.background) lane.background.push(job);
   else lane.user.push(job);
   drainLane(accountId);
@@ -272,9 +286,19 @@ function accountView(row, index) {
   return view;
 }
 
+let mailNoticeRevision = -1;
 function emitAccounts(extra) {
+  const changes = db.mailInvalidations(mailNoticeRevision);
+  mailNoticeRevision = changes.revision;
   broadcast("mail:accountsUpdated", { source: "server", accounts: accountViews(), ...(extra || {}) });
-  broadcast("mail:emailsUpdated", { accountId: null, folderId: null, folderIds: null });
+  const scopes = new Map();
+  for (const row of changes.scopes) {
+    if (!scopes.has(row.account_id)) scopes.set(row.account_id, new Set());
+    scopes.get(row.account_id).add(row.folder_path);
+  }
+  for (const [accountId, paths] of scopes) broadcast("mail:emailsUpdated", { accountId,
+    folderId: paths.size === 1 && !paths.has("") ? [...paths][0] : null,
+    folderIds: paths.has("") ? null : [...paths] });
 }
 
 function publicAttachment(item) {
@@ -800,15 +824,26 @@ function clearStrikes(accountId) {
   if (row) row.strikes = 0;
 }
 
+const syncCredentialScope = new AsyncLocalStorage();
+const syncErrorText = new WeakMap();
+
+function withSyncSecret(account, secret, work) {
+  return syncCredentialScope.run({ accountId: account.id, secret }, async () => {
+    try { return await work(); }
+    catch (error) {
+      if (error && typeof error === "object") syncErrorText.set(error, remote.explain(error, secret, account));
+      throw error;
+    }
+  });
+}
+
 function explainSyncError(account, error, secret) {
   if (/^secure_storage_/.test(error?.code || "")) {
     return "Secure storage is temporarily unavailable. Check access and retry.";
   }
-  let hidden = secret || "";
-  if (!hidden && account && account.id) {
-    try { hidden = secrets.getPassword(account.id) || ""; } catch { hidden = ""; }
-  }
-  return remote.explain(error, hidden, account);
+  const active = syncCredentialScope.getStore();
+  const usedSecret = secret || (active?.accountId === account?.id ? active.secret : "");
+  return usedSecret ? remote.explain(error, usedSecret, account) : syncErrorText.get(error) || remote.explain(error, "", account);
 }
 
 // One schedule per failure. The folder catch sets syncReported before rethrowing
@@ -903,11 +938,10 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
       noteStorm(account.id);
       return { paused: true, bootstrapped: false };
     }
-    const have = new Set(db.uidsFor(account.id, folderPath));
-    const missing = found.uids.filter((uid) => !have.has(uid)).sort((a, b) => b - a);
+    const missing = db.missingUidsFor(account.id, folderPath, found.uids, found.validity);
     const cursor = maxUid(found.uids);
     if (!missing.length) {
-      db.applyFolderSync(account.id, folderPath, {
+      await db.applyFolderSyncAsync(account.id, folderPath, {
         messages: [],
         validity: found.validity,
         exists: found.exists,
@@ -917,7 +951,7 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
         windowDone: true,
         horizonDays: days,
         uidCursor: cursor,
-      });
+      }, () => assertAccountCurrent(account));
       return { paused: false, bootstrapped: true };
     }
     if (pages > 0) await sleep(pageDelayMs());
@@ -932,7 +966,7 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
     }
     const highest = Math.max(Number(folder && folder.uid_cursor) || 0, ...page);
     const finished = missing.length <= size;
-    db.applyFolderSync(account.id, folderPath, {
+    await db.applyFolderSyncAsync(account.id, folderPath, {
       messages: fetched.messages,
       validity: fetched.validity || found.validity,
       exists: found.exists,
@@ -942,7 +976,7 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
       windowDone: finished,
       ...(finished ? { horizonDays: days } : {}),
       uidCursor: finished ? cursor : highest,
-    });
+    }, () => assertAccountCurrent(account));
     emitFolderSync(account.id, folderPath, true);
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folderPath, folderIds: [folderPath] });
     pages += 1;
@@ -976,12 +1010,12 @@ async function warmFolder(client, account, folder, started, days, limits) {
     const fetched = await remote.fetchMessages(client, folder.path, page);
     assertAccountCurrent(account);
     next = Math.max(next, ...page);
-    db.applyFolderSync(account.id, folder.path, {
+    await db.applyFolderSyncAsync(account.id, folder.path, {
       messages: fetched.messages,
       validity: fetched.validity || found.validity,
       keepOthers: true,
       uidCursor: next,
-    });
+    }, () => assertAccountCurrent(account));
     if (folder.well_known === "inbox" && localInboxRules(account)) {
       emitSync("syncing", { accountId: account.id, folderId: folder.path, phase: "rules" });
       const ruled = await inboxRules.runImapPlan({
@@ -1022,8 +1056,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
     noteStorm(account.id);
     return { paused: true, bootstrapped: false };
   }
-  // applyFolderSync prunes and updates the cursor/counts in one transaction.
-  const flagsChanged = db.applyFolderSync(account.id, folder.path, {
+  const flagsChanged = await db.applyFolderSyncAsync(account.id, folder.path, {
     messages: [],
     validity: live.validity,
     flags: live.flags,
@@ -1034,7 +1067,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
     windowDone: true,
     horizonDays: days,
     uidCursor: next,
-  });
+  }, () => assertAccountCurrent(account));
   if (flagUids.length && Array.isArray(live.flags)) {
     flagCursors.set(flagKey, { validity: live.validity, uid: flagUids[flagUids.length - 1] });
   }
@@ -1109,11 +1142,24 @@ async function syncFolderPathAdmitted(account, folderPath) {
   return exclusive(account.id, async () => {
     assertAccountCurrent(account);
     const password = await secretFor(account);
-    const result = await remote.withClient(account, password, (client) => syncFolderPolicy(client, account, folderPath));
+    const result = await withSyncSecret(account, password, () => remote.withClient(account, password, (client) => syncFolderPolicy(client, account, folderPath)));
     assertAccountCurrent(account);
     finishSync([folderPath], result && result.paused, result && result.bootstrapped, account.id);
     return result;
-  });
+  }, { readKey: JSON.stringify([account.created_at, account.auth_kind, account.mail_transport, folderPath]) });
+}
+
+const refreshes = new Map();
+
+function joinAccountRefresh(account, options, work) {
+  const scope = options || {};
+  const key = JSON.stringify([account.id, account.created_at, accountEpochs.get(account.id) || 0,
+    laneFor(account.id).revision, account.auth_kind, account.mail_transport,
+    scope.folderKey || "", scope.onlyPath || "", !!scope.onlyInbox, !!scope.background]);
+  if (refreshes.has(key)) return refreshes.get(key);
+  const pending = Promise.resolve().then(work).finally(() => { if (refreshes.get(key) === pending) refreshes.delete(key); });
+  refreshes.set(key, pending);
+  return pending;
 }
 
 function jobFolders(folders, options) {
@@ -1137,7 +1183,7 @@ function jobFolders(folders, options) {
 
 async function syncAccount(account, options) {
   account = bindAccount(account);
-  return updateGate.run(() => syncAccountAdmitted(account, options)).catch(error => {
+  return joinAccountRefresh(account, options, () => updateGate.run(() => syncAccountAdmitted(account, options))).catch(error => {
     assertAccountCurrent(account);
     throw error;
   });
@@ -1177,7 +1223,7 @@ async function syncAccountAdmitted(account, options) {
         yielded = true;
         return;
       }
-      await remote.withClient(account, password, async (client) => {
+      await withSyncSecret(account, password, () => remote.withClient(account, password, async (client) => {
         if (!jobs) {
           emitSync("syncing", { accountId: account.id, phase: "listing" });
           const listed = await remote.listFolderRecords(client);
@@ -1215,7 +1261,7 @@ async function syncAccountAdmitted(account, options) {
         if (background && plan) {
           backgroundCursor.set(account.id, pausedPath ? plan.cursorFor(pausedPath) : plan.nextCursor(visited));
         }
-      });
+      }));
       const passDone = !!(jobs && jobs.length && visited.size === jobs.length && !incomplete);
       assertAccountCurrent(account);
       finishSync(jobs || [], paused, passDone, account.id);
@@ -1223,7 +1269,7 @@ async function syncAccountAdmitted(account, options) {
         db.clearAuthError(account.id);
         syncRetryScheduler.noteSuccess(account.id);
       }
-    }, background ? { background: true } : undefined);
+    }, { background, readKey: JSON.stringify(["walk", account.created_at, options || {}, [...visited]]) });
     if (!background || !yielded || paused) break;
   }
 }
@@ -1241,28 +1287,33 @@ async function syncAllAdmitted(options) {
     ? options
     : { background: true };
   const accounts = db.listAccountRows();
-  for (const account of accounts) {
-    const pushed = !!(idleController && idleController.healthy(account.id));
-    if (scope.background && !idle.backgroundPollDue(
-      pushed,
-      idleSafetyAt.get(account.id) || 0,
-      Date.now(),
-      idle.IDLE_SAFETY_POLL_MS,
-    )) continue;
-    if (pushed) idleSafetyAt.set(account.id, Date.now());
-    // A sticky sign-in failure waits for reconnect. The 45s poll must not keep
-    // opening the mailbox or refreshing a rejected token.
-    if (account.auth_error) {
-      syncRetryScheduler.clear(account.id);
-      continue;
+  let cursor = 0;
+  const visit = async () => {
+    while (cursor < accounts.length) {
+      const account = accounts[cursor++];
+      const pushed = !!(idleController && idleController.healthy(account.id));
+      if (scope.background && !idle.backgroundPollDue(
+        pushed,
+        idleSafetyAt.get(account.id) || 0,
+        Date.now(),
+        idle.IDLE_SAFETY_POLL_MS,
+      )) continue;
+      if (pushed) idleSafetyAt.set(account.id, Date.now());
+      // A sticky sign-in failure waits for reconnect. The 45s poll must not keep
+      // opening the mailbox or refreshing a rejected token.
+      if (account.auth_error) {
+        syncRetryScheduler.clear(account.id);
+        continue;
+      }
+      try {
+        await syncAccount(account, scope);
+      } catch (error) {
+        if (error && error.syncReported) continue;
+        reportSyncFailure(account, error);
+      }
     }
-    try {
-      await syncAccount(account, scope);
-    } catch (error) {
-      if (error && error.syncReported) continue;
-      reportSyncFailure(account, error);
-    }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(2, accounts.length) }, visit));
   if (scope.background) {
     try { await fillOvernightBodies(); } catch { /* one body must not stop the next poll */ }
   }
@@ -1829,6 +1880,7 @@ async function connectAccount(params) {
 
 function invalidateAttachmentAccount(id) {
   accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
+  overnightCursor = null;
   const error = removedAccountError();
   attachmentRequests.invalidateAccount(id, error);
   attachmentCache.invalidateAccount(id, error);
@@ -2031,7 +2083,8 @@ function usableStoredBody(row) {
 }
 
 function rowNeedsBody(row) {
-  return !!(row && !row.draft_pending && Number(row.uid) > 0 && row.body_complete !== 1);
+  return !!(row && !row.draft_pending && Number(row.uid) > 0 && row.body_complete !== 1
+    && !row.body_retry_blocked && !(row.body_retry_after > Date.now()));
 }
 
 // Visible-list prefetch only. Older mail waits for the off-hours fill.
@@ -2169,11 +2222,13 @@ function overnightZone() {
 }
 
 const overnightTried = new Set();
+let overnightCursor = null;
 let overnightSawWindow = false;
 let overnightRunning = false;
 
 function resetOvernightForTest() {
   overnightTried.clear();
+  overnightCursor = null;
   overnightSawWindow = false;
   overnightRunning = false;
   fillRunning = false;
@@ -2184,25 +2239,35 @@ function resetOvernightForTest() {
 
 function nextOvernightRow(now) {
   const days = syncHorizonDays();
-  const query = { needsBody: true, limit: 200 };
+  const query = { needsBody: true, limit: 200, beforeMessage: overnightCursor };
   if (days) query.sinceTs = now - days * DAY_MS;
-  const rows = db.selectMessages(query);
-  for (const row of rows) {
-    if (!row || overnightTried.has(String(row.id))) continue;
-    if (!rowNeedsBody(row)) continue;
-    if (!gateOpen(row.account_id) || priorityWaiting(row.account_id)) continue;
-    const account = db.accountById(row.account_id);
-    if (!account || account.auth_error) continue;
-    return row;
+  while (true) {
+    const rows = db.selectMessages(query, { headersOnly: true });
+    for (const row of rows) {
+      if (!row) continue;
+      overnightCursor = { ts: row.list_sort_ts, id: row.id };
+      if (overnightTried.has(overnightIdentity(row))) continue;
+      if (!rowNeedsBody(row)) continue;
+      if (!gateOpen(row.account_id) || priorityWaiting(row.account_id)) continue;
+      const account = db.accountById(row.account_id);
+      if (!account || account.auth_error) continue;
+      return row;
+    }
+    if (rows.length < 200) { overnightCursor = null; return null; }
+    query.beforeMessage = overnightCursor;
   }
-  return null;
+}
+
+function overnightIdentity(row) {
+  return JSON.stringify([row.account_id, row.id, row.folder_path, row.uid, row.uid_validity, row.gmail_id,
+    accountEpochs.get(row.account_id) || 0]);
 }
 
 async function fillOvernightBodies() {
   if (overnightRunning) return { ran: false, fetched: 0, busy: true, window: true };
   const now = overnightNow();
   if (!overnight.inOvernightWindow(now, overnightZone())) {
-    if (overnightSawWindow) overnightTried.clear();
+    if (overnightSawWindow) { overnightTried.clear(); overnightCursor = null; }
     overnightSawWindow = false;
     return { ran: false, fetched: 0, window: false };
   }
@@ -2212,7 +2277,8 @@ async function fillOvernightBodies() {
   if (!row) return { ran: true, fetched: 0, window: true };
   overnightRunning = true;
   fillRunning = true;
-  overnightTried.add(String(row.id));
+  const identity = overnightIdentity(row);
+  overnightTried.add(identity);
   const outcome = { skipped: false, rateLimited: false };
   try {
     await fillBodyInBackground(row, outcome, "overnight");
@@ -2222,11 +2288,13 @@ async function fillOvernightBodies() {
     if (fillQueue.length) pumpBodyFills();
   }
   if (outcome.skipped) {
-    overnightTried.delete(String(row.id));
+    overnightTried.delete(identity);
+    overnightCursor = null;
     return { ran: true, fetched: 0, window: true, yielded: "open" };
   }
   if (outcome.rateLimited) {
-    overnightTried.delete(String(row.id));
+    overnightTried.delete(identity);
+    overnightCursor = null;
     return { ran: true, fetched: 0, window: true, yielded: "rate" };
   }
   const fresh = db.messageById(row.id);
@@ -2238,6 +2306,13 @@ function needsGmailMetadata(row, account) {
     .some(file => !String(file.storageUrl || "").startsWith("local:") && !String(file.id || "").startsWith("gmail:")));
 }
 
+function assertReadableBody(row) {
+  if (row && !row.draft_pending && Number(row.uid) > 0 && row.body_complete !== 1 && !usableStoredBody(row)) {
+    throw Object.assign(new Error("This message could not be downloaded. Check the mailbox connection and choose Retry download."), { code: "body_download_failed" });
+  }
+  return row;
+}
+
 async function ensureBody(row, options) {
   const background = !!(options && options.background);
   const outcome = options && options.outcome;
@@ -2247,6 +2322,7 @@ async function ensureBody(row, options) {
   // Full RFC822 via fetchSource. A text/html part fetch needs stored structure
   // so attachments and recipient headers stay intact.
   if (!row || row.draft_pending || !row.uid) return row;
+  if (!options?.retry && (row.body_retry_blocked || row.body_retry_after > Date.now())) return row;
   const account = db.accountById(row.account_id);
   if (!account) return row;
   const generation = accountEpochs.get(account.id) || 0;
@@ -2270,6 +2346,10 @@ async function ensureBody(row, options) {
     // Another open may have filled the cache while this request queued.
     row = db.messageById(row.id);
     if (!row || row.draft_pending || !row.uid || (row.body_complete === 1 && !row.body_warning && completeHeaders(row) && !needsGmailMetadata(row, account))) return row;
+    if (!options?.retry && (row.body_retry_blocked || row.body_retry_after > Date.now())) {
+      bodyResult = row.body_retry_blocked ? "source-limit" : "incomplete";
+      return row;
+    }
     actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
     bodyProgress.start(bodyTask);
@@ -2292,7 +2372,11 @@ async function ensureBody(row, options) {
       ...(account.mail_transport === "gmail_api" && fetched.providerId && Number.isSafeInteger(fetched.providerUid) && fetched.providerUid > 0 && fetched.providerValidity === account.gmail_generation
         ? { gmail_id: fetched.providerId, uid: fetched.providerUid, uid_validity: fetched.providerValidity } : {}),
       ...(metadataOnly ? {} : { html_body: fetched.htmlBody, text_body: fetched.textBody, body_complete: fetched.bodyComplete ? 1 : 0, snippet: fetched.snippet || row.snippet }),
-      body_warning: fetched.bodyWarning || null,
+      body_warning: fetched.bodyWarning || (!metadataOnly && !fetched.bodyComplete
+        ? fetched.bodySourceLimited ? "This message exceeds the source download limit. Any cached content is shown. Choose Retry download to try again."
+          : "The complete message could not be downloaded. Any cached content is shown. Choose Retry download to try again." : null),
+      body_retry_blocked: !metadataOnly && fetched.bodySourceLimited ? 1 : 0,
+      body_retry_after: !metadataOnly && !fetched.bodyComplete && !fetched.bodySourceLimited ? Date.now() + 60000 : 0,
       attachments_json: JSON.stringify(localFiles.length ? localFiles : fetched.attachments || []),
       has_attachments: localFiles.length > 0 || fetched.hasAttachments ? 1 : 0,
       subject: fetched.subject || row.subject,
@@ -2320,10 +2404,10 @@ async function ensureBody(row, options) {
         || current.account_id !== row.account_id || current.folder_path !== row.folder_path
         || current.uid !== row.uid || current.uid_validity !== row.uid_validity || current.draft_pending) return current || row;
     if (current.body_complete !== 1) {
+      db.updateMessage(row.id, { body_retry_after: Date.now() + 60000, body_warning: "The complete message could not be downloaded. Any cached content is shown. Choose Retry download to try again." });
       if (!background && !usableStoredBody(current)) {
         throw Object.assign(new Error("This message could not be downloaded. Check the mailbox connection and choose Retry download."), { code: "body_download_failed" });
       }
-      db.updateMessage(row.id, { body_warning: "The complete message could not be downloaded. The cached content is shown. Choose Retry download to try again." });
       return db.messageById(row.id);
     }
     return current;
@@ -3279,6 +3363,14 @@ function scheduleSend(params) {
 
 function listScheduled(params) {
   const accountId = params && params.accountId ? String(params.accountId) : "";
+  if (params?.id) {
+    const row = db.scheduledById(String(params.id));
+    return ok(row && (!accountId || accountId === row.account_id) ? [publicScheduled(row)] : []);
+  }
+  if (params?.summary === true) {
+    const overview = db.scheduledOverview(accountId, params);
+    return ok({ ...overview, rows: overview.rows.map(publicScheduled), selected: overview.selected ? publicScheduled(overview.selected) : null });
+  }
   return ok(db.listScheduled(accountId).map(publicScheduled));
 }
 
@@ -3484,7 +3576,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
     } else if (password) {
       try {
         const report = await remote.withClient(account, password, (client) => remote.syncFolder(client, sent.path, { limit: 40 }));
-        db.applyFolderSync(account.id, sent.path, report);
+        await db.applyFolderSyncAsync(account.id, sent.path, report);
       } catch {
         // The local Sent row stays until a later sync can adopt it.
       }
@@ -3983,7 +4075,7 @@ function answer(channel, args, event) {
     case "mail:searchSender":
       return searchSender(params || {});
     case "mail:suggestRecipients":
-      return ok({ suggestions: recipientSuggest.list(params && params.query) });
+      return recipientSuggest.list(params && params.query).then(suggestions => ok({ suggestions }));
     case "mail:openEmail":
       return (async () => {
         const stored = db.messageById(params && params.emailId);
@@ -3994,7 +4086,7 @@ function answer(channel, args, event) {
           && stored.body_complete !== 1
           && usableStoredBody(stored);
         let row;
-        try { row = paintFirst ? stored : await ensureBody(stored); }
+        try { row = assertReadableBody(paintFirst ? stored : await ensureBody(stored, { retry: params?.full === true })); }
         catch (error) { return fail(error.code || "read", error.message); }
         if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
         if (generation !== (accountEpochs.get(stored.account_id) || 0)) return fail("message_changed", "The mailbox connection changed. Reopen the message.");
@@ -4019,7 +4111,7 @@ function answer(channel, args, event) {
     case "mail:readEmail":
       return (async () => {
         let row;
-        try { row = await ensureBody(db.messageById(params && params.emailId)); }
+        try { row = assertReadableBody(await ensureBody(db.messageById(params && params.emailId), { retry: params?.retry === true })); }
         catch (error) { return fail(error.code || "read", error.message); }
         if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
         return ok(detailOf(row));

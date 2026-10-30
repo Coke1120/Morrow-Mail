@@ -28,12 +28,20 @@ Mail list and header-only thread queries omit body strings from JavaScript rows,
 and IMAP sync preserves search entries for unchanged indexed content. Full message
 and full-thread responses retain their bodies. Optional `MORROW_PERF=1` local
 timings appear in Debug log every 30 seconds with fixed labels and numeric
-aggregates, no mail/request/identity/path/credential data or telemetry. On macOS,
-routine mail reads and startup checks use the bounded asynchronous Keychain path;
-compatibility calls remain synchronous with a per-command deadline.
-Durable writes keep their existing semantics. See [Keychain read coverage and
+aggregates, no mail/request/identity/path/credential data or telemetry. Windows DPAPI
+and macOS Keychain routine reads and startup checks use bounded asynchronous children.
+Read-only feature/status checks share guarded per-request grant snapshots, not a global
+completed-credential cache. Mutation/compensation compatibility calls stay synchronous
+with a per-command deadline. Header-only recipient history updates in a worker; unrelated
+body and flag writes do not rebuild it. Sync commits bounded batches and yields outside
+transactions; startup replay and initial checkpoint publication run in workers before
+mail admission. Individual SQL/index/fsync calls remain synchronous. Mail invalidations
+are scoped to the visible surface; Outbox/Scheduled use paged body-free summaries and
+fetch full content on demand. Durable acknowledgement and recovery stay unchanged.
+See [bounded performance work](adr/2026-10-31-bounded-mail-work.md), [Keychain read coverage and
 limits](adr/2026-10-27-keychain-read-deadlines.md) and [performance diagnostics
-and synthetic measurements](PERFORMANCE.md); native Mac freezes remain unverified.
+and synthetic measurements](PERFORMANCE.md); native Mac freezes remain unverified and
+Windows frame times have not been measured.
 
 `npm start` loads `renderer/` through the host IPC that already exists. It does not read `resources/ui.asar`, unless you set `MORROW_ASAR` to an `app.asar` path.
 

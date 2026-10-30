@@ -38,6 +38,9 @@ async function diagnosticChecks() {
   assert.match(document.body.textContent,/Native Mac freezes still need profiling/);
   assert.match(document.body.textContent,/routine mail credential reads and startup checks wait asynchronously/);
   assert.match(document.body.textContent,/30 seconds per command\. Search repair yields between saved batches/);
+  assert.match(document.body.textContent,/On Windows and macOS/);
+  assert.match(document.body.textContent,/guarded per-request grant snapshots/);
+  assert.match(document.body.textContent,/Durable acknowledgement, journal recovery and fsync are unchanged/);
   const help=new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"),"utf8")).window.document;
   assert.match(help.getElementById("cli-performance").textContent,/MORROW_PERF=1 npm start/);
   assert.match(help.getElementById("performance-diagnostics-note").textContent,/paths and credentials/);

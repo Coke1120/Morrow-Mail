@@ -322,12 +322,15 @@ class Persistence {
 
   async open() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const database = await loadDatabase(this.file);
+    let database = await loadDatabase(this.file);
     try {
       const saved = state(database);
       if (saved) {
-        replay(database, this.pending);
-        replay(database, this.journal, { repairTail: true });
+        database.close();
+        database = null;
+        await this.startupWork("replay");
+        if (this.closed) throw new Error("Mail storage opening cancelled.");
+        database = openAdapted(`${this.file}.live`);
         Object.assign(this, state(database));
         this.transactions = this.sequence - saved.sequence;
         this.initialized = true;
@@ -338,19 +341,43 @@ class Persistence {
       }
       return database;
     } catch (error) {
-      database.close();
+      if (database) database.close();
       throw error;
     }
   }
 
-  initialize(database) {
+  async initialize(database) {
     this.generation = crypto.randomUUID();
     this.sequence = 0;
     database.run("CREATE TABLE morrow_storage (id INTEGER PRIMARY KEY CHECK (id = 1), generation TEXT NOT NULL, sequence INTEGER NOT NULL)");
     database.run("INSERT INTO morrow_storage VALUES (1, ?, 0)", [this.generation]);
-    snapshot(database, this.file);
+    await this.startupWork("initialize");
+    if (this.closed) throw new Error("Mail storage opening cancelled.");
     this.initialized = true;
     this.openJournal();
+  }
+
+  startupWork(kind) {
+    const worker = new Worker(__filename, { workerData: { morrowStartupWorker: kind, file: this.file } });
+    const pending = new Promise((resolve, reject) => {
+      let failure = null, settled = false;
+      const timer = setTimeout(() => {
+        failure = new Error("Mail storage opening timed out; durable data retained.");
+        worker.terminate();
+      }, checkpointTimeout(this.file));
+      const finish = (error, report) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        worker.unref();
+        if (failure || error) reject(failure || error); else resolve(report);
+      };
+      worker.once("message", message => finish(message.error ? Object.assign(new Error(message.error.message), { code: message.error.code }) : null, message.report));
+      worker.once("error", error => finish(error));
+      worker.once("exit", code => finish(new Error(`Mail storage worker stopped (${code}).`)));
+    });
+    this.running = pending.finally(() => { this.running = null; });
+    return this.running;
   }
 
   openJournal() {
@@ -525,7 +552,23 @@ class Persistence {
   }
 }
 
-if (!isMainThread && workerData && workerData.morrowCheckpointWorker) {
+if (!isMainThread && workerData?.morrowStartupWorker) {
+  let database;
+  try {
+    const file = workerData.file;
+    database = openAdapted(`${file}.live`);
+    if (workerData.morrowStartupWorker === "replay") {
+      replay(database, `${file}.journal.pending`);
+      replay(database, `${file}.journal`, { repairTail: true });
+    } else snapshot(database, file);
+    database.close();
+    database = null;
+    parentPort.postMessage({ report: { complete: true } });
+  } catch (error) {
+    try { database?.close(); } catch {}
+    parentPort.postMessage({ error: { message: error.message, code: error.code } });
+  }
+} else if (!isMainThread && workerData && workerData.morrowCheckpointWorker) {
   parentPort.on("message", ({ file, pending }) => {
     let database;
     try {

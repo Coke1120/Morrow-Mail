@@ -5,6 +5,9 @@ const sidecar = require("./sidecar");
 const provider = require("./provider-api");
 const senderHeader = require("./sender-header");
 const lookups = new Map();
+const lookupFailures = new Map();
+const secrets = require("./secrets");
+const oauthConfig = require("./oauth-config");
 
 function preferences() { return settings.answer("emailBrain:getComposeSettings", []); }
 
@@ -26,30 +29,54 @@ async function refresh(account, force) {
   if (sidecar.providerOf(account) !== "google") return "";
   const cache = cacheOf(account);
   if (!force && Date.now() - cache.updatedAt < 10 * 60 * 1000) return "";
-  const attempt = {};
+  let client = "";
+  try { client = oauthConfig.loadGoogleClient()?.clientId || ""; } catch {}
+  const key = JSON.stringify([account.created_at, account.email, account.auth_kind, account.profile, account.mail_transport, account.gmail_generation, client]);
+  const revision = secrets.revision(account.id);
+  const pending = lookups.get(account.id);
+  if (pending?.key === key && pending.revision === revision) return pending.promise;
+  const failure = lookupFailures.get(account.id);
+  if (!force && failure?.key === key && failure.revision === revision && Date.now() - failure.at < 30000) return failure.warning;
+  if (pending) pending.active = false;
+  const attempt = { key, revision, active: true };
   lookups.set(account.id, attempt);
-  let timer;
-  try {
-    const identities = await Promise.race([
-      (async () => {
-        const token = await sidecar.gmailSendAsToken(account);
-        return token ? provider.listSendAs(token.accessToken) : null;
-      })(),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Alias lookup timed out")), 8000); }),
-    ]);
-    if (!identities) return "Gmail aliases could not be checked. Configure verified send-as addresses in Gmail and add them in Brain, or enable mailbox features to discover them.";
-    const current = db.accountById(account.id);
-    if (lookups.get(account.id) !== attempt || !current || current.email !== account.email || current.auth_kind !== account.auth_kind || current.profile !== account.profile
-      || current.created_at !== account.created_at || current.mail_transport !== account.mail_transport || current.gmail_generation !== account.gmail_generation) {
-      throw new Error("The mailbox connection changed. Reopen compose.");
+  attempt.promise = discover().then(warning => {
+    if (attempt.active && attempt.revision === secrets.revision(account.id)) {
+      if (warning) lookupFailures.set(account.id, { key, revision: attempt.revision, at: Date.now(), warning });
+      else lookupFailures.delete(account.id);
     }
-    db.saveSendAs(account.id, { email: account.email, identities, updatedAt: Date.now() });
-    return "";
-  } catch {
-    return "Could not refresh Gmail send-as addresses. Cached and explicitly configured aliases remain available; Gmail must verify the address before sending.";
-  } finally {
-    clearTimeout(timer);
-    if (lookups.get(account.id) === attempt) lookups.delete(account.id);
+    return warning;
+  });
+  return attempt.promise;
+
+  async function discover() {
+    let timer;
+    try {
+      const identities = await Promise.race([
+        (async () => {
+          const token = await sidecar.gmailSendAsToken(account);
+          attempt.revision = secrets.revision(account.id);
+          return token ? provider.listSendAs(token.accessToken) : null;
+        })(),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Alias lookup timed out")), 8000); }),
+      ]);
+      if (!identities) return "Gmail aliases could not be checked. Configure verified send-as addresses in Gmail and add them in Brain, or enable mailbox features to discover them.";
+      const current = db.accountById(account.id);
+      let currentClient = "";
+      try { currentClient = oauthConfig.loadGoogleClient()?.clientId || ""; } catch {}
+      if (lookups.get(account.id) !== attempt || !attempt.active || attempt.revision !== secrets.revision(account.id) || client !== currentClient
+        || !current || current.email !== account.email || current.auth_kind !== account.auth_kind || current.profile !== account.profile
+        || current.created_at !== account.created_at || current.mail_transport !== account.mail_transport || current.gmail_generation !== account.gmail_generation) {
+        throw new Error("The mailbox connection changed. Reopen compose.");
+      }
+      db.saveSendAs(account.id, { email: account.email, identities, updatedAt: Date.now() });
+      return "";
+    } catch {
+      return "Could not refresh Gmail send-as addresses. Cached and explicitly configured aliases remain available; Gmail must verify the address before sending.";
+    } finally {
+      clearTimeout(timer);
+      if (lookups.get(account.id) === attempt) lookups.delete(account.id);
+    }
   }
 }
 
@@ -112,4 +139,9 @@ async function sendingFrom(account, input) {
 
 module.exports = { preferences, accountIdentity, context, outgoingFrom, outgoingIdentity, mimeFrom, savedName, sendingFrom,
   savedAddress: senderHeader.savedAddress,
-  invalidate: id => lookups.delete(id) };
+  invalidate(id) {
+    const pending = lookups.get(id);
+    if (pending) pending.active = false;
+    lookups.delete(id);
+    lookupFailures.delete(id);
+  } };
