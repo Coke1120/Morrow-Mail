@@ -140,6 +140,9 @@ let signatureGen = 0;
 let signatureEditId = "";
 let signatureEditorAccountId = "";
 let signatureEditorPack = null;
+let signatureEditorIdentity = null;
+let signatureEditorFocus = null;
+let signatureEditorSettings = null;
 let signatureEditorGeneration = 0;
 let signatureListGen = 0;
 let signatureSavePending = null;
@@ -2968,6 +2971,15 @@ function chosenSignatureId(pack, accountId, policyDomain) {
   const fromAccount = per && accountId ? per[accountId] : null;
   if (fromAccount) return String(fromAccount);
   if (pack && pack.defaultSignatureId) return String(pack.defaultSignatureId);
+  // One unbound signature is already the account default, including rows saved before that flag existed.
+  const owned = pack && Array.isArray(pack.signatures) ? pack.signatures.filter((row) => {
+    return row && row.id && (!row.accountId || !accountId || String(row.accountId) === String(accountId));
+  }) : [];
+  if (owned.length === 1) {
+    const id = String(owned[0].id);
+    const map = pack.signatureByDomainPerAccount && accountId ? pack.signatureByDomainPerAccount[accountId] : null;
+    if (!map || !Object.keys(map).some((domain) => String(map[domain]) === id)) return id;
+  }
   return "";
 }
 
@@ -12463,11 +12475,15 @@ function onSignatureHtmlToggle() {
 function clearSignatureForm() {
   signatureEditorGeneration += 1;
   signatureEditId = "";
+  signatureEditorIdentity = null;
+  signatureEditorFocus = null;
   $("signature-name").value = "";
   $("signature-body").value = "";
   $("signature-html").checked = true;
-  $("signature-default").checked = false;
-  $("signature-domains").value = "";
+  const legacyDefault = $("signature-default");
+  if (legacyDefault) legacyDefault.checked = false;
+  const legacyDomains = $("signature-domains");
+  if (legacyDomains) legacyDomains.value = "";
   syncSignatureSave();
   $("signature-cancel").hidden = true;
   showSignatureStatus("");
@@ -12477,7 +12493,8 @@ function clearSignatureForm() {
 function syncSignatureSave() {
   const pending = signatureSavePending === signatureEditorGeneration;
   $("signature-save").disabled = pending;
-  $("signature-save").textContent = pending ? "Saving…" : signatureEditId ? "Save" : "Add";
+  const editing = signatureEditId || signatureEditorIdentity;
+  $("signature-save").textContent = pending ? "Saving…" : editing ? "Save" : "Add";
   $("signature-form").setAttribute("aria-busy", String(pending));
 }
 
@@ -12487,57 +12504,360 @@ function signatureDomainField(pack, accountId, signatureId) {
   return Object.keys(map).filter((domain) => map[domain] === signatureId).sort().join(", ");
 }
 
-function paintSignatures(pack) {
-  signatureEditorPack = pack;
-  const root = $("signature-list");
-  root.replaceChildren();
-  const rows = signatureRows(pack);
-  const def = pack && pack.defaultSignatureId ? String(pack.defaultSignatureId) : "";
-  if (!rows.length) {
-    const empty = document.createElement("p");
-    empty.className = "hint";
-    empty.textContent = "No signatures.";
-    root.appendChild(empty);
+function signatureBareAddress(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/<([^<>]+)>/);
+  return (match ? match[1] : text).trim().toLowerCase();
+}
+
+function signaturePolicyDomain(address, account, settings) {
+  const policy = typeof window !== "undefined" && window.morrowComposePolicy;
+  if (policy && typeof policy.policyDomain === "function") {
+    return policy.policyDomain(address, account || { email: "" }, settings || { accounts: {} });
   }
-  for (const row of rows) {
-    const line = document.createElement("div");
-    line.className = "signature-row";
-    const isDefault = String(row.id) === def;
-    const text = document.createElement("p");
-    text.textContent = signatureName(row) + (isDefault ? " · Default" : "");
-    const name = signatureName(row);
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "ghost";
-    edit.textContent = "Edit";
-    edit.setAttribute("aria-label", "Edit " + name);
-    edit.addEventListener("click", () => startSignatureEdit(row, isDefault));
+  const bare = signatureBareAddress(address);
+  const at = bare.lastIndexOf("@");
+  const host = at >= 0 ? bare.slice(at + 1).replace(/^@/, "").toLowerCase() : "";
+  const prefs = settings && settings.accounts && account && account.id ? settings.accounts[account.id] : null;
+  const aliases = prefs && Array.isArray(prefs.aliases) ? prefs.aliases : [];
+  for (const row of aliases) {
+    if (!row || signatureBareAddress(row.address) !== bare || !row.domain) continue;
+    const mapped = String(row.domain).replace(/^@/, "").trim().toLowerCase();
+    if (mapped) return mapped;
+  }
+  return host;
+}
+
+function signatureDomainList(pack, accountId, signatureId) {
+  const text = signatureDomainField(pack, accountId, signatureId);
+  return text ? text.split(", ").filter(Boolean) : [];
+}
+
+function signatureRecordPayload(row) {
+  const name = row && row.name ? String(row.name).trim() : "";
+  const payload = { id: row && row.id ? String(row.id) : "", name: name || "Signature" };
+  const html = row && typeof row.html === "string" ? row.html.trim() : "";
+  if (html) payload.html = html;
+  else payload.text = row && typeof row.text === "string" ? row.text : "";
+  return payload;
+}
+
+function signatureIdentityRows(pack, account, settings) {
+  const accountId = account && account.id ? String(account.id) : "";
+  const stored = signatureRows(pack).filter((row) => !row.accountId || !accountId || String(row.accountId) === accountId);
+  const byId = new Map(stored.map((row) => [String(row.id), row]));
+  const defaultId = chosenSignatureId(pack, accountId);
+  const domainMap = pack && pack.signatureByDomainPerAccount && accountId && pack.signatureByDomainPerAccount[accountId]
+    ? pack.signatureByDomainPerAccount[accountId] : {};
+  const primary = signatureBareAddress(account && account.email);
+  const primaryHost = primary.includes("@") ? primary.slice(primary.lastIndexOf("@") + 1) : "";
+  const addresses = [];
+  const seen = new Set();
+  function addAddress(value) {
+    const email = signatureBareAddress(value);
+    if (!email || seen.has(email)) return;
+    seen.add(email);
+    addresses.push(email);
+  }
+  addAddress(primary);
+  const sendAs = account && Array.isArray(account.sendAs) ? account.sendAs : [];
+  for (const row of sendAs) {
+    if (!row || row.verificationStatus === "pending" || row.verified === false) continue;
+    addAddress(row.email || row.sendAsEmail);
+  }
+  const prefs = settings && settings.accounts && accountId ? settings.accounts[accountId] : null;
+  const aliases = prefs && Array.isArray(prefs.aliases) ? prefs.aliases : [];
+  for (const row of aliases) addAddress(row && row.address);
+  if (account && account.preferredFromAddress) addAddress(account.preferredFromAddress);
+  if (prefs && prefs.preferredFromAddress) addAddress(prefs.preferredFromAddress);
+  const groups = new Map();
+  for (const email of addresses) {
+    const domain = signaturePolicyDomain(email, account, settings);
+    if (!domain) continue;
+    if (!groups.has(domain)) groups.set(domain, []);
+    groups.get(domain).push(email);
+  }
+  for (const domain of Object.keys(domainMap)) {
+    if (!groups.has(domain)) groups.set(domain, []);
+  }
+  const domains = [];
+  for (const [domain, emails] of groups) {
+    const bound = Object.hasOwn(domainMap, domain);
+    const onlyPrimary = !emails.length || (emails.length === 1 && emails[0] === primary);
+    // The primary host is already covered by Account default unless another address uses it or a row is saved.
+    if (!bound && onlyPrimary && domain === primaryHost) continue;
+    domains.push({ domain, emails });
+  }
+  domains.sort((a, b) => a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0);
+  const defaultRow = byId.get(defaultId);
+  const defaultName = defaultRow ? signatureName(defaultRow) : "";
+  const email = account && account.email ? String(account.email) : "";
+  const rows = [{
+    key: "default",
+    kind: "default",
+    domain: "",
+    label: "Account default",
+    detail: defaultName ? (email ? email + " · " + defaultName : defaultName) : "Used when From has no domain signature",
+    signatureId: defaultId || "",
+  }];
+  const used = new Set(defaultId ? [defaultId] : []);
+  for (const item of domains) {
+    const signatureId = Object.hasOwn(domainMap, item.domain) ? String(domainMap[item.domain] || "") : "";
+    if (signatureId) used.add(signatureId);
+    const row = byId.get(signatureId);
+    const storedName = row ? signatureName(row) : "";
+    const who = item.emails.length ? item.emails.join(", ") : "Saved domain";
+    rows.push({
+      key: "domain:" + item.domain,
+      kind: "domain",
+      domain: item.domain,
+      label: item.domain,
+      detail: storedName && storedName !== item.domain ? who + " · " + storedName : who,
+      signatureId,
+    });
+  }
+  for (const row of stored) {
+    const id = String(row.id);
+    if (used.has(id) || signatureDomainList(pack, accountId, id).length) continue;
+    rows.push({
+      key: "signature:" + id,
+      kind: "extra",
+      domain: "",
+      label: signatureName(row),
+      detail: "Saved signature, not used for a From domain",
+      signatureId: id,
+    });
+  }
+  return rows;
+}
+
+function signatureSavePlan(pack, account, settings, target, draft) {
+  const accountId = account && account.id ? String(account.id) : "";
+  const rows = signatureIdentityRows(pack, account, settings);
+  const identity = rows.find((row) => row.key === (target && target.key)) || target || {};
+  const base = signatureDraft(draft || {});
+  base.accountId = accountId;
+  const signatureId = identity.signatureId ? String(identity.signatureId) : "";
+  const stored = signatureRows(pack).find((row) => String(row.id) === signatureId);
+  if (identity.kind !== "domain" && identity.kind !== "default") {
+    if (signatureId) base.id = signatureId;
+    base.isDefault = false;
+    delete base.domains;
+    return [base];
+  }
+  if (identity.kind === "default") {
+    const domains = signatureDomainList(pack, accountId, signatureId);
+    if (signatureId && !domains.length) base.id = signatureId;
+    else delete base.id;
+    base.isDefault = true;
+    delete base.domains;
+    return [base];
+  }
+  const domain = identity.domain;
+  const defaultId = chosenSignatureId(pack, accountId);
+  const boundDomains = signatureDomainList(pack, accountId, signatureId);
+  const exclusive = !!(stored && signatureId && signatureId !== defaultId && boundDomains.length === 1 && boundDomains[0] === domain);
+  if (exclusive) {
+    base.id = signatureId;
+    base.isDefault = false;
+    base.domains = [domain];
+    return [base];
+  }
+  const steps = [];
+  if (stored && signatureId && boundDomains.includes(domain)) {
+    // Keep the shared body. Drop this domain first so the host can bind it to the new row.
+    const keep = signatureRecordPayload(stored);
+    keep.accountId = accountId;
+    keep.domains = boundDomains.filter((item) => item !== domain);
+    steps.push(keep);
+  }
+  delete base.id;
+  base.isDefault = false;
+  base.domains = domain ? [domain] : [];
+  steps.push(base);
+  return steps;
+}
+
+function signatureDeletePlan(pack, account, settings, target) {
+  const accountId = account && account.id ? String(account.id) : "";
+  const rows = signatureIdentityRows(pack, account, settings);
+  const identity = rows.find((row) => row.key === (target && target.key)) || target || {};
+  const id = identity.signatureId ? String(identity.signatureId) : "";
+  if (!id) return [];
+  const stored = signatureRows(pack).find((row) => String(row.id) === id);
+  const sharers = rows.filter((row) => String(row.signatureId) === id);
+  if (sharers.length <= 1 || !stored) return [{ delete: true, id }];
+  if (identity.kind === "domain") {
+    const keep = signatureRecordPayload(stored);
+    keep.accountId = accountId;
+    keep.domains = signatureDomainList(pack, accountId, id).filter((item) => item !== identity.domain);
+    return [keep];
+  }
+  if (identity.kind === "default") {
+    const keep = signatureRecordPayload(stored);
+    keep.accountId = accountId;
+    keep.isDefault = false;
+    return [keep];
+  }
+  return [{ delete: true, id }];
+}
+
+function signatureSettings() {
+  if (signatureEditorSettings) return signatureEditorSettings;
+  const brain = typeof window !== "undefined" && window.morrowBrainCompose;
+  if (brain && typeof brain.settings === "function") {
+    const value = brain.settings();
+    if (value) return value;
+  }
+  if (state.composeIdentity && state.composeIdentity.settings) return state.composeIdentity.settings;
+  return { accounts: {} };
+}
+
+function signatureFocusRow(rows, focus, account, settings) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (focus && focus.key) {
+    const match = list.find((row) => row.key === focus.key);
+    if (match) return match;
+  }
+  if (focus && focus.email) {
+    const domain = signaturePolicyDomain(focus.email, account, settings);
+    const match = list.find((row) => row.kind === "domain" && row.domain === domain);
+    if (match) return match;
+  }
+  return list.find((row) => row.kind === "default") || list[0] || null;
+}
+
+function signatureGroupLabel(text) {
+  const label = document.createElement("p");
+  label.className = "hint signature-group";
+  label.textContent = text;
+  return label;
+}
+
+function signatureIdentityLine(identity) {
+  const line = document.createElement("div");
+  line.className = "signature-row";
+  line.dataset.signatureKey = identity.key;
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "signature-pick";
+  pick.setAttribute("aria-pressed", "false");
+  const label = document.createElement("span");
+  label.className = "signature-label";
+  label.textContent = identity.label;
+  const detail = document.createElement("span");
+  detail.className = "hint";
+  detail.textContent = identity.detail || "";
+  pick.append(label, detail);
+  pick.addEventListener("click", () => selectSignatureIdentity(identity, true));
+  line.appendChild(pick);
+  if (identity.signatureId) {
     const del = document.createElement("button");
     del.type = "button";
     del.className = "ghost";
     del.textContent = "Delete";
-    del.setAttribute("aria-label", "Delete " + name);
+    del.setAttribute("aria-label", "Delete " + identity.label);
     del.addEventListener("click", () => {
-      removeSignature(row.id).catch((error) => {
+      removeSignatureIdentity(identity).catch((error) => {
         showSignatureStatus(error instanceof Error ? error.message : String(error), true);
       });
     });
-    line.append(text, edit, del);
-    root.appendChild(line);
+    line.appendChild(del);
+  }
+  return line;
+}
+
+function markSignatureSelection(key) {
+  const root = $("signature-list");
+  if (!root || !root.children) return;
+  for (const row of root.children) {
+    const on = !!(row.dataset && row.dataset.signatureKey === key);
+    if (row.classList) row.classList.toggle("is-selected", on);
+    const pick = row.children && row.children[0];
+    if (pick && pick.classList && pick.classList.contains("signature-pick")) pick.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+function selectSignatureIdentity(identity, focus) {
+  if (!identity) return;
+  if (focus) signatureEditorGeneration += 1;
+  signatureEditorIdentity = {
+    key: identity.key,
+    kind: identity.kind,
+    domain: identity.domain || "",
+    label: identity.label || "",
+    signatureId: identity.signatureId || "",
+  };
+  const row = signatureRows(signatureEditorPack).find((item) => String(item.id) === String(identity.signatureId || ""));
+  const fields = row
+    ? signatureFields(row, identity.kind === "default")
+    : { id: "", name: identity.label || "", body: "", html: true, isDefault: identity.kind === "default" };
+  signatureEditId = fields.id;
+  $("signature-name").value = fields.name;
+  $("signature-body").value = fields.body;
+  $("signature-html").checked = row ? fields.html : true;
+  const legacyDefault = $("signature-default");
+  if (legacyDefault) legacyDefault.checked = identity.kind === "default";
+  const legacyDomains = $("signature-domains");
+  if (legacyDomains) legacyDomains.value = identity.kind === "domain" ? identity.domain || "" : "";
+  syncSignatureSave();
+  $("signature-cancel").hidden = false;
+  if (focus) showSignatureStatus("");
+  showSignatureEditor(fields.body, row ? fields.html : true);
+  markSignatureSelection(identity.key);
+  if (focus) $("signature-name").focus();
+}
+
+function paintSignatures(pack) {
+  signatureEditorPack = pack;
+  const root = $("signature-list");
+  root.replaceChildren();
+  const account = signatureAccount();
+  const settings = signatureSettings();
+  const rows = signatureIdentityRows(pack, account, settings);
+  let grouped = false;
+  let extras = false;
+  for (const identity of rows) {
+    if (identity.kind === "domain" && !grouped) {
+      root.appendChild(signatureGroupLabel("Send-as domains"));
+      grouped = true;
+    }
+    if (identity.kind === "extra" && !extras) {
+      root.appendChild(signatureGroupLabel("Other saved signatures"));
+      extras = true;
+    }
+    root.appendChild(signatureIdentityLine(identity));
   }
   syncSignatureSave();
-  $("signature-cancel").hidden = !signatureEditId;
+  const current = signatureEditorIdentity;
+  if (current || signatureEditId) {
+    const fresh = current && rows.find((row) => row.key === current.key);
+    if (fresh) {
+      current.signatureId = fresh.signatureId || "";
+      if (fresh.signatureId) signatureEditId = fresh.signatureId;
+      markSignatureSelection(fresh.key);
+    }
+    $("signature-cancel").hidden = false;
+    return;
+  }
+  const request = signatureEditorFocus;
+  signatureEditorFocus = null;
+  const picked = signatureFocusRow(rows, request, account, settings);
+  if (picked) selectSignatureIdentity(picked, !!request);
 }
 
 function startSignatureEdit(row, isDefault) {
   signatureEditorGeneration += 1;
+  signatureEditorIdentity = null;
   const fields = signatureFields(row, isDefault);
   signatureEditId = fields.id;
   $("signature-name").value = fields.name;
   $("signature-body").value = fields.body;
   $("signature-html").checked = fields.html;
-  $("signature-default").checked = fields.isDefault;
-  $("signature-domains").value = signatureDomainField(signatureEditorPack, signatureAccount()?.id, fields.id);
+  const legacyDefault = $("signature-default");
+  if (legacyDefault) legacyDefault.checked = fields.isDefault;
+  const legacyDomains = $("signature-domains");
+  if (legacyDomains) legacyDomains.value = signatureDomainField(signatureEditorPack, signatureAccount()?.id, fields.id);
   syncSignatureSave();
   $("signature-cancel").hidden = false;
   showSignatureStatus("");
@@ -12555,13 +12875,38 @@ async function loadSignatureEditor() {
   return pack;
 }
 
-function openSignatures(accountId) {
+function ensureSignatureSettings() {
+  const generation = signatureEditorGeneration;
+  const accountId = signatureEditorAccountId;
+  call("emailBrain:getComposeSettings").then((value) => {
+    if (!$("signatures").open || signatureEditorGeneration !== generation || signatureEditorAccountId !== accountId) return;
+    if (!value || signatureEditorSettings) return;
+    signatureEditorSettings = value;
+    loadSignatureEditor().catch((error) => {
+      showSignatureStatus(error instanceof Error ? error.message : String(error), true);
+    });
+  }).catch(() => {});
+}
+
+function openSignatures(accountId, focus) {
   const explicit = typeof accountId === "string" ? accountId : "";
+  const request = focus && typeof focus === "object" && !focus.preventDefault ? focus : null;
   signatureEditorAccountId = explicit || ($("settings").open ? settingsAccount() : composeAccount())?.id || settingsAccount()?.id || "";
   $("signatures-title").textContent = "Signatures · " + (signatureAccount()?.email || "No mailbox");
   clearSignatureForm();
+  signatureEditorSettings = null;
+  if (request && request.settings) signatureEditorSettings = request.settings;
+  else if (typeof window !== "undefined" && window.morrowBrainCompose && typeof window.morrowBrainCompose.settings === "function") {
+    const value = window.morrowBrainCompose.settings();
+    if (value) signatureEditorSettings = value;
+  }
+  if (!signatureEditorSettings && state.composeIdentity && state.composeIdentity.settings) {
+    signatureEditorSettings = state.composeIdentity.settings;
+  }
+  signatureEditorFocus = request;
   showSignatureStatus("");
   openDialog("signatures");
+  if (!signatureEditorSettings) ensureSignatureSettings();
   loadSignatureEditor().catch((error) => {
     showSignatureStatus(error instanceof Error ? error.message : String(error), true);
   });
@@ -12585,14 +12930,20 @@ async function submitSignature(event) {
   const generation = signatureEditorGeneration;
   if (signatureSavePending === generation) return;
   if ($("signature-html") && $("signature-html").checked) syncSignatureSource();
-  const draft = signatureDraft({
-    id: signatureEditId,
-    name: $("signature-name").value,
+  const identity = signatureEditorIdentity;
+  let name = $("signature-name").value;
+  if (identity && !String(name || "").trim() && identity.label) name = identity.label;
+  const legacyDefault = $("signature-default");
+  const legacyDomains = $("signature-domains");
+  const source = {
+    id: identity ? "" : signatureEditId,
+    name,
     body: $("signature-body").value,
     html: $("signature-html").checked,
-    isDefault: $("signature-default").checked,
-    domains: $("signature-domains").value.split(/[,;\s]+/).map((token) => token.trim()).filter(Boolean),
-  });
+    isDefault: identity ? false : !!(legacyDefault && legacyDefault.checked),
+    domains: identity || !legacyDomains ? undefined : legacyDomains.value.split(/[,;\s]+/).map((token) => token.trim()).filter(Boolean),
+  };
+  const draft = signatureDraft(source);
   if (!draft.name) {
     showSignatureStatus("Add a name.", true);
     return;
@@ -12606,16 +12957,22 @@ async function submitSignature(event) {
     showSignatureStatus("Connect an account before saving a signature.", true);
     return;
   }
-  draft.accountId = account.id;
+  const steps = identity
+    ? signatureSavePlan(signatureEditorPack, account, signatureSettings(), identity, source)
+    : [{ ...draft, accountId: account.id }];
   const ownsEditor = () => generation === signatureEditorGeneration
     && signatureAccount()?.id === account.id && $("signatures").open;
   signatureSavePending = generation;
   syncSignatureSave();
   showSignatureStatus("Saving…");
   try {
-    const saved = await call("mail:upsertSignature", draft);
-    if (!ownsEditor()) return;
+    let saved = null;
+    for (const step of steps) {
+      saved = await call("mail:upsertSignature", step);
+      if (!ownsEditor()) return;
+    }
     signatureEditId = saved && saved.id ? String(saved.id) : "";
+    if (signatureEditorIdentity && signatureEditId) signatureEditorIdentity.signatureId = signatureEditId;
     showSignatureStatus("Saved.");
     await loadSignatureEditor();
     if (!ownsEditor()) return;
@@ -12631,6 +12988,20 @@ async function submitSignature(event) {
 async function removeSignature(id) {
   await call("mail:deleteSignature", { id });
   if (signatureEditId === id) clearSignatureForm();
+  showSignatureStatus("Deleted.");
+  await loadSignatureEditor();
+  await refreshComposeSignatures();
+}
+
+async function removeSignatureIdentity(identity) {
+  const account = signatureAccount();
+  const plan = signatureDeletePlan(signatureEditorPack, account, signatureSettings(), identity);
+  if (!plan.length) return;
+  for (const step of plan) {
+    if (step.delete) await call("mail:deleteSignature", { id: step.id });
+    else await call("mail:upsertSignature", step);
+  }
+  if (signatureEditorIdentity && identity && signatureEditorIdentity.key === identity.key) clearSignatureForm();
   showSignatureStatus("Deleted.");
   await loadSignatureEditor();
   await refreshComposeSignatures();
@@ -15867,6 +16238,7 @@ function loadComposeSettings() {
     call,
     accounts: () => state.accounts,
     selectedId: () => state.accountId,
+    openSignatures,
   });
 }
 function loadSettingsFold(name) {
@@ -23915,14 +24287,22 @@ function wire() {
   $("signatures-open").addEventListener("click", openSignatures);
   const composeSignatures = $("brain-compose-signatures");
   if (composeSignatures) composeSignatures.addEventListener("click", () => openSignatures(($("brain-compose-account") && $("brain-compose-account").value) || ""));
-  $("signatures-close").addEventListener("click", () => closeDialog("signatures"));
+  $("signatures-close").addEventListener("click", () => {
+    signatureEditorIdentity = null;
+    signatureEditorFocus = null;
+    signatureEditorSettings = null;
+    closeDialog("signatures");
+  });
   $("signatures").addEventListener("close", () => {
     if ($("signatures").open) return; // ignore a queued close from a previous editor
     signatureEditorGeneration += 1;
     signatureEditId = "";
     signatureEditorAccountId = "";
   });
-  $("signature-cancel").addEventListener("click", clearSignatureForm);
+  $("signature-cancel").addEventListener("click", () => {
+    if (signatureEditorIdentity) selectSignatureIdentity(signatureEditorIdentity, true);
+    else clearSignatureForm();
+  });
   $("signature-html").addEventListener("change", onSignatureHtmlToggle);
   $("signature-form").addEventListener("submit", (event) => {
     submitSignature(event).catch((error) => {

@@ -116,7 +116,16 @@
         input.value = row.defaultName; paintName();
       });
       paintName();
-      for (const child of [title, states, label, input, source, preview, reset]) card.appendChild(child);
+      const editSig = document.createElement("button");
+      editSig.type = "button";
+      editSig.className = "inline-link";
+      editSig.textContent = "Edit signature";
+      editSig.addEventListener("click", () => {
+        if (!currentIdentity()) return;
+        if (typeof api.openSignatures !== "function") return;
+        api.openSignatures(ownerId, { email: row.email, settings });
+      });
+      for (const child of [title, states, label, input, source, preview, editSig, reset]) card.appendChild(child);
       container.appendChild(card);
     }
   }
@@ -234,5 +243,5 @@
     node.open = advancedHasRules(settings);
     node.dataset.ready = "1";
   }
-  window.morrowBrainCompose = { load, wire, parseDomainLines, sync, advancedHasRules };
+  window.morrowBrainCompose = { load, wire, parseDomainLines, sync, advancedHasRules, settings: () => settings };
 })();

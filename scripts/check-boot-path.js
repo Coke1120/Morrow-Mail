@@ -1490,10 +1490,137 @@ assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "gmail.com"), "s1"
 assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "mail.hkbscl.com"), "s1");
 assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada"), "s1");
 assert.strictEqual(chosenSignatureId(domainPack, "other", "hkbscl.com"), "s2");
+assert.strictEqual(chosenSignatureId({ signatures: [{ id: "only", accountId: "gmail-ada", text: "Hi" }] }, "gmail-ada"), "only");
+assert.strictEqual(chosenSignatureId({
+  signatures: [{ id: "only", accountId: "gmail-ada", text: "Hi" }],
+  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "only" } },
+}, "gmail-ada"), "");
+assert.strictEqual(chosenSignatureId({
+  signatures: [{ id: "only", accountId: "gmail-ada", text: "Hi" }],
+  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "only" } },
+}, "gmail-ada", "hkbscl.com"), "only");
 const signatureDomainField = extractFunction(appJs, "signatureDomainField");
 assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s2"), "hkbscl.com");
 assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s1"), "mail.hkbscl.com");
 assert.strictEqual(signatureDomainField(domainPack, "other", "s2"), "");
+const signatureIdentity = loadFunctions(appJs, [
+  "signatureRows", "chosenSignatureId", "signatureName", "signatureBareAddress", "signaturePolicyDomain",
+  "signatureDomainField", "signatureDomainList", "signatureRecordPayload", "signatureDraft",
+  "signatureIdentityRows", "signatureSavePlan", "signatureDeletePlan", "signatureFocusRow",
+]);
+const plainAccount = { id: "gmail-ada", email: "leo@gmail.com" };
+const sendAsAccount = {
+  id: "gmail-ada",
+  email: "leo@gmail.com",
+  sendAs: [
+    { email: "leo@gmail.com", verified: true },
+    { email: "leo@hkbscl.com", verified: true },
+    { email: "pending@hkbscl.com", verificationStatus: "pending" },
+    { email: "nope@hkbscl.com", verified: false },
+  ],
+};
+const emptySettings = { accounts: {} };
+const identityRows = signatureIdentity.signatureIdentityRows({ signatures: [], signatureByDomainPerAccount: {} }, sendAsAccount, emptySettings);
+assert.deepStrictEqual(identityRows.map((row) => row.key), ["default", "domain:hkbscl.com"]);
+assert.equal(identityRows[1].detail.includes("pending@"), false);
+assert.equal(identityRows[1].detail.includes("nope@"), false);
+assert.match(identityRows[1].detail, /leo@hkbscl.com/);
+const primaryOnly = signatureIdentity.signatureIdentityRows(
+  { signatures: [{ id: "s1", accountId: "gmail-ada", name: "Work", text: "Hi" }], defaultSignaturePerAccount: { "gmail-ada": "s1" } },
+  plainAccount,
+  emptySettings,
+);
+assert.deepStrictEqual(primaryOnly.map((row) => row.key), ["default"]);
+assert.equal(primaryOnly[0].signatureId, "s1");
+assert.match(primaryOnly[0].detail, /Work/);
+const boundHost = signatureIdentity.signatureIdentityRows(
+  { signatures: [{ id: "s2", accountId: "gmail-ada", name: "G", text: "G" }], signatureByDomainPerAccount: { "gmail-ada": { "gmail.com": "s2" } } },
+  plainAccount,
+  emptySettings,
+);
+assert.ok(boundHost.some((row) => row.key === "domain:gmail.com" && row.signatureId === "s2"));
+const sharedHost = signatureIdentity.signatureIdentityRows(
+  { signatures: [] },
+  { id: "gmail-ada", email: "leo@gmail.com", sendAs: [{ email: "ada@gmail.com", verified: true }] },
+  emptySettings,
+);
+assert.ok(sharedHost.some((row) => row.domain === "gmail.com"));
+const aliasAccount = plainAccount;
+const aliasSettings = { accounts: { "gmail-ada": { aliases: [{ address: "leo@gmail.com", domain: "hkbscl.com" }] } } };
+const composePolicy = require("../shared/compose-policy");
+assert.strictEqual(
+  signatureIdentity.signaturePolicyDomain("Leo <leo@gmail.com>", aliasAccount, aliasSettings),
+  composePolicy.policyDomain("Leo <leo@gmail.com>", aliasAccount, aliasSettings),
+);
+const aliasRows = signatureIdentity.signatureIdentityRows(
+  { signatures: [{ id: "s1", accountId: "gmail-ada", name: "Work", text: "Hi" }], defaultSignaturePerAccount: { "gmail-ada": "s1" } },
+  aliasAccount,
+  aliasSettings,
+);
+assert.ok(aliasRows.some((row) => row.key === "domain:hkbscl.com"));
+const domainOnly = signatureIdentity.signatureIdentityRows(
+  {
+    signatures: [{ id: "only", accountId: "gmail-ada", name: "Only", text: "Hi" }],
+    signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "only" } },
+  },
+  sendAsAccount,
+  emptySettings,
+);
+assert.equal(domainOnly[0].signatureId, "");
+assert.equal(domainOnly.find((row) => row.domain === "hkbscl.com").signatureId, "only");
+const domainAccount = { id: "gmail-ada", email: "leo@gmail.com", sendAs: [{ email: "leo@hkbscl.com", verified: true }] };
+const exclusivePack = {
+  signatures: [
+    { id: "s1", accountId: "gmail-ada", name: "Account", text: "Account" },
+    { id: "s2", accountId: "gmail-ada", name: "Domain", text: "Old" },
+  ],
+  defaultSignaturePerAccount: { "gmail-ada": "s1" },
+  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "s2" } },
+};
+const exclusive = signatureIdentity.signatureSavePlan(exclusivePack, domainAccount, emptySettings, { key: "domain:hkbscl.com" }, { name: "hkbscl.com", body: "Domain only", html: false });
+assert.equal(exclusive.length, 1);
+assert.equal(exclusive[0].id, "s2");
+assert.equal(exclusive[0].isDefault, false);
+assert.deepStrictEqual(exclusive[0].domains, ["hkbscl.com"]);
+assert.equal(exclusive[0].text, "Domain only");
+const sharedPack = {
+  signatures: [{ id: "s1", accountId: "gmail-ada", name: "Shared", text: "Shared" }],
+  defaultSignaturePerAccount: { "gmail-ada": "s1" },
+  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "s1" } },
+};
+const split = signatureIdentity.signatureSavePlan(sharedPack, domainAccount, emptySettings, { key: "domain:hkbscl.com" }, { name: "hkbscl.com", body: "New", html: false });
+assert.equal(split.length, 2);
+assert.equal(split[0].id, "s1");
+assert.equal(split[0].text, "Shared");
+assert.deepStrictEqual(split[0].domains, []);
+assert.equal(Object.hasOwn(split[0], "isDefault"), false);
+assert.equal(split[1].id, undefined);
+assert.equal(split[1].isDefault, false);
+assert.deepStrictEqual(split[1].domains, ["hkbscl.com"]);
+assert.equal(split[1].text, "New");
+const defaultSplit = signatureIdentity.signatureSavePlan(sharedPack, domainAccount, emptySettings, { key: "default" }, { name: "Account default", body: "Only default", html: false });
+assert.equal(defaultSplit.length, 1);
+assert.equal(defaultSplit[0].id, undefined);
+assert.equal(defaultSplit[0].isDefault, true);
+assert.equal(defaultSplit[0].text, "Only default");
+assert.equal(defaultSplit[0].domains, undefined);
+const unbound = signatureIdentity.signatureDeletePlan(sharedPack, domainAccount, emptySettings, { key: "domain:hkbscl.com" });
+assert.deepStrictEqual(unbound[0].domains, []);
+assert.equal(unbound[0].text, "Shared");
+assert.equal(Object.hasOwn(unbound[0], "isDefault"), false);
+const clearDefault = signatureIdentity.signatureDeletePlan(sharedPack, domainAccount, emptySettings, { key: "default" });
+assert.equal(clearDefault[0].isDefault, false);
+assert.equal(clearDefault[0].domains, undefined);
+assert.equal(clearDefault[0].id, "s1");
+const soleDelete = signatureIdentity.signatureDeletePlan(
+  { signatures: [{ id: "s1", accountId: "gmail-ada", name: "Account", text: "Account" }], defaultSignaturePerAccount: { "gmail-ada": "s1" } },
+  plainAccount,
+  emptySettings,
+  { key: "default" },
+);
+assert.deepStrictEqual(soleDelete, [{ delete: true, id: "s1" }]);
+assert.equal(signatureIdentity.signatureFocusRow(aliasRows, { email: "Leo <leo@gmail.com>" }, aliasAccount, aliasSettings).key, "domain:hkbscl.com");
+assert.equal(signatureIdentity.signatureFocusRow(aliasRows, { key: "default" }, aliasAccount, aliasSettings).key, "default");
 assert.strictEqual(signaturePlain(pack.signatures[0]), "Thanks,\nAda");
 assert.strictEqual(signaturePlain(pack.signatures[1]), "— Ada");
 assert.strictEqual(applySignature("Hello", "", "— Ada"), "Hello\n\n— Ada");
@@ -1600,7 +1727,7 @@ for (const channel of ["mail:upsertSignature", "mail:deleteSignature"]) {
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
 assert.ok(html.includes('id="signatures"') && html.includes('id="signature-name"') && html.includes('id="signature-body"'));
-assert.ok(html.includes('id="signature-html" type="checkbox" checked') && html.includes('id="signature-default"') && html.includes('id="signatures-open"'));
+assert.ok(html.includes('id="signature-html" type="checkbox" checked') && html.includes('id="signature-identity-help"') && html.includes('id="signatures-open"'));
 assert.ok(html.includes('id="signature-editor"') && html.includes('id="signature-format"') && html.includes('class="compose-editor"'));
 assert.ok(html.includes('data-command="foreColor"') && html.includes('data-command="hiliteColor"'));
 assert.ok(html.split('aria-label="Text color"').length - 1 >= 2);
@@ -1611,10 +1738,11 @@ assert.ok(functionSource(appJs, "wireComposeFormat").includes('$("signature-edit
 assert.ok(functionSource(appJs, "bindRichEditor").includes("sanitizeComposeHtml"));
 assert.ok(functionSource(appJs, "revealEditorStyles").includes("background-color"));
 assert.ok(css.includes(".compose-color") && css.includes("#signature-form .compose-editor") && css.includes("#signature-form textarea"));
-assert.ok(html.includes('id="signature-domains"') && html.includes('id="brain-compose-bcc"'));
+assert.ok(html.includes('id="brain-compose-bcc"') && html.includes("Account default is used when From has no domain signature"));
 assert.ok(html.includes('id="signatures-from-compose"'));
 assert.ok(html.includes("Saved on this computer for the selected account"));
-assert.ok(html.includes("Default for this account"));
+assert.ok(html.includes("does not replace the account default"));
+assert.ok(fs.readFileSync(path.join(root, "renderer/brain-compose.js"), "utf8").includes("Edit signature"));
 assert.ok(html.includes("Sends while the app is open"));
 assert.ok(!html.includes("Sample signatures"));
 assert.ok(!appJs.includes("Sample mailbox"));
@@ -1746,7 +1874,7 @@ assert.ok(functionSource(appJs, "paintPrefs").includes("repaintClockSurfaces"));
 assert.ok(!html.includes("hkbscl"));
 assert.ok(html.includes("@example.com = colleague@example.com, team@example.org"));
 assert.ok(html.includes("ada@example.org = example.com"));
-assert.ok(html.includes("example.com, example.org"));
+assert.ok(html.includes("A domain row applies only to that From domain"));
 assert.ok(!fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8").includes("hkbscl"));
 assert.ok(functionSource(appJs, "chooseFetchedModel").includes("paintAiDirty"));
 assert.ok(functionSource(appJs, "chooseFetchedModel").includes('new Event("input"'));
@@ -4101,7 +4229,7 @@ const featureSeed = [
   ["conversation-members", "Conversation messages", "Mail", "Gmail label copies appear once in a conversation, using the provider message ID within the same account. The selected folder copy stays selected. Folder records remain stored. Distinct provider messages and rows without a reliable provider ID stay separate, even when RFC Message-ID matches. A single message has no Earlier section."],
   ["reading-header", "Reading header", "Mail", "The open message shows its date and time on the From row, right-aligned, in the main reading pane and in a separate reader window. That text uses the reader's existing date and time format. To and Cc stay on the lines below. Main and separate readers apply definitive flag and removal receipts; terminal refusals restore the authoritative flags instead of announcing success. Remote images are on for new profiles. When disabled, normal image, CSS URL and table backgrounds stay blocked until Load remote content is chosen for that message. Unsupported CSS image functions, including image-set, are discarded."],
   ["sender-identities", "Sender identities", "Mail", "Settings → Compose previews each exact From address and its Morrow-only display name. Verified Gmail send-as names are the default; local overrides survive refresh. Clear a name for address-only sending or reset to the default. Most people only need a display name. Domain CC/BCC, aliases, and the fallback CC domain stay under Advanced, collapsed until one of those rules is saved. Compose From lists authorized addresses for every connected mailbox; choosing another mailbox sends and saves drafts there. Switching mailboxes preserves body formatting and links, and keeps a signature you edited. Only untouched automatic signatures, including multiline HTML signatures, follow the new mailbox. Drafts and scheduled mail retain the selected name and address, including punctuation and Unicode in names. Bot mail.send uses these defaults on the granted account only. Provider sending permissions still apply; Gmail settings and OAuth scopes stay unchanged. Providers or recipient contacts may affect the delivered display. The Compose mailbox selector is in Basic, above sender names, Preferred From and Signatures; alias and domain rules remain in Advanced."],
-  ["signatures", "Signatures", "Mail", "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target."],
+  ["signatures", "Signatures", "Mail", "Settings → Signatures lists an Account default and one row per send-as domain. Saving a domain row does not replace the account default. Compose uses that domain signature, then the account default, then no signature. Saving… shows while a save waits, and switching identities keeps the new editing target. Edit signature on a From card opens the same dialog."],
   ["mail-keyboard", "Mail list keyboard navigation", "Mail", "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus."],
   ["unread-filter", "Unread filter", "Mail", "The sidebar Unread filter and the All Account Mail Unread chip list downloaded unread mail. Opening an unread message may mark it read and keeps that one row in the list until a different unread message is opened. Opening a message that is already read, opening the held row again, or highlighting a row without opening it leaves the hold. Mark read on the held row from the row button leaves it listed. Mark unread clears the hold and the row stays because it is unread. Mark read on a row that is not held removes it immediately. Multi-select Mark read removes every selected row immediately, including the held row when it is selected, even when only that row is selected. A held row outside the selection stays. Leaving Unread, switching folder or account, searching, or turning the filter off clears the hold, and coming back does not restore it. Refresh and Sync keep the held row unless the message is gone from that filtered mail. Other filters do not keep a read row this way."],
   ["undo-removal", "Undo removal details", "Mail", "Archive, Trash, and Move keep Undo for every completed change in the current removal. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Select all or Clear, then Undo selected. The status chip only shows or hides the notice, anchored at the bottom-right. Details keeps its selection and stays open while you use it; Escape closes it and returns focus. Restore controls wait until pending changes settle, and unreported rows stay available. Mark as read keeps its own Undo and does not replace a removal Undo. A newer removal replaces that list. Outbox undo send is separate and is not in this checklist. Separate account settlements from one reviewed removal join that same session in either order; late settlements from an older removal cannot replace the newer checklist."],
