@@ -14828,7 +14828,10 @@ async function undoOutboxItem(row) {
   }
   const status = "Send canceled. A recovery copy is saved in local Drafts; nothing sends automatically.";
   try {
-    await resumeDraft({ id: recovered.emailId, accountId: recovered.accountId }, { status });
+    await resumeDraft({ id: recovered.emailId, accountId: recovered.accountId }, {
+      status,
+      ...(explicitAgentTodo(recovered.agentTodo) ? { agentTodo: explicitAgentTodo(recovered.agentTodo) } : {}),
+    });
     showStatus(status);
   } catch (error) {
     showStatus("Send canceled and saved in local Drafts, but Compose could not open. Resume it from Drafts. " + (error.message || String(error)), true);

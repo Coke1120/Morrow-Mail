@@ -700,6 +700,8 @@ test("Features: actual catalog render and tab switching keep recovery, privacy a
   ui.run("paintFeatureCatalog()");
   const rendered = ui.nodes.get("features-catalog").textContent;
   for (const claim of [/uncertain.*Scheduled delivery review/i, /Split|Separate account settlements/, /terminal refusals/, /ai\.json.*not OS encryption/, /Disable and Revoke/, /selected skill ID/, /newer typing/]) assert.match(rendered, claim);
+  assert.match(rendered, /Undo reopens Compose.*Agent todo.*confirmed send/);
+  assert.match(rendered, /Outlook description edits.*surrounding whitespace.*provider revision/);
   assert.doesNotMatch(rendered, /Credentials stay encrypted on this computer/);
   const nav = ui.nodes.get("features-tabs");
   for (const name of ["catalog", "shortcuts", "cli"]) {
