@@ -14427,7 +14427,7 @@ async function undoOutboxItem(row) {
   }
   let recovered;
   try {
-    recovered = await call("mail:editScheduled", { id: row.id });
+    recovered = await call("mail:cancelScheduled", { id: row.id, recoverDraft: true });
   } catch (error) {
     showStatus(error.message || "Delivery has started. It can no longer be canceled. Check Sent before retrying.", true);
     return;

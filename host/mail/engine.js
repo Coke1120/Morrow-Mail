@@ -3296,8 +3296,14 @@ function cancelScheduled(params) {
   if (scheduledDelivering.has(id)) return fail("sending", "Delivery has started. It can no longer be canceled or edited. Check Sent before retrying.");
   const row = db.scheduledById(id);
   if (!row) return fail("not-found", "That scheduled send is gone.");
-  clearOutboxWake(id);
   const snapshot = scheduledSnapshot(row);
+  if (params && params.recoverDraft === true) {
+    const recovered = editScheduled(params);
+    if (!recovered.success) return recovered;
+    clearOutboxWake(id);
+    return ok({ id, snapshot, ...recovered.data });
+  }
+  clearOutboxWake(id);
   let outbox = false;
   try { outbox = JSON.parse(row.payload_json).outbox === true; } catch { outbox = false; }
   if (!db.deleteScheduled(id)) return fail("not-found", "That scheduled send is gone.");

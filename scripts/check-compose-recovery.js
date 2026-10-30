@@ -19,7 +19,7 @@ async function run() {
       calls.push({channel,payload});
       if (channel === 'mail:getComposeContext') return {...window.morrowComposePolicy.resolve(state.accounts[0], null, {ccByDomain:{},accounts:{}}, 'new', payload.fromAddress), settings:{ccByDomain:{},accounts:{}}};
       if (channel === 'mail:upsertDraft') { if(failSave) throw new Error('Save failed; text retained'); return {draftId:'same-draft'}; }
-      if (channel === 'mail:editScheduled') return {emailId:'recovered-draft',accountId:'a'};
+      if (channel === 'mail:cancelScheduled' && payload.recoverDraft === true) return {emailId:'recovered-draft',accountId:'a'};
       if (channel === 'mail:openEmail') return {email:{id:payload.emailId,accountId:'a',isDraft:true,bodyComplete:true,
         fromAddress:'me@example.test',to:queued.to,subject:queued.subject,textBody:'Edited same draft',htmlBody:queued.body,inReplyTo:queued.inReplyTo}};
       if (channel === 'mail:send' && failSend) throw new Error('Delivery failed');
@@ -66,6 +66,7 @@ async function run() {
   assert.equal(ui.run(`calls.filter(x=>x.channel==='mail:send').length`),0);
   ui.context.row = { id: 'outbox-1', accountId: 'a', outboxStatus: 'pending', status: 'pending', subject: queued.payload.subject, htmlBody: queued.payload.body, draftId: queued.payload.draftId, inReplyTo: queued.payload.inReplyTo, to: queued.payload.to, fromAddress: queued.payload.fromAddress };
   await ui.run('undoOutboxItem(row)');
+  assert.deepEqual(JSON.parse(ui.run(`JSON.stringify(calls.filter(x=>x.channel==='mail:cancelScheduled').map(x=>x.payload))`)), [{id:'outbox-1',recoverDraft:true}]);
   assert.equal(get('compose').open, true);
   assert.equal(ui.run('state.draftId'), 'recovered-draft');
   assert.equal(ui.run('state.composeMeta.inReplyTo'), 'original');

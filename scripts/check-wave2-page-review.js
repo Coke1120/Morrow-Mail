@@ -71,7 +71,7 @@ function composeFixture(extraApi = {}) {
       if(channel==='mail:listSignatures')return fixture.signatures;
       if(channel==='mail:upsertDraft')return {emailId:'saved',draftRevision:'revision'};
       if(channel==='mail:scheduleSend'){const row={...payload,id:'queue-'+fixture.queue.length,status:'pending',htmlBody:payload.body};fixture.queue.push(row);return row;}
-      if(channel==='mail:editScheduled'){
+      if(channel==='mail:cancelScheduled'&&payload.recoverDraft===true){
         const row=fixture.queue.find(item=>item.id===payload.id);if(!row)throw new Error('Missing queued message');
         const draft={...row,id:'recovered',accountId:'a',isDraft:true,bodyComplete:true,textBody:plainFromMailHtml(row.body)};
         fixture.drafts.set(draft.id,draft);fixture.queue=fixture.queue.filter(item=>item!==row);return {emailId:draft.id,accountId:'a'};
@@ -138,6 +138,10 @@ test("Compose P2: Undo and failed-send snapshots preserve empty recipients and e
     await ui.run("sendMail()");
     if (recovery === "undo") await ui.run("undoOutboxItem(fixture.queue[0])");
     else await ui.run("openCompose(outboxComposeSeed(fixture.queue[0],fixture.queue[0]))");
+    if (recovery === "undo") {
+      assert.deepEqual(copy(ui.run("fixture.calls.filter(item=>item.channel==='mail:cancelScheduled').map(item=>item.payload)")), [{ id: "queue-0", recoverDraft: true }]);
+      assert.equal(ui.run("fixture.calls.some(item=>item.channel==='mail:editScheduled')"), false);
+    }
     assert.equal(ui.get("compose-cc").value, "");
     assert.equal(ui.get("compose-bcc").value, "");
     assert.equal(ui.get("compose-body").value, body);
@@ -565,7 +569,9 @@ test("Features: production catalog rendering and page/CLI help describe the fixe
   const text = ui.nodes.get("features-catalog").textContent;
   for (const claim of [/AI draft events cannot replace manual edits/, /Preparing attachment/, /inert recovery draft/,
     /cleared Cc\/Bcc/, /Untouched multiline HTML/, /retires old suggestion choices/, /non-Latin names/,
-    /voice quotes/, /Category-save readback preserves newer/, /Reauthorize calendar/, /transaction ID/,
+    /voice quotes/, /Category-save readback preserves newer/, /Undo cancels the queued send/,
+    /If Compose cannot open, resume it from local Drafts/, /Recovery failure leaves the queued send unchanged/,
+    /Once delivery starts, Undo cannot cancel it/, /Reauthorize calendar/, /transaction ID/,
     /literal angle brackets/, /preserving offsets and seconds/, /saves and deletes invalidate/]) assert.match(text, claim);
   const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
   assert.match(html, /id="cli-page-recovery"[^>]*>[^<]*bot capabilities and permissions are unchanged/);
@@ -573,6 +579,7 @@ test("Features: production catalog rendering and page/CLI help describe the fixe
   assert.doesNotMatch(fs.readFileSync(path.join(root, "shared/bot-contract-v1.json"), "utf8"), /calendar:createEvent/);
   assert.match(html, /id="brain-persona-hint"[^>]*>[^<]*saved edits made during analysis/);
   assert.match(html, /id="calendar-save-note"[^>]*>[^<]*Retry unchanged creation/);
+  assert.match(html, /id="pref-undo-help"[^>]*>[^<]*saves a recovery copy in local Drafts before reopening Compose/);
 });
 
 test("Existing provider description guards still reject lossy, stale, oversized and uncertain replacements", async () => {
