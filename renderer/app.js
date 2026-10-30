@@ -119,6 +119,7 @@ let undoOpIds = null;
 let undoItems = null;
 let undoBusy = false;
 let undoEpoch = 0;
+let undoDetailsEpoch = -1;
 const undoEpochByOp = new Map();
 const removalEpochByAction = new Map();
 const removalEpochByMessage = new Map();
@@ -150,6 +151,7 @@ let scheduledGen = 0;
 let scheduleUndo = null;
 let scheduleUndoTimer = null;
 let scheduleUndoBusy = false;
+let scheduleUndoEpoch = 0;
 let previewDraftState = null;
 let layoutSaveTimer = null;
 let sendTimer = null;
@@ -8364,8 +8366,9 @@ function paintUndoDetails() {
   const checked = new Set(selectedUndoOpIds());
   const focused = list.contains(document.activeElement) ? document.activeElement.value : null;
   const scrollTop = list.scrollTop;
+  const multipleAccounts = new Set((undoItems || []).map((item) => item.accountId).filter(Boolean)).size > 1;
   list.replaceChildren();
-  for (const item of undoItems || []) {
+  for (const [index, item] of (undoItems || []).entries()) {
     const li = document.createElement("li");
     const label = document.createElement("label");
     label.className = "check";
@@ -8383,9 +8386,13 @@ function paintUndoDetails() {
     subject.textContent = item.subject || "(No subject)";
     const meta = document.createElement("span");
     meta.className = "undo-details-meta";
+    meta.id = "undo-details-meta-" + index;
+    box.setAttribute("aria-describedby", meta.id);
     const action = item.action || "move";
     const where = item.destinationLabel ? " → " + item.destinationLabel : "";
-    meta.textContent = [item.from, action + where].filter(Boolean).join(" · ");
+    const account = multipleAccounts && state.accounts.find((row) => row.id === item.accountId);
+    const mailbox = multipleAccounts ? accountLabel({ ...account, id: "" }) || "Unavailable mailbox" : "";
+    meta.textContent = [mailbox, item.from, action + where].filter(Boolean).join(" · ");
     text.append(subject, meta);
     label.append(box, text);
     li.appendChild(label);
@@ -8453,11 +8460,11 @@ function paintUndoControls() {
 function showUndo(text, opIds, isError, items) {
   clearReadUndoTimer();
   const nextIds = opIds && opIds.length ? opIds.slice() : null;
-  const same = undoKind === "removal" && undoOpIds && nextIds && undoOpIds.join("\0") === nextIds.join("\0");
-  if (!same) {
+  if (undoKind !== "removal" || undoDetailsEpoch !== undoEpoch) {
     closeUndoDetails(false);
     $("undo-details-list")?.replaceChildren?.();
   }
+  undoDetailsEpoch = undoEpoch;
   undoKind = "removal";
   readUndoItems = null;
   undoReceipt = text;
@@ -14302,6 +14309,7 @@ function hideScheduleUndo() {
 
 function armScheduleUndo(snapshot) {
   clearScheduleUndoTimer();
+  scheduleUndoEpoch += 1;
   scheduleUndo = snapshot;
   paintScheduleUndo();
   scheduleUndoTimer = setTimeout(() => {
@@ -14353,11 +14361,12 @@ async function requestCancelScheduled(row) {
 async function undoCancelScheduled() {
   const snapshot = scheduleUndo;
   if (!snapshot || scheduleUndoBusy) return;
+  const epoch = scheduleUndoEpoch;
   scheduleUndoBusy = true;
   paintScheduleUndo();
   try {
     await call("mail:restoreScheduled", { snapshot });
-    if (scheduleUndo === snapshot) {
+    if (scheduleUndoEpoch === epoch) {
       hideScheduleUndo();
       const status = $("scheduled-status");
       if (status) status.textContent = "Scheduled send restored.";
@@ -14365,7 +14374,7 @@ async function undoCancelScheduled() {
     }
     await loadScheduled();
   } catch (error) {
-    if (scheduleUndo !== snapshot) return;
+    if (scheduleUndoEpoch !== epoch) return;
     const message = error instanceof Error ? error.message : String(error);
     const status = $("scheduled-status");
     if (status) status.textContent = message;
