@@ -226,7 +226,7 @@ async function run() {
   assert.deepEqual(failures, [], "calendar and keyboard regressions");
   console.log("calendar-keyboard-followup-ok (Cancel/read races, local dates in 4 time zones, focused controls, form errors; no live I/O)");
 }
-module.exports = { run };
+module.exports = { run, fixture };
 if (require.main === module) {
   const timer = setTimeout(() => { console.error("Unresolved UI fixture"); process.exit(1); }, 10000);
   Promise.resolve().then(() => process.argv.includes("--days") ? dayBoundaries() : run())

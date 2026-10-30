@@ -2294,7 +2294,7 @@ async function ensureBody(row, options) {
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
       from_address: fetched.fromAddress || row.from_address || null,
     });
-    bodyResult = metadataOnly || fetched.bodyComplete ? "done" : "incomplete";
+    bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
   } catch (error) {
@@ -3154,6 +3154,7 @@ function agentTodoOf(input) {
 function outboxNoticeSeed(row, payload, presented) {
   const html = presented && typeof presented.htmlBody === "string" ? presented.htmlBody : (typeof payload.body === "string" ? payload.body : "");
   const seed = {
+    recoveredSnapshot: true,
     accountId: row.account_id,
     to: payload.to,
     cc: payload.cc,
@@ -3295,8 +3296,14 @@ function cancelScheduled(params) {
   if (scheduledDelivering.has(id)) return fail("sending", "Delivery has started. It can no longer be canceled or edited. Check Sent before retrying.");
   const row = db.scheduledById(id);
   if (!row) return fail("not-found", "That scheduled send is gone.");
-  clearOutboxWake(id);
   const snapshot = scheduledSnapshot(row);
+  if (params && params.recoverDraft === true) {
+    const recovered = editScheduled(params);
+    if (!recovered.success) return recovered;
+    clearOutboxWake(id);
+    return ok({ id, snapshot, ...recovered.data });
+  }
+  clearOutboxWake(id);
   let outbox = false;
   try { outbox = JSON.parse(row.payload_json).outbox === true; } catch { outbox = false; }
   if (!db.deleteScheduled(id)) return fail("not-found", "That scheduled send is gone.");
@@ -3715,6 +3722,8 @@ async function pumpScheduledAdmitted() {
         }
         if (outbox && status === "partial") {
           extra = { outboxReceipt: { message: result?.data?.warning || "Partly sent. Review rejected recipients in Scheduled delivery review; accepted recipients will not be resent automatically.", seed } };
+        } else if (outbox && db.scheduledById(row.id)?.status === "unknown") {
+          extra = { outboxReceipt: { uncertain: true, message: "Delivery is uncertain. Check Sent, then review this message in Scheduled delivery review before recovering it. The durable record has been kept." } };
         } else if (outbox && status !== "sent" && status !== "partial") {
           // A failed undo-send becomes the draft again. Leaving the row would also offer Scheduled review.
           try { db.deleteScheduled(row.id); } catch { /* the restore still opens the draft */ }

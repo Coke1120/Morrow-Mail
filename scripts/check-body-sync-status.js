@@ -22,6 +22,11 @@ function trackerChecks() {
   const next = tracker.queue("a", "overnight"); tracker.start(next);
   tracker.finish(next, "incomplete");
   assert.equal(read().accounts[0].reason, "incomplete");
+  assert.equal(read().accounts[0].state, "error", "decoding failures still need attention");
+  tracker.finish(tracker.queue("a", "open"), "source-limit");
+  assert.equal(read().accounts[0].state, "limited", "the intentional source cap is not a failure");
+  assert.equal(read().accounts[0].lastResult, "limited");
+  assert.equal(read().accounts[0].reason, "source-limit");
   assert.equal(read({ accounts: [{ id: "a", pausedUntil: 2000 }] }).accounts[0].reason, "rate-limit");
   assert.equal(read({ sleeping: true }).accounts[1].reason, "sleeping");
   assert.equal(read({ online: false }).accounts[1].reason, "offline");
@@ -64,6 +69,16 @@ function fixture() {
 
 async function rendererChecks() {
   const { ui, node, document } = fixture();
+  const tracker = createBodyProgress();
+  tracker.finish(tracker.queue("a", "open"), "source-limit");
+  ui.context.capped = tracker.snapshot({ accounts: [{ id: "a" }] });
+  ui.run("rememberBodySync(capped);paintBodySyncStatus()");
+  assert.equal(node("body-sync-label").textContent, "Bodies · Limited");
+  assert.match(node("body-sync-accounts").children[0].children[1].textContent, /Limited.*3 MiB source limit.*No action needed/);
+  tracker.finish(tracker.queue("b", "open"), "download-failed");
+  ui.context.capped = tracker.snapshot({ accounts: [{ id: "a" }, { id: "b" }] });
+  assert.equal(ui.run("bodySyncView(capped,state.accounts).label"), "Bodies · Needs attention", "real errors outrank limited bodies");
+  ui.run("state.bodySync=null");
   const payload = { session: "first", startedAt: 1000, sequence: 2, night: true, horizonDays: 365,
     accounts: [{ accountId: "a", state: "running", source: "visible" }, { accountId: "b", state: "paused", reason: "rate-limit" }] };
   ui.context.snapshot = payload;
@@ -113,18 +128,23 @@ async function rendererChecks() {
   assert.doesNotMatch(html, /<details id="body-sync"/);
   assert.match(sync, /id="refresh"[^>]*aria-describedby="body-sync"/);
   assert.match(sync, /id="body-sync" class="body-sync" role="tooltip"/);
+  assert.match(sync, /class="body-sync-scroll" tabindex="0" role="region"/);
   assert.match(sync, /id="sync-tip-line"[^>]*aria-hidden="true"/);
   assert.match(html, /id="body-sync-label" role="status" aria-live="polite"/);
   assert.match(html, /All mailboxes.*separate from list sync/);
   const css = fs.readFileSync(path.join(root,"renderer/app.css"),"utf8");
   assert.match(css, /\.sync-slot:hover > \.body-sync:not\(\[hidden\]\)/);
   assert.match(css, /#refresh:focus-visible ~ \.body-sync:not\(\[hidden\]\)/);
+  assert.match(css, /\.body-sync:not\(\[hidden\]\):focus-within/);
+  assert.match(css, /\.body-sync-scroll\s*\{[^}]*overflow: auto;[^}]*overscroll-behavior: contain;/);
   const preload = fs.readFileSync(path.join(root,"renderer/preload.js"),"utf8");
   assert.match(preload, /"mail:getBodySyncStatus"/); assert.match(preload, /"mail:bodySyncStatus"/);
   const catalog = require("../renderer/features-catalog");
   ui.context.window.morrowFeaturesCatalog = catalog;
   ui.run("paintFeatureCatalog()");
   assert.match(text(node("features-catalog")), /Full message bodies.*Hover or focus Sync.*no whole-mailbox total or percentage.*3 MiB source limit/);
+  assert.match(text(node("features-catalog")), /Full message bodies.*Limited.*No action needed/);
+  assert.match(text(node("features-catalog")), /Undo removal details.*Escape.*focus.*pending/);
 }
 async function run() { trackerChecks(); await rendererChecks(); console.log("body-sync-status-ok (sessions, ownership, states, privacy, sync tooltip; no live I/O)"); }
 module.exports = { run };

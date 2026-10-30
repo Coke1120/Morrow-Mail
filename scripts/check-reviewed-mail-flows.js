@@ -79,13 +79,15 @@ async function imapFixture(mode, cached, work) {
     const remote = load("./host/mail/remote"), withClient = remote.withClient, secrets = load("./host/mail/secrets");
     secrets.setPassword(accountId, "synthetic-password");
     let failing = true;
-    const writes = [], fetches = [];
+    const writes = [], fetches = [], sourceCaps = [];
     const source = Buffer.from("From: sender@fixture.invalid\r\nTo: owner@imap.fixture.invalid\r\nSubject: Synthetic IMAP read\r\nMessage-ID: <imap-source@fixture.invalid>\r\nDate: Sun, 25 Oct 2026 00:00:00 +0000\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nRecovered IMAP body.");
     const client = {
       mailbox: { uidValidity: 1 }, getMailboxLock: async () => ({ release() {} }),
-      fetch: async function* (uid) {
+      fetch: async function* (uid, options) {
         fetches.push(uid);
-        if (!failing) yield { uid: 7, source, flags: new Set(), internalDate: new Date("2026-10-25T00:00:00.000Z") };
+        sourceCaps.push(options?.source?.maxLength);
+        if (mode === "source-limit" && failing) yield { uid: 7, source: Buffer.concat([source, Buffer.alloc(options.source.maxLength - source.length, 120)]), flags: new Set() };
+        else if (!failing) yield { uid: 7, source, flags: new Set(), internalDate: new Date("2026-10-25T00:00:00.000Z") };
         else if (mode !== "empty") yield { uid: mode === "other-uid" ? 8 : 7, flags: new Set(), ...(mode === "other-uid" ? { source } : {}) };
       },
       messageFlagsAdd: async (uid, flags) => { writes.push({ uid, flags }); },
@@ -95,10 +97,29 @@ async function imapFixture(mode, cached, work) {
       assert.equal(account.id, accountId); assert.equal(password, "synthetic-password");
       return action(client);
     };
-    try { await work({ ...f, target: f.db.messageById(id), writes, fetches, recover() { failing = false; } }); }
+    try { await work({ ...f, target: f.db.messageById(id), writes, fetches, sourceCaps, recover() { failing = false; } }); }
     finally { await f.engine.settleAccount(accountId); remote.withClient = withClient; secrets.deletePassword(accountId); }
   });
 }
+
+test("the real IMAP cap reaches body activity as Limited and a later complete read clears it", async () => {
+  await imapFixture("source-limit", null, async f => {
+    const open = () => f.engine.answer("mail:openEmail", [{ emailId: f.target.id, full: true }]);
+    assert.equal((await open()).success, true);
+    await f.engine.settleAccount("imap");
+    const activity = async () => (await f.engine.answer("mail:getBodySyncStatus", [])).data.accounts.find(row => row.accountId === "imap");
+    assert.equal((await activity()).state, "limited");
+    assert.equal((await activity()).reason, "source-limit");
+    assert.equal(f.db.messageById(f.target.id).body_complete, 0);
+    assert.ok(f.db.messageById(f.target.id).text_body.length > 2 * 1024 * 1024);
+    assert.ok(f.sourceCaps.every(cap => cap === 3 * 1024 * 1024), "the provider source cap is unchanged");
+    f.recover();
+    assert.equal((await open()).success, true);
+    await f.engine.settleAccount("imap");
+    assert.equal((await activity()).state, "idle");
+    assert.equal((await activity()).lastResult, "done");
+  });
+});
 
 for (const mode of ["flags-only", "empty", "other-uid"]) for (const native of [false, true]) {
   test(`IMAP ${mode} response without usable body keeps unread and Retry recovers ${native ? "reader window" : "mail pane"}`, async () => {
@@ -109,6 +130,8 @@ for (const mode of ["flags-only", "empty", "other-uid"]) for (const native of [f
         else await assert.rejects(view.ui.run("openMessage(targetId,false)"), /could not be downloaded/);
         await f.engine.settleAccount("imap");
         assert.equal(f.db.messageById(f.target.id).unread, 1);
+        const activity = (await f.engine.answer("mail:getBodySyncStatus", [])).data.accounts.find(row => row.accountId === "imap");
+        assert.equal(activity.state, "error", "missing source is still a failure, not a source limit");
         assert.equal(f.writes.length, 0);
         assert.equal(view.calls.filter(row => row.channel === "mail:markRead").length, 0);
         assert.equal(view.pane.querySelector(".body"), null);

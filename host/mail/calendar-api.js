@@ -39,6 +39,11 @@ function normalizeGraphCalendar(item) {
 
 function plainDescription(value, limit = 8000) {
   const stripped = String(value || "")
+    .replace(/<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi,
+      (match, double, single, bare, label) => {
+        const target = double || single || bare || "";
+        return /^(https?:\/\/|mailto:)/i.test(target) ? `${label} (${target})` : label;
+      })
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n")
     .replace(/<[^>]*>/g, " ")
@@ -100,6 +105,8 @@ function normalizeGraphEvent(item, calendarId) {
   const allDay = item.isAllDay === true;
   const startZone = item.start && item.start.timeZone;
   const endZone = item.end && item.end.timeZone;
+  const fullDescription = item.body && String(item.body.contentType).toLowerCase() === "text"
+    ? String(item.body.content || "") : plainDescription((item.body && item.body.content) || item.bodyPreview, 0);
   return {
     id: safeId(item.id),
     calendarId: safeId(calendarId) || "",
@@ -108,7 +115,8 @@ function normalizeGraphEvent(item, calendarId) {
     end: rawEnd ? zonedDateTime(rawEnd, endZone, allDay) : "",
     allDay,
     location: cleanName(item.location && item.location.displayName) || "",
-    description: plainDescription((item.body && item.body.content) || item.bodyPreview),
+    description: fullDescription.slice(0, 8000),
+    ...(fullDescription.length > 8000 ? { descriptionTruncated: true } : {}),
   };
 }
 
@@ -116,29 +124,29 @@ function googleEventBody(draft) {
   const allDay = !!(draft && draft.allDay);
   const body = {};
   if (Object.prototype.hasOwnProperty.call(draft, "title")) body.summary = draft.title;
-  if (allDay) {
+  if (Object.hasOwn(draft, "start") && allDay) {
     body.start = { date: String(draft.start).slice(0, 10) };
     body.end = { date: String(draft.end).slice(0, 10) };
-  } else {
+  } else if (Object.hasOwn(draft, "start")) {
     body.start = { dateTime: draft.start, timeZone: "UTC" };
     body.end = { dateTime: draft.end, timeZone: "UTC" };
   }
   const location = cleanName(draft && draft.location);
   if (draft && Object.prototype.hasOwnProperty.call(draft, "location")) body.location = location;
   if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) {
-    body.description = String(draft.description || "");
+    body.description = String(draft.description || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
   return body;
 }
 
 function graphEventBody(draft) {
   const allDay = !!(draft && draft.allDay);
-  const body = { isAllDay: allDay };
+  const body = Object.hasOwn(draft, "allDay") ? { isAllDay: allDay } : {};
   if (Object.prototype.hasOwnProperty.call(draft, "title")) body.subject = draft.title;
-  if (allDay) {
+  if (Object.hasOwn(draft, "start") && allDay) {
     body.start = { dateTime: String(draft.start).slice(0, 10) + "T00:00:00", timeZone: "UTC" };
     body.end = { dateTime: String(draft.end).slice(0, 10) + "T00:00:00", timeZone: "UTC" };
-  } else {
+  } else if (Object.hasOwn(draft, "start")) {
     body.start = { dateTime: draft.start, timeZone: "UTC" };
     body.end = { dateTime: draft.end, timeZone: "UTC" };
   }
@@ -159,14 +167,25 @@ function pageToken(value) {
 async function listGoogleCalendars(accessToken, fetchImpl) {
   const url = new URL(`${GOOGLE_ROOT}/users/me/calendarList`);
   url.searchParams.set("maxResults", "100");
-  const json = await apiJson(url.toString(), accessToken, { fetchImpl });
-  const items = Array.isArray(json.items) ? json.items : null;
-  if (!items) {
-    const error = new Error("Google Calendar did not return a calendar list.");
-    error.code = "provider";
-    throw error;
+  const rows = [];
+  const seen = new Set();
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const json = await apiJson(url.toString(), accessToken, { fetchImpl });
+    if (!Array.isArray(json.items)) {
+      const error = new Error("Google Calendar did not return a calendar list.");
+      error.code = "provider";
+      throw error;
+    }
+    rows.push(...json.items.map(normalizeGoogleCalendar).filter(Boolean));
+    if (!json.nextPageToken) return rows;
+    const token = pageToken(json.nextPageToken);
+    if (!token || seen.has(token)) break;
+    seen.add(token);
+    url.searchParams.set("pageToken", token);
   }
-  return items.map(normalizeGoogleCalendar).filter(Boolean);
+  const error = new Error("Google Calendar returned an incomplete calendar list. Saved calendar selections have not been changed; try again or use the provider.");
+  error.code = "provider";
+  throw error;
 }
 
 async function listGraphCalendars(accessToken, fetchImpl) {
@@ -310,10 +329,12 @@ function writeEvent(draft, updating = false) {
   const location = cleanName(draft && draft.location);
   const optional = hasTitle ? { title } : {};
   if (draft && Object.prototype.hasOwnProperty.call(draft, "description")) {
-    optional.description = plainDescription(draft.description, 0);
+    optional.description = String(draft.description || "").replace(/\r\n/g, "\n")
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim();
     if (optional.description.length > 8000) throw invalidEvent("This description is too long for this editor. Leave it unchanged or edit it with the calendar provider.");
   }
   if (draft && Object.prototype.hasOwnProperty.call(draft, "location")) optional.location = location;
+  if (updating && !["start", "end", "allDay"].some((field) => Object.hasOwn(draft, field))) return optional;
   if (draft && draft.allDay === true) {
     const start = String(draft.start || "").slice(0, 10);
     const end = String(draft.end || "").slice(0, 10);
@@ -339,7 +360,9 @@ function writeEvent(draft, updating = false) {
 async function sendEvent(provider, accessToken, calendarId, url, body, method, fetchImpl, headers) {
   if (!url) throw invalidEvent("Choose a calendar.");
   if (provider === "google") {
-    const json = await apiJson(url, accessToken, { method, fetchImpl, headers, body: googleEventBody(body) });
+    const payload = googleEventBody(body);
+    if (body.operationId) payload.id = body.operationId;
+    const json = await apiJson(url, accessToken, { method, fetchImpl, headers, body: payload });
     const event = normalizeGoogleEvent(json, calendarId);
     if (!event) {
       const error = new Error(method === "POST" ? "Google Calendar did not return the new event." : "Google Calendar did not return the event.");
@@ -349,7 +372,9 @@ async function sendEvent(provider, accessToken, calendarId, url, body, method, f
     return event;
   }
   if (provider === "microsoft") {
-    const json = await apiJson(url, accessToken, { method, fetchImpl, headers, body: graphEventBody(body) });
+    const payload = graphEventBody(body);
+    if (body.operationId) payload.transactionId = body.operationId;
+    const json = await apiJson(url, accessToken, { method, fetchImpl, headers, body: payload });
     const event = normalizeGraphEvent(json, calendarId);
     if (!event) {
       const error = new Error(method === "POST" ? "Outlook did not return the new event." : "Outlook did not return the event.");
@@ -365,9 +390,25 @@ async function sendEvent(provider, accessToken, calendarId, url, body, method, f
 
 async function createEvent(provider, accessToken, calendarId, draft, fetchImpl) {
   const body = writeEvent(draft);
+  if (draft && Object.hasOwn(draft, "operationId")) {
+    if (typeof draft.operationId !== "string" || !/^[a-f0-9]{32}$/.test(draft.operationId)) throw invalidEvent("Use a valid calendar creation operation id.");
+    body.operationId = draft.operationId;
+  }
   const suffix = "/events";
   const url = provider === "google" || provider === "microsoft" ? calendarPath(provider, calendarId, suffix) : "";
-  return sendEvent(provider, accessToken, calendarId, url, body, "POST", fetchImpl);
+  try {
+    return await sendEvent(provider, accessToken, calendarId, url, body, "POST", fetchImpl);
+  } catch (error) {
+    if (provider !== "google" || error.status !== 409 || !body.operationId) throw error;
+    const existing = await apiJson(url + "/" + encodeURIComponent(body.operationId), accessToken, { fetchImpl });
+    const event = normalizeGoogleEvent(existing, calendarId);
+    const expected = normalizeGoogleEvent({ ...googleEventBody(body), id: body.operationId }, calendarId);
+    if (event && event.id === body.operationId && ["title", "allDay", "location", "description"].every((field) => event[field] === expected[field])
+        && ["start", "end"].every((field) => event.allDay ? event[field] === expected[field] : Date.parse(event[field]) === Date.parse(expected[field]))) return event;
+    const conflict = new Error("An event already exists for this creation attempt with different content. Check the provider before creating another event.");
+    conflict.code = "conflict";
+    throw conflict;
+  }
 }
 
 async function updateEvent(provider, accessToken, calendarId, eventId, draft, fetchImpl) {
@@ -384,7 +425,8 @@ async function updateEvent(provider, accessToken, calendarId, eventId, draft, fe
     const current = await apiJson(url, accessToken, { fetchImpl });
     const full = provider === "google"
       ? (current.description == null ? "" : typeof current.description === "string" ? plainDescription(current.description, 0) : null)
-      : current.body && typeof current.body.content === "string" ? plainDescription(current.body.content, 0) : null;
+      : current.body && typeof current.body.content === "string"
+        ? String(current.body.contentType).toLowerCase() === "text" ? current.body.content : plainDescription(current.body.content, 0) : null;
     if (safeId(current.id) !== id || full == null || full.length > 8000 || provider === "microsoft" && current.isOnlineMeeting === true
         || typeof draft.descriptionBase !== "string" || full !== draft.descriptionBase.trim()) {
       const error = new Error(`The full ${providerName} description cannot be safely replaced from this preview. Edit it with the calendar provider, or leave it unchanged to save other fields.`);

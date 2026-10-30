@@ -349,9 +349,12 @@ function sourceChecks() {
 
 async function main() {
   sourceChecks();
+  require("./check-agent-learning-store").run();
   hostChecks();
   await sendChecks();
   await rendererChecks();
+  await require("./check-agent-learning-followups").run();
+  await require("./check-agent-learning-journal").run();
   console.log("agent learning ok");
 }
 

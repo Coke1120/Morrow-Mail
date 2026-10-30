@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.10": [
+      "Learned waits for matching completed read settlements before counting a pattern, keeps validated thread identity across triage refreshes, and refreshes already-open suggestion surfaces when a pattern is learned or deleted. Reply learning no longer depends on a Needs You todo target.",
+      "Undo Details keeps pending rows, checkbox state, and focus while restores finish, and late restores do not affect a replacement Undo offer. The Bodies Sync tooltip keeps a hover bridge and keyboard scroll, and confirmed IMAP source-limit results show as Limited with No action needed.",
+      "Uncertain Outbox deliveries stay durable and noneditable. Agent filing follows matching journal completion without overwriting newer store state. Bot Disable and Revoke keep their intent during probes. Compose ignores finished AI events and fences pending attachments; Brain keeps concurrent saved rules and Unicode facts; Calendar keeps original instants on non-time edits and exposes reauthorization after known auth failure.",
+      "The Electron/Node security bump is not in this version.",
+    ],
     "0.3.9": [
       "All Account Mail is a collapsible section. Choosing the header expands or collapses it and does not open a list. Inbox opens the same merged list and keeps the Unread chip. Gmail still uses cached All Mail; other accounts use Inbox. Outbox stays beside Inbox as the local undo queue.",
       "The open message shows its date and time on the From row, right-aligned, in the main reading pane and in a separate reader window. That text uses the reader's existing date and time format. Loading and download-error headers use the same row. To and Cc stay on the lines below.",

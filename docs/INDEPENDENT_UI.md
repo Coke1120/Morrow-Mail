@@ -4,6 +4,16 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Wave1 review fixes retain uncertain Outbox deliveries in Scheduled delivery review,
+including their content and Message-ID, without opening an editable retry draft.
+Folder/search responses from before Outbox selection are retired. Queue errors
+show Unknown and Retry on Outbox itself. Split-account removal receipts share one
+Undo session, and separate readers subscribe to definitive action settlements.
+CSS image functions outside the supported safe-function set are discarded;
+ordinary CSS URL and table backgrounds share the per-message remote-content gate.
+Agent peek retries never use Mail's read-on-open path. See
+[settlement and editor ownership](adr/2026-10-30-wave1-settlement-and-editor-ownership.md).
+
 Phase-two mail responsiveness batches action generations for lists/thread rows
 and reuses account IDs already present in list metadata for prefetch admission.
 Body notifications contain availability and scoped versions; open readers and
@@ -75,7 +85,7 @@ Signature saves show Saving… and ignore repeated submits in the current editor
 
 Hover or keyboard focus on Sync shows body activity for all connected mailboxes, separate from list/header synchronization. It reports downloading, waiting for mail work, idle/last download finished, rate-limit or connection hints, and bounded error reasons. It uses `mail:getBodySyncStatus` / `mail:bodySyncStatus`; snapshots have a process session and sequence so stale reads cannot overwrite newer events. Account removal/replacement and process restart discard old activity. These in-memory observations contain no message IDs, subjects, senders, bodies or raw provider errors. There is no global body total, remaining estimate, percentage, or claim that all mail is cached.
 
-The existing slow fill runs only inside the running app's background poll, from 00:00 until 07:00 local time (exclusive). A nominal 45-second tick can be delayed by preceding folder work. Each pass chooses at most one body from up to 200 newest indexed candidates in the All/365/180-day horizon; drafts, trash and spam are excluded. Message opens and visible-page prefetch can fetch bodies throughout the day, ahead of the slow fill. A source read is capped at 3 MiB, so large messages can remain incomplete. Separate attachment-file downloads stay on demand; raw MIME source may include attachment portions. Sleep/quit cannot download or trigger a wakeup; there is no independent OS overnight job or guarantee of full overnight coverage. Offline/connection hints report observed availability and do not cancel requests or change the existing polling/retry policy. On macOS, hiding the main window can leave the app running; quitting stops it.
+The existing slow fill runs only inside the running app's background poll, from 00:00 until 07:00 local time (exclusive). A nominal 45-second tick can be delayed by preceding folder work. Each pass chooses at most one body from up to 200 newest indexed candidates in the All/365/180-day horizon; drafts, trash and spam are excluded. Message opens and visible-page prefetch can fetch bodies throughout the day, ahead of the slow fill. An IMAP source read is capped at 3 MiB, so large messages can remain incomplete. Reaching that bound publishes Limited with No action needed and keeps available content; missing-source, download and decoding failures remain errors. The activity tooltip has an outer hover bridge and an inner scroll area: hover or focus Sync, then move into it to scroll, or Tab into it and use the arrow keys. Scrolling stays within the panel, and the description remains available to screen readers while visually clipped. Separate attachment-file downloads stay on demand; raw MIME source may include attachment portions. Sleep/quit cannot download or trigger a wakeup; there is no independent OS overnight job or guarantee of full overnight coverage. Offline/connection hints report observed availability and do not cancel requests or change the existing polling/retry policy. On macOS, hiding the main window can leave the app running; quitting stops it.
 
 Calendar form validation and save errors appear inside the event dialog. The error receives keyboard focus, the entered values remain available, and a failed save releases the pending state. A response for a dismissed or replaced editor does not change the new event's feedback.
 

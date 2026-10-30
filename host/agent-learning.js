@@ -1,11 +1,14 @@
 // Local Agent corrections. Not Brain categories, triage prompts, or provider rules.
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { userDataDir } = require("./ai-config");
 
 const THRESHOLD = 3;
 const MAX_PATTERNS = 80;
 const MAX_SENDERS = 12;
+const MAX_PATTERN_ID = 2048;
+const MAX_OBSERVATIONS = 256;
 const PILES = { "needs-you": "Needs You", fyi: "FYI", other: "Other" };
 const ACTIONS = { "mark-read": "Mark as read", reply: "Reply", "reply-all": "Reply All" };
 
@@ -47,6 +50,18 @@ function clipId(value) {
   return String(value || "").trim().slice(0, 120);
 }
 
+function validPatternId(id) {
+  return typeof id === "string" && id.length > 0 && id.length <= MAX_PATTERN_ID;
+}
+
+function patternId(prefix, key) {
+  try {
+    const encoded = prefix + encodeURIComponent(key);
+    if (encoded.length <= MAX_PATTERN_ID) return encoded;
+  } catch {}
+  return prefix + "sha256:" + crypto.createHash("sha256").update(key).digest("hex");
+}
+
 function load() {
   let parsed;
   try {
@@ -55,28 +70,33 @@ function load() {
     if (error && error.code === "ENOENT") return { ok: true, store: emptyStore() };
     return { ok: false, store: null };
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, store: null };
+  if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.patterns) || parsed.patterns.length > MAX_PATTERNS
+    || !parsed.revoked || typeof parsed.revoked !== "object" || Array.isArray(parsed.revoked)) return { ok: false, store: null };
   const patterns = [];
-  for (const row of Array.isArray(parsed.patterns) ? parsed.patterns : []) {
+  for (const row of parsed.patterns) {
     const next = normalizePattern(row);
-    if (next) patterns.push(next);
+    if (!next || patterns.some((item) => item.id === next.id)) return { ok: false, store: null };
+    patterns.push(next);
   }
-  const revoked = {};
-  const source = parsed.revoked && typeof parsed.revoked === "object" && !Array.isArray(parsed.revoked) ? parsed.revoked : {};
-  for (const [id, at] of Object.entries(source)) {
-    if (typeof id === "string" && id.length <= 240 && Number.isFinite(at)) revoked[id] = at;
+  const revoked = Object.create(null);
+  for (const [id, at] of Object.entries(parsed.revoked)) {
+    if (!validPatternId(id) || !Number.isFinite(at)) return { ok: false, store: null };
+    revoked[id] = at;
   }
   return { ok: true, store: { version: 1, patterns, revoked } };
 }
 
 function normalizePattern(row) {
   if (!row || typeof row !== "object" || Array.isArray(row)) return null;
-  const id = String(row.id || "");
+  const id = row.id;
   const kind = row.kind;
   const count = row.count;
-  if (!id || id.length > 240) return null;
+  if (!validPatternId(id)) return null;
   if (kind !== "category" && kind !== "action" && kind !== "suggestion") return null;
   if (!Number.isInteger(count) || count < 1 || count > 100000) return null;
+  if (row.learned !== (count >= THRESHOLD) || typeof row.updatedAt !== "string") return null;
+  if (row.lastBegunAt !== undefined && !Number.isFinite(row.lastBegunAt)) return null;
+  if (row.begunAts !== undefined && (!Array.isArray(row.begunAts) || row.begunAts.length > MAX_OBSERVATIONS || !row.begunAts.every(Number.isFinite))) return null;
   const next = {
     id,
     kind,
@@ -85,10 +105,13 @@ function normalizePattern(row) {
     updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : "",
   };
   if (Number.isFinite(row.lastBegunAt)) next.lastBegunAt = row.lastBegunAt;
+  next.begunAts = row.begunAts ? [...new Set(row.begunAts)] : Number.isFinite(row.lastBegunAt) ? [row.lastBegunAt] : [];
   if (kind === "category") {
+    if (typeof row.fromCategoryId !== "string" || typeof row.toCategoryId !== "string" || typeof row.fromName !== "string" || typeof row.toName !== "string") return null;
     const fromCategoryId = pileId(row.fromCategoryId);
     const toCategoryId = pileId(row.toCategoryId);
     if (!fromCategoryId || !toCategoryId || fromCategoryId === toCategoryId) return null;
+    if (!Array.isArray(row.senders) || row.senders.length > MAX_SENDERS || row.senders.some((email) => typeof email !== "string" || !addressOf(email))) return null;
     next.fromCategoryId = fromCategoryId;
     next.toCategoryId = toCategoryId;
     next.fromName = cleanLabel(row.fromName, pileName(fromCategoryId));
@@ -103,6 +126,7 @@ function normalizePattern(row) {
   if (kind === "action") {
     if (!ACTIONS[row.action]) return null;
     if (row.scope !== "sender" && row.scope !== "thread") return null;
+    if (typeof row.key !== "string") return null;
     const key = row.scope === "sender" ? addressOf(row.key) : clipId(row.key);
     if (!key) return null;
     next.action = row.action;
@@ -110,6 +134,7 @@ function normalizePattern(row) {
     next.key = key;
     return next;
   }
+  if (typeof row.className !== "string") return null;
   const className = suggestionClass(row.className);
   if ((row.choice !== "open" && row.choice !== "dismiss") || !className) return null;
   next.choice = row.choice;
@@ -201,18 +226,23 @@ function bump(store, id, begunAt, seen, create) {
   if (seen.has(id) || !allow(store, id, begunAt)) return null;
   seen.add(id);
   let row = store.patterns.find((item) => item.id === id);
-  if (row && Number.isFinite(begunAt) && row.lastBegunAt === begunAt) return null;
+  if (row && (row.count >= 100000 || Number.isFinite(begunAt) && (row.lastBegunAt === begunAt || row.begunAts.includes(begunAt)))) return null;
   if (!row) {
     if (store.patterns.length >= MAX_PATTERNS) return null;
     row = create();
     row.id = id;
     row.count = 0;
+    row.begunAts = [];
     store.patterns.push(row);
   }
   row.count += 1;
   row.learned = row.count >= THRESHOLD;
   row.updatedAt = new Date().toISOString();
-  if (Number.isFinite(begunAt)) row.lastBegunAt = begunAt;
+  if (Number.isFinite(begunAt)) {
+    row.lastBegunAt = Number.isFinite(row.lastBegunAt) ? Math.max(row.lastBegunAt, begunAt) : begunAt;
+    row.begunAts.push(begunAt);
+    row.begunAts = row.begunAts.slice(-MAX_OBSERVATIONS);
+  }
   return row;
 }
 
@@ -298,12 +328,12 @@ function observe(input) {
       const email = senderOf(item);
       const thread = threadOf(item);
       if (email) {
-        bump(store, `action:${input.action}:sender:${encodeURIComponent(email)}`, begunAt, seen, () => ({
+        bump(store, patternId(`action:${input.action}:sender:`, email), begunAt, seen, () => ({
           kind: "action", action: input.action, scope: "sender", key: email,
         }));
       }
       if (thread) {
-        bump(store, `action:${input.action}:thread:${encodeURIComponent(thread)}`, begunAt, seen, () => ({
+        bump(store, patternId(`action:${input.action}:thread:`, thread), begunAt, seen, () => ({
           kind: "action", action: input.action, scope: "thread", key: thread,
         }));
       }
@@ -312,7 +342,7 @@ function observe(input) {
     const className = suggestionClass(input.className || input.class);
     const choice = input.choice === "dismiss" ? "dismiss" : input.choice === "open" ? "open" : "";
     if (className && choice) {
-      bump(store, `suggestion:${choice}:${encodeURIComponent(className)}`, begunAt, seen, () => ({
+      bump(store, patternId(`suggestion:${choice}:`, className), begunAt, seen, () => ({
         kind: "suggestion", choice, className,
       }));
     }
@@ -325,7 +355,7 @@ function forget(params) {
   const loaded = load();
   if (!loaded.ok) return null;
   const id = String(params && params.id || "").trim();
-  if (!id || id.length > 240) return present(loaded.store);
+  if (!validPatternId(id)) return present(loaded.store);
   const store = loaded.store;
   if (!store.patterns.some((row) => row.id === id)) return present(store);
   store.patterns = store.patterns.filter((row) => row.id !== id);

@@ -21,8 +21,15 @@ window.fixture={state,paint:()=>{renderList();renderReader();},sync:kind=>{state
 window.fixtureReady=true;
 `;
 let browser, socket;
+const trackingRequests = [];
 const server = http.createServer((req,res)=>{
   const pathname = new URL(req.url,'http://localhost').pathname;
+  if (pathname.startsWith('/wave1-tracker/')) {
+    trackingRequests.push(pathname);
+    res.setHeader('Content-Type','image/png');
+    res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64'));
+    return;
+  }
   if (!/^\/(renderer|shared)\/[\w./-]+$/.test(pathname) || pathname.includes('..')) {res.writeHead(404);res.end();return;}
   try { let data=fs.readFileSync(path.join(root,pathname));
     if(pathname==='/renderer/app.js')data=fixture+data.toString().replace(/boot\(\)\.catch\([^\n]+\);\s*$/,'')+setup;
@@ -50,8 +57,70 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
  assert(await evaluate('window.fixtureReady===true'),JSON.stringify(errors));await shot('wide');
  const revised=await evaluate('!!document.getElementById("message-list")');
  if(revised){
+  const trackerOrigin='http://127.0.0.1:'+server.address().port;
+  await evaluate(`globalThis.wave1Original=state.email; globalThis.wave1OriginalImages=state.prefs.images; state.prefs.images=false; state.remoteAllowed={};
+    state.email={...state.email,id:'wave1-privacy',htmlBody:${JSON.stringify('<img src="'+trackerOrigin+'/wave1-tracker/img" width="20" height="20"><table background="'+trackerOrigin+'/wave1-tracker/table"><tr><td style="width:30px;height:30px;background-image:url('+trackerOrigin+'/wave1-tracker/css)">Synthetic</td></tr></table><div style=\'width:30px;height:30px;background-image:image-set("'+trackerOrigin+'/wave1-tracker/image-set" 1x)\'>Blocked image function</div>')}}; renderReader();`);
+  await delay(300);
+  assert.deepEqual(trackingRequests,[], 'remote opt-out blocks img, CSS URL, table background and image-set');
+  assert(await evaluate(`!!$('reader').querySelector('[data-action="remote"]')`));
+  await evaluate(`$('reader').querySelector('[data-action="remote"]').click()`);
+  for(let attempt=0;attempt<30&&trackingRequests.length<3;attempt++)await delay(50);
+  assert.deepEqual([...new Set(trackingRequests)].sort(),['/wave1-tracker/css','/wave1-tracker/img','/wave1-tracker/table']);
+  assert(!trackingRequests.includes('/wave1-tracker/image-set'),'unsupported image functions remain discarded after opt-in');
+  await evaluate(`state.email=wave1Original;state.prefs.images=wave1OriginalImages;state.remoteAllowed={};renderReader();`);
   assert.equal(await evaluate('document.getElementById("list-page-status").textContent'),'1–200 / 4,479 downloaded');
   assert(await evaluate('document.getElementById("list-coverage").hidden'));
+  // Real hit testing across the Sync gap, wheel containment, and keyboard scrolling.
+  await evaluate(`state.accounts=Array.from({length:18},(_,i)=>({id:'body-'+i,email:'body-'+i+'@example.invalid'}));
+    state.bodySync={session:'browser-fixture',startedAt:1,sequence:1,horizonDays:0,accounts:state.accounts.map(a=>({accountId:a.id,state:'limited',reason:'source-limit'}))};paintBodySyncStatus();`);
+  const syncPoint = await evaluate(`(()=>{const r=$('refresh').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,bottom:r.bottom};})()`);
+  await cdp('Input.dispatchMouseEvent',{type:'mouseMoved',x:syncPoint.x,y:syncPoint.y});await delay(80);
+  await cdp('Input.dispatchMouseEvent',{type:'mouseMoved',x:syncPoint.x,y:syncPoint.bottom+3});await delay(80);
+  assert(await evaluate(`$('body-sync').getBoundingClientRect().width>100`),'the hover bridge keeps the activity panel open');
+  const tipPoint=await evaluate(`(()=>{const r=document.querySelector('.body-sync-scroll').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+60};})()`);
+  await cdp('Input.dispatchMouseEvent',{type:'mouseMoved',...tipPoint});await delay(80);
+  assert(await evaluate(`!!document.elementFromPoint(${tipPoint.x},${tipPoint.y}).closest('#body-sync')`),'the tooltip is not clipped by its parent');
+  await cdp('Input.dispatchMouseEvent',{type:'mouseWheel',...tipPoint,deltaX:0,deltaY:180});await delay(200);
+  assert(await evaluate(`document.querySelector('.body-sync-scroll').scrollTop>0`),'wheel scrolls the body activity');
+  const bodyScroll=await evaluate(`document.querySelector('.body-sync-scroll').scrollTop`);
+  await evaluate(`paintBodySyncStatus()`);
+  assert.equal(await evaluate(`document.querySelector('.body-sync-scroll').scrollTop`),bodyScroll,'activity updates preserve scroll position');
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('.body-sync-scroll')).overscrollBehaviorY`),'contain');
+  await evaluate(`document.querySelector('.body-sync-scroll').scrollTop=100000;`);
+  const listScroll=await evaluate(`$('message-list').scrollTop`);
+  await cdp('Input.dispatchMouseEvent',{type:'mouseWheel',...tipPoint,deltaX:0,deltaY:500});await delay(200);
+  assert.equal(await evaluate(`$('message-list').scrollTop`),listScroll,'wheel at the panel boundary leaves the message list still');
+  await shot('body-sync-scrolled');
+  await cdp('Input.dispatchMouseEvent',{type:'mouseMoved',x:2,y:2});
+  await evaluate(`$('refresh').focus()`);
+  const key=async(key,code,windowsVirtualKeyCode)=>{await cdp('Input.dispatchKeyEvent',{type:'keyDown',key,code,windowsVirtualKeyCode});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode});};
+  await key('Tab','Tab',9);
+  assert(await evaluate(`document.activeElement.classList.contains('body-sync-scroll')`),'Tab enters the scroll area');
+  await evaluate(`document.activeElement.scrollTop=0`);await key('ArrowDown','ArrowDown',40);await delay(200);
+  assert(await evaluate(`document.activeElement.classList.contains('body-sync-scroll') && document.activeElement.scrollTop>0`),'arrow keys scroll without moving the mailbox cursor');
+  await key('Tab','Tab',9);
+  assert.equal(await evaluate(`$('body-sync').getBoundingClientRect().width`),1,'description is visually clipped after focus and hover leave');
+  assert.equal(await evaluate(`$('refresh').getAttribute('aria-describedby')`),'body-sync');
+  await evaluate(`state.accounts=fixtureAccounts;state.bodySync=null;paintBodySyncStatus();
+    globalThis.undoFixture=Array.from({length:20},(_,i)=>({opId:'browser-'+i,messageId:'m-'+i,subject:'Synthetic change '+i,from:'Sender',action:'archive'}));
+    startRemovalSession('Archive: 20 completed.',undoFixture.map(i=>i.opId),false,undoFixture);openUndoDetails();setUndoDetailChecks(true);
+    $('undo-details-list').querySelector('input').focus();paintUndoControls();`);
+  assert.equal(await evaluate(`document.activeElement.value`),'browser-0');
+  assert.equal(await evaluate(`$('undo-details-selected').textContent`),'Undo selected (20)');
+  assert.equal(await evaluate(`statusCollapseTimer`),0);
+  await key('Escape','Escape',27);
+  assert.equal(await evaluate(`document.activeElement.id`),'undo-details');
+  assert(await evaluate(`$('undo-details-popover').hidden`));
+  await evaluate(`openUndoDetails()`);
+  await cdp('Emulation.setDeviceMetricsOverride',{width:720,height:500,deviceScaleFactor:1,mobile:false});
+  assert(await evaluate(`(()=>{const r=$('undo-details-popover').getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;})()`),'Details fits a short window');
+  await shot('undo-details-short');
+  await evaluate(`closeUndoDetails(false);clearUndo();showStatus('');paintFeatureCatalog();showFeatures();`);
+  assert.match(await evaluate(`$('features-catalog').textContent`),/Limited.*No action needed/);
+  assert.match(await evaluate(`$('features-catalog').textContent`),/Escape.*focus.*pending/);
+  await shot('features-undo-body-sync');
+  await evaluate(`showMail();renderList();`);
+  await cdp('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   const track=await evaluate('(()=>{const r=document.getElementById("message-list").getBoundingClientRect();return {x:r.right-6,y:r.top+12};})()');
   await cdp('Input.dispatchMouseEvent',{type:'mousePressed',...track,button:'left',clickCount:1});await delay(100);
   await cdp('Input.dispatchMouseEvent',{type:'mouseMoved',x:track.x,y:track.y+100,button:'left',buttons:1});await delay(100);
@@ -87,6 +156,6 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
  }
  await cdp('Emulation.setDeviceMetricsOverride',{width:720,height:1000,deviceScaleFactor:1,mobile:false});await shot('narrow');
  if(revised){assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'));assert(await evaluate('document.getElementById("message-list").clientHeight>=64'));}
- assert.deepEqual(errors,[]);fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({source:root,revised,errors,checks:revised?'keyboard Space selection, tri-state, filter, pagination, history loading, busy/paused/completed sync, search, refresh relocation, high contrast, narrow overflow':'baseline screenshots'},null,2));
+ assert.deepEqual(errors,[]);fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({source:root,revised,errors,checks:revised?'Sync hover bridge, wheel/keyboard scrolling and containment, description clipping, Undo focus/selection/short window, rendered Features; keyboard Space selection, tri-state, filter, pagination, history loading, busy/paused/completed sync, search, refresh relocation, high contrast, narrow overflow':'baseline screenshots'},null,2));
  console.log('Inbox browser QA passed: '+output);
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{socket?.close();browser?.kill();server.close();});

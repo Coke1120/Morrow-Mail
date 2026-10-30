@@ -7,6 +7,7 @@ const state = {
   allInboxUnreadOnly: false,
   outbox: false,
   outboxRows: [],
+  outboxError: "",
   settingsAccountId: null,
   reconnectAccountId: null,
   folderId: null,
@@ -24,8 +25,10 @@ const state = {
   draftRevision: null,
   composeSession: 0,
   agentReplyTodo: null,
+  agentReplySource: null,
   agentLearning: null,
   composeAttachments: [],
+  composeFileJobs: [],
   composeSuggestions: null,
   composeMeta: null,
   composeBaseline: "",
@@ -117,6 +120,8 @@ let undoItems = null;
 let undoBusy = false;
 let undoEpoch = 0;
 const undoEpochByOp = new Map();
+const removalEpochByAction = new Map();
+const removalEpochByMessage = new Map();
 const undoPending = new Set();
 let undoInflight = null;
 let undoFlightSerial = 0;
@@ -156,6 +161,9 @@ let brainEditId = "";
 let brainCategories = [];
 let updateCategoriesBaseline = "[]";
 let updateMemoryBaseline = "";
+let agentMemoryVersion = 0;
+let agentMemorySaveQueue = Promise.resolve();
+let agentMemoryPending = 0;
 let updateAiBaseline = null;
 let updateFreezeNonce = null;
 let updateWasInert = false;
@@ -168,6 +176,7 @@ let customSkillCreating = false;
 let customSkillSaving = false;
 let brainFixBusy = false;
 let brainCategoryBusy = false;
+let brainCategorySaving = false;
 let brainSkillCache = {};
 let brainCategoriesReady = false;
 let calendarGen = 0;
@@ -244,16 +253,21 @@ function paintStatusChrome(expanded) {
 
 function scheduleStatusCollapse() {
   clearStatusTimer();
-  if (statusHoldOpen || !statusExpanded) return;
+  if (statusHoldOpen || !statusExpanded || statusInteractionActive()) return;
   const generation = statusGeneration;
   const wait = statusIsError ? STATUS_ERROR_DWELL_MS : STATUS_SUCCESS_DWELL_MS;
   statusCollapseTimer = armStatusTimer(() => {
-    if (generation !== statusGeneration || statusHoldOpen) return;
+    if (generation !== statusGeneration || statusHoldOpen || statusInteractionActive()) return;
     statusCollapseTimer = 0;
     const status = $("status");
     if (!status || !status.textContent) return;
     paintStatusChrome(false);
   }, wait);
+}
+
+function statusInteractionActive() {
+  const notice = $("notice");
+  return undoPopoverOpen() || !!notice?.matches?.(":hover, :focus-within");
 }
 
 function collapseStatus() {
@@ -356,7 +370,16 @@ function wireStatusNotice() {
   const notice = $("notice");
   if (!notice || (notice.dataset && notice.dataset.statusWired)) return;
   if (notice.dataset) notice.dataset.statusWired = "1";
-  if (typeof notice.addEventListener === "function") notice.addEventListener("click", statusControl);
+  if (typeof notice.addEventListener === "function") {
+    notice.addEventListener("click", statusControl);
+    notice.addEventListener("pointerenter", clearStatusTimer);
+    notice.addEventListener("pointerleave", scheduleStatusCollapse);
+    notice.addEventListener("focusin", clearStatusTimer);
+    notice.addEventListener("focusout", () => Promise.resolve().then(() => {
+      if (undoPopoverOpen() && !eventInsideUndoDetails({ target: document.activeElement })) closeUndoDetails(false);
+      scheduleStatusCollapse();
+    }));
+  }
   document.addEventListener("mousedown", statusDismissPointer);
   document.addEventListener("keydown", statusDismissKey);
 }
@@ -1595,19 +1618,19 @@ function calendarCopy(reason, email) {
   return `Enable calendar and mailbox features${who}. Google requests Calendar separately from mail; Microsoft connects mail first, then checks feature permissions for the same account.`;
 }
 
-function calendarConnection(status, account, listed) {
+function calendarConnection(status, account, listed, reauthorize = false) {
   const grant = calendarGrantState(status, account);
   if (!account || grant.disabled) {
     return { connected: false, canGrant: false, reason: grant.reason, label: "Enable mailbox features" };
   }
   const rows = status && Array.isArray(status.accounts) ? status.accounts : [];
   const row = rows.find((item) => item && item.id === account.id);
-  const connected = (row && row.calendar === true) || (listed && listed.api === true);
+  const connected = !reauthorize && ((row && row.calendar === true) || (listed && listed.api === true));
   return {
     connected,
     canGrant: true,
     reason: connected ? "" : ((row && row.calendarReason) || "needs_auth"),
-    label: connected ? "Refresh calendar" : (account.imapSmtpProfile || account.profile) === "gmail" ? "Enable Google Calendar" : "Enable mailbox features",
+    label: reauthorize ? "Reauthorize calendar" : connected ? "Refresh calendar" : (account.imapSmtpProfile || account.profile) === "gmail" ? "Enable Google Calendar" : "Enable mailbox features",
   };
 }
 
@@ -1755,8 +1778,14 @@ function eventChip(event) {
 
 function agendaEvents(events) {
   return (Array.isArray(events) ? events : []).slice().sort((left, right) => {
-    return String((left && left.start) || "").localeCompare(String((right && right.start) || ""));
+    return compareCalendarStarts(left, right);
   });
+}
+
+function compareCalendarStarts(left, right) {
+  const startOf = (event) => Date.parse(event?.allDay ? String(event.start).slice(0, 10) + "T00:00:00" : event?.start);
+  const difference = startOf(left) - startOf(right);
+  return Number.isFinite(difference) ? difference : String(left?.start || "").localeCompare(String(right?.start || ""));
 }
 
 function agendaLine(event) {
@@ -1910,9 +1939,10 @@ function vacationConfirm(kind, owner, options) {
   const closed = "Your mail server will send these automatic replies to the audience below, including while Morrow is closed.";
   if (kind === "grant") {
     const scope = options && options.scope ? options.scope : "the provider settings permission";
+    const bundle = provider === "google" ? "the Gmail mail, organize, Out of Office, and inbox rules grant. Calendar permission is separate" : "the Microsoft Graph calendar, organize, Out of Office, and inbox rules bundle";
     return {
       title: "Allow Out of Office settings",
-      body: "Allow Out of Office settings access for " + who + "?\n\nThe browser will request " + scope + " as part of the calendar, organize, Out of Office, and inbox rules bundle" + (provider === "google" ? ", together with mail access" : "") + ". Enabling replies still needs a separate Save confirmation. The existing mailbox connection stays if consent is incomplete.",
+      body: "Allow Out of Office settings access for " + who + "?\n\nThe browser will request " + scope + " as part of " + bundle + ". Enabling replies still needs a separate Save confirmation. The existing mailbox connection stays if consent is incomplete.",
       confirm: "Continue",
       cancel: "Cancel",
       needsName: false,
@@ -1964,7 +1994,7 @@ function vacationConfirm(kind, owner, options) {
   };
 }
 
-function calendarDraft(input, omitTitle = false) {
+function calendarDraft(input, omitTitle = false, omitTime = false) {
   const title = String((input && input.title) || "").trim();
   const startRaw = String((input && input.start) || "").trim();
   const endRaw = String((input && input.end) || "").trim();
@@ -1978,6 +2008,8 @@ function calendarDraft(input, omitTitle = false) {
   const description = String((input && input.description) || "").trim();
   const allDay = !!(input && input.allDay);
   const eventId = String((input && input.eventId) || "").trim();
+  if (omitTime && eventId) return { error: "", accountId, calendarId, eventId,
+    ...(omitTitle ? {} : { title }), location, description };
   if (allDay) {
     const start = startRaw.slice(0, 10);
     const end = endRaw.slice(0, 10);
@@ -2001,6 +2033,15 @@ function calendarDraft(input, omitTitle = false) {
   const start = Date.parse(startRaw);
   const end = Date.parse(endRaw);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return { error: "Pick a start and a later end." };
+  for (const raw of [startRaw, endRaw]) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(raw)) continue;
+    const parsed = new Date(raw);
+    const offsets = [-86400000, 86400000].map((shift) => new Date(parsed.getTime() + shift).getTimezoneOffset());
+    if (toDateTimeLocal(raw) !== raw.slice(0, 16) || offsets.some((offset) => {
+      const alternate = parsed.getTime() + (offset - parsed.getTimezoneOffset()) * 60000;
+      return alternate !== parsed.getTime() && toDateTimeLocal(new Date(alternate).toISOString()) === raw.slice(0, 16);
+    })) return { error: "This local time is missing or ambiguous at a daylight-saving change. Choose another time or edit it with the calendar provider using an explicit offset." };
+  }
   const body = {
     error: "",
     accountId: accountId,
@@ -2772,6 +2813,7 @@ function outboxComposeSeed(row, payload) {
   const html = typeof source.body === "string" ? source.body : (row && row.htmlBody) || "";
   const subject = source.subject || (row && row.subject) || "";
   const seed = {
+    recoveredSnapshot: true,
     title: subject || "Message",
     accountId: source.accountId || (row && row.accountId),
     fromAddress: source.fromAddress || (row && row.fromAddress),
@@ -3203,10 +3245,15 @@ function mailSplitDecls(css) {
   return out;
 }
 
+const MAIL_CSS_FUNCTIONS = new Set(["url", "rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch", "oklab", "oklch", "color", "color-mix", "calc", "min", "max", "clamp", "linear-gradient", "radial-gradient", "conic-gradient", "repeating-linear-gradient", "repeating-radial-gradient", "repeating-conic-gradient"]);
 function mailCssValue(prop, raw, imagesOn) {
   let value = String(raw || "").trim();
   if (!value || value.length > 100000) return "";
+  if (/\/\*|[\u0000-\u001f\u007f]/.test(value)) return "";
   if (/[{}<>]|expression\s*\(|javascript\s*:|@import|-moz-binding|behavior\s*:|\\/i.test(value)) return "";
+  for (const match of value.matchAll(/([a-z][a-z0-9-]*)\s*\(/gi)) {
+    if (!MAIL_CSS_FUNCTIONS.has(match[1].toLowerCase())) return "";
+  }
   const urls = [];
   const urlRe = /url\(\s*(?:(['"])([\s\S]*?)\1|([^)'"\s]+))\s*\)/gi;
   value.replace(urlRe, (_all, _q, quoted, bare) => { urls.push(String(quoted || bare || "").trim()); return ""; });
@@ -5716,11 +5763,12 @@ function bodySyncCopy(row) {
     "rate-limit": "Paused for mailbox rate limit", connection: "Check the mailbox connection",
     offline: "Network reports offline; existing requests may still finish",
     sleeping: "Waiting for the computer to wake",
-    incomplete: "Body remains incomplete; large messages may exceed the 3 MiB source limit",
+    "source-limit": "Reached the 3 MiB source limit; available content is kept. No action needed",
+    incomplete: "Body remains incomplete; available content is kept",
     "message-changed": "Message changed; refresh the folder or reopen it",
     "download-failed": "Body download did not finish; normal mail activity can retry",
   };
-  const labels = { running: "Downloading", queued: "Waiting", paused: "Paused", error: "Needs attention", idle: "Idle" };
+  const labels = { running: "Downloading", queued: "Waiting", paused: "Paused", error: "Needs attention", limited: "Limited", idle: "Idle" };
   const label = labels[row?.state] || "Checking activity…";
   const detail = row?.reason === "rate-limit" && row.state === "error" ? "Last attempt hit a mailbox rate limit"
     : reasons[row?.reason] || (row?.state === "idle" && row.lastResult === "done" ? "Last body download finished" : sources[row?.source] || "Downloads as needed");
@@ -5732,7 +5780,7 @@ function bodySyncView(snapshot, accounts, unavailable = false) {
     const activity = !unavailable && snapshot?.accounts.find(row => row.accountId === account.id);
     return { account, ...(activity || { state: "unknown" }), copy: unavailable ? { label: "Status unavailable", detail: "Waiting for a fresh activity update" } : bodySyncCopy(activity) };
   });
-  const priority = ["running", "queued", "paused", "error", "idle"];
+  const priority = ["running", "queued", "paused", "error", "limited", "idle"];
   const active = priority.find(kind => rows.some(row => row.state === kind)) || "unknown";
   const label = unavailable ? "Status unavailable" : bodySyncCopy({ state: active }).label;
   const horizon = snapshot?.horizonDays === 0 ? "All history" : [180,365].includes(snapshot?.horizonDays) ? snapshot.horizonDays + " days" : "Mail & Sync history";
@@ -6384,6 +6432,20 @@ function renderList() {
     if (!keys.has(key)) { cached.row.remove(); messageRows.delete(key); }
   }
   list.querySelector(":scope > .empty")?.remove();
+  list.querySelector(":scope > .outbox-load-error")?.remove();
+  if (state.outbox && state.outboxError) {
+    const error = document.createElement("p");
+    error.className = "outbox-load-error hint";
+    error.setAttribute("role", "status");
+    error.textContent = "Unknown — Outbox could not be refreshed. Saved rows may be out of date. ";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "ghost";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => loadScheduled());
+    error.appendChild(retry);
+    list.appendChild(error);
+  }
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -6393,7 +6455,7 @@ function renderList() {
     } else if (state.query && !state.emails.length) {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
     } else if (state.outbox && !listQuery && !state.emails.length) {
-      empty.textContent = outboxEmptyCopy();
+      empty.textContent = state.outboxError ? "Waiting sends are unknown. Retry to load Outbox." : outboxEmptyCopy();
     } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || !state.emails.length)) {
       empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly);
     } else if (!listQuery && folder && folder.emptyCopy) {
@@ -6995,7 +7057,7 @@ function appendMessageBody(parent, email, imagesOn) {
   return wrap;
 }
 
-function bodyRetryButton(email) {
+function bodyRetryButton(email, refresh) {
   const retry = document.createElement("button");
   retry.type = "button";
   retry.className = "ghost";
@@ -7003,18 +7065,21 @@ function bodyRetryButton(email) {
   retry.textContent = "Retry download";
   retry.addEventListener("click", () => guard(async () => {
     retry.disabled = true;
-    try { await openMessage(email.id, false, true); }
+    try {
+      if (typeof refresh === "function") await refresh();
+      else await openMessage(email.id, false, true);
+    }
     finally { retry.disabled = false; }
   }));
   return retry;
 }
 
-function renderBody(pane, email) {
+function renderBody(pane, email, refresh) {
   if (email?.bodyWarning) {
     const warning = document.createElement("p");
     warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = email.bodyWarning;
     pane.appendChild(warning);
-    pane.appendChild(bodyRetryButton(email));
+    pane.appendChild(bodyRetryButton(email, refresh));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
   appendMessageBody(pane, email, remoteVisible(state.prefs.images, allowed));
@@ -8086,6 +8151,33 @@ function startRemovalSession(text, opIds, isError, items) {
   showUndo(text, opIds, isError, items);
 }
 
+function beginRemovalRequest(messages, action, destinationLabel) {
+  rememberUndoSnapshots(messages, action, destinationLabel);
+  startRemovalSession("Applying mailbox changes…", [], false, []);
+  for (const message of messages || []) {
+    if (message?.id) removalEpochByMessage.set(String(message.id), { epoch: undoEpoch, generation: (actionGeneration.get(message.id) || 0) + 1 });
+  }
+  return undoEpoch;
+}
+
+function rememberRemovalReceipt(data, epoch) {
+  if (epoch == null) return;
+  for (const row of [...(data?.pending || []), ...(data?.outcomes || [])]) {
+    if (row.actionId) removalEpochByAction.set(row.actionId, epoch);
+    if (row.opId) undoEpochByOp.set(row.opId, epoch);
+  }
+}
+
+function removalSettlementEpoch(row) {
+  if (row.actionId && removalEpochByAction.has(row.actionId)) return removalEpochByAction.get(row.actionId);
+  if (row.opId && undoEpochByOp.has(row.opId)) return undoEpochByOp.get(row.opId);
+  if (row.kind !== "remove") return undefined;
+  const request = removalEpochByMessage.get(String(row.id));
+  if (request && (typeof row.generation !== "number" || row.generation >= request.generation)) return request.epoch;
+  if (request) return -1;
+  return undefined;
+}
+
 function showRemovalUndo(text, opIds, isError, items) {
   const ids = opIds || [];
   const sameEpoch = ids.length > 0 && ids.every((id) => undoEpochByOp.get(id) === undoEpoch);
@@ -8095,8 +8187,10 @@ function showRemovalUndo(text, opIds, isError, items) {
 
 function inflightUndoRow(row) {
   if (!undoInflight || !row) return false;
-  if (row.retryOpId && undoInflight.opIds.has(row.retryOpId)) return true;
-  return row.kind === "undo" && row.id != null && undoInflight.messages.has(String(row.id));
+  if (row.retryOpId) return undoInflight.opIds.has(row.retryOpId);
+  const requested = row.id != null && undoInflight.messages.get(String(row.id));
+  return row.kind === "undo" && requested && undoInflight.opIds.has(requested.opId)
+    && (typeof row.generation !== "number" || row.generation > requested.generation);
 }
 
 function settleUndoInflight(batch) {
@@ -8132,6 +8226,15 @@ function settleUndoInflight(batch) {
 }
 
 function applyRemovalSettlement(batch, receipt, bad) {
+  if (batch?.outcomes) {
+    const outcomes = batch.outcomes.filter((row) => {
+      const epoch = removalSettlementEpoch(row);
+      return epoch == null || epoch === undoEpoch;
+    });
+    if (!outcomes.length && batch.outcomes.length) return;
+    if (outcomes.length !== batch.outcomes.length) batch = { ...batch, outcomes,
+      opIds: outcomes.flatMap((row) => row.retryOpId ? [row.retryOpId] : row.status === "completed" && row.opId ? [row.opId] : []) };
+  }
   if (!batch || !Array.isArray(batch.opIds) || !batch.opIds.length) {
     if (bad) showStatus(receipt, true);
     return;
@@ -8148,7 +8251,12 @@ function applyRemovalSettlement(batch, receipt, bad) {
     showUndo(text, live.map((item) => item.opId), true, live);
   } else {
     const built = undoItemsForOutcomes(batch);
-    showRemovalUndo(text, batch.opIds, bad, built.length ? built : undefined);
+    if (batch.outcomes?.some((row) => removalSettlementEpoch(row) === undoEpoch)) {
+      const merged = new Map((undoItems || []).map((item) => [item.opId, item]));
+      for (const item of built) merged.set(item.opId, item);
+      for (const id of batch.opIds) if (!merged.has(id)) merged.set(id, normalizeUndoItem({ opId: id }));
+      showUndo(text, [...merged.keys()], bad, [...merged.values()]);
+    } else showRemovalUndo(text, batch.opIds, bad, built.length ? built : undefined);
   }
 }
 
@@ -8214,11 +8322,17 @@ function eventInsideUndoDetails(event) {
 
 function closeUndoDetails(restoreFocus) {
   const pop = $("undo-details-popover");
+  const hadFocus = !!pop?.contains?.(document.activeElement);
   if (pop) pop.hidden = true;
   const button = $("undo-details");
   if (!button) return;
   if (typeof button.setAttribute === "function") button.setAttribute("aria-expanded", "false");
-  if (restoreFocus && typeof button.focus === "function") button.focus();
+  if (restoreFocus || hadFocus) {
+    const target = undoKind === "removal" && undoOpIds?.length && !button.hidden && !undoBusy && !undoPending.size
+      ? button : $("status-chip");
+    if (target && !target.hidden && typeof target.focus === "function") target.focus();
+  }
+  scheduleStatusCollapse();
 }
 
 function paintUndoSelectedCount() {
@@ -8227,14 +8341,17 @@ function paintUndoSelectedCount() {
   if (!button) return;
   const boxes = list && typeof list.querySelectorAll === "function" ? list.querySelectorAll('input[type="checkbox"]') : [];
   let count = 0;
-  for (const box of boxes) if (box.checked) count += 1;
+  for (const box of boxes) if (box.checked && !box.disabled) count += 1;
   button.textContent = "Undo selected (" + count + ")";
-  button.disabled = count === 0 || !!undoBusy;
+  button.disabled = count === 0 || !!undoBusy || undoPending.size > 0;
 }
 
 function paintUndoDetails() {
   const list = $("undo-details-list");
   if (!list || typeof list.replaceChildren !== "function" || typeof document.createElement !== "function") return;
+  const checked = new Set(selectedUndoOpIds());
+  const focused = list.contains(document.activeElement) ? document.activeElement.value : null;
+  const scrollTop = list.scrollTop;
   list.replaceChildren();
   for (const item of undoItems || []) {
     const li = document.createElement("li");
@@ -8243,6 +8360,8 @@ function paintUndoDetails() {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.value = item.opId;
+    box.disabled = undoPending.has(item.opId);
+    box.checked = checked.has(item.opId) && !box.disabled;
     box.setAttribute("aria-label", item.subject || "(No subject)");
     box.addEventListener("change", paintUndoSelectedCount);
     const text = document.createElement("span");
@@ -8259,14 +8378,16 @@ function paintUndoDetails() {
     label.append(box, text);
     li.appendChild(label);
     list.appendChild(li);
+    if (focused === item.opId) box.focus({ preventScroll: true });
   }
+  list.scrollTop = scrollTop;
   paintUndoSelectedCount();
 }
 
 function setUndoDetailChecks(on) {
   const list = $("undo-details-list");
   if (!list || typeof list.querySelectorAll !== "function") return;
-  for (const box of list.querySelectorAll('input[type="checkbox"]')) box.checked = !!on;
+  for (const box of list.querySelectorAll('input[type="checkbox"]')) box.checked = !!on && !box.disabled;
   paintUndoSelectedCount();
 }
 
@@ -8275,13 +8396,13 @@ function selectedUndoOpIds() {
   if (!list || typeof list.querySelectorAll !== "function") return [];
   const ids = [];
   for (const box of list.querySelectorAll('input[type="checkbox"]')) {
-    if (box.checked && box.value) ids.push(box.value);
+    if (box.checked && !box.disabled && box.value) ids.push(box.value);
   }
   return ids;
 }
 
 function openUndoDetails() {
-  if (undoBusy || undoKind !== "removal" || !undoOpIds || !undoOpIds.length) return;
+  if (undoBusy || undoPending.size || undoKind !== "removal" || !undoOpIds || !undoOpIds.length) return;
   const pop = $("undo-details-popover");
   if (!pop) return;
   if (pop.hidden === false) {
@@ -8290,6 +8411,7 @@ function openUndoDetails() {
   }
   paintUndoDetails();
   pop.hidden = false;
+  clearStatusTimer();
   const button = $("undo-details");
   if (button && typeof button.setAttribute === "function") button.setAttribute("aria-expanded", "true");
   const first = typeof pop.querySelector === "function" ? pop.querySelector("button, input") : null;
@@ -8300,18 +8422,19 @@ function paintUndoControls() {
   const undo = $("undo");
   const details = $("undo-details");
   const count = undoKind === "removal" && undoOpIds ? undoOpIds.length : 0;
-  const pendingAll = count > 0 && undoOpIds.every((id) => undoPending.has(id));
+  const pending = undoPending.size > 0;
   if (undo && undoKind === "removal") {
     undo.hidden = !count;
-    undo.disabled = !!undoBusy || pendingAll;
-    undo.textContent = "Undo " + count + " completed changes";
+    undo.disabled = !!undoBusy || pending;
+    undo.setAttribute?.("aria-busy", undoBusy || pending ? "true" : "false");
+    undo.textContent = pending ? "Restoring " + undoPending.size + " changes…" : "Undo " + count + " completed changes";
   }
   if (details) {
     details.hidden = !count;
-    details.disabled = !!undoBusy || !count;
+    details.disabled = !!undoBusy || pending || !count;
     if (!count && typeof details.setAttribute === "function") details.setAttribute("aria-expanded", "false");
   }
-  if (!count) closeUndoDetails(false);
+  if (!count || undoBusy || pending) closeUndoDetails(false);
   else if (undoPopoverOpen()) paintUndoDetails();
 }
 
@@ -8319,7 +8442,10 @@ function showUndo(text, opIds, isError, items) {
   clearReadUndoTimer();
   const nextIds = opIds && opIds.length ? opIds.slice() : null;
   const same = undoKind === "removal" && undoOpIds && nextIds && undoOpIds.join("\0") === nextIds.join("\0");
-  if (!same) closeUndoDetails(false);
+  if (!same) {
+    closeUndoDetails(false);
+    $("undo-details-list")?.replaceChildren?.();
+  }
   undoKind = "removal";
   readUndoItems = null;
   undoReceipt = text;
@@ -8338,8 +8464,8 @@ function showReadUndo(text, items) {
     return;
   }
   clearReadUndoTimer();
-  closeUndoDetails(false);
   undoKind = "read";
+  closeUndoDetails(false);
   undoOpIds = null;
   undoItems = null;
   readUndoItems = (items || []).slice();
@@ -8349,6 +8475,7 @@ function showReadUndo(text, items) {
   if (undo) {
     undo.hidden = !readUndoItems.length;
     undo.disabled = false;
+    undo.setAttribute?.("aria-busy", "false");
     undo.textContent = "Undo";
   }
   const details = $("undo-details");
@@ -8376,11 +8503,14 @@ function clearUndo() {
   closeUndoDetails(false);
   const undo = $("undo");
   if (undo) {
+    if (document.activeElement === undo) $("status-chip")?.focus?.();
     undo.hidden = true;
     undo.disabled = false;
+    undo.setAttribute?.("aria-busy", "false");
   }
   const details = $("undo-details");
   if (details) {
+    if (document.activeElement === details) $("status-chip")?.focus?.();
     details.hidden = true;
     details.disabled = false;
     if (typeof details.setAttribute === "function") details.setAttribute("aria-expanded", "false");
@@ -8469,17 +8599,19 @@ function applyActionSettlement(batch) {
   let moved = false;
   for (const outcome of outcomes) {
     if (!outcome || !outcome.id) continue;
+    if (typeof settleAgentReadOutcome === "function") settleAgentReadOutcome(outcome).catch((error) => showStatus(error.message || String(error), true));
     const memory = actionGeneration.get(outcome.id) || 0;
     if (typeof outcome.generation === "number" && outcome.generation < memory) continue;
     if (typeof outcome.generation === "number") actionGeneration.set(outcome.id, outcome.generation);
     const projection = outcome.projection;
+    if (projection && typeof paintAgentReadProjection === "function") paintAgentReadProjection(outcome.id, !!projection.unread);
     if ((outcome.status === "failed" || outcome.status === "not_attempted") && projection) {
-      paintStars([{ id: outcome.id }], !!projection.isStarred);
       eachStarRow({ id: outcome.id }, (row) => {
         row.unread = !!projection.unread;
         row.isRead = !projection.unread;
         if (projection.folderId) row.folderId = projection.folderId;
       });
+      paintStars([{ id: outcome.id }], !!projection.isStarred);
     }
     if (outcome.kind === "remove" || outcome.kind === "undo") moved = true;
   }
@@ -8510,14 +8642,18 @@ async function toggleStar(email) {
   const next = !email.isStarred;
   const previous = !!email.isStarred;
   paintStars([email], next, true);
+  let data;
   try {
-    const data = await call("mail:toggleStar", { emailId: email.id, accountId: email.accountId, isStarred: next });
+    data = await call("mail:toggleStar", { emailId: email.id, accountId: email.accountId, isStarred: next });
     rememberActionGeneration(data && data.pending);
     rememberActionGeneration(data && data.outcomes);
   } catch (error) {
     paintStars([email], previous, true);
     throw error;
   }
+  const rejected = data?.outcomes?.find((row) => row.status !== "completed");
+  if (rejected) applyActionSettlement(data);
+  if (rejected) throw new Error(rejected.error || "The mailbox did not confirm the star change. Refresh before retrying.");
   showStatus(next ? "Starred." : "Removed the star.");
   await settleOpenView();
 }
@@ -8541,6 +8677,7 @@ async function setRead(email, isRead) {
       mailList: state.view === "mail",
     });
   }
+  const appliedHold = state.unreadHold;
   const paint = (unread) => {
     eachStarRow(email, (row) => { row.unread = unread; row.isRead = !unread; });
     renderList();
@@ -8548,27 +8685,39 @@ async function setRead(email, isRead) {
   paint(!isRead);
   const write = call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead });
   readWrites.set(email.id, write);
+  let data;
   try {
-    const data = await write;
+    data = await write;
     if (typeof rememberActionGeneration === "function") {
       rememberActionGeneration(data && data.pending);
       rememberActionGeneration(data && data.outcomes);
     }
-    paint(!isRead);
   }
   catch (error) {
-    if (typeof applyUnreadHold === "function") state.unreadHold = priorHold;
+    if (typeof applyUnreadHold === "function" && state.unreadHold === appliedHold) state.unreadHold = priorHold;
     paint(previous);
     throw error;
   }
   finally { if (readWrites.get(email.id) === write) readWrites.delete(email.id); }
+  const rejected = data?.outcomes?.find((row) => row.status !== "completed");
+  if (rejected) {
+    if (typeof applyActionSettlement === "function") applyActionSettlement(data);
+    else if (rejected.projection) paint(!!rejected.projection.unread);
+    if (typeof applyUnreadHold === "function" && state.unreadHold === appliedHold) state.unreadHold = priorHold;
+    renderList();
+    throw new Error(rejected.error || "The mailbox did not confirm the read change. Refresh before retrying.");
+  }
+  // Re-paint after success so a list reload during the network wait still gets the confirmed unread flag.
+  paint(!isRead);
   await settleOpenView();
+  return data;
 }
 
 async function deleteFromList(email) {
   const answer = await askConfirm(bulkConfirmCopy("trash", 1, { scope: selectionScopeCopy([email], [email]) }));
   if (!answer || !answer.ok) return;
-  await finishRemoval(email, "Move to Trash", await call("mail:delete", removalPayload(email, false)));
+  const epoch = beginRemovalRequest([email], "trash");
+  await finishRemoval(email, "Move to Trash", await call("mail:delete", removalPayload(email, false)), undefined, epoch);
 }
 
 async function replyFromList(email, kind) {
@@ -8583,12 +8732,14 @@ async function replyFromList(email, kind) {
   await presentCompose(composeSeed(opened, kind, self));
 }
 
-async function finishRemoval(email, label, data, destinationLabel) {
+async function finishRemoval(email, label, data, destinationLabel, epoch) {
+  rememberRemovalReceipt(data, epoch);
   const outcomes = receiptRows(data, { params: { emailId: email.id } });
   return finishBulkRemoval(label, {
     outcomes,
     opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId),
     error: outcomes.some((row) => row.status !== "completed") ? "Some changes could not be verified." : "",
+    removalEpoch: epoch,
   }, [email.id], {
     messages: [email],
     action: removalAction(label),
@@ -8602,7 +8753,8 @@ async function removeOpen(email, channel, label) {
   const review = await reviewedRemoval([withSelectionMembers(email)], kind);
   const answer = await askConfirm(bulkConfirmCopy(kind, review.rows.length, review.detail));
   if (!answer || !answer.ok) return;
-  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls), review.rows.map((row) => row.id), {
+  const epoch = beginRemovalRequest(review.rows, kind);
+  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls, epoch), review.rows.map((row) => row.id), {
     messages: review.rows,
     action: kind === "trash" ? "trash" : "archive",
   });
@@ -8641,12 +8793,13 @@ async function moveOpen(email, targetFolderId) {
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
   const target = folderTitle(foldersOf(account), targetFolderId);
   if (!(await confirmRelocation("mail:moveToFolder", email, target))) return;
+  const epoch = beginRemovalRequest([email], "move", target);
   await finishRemoval(email, "Moved.", await call("mail:moveToFolder", {
     emailId: email.id,
     accountId: email.accountId,
     targetFolderId,
     folderId: email.folderId,
-  }), target);
+  }), target, epoch);
 }
 
 async function undoReadBatch() {
@@ -8670,6 +8823,11 @@ async function undoReadBatch() {
     for (const row of (data && data.pending) || []) {
       if (row && row.id) restored.add(row.id);
     }
+    for (const messageId of restored) {
+      const pending = agentPendingReads.get(String(messageId));
+      if (pending) pending.item.unread = true;
+      agentPendingReads.delete(String(messageId));
+    }
     for (const section of agentSections(agentPaintPayload)) {
       for (const item of section.items || []) {
         if (!item || !restored.has(item.messageId)) continue;
@@ -8686,7 +8844,7 @@ async function undoReadBatch() {
 
 function retainedUndoOpIds(requested, outcomes, items) {
   const rows = Array.isArray(outcomes) ? outcomes : [];
-  if (!rows.length) return [];
+  if (!rows.length) return requested.slice();
   const itemByMessage = new Map();
   for (const item of items || []) {
     if (item && item.opId && item.messageId) itemByMessage.set(String(item.messageId), item.opId);
@@ -8704,7 +8862,8 @@ function retainedUndoOpIds(requested, outcomes, items) {
       || (requested.length === 1 ? requested[0] : "");
     if (opId) failed.add(opId);
   }
-  if (failed.size) return requested.filter((opId) => failed.has(opId));
+  // A settlement can cover only one account. Absence is not completion.
+  if (failed.size) return requested.filter((opId) => failed.has(opId) || !completed.has(opId));
   const completedCount = rows.filter((row) => row && row.status === "completed").length;
   if (completedCount === rows.length && (completed.size === requested.length || (!completed.size && rows.length === requested.length) || requested.length === 1)) {
     return [];
@@ -8714,7 +8873,7 @@ function retainedUndoOpIds(requested, outcomes, items) {
 }
 
 async function undoRemoval(requested) {
-  if (undoBusy) return;
+  if (undoBusy || undoPending.size) return;
   if (undoKind === "read") return undoReadBatch();
   const opIds = (Array.isArray(requested) && requested.length
     ? requested.filter((id) => (undoOpIds || []).includes(id))
@@ -8726,9 +8885,11 @@ async function undoRemoval(requested) {
   const previousError = undoReceiptError;
   const epoch = undoEpoch;
   const serial = ++undoFlightSerial;
-  const messages = new Set();
+  const messages = new Map();
   for (const item of previousItems) {
-    if (item && opIds.includes(item.opId) && item.messageId) messages.add(String(item.messageId));
+    if (item && opIds.includes(item.opId) && item.messageId) messages.set(String(item.messageId), {
+      opId: item.opId, generation: actionGeneration.get(item.messageId) || 0,
+    });
   }
   for (const id of opIds) undoPending.add(id);
   undoInflight = { epoch, serial, opIds: new Set(opIds), messages };
@@ -8786,7 +8947,10 @@ async function undoRemoval(requested) {
     } else applied = true;
     await loadList();
   } catch (error) {
-    if (epoch === undoEpoch && !applied) {
+    if (epoch !== undoEpoch) return;
+    // A settlement can arrive before an IPC rejection. Never resurrect its rows.
+    if (!applied && (!undoInflight || undoInflight.serial !== serial || undoInflight.settled)) return;
+    if (!applied) {
       for (const id of opIds) undoPending.delete(id);
       if (undoInflight && undoInflight.serial === serial) undoInflight = null;
       undoKind = "removal";
@@ -8797,7 +8961,8 @@ async function undoRemoval(requested) {
       paintUndoControls();
     }
     const message = error && error.message ? error.message : String(error);
-    showStatus(prior + " Restore outcome is unknown. " + message + " Refresh before retrying.", true);
+    showStatus(applied ? "Restore result received, but the message list could not refresh. " + message
+      : prior + " Restore outcome is unknown. " + message + " Refresh before retrying.", true);
   } finally {
     undoBusy = false;
     flushUndoSettleQueue();
@@ -9965,7 +10130,7 @@ function operationIds(spec) {
 
 function receiptRows(data, spec) {
   const pending = data && Array.isArray(data.pending)
-    ? data.pending.map((row) => ({ id: row.id, status: "completed", phase: "accepted" }))
+    ? data.pending.map((row) => ({ ...row, status: "completed", phase: "accepted" }))
     : [];
   if (data && Array.isArray(data.outcomes)) return [...pending, ...data.outcomes];
   const ids = operationIds(spec);
@@ -9984,8 +10149,9 @@ function receiptText(label, outcome) {
     + (count("unknown") ? " Refresh before retrying unknown changes." : "");
 }
 
-async function runBulk(calls) {
+async function runBulk(calls, removalEpoch) {
   const outcome = { opIds: [], outcomes: [], done: 0, paused: false, error: "" };
+  if (removalEpoch != null) outcome.removalEpoch = removalEpoch;
   let stopped = false;
   for (const spec of calls) {
     if (stopped) {
@@ -9995,6 +10161,7 @@ async function runBulk(calls) {
     let rows;
     try {
       const data = await call(spec.channel, spec.params);
+      rememberRemovalReceipt(data, removalEpoch);
       rows = receiptRows(data, spec);
     } catch (error) {
       const message = error.message || String(error);
@@ -10015,6 +10182,7 @@ async function runBulk(calls) {
 }
 
 async function finishBulkRemoval(label, outcome, ids, extra) {
+  rememberActionGeneration(outcome.outcomes);
   const action = (extra && extra.action) || removalAction(label);
   rememberUndoSnapshots(snapshotEmails(ids, extra), action, extra && extra.destinationLabel);
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => row.id));
@@ -10026,9 +10194,14 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
   const text = receiptText(label, outcome);
   const waiting = (outcome.outcomes || []).some((row) => row.phase === "accepted");
-  if (outcome.opIds.length) showRemovalUndo(text, outcome.opIds, !!outcome.error, undoItemsForOutcomes(outcome));
-  else if (waiting) showStatus(text, !!outcome.error);
-  else { clearUndo(); showStatus(text, !!outcome.error); }
+  if (outcome.removalEpoch == null) startRemovalSession(text, [], !!outcome.error, []);
+  const epoch = outcome.removalEpoch ?? undoEpoch;
+  rememberRemovalReceipt(outcome, epoch);
+  if (epoch === undoEpoch) {
+    if (outcome.opIds.length) applyRemovalSettlement(outcome, text, !!outcome.error);
+    else if (waiting || undoOpIds?.length) showStatus(text, !!outcome.error);
+    else { clearUndo(); showStatus(text, !!outcome.error); }
+  }
   if (completed.size) await loadList();
   else renderList();
 }
@@ -10040,7 +10213,7 @@ async function bulkArchive() {
   const answer = await askConfirm(bulkConfirmCopy("archive", review.rows.length, review.detail));
   const gated = confirmedCalls("archive", answer, review.calls, review.detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated);
+  const outcome = await runBulk(gated, beginRemovalRequest(review.rows, "archive"));
   await finishBulkRemoval("Archive", outcome, review.rows.map((item) => item.id), {
     messages: review.rows,
     action: "archive",
@@ -10054,7 +10227,7 @@ async function bulkTrash() {
   const answer = await askConfirm(bulkConfirmCopy("trash", review.rows.length, review.detail));
   const gated = confirmedCalls("trash", answer, review.calls, review.detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated);
+  const outcome = await runBulk(gated, beginRemovalRequest(review.rows, "trash"));
   await finishBulkRemoval("Move to Trash", outcome, review.rows.map((item) => item.id), {
     messages: review.rows,
     action: "trash",
@@ -10144,7 +10317,7 @@ async function applyBulkMove(messages, target, targetName) {
   }
   const gated = confirmedCalls(action, answer, planned, detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated);
+  const outcome = await runBulk(gated, action === "add-label" ? undefined : beginRemovalRequest(rows, "move", name));
   const acted = [];
   for (const spec of gated) {
     if (spec.params && Array.isArray(spec.params.items)) {
@@ -10668,6 +10841,8 @@ function wireOrganize() {
 
 async function selectOutbox() {
   if (!state.accounts.length) return;
+  ++listGen;
+  state.listLoading = false;
   invalidateReaderOpen();
   state.outbox = true;
   state.allInbox = false;
@@ -11130,7 +11305,8 @@ function onAccountsUpdated(payload) {
   }
   if (payload && payload.outboxReceipt) {
     const notice = payload.outboxReceipt;
-    separatePartialReceipt(notice.seed || {}, notice.message || "").catch(() => {});
+    if (notice.uncertain) showStatus(notice.message || "Delivery is uncertain. Check Sent and Scheduled delivery review.", true);
+    else separatePartialReceipt(notice.seed || {}, notice.message || "").catch(() => {});
   }
   if (payload && payload.outboxRestore) {
     const notice = payload.outboxRestore;
@@ -11431,6 +11607,7 @@ function syncComposePlainFromEditor() {
   const editor = $("compose-editor");
   const body = $("compose-body");
   if (!composeEditorLive() || !body) return;
+  if (state.draftWrite && !state.draftWrite.pending) state.draftWrite = null;
   const sig = editor.querySelector("[data-compose-signature]");
   if (sig) {
     const clone = editor.cloneNode(true);
@@ -11751,7 +11928,7 @@ function syncComposeRecipientRows() {
 function syncComposeActions() {
   const account = composeAccount();
   const live = isLive(account);
-  const locked = state.composePending || state.composeQueued || state.composeInitializing || !!state.draftWrite?.pending;
+  const locked = state.composePending || state.composeQueued || state.composeInitializing || !!state.draftWrite?.pending || composeFilesPending();
   for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked || !!state.composeIdentityError;
   $("compose-schedule").disabled = !live || locked || !!state.composeIdentityError || !!state.botDraftReview;
   const sendButton = $("compose-send");
@@ -11827,7 +12004,13 @@ function paintComposeAttachments() {
   if (!list || typeof list.replaceChildren !== "function") return;
   const rows = composeAttachmentList(state.composeAttachments);
   list.replaceChildren();
-  list.hidden = !rows.length;
+  const pending = (state.composeFileJobs || []).filter((job) => job.session === state.composeSession);
+  list.hidden = !rows.length && !pending.length;
+  for (const job of pending) {
+    const item = document.createElement("li");
+    item.textContent = "Preparing attachment: " + job.names.join(", ");
+    list.appendChild(item);
+  }
   const locked = !!(state.composePending || state.composeQueued || state.composeInitializing);
   for (const row of rows) {
     const item = typeof document.createElement === "function" ? document.createElement("li") : null;
@@ -11868,6 +12051,10 @@ function removeComposeAttachment(storageUrl) {
   paintComposeNote();
 }
 
+function composeFilesPending() {
+  return (state.composeFileJobs || []).some((job) => job.session === state.composeSession);
+}
+
 async function addComposeFiles(list) {
   const incoming = Array.from(list || []);
   if (!incoming.length || state.composePending || state.composeQueued || state.composeInitializing) return;
@@ -11877,41 +12064,57 @@ async function addComposeFiles(list) {
     size: file && file.size,
   })), provider);
   const errors = review.errors.slice();
-  for (const row of review.accepted) {
-    const file = incoming[row.index];
-    const name = row.filename;
-    try {
-      const bytes = file && typeof file.arrayBuffer === "function" ? new Uint8Array(await file.arrayBuffer()) : null;
-      if (!bytes || !bytes.length) {
-        errors.push(`${name} is empty.`);
-        continue;
+  const job = { session: state.composeSession, names: review.accepted.map((row) => row.filename) };
+  const active = () => job.session === state.composeSession && !state.composeQueued && $("compose").open;
+  state.composeFileJobs.push(job);
+  syncComposeActions();
+  paintComposeAttachments();
+  try {
+    for (const row of review.accepted) {
+      if (!active()) return;
+      const file = incoming[row.index];
+      const name = row.filename;
+      try {
+        const bytes = file && typeof file.arrayBuffer === "function" ? new Uint8Array(await file.arrayBuffer()) : null;
+        if (!active()) return;
+        if (!bytes || !bytes.length) {
+          errors.push(`${name} is empty.`);
+          continue;
+        }
+        const saved = await call("mail:uploadAttachment", {
+          filename: name,
+          mimeType: (file && file.type) || "application/octet-stream",
+          fileBytes: bytes,
+        });
+        if (!active()) return;
+        const meta = composeFileMeta(saved);
+        if (!meta) {
+          errors.push(`Could not read ${name}. Remove it and attach the file again.`);
+          continue;
+        }
+        const next = composeAttachmentList(state.composeAttachments.concat([meta]));
+        const sum = next.reduce((total, item) => total + (Number(item.size) || 0), 0);
+        const over = attachmentCapCopy(meta.filename, meta.size, sum, provider);
+        if (over) {
+          errors.push(over);
+          continue;
+        }
+        state.composeAttachments = next;
+        paintComposeAttachments();
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
       }
-      const saved = await call("mail:uploadAttachment", {
-        filename: name,
-        mimeType: (file && file.type) || "application/octet-stream",
-        fileBytes: bytes,
-      });
-      const meta = composeFileMeta(saved);
-      if (!meta) {
-        errors.push(`Could not read ${name}. Remove it and attach the file again.`);
-        continue;
-      }
-      const next = composeAttachmentList(state.composeAttachments.concat([meta]));
-      const sum = next.reduce((total, item) => total + (Number(item.size) || 0), 0);
-      const over = attachmentCapCopy(meta.filename, meta.size, sum, provider);
-      if (over) {
-        errors.push(over);
-        continue;
-      }
-      state.composeAttachments = next;
+    }
+    if (!active()) return;
+    setComposeAttachError(errors[0] || "");
+    paintComposeNote();
+  } finally {
+    state.composeFileJobs = state.composeFileJobs.filter((item) => item !== job);
+    if (active()) {
+      syncComposeActions();
       paintComposeAttachments();
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
     }
   }
-  setComposeAttachError(errors[0] || "");
-  paintComposeAttachments();
-  paintComposeNote();
 }
 
 let composeDropDepth = 0;
@@ -12663,6 +12866,8 @@ function paintDraft() {
 }
 
 function onDraftEvent(event) {
+  if (!state.draftWrite?.pending || !event || event.reqId !== state.draftWrite.reqId) return;
+  if (!["chunk", "error", "done"].includes(event.type)) return;
   applyDraftEvent(state.draftWrite, event);
   if (!$("compose").open) return;
   paintDraft();
@@ -12704,7 +12909,7 @@ async function startDraftWrite() {
       body: draftInstruction(mode, prompt, draftExisting, $("compose-subject").value, source),
     });
   } catch (error) {
-    if (!state.draftWrite || state.draftWrite.reqId !== reqId) return;
+    if (!state.draftWrite?.pending || state.draftWrite.reqId !== reqId) return;
     state.draftWrite.pending = false;
     state.draftWrite.error = error instanceof Error ? error.message : String(error);
     paintDraft();
@@ -13018,7 +13223,7 @@ async function initializeComposeIdentity(fields) {
     $("compose-to").value = parties.to;
     $("compose-cc").value = parties.cc;
   }
-  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt;
+  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot;
   state.composeIdentity = { ...context, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
   paintComposeFromPicker(state.composeIdentity);
@@ -13075,8 +13280,14 @@ function changeComposeFrom() {
   context.defaultCc = defaults.cc;
   context.defaultBcc = defaults.bcc;
   applyComposeRecipients();
+  const untouched = composeSignatureUntouched();
+  if (untouched && composeEditorLive()) {
+    const node = $("compose-editor").querySelector("[data-compose-signature]");
+    state.signatureText = node ? plainFromComposeHtml(node.innerHTML) : "";
+    syncComposePlainFromEditor();
+  }
   const signature = applyFromSignature({
-    follows: context.signatureFollowsFrom,
+    follows: context.signatureFollowsFrom && untouched,
     body: $("compose-body").value,
     previous: state.signatureText,
     pack: state.signaturePack,
@@ -13395,6 +13606,7 @@ async function bootReaderWindow() {
   wire();
   if (typeof api.on === "function") api.on("mail:translate:event", onTranslateEvent);
   if (typeof api.on === "function") api.on("mail:bodyUpdated", applyBodyUpdate);
+  if (typeof api.on === "function") api.on("mail:actionsSettled", applyActionSettlement);
   if (typeof api.on === "function") api.on("mail:accountsUpdated", payload => {
     if (Array.isArray(payload?.accounts)) acceptBodyAccounts(payload.accounts);
   });
@@ -13455,7 +13667,7 @@ async function bootReaderWindow() {
   }).catch(() => {});
   if (!email.unread) return;
   try {
-    await call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead: true });
+    await setRead(email, true);
   } catch (error) {
     showStatus("Message opened, but marking it read was not confirmed. Other clients may still show it unread. " + (error.message || String(error)), true);
   }
@@ -13470,8 +13682,10 @@ async function openCompose(seed) {
   hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
+  state.composeFileJobs = [];
   const replySession = state.composeSession;
   state.agentReplyTodo = explicitAgentTodo(fields.agentTodo);
+  state.agentReplySource = freshReplyLearningSource(fields);
   state.composeInitializing = true;
   state.composeIdentityError = false;
   state.composeIdentity = null;
@@ -13533,7 +13747,7 @@ async function openCompose(seed) {
     setComposeStatus("From address could not be loaded. Your text is retained.", true);
   }
   const initial = composeSnapshot();
-  await Promise.all([fields.partialReceipt ? Promise.resolve() : fillSignatures(!!fields.draftId), loadScheduled()]);
+  await Promise.all([fields.partialReceipt ? Promise.resolve() : fillSignatures(!!fields.draftId || !!fields.recoveredSnapshot), loadScheduled()]);
   if (replySession === state.composeSession && !state.agentReplyTodo && freshReplyTodoSeed(fields)) {
     try {
       const target = await call("nativeAgent:home:replyTarget", freshReplyTodoSeed(fields));
@@ -13554,7 +13768,7 @@ async function openCompose(seed) {
   }
   // A supplied proposal is unsaved work; an untouched new message is not.
   const baseline = JSON.parse(initial);
-  baseline.body = fields.draftId ? baseline.body : applySignature(baseline.body, "", state.signatureText);
+  baseline.body = fields.draftId || fields.recoveredSnapshot ? baseline.body : applySignature(baseline.body, "", state.signatureText);
   baseline.html = composeEditorSnapshot();
   state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
   syncCompose();
@@ -13592,7 +13806,8 @@ function composeSnapshot() {
     subject: $("compose-subject").value, body: $("compose-body").value,
     html: composeEditorSnapshot(),
     quote: state.composeQuote && state.composeQuote.text,
-    attachments: attachmentKey(state.composeAttachments) });
+    attachments: attachmentKey(state.composeAttachments),
+    pendingAttachments: (state.composeFileJobs || []).filter((job) => job.session === state.composeSession).map((job) => job.names) });
 }
 
 async function requestComposeClose() {
@@ -13656,6 +13871,7 @@ async function loadScheduled() {
   try {
     const data = await call("mail:listScheduled", {});
     if (gen !== scheduledGen) return;
+    state.outboxError = "";
     state.outboxRows = outboxRowsFrom(data);
     renderScheduled(scheduledRows(data));
     const nav = $("folders");
@@ -13674,6 +13890,8 @@ async function loadScheduled() {
     }
   } catch (error) {
     if (gen !== scheduledGen) return;
+    state.outboxError = error instanceof Error ? error.message : String(error);
+    if (state.outbox) renderList();
     $("scheduled").replaceChildren();
     const item = document.createElement("li");
     item.textContent = "Unknown — Scheduled mail could not be loaded. ";
@@ -13691,7 +13909,12 @@ function paintScheduleUndo() {
   const on = !!scheduleUndo;
   for (const id of ["undo-schedule", "scheduled-undo"]) {
     const button = $(id);
-    if (button) button.hidden = !on;
+    if (button) {
+      if (!on && document.activeElement === button) $(id === "scheduled-undo" ? "scheduled-close" : "status-chip")?.focus?.();
+      button.hidden = !on;
+      button.disabled = scheduleUndoBusy;
+      button.setAttribute?.("aria-busy", scheduleUndoBusy ? "true" : "false");
+    }
   }
 }
 
@@ -13760,20 +13983,25 @@ async function undoCancelScheduled() {
   const snapshot = scheduleUndo;
   if (!snapshot || scheduleUndoBusy) return;
   scheduleUndoBusy = true;
+  paintScheduleUndo();
   try {
     await call("mail:restoreScheduled", { snapshot });
-    hideScheduleUndo();
-    const status = $("scheduled-status");
-    if (status) status.textContent = "Scheduled send restored.";
-    showStatus("Scheduled send restored.");
+    if (scheduleUndo === snapshot) {
+      hideScheduleUndo();
+      const status = $("scheduled-status");
+      if (status) status.textContent = "Scheduled send restored.";
+      showStatus("Scheduled send restored.");
+    }
     await loadScheduled();
   } catch (error) {
+    if (scheduleUndo !== snapshot) return;
     const message = error instanceof Error ? error.message : String(error);
     const status = $("scheduled-status");
     if (status) status.textContent = message;
     showStatus(message, true);
   } finally {
     scheduleUndoBusy = false;
+    paintScheduleUndo();
   }
 }
 
@@ -13917,7 +14145,7 @@ async function editScheduledMail(row) {
 }
 
 async function composeOperation(work) {
-  if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending) return false;
+  if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending || composeFilesPending()) return false;
   state.composePending = true;
   syncCompose();
   try { await work(); return true; }
@@ -13942,6 +14170,7 @@ async function scheduleMail(whenOverride, reviewedPayload) {
     setComposeStatus("Scheduling…");
     await call("mail:scheduleSend", { ...withAgentReplyTodo(reviewedPayload || composePayload(account)), sendAt: when.toISOString() });
     state.agentReplyTodo = null;
+    state.agentReplySource = null;
     state.composeQueued = true;
     $("compose-title").textContent = "Scheduled receipt";
     // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
@@ -13972,6 +14201,10 @@ function composeReady() {
   const account = composeAccount();
   if (!isLive(account)) return false;
   if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError) return false;
+  if (composeFilesPending()) {
+    setComposeStatus("Wait for attachment preparation before saving, sending or scheduling.", true);
+    return false;
+  }
   if (state.draftWrite?.pending) {
     setComposeStatus("Finish or cancel AI writing before reviewing this message.", true);
     return false;
@@ -14066,7 +14299,7 @@ async function confirmComposePreview() {
   if (!draft) return false;
   previewDraftState = null;
   await closeDialog("compose-preview");
-  if (draft.session !== state.composeSession || draft.snapshot !== composeSnapshot() || state.draftWrite?.pending) {
+  if (draft.session !== state.composeSession || draft.snapshot !== composeSnapshot() || state.draftWrite?.pending || composeFilesPending()) {
     setComposeStatus("The message changed. Review a new preview before sending or scheduling.", true);
     return false;
   }
@@ -14192,19 +14425,13 @@ async function undoOutboxItem(row) {
     showStatus("Delivery has started. It can no longer be canceled. Check Sent before retrying.", true);
     return;
   }
-  let snapshot;
+  let recovered;
   try {
-    const result = await call("mail:cancelScheduled", { id: row.id });
-    snapshot = result && result.snapshot;
+    recovered = await call("mail:cancelScheduled", { id: row.id, recoverDraft: true });
   } catch (error) {
     showStatus(error.message || "Delivery has started. It can no longer be canceled. Check Sent before retrying.", true);
     return;
   }
-  let payload = {};
-  if (snapshot && typeof snapshot.payloadJson === "string") {
-    try { payload = JSON.parse(snapshot.payloadJson) || {}; } catch { payload = {}; }
-  }
-  const seed = outboxComposeSeed(row, payload);
   state.outboxRows = (state.outboxRows || []).filter((item) => item && item.id !== row.id);
   const nav = $("folders");
   if (nav && typeof nav.querySelector === "function") applyOutboxChrome(nav.querySelector(".outbox-mail"));
@@ -14219,14 +14446,19 @@ async function undoOutboxItem(row) {
     renderList();
     renderReader(false);
   }
-  await presentCompose(seed);
-  showStatus(seed.status);
+  const status = "Send canceled. A recovery copy is saved in local Drafts; nothing sends automatically.";
+  try {
+    await resumeDraft({ id: recovered.emailId, accountId: recovered.accountId }, { status });
+    showStatus(status);
+  } catch (error) {
+    showStatus("Send canceled and saved in local Drafts, but Compose could not open. Resume it from Drafts. " + (error.message || String(error)), true);
+  }
 }
 
 // The local delay can be canceled only before mail:send begins.
 async function sendMail(reviewedPayload) {
   const account = composeAccount();
-  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending || sendTimer) return;
+  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending || composeFilesPending() || sendTimer) return;
   if (reviewedPayload && reviewedPayload.accountId !== account.id) return;
   if (!composeHasRecipient()) {
     setComposeStatus("Add at least one recipient.", true);
@@ -14244,6 +14476,7 @@ async function sendMail(reviewedPayload) {
     await call("mail:scheduleSend", { ...payload, sendAt: new Date(Date.now() + delay).toISOString(), outbox: true });
     queued = true;
     state.agentReplyTodo = null;
+    state.agentReplySource = null;
     state.composeQueued = true;
     state.composeBaseline = composeSnapshot();
   } catch (error) {
@@ -14346,7 +14579,7 @@ async function loadPresets() {
 
 function shellBlocked(target) {
   if (!target || !target.closest) return true;
-  if (target.closest("input, textarea, select, [contenteditable='true']")) return true;
+  if (target.closest("input, textarea, select, [contenteditable='true'], #undo-details-popover, #body-sync")) return true;
   return !!document.querySelector("dialog[open]");
 }
 
@@ -14474,7 +14707,7 @@ function mailShortcutContext(event) {
   }
   return {
     typing: !!editableField(event && event.target),
-    dialog: !!(top),
+    dialog: !!top || undoPopoverOpen() || !!event?.target?.closest?.("#body-sync"),
     menu: !!(menu && menu.hidden === false),
     topDialog: top && top.id ? top.id : "",
     mailOpen: !!(state.email && state.email.id && !state.email.outbox),
@@ -15197,6 +15430,15 @@ function remoteImageSrcs(html) {
     const alt = altMatch ? (altMatch[1] || altMatch[2] || altMatch[3] || "").trim() : "";
     srcs.push({ src, alt });
   }
+  const seen = new Set(srcs.map((image) => image.src));
+  const references = /url\(\s*(?:"([^"<>]*)"|'([^'<>]*)'|([^\s)'"<>]+))\s*\)|\bbackground\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)'|([^\s"'=<>`]+))/gi;
+  for (const reference of String(html || "").matchAll(references)) {
+    const src = reference.slice(1).find((value) => value != null)?.trim() || "";
+    if (/^https?:\/\/\S+$/i.test(src) && !seen.has(src)) {
+      srcs.push({ src, alt: "" });
+      seen.add(src);
+    }
+  }
   return srcs;
 }
 
@@ -15545,7 +15787,14 @@ function setScheduleStatus(text, isError) {
   }
 }
 
+let scheduleDelaySaveSerial = 0;
+let scheduleDelaySaveQueue = Promise.resolve();
+function scheduleDelaySnapshot() {
+  return JSON.stringify([$("pref-schedule-hours")?.value, $("pref-schedule-minutes")?.value]);
+}
 async function saveScheduleDelay() {
+  const serial = ++scheduleDelaySaveSerial;
+  const snapshot = scheduleDelaySnapshot();
   const hours = readWhole($("pref-schedule-hours") && $("pref-schedule-hours").value);
   const minutes = readWhole($("pref-schedule-minutes") && $("pref-schedule-minutes").value);
   const total = joinScheduleDelay(hours, minutes);
@@ -15554,19 +15803,26 @@ async function saveScheduleDelay() {
     paintScheduleDelay(state.prefs.scheduleDelay);
     return;
   }
-  try {
-    await api.invoke("morrow:configSetDefaultScheduleDelayMinutes", total);
-    const saved = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
-    state.prefs.scheduleDelay = saved;
-    paintScheduleDelay(saved);
-    setScheduleStatus(saved
-      ? "Saved. Send schedules " + formatScheduleDelay(saved) + " ahead."
-      : "Saved. Send delivers immediately.", false);
-    if ($("compose") && $("compose").open) syncCompose();
-  } catch (error) {
-    setScheduleStatus(error instanceof Error ? error.message : String(error), true);
-    paintScheduleDelay(state.prefs.scheduleDelay);
-  }
+  const pending = scheduleDelaySaveQueue.then(async () => {
+    try {
+      await api.invoke("morrow:configSetDefaultScheduleDelayMinutes", total);
+      const saved = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
+      state.prefs.scheduleDelay = saved;
+      if (serial !== scheduleDelaySaveSerial) return;
+      const edited = scheduleDelaySnapshot() !== snapshot;
+      if (!edited) paintScheduleDelay(saved);
+      setScheduleStatus((saved
+        ? "Saved. Send schedules " + formatScheduleDelay(saved) + " ahead."
+        : "Saved. Send delivers immediately.") + (edited ? " Newer edits are not saved yet." : ""), false);
+      if ($("compose") && $("compose").open) syncCompose();
+    } catch (error) {
+      if (serial !== scheduleDelaySaveSerial) return;
+      setScheduleStatus(error instanceof Error ? error.message : String(error), true);
+      if (scheduleDelaySnapshot() === snapshot) paintScheduleDelay(state.prefs.scheduleDelay);
+    }
+  });
+  scheduleDelaySaveQueue = pending;
+  return pending;
 }
 
 const settingsFoldPending = new Map();
@@ -15638,7 +15894,9 @@ function loadSettingsFold(name) {
     }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); await loadGoogleOauthClient(); }
     else if (name === "compose") await loadComposeSettings();
-    else if (name === "ooo" && !oooDirty()) await loadVacation();
+    else if (name === "ooo" && !oooDirty()) {
+      if (await loadVacation() !== true) return;
+    }
     else if (name === "bot") await loadBotAccess();
     if (settingsFoldPending.get(key) === pending) settingsFoldLoaded.add(key);
   }).catch(error => {
@@ -15793,14 +16051,33 @@ async function loadVacation() {
   }
   setOooStatus("Contacting the mail provider…", false);
   const gen = ++settingsVacationGen;
+  const snapshot = oooSnapshot();
   const data = await call("mail:vacationGet", { accountId: account.id });
   if (gen !== settingsVacationGen) return;
   if (!data || data.accountId !== account.id) throw new Error("Out of Office response did not match this mailbox.");
   if (!settingsAccount() || settingsAccount().id !== account.id) return;
+  const edited = applyVacationResponse(data, snapshot);
+  setOooStatus(edited ? "Provider settings loaded. Newer edits are not saved yet." : "", false);
+  return true;
+}
+
+function applyVacationResponse(data, snapshot) {
+  const current = oooSnapshot();
+  const edited = current !== snapshot;
   paintVacation(data);
   oooBaseline = oooSnapshot();
+  if (edited) {
+    const values = JSON.parse(current);
+    ["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience", "ooo-domain"].forEach((id, index) => {
+      const field = $(id);
+      if (!field) return;
+      if (field.type === "checkbox") field.checked = values[index];
+      else field.value = values[index];
+    });
+    syncVacationFields();
+  }
   paintOooDirty();
-  setOooStatus("", false);
+  return edited;
 }
 
 async function refreshVacation() {
@@ -15835,6 +16112,7 @@ async function saveVacation(kind) {
     throw new Error("Choose a connected mailbox.");
   }
   const body = vacationFormBody(kind);
+  const snapshot = oooSnapshot();
   if (kind !== "disable") {
     const draft = vacationDraft({ ...body, provider: vacationCache.provider });
     if (draft.error) throw new Error(draft.error);
@@ -15849,11 +16127,12 @@ async function saveVacation(kind) {
     throw new Error("Choose a connected mailbox.");
   }
   setOooStatus("Contacting the mail provider…", false);
+  const gen = ++settingsVacationGen;
   const saved = await call("mail:vacationPut", body);
-  paintVacation(saved);
-  oooBaseline = oooSnapshot();
-  paintOooDirty();
-  setOooStatus("Saved on the provider.", false);
+  if (gen !== settingsVacationGen || settingsAccount()?.id !== account.id) return;
+  if (!saved || saved.accountId !== account.id) throw new Error("Out of Office response did not match this mailbox.");
+  const edited = applyVacationResponse(saved, snapshot);
+  setOooStatus(edited ? "Reviewed reply saved on the provider. Newer edits are not saved yet." : "Saved on the provider.", false);
 }
 
 async function grantVacationAccess() {
@@ -16189,29 +16468,39 @@ function setPrefSaveStatus(id, text, isError) {
   }, 1800));
 }
 
+const prefWriteSerial = new Map();
 async function savePref(row) {
   const [id, getChannel, setChannel, kind] = row;
+  const control = $(id);
+  const submitted = readPref(kind, control);
+  const serial = (prefWriteSerial.get(id) || 0) + 1;
+  prefWriteSerial.set(id, serial);
   const status = $("settings-status");
   try {
-    await api.invoke(setChannel, readPref(kind, $(id)));
-    applyPref(kind, $(id), await api.invoke(getChannel));
+    await api.invoke(setChannel, submitted);
+    const saved = await api.invoke(getChannel);
+    if (serial !== prefWriteSerial.get(id)) return;
+    const edited = readPref(kind, control) !== submitted;
+    if (!edited) applyPref(kind, control, saved);
     status.textContent = "";
     status.classList.remove("error");
-    if (takePref(getChannel, kind, $(id))) paintPrefs();
+    if (takePref(getChannel, kind, { checked: saved === true, value: String(saved) })) paintPrefs();
     if (id === "pref-sync-horizon") {
       status.textContent = "Sync history saved. It takes effect on the next sync; downloaded mail stays.";
-      setPrefSaveStatus(id, "Saved. It takes effect on the next sync.", false);
+      setPrefSaveStatus(id, "Saved. It takes effect on the next sync." + (edited ? " Newer edits are not saved yet." : ""), false);
       await loadList();
     } else {
-      setPrefSaveStatus(id, "Saved.", false);
+      setPrefSaveStatus(id, edited ? "Saved. Newer edits are not saved yet." : "Saved.", false);
     }
   } catch (error) {
+    if (serial !== prefWriteSerial.get(id)) return;
     const message = error instanceof Error ? error.message : String(error);
     status.textContent = message;
     status.classList.add("error");
     setPrefSaveStatus(id, message, true);
     try {
-      applyPref(kind, $(id), await api.invoke(getChannel));
+      const saved = await api.invoke(getChannel);
+      if (serial === prefWriteSerial.get(id) && readPref(kind, control) === submitted) applyPref(kind, control, saved);
     } catch { /* status already shows the failure */ }
   }
   if (id === "pref-theme" || id === "pref-accent") {
@@ -16610,6 +16899,7 @@ async function changeSettingsMailbox(id) {
   paintOooDirty();
   paintSettingsMailbox();
   for (const key of settingsFoldLoaded) if (key.startsWith("mailbox:") || key.startsWith("ooo:")) settingsFoldLoaded.delete(key);
+  for (const key of settingsFoldPending.keys()) if (key.startsWith("mailbox:") || key.startsWith("ooo:")) settingsFoldPending.delete(key);
   const fold = document.querySelector("#settings .fold.is-open");
   if (fold) await loadSettingsFold(fold.dataset.fold);
   return true;
@@ -17593,7 +17883,7 @@ function paintCategories() {
   $("brain-category-add").textContent = brainCategoryIndex >= 0 ? "Update" : "Add";
   $("brain-category-add").disabled = locked;
   $("brain-category-cancel").hidden = brainCategoryIndex < 0;
-  $("brain-category-save").disabled = locked;
+  $("brain-category-save").disabled = locked || brainCategorySaving;
   $("brain-category-ai").disabled = locked;
 }
 
@@ -17681,23 +17971,35 @@ async function loadBrainCategories(gen) {
 }
 
 async function saveBrainCategories() {
-  if (!brainCategoriesReady) return;
-  const wasEmpty = brainCategories.length === 0;
-  await call("emailBrain:saveCategories", { categories: brainCategories });
+  if (!brainCategoriesReady || brainCategorySaving) return;
   const gen = brainCategoryGen;
-  const parsed = readCategoryPayload(await call("emailBrain:getCategories"));
-  if (gen !== brainCategoryGen) return;
-  brainCategories = parsed.categories;
-  updateCategoriesBaseline = JSON.stringify(brainCategories);
-  brainCategoryDefaults = parsed.defaults;
-  resetCategoryForm();
-  // shortcut: an empty save reads back as the host defaults, change readStore if an empty list must stick
-  showCategoryStatus(wasEmpty ? "Saved. An empty list uses the defaults." : "Saved.", false);
+  const submitted = JSON.stringify(brainCategories);
+  const formState = () => JSON.stringify([brainCategoryIndex, $("brain-category-name").value,
+    $("brain-category-description").value, $("brain-category-collapse").checked]);
+  const submittedForm = formState();
+  const wasEmpty = brainCategories.length === 0;
+  brainCategorySaving = true;
   paintCategories();
-  const home = await call("nativeAgent:home:refreshTaxonomy");
-  if (state.view === "agent") {
-    paintAgent(home, "");
-    await loadAgent();
+  try {
+    await call("emailBrain:saveCategories", { categories: JSON.parse(submitted) });
+    const parsed = readCategoryPayload(await call("emailBrain:getCategories"));
+    if (gen !== brainCategoryGen) return;
+    const unchanged = JSON.stringify(brainCategories) === submitted && formState() === submittedForm;
+    if (unchanged) brainCategories = parsed.categories;
+    updateCategoriesBaseline = JSON.stringify(parsed.categories);
+    brainCategoryDefaults = parsed.defaults;
+    if (unchanged) resetCategoryForm();
+    showCategoryStatus(!unchanged ? "Submitted list saved. Newer edits are not saved."
+      : wasEmpty ? "Saved. An empty list uses the defaults." : "Saved.", false);
+    paintCategories();
+    const home = await call("nativeAgent:home:refreshTaxonomy");
+    if (state.view === "agent") {
+      paintAgent(home, "");
+      await loadAgent();
+    }
+  } finally {
+    brainCategorySaving = false;
+    if (gen === brainCategoryGen) paintCategories();
   }
 }
 
@@ -17792,7 +18094,7 @@ function openBrain(pane) {
   skillStatus.textContent = "";
   skillStatus.classList.remove("error");
   const skillResult = $("brain-skill-result");
-  if (skillResult) skillResult.replaceChildren();
+  if (skillResult) paintSkillBlocks(skillResult, null);
   loadBrainSkills().catch((error) => {
     if (brainIsOpen()) paintBrainSkills({}, error instanceof Error ? error.message : String(error));
   });
@@ -18088,19 +18390,27 @@ function freshReplyTodoSeed(fields) {
   return { messageId, accountId: String(fields.accountId || "").trim() };
 }
 
+function freshReplyLearningSource(fields) {
+  const source = freshReplyTodoSeed(fields);
+  if (!source) return null;
+  const quoted = fields.quoteEmail;
+  if (quoted && quoted.id === source.messageId && (!quoted.accountId || quoted.accountId === source.accountId)) {
+    if (quoted.from) source.from = String(quoted.from);
+  }
+  if (fields.threadId) source.threadId = String(fields.threadId);
+  return source;
+}
+
 function withAgentReplyTodo(payload) {
+  if (!payload) return payload;
   const todo = explicitAgentTodo(state.agentReplyTodo);
-  if (!todo || !payload) return payload;
-  const next = { ...payload, agentTodo: todo };
+  const next = { ...payload };
+  if (todo) next.agentTodo = todo;
   const kind = state.composeIdentity && state.composeIdentity.kind;
   const action = kind === "all" ? "reply-all" : kind === "reply" ? "reply" : "";
-  if (!action) return next;
-  const item = { messageId: todo.messageId, accountId: todo.accountId };
-  const email = state.email;
-  if (email && String(email.id || "") === todo.messageId) {
-    if (email.from) item.from = String(email.from);
-    if (email.threadId) item.threadId = String(email.threadId);
-  }
+  const source = state.agentReplySource;
+  if (!action || !source) return next;
+  const item = { ...source };
   next.agentLearning = { kind: "action", action, begunAt: Date.now(), items: [item] };
   return next;
 }
@@ -18109,6 +18419,7 @@ async function finishAgentReplyTodo(session) {
   if (session !== state.composeSession) return;
   const todo = explicitAgentTodo(state.agentReplyTodo);
   state.agentReplyTodo = null;
+  state.agentReplySource = null;
   if (!todo) return;
   try {
     const data = await call("nativeAgent:home:todoUpdate", {
@@ -18204,6 +18515,15 @@ function applyAgentLearning(view) {
     agentPaintPayload.learning = next;
     paintAgentHome(agentPaintPayload);
   }
+  if (changed) {
+    for (const [root, surface] of agentSuggestionSurfaces) {
+      if (!root.isConnected) agentSuggestionSurfaces.delete(root);
+      else if (surface.kind === "run") paintStoredRun(surface.data);
+      else if (surface.kind === "skill") paintSkillBlocks(root, surface.data);
+      else paintProposals(root, surface.data);
+    }
+    paintThread();
+  }
   const settings = $("settings");
   if (settings && settings.open && $("agent-learned-list")) renderAgentLearned(next);
 }
@@ -18235,7 +18555,7 @@ async function moveAgentCategory(item, toCategoryId, toName, fromName) {
     fromName,
     begunAt: Date.now(),
   });
-  if (data && data.learning) state.agentLearning = data.learning;
+  if (data && data.learning) applyAgentLearning(data.learning);
   if (state.view === "agent" && data) paintAgent(data, "");
 }
 
@@ -18310,7 +18630,7 @@ function agentUnreadSnapshot(items) {
   for (const item of items || []) {
     if (agentReadIntent(item) !== "mark") continue;
     const context = agentMessageContext(item);
-    if (!context || seen.has(context.messageId) || agentMarkedRead.has(context.messageId)) continue;
+    if (!context || seen.has(context.messageId) || agentMarkedRead.has(context.messageId) || agentPendingReads.has(context.messageId)) continue;
     seen.add(context.messageId);
     rows.push({ messageId: context.messageId, accountId: context.accountId });
   }
@@ -18567,7 +18887,15 @@ async function describeDraftSource(node, draft) {
 }
 async function refreshAiSetupState() {
   let configured = null;
-  try { const result = await api.invoke("host:aiGetConfig"); configured = (result?.data || result)?.hasKey === true; } catch { /* unknown stays actionable */ }
+  try {
+    const result = await api.invoke("host:aiGetConfig");
+    const config = result?.data || result;
+    if (config?.authMode === "chatgpt") {
+      const reply = await api.invoke("host:chatgptStatus");
+      const connection = reply?.data || reply;
+      configured = connection?.connected === true && connection?.planEnabled === true;
+    } else configured = config?.hasKey === true;
+  } catch { /* unknown stays actionable */ }
   for (const space of ["agent", "brain"]) {
     const box = $(space + "-setup");
     if (!box) continue;
@@ -18608,8 +18936,11 @@ function followButton(follow, draft) {
   return button;
 }
 
+const agentSuggestionSurfaces = new Map();
+
 function paintSkillBlocks(root, data) {
   if (!root) return;
+  if (root.isConnected) agentSuggestionSurfaces.set(root, { kind: "skill", data });
   root.replaceChildren();
   if (!data || data.accepted === false) return;
   for (const block of skillBlocks(data)) {
@@ -18662,6 +18993,7 @@ function paintSkillBlocks(root, data) {
 
 function paintProposals(root, proposals, append) {
   if (!root) return;
+  if (!append && root.isConnected) agentSuggestionSurfaces.set(root, { kind: "proposal", data: proposals });
   if (!append) root.replaceChildren();
   const rows = Array.isArray(proposals) ? proposals.filter((item) => item && item.status !== "dismissed" && item.status !== "confirmed" && !suggestionSuppressed(item.labelName || "Filing")) : [];
   if (!rows.length) {
@@ -18685,6 +19017,22 @@ function paintProposals(root, proposals, append) {
     confirm.type = "button";
     confirm.className = "primary";
     confirm.textContent = "Review filing…";
+    const waiting = proposal.filing?.status === "pending";
+    const uncertain = proposal.filing?.status === "unknown";
+    confirm.disabled = waiting || uncertain;
+    if (proposal.filing) {
+      const receipt = document.createElement("p");
+      receipt.className = "hint";
+      receipt.setAttribute("role", "status");
+      receipt.textContent = waiting ? "Waiting for mailbox confirmation. This proposal stays visible until completion." : uncertain ? "Filing is uncertain. Open the message in Mail and check its folder before any retry. Morrow will not retry automatically." : proposal.filing.error || "Filing was not completed. Review before retrying.";
+      wrap.appendChild(receipt);
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "ghost";
+      open.textContent = "Open in Mail";
+      open.addEventListener("click", () => guard(async () => { showMail(); await openMessage(proposal.messageId, true); }));
+      actions.appendChild(open);
+    }
     confirm.addEventListener("click", () => {
       const begunAt = Date.now();
       confirmProposal(proposal).then((data) => {
@@ -18692,8 +19040,8 @@ function paintProposals(root, proposals, append) {
         if (data.accepted !== false) {
           learnAgent({ kind: "suggestion", choice: "open", className: proposal.labelName || "Filing", begunAt });
         }
-        wrap.remove();
-        if (brainIsOpen()) setSkillStatus((data && data.detail) || "Move confirmed.", false);
+        if (data.accepted !== false) wrap.remove();
+        if (brainIsOpen()) setSkillStatus(data.pending ? data.error || "Waiting for mailbox confirmation." : data.detail || "Move confirmed.", false);
       }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         if (brainIsOpen()) setSkillStatus(message, true);
@@ -18738,6 +19086,7 @@ const AGENT_ICON = {
 };
 
 const agentMarkedRead = new Set();
+const agentPendingReads = new Map();
 
 function iconShapes(spec) {
   if (!spec) return [];
@@ -18869,7 +19218,7 @@ function agentCard(item, options) {
   main.append(avatar, copy);
   card.appendChild(main);
   if (!(options && options.actions === false)) {
-    const follows = agentFollowUps(item);
+    const follows = agentFollowUps(item).filter((follow) => !suggestionSuppressed(follow.label || (follow.kind === "draft" ? "Review draft" : "Open")));
     if (follows.length) {
       const actions = document.createElement("div");
       actions.className = "agent-actions";
@@ -18887,6 +19236,7 @@ function paintStoredRun(run) {
   const view = historyRunView(run);
   const root = $("agent-result");
   if (!root || !view) return;
+  if (root.isConnected) agentSuggestionSurfaces.set(root, { kind: "run", data: run });
   if (!view.accepted) setAgentSkillStatus(view.summary || "That run did not finish.", true);
   else setAgentSkillStatus(view.summary || view.name, false);
   const mailSections = view.sections.filter(sectionItemsAreMail);
@@ -18948,12 +19298,22 @@ function scheduleChoice(row) {
   return "off";
 }
 
+function skillScheduleSnapshot(box) {
+  return JSON.stringify([...box.querySelectorAll("select, input")].map((field) => field.value));
+}
+
+function keepSkillSchedule(row) {
+  const editor = row?.querySelector(".skill-schedule");
+  return !!(editor && (editor.contains(document.activeElement) || skillScheduleSnapshot(editor) !== editor.dataset.baseline));
+}
+
 function appendSkillSchedule(parent, row) {
   const skillId = skillIdOf(row);
   if (!parent || !skillId) return;
   const name = skillName(row) || skillId;
   const box = document.createElement("div");
   box.className = "skill-schedule";
+  box.dataset.skillId = skillId;
   const kind = document.createElement("select");
   kind.setAttribute("aria-label", "Schedule " + name);
   const choices = [["off", "Only when I ask"], ["interval", "Every N minutes"], ["cron", "Cron"]];
@@ -19007,6 +19367,7 @@ function appendSkillSchedule(parent, row) {
     });
   });
   box.append(kind, minutes, cron, contact, save);
+  box.dataset.baseline = skillScheduleSnapshot(box);
   if (row && row.schedule && row.schedule !== "disabled") {
     const pause = document.createElement("button");
     pause.type = "button";
@@ -19030,6 +19391,8 @@ async function saveSkillSchedule(row, input) {
   const draft = scheduleFormValue(input);
   if (draft.error) throw new Error(draft.error);
   const name = skillName(row) || skillId;
+  const editors = [...document.querySelectorAll(".skill-schedule")].filter((box) => box.dataset.skillId === skillId);
+  const snapshots = new Map(editors.map((box) => [box, skillScheduleSnapshot(box)]));
   if (draft.action === "delete") {
     if (!row || row.schedule === "disabled" || !row.schedule) {
       setSkillStatus(name + " already runs only when you ask.", false);
@@ -19045,6 +19408,7 @@ async function saveSkillSchedule(row, input) {
     await call("emailBrain:setSkillSchedule", payload);
     setSkillStatus("Saved the schedule for " + name + ".", false);
   }
+  for (const [box, snapshot] of snapshots) box.dataset.baseline = snapshot;
   await Promise.all([loadBrainSkills(), loadStudio()]);
   refreshBrainSkillDialog(true);
 }
@@ -19083,8 +19447,10 @@ function onScheduleFired(payload) {
 }
 
 function paintSkillList(root, rows, empty, mode) {
-  root.replaceChildren();
+  const previous = new Map([...root.children].filter((row) => row.dataset.skillId).map((row) => [row.dataset.skillId, row]));
+  const rendered = [];
   if (!rows.length) {
+    root.replaceChildren();
     const note = document.createElement("p");
     note.className = "hint";
     note.textContent = empty;
@@ -19095,8 +19461,14 @@ function paintSkillList(root, rows, empty, mode) {
     const name = skillName(row) || "Skill";
     const detail = skillDetail(row);
     const skillId = skillIdOf(row);
+    const retained = previous.get(skillId);
+    if (retained && keepSkillSchedule(retained)) {
+      rendered.push(retained);
+      continue;
+    }
     const wrap = document.createElement("div");
     wrap.className = "studio-row";
+    if (skillId) wrap.dataset.skillId = skillId;
     const copy = document.createElement("div");
     copy.className = "studio-copy";
     const title = document.createElement("p");
@@ -19121,7 +19493,7 @@ function paintSkillList(root, rows, empty, mode) {
     if (modeLine.textContent) copy.appendChild(modeLine);
     wrap.appendChild(copy);
     if (!skillId) {
-      root.appendChild(wrap);
+      rendered.push(wrap);
       continue;
     }
     const actions = document.createElement("div");
@@ -19159,8 +19531,13 @@ function paintSkillList(root, rows, empty, mode) {
     }
     wrap.appendChild(actions);
     if (mode === "run") appendSkillSchedule(wrap, row);
-    root.appendChild(wrap);
+    rendered.push(wrap);
   }
+  const wanted = new Set(rendered);
+  for (const child of [...root.children]) if (!wanted.has(child)) child.remove();
+  rendered.forEach((child, index) => {
+    if (root.children[index] !== child) root.insertBefore(child, root.children[index] || null);
+  });
 }
 
 function skillActionButton(className, action, busy) {
@@ -19357,7 +19734,7 @@ function openCustomSkillCreator() {
   const actions = $("brain-skill-dialog-actions");
   if (actions) actions.replaceChildren();
   const result = $("brain-skill-dialog-result");
-  if (result) result.replaceChildren();
+  if (result) paintSkillBlocks(result, null);
   const status = $("brain-skill-dialog-status");
   if (status) {
     status.textContent = "";
@@ -19378,7 +19755,7 @@ function openBrainSkillDialog(row, mode) {
   paintBrainSkillDialog(row, mode);
   if (switching) {
     const result = $("brain-skill-dialog-result");
-    if (result) result.replaceChildren();
+    if (result) paintSkillBlocks(result, null);
     const status = $("brain-skill-dialog-status");
     if (status) {
       status.textContent = "";
@@ -19448,7 +19825,7 @@ async function reviewDraft(draft) {
   await presentCompose(withSuggestion(seed, body));
 }
 
-function paintMailBody(pane, email, repaint) {
+function paintMailBody(pane, email, repaint, refresh) {
   pane.replaceChildren();
   const from = document.createElement("p");
   from.className = "meta";
@@ -19468,7 +19845,7 @@ function paintMailBody(pane, email, repaint) {
   }
   renderRemoteGate(pane, email, repaint);
   renderAttachments(pane, email);
-  renderBody(pane, email);
+  renderBody(pane, email, refresh);
 }
 
 function paintPeek(email) {
@@ -19476,7 +19853,7 @@ function paintPeek(email) {
   if (title) title.textContent = (email && String(email.subject || "").trim()) || "Message";
   const pane = $("agent-peek-body");
   if (!pane || !email) return;
-  paintMailBody(pane, email, () => paintPeek(email));
+  paintMailBody(pane, email, () => paintPeek(email), () => peekMessage(email.id, true));
 }
 
 function invalidatePeek() {
@@ -19487,13 +19864,14 @@ function invalidatePeek() {
   pruneBodyNotices();
 }
 
-async function peekMessage(messageId) {
+async function peekMessage(messageId, full) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
   const gen = ++peekGen;
-  pendingPeekId = String(messageId); pendingPeekAccountId = listedMessage(messageId)?.accountId || "";
+  pendingPeekId = String(messageId); pendingPeekAccountId = peekEmail?.id === messageId ? peekEmail.accountId : listedMessage(messageId)?.accountId || "";
+  const accountId = pendingPeekAccountId;
   let data;
   try {
-    data = await call("mail:openEmail", { emailId: messageId });
+    data = await call("mail:openEmail", { emailId: messageId, ...(accountId ? { accountId } : {}), ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== peekGen) return;
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
@@ -19501,7 +19879,7 @@ async function peekMessage(messageId) {
   }
   if (gen !== peekGen) return;
   const email = data && data.email;
-  if (!email || (email.bodyEpoch != null && !bodyIdentity(email))) {
+  if (!email || (accountId && email.accountId !== accountId) || (email.bodyEpoch != null && !bodyIdentity(email))) {
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
     throw new Error("That message is no longer available for this mailbox.");
   }
@@ -19549,7 +19927,7 @@ async function runBrainSkill(row) {
     return;
   }
   if (!brainIsOpen() && state.view === "agent") {
-    await sendAgentText(skillName(row) || skillId);
+    await sendAgentText(skillName(row) || skillId, skillId);
     return;
   }
   if (brainSkillBusy) return;
@@ -19647,15 +20025,17 @@ async function confirmProposal(proposal) {
   const answer = await askConfirm({ title: "Confirm provider filing", body: proposalContext(proposal, "filing") + "\nThis changes mail on your server. It is separate from marking a local todo done.", confirm: "Apply filing", cancel: "Cancel" });
   if (!answer?.ok) return null;
   const data = await call("emailBrain:confirmProposal", { proposalId: proposal && proposal.id });
-  if (data && data.accepted === false) throw new Error(data.error || "That move was not applied.");
-  showStatus((data && data.detail) || "Move confirmed.", false);
   paintProposals($("agent-proposals"), data && data.proposals);
+  if (data && data.accepted === false && !data.pending) throw new Error(data.error || "That move was not applied.");
+  if (proposal && data?.accepted === true) proposal.status = "confirmed";
+  showStatus(data?.pending ? data.error || "Waiting for mailbox confirmation." : (data && data.detail) || "Move confirmed.", false);
   if ($("agent-panel") && !$("agent-panel").hidden) await loadAgent();
   return data;
 }
 
 async function dismissProposal(proposal) {
   const data = await call("emailBrain:dismissProposal", { proposalId: proposal && proposal.id });
+  if (proposal) proposal.status = "dismissed";
   paintProposals($("agent-proposals"), data && data.proposals);
   if ($("agent-panel") && !$("agent-panel").hidden) await loadAgent();
 }
@@ -19706,13 +20086,15 @@ function paintSkillChips(rows) {
     button.type = "button";
     button.textContent = name;
     button.addEventListener("click", () => {
-      sendAgentText(name).catch((error) => setAgentSkillStatus(error instanceof Error ? error.message : String(error), true));
+      sendAgentText(name, skillIdOf(row)).catch((error) => setAgentSkillStatus(error instanceof Error ? error.message : String(error), true));
     });
     root.appendChild(button);
   }
 }
 
+let studioGen = 0;
 async function loadStudio() {
+  const gen = ++studioGen;
   const lists = {};
   const errors = [];
   for (const [id, channel] of studioLists()) {
@@ -19723,7 +20105,7 @@ async function loadStudio() {
     }
   }
   const panel = $("agent-panel");
-  if (panel && !panel.hidden) paintStudio(lists, errors.filter(Boolean).join(" "));
+  if (gen === studioGen && panel && !panel.hidden) paintStudio(lists, errors.filter(Boolean).join(" "));
 }
 
 function shownProposals(list) {
@@ -19830,7 +20212,7 @@ function paintThread() {
   const root = $("agent-sections");
   if (!root) return;
   const turnsKey = JSON.stringify(agentTurns);
-  const key = turnsKey + "\n" + JSON.stringify(agentProposalIds);
+  const key = turnsKey + "\n" + JSON.stringify(agentProposalIds) + "\n" + learningApplyStamp(state.agentLearning);
   if (key === agentThreadKey) return;
   const followEnd = turnsKey !== agentThreadTurns;
   agentThreadKey = key;
@@ -19849,7 +20231,7 @@ function paintThread() {
 
 function paintAgent(payload, errorText) {
   if (payload && typeof payload === "object") agentPaintPayload = payload;
-  if (payload && payload.learning) state.agentLearning = payload.learning;
+  if (payload && payload.learning) applyAgentLearning(payload.learning);
   const status = $("agent-status");
   const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
   if (status) {
@@ -19953,7 +20335,7 @@ function paintAgentHome(payload) {
   const note = document.createElement("p");
   note.id = "agent-todo-note";
   note.className = "agent-note";
-  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. FYI and Other can mark the listed messages read, with Undo, and do not complete todos. Settings → Learned keeps a correction after the same pattern happens 3 times. Delete removes that one pattern.";
+  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. Both wait for mailbox confirmation before completing a todo or counting a read for Learned. FYI and Other can mark the listed messages read, with Undo, and do not complete todos. Successful replies in any category can count for Learned without an open todo. Settings → Learned keeps a correction after the same pattern happens 3 times. Delete removes that one pattern and refreshes suggestions in open views.";
   root.appendChild(note);
   paintReplySelectionLabels(root);
   paintMotionRows("agent", root.querySelectorAll(".agent-section"));
@@ -20055,28 +20437,109 @@ function agentCategoryReadButton(role, items) {
   return button;
 }
 
-async function markAgentMessageRead(item, card, mode) {
+function paintAgentReadProjection(messageId, unread, original) {
+  eachStarRow({ id: messageId }, (row) => { row.unread = unread; row.isRead = !unread; });
+  if (state.view === "mail" && $("messages") && $("message-list")) renderList();
+  const rows = original ? [original] : [];
+  for (const section of agentPaintPayload && agentPaintPayload.sections || []) rows.push(...section.items || []);
+  for (const item of rows) {
+    if (item && String(item.messageId || "") === messageId) item.unread = unread;
+  }
+  if (unread) agentMarkedRead.delete(messageId);
+  else agentMarkedRead.add(messageId);
+  if (state.view === "agent" && agentPaintPayload) paintAgentHome(agentPaintPayload);
+}
+
+function beginAgentRead(item, begunAt, complete) {
+  const entry = { item, begunAt, complete, signal: learningSignalItem(item), receipt: null, early: [] };
+  agentPendingReads.set(String(item.messageId), entry);
+  return entry;
+}
+
+async function settleAgentReadOutcome(outcome) {
+  if (outcome.kind && outcome.kind !== "read") return;
+  const entry = agentPendingReads.get(String(outcome.id));
+  if (!entry) return;
+  if (!entry.receipt) {
+    entry.early.push(outcome);
+    return;
+  }
+  const receipt = entry.receipt;
+  if (!Number.isFinite(outcome.generation) || outcome.generation < receipt.generation) return;
+  agentPendingReads.delete(String(outcome.id));
+  const same = outcome.generation === receipt.generation && (!receipt.actionId || outcome.actionId === receipt.actionId);
+  const completed = same && outcome.status === "completed" && (!outcome.kind || outcome.kind === "read") && (!outcome.projection || outcome.projection.unread === false);
+  const unread = outcome.projection ? !!outcome.projection.unread : !completed;
+  // Record the confirmation before painting. A list repaint must not drop it.
+  if (completed && entry.signal) await learnAgent({ kind: "action", action: "mark-read", begunAt: entry.begunAt, items: [entry.signal] });
+  if (completed && entry.complete) {
+    const context = agentMessageContext(entry.item);
+    await updateTodo(context.messageId, "done", context.accountId);
+  }
+  if (outcome.generation >= (actionGeneration.get(outcome.id) || 0)) paintAgentReadProjection(String(outcome.id), unread, entry.item);
+  if (!completed) {
+    showStatus("Mark as read was not confirmed.", true);
+    return same && outcome.status !== "completed" ? outcome.status : "superseded";
+  }
+  showStatus(entry.complete ? "Marked as read; todo completed." : "Marked as read.");
+  return "completed";
+}
+
+async function acceptAgentRead(entry, data) {
+  const messageId = String(entry.item.messageId);
+  if (agentPendingReads.get(messageId) !== entry) return "superseded";
+  const outcomes = data && Array.isArray(data.outcomes) ? data.outcomes : [];
+  const pending = data && Array.isArray(data.pending) ? data.pending : [];
+  const receipt = outcomes.find((row) => row.id === messageId) || pending.find((row) => row.id === messageId);
+  if (!receipt || !Number.isFinite(receipt.generation)) {
+    agentPendingReads.delete(messageId);
+    paintAgentReadProjection(messageId, true, entry.item);
+    return "not_attempted";
+  }
+  entry.receipt = receipt;
+  const early = entry.early.filter((row) => Number.isFinite(row.generation) && row.generation >= receipt.generation).sort((first, second) => second.generation - first.generation)[0];
+  const outcome = early || outcomes.find((row) => row.id === messageId);
+  if (outcome) {
+    return await settleAgentReadOutcome(outcome);
+  }
+  paintAgentReadProjection(messageId, false, entry.item);
+  return "pending";
+}
+
+function abandonAgentRead(entry) {
+  const messageId = String(entry.item.messageId);
+  if (agentPendingReads.get(messageId) !== entry) return;
+  agentPendingReads.delete(messageId);
+  paintAgentReadProjection(messageId, true, entry.item);
+}
+
+async function markAgentMessageRead(item, card, mode, begunAt = Date.now()) {
   const context = agentMessageContext(item);
   if (!context) return;
-  const begunAt = Date.now();
   const reply = agentPileRole(item) === "reply";
   const already = agentReadIntent(item) === "already" || agentMarkedRead.has(context.messageId);
   const complete = mode === "done" || (reply && state.prefs.markReadCompletesTodos === true);
+  const pending = agentPendingReads.get(context.messageId);
+  if (pending) {
+    pending.complete = pending.complete || complete;
+    showStatus("Mark as read is waiting for mailbox confirmation.");
+    return "pending";
+  }
   if (already && !complete) {
     showStatus("Already read.");
-    return;
+    return "already";
   }
   if (!already) {
-    await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
-    item.unread = false;
-    agentMarkedRead.add(context.messageId);
-    if (card && card.classList) {
-      card.classList.remove("unread");
-      const dot = card.querySelector(".unread-dot");
-      if (dot) dot.remove();
+    const entry = beginAgentRead(item, begunAt, complete);
+    try {
+      const data = await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
+      const status = await acceptAgentRead(entry, data);
+      showStatus(status === "pending" ? "Mark as read is waiting for mailbox confirmation." : status === "completed" ? "Marked as read." : "Mark as read was not confirmed.", status !== "pending" && status !== "completed");
+      return status;
+    } catch (error) {
+      abandonAgentRead(entry);
+      throw error;
     }
-    const signal = learningSignalItem(item);
-    if (signal) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: [signal] });
   }
   if (complete) {
     await updateTodo(context.messageId, "done", context.accountId);
@@ -20096,62 +20559,42 @@ async function applyReplySelection(items, mode) {
     showStatus(captured.length === 1 ? "Todo completed." : "Todos completed.");
     return;
   }
-  const optIn = state.prefs.markReadCompletesTodos === true;
   const begunAt = Date.now();
-  const learned = [];
-  let marked = 0;
   for (const item of captured) {
-    const context = agentMessageContext(item);
-    const unread = agentReadIntent(item) === "mark" && !agentMarkedRead.has(context.messageId);
-    if (unread) {
-      await setRead({ id: context.messageId, accountId: context.accountId, unread: true }, true);
-      item.unread = false;
-      agentMarkedRead.add(context.messageId);
-      marked += 1;
-      const signal = learningSignalItem(item);
-      if (signal) learned.push(signal);
-    }
-    if (optIn) await updateTodo(context.messageId, "done", context.accountId);
+    await markAgentMessageRead(item, null, undefined, begunAt);
   }
-  if (learned.length) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: learned });
   if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
-  if (!marked && !optIn) showStatus("Already read.");
-  else showStatus(marked ? "Marked as read." : "Todo completed.");
 }
 
 async function markAgentCategoryRead(items) {
   const begunAt = Date.now();
   const snapshot = agentUnreadSnapshot(items);
   if (!snapshot.length) return;
-  const data = await call("mail:markReadBatch", {
-    isRead: true,
-    items: snapshot.map((row) => ({ emailId: row.messageId, accountId: row.accountId })),
-  });
+  const entries = snapshot.map((row) => beginAgentRead(items.find((item) => item.messageId === row.messageId), begunAt, false));
+  let data;
+  try {
+    data = await call("mail:markReadBatch", {
+      isRead: true,
+      items: snapshot.map((row) => ({ emailId: row.messageId, accountId: row.accountId })),
+    });
+  } catch (error) {
+    for (const entry of entries) abandonAgentRead(entry);
+    throw error;
+  }
   if (typeof rememberActionGeneration === "function") {
     rememberActionGeneration(data && data.pending);
     rememberActionGeneration(data && data.outcomes);
   }
   const undoRows = readUndoRows(snapshot, data);
-  const touched = new Set(undoRows.map((row) => row.emailId));
-  for (const item of items || []) {
-    if (!item || !touched.has(String(item.messageId || ""))) continue;
-    item.unread = false;
-    agentMarkedRead.add(String(item.messageId));
-  }
+  await Promise.all(entries.map((entry) => acceptAgentRead(entry, data)));
   if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
-  const learned = [];
-  for (const item of items || []) {
-    if (!item || !touched.has(String(item.messageId || ""))) continue;
-    const signal = learningSignalItem(item);
-    if (signal) learned.push(signal);
-  }
-  if (learned.length) await learnAgent({ kind: "action", action: "mark-read", begunAt, items: learned });
   if (!undoRows.length) {
-    showStatus("Marked as read.");
+    showStatus("Mark as read was not confirmed.", true);
     return;
   }
   const noun = undoRows.length === 1 ? "message" : "messages";
-  showReadUndo("Marked " + undoRows.length + " " + noun + " as read.", undoRows);
+  const waiting = entries.some((entry) => agentPendingReads.get(String(entry.item.messageId)) === entry);
+  showReadUndo(waiting ? "Mark as read requested for " + undoRows.length + " " + noun + "." : "Marked " + undoRows.length + " " + noun + " as read.", undoRows);
 }
 
 function agentTodoActions(item, section) {
@@ -20515,11 +20958,10 @@ async function updateTodo(messageId, status, accountId) {
   paintAgent(data, "");
 }
 
-function applyChatPayload(data) {
+function applyChatPayload(data, memoryVersion = agentMemoryVersion) {
   if (!data) return;
   if (Array.isArray(data.turns)) agentTurns = data.turns;
-  const notes = $("agent-memory");
-  if (notes && data.memory && document.activeElement !== notes) notes.value = updateMemoryBaseline = data.memory.notes || "";
+  if (data.memory && memoryVersion === agentMemoryVersion) applyAgentMemory(data.memory.notes || "");
   if (data.triage) paintAgent(data.triage, "");
   else {
     const status = $("agent-status");
@@ -20568,7 +21010,7 @@ function setAgentBusy(busy) {
   syncAgentPageBusy();
 }
 
-async function sendAgentText(text) {
+async function sendAgentText(text, skillId) {
   const trimmed = String(text || "").trim();
   if (!trimmed || agentChatBusy) return;
   showAgentTab("conversation");
@@ -20581,8 +21023,11 @@ async function sendAgentText(text) {
     status.classList.remove("error");
   }
   try {
-    const data = await call("nativeAgent:chat", agentChatRequest(trimmed));
-    applyChatPayload(data);
+    const memoryVersion = agentMemoryVersion;
+    const request = agentChatRequest(trimmed);
+    if (skillId) request.skillId = skillId;
+    const data = await call("nativeAgent:chat", request);
+    applyChatPayload(data, memoryVersion);
     if (data && (data.intent === "skill" || data.intent === "triage")) {
       const history = await call("nativeAgent:history");
       paintHistory($("agent-history"), history && history.runs);
@@ -20592,17 +21037,38 @@ async function sendAgentText(text) {
   }
 }
 
+function applyAgentMemory(value) {
+  const notes = $("agent-memory");
+  if (notes && !agentMemoryPending && notes.value === updateMemoryBaseline) notes.value = updateMemoryBaseline = value;
+}
+
 async function saveAgentMemory() {
   const notes = $("agent-memory");
-  const data = await call("nativeAgent:memorySet", { notes: notes ? notes.value : "" });
-  if (notes && data && typeof data.notes === "string") notes.value = updateMemoryBaseline = data.notes;
-  const status = $("agent-memory-status");
-  if (status) status.textContent = "Notes saved.";
+  const submitted = notes ? notes.value : "";
+  ++agentMemoryVersion;
+  ++agentMemoryPending;
+  const pending = agentMemorySaveQueue.catch(() => {}).then(async () => {
+    try {
+      const data = await call("nativeAgent:memorySet", { notes: submitted });
+      if (data && typeof data.notes === "string") {
+        updateMemoryBaseline = data.notes;
+        if (notes && notes.value === submitted) notes.value = data.notes;
+      }
+      const status = $("agent-memory-status");
+      if (status) status.textContent = notes && notes.value !== updateMemoryBaseline ? "Notes saved. Newer edits are not saved yet." : "Notes saved.";
+    } finally {
+      --agentMemoryPending;
+      ++agentMemoryVersion;
+    }
+  });
+  agentMemorySaveQueue = pending;
+  return pending;
 }
 
 async function loadAgent(options) {
   const quiet = !!(options && options.overlay === false);
   const gen = ++agentGen;
+  const memoryVersion = agentMemoryVersion;
   const hold = (on) => {
     if (gen !== agentGen) return;
     agentLoadOverlay = !!on;
@@ -20617,8 +21083,7 @@ async function loadAgent(options) {
     ]);
     if (gen !== agentGen || state.view !== "agent") return;
     agentTurns = chat && Array.isArray(chat.turns) ? chat.turns : [];
-    const notes = $("agent-memory");
-    if (notes && document.activeElement !== notes) notes.value = updateMemoryBaseline = (chat && chat.memory && chat.memory.notes) || "";
+    if (memoryVersion === agentMemoryVersion) applyAgentMemory((chat && chat.memory && chat.memory.notes) || "");
     const runs = history && Array.isArray(history.runs) ? history.runs : triage && triage.runs;
     const payload = Object.assign({}, triage, { runs });
     paintAgent(payload, "");
@@ -20790,6 +21255,18 @@ let calendarDetailKey = "";
 let calendarEditingId = "";
 let calendarEditingIdentity = null;
 let calendarTimedSnapshot = null;
+let calendarCreateAttempt = null;
+const calendarAuthFailures = new Set();
+
+function recordCalendarAuthFailure(accountId, error) {
+  if (!["needs_auth", "scope_missing", "oauth", "google_client_changed"].includes(error?.code)) return false;
+  calendarAuthFailures.add(accountId);
+  if (calendarAccount()?.id === accountId) {
+    const grant = $("calendar-grant");
+    if (grant) grant.textContent = "Reauthorize calendar";
+  }
+  return true;
+}
 let calendarEditorGeneration = 0;
 let calendarWritePending = false;
 
@@ -20922,7 +21399,7 @@ function paintCalendar(payload) {
   const month = cursor.getMonth();
   const range = monthRange(year, month);
   const account = calendarAccount();
-  const connection = calendarConnection(state.calendarStatus || state.oauthStatus, account, payload);
+  const connection = calendarConnection(state.calendarStatus || state.oauthStatus, account, payload, calendarAuthFailures.has(account?.id));
   let status = view.status;
   if (!view.showGrid && payload && payload.reason === "needs_auth" && account && account.email) {
     status = calendarCopy("needs_auth", account.email);
@@ -20963,7 +21440,7 @@ function paintCalendar(payload) {
     for (const item of bucket.querySelectorAll(".calendar-event")) item.remove();
     const rows = eventsOnDay(events, key).slice().sort((left, right) => {
       if (!!left.allDay !== !!right.allDay) return left.allDay ? -1 : 1;
-      return String((left && left.start) || "").localeCompare(String((right && right.start) || ""));
+      return compareCalendarStarts(left, right);
     });
     for (const event of rows) appendCalendarEvent(bucket, event, key, calendarColor(event.calendarId || state.calendarId));
   }
@@ -21211,6 +21688,7 @@ function openCalendarEditor(event, dayStamp) {
   }
   calendarEditorGeneration += 1;
   calendarTimedSnapshot = null;
+  calendarCreateAttempt = null;
   const dialogTitle = $("calendar-dialog-title");
   const save = $("calendar-save");
   const remove = $("calendar-delete");
@@ -21259,6 +21737,7 @@ function openCalendarEditor(event, dayStamp) {
     end.value = stamp + "T10:00";
   }
   syncAllDayInputs();
+  if (editing) calendarEditingIdentity.timeInputs = [start.value, end.value, !!allDay.checked];
   const pick = $("calendar-pick");
   if (pick) pick.disabled = editing;
   const wanted = editing && event.calendarId ? event.calendarId : (state.calendarId || state.calendarIds[0] || "");
@@ -21292,14 +21771,20 @@ async function deleteCalendarEvent(event) {
       calendarId: identity.calendarId,
       eventId: id,
     });
-    if (generation !== calendarEditorGeneration || calendarAccount()?.id !== ownerId) return;
+    invalidateCalendarAccount(ownerId);
+    if (generation !== calendarEditorGeneration || calendarAccount()?.id !== ownerId) {
+      if (state.view === "calendar" && calendarAccount()?.id === ownerId && !$("calendar-event-dialog").open) await loadCalendar({ fresh: true });
+      return;
+    }
     calendarEditingId = "";
     calendarEditingIdentity = null;
     if (event && calendarEventKey(event) === state.calendarEventId) state.calendarEventId = "";
     closeDialog("calendar-event-dialog");
     showStatus("Event deleted.");
-    calendarCache.clear();
     await loadCalendar({ fresh: true });
+  } catch (error) {
+    recordCalendarAuthFailure(ownerId, error);
+    throw error;
   } finally { calendarWritePending = false; }
 }
 
@@ -21487,7 +21972,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
   calendarStatusPending.then(status => {
     if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
     state.calendarStatus = status;
-    const connection = calendarConnection(status, calendarAccount(), state.calendarPayload);
+    const connection = calendarConnection(status, calendarAccount(), state.calendarPayload, calendarAuthFailures.has(account.id));
     $("calendar-grant").disabled = !connection.canGrant;
     $("calendar-grant").textContent = connection.label;
     $("calendar-grant").title = connection.reason;
@@ -21503,12 +21988,14 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
     }
     const payload = await calendarPending.get(key);
     if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
+    if (payload?.api) calendarAuthFailures.delete(account.id);
     applyCalendarPayload(payload);
     rememberCalendar(key, payload);
     rememberCalendar(calendarCacheKey(account, range, state.calendarIds), payload);
   } catch (error) {
     if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
     const message = error instanceof Error ? error.message : String(error);
+    recordCalendarAuthFailure(account.id, error);
     if (cached?.payload?.api) {
       $("calendar-status").textContent = "Could not refresh. Showing the saved month. " + message;
       $("calendar-status").classList.add("error");
@@ -21549,9 +22036,11 @@ async function grantCalendar() {
   if (!account) throw new Error("Connect a Google or Microsoft mailbox first.");
   showStatus("Enabling mailbox features…");
   try {
-    const saved = await call("calendar:connect", { accountId: account.id });
+    const saved = await call("calendar:connect", { accountId: account.id,
+      ...(calendarAuthFailures.has(account.id) ? { forceReauthorize: true } : {}) });
     const outcome = grantApiOutcome(saved, "Calendar connected.", "Approve mailbox feature permissions in your browser.");
     if (!outcome.ok) throw new Error(outcome.message);
+    calendarAuthFailures.delete(account.id);
     showStatus(outcome.message);
   } finally {
     await loadCalendar({ fresh: true });
@@ -21587,6 +22076,8 @@ async function submitCalendarEvent(event) {
     throw new Error("The calendar account changed. Reopen the event before saving it.");
   }
   const title = $("calendar-event-title").value;
+  const unchangedTime = !!editing && JSON.stringify(identity.timeInputs) === JSON.stringify([
+    $("calendar-start").value, $("calendar-end").value, !!$("calendar-all-day").checked]);
   if (editing && identity.titleTruncated && title !== identity.title) {
     throw new Error("This title is incomplete. Leave it unchanged or edit it with the calendar provider.");
   }
@@ -21600,7 +22091,7 @@ async function submitCalendarEvent(event) {
     start: $("calendar-start").value,
     end: $("calendar-end").value,
     eventId: editing,
-  }, !!editing && title === identity.title);
+  }, !!editing && title === identity.title, unchangedTime);
   const status = $("calendar-form-status");
   if (draft.error) {
     if (status) {
@@ -21616,6 +22107,22 @@ async function submitCalendarEvent(event) {
       draft.descriptionBase = identity.description;
     }
     if (draft.location === identity.location.trim()) delete draft.location;
+  } else {
+    const fingerprint = JSON.stringify(draft);
+    if (calendarCreateAttempt && calendarCreateAttempt.fingerprint !== fingerprint) {
+      throw new Error("The earlier creation may already exist. Restore the submitted fields to retry safely, or check the provider before starting another event.");
+    }
+    if (!calendarCreateAttempt) {
+      const uuid = (typeof globalThis !== "undefined" && globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : (typeof window !== "undefined" && window.crypto && typeof window.crypto.randomUUID === "function"
+          ? window.crypto.randomUUID()
+          : ""));
+      const operationId = (uuid && String(uuid).replace(/-/g, ""))
+        || Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+      calendarCreateAttempt = { operationId, fingerprint };
+    }
+    draft.operationId = calendarCreateAttempt.operationId;
   }
   if (status) {
     status.textContent = "";
@@ -21625,6 +22132,10 @@ async function submitCalendarEvent(event) {
   try {
     if (editing) await call("calendar:updateEvent", draft);
     else await call("calendar:createEvent", draft);
+  } catch (error) {
+    const refused = recordCalendarAuthFailure(account.id, error) || ["invalid", "oauth_not_ready", "imap_only", "no_account"].includes(error.code);
+    if (!editing && refused && generation === calendarEditorGeneration) calendarCreateAttempt = null;
+    throw error;
   } finally { calendarWritePending = false; }
   invalidateCalendarAccount(account.id);
   if (generation !== calendarEditorGeneration || calendarAccount()?.id !== account.id) {
@@ -21710,9 +22221,11 @@ function showBotSecret(secret) {
   openDialog("bot-secret");
 }
 
+let botAccessVersion = 0;
 async function loadBotAccess() {
+  const version = botAccessVersion;
   const data = await call("bot:getAccess");
-  state.botAccess = data;
+  if (version !== botAccessVersion) return state.botAccess;
   paintBotAccess(data);
   return data;
 }
@@ -21862,7 +22375,7 @@ function paintBotGrants(grants) {
       botGuard(async () => {
         paintBotAccess(await call("bot:revokeGrant", { clientId: grant.clientId }));
         setBotStatus(`Access revoked for ${grant.label}. The secret no longer works. Other bots are unchanged.`);
-      });
+      }, true);
     });
     const remove = document.createElement("button");
     remove.type = "button";
@@ -21882,7 +22395,7 @@ function paintBotGrants(grants) {
         if (!answer || !answer.ok) return;
         paintBotAccess(await call("bot:deleteGrant", { clientId: grant.clientId }));
         setBotStatus(`Deleted ${grant.label}. Its secret no longer works.`);
-      });
+      }, true);
     });
     row.append(rotate, revoke, remove);
     item.append(title, meta, used, row);
@@ -21981,6 +22494,7 @@ function paintBotSends(rows) {
 }
 
 function paintBotAccess(data) {
+  ++botAccessVersion;
   const access = data || {};
   state.botAccess = access;
   $("bot-listen").textContent = botListenerStatus(access);
@@ -22130,17 +22644,26 @@ async function openBotDraft(proposalId) {
 }
 
 let botBusy = false;
-function botGuard(fn) {
-  if (botBusy) return Promise.resolve();
+let botStatusBusy = false;
+let botMutationCount = 0;
+let botMutationQueue = Promise.resolve();
+function botGuard(fn, mutation) {
+  if (!mutation && botBusy) return Promise.resolve();
+  if (mutation) botMutationCount += 1;
+  else botStatusBusy = true;
   botBusy = true;
-  return Promise.resolve()
+  const pending = (mutation ? botMutationQueue : Promise.resolve())
     .then(fn)
     .catch((error) => {
       setBotStatus(error instanceof Error ? error.message : String(error), true);
     })
     .finally(() => {
-      botBusy = false;
+      if (mutation) botMutationCount -= 1;
+      else botStatusBusy = false;
+      botBusy = botStatusBusy || botMutationCount > 0;
     });
+  if (mutation) botMutationQueue = pending;
+  return pending;
 }
 
 function selectedBotAccounts() {
@@ -22260,19 +22783,19 @@ function wireBot() {
     const access = await call("bot:setEnabled", { enabled: true });
     paintBotAccess(access);
     setBotStatus(botListenerStatus(access), !(access.listen && access.listen.listening));
-  }));
+  }, true));
   $("bot-enabled").addEventListener("change", () => {
     const want = $("bot-enabled").checked === true;
     botGuard(async () => {
       try {
         const access = await call("bot:setEnabled", { enabled: want });
         paintBotAccess(access);
-        setBotStatus(want ? botListenerStatus(access) : "Bot access off. Existing bots keep their access.", want && !(access.listen && access.listen.listening));
+        setBotStatus(want ? botListenerStatus(access) : "Bot access off. New bot calls are blocked; saved grants are retained.", want && !(access.listen && access.listen.listening));
       } catch (error) {
         await loadBotAccess().catch(() => {});
         throw error;
       }
-    });
+    }, true);
   });
   $("bot-serve-save").addEventListener("click", () => {
     botGuard(async () => {
@@ -22378,7 +22901,10 @@ function wireBot() {
   $("bot-secret-close").addEventListener("click", () => closeDialog("bot-secret"));
   $("bot-secret").addEventListener("close", clearBotSecret);
   for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body"]) {
-    $(id).addEventListener("input", paintComposeNote);
+    $(id).addEventListener("input", () => {
+      if (id === "compose-body" && state.draftWrite && !state.draftWrite.pending) state.draftWrite = null;
+      paintComposeNote();
+    });
   }
 }
 
@@ -22693,6 +23219,7 @@ let recipientSuggestIndex = -1;
 let recipientSuggestRows = [];
 let recipientSuggestInput = null;
 let recipientSuggestEscape = false;
+let recipientSuggestSnapshot = null;
 
 function recipientSuggestApi() {
   return typeof window !== "undefined" ? window.morrowRecipientSuggest : null;
@@ -22710,6 +23237,7 @@ function hideRecipientSuggest() {
   recipientSuggestIndex = -1;
   recipientSuggestRows = [];
   recipientSuggestInput = null;
+  recipientSuggestSnapshot = null;
   if (input && typeof input.setAttribute === "function") {
     input.setAttribute("aria-expanded", "false");
     if (typeof input.removeAttribute === "function") input.removeAttribute("aria-activedescendant");
@@ -22727,6 +23255,7 @@ function scheduleRecipientSuggest(input) {
     hideRecipientSuggest();
     return;
   }
+  hideRecipientSuggest();
   const gen = ++recipientSuggestGen;
   if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
   recipientSuggestTimer = setTimeout(() => {
@@ -22778,6 +23307,7 @@ function paintRecipientSuggest(input, rows) {
   box.replaceChildren();
   recipientSuggestRows = rows;
   recipientSuggestInput = input;
+  recipientSuggestSnapshot = { value: input.value, gen: recipientSuggestGen };
   recipientSuggestIndex = -1;
   for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
     const node = document.getElementById(id);
@@ -22840,6 +23370,10 @@ function chooseRecipientSuggest(email) {
   const input = recipientSuggestInput;
   const choice = recipientSuggestRows.find((row) => row.email === email);
   if (!api || !input || !choice) return;
+  if (!recipientSuggestSnapshot || recipientSuggestSnapshot.value !== input.value || recipientSuggestSnapshot.gen !== recipientSuggestGen) {
+    hideRecipientSuggest();
+    return;
+  }
   input.value = api.applyChoice(input.value, choice);
   hideRecipientSuggest();
   input.dispatchEvent(new Event("input", { bubbles: true }));

@@ -1,7 +1,7 @@
 // In-memory activity only. No message identifiers/content enter public snapshots.
 const { randomUUID } = require("node:crypto");
 const SOURCES = new Set(["open", "visible", "overnight"]);
-const REASONS = new Set(["incomplete", "download-failed", "message-changed", "rate-limit"]);
+const REASONS = new Set(["source-limit", "incomplete", "download-failed", "message-changed", "rate-limit"]);
 
 function createBodyProgress({ onChange = () => {}, now = Date.now } = {}) {
   const session = randomUUID();
@@ -24,7 +24,7 @@ function createBodyProgress({ onChange = () => {}, now = Date.now } = {}) {
     tasks.delete(token);
     if (result && token >= (last.get(task.accountId)?.token || 0)) {
       last.set(task.accountId, { token, generation: task.generation, source: task.source, at: now(),
-        result: result === "done" ? "done" : "error",
+        result: result === "done" ? "done" : result === "source-limit" ? "limited" : "error",
         reason: REASONS.has(result) ? result : "" });
     }
     changed();
@@ -45,7 +45,7 @@ function createBodyProgress({ onChange = () => {}, now = Date.now } = {}) {
         reason = sleeping ? "sleeping" : !online ? "offline" : account.needsConnection ? "connection" : "rate-limit";
       } else if (waiting) {
         state = "queued"; reason = account.busy ? "mail-work" : "turn";
-      } else if (previous?.result === "error") { state = "error"; reason = previous.reason; }
+      } else if (["error", "limited"].includes(previous?.result)) { state = previous.result; reason = previous.reason; }
       return { accountId: account.id, state, reason, source,
         lastResult: previous?.result || "", lastActivityAt: previous?.at || null };
     });

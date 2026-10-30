@@ -288,7 +288,7 @@ async function rendererChecks() {
   assert.equal(replyTools.querySelector(".agent-mark-selected").textContent, "Mark all as read");
   assert.equal(replyTools.querySelector(".agent-complete-selected").textContent, "Complete all");
 
-  ui.run("setRead = async (email) => { globalThis.readIds.push(email.id); }; globalThis.readIds = [];");
+  ui.run("setRead = async (email) => { globalThis.readIds.push(email.id); return { outcomes: [{ id: email.id, generation: 1, status: 'completed', kind: 'read', projection: { unread: false } }] }; }; globalThis.readIds = [];");
   replyTools.querySelector(".agent-complete-selected").click();
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual(calls.map((row) => row.channel), ["nativeAgent:home:todoUpdate", "nativeAgent:home:todoUpdate"]);

@@ -71,9 +71,33 @@ async function engineChecks() {
     assert.match(canceled.data.snapshot.payloadJson, /"outbox":true/);
     assert.equal(db.scheduledById(ada.data.id), null);
 
+    const recoveryQueued = queue(engine, "ada", "Recovery note", later);
+    const recovered = engine.answer("mail:cancelScheduled", [{ id: recoveryQueued.data.id, recoverDraft: true }]);
+    assert.equal(recovered.success, true);
+    assert.equal(recovered.data.id, recoveryQueued.data.id);
+    assert.equal(recovered.data.accountId, "ada");
+    assert.match(recovered.data.snapshot.payloadJson, /Recovery note/);
+    assert.equal(db.scheduledById(recoveryQueued.data.id), null);
+    const recoveryDraft = db.messageById(recovered.data.emailId);
+    assert.equal(recoveryDraft.is_draft, 1);
+    assert.equal(recoveryDraft.folder_path, "Drafts");
+    assert.match(recoveryDraft.html_body, /Recovery note/);
+
+    seedAccount(db, "no-drafts");
+    db.replaceFolders("no-drafts", []);
+    const unrecoverable = queue(engine, "no-drafts", "Keep queued", later);
+    const recoveryFailed = engine.answer("mail:cancelScheduled", [{ id: unrecoverable.data.id, recoverDraft: true }]);
+    assert.equal(recoveryFailed.success, false);
+    assert.match(recoveryFailed.error.message, /queued message is unchanged/);
+    assert.equal(db.scheduledById(unrecoverable.data.id).status, "pending");
+    assert.equal(engine.answer("mail:cancelScheduled", [{ id: unrecoverable.data.id }]).success, true);
+
     let sent = 0;
     engine.setSmtpSenderForTest(async () => {
       sent += 1;
+      const tooLate = engine.answer("mail:cancelScheduled", [{ id: grace.data.id, recoverDraft: true }]);
+      assert.equal(tooLate.success, false);
+      assert.equal(tooLate.error.code, "sending");
       return { messageId: "<ok@test>", accepted: ["bob@example.test"], rejected: [] };
     });
     db.setScheduledSendAt(grace.data.id, 0);
@@ -107,6 +131,28 @@ async function engineChecks() {
     assert.equal(db.scheduledById(failed.data.id), null);
     assert.match(failedNotices[0].outboxRestore.message, /Delivery was not confirmed/);
     assert.match(failedNotices[0].outboxRestore.seed.body, /Failed note/);
+
+    const uncertain = queue(engine, "grace", "Uncertain note", later);
+    let uncertainAttempts = 0;
+    engine.setSmtpSenderForTest(async () => {
+      uncertainAttempts += 1;
+      throw Object.assign(new Error("Connection closed after DATA"), { code: "ECONNRESET" });
+    });
+    db.setScheduledSendAt(uncertain.data.id, 0);
+    const uncertainNotices = await engine.pumpScheduled();
+    const recovery = db.scheduledById(uncertain.data.id);
+    assert.equal(recovery.status, "unknown");
+    assert.ok(recovery.message_id);
+    assert.match(recovery.payload_json, /Uncertain note/);
+    assert.equal(uncertainNotices[0].outboxRestore, undefined);
+    assert.equal(uncertainNotices[0].outboxReceipt.uncertain, true);
+    await db.close();
+    await engine.init();
+    assert.equal(db.messageById(recovered.data.emailId).is_draft, 1);
+    assert.equal(db.scheduledById(uncertain.data.id).message_id, recovery.message_id);
+    assert.equal(db.scheduledById(uncertain.data.id).status, "unknown");
+    await engine.pumpScheduled();
+    assert.equal(uncertainAttempts, 1);
 
     let woke = 0;
     engine.setSmtpSenderForTest(async () => {
@@ -184,7 +230,8 @@ function rendererChecks() {
     call = async (channel, payload) => {
       calls.push({ channel, payload });
       if (channel === "mail:listScheduled") return rows;
-      if (channel === "mail:cancelScheduled") return { id: payload.id, snapshot: { payloadJson: JSON.stringify({ body: "<p>Hello <b>Ada</b></p>", draftId: "draft-ada", inReplyTo: "msg-1", subject: "Ada note", to: ["bob@example.test"], outbox: true }) } };
+      if (channel === "mail:cancelScheduled") return { id: payload.id, emailId: "recovered-ada", accountId: "ada", snapshot: { payloadJson: JSON.stringify({ body: "<p>Hello <b>Ada</b></p>", draftId: "draft-ada", inReplyTo: "msg-1", subject: "Ada note", to: ["bob@example.test"], outbox: true }) } };
+      if (channel === "mail:openEmail") return { email: { id: "recovered-ada", accountId: "ada", isDraft: true, bodyComplete: true, fromAddress: "ada@example.test", to: ["bob@example.test"], cc: [], bcc: [], subject: "Ada note", textBody: "Hello Ada", htmlBody: "<p>Hello <b>Ada</b></p>", inReplyTo: "msg-1" } };
       return {};
     };
     presentCompose = async (seed) => { opened = seed; };
@@ -267,8 +314,10 @@ function rendererChecks() {
     return ui.run("undoOutboxItem(state.emails.find(row => row.id === 's1'))");
   }).then(() => {
     assert.equal(ui.run("calls.filter(item => item.channel === 'mail:cancelScheduled').length"), 1);
+    assert.deepEqual(JSON.parse(ui.run("JSON.stringify(calls.find(item => item.channel === 'mail:cancelScheduled').payload)")), { id: "s1", recoverDraft: true });
+    assert.equal(ui.run("calls.some(item => item.channel === 'mail:editScheduled')"), false);
     const opened = ui.run("opened");
-    assert.equal(opened.draftId, "draft-ada");
+    assert.equal(opened.draftId, "recovered-ada");
     assert.equal(opened.inReplyTo, "msg-1");
     assert.equal(opened.body, "Hello Ada");
     assert.equal(document.getElementById("message-list").textContent.includes("Ada note"), false);

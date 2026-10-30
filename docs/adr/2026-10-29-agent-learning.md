@@ -24,6 +24,15 @@ Command repetitions count only after confirmed success. Failed sends, draft
 saves, and queueing or cancelling a scheduled send do not count. A scheduled
 send may count once when it succeeds, not when it is queued.
 
+Read acceptance is not provider success. The renderer retains the click's
+`begunAt`, action id and generation until a completed journal settlement.
+Failed, unknown, superseded and unattempted reads do not count or complete
+todos. A confirmed read is stored before the mail list is repainted, including
+when that list is not mounted. Split settlements from one batch reuse that click identity. Undo can
+cancel a pending read observation; it does not remove a confirmed observation.
+Reply source identity is frozen separately from the optional Needs You todo,
+so successful FYI, Other and already-completed-source replies can also count.
+
 One explicit action contributes at most one observation to the same pattern,
 even when it touches a batch. Automatic read-on-open, event retries, and
 actions applied by learning do not add observations.
@@ -57,6 +66,10 @@ Outlook rules stay as written.
   unless a later learned Open of the same label is newer. Open does not
   open the suggestion or send.
 
+Learning changes invalidate mounted conversations, skill results and proposal
+lists as well as Home and Settings. Fresh triage retains validated thread ids;
+old cached rows may acquire one from the same message and mailbox in the cache.
+
 Undo of Mark as read does not erase the observation. Delete does.
 
 An observation carries `begunAt` from the click or from Send. Delete records
@@ -86,6 +99,14 @@ class), the count, and whether the threshold has been reached. Category rows
 also keep the sender addresses from those moves, capped, so the hint stays
 on that mail. Rows are not written into `brain.json` categories or provider
 rules. A damaged file is left in place and is not replaced with an empty list.
+
+Schema damage, including a malformed pattern or revocation, also blocks writes;
+the complete original file stays available for explicit recovery. Percent-encoded
+legacy ids remain valid up to the shared 2048-character reader/deleter bound;
+larger generated identities use a stable SHA-256 suffix. Each row retains up to
+256 recent observation timestamps to deduplicate non-adjacent retries while
+allowing distinct out-of-order completions. Older legacy rows seed that history
+from `lastBegunAt`; timestamps never move the latest choice backwards.
 
 Counting these actions adds no cloud mailbox export and no new scope. A later
 model call stays inside the existing AI consent and the saved target.

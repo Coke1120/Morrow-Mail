@@ -612,7 +612,12 @@ function projectSections(categories, items, todos) {
     const mark = hidden[item.messageId];
     if (mark && (mark.status === "done" || mark.status === "dismissed")) continue;
     const bucket = byId.get(item.categoryId) || other;
-    if (bucket) bucket.items.push(item);
+    if (bucket) {
+      const threadId = triageThreadId(item.threadId);
+      const message = threadId ? null : cachedMessage(item.messageId);
+      const cachedThread = message && (!item.accountId || item.accountId === message.accountId) ? triageThreadId(message.threadId) : "";
+      bucket.items.push(Object.assign({}, item, { threadId: threadId || cachedThread }));
+    }
   }
   return sections;
 }
@@ -640,10 +645,15 @@ function sanitizeFollowUps(list, allowed) {
   }).filter(Boolean);
 }
 
+function triageThreadId(value) {
+  return typeof value === "string" && !/[\u0000-\u001F\u007F]/.test(value) ? value.trim().slice(0, 120) : "";
+}
+
 function triageItem(message, summary, followUps) {
   return {
     messageId: message.id,
     accountId: message.accountId || "",
+    threadId: triageThreadId(message.threadId),
     from: message.from || "",
     subject: message.subject || "",
     summary: summary || "",
@@ -774,6 +784,7 @@ function gate() {
 function homePayload(extra) {
   const categories = taxonomy();
   const store = readStore();
+  reconcileFilingStore(store);
   const blocked = gate();
   const snapshot = !blocked && store.triage ? store.triage : null;
   const sections = snapshot
@@ -1176,11 +1187,61 @@ function history() {
   return ok({ runs: readStore().runs.slice(0, 30) });
 }
 
+const filingConfirmations = new Set();
+
+function applyFilingOutcome(proposal, outcome) {
+  if (proposal.status !== "pending" || !proposal.filing || !outcome) return false;
+  const status = outcome.status === "superseded" ? "unknown" : outcome.status;
+  if (!status || status === "pending") return false;
+  if (proposal.filing.status === status && proposal.filing.error === (outcome.error || "")) return false;
+  proposal.filing.status = status;
+  proposal.filing.error = outcome.error || "";
+  if (status === "completed") {
+    proposal.status = "confirmed";
+    proposal.confirmedAt = new Date().toISOString();
+  }
+  return true;
+}
+
+function reconcileFilingStore(store) {
+  let changed = false;
+  for (const proposal of store.proposals) {
+    if (proposal.status !== "pending" || !proposal.filing?.actionId || proposal.filing.status !== "pending") continue;
+    try {
+      const action = require("./mail/db").mailActionById(proposal.filing.actionId);
+      if (action?.phase === "closed" && action.message_id === proposal.messageId && action.account_id === proposal.accountId) {
+        changed = applyFilingOutcome(proposal, { status: action.receipt, error: action.error }) || changed;
+      }
+    } catch { }
+  }
+  if (changed) writeStore(store);
+}
+
+function settleFilingOutcomes(outcomes) {
+  const store = readStore();
+  const byAction = new Map((outcomes || []).filter((row) => row?.actionId).map((row) => [row.actionId, row]));
+  let changed = false;
+  for (const proposal of store.proposals) {
+    const outcome = byAction.get(proposal.filing?.actionId);
+    if (outcome && outcome.id === proposal.messageId) changed = applyFilingOutcome(proposal, outcome) || changed;
+  }
+  if (changed) {
+    writeStore(store);
+    publishHome(homePayload());
+  }
+}
+
 async function confirmProposal(params) {
   const proposalId = params && typeof params.proposalId === "string" ? params.proposalId.trim() : "";
   const store = readStore();
+  reconcileFilingStore(store);
   const proposal = store.proposals.find((item) => item.id === proposalId);
   if (!proposal || proposal.status !== "pending") return fail(new Error("That proposal is not waiting for confirmation."));
+  if (filingConfirmations.has(proposalId) || ["pending", "unknown"].includes(proposal.filing?.status)) {
+    return ok({ accepted: false, pending: proposal.filing?.status !== "unknown", proposalId,
+      error: "This filing is waiting for mailbox confirmation or is uncertain. Check the mailbox before retrying.",
+      proposals: store.proposals.filter((item) => item.status === "pending") });
+  }
   const message = cachedMessage(proposal.messageId);
   if (!message) {
     return ok({
@@ -1191,32 +1252,40 @@ async function confirmProposal(params) {
     });
   }
   const labelName = clip(proposal.labelName, 80);
+  filingConfirmations.add(proposalId);
   try {
     const applied = await applyMove(message, labelName);
-    if (!applied.ok) {
-      return ok({
-        accepted: false,
-        proposalId,
-        error: applied.error,
-        proposals: store.proposals.filter((item) => item.status === "pending"),
-      });
+    const current = readStore();
+    const live = current.proposals.find((item) => item.id === proposalId);
+    if (!live || live.status !== "pending" || live.messageId !== proposal.messageId || live.accountId !== proposal.accountId || live.labelName !== proposal.labelName) {
+      return ok({ accepted: false, proposalId, error: "The proposal changed while filing was in progress. Check the mailbox; a submitted provider change cannot be recalled.",
+        proposals: current.proposals.filter((item) => item.status === "pending") });
     }
-    proposal.status = "confirmed";
-    proposal.confirmedAt = new Date().toISOString();
-    writeStore(store);
+    if (applied.filing) live.filing = applied.filing;
+    if (applied.ok) {
+      live.status = "confirmed";
+      live.confirmedAt = new Date().toISOString();
+    }
+    writeStore(current);
+    reconcileFilingStore(current);
+    const confirmed = live.status === "confirmed";
     return ok({
-      accepted: true,
+      accepted: confirmed,
+      pending: !confirmed && live.filing?.status === "pending",
       proposalId,
-      detail: applied.detail,
-      proposals: store.proposals.filter((item) => item.status === "pending"),
+      detail: confirmed ? applied.detail : "",
+      error: confirmed ? "" : (live.filing?.error || applied.error),
+      proposals: current.proposals.filter((item) => item.status === "pending"),
     });
   } catch (error) {
     return ok({
       accepted: false,
       proposalId,
       error: error instanceof Error ? error.message : String(error),
-      proposals: store.proposals.filter((item) => item.status === "pending"),
+      proposals: readStore().proposals.filter((item) => item.status === "pending"),
     });
+  } finally {
+    filingConfirmations.delete(proposalId);
   }
 }
 
@@ -1278,7 +1347,12 @@ async function applyMove(message, labelName) {
     const err = moved && moved.error;
     return { ok: false, error: (err && err.message) || "The mailbox did not move that message." };
   }
-  return { ok: true, detail: `Moved to “${labelName}”.` };
+  const pending = moved.data?.pending?.find((row) => row.id === message.id);
+  const outcome = moved.data?.outcomes?.find((row) => row.id === message.id);
+  if (outcome?.status === "completed") return { ok: true, detail: `Moved to “${labelName}”.` };
+  const status = pending ? "pending" : outcome?.status || "unknown";
+  const error = outcome?.error || (pending ? "Waiting for mailbox confirmation. Nothing will be retried automatically." : "The mailbox did not confirm this filing. Check the mailbox before retrying.");
+  return { ok: false, error, filing: { actionId: pending?.actionId || outcome?.actionId || "", status, error } };
 }
 
 const CHAT_SYSTEM = [
@@ -1946,7 +2020,11 @@ async function answerQuestion(text) {
 async function chat(params) {
   const text = clip(params && params.text, 2000);
   if (!text) return fail(new Error("Write a message first."));
-  const intent = routeChat(text, listHomeSkills());
+  const skills = listHomeSkills();
+  const selectedId = params && typeof params.skillId === "string" ? params.skillId.trim() : "";
+  const selected = selectedId ? skills.find((skill) => skill.id === selectedId) : null;
+  if (selectedId && !selected) return fail(new Error("That skill is no longer installed. Refresh Skills before running it."));
+  const intent = selected ? { kind: "skill", skillId: selected.id, name: selected.name } : routeChat(text, skills);
   appendChat({ role: "user", kind: intent.kind, text });
   if (intent.kind === "skill") {
     const result = await runSkill({
@@ -2447,6 +2525,7 @@ module.exports = {
   removeSkill,
   runSkill,
   confirmProposal,
+  settleFilingOutcomes,
   dismissProposal,
   bridgeListProposals,
   triage,

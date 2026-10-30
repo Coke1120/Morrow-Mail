@@ -26,9 +26,10 @@
   function parseDomainLines(text, label) {
     const map = {};
     for (const line of String(text || "").split(/\r?\n/).map((row) => row.trim()).filter(Boolean)) {
-      const parts = line.split("=");
+      const delimiter = line.indexOf("=");
+      const parts = [line.slice(0, delimiter), line.slice(delimiter + 1)];
       const key = policy.domain(parts[0]);
-      if (parts.length !== 2 || !key) throw new Error("Use @domain = address, address on each " + label + " line.");
+      if (delimiter < 0 || !key) throw new Error("Use @domain = address, address on each " + label + " line.");
       if (Object.hasOwn(map, key)) throw new Error("Each " + label + " domain can appear only once.");
       map[key] = parts[1].split(/[,;]/).map((row) => row.trim()).filter(Boolean);
     }

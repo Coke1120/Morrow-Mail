@@ -120,11 +120,13 @@
         </button>
         <p id="sync-detail" class="sync-detail" role="status" hidden></p>
         <div id="body-sync" class="body-sync" role="tooltip" hidden>
-          <p id="sync-tip-line" class="sync-tip-line" aria-hidden="true"></p>
-          <p id="body-sync-label" role="status" aria-live="polite">Bodies · Checking activity…</p>
-          <p class="hint">All mailboxes · full message bodies, separate from list sync.</p>
-          <ul id="body-sync-accounts" aria-label="Body download activity by mailbox"></ul>
-          <p id="body-sync-help" class="hint"></p>
+          <div class="body-sync-scroll" tabindex="0" role="region" aria-label="Body download activity">
+            <p id="sync-tip-line" class="sync-tip-line" aria-hidden="true"></p>
+            <p id="body-sync-label" role="status" aria-live="polite">Bodies · Checking activity…</p>
+            <p class="hint">All mailboxes · full message bodies, separate from list sync.</p>
+            <ul id="body-sync-accounts" aria-label="Body download activity by mailbox"></ul>
+            <p id="body-sync-help" class="hint"></p>
+          </div>
         </div>
         </div>
         </div>
@@ -274,14 +276,14 @@
         <input id="calendar-location" type="text" maxlength="200" />
         <label for="calendar-description">Description <span class="optional">(optional)</span></label>
         <textarea id="calendar-description" maxlength="8000" rows="4" aria-describedby="calendar-description-note"></textarea>
-        <p id="calendar-description-note" class="hint" hidden>This description is longer than this editor can display. Edit it in Google Calendar; other fields can still be saved here.</p>
+        <p id="calendar-description-note" class="hint" hidden>This description is longer than this editor can display. Edit it with the calendar provider; other fields can still be saved here.</p>
         <label class="calendar-all-day-label" for="calendar-all-day"><input id="calendar-all-day" type="checkbox" /> All day</label>
         <label for="calendar-start">Start</label>
         <input id="calendar-start" type="datetime-local" />
         <label for="calendar-end">End</label>
         <input id="calendar-end" type="datetime-local" />
         <p id="calendar-form-status" role="alert" tabindex="-1"></p>
-        <p id="calendar-save-note" class="hint">Cancel closes this editor. A save already in progress can still finish; confirmed changes appear when the calendar refreshes. Switching All day keeps the dates; an all-day end is exclusive. Switching back without changing the all-day range restores the previous times; otherwise timed defaults are 09:00/10:00.</p>
+        <p id="calendar-save-note" class="hint">Cancel closes this editor, not a pending save or delete. Confirmed changes invalidate this mailbox's cached months. Retry unchanged creation in this editor to reuse the same provider operation; check the provider before starting another event after an uncertain result. Non-time edits preserve exact event instants. Ambiguous local time edits need an explicit offset in the provider editor. Switching All day keeps the dates; an all-day end is exclusive. Switching back without changing the all-day range restores the previous times; otherwise timed defaults are 09:00/10:00.</p>
         <div class="row">
           <button type="submit" class="primary" id="calendar-save">Add event</button>
           <button type="button" class="ghost" id="calendar-delete" hidden>Delete</button>
@@ -404,7 +406,7 @@
             <button type="button" class="ghost" id="brain-refresh">Refresh</button>
             <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
           </div>
-          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay.</p>
+          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay, including saved edits made during analysis. A conflicting learned-profile change requires another refresh.</p>
         </section>
         <div id="brain-sections"></div>
         <p class="hint" id="brain-compose-pointer">Compose defaults live in <button type="button" class="inline-link" id="brain-open-compose-settings">Settings → Compose</button>.</p>
@@ -422,7 +424,7 @@
         </form>
         <label for="brain-fix-note">Fix note <span class="optional">(optional)</span></label>
         <input id="brain-fix-note" type="text" autocomplete="off" />
-        <p class="hint">Fix rewrites a learned row. Forget removes it. A missing AI key points to Morrow Mail → AI Setup. Rebuild uses a connected mailbox and never sample mail.</p>
+        <p class="hint">Fix rewrites the selected learned row, including a voice quote. If that row changes while Fix is running, reload and choose it again. Forget removes it. A missing AI key points to Morrow Mail → AI Setup. Rebuild uses a connected mailbox and never sample mail.</p>
       </section>
       <section id="brain-categories" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-categories" hidden>
         <h3 id="brain-categories-title">Categories</h3>
@@ -554,6 +556,7 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
+        <p class="hint" id="cli-page-recovery">Compose attachment preparation, inert Undo recovery and Calendar retry identities are desktop operations; bot capabilities and permissions are unchanged. Calendar reauthorization uses the existing provider grant, separately from Google mail. These fixes do not expose calendar writes through the Node bot client.</p>
         <p class="hint" id="cli-performance">For a POSIX development checkout, <code>MORROW_PERF=1 npm start</code> opts into bounded local performance summaries in Debug log every 30 seconds. The flag does not send telemetry or grant access to accounts. Restart without it to disable tracing. The offline benchmark is <code>node --expose-gc scripts/benchmark-mail-responsiveness.js</code>; it always creates synthetic temporary mail data, and does not measure native Mac rendering or a real Keychain.</p>
         <p class="hint" id="cli-body-updates">The phase-two offline benchmark is <code>node scripts/benchmark-mail-phase-two.js</code>. It measures synthetic list query counts, body-notification size and unopened-body retention. The cached-body refresh is an internal desktop operation; bot capabilities and permissions are unchanged.</p>
         <p class="hint" id="cli-ai-connection">AI authentication and AI data permission are configured in desktop Settings → AI or Morrow Mail → AI Setup. Existing connections require disclosure and affirmative approval before AI transfers. Background AI needs a separate opt-in. Cancel / revoke blocks pending and future AI transfers. ChatGPT sign-in, callback paste-back and credentials are not exposed through the CLI or bot bridge. The existing API key/custom endpoint choice remains available. ChatGPT adds no general-purpose model proxy. Ordinary bot mail operations do not grant AI permission.</p>
@@ -587,7 +590,7 @@
         <details class="cli-guide" id="cli-send-safety">
           <summary>Sending, revocation and retries</summary>
           <p>Send permission allows mail without waiting for you to press Send. Morrow rechecks the grant, expiry, installation, enabled flag, mailbox/send scopes and connected account after From resolution, before claiming the request, and again after mailbox/credential waits immediately before mail-provider submission.</p>
-          <p>Revoking or disabling access stops a pending send before that boundary. Once mail-provider submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
+          <p>Revoking or disabling access stops a pending send before that boundary. Disable and Revoke remain actionable during connection checks; access changes keep user order and show acknowledged state. Once mail-provider submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
           <p><code>mail.send</code> requires a UUID in <code>--request-id</code>. Retry the same ID and content; the client never retries automatically. <code>SEND_OUTCOME_UNKNOWN</code> means do not send the same message under a new ID. For partial delivery, review rejected recipients separately; do not resend the original list.</p>
         </details>
         <details class="cli-guide" id="cli-json-examples">
@@ -869,6 +872,7 @@
           </button>
           <ul id="compose-attachments" class="compose-attachments" hidden></ul>
           <p id="compose-attach-error" class="error" role="status" hidden></p>
+          <p class="hint">Wait for Preparing attachment to finish before Save, preview, Send or Schedule. Closing Compose abandons unfinished file preparation. Undo saves an inert recovery draft before reopening; if the window fails, resume from local Drafts. Recovered recipients and signatures stay exactly as queued.</p>
         </div>
         <details id="compose-schedule-tools"><summary>Send later</summary>
           <label for="schedule-preset">When</label>
@@ -1072,9 +1076,9 @@
             <div class="checks">
               <h4>Agent</h4>
               <label class="check" for="pref-agent-read-done"><input id="pref-agent-read-done" type="checkbox" aria-describedby="pref-agent-read-done-help" /> Mark as read also completes Agent todos</label>
-              <p class="hint" id="pref-agent-read-done-help">Off by default. Opening a message, and Mark category as read on FYI or Other, stay mark-read only.</p>
+              <p class="hint" id="pref-agent-read-done-help">Off by default. Explicit read actions wait for mailbox confirmation before completing a todo. Opening a message, and Mark category as read on FYI or Other, stay mark-read only.</p>
               <h4>Learned</h4>
-              <p class="hint" id="agent-learned-help">Category moves among Needs You, FYI, and Other, repeated Mark as read or a successful reply for one sender or thread, and opened or dismissed suggestion labels. The same pattern is Learned after 3 times. Delete removes that pattern and its count. This stays on this computer. It does not rewrite Brain categories, triage prompts, or mailbox rules, and it does not send mail.</p>
+              <p class="hint" id="agent-learned-help">Category moves among Needs You, FYI, and Other, repeated Mark as read or a successful reply for one sender or thread, and opened or dismissed suggestion labels. Reads count only after mailbox confirmation. Replies in any category count only after non-partial delivery, even without an open todo; queued, canceled, and failed sends do not count. The same pattern is Learned after 3 times. Delete removes that pattern and its count and immediately refreshes open suggestion views. This stays on this computer. It does not rewrite Brain categories, triage prompts, or mailbox rules, and it does not send or move mail.</p>
               <ul id="agent-learned-list" class="settings-accounts" aria-label="Learned Agent patterns"></ul>
             </div>
           </div>
@@ -1105,7 +1109,7 @@
               <div class="field settings-short-field">
                 <label for="pref-undo">Undo send (seconds)</label>
                 <input id="pref-undo" type="number" min="0" max="30" step="1" value="30" aria-describedby="pref-undo-help" />
-                <p class="hint" id="pref-undo-help">0 sends immediately. Any other value closes compose and keeps the message in Outbox, beside Inbox under All Account Mail, until that delay ends. Undo there cancels the send.</p>
+                <p class="hint" id="pref-undo-help">0 sends immediately. Any other value closes compose and keeps the message in Outbox, beside Inbox under All Account Mail, until that delay ends. Undo there cancels the send and saves a recovery copy in local Drafts before reopening Compose. Once delivery starts, Undo cannot cancel it.</p>
               </div>
               <div class="schedule-delay-field" id="pref-schedule-delay">
                 <span id="pref-schedule-delay-label">Default schedule delay</span>
@@ -1126,7 +1130,7 @@
                 <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
                 <p id="conversation-copy-help" class="hint">Gmail label copies appear once per conversation within the same account. The selected folder copy stays selected; folder records remain stored. Different provider messages and messages without a reliable provider ID stay separate. A single message has no Earlier section.</p>
                 <label class="check" for="pref-images"><input id="pref-images" type="checkbox" checked aria-describedby="pref-images-help" /> Load remote images</label>
-                <p class="hint check-hint" id="pref-images-help">Remote images can include tracking pixels that report when and where you opened a message and may identify your device to the sender. Morrow keeps them blocked until you turn this on.</p>
+                <p class="hint check-hint" id="pref-images-help">Remote images can include tracking pixels that report when and where you opened a message and may identify your device to the sender. This is on for new profiles. Turn it off to block remote images, including CSS and table backgrounds; Load remote content allows them for one message.</p>
                 <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
               </div>
             </div>
@@ -1258,6 +1262,8 @@
             <h3 id="settings-compose-title">How you look when sending</h3>
             <p class="hint" id="brain-compose-basic">Most people only need a display name.</p>
             <form id="brain-compose-form">
+              <label for="brain-compose-account">Compose mailbox</label>
+              <select id="brain-compose-account" disabled></select>
               <h4>Sender identities</h4>
               <p id="brain-compose-identities" class="hint"></p>
               <div id="brain-compose-senders" aria-label="Sender identities"></div>
@@ -1273,8 +1279,6 @@
                 <textarea id="brain-compose-domains" rows="4" placeholder="@example.com = colleague@example.com, team@example.org" spellcheck="false" disabled></textarea>
                 <label for="brain-compose-bcc">Default BCC by domain — one domain per line</label>
                 <textarea id="brain-compose-bcc" rows="4" placeholder="@example.org = records@example.org, audit@example.com" spellcheck="false" disabled></textarea>
-                <label for="brain-compose-account">Mailbox for alias settings</label>
-                <select id="brain-compose-account" disabled></select>
                 <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
                 <textarea id="brain-compose-aliases" rows="3" placeholder="ada@example.com&#10;ada@example.org = example.com" spellcheck="false" disabled></textarea>
                 <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
@@ -1445,7 +1449,7 @@
           </div>
           <div id="bot-panel-grants" role="tabpanel" aria-labelledby="bot-tab-grants" hidden>
           <h4>Your bots</h4>
-          <p class="hint">Each bot has its own secret and access. Revoke stops its access and keeps the row. Delete removes the row after you confirm. Turning access off on this computer stops every bot without revoking it.</p>
+          <p class="hint">Each bot has its own secret and access. Revoke stops its access and keeps the row. Delete removes the row after you confirm. Turning access off on this computer stops new calls from every bot without revoking it. Disable and Revoke still work during a connection check; an already-submitted send cannot be recalled.</p>
           <ul id="bot-grants" aria-label="Your bots"></ul>
           <details class="settings-disclosure" id="bot-add-client" open>
           <summary>Add a bot</summary>

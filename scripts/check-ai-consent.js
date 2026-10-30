@@ -203,7 +203,14 @@ test("actual Brain, Agent, custom/catalog skill, draft, suggestion and translati
   const draft = loadSynthetic("draft-write", replacements);
   const translate = loadSynthetic("translate", { ...replacements, "./translate-window": { note() {} } });
   const messages = [];
-  for (const channel of ["emailBrain:addCategoryViaPrompt", "emailBrain:fixCategory", "emailBrain:fixItem"]) messages.push((await brain.answer(channel, [{ prompt: "Synthetic", itemId: "row" }])).error.message);
+  for (const channel of ["emailBrain:addCategoryViaPrompt", "emailBrain:fixCategory"]) messages.push((await brain.answer(channel, [{ prompt: "Synthetic", itemId: "row" }])).error.message);
+  const seeded = brain.answer("emailBrain:addWritingRule", [{ text: "Synthetic writing rule." }]);
+  assert.ok(seeded.success, JSON.stringify(seeded));
+  const persona = seeded.data.persona || seeded.data;
+  const writing = (persona.profile && persona.profile.sections || []).find(section => section.id === "how-you-write");
+  const ruleId = (writing && writing.rows || []).find(row => row.value === "Synthetic writing rule.")?.id;
+  assert.ok(ruleId, "seeded writing rule id");
+  messages.push((await brain.answer("emailBrain:fixItem", [{ prompt: "Synthetic", itemId: ruleId }])).error.message);
   for (const run of [() => agent.runSkill({ skillId: "morning-brief" }), () => agent.runSkill({ skillId: "morning-brief", source: "schedule" }), () => agent.answer("nativeAgent:triage", [{}]), () => agent.answer("nativeAgent:triage", [{ source: "open" }])]) messages.push((await run()).data.error);
   const custom = brain.answer("emailBrain:saveCustomSkill", [{ name: "Fixture skill", instruction: "Summarize synthetic context" }]);
   assert.ok(custom.success, JSON.stringify(custom));
