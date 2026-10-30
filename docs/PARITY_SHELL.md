@@ -1,5 +1,15 @@
 # Shell parity
 
+Wave1 review follow-up: the Compose mailbox selector is in Basic, while alias and
+domain rules remain in Advanced. Notes, schedule editors, Out of Office replies
+and default schedule-delay fields retain edits made during asynchronous reads or
+writes. Agent Run buttons preserve the selected skill ID rather than routing its
+name as chat. Filing stays pending until its matching journal completion, and
+uncertain filing offers Mail review without automatic retry. Bot Disable/Revoke
+run independently of probes and access mutations preserve their order. The
+Features catalog and CLI help describe these boundaries. Validation is synthetic;
+native focus, provider delivery and browser tracking-request checks remain pending.
+
 Draft hydration and scheduled recovery preserve a separate bare sender address, including display names with angle brackets or Unicode/quotes. Unchanged legacy source drafts still clean up after queued delivery when a provider refresh only enriches equivalent name metadata; genuine edits retain their protection.
 
 Sender identities are edited in Settings → Compose. Gmail's discovered Send mail as names are defaults; exact per-account/address Morrow overrides survive refresh and do not update Gmail. Primary, verified send-as, Gmail default and selected new-mail From are distinct states; manually configured aliases are not presented as verified. Clear a name for address-only sending or reset it to inherit the default. Recipient-visible previews and structured MIME use the selected name/address. Draft and scheduled snapshots preserve names across Settings changes and recovery; explicitly changing From adopts that identity's current name. Bot `mail.send` resolves these local defaults without a new parameter or permission. No OAuth scope change or Gmail-wide name write is involved. Native/live delivery validation remains pending.

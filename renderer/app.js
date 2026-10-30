@@ -7,6 +7,7 @@ const state = {
   allInboxUnreadOnly: false,
   outbox: false,
   outboxRows: [],
+  outboxError: "",
   settingsAccountId: null,
   reconnectAccountId: null,
   folderId: null,
@@ -118,6 +119,8 @@ let undoItems = null;
 let undoBusy = false;
 let undoEpoch = 0;
 const undoEpochByOp = new Map();
+const removalEpochByAction = new Map();
+const removalEpochByMessage = new Map();
 const undoPending = new Set();
 let undoInflight = null;
 let undoFlightSerial = 0;
@@ -157,6 +160,9 @@ let brainEditId = "";
 let brainCategories = [];
 let updateCategoriesBaseline = "[]";
 let updateMemoryBaseline = "";
+let agentMemoryVersion = 0;
+let agentMemorySaveQueue = Promise.resolve();
+let agentMemoryPending = 0;
 let updateAiBaseline = null;
 let updateFreezeNonce = null;
 let updateWasInert = false;
@@ -1925,9 +1931,10 @@ function vacationConfirm(kind, owner, options) {
   const closed = "Your mail server will send these automatic replies to the audience below, including while Morrow is closed.";
   if (kind === "grant") {
     const scope = options && options.scope ? options.scope : "the provider settings permission";
+    const bundle = provider === "google" ? "the Gmail mail, organize, Out of Office, and inbox rules grant. Calendar permission is separate" : "the Microsoft Graph calendar, organize, Out of Office, and inbox rules bundle";
     return {
       title: "Allow Out of Office settings",
-      body: "Allow Out of Office settings access for " + who + "?\n\nThe browser will request " + scope + " as part of the calendar, organize, Out of Office, and inbox rules bundle" + (provider === "google" ? ", together with mail access" : "") + ". Enabling replies still needs a separate Save confirmation. The existing mailbox connection stays if consent is incomplete.",
+      body: "Allow Out of Office settings access for " + who + "?\n\nThe browser will request " + scope + " as part of " + bundle + ". Enabling replies still needs a separate Save confirmation. The existing mailbox connection stays if consent is incomplete.",
       confirm: "Continue",
       cancel: "Cancel",
       needsName: false,
@@ -3218,10 +3225,15 @@ function mailSplitDecls(css) {
   return out;
 }
 
+const MAIL_CSS_FUNCTIONS = new Set(["url", "rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch", "oklab", "oklch", "color", "color-mix", "calc", "min", "max", "clamp", "linear-gradient", "radial-gradient", "conic-gradient", "repeating-linear-gradient", "repeating-radial-gradient", "repeating-conic-gradient"]);
 function mailCssValue(prop, raw, imagesOn) {
   let value = String(raw || "").trim();
   if (!value || value.length > 100000) return "";
+  if (/\/\*|[\u0000-\u001f\u007f]/.test(value)) return "";
   if (/[{}<>]|expression\s*\(|javascript\s*:|@import|-moz-binding|behavior\s*:|\\/i.test(value)) return "";
+  for (const match of value.matchAll(/([a-z][a-z0-9-]*)\s*\(/gi)) {
+    if (!MAIL_CSS_FUNCTIONS.has(match[1].toLowerCase())) return "";
+  }
   const urls = [];
   const urlRe = /url\(\s*(?:(['"])([\s\S]*?)\1|([^)'"\s]+))\s*\)/gi;
   value.replace(urlRe, (_all, _q, quoted, bare) => { urls.push(String(quoted || bare || "").trim()); return ""; });
@@ -6400,6 +6412,20 @@ function renderList() {
     if (!keys.has(key)) { cached.row.remove(); messageRows.delete(key); }
   }
   list.querySelector(":scope > .empty")?.remove();
+  list.querySelector(":scope > .outbox-load-error")?.remove();
+  if (state.outbox && state.outboxError) {
+    const error = document.createElement("p");
+    error.className = "outbox-load-error hint";
+    error.setAttribute("role", "status");
+    error.textContent = "Unknown — Outbox could not be refreshed. Saved rows may be out of date. ";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "ghost";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => loadScheduled());
+    error.appendChild(retry);
+    list.appendChild(error);
+  }
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -6409,7 +6435,7 @@ function renderList() {
     } else if (state.query && !state.emails.length) {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
     } else if (state.outbox && !listQuery && !state.emails.length) {
-      empty.textContent = outboxEmptyCopy();
+      empty.textContent = state.outboxError ? "Waiting sends are unknown. Retry to load Outbox." : outboxEmptyCopy();
     } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || !state.emails.length)) {
       empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly);
     } else if (!listQuery && folder && folder.emptyCopy) {
@@ -7011,7 +7037,7 @@ function appendMessageBody(parent, email, imagesOn) {
   return wrap;
 }
 
-function bodyRetryButton(email) {
+function bodyRetryButton(email, refresh) {
   const retry = document.createElement("button");
   retry.type = "button";
   retry.className = "ghost";
@@ -7019,18 +7045,21 @@ function bodyRetryButton(email) {
   retry.textContent = "Retry download";
   retry.addEventListener("click", () => guard(async () => {
     retry.disabled = true;
-    try { await openMessage(email.id, false, true); }
+    try {
+      if (typeof refresh === "function") await refresh();
+      else await openMessage(email.id, false, true);
+    }
     finally { retry.disabled = false; }
   }));
   return retry;
 }
 
-function renderBody(pane, email) {
+function renderBody(pane, email, refresh) {
   if (email?.bodyWarning) {
     const warning = document.createElement("p");
     warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = email.bodyWarning;
     pane.appendChild(warning);
-    pane.appendChild(bodyRetryButton(email));
+    pane.appendChild(bodyRetryButton(email, refresh));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
   appendMessageBody(pane, email, remoteVisible(state.prefs.images, allowed));
@@ -8102,6 +8131,33 @@ function startRemovalSession(text, opIds, isError, items) {
   showUndo(text, opIds, isError, items);
 }
 
+function beginRemovalRequest(messages, action, destinationLabel) {
+  rememberUndoSnapshots(messages, action, destinationLabel);
+  startRemovalSession("Applying mailbox changes…", [], false, []);
+  for (const message of messages || []) {
+    if (message?.id) removalEpochByMessage.set(String(message.id), { epoch: undoEpoch, generation: (actionGeneration.get(message.id) || 0) + 1 });
+  }
+  return undoEpoch;
+}
+
+function rememberRemovalReceipt(data, epoch) {
+  if (epoch == null) return;
+  for (const row of [...(data?.pending || []), ...(data?.outcomes || [])]) {
+    if (row.actionId) removalEpochByAction.set(row.actionId, epoch);
+    if (row.opId) undoEpochByOp.set(row.opId, epoch);
+  }
+}
+
+function removalSettlementEpoch(row) {
+  if (row.actionId && removalEpochByAction.has(row.actionId)) return removalEpochByAction.get(row.actionId);
+  if (row.opId && undoEpochByOp.has(row.opId)) return undoEpochByOp.get(row.opId);
+  if (row.kind !== "remove") return undefined;
+  const request = removalEpochByMessage.get(String(row.id));
+  if (request && (typeof row.generation !== "number" || row.generation >= request.generation)) return request.epoch;
+  if (request) return -1;
+  return undefined;
+}
+
 function showRemovalUndo(text, opIds, isError, items) {
   const ids = opIds || [];
   const sameEpoch = ids.length > 0 && ids.every((id) => undoEpochByOp.get(id) === undoEpoch);
@@ -8150,6 +8206,15 @@ function settleUndoInflight(batch) {
 }
 
 function applyRemovalSettlement(batch, receipt, bad) {
+  if (batch?.outcomes) {
+    const outcomes = batch.outcomes.filter((row) => {
+      const epoch = removalSettlementEpoch(row);
+      return epoch == null || epoch === undoEpoch;
+    });
+    if (!outcomes.length && batch.outcomes.length) return;
+    if (outcomes.length !== batch.outcomes.length) batch = { ...batch, outcomes,
+      opIds: outcomes.flatMap((row) => row.retryOpId ? [row.retryOpId] : row.status === "completed" && row.opId ? [row.opId] : []) };
+  }
   if (!batch || !Array.isArray(batch.opIds) || !batch.opIds.length) {
     if (bad) showStatus(receipt, true);
     return;
@@ -8166,7 +8231,12 @@ function applyRemovalSettlement(batch, receipt, bad) {
     showUndo(text, live.map((item) => item.opId), true, live);
   } else {
     const built = undoItemsForOutcomes(batch);
-    showRemovalUndo(text, batch.opIds, bad, built.length ? built : undefined);
+    if (batch.outcomes?.some((row) => removalSettlementEpoch(row) === undoEpoch)) {
+      const merged = new Map((undoItems || []).map((item) => [item.opId, item]));
+      for (const item of built) merged.set(item.opId, item);
+      for (const id of batch.opIds) if (!merged.has(id)) merged.set(id, normalizeUndoItem({ opId: id }));
+      showUndo(text, [...merged.keys()], bad, [...merged.values()]);
+    } else showRemovalUndo(text, batch.opIds, bad, built.length ? built : undefined);
   }
 }
 
@@ -8516,12 +8586,12 @@ function applyActionSettlement(batch) {
     const projection = outcome.projection;
     if (projection && typeof paintAgentReadProjection === "function") paintAgentReadProjection(outcome.id, !!projection.unread);
     if ((outcome.status === "failed" || outcome.status === "not_attempted") && projection) {
-      paintStars([{ id: outcome.id }], !!projection.isStarred);
       eachStarRow({ id: outcome.id }, (row) => {
         row.unread = !!projection.unread;
         row.isRead = !projection.unread;
         if (projection.folderId) row.folderId = projection.folderId;
       });
+      paintStars([{ id: outcome.id }], !!projection.isStarred);
     }
     if (outcome.kind === "remove" || outcome.kind === "undo") moved = true;
   }
@@ -8552,14 +8622,18 @@ async function toggleStar(email) {
   const next = !email.isStarred;
   const previous = !!email.isStarred;
   paintStars([email], next, true);
+  let data;
   try {
-    const data = await call("mail:toggleStar", { emailId: email.id, accountId: email.accountId, isStarred: next });
+    data = await call("mail:toggleStar", { emailId: email.id, accountId: email.accountId, isStarred: next });
     rememberActionGeneration(data && data.pending);
     rememberActionGeneration(data && data.outcomes);
   } catch (error) {
     paintStars([email], previous, true);
     throw error;
   }
+  const rejected = data?.outcomes?.find((row) => row.status !== "completed");
+  if (rejected) applyActionSettlement(data);
+  if (rejected) throw new Error(rejected.error || "The mailbox did not confirm the star change. Refresh before retrying.");
   showStatus(next ? "Starred." : "Removed the star.");
   await settleOpenView();
 }
@@ -8583,6 +8657,7 @@ async function setRead(email, isRead) {
       mailList: state.view === "mail",
     });
   }
+  const appliedHold = state.unreadHold;
   const paint = (unread) => {
     eachStarRow(email, (row) => { row.unread = unread; row.isRead = !unread; });
     renderList();
@@ -8597,14 +8672,23 @@ async function setRead(email, isRead) {
       rememberActionGeneration(data && data.pending);
       rememberActionGeneration(data && data.outcomes);
     }
-    paint(!isRead);
   }
   catch (error) {
-    if (typeof applyUnreadHold === "function") state.unreadHold = priorHold;
+    if (typeof applyUnreadHold === "function" && state.unreadHold === appliedHold) state.unreadHold = priorHold;
     paint(previous);
     throw error;
   }
   finally { if (readWrites.get(email.id) === write) readWrites.delete(email.id); }
+  const rejected = data?.outcomes?.find((row) => row.status !== "completed");
+  if (rejected) {
+    if (typeof applyActionSettlement === "function") applyActionSettlement(data);
+    else if (rejected.projection) paint(!!rejected.projection.unread);
+    if (typeof applyUnreadHold === "function" && state.unreadHold === appliedHold) state.unreadHold = priorHold;
+    renderList();
+    throw new Error(rejected.error || "The mailbox did not confirm the read change. Refresh before retrying.");
+  }
+  // Re-paint after success so a list reload during the network wait still gets the confirmed unread flag.
+  paint(!isRead);
   await settleOpenView();
   return data;
 }
@@ -8612,7 +8696,8 @@ async function setRead(email, isRead) {
 async function deleteFromList(email) {
   const answer = await askConfirm(bulkConfirmCopy("trash", 1, { scope: selectionScopeCopy([email], [email]) }));
   if (!answer || !answer.ok) return;
-  await finishRemoval(email, "Move to Trash", await call("mail:delete", removalPayload(email, false)));
+  const epoch = beginRemovalRequest([email], "trash");
+  await finishRemoval(email, "Move to Trash", await call("mail:delete", removalPayload(email, false)), undefined, epoch);
 }
 
 async function replyFromList(email, kind) {
@@ -8627,12 +8712,14 @@ async function replyFromList(email, kind) {
   await presentCompose(composeSeed(opened, kind, self));
 }
 
-async function finishRemoval(email, label, data, destinationLabel) {
+async function finishRemoval(email, label, data, destinationLabel, epoch) {
+  rememberRemovalReceipt(data, epoch);
   const outcomes = receiptRows(data, { params: { emailId: email.id } });
   return finishBulkRemoval(label, {
     outcomes,
     opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId),
     error: outcomes.some((row) => row.status !== "completed") ? "Some changes could not be verified." : "",
+    removalEpoch: epoch,
   }, [email.id], {
     messages: [email],
     action: removalAction(label),
@@ -8646,7 +8733,8 @@ async function removeOpen(email, channel, label) {
   const review = await reviewedRemoval([withSelectionMembers(email)], kind);
   const answer = await askConfirm(bulkConfirmCopy(kind, review.rows.length, review.detail));
   if (!answer || !answer.ok) return;
-  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls), review.rows.map((row) => row.id), {
+  const epoch = beginRemovalRequest(review.rows, kind);
+  await finishBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", await runBulk(review.calls, epoch), review.rows.map((row) => row.id), {
     messages: review.rows,
     action: kind === "trash" ? "trash" : "archive",
   });
@@ -8685,12 +8773,13 @@ async function moveOpen(email, targetFolderId) {
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
   const target = folderTitle(foldersOf(account), targetFolderId);
   if (!(await confirmRelocation("mail:moveToFolder", email, target))) return;
+  const epoch = beginRemovalRequest([email], "move", target);
   await finishRemoval(email, "Moved.", await call("mail:moveToFolder", {
     emailId: email.id,
     accountId: email.accountId,
     targetFolderId,
     folderId: email.folderId,
-  }), target);
+  }), target, epoch);
 }
 
 async function undoReadBatch() {
@@ -10021,7 +10110,7 @@ function operationIds(spec) {
 
 function receiptRows(data, spec) {
   const pending = data && Array.isArray(data.pending)
-    ? data.pending.map((row) => ({ id: row.id, status: "completed", phase: "accepted" }))
+    ? data.pending.map((row) => ({ ...row, status: "completed", phase: "accepted" }))
     : [];
   if (data && Array.isArray(data.outcomes)) return [...pending, ...data.outcomes];
   const ids = operationIds(spec);
@@ -10040,8 +10129,9 @@ function receiptText(label, outcome) {
     + (count("unknown") ? " Refresh before retrying unknown changes." : "");
 }
 
-async function runBulk(calls) {
+async function runBulk(calls, removalEpoch) {
   const outcome = { opIds: [], outcomes: [], done: 0, paused: false, error: "" };
+  if (removalEpoch != null) outcome.removalEpoch = removalEpoch;
   let stopped = false;
   for (const spec of calls) {
     if (stopped) {
@@ -10051,6 +10141,7 @@ async function runBulk(calls) {
     let rows;
     try {
       const data = await call(spec.channel, spec.params);
+      rememberRemovalReceipt(data, removalEpoch);
       rows = receiptRows(data, spec);
     } catch (error) {
       const message = error.message || String(error);
@@ -10083,9 +10174,14 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
   const text = receiptText(label, outcome);
   const waiting = (outcome.outcomes || []).some((row) => row.phase === "accepted");
-  if (outcome.opIds.length) showRemovalUndo(text, outcome.opIds, !!outcome.error, undoItemsForOutcomes(outcome));
-  else if (waiting) showStatus(text, !!outcome.error);
-  else { clearUndo(); showStatus(text, !!outcome.error); }
+  if (outcome.removalEpoch == null) startRemovalSession(text, [], !!outcome.error, []);
+  const epoch = outcome.removalEpoch ?? undoEpoch;
+  rememberRemovalReceipt(outcome, epoch);
+  if (epoch === undoEpoch) {
+    if (outcome.opIds.length) applyRemovalSettlement(outcome, text, !!outcome.error);
+    else if (waiting || undoOpIds?.length) showStatus(text, !!outcome.error);
+    else { clearUndo(); showStatus(text, !!outcome.error); }
+  }
   if (completed.size) await loadList();
   else renderList();
 }
@@ -10097,7 +10193,7 @@ async function bulkArchive() {
   const answer = await askConfirm(bulkConfirmCopy("archive", review.rows.length, review.detail));
   const gated = confirmedCalls("archive", answer, review.calls, review.detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated);
+  const outcome = await runBulk(gated, beginRemovalRequest(review.rows, "archive"));
   await finishBulkRemoval("Archive", outcome, review.rows.map((item) => item.id), {
     messages: review.rows,
     action: "archive",
@@ -10111,7 +10207,7 @@ async function bulkTrash() {
   const answer = await askConfirm(bulkConfirmCopy("trash", review.rows.length, review.detail));
   const gated = confirmedCalls("trash", answer, review.calls, review.detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated);
+  const outcome = await runBulk(gated, beginRemovalRequest(review.rows, "trash"));
   await finishBulkRemoval("Move to Trash", outcome, review.rows.map((item) => item.id), {
     messages: review.rows,
     action: "trash",
@@ -10201,7 +10297,7 @@ async function applyBulkMove(messages, target, targetName) {
   }
   const gated = confirmedCalls(action, answer, planned, detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated);
+  const outcome = await runBulk(gated, action === "add-label" ? undefined : beginRemovalRequest(rows, "move", name));
   const acted = [];
   for (const spec of gated) {
     if (spec.params && Array.isArray(spec.params.items)) {
@@ -10725,6 +10821,8 @@ function wireOrganize() {
 
 async function selectOutbox() {
   if (!state.accounts.length) return;
+  ++listGen;
+  state.listLoading = false;
   invalidateReaderOpen();
   state.outbox = true;
   state.allInbox = false;
@@ -11187,7 +11285,8 @@ function onAccountsUpdated(payload) {
   }
   if (payload && payload.outboxReceipt) {
     const notice = payload.outboxReceipt;
-    separatePartialReceipt(notice.seed || {}, notice.message || "").catch(() => {});
+    if (notice.uncertain) showStatus(notice.message || "Delivery is uncertain. Check Sent and Scheduled delivery review.", true);
+    else separatePartialReceipt(notice.seed || {}, notice.message || "").catch(() => {});
   }
   if (payload && payload.outboxRestore) {
     const notice = payload.outboxRestore;
@@ -13452,6 +13551,7 @@ async function bootReaderWindow() {
   wire();
   if (typeof api.on === "function") api.on("mail:translate:event", onTranslateEvent);
   if (typeof api.on === "function") api.on("mail:bodyUpdated", applyBodyUpdate);
+  if (typeof api.on === "function") api.on("mail:actionsSettled", applyActionSettlement);
   if (typeof api.on === "function") api.on("mail:accountsUpdated", payload => {
     if (Array.isArray(payload?.accounts)) acceptBodyAccounts(payload.accounts);
   });
@@ -13512,7 +13612,7 @@ async function bootReaderWindow() {
   }).catch(() => {});
   if (!email.unread) return;
   try {
-    await call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead: true });
+    await setRead(email, true);
   } catch (error) {
     showStatus("Message opened, but marking it read was not confirmed. Other clients may still show it unread. " + (error.message || String(error)), true);
   }
@@ -13714,6 +13814,7 @@ async function loadScheduled() {
   try {
     const data = await call("mail:listScheduled", {});
     if (gen !== scheduledGen) return;
+    state.outboxError = "";
     state.outboxRows = outboxRowsFrom(data);
     renderScheduled(scheduledRows(data));
     const nav = $("folders");
@@ -13732,6 +13833,8 @@ async function loadScheduled() {
     }
   } catch (error) {
     if (gen !== scheduledGen) return;
+    state.outboxError = error instanceof Error ? error.message : String(error);
+    if (state.outbox) renderList();
     $("scheduled").replaceChildren();
     const item = document.createElement("li");
     item.textContent = "Unknown — Scheduled mail could not be loaded. ";
@@ -15267,6 +15370,15 @@ function remoteImageSrcs(html) {
     const alt = altMatch ? (altMatch[1] || altMatch[2] || altMatch[3] || "").trim() : "";
     srcs.push({ src, alt });
   }
+  const seen = new Set(srcs.map((image) => image.src));
+  const references = /url\(\s*(?:"([^"<>]*)"|'([^'<>]*)'|([^\s)'"<>]+))\s*\)|\bbackground\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)'|([^\s"'=<>`]+))/gi;
+  for (const reference of String(html || "").matchAll(references)) {
+    const src = reference.slice(1).find((value) => value != null)?.trim() || "";
+    if (/^https?:\/\/\S+$/i.test(src) && !seen.has(src)) {
+      srcs.push({ src, alt: "" });
+      seen.add(src);
+    }
+  }
   return srcs;
 }
 
@@ -15615,7 +15727,14 @@ function setScheduleStatus(text, isError) {
   }
 }
 
+let scheduleDelaySaveSerial = 0;
+let scheduleDelaySaveQueue = Promise.resolve();
+function scheduleDelaySnapshot() {
+  return JSON.stringify([$("pref-schedule-hours")?.value, $("pref-schedule-minutes")?.value]);
+}
 async function saveScheduleDelay() {
+  const serial = ++scheduleDelaySaveSerial;
+  const snapshot = scheduleDelaySnapshot();
   const hours = readWhole($("pref-schedule-hours") && $("pref-schedule-hours").value);
   const minutes = readWhole($("pref-schedule-minutes") && $("pref-schedule-minutes").value);
   const total = joinScheduleDelay(hours, minutes);
@@ -15624,19 +15743,26 @@ async function saveScheduleDelay() {
     paintScheduleDelay(state.prefs.scheduleDelay);
     return;
   }
-  try {
-    await api.invoke("morrow:configSetDefaultScheduleDelayMinutes", total);
-    const saved = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
-    state.prefs.scheduleDelay = saved;
-    paintScheduleDelay(saved);
-    setScheduleStatus(saved
-      ? "Saved. Send schedules " + formatScheduleDelay(saved) + " ahead."
-      : "Saved. Send delivers immediately.", false);
-    if ($("compose") && $("compose").open) syncCompose();
-  } catch (error) {
-    setScheduleStatus(error instanceof Error ? error.message : String(error), true);
-    paintScheduleDelay(state.prefs.scheduleDelay);
-  }
+  const pending = scheduleDelaySaveQueue.then(async () => {
+    try {
+      await api.invoke("morrow:configSetDefaultScheduleDelayMinutes", total);
+      const saved = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
+      state.prefs.scheduleDelay = saved;
+      if (serial !== scheduleDelaySaveSerial) return;
+      const edited = scheduleDelaySnapshot() !== snapshot;
+      if (!edited) paintScheduleDelay(saved);
+      setScheduleStatus((saved
+        ? "Saved. Send schedules " + formatScheduleDelay(saved) + " ahead."
+        : "Saved. Send delivers immediately.") + (edited ? " Newer edits are not saved yet." : ""), false);
+      if ($("compose") && $("compose").open) syncCompose();
+    } catch (error) {
+      if (serial !== scheduleDelaySaveSerial) return;
+      setScheduleStatus(error instanceof Error ? error.message : String(error), true);
+      if (scheduleDelaySnapshot() === snapshot) paintScheduleDelay(state.prefs.scheduleDelay);
+    }
+  });
+  scheduleDelaySaveQueue = pending;
+  return pending;
 }
 
 const settingsFoldPending = new Map();
@@ -15708,7 +15834,9 @@ function loadSettingsFold(name) {
     }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); await loadGoogleOauthClient(); }
     else if (name === "compose") await loadComposeSettings();
-    else if (name === "ooo" && !oooDirty()) await loadVacation();
+    else if (name === "ooo" && !oooDirty()) {
+      if (await loadVacation() !== true) return;
+    }
     else if (name === "bot") await loadBotAccess();
     if (settingsFoldPending.get(key) === pending) settingsFoldLoaded.add(key);
   }).catch(error => {
@@ -15863,14 +15991,33 @@ async function loadVacation() {
   }
   setOooStatus("Contacting the mail provider…", false);
   const gen = ++settingsVacationGen;
+  const snapshot = oooSnapshot();
   const data = await call("mail:vacationGet", { accountId: account.id });
   if (gen !== settingsVacationGen) return;
   if (!data || data.accountId !== account.id) throw new Error("Out of Office response did not match this mailbox.");
   if (!settingsAccount() || settingsAccount().id !== account.id) return;
+  const edited = applyVacationResponse(data, snapshot);
+  setOooStatus(edited ? "Provider settings loaded. Newer edits are not saved yet." : "", false);
+  return true;
+}
+
+function applyVacationResponse(data, snapshot) {
+  const current = oooSnapshot();
+  const edited = current !== snapshot;
   paintVacation(data);
   oooBaseline = oooSnapshot();
+  if (edited) {
+    const values = JSON.parse(current);
+    ["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience", "ooo-domain"].forEach((id, index) => {
+      const field = $(id);
+      if (!field) return;
+      if (field.type === "checkbox") field.checked = values[index];
+      else field.value = values[index];
+    });
+    syncVacationFields();
+  }
   paintOooDirty();
-  setOooStatus("", false);
+  return edited;
 }
 
 async function refreshVacation() {
@@ -15905,6 +16052,7 @@ async function saveVacation(kind) {
     throw new Error("Choose a connected mailbox.");
   }
   const body = vacationFormBody(kind);
+  const snapshot = oooSnapshot();
   if (kind !== "disable") {
     const draft = vacationDraft({ ...body, provider: vacationCache.provider });
     if (draft.error) throw new Error(draft.error);
@@ -15919,11 +16067,12 @@ async function saveVacation(kind) {
     throw new Error("Choose a connected mailbox.");
   }
   setOooStatus("Contacting the mail provider…", false);
+  const gen = ++settingsVacationGen;
   const saved = await call("mail:vacationPut", body);
-  paintVacation(saved);
-  oooBaseline = oooSnapshot();
-  paintOooDirty();
-  setOooStatus("Saved on the provider.", false);
+  if (gen !== settingsVacationGen || settingsAccount()?.id !== account.id) return;
+  if (!saved || saved.accountId !== account.id) throw new Error("Out of Office response did not match this mailbox.");
+  const edited = applyVacationResponse(saved, snapshot);
+  setOooStatus(edited ? "Reviewed reply saved on the provider. Newer edits are not saved yet." : "Saved on the provider.", false);
 }
 
 async function grantVacationAccess() {
@@ -16259,29 +16408,39 @@ function setPrefSaveStatus(id, text, isError) {
   }, 1800));
 }
 
+const prefWriteSerial = new Map();
 async function savePref(row) {
   const [id, getChannel, setChannel, kind] = row;
+  const control = $(id);
+  const submitted = readPref(kind, control);
+  const serial = (prefWriteSerial.get(id) || 0) + 1;
+  prefWriteSerial.set(id, serial);
   const status = $("settings-status");
   try {
-    await api.invoke(setChannel, readPref(kind, $(id)));
-    applyPref(kind, $(id), await api.invoke(getChannel));
+    await api.invoke(setChannel, submitted);
+    const saved = await api.invoke(getChannel);
+    if (serial !== prefWriteSerial.get(id)) return;
+    const edited = readPref(kind, control) !== submitted;
+    if (!edited) applyPref(kind, control, saved);
     status.textContent = "";
     status.classList.remove("error");
-    if (takePref(getChannel, kind, $(id))) paintPrefs();
+    if (takePref(getChannel, kind, { checked: saved === true, value: String(saved) })) paintPrefs();
     if (id === "pref-sync-horizon") {
       status.textContent = "Sync history saved. It takes effect on the next sync; downloaded mail stays.";
-      setPrefSaveStatus(id, "Saved. It takes effect on the next sync.", false);
+      setPrefSaveStatus(id, "Saved. It takes effect on the next sync." + (edited ? " Newer edits are not saved yet." : ""), false);
       await loadList();
     } else {
-      setPrefSaveStatus(id, "Saved.", false);
+      setPrefSaveStatus(id, edited ? "Saved. Newer edits are not saved yet." : "Saved.", false);
     }
   } catch (error) {
+    if (serial !== prefWriteSerial.get(id)) return;
     const message = error instanceof Error ? error.message : String(error);
     status.textContent = message;
     status.classList.add("error");
     setPrefSaveStatus(id, message, true);
     try {
-      applyPref(kind, $(id), await api.invoke(getChannel));
+      const saved = await api.invoke(getChannel);
+      if (serial === prefWriteSerial.get(id) && readPref(kind, control) === submitted) applyPref(kind, control, saved);
     } catch { /* status already shows the failure */ }
   }
   if (id === "pref-theme" || id === "pref-accent") {
@@ -16680,6 +16839,7 @@ async function changeSettingsMailbox(id) {
   paintOooDirty();
   paintSettingsMailbox();
   for (const key of settingsFoldLoaded) if (key.startsWith("mailbox:") || key.startsWith("ooo:")) settingsFoldLoaded.delete(key);
+  for (const key of settingsFoldPending.keys()) if (key.startsWith("mailbox:") || key.startsWith("ooo:")) settingsFoldPending.delete(key);
   const fold = document.querySelector("#settings .fold.is-open");
   if (fold) await loadSettingsFold(fold.dataset.fold);
   return true;
@@ -18655,7 +18815,15 @@ async function describeDraftSource(node, draft) {
 }
 async function refreshAiSetupState() {
   let configured = null;
-  try { const result = await api.invoke("host:aiGetConfig"); configured = (result?.data || result)?.hasKey === true; } catch { /* unknown stays actionable */ }
+  try {
+    const result = await api.invoke("host:aiGetConfig");
+    const config = result?.data || result;
+    if (config?.authMode === "chatgpt") {
+      const reply = await api.invoke("host:chatgptStatus");
+      const connection = reply?.data || reply;
+      configured = connection?.connected === true && connection?.planEnabled === true;
+    } else configured = config?.hasKey === true;
+  } catch { /* unknown stays actionable */ }
   for (const space of ["agent", "brain"]) {
     const box = $(space + "-setup");
     if (!box) continue;
@@ -18777,6 +18945,22 @@ function paintProposals(root, proposals, append) {
     confirm.type = "button";
     confirm.className = "primary";
     confirm.textContent = "Review filing…";
+    const waiting = proposal.filing?.status === "pending";
+    const uncertain = proposal.filing?.status === "unknown";
+    confirm.disabled = waiting || uncertain;
+    if (proposal.filing) {
+      const receipt = document.createElement("p");
+      receipt.className = "hint";
+      receipt.setAttribute("role", "status");
+      receipt.textContent = waiting ? "Waiting for mailbox confirmation. This proposal stays visible until completion." : uncertain ? "Filing is uncertain. Open the message in Mail and check its folder before any retry. Morrow will not retry automatically." : proposal.filing.error || "Filing was not completed. Review before retrying.";
+      wrap.appendChild(receipt);
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "ghost";
+      open.textContent = "Open in Mail";
+      open.addEventListener("click", () => guard(async () => { showMail(); await openMessage(proposal.messageId, true); }));
+      actions.appendChild(open);
+    }
     confirm.addEventListener("click", () => {
       const begunAt = Date.now();
       confirmProposal(proposal).then((data) => {
@@ -18784,8 +18968,8 @@ function paintProposals(root, proposals, append) {
         if (data.accepted !== false) {
           learnAgent({ kind: "suggestion", choice: "open", className: proposal.labelName || "Filing", begunAt });
         }
-        wrap.remove();
-        if (brainIsOpen()) setSkillStatus((data && data.detail) || "Move confirmed.", false);
+        if (data.accepted !== false) wrap.remove();
+        if (brainIsOpen()) setSkillStatus(data.pending ? data.error || "Waiting for mailbox confirmation." : data.detail || "Move confirmed.", false);
       }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         if (brainIsOpen()) setSkillStatus(message, true);
@@ -18962,7 +19146,7 @@ function agentCard(item, options) {
   main.append(avatar, copy);
   card.appendChild(main);
   if (!(options && options.actions === false)) {
-    const follows = agentFollowUps(item);
+    const follows = agentFollowUps(item).filter((follow) => !suggestionSuppressed(follow.label || (follow.kind === "draft" ? "Review draft" : "Open")));
     if (follows.length) {
       const actions = document.createElement("div");
       actions.className = "agent-actions";
@@ -19042,12 +19226,22 @@ function scheduleChoice(row) {
   return "off";
 }
 
+function skillScheduleSnapshot(box) {
+  return JSON.stringify([...box.querySelectorAll("select, input")].map((field) => field.value));
+}
+
+function keepSkillSchedule(row) {
+  const editor = row?.querySelector(".skill-schedule");
+  return !!(editor && (editor.contains(document.activeElement) || skillScheduleSnapshot(editor) !== editor.dataset.baseline));
+}
+
 function appendSkillSchedule(parent, row) {
   const skillId = skillIdOf(row);
   if (!parent || !skillId) return;
   const name = skillName(row) || skillId;
   const box = document.createElement("div");
   box.className = "skill-schedule";
+  box.dataset.skillId = skillId;
   const kind = document.createElement("select");
   kind.setAttribute("aria-label", "Schedule " + name);
   const choices = [["off", "Only when I ask"], ["interval", "Every N minutes"], ["cron", "Cron"]];
@@ -19101,6 +19295,7 @@ function appendSkillSchedule(parent, row) {
     });
   });
   box.append(kind, minutes, cron, contact, save);
+  box.dataset.baseline = skillScheduleSnapshot(box);
   if (row && row.schedule && row.schedule !== "disabled") {
     const pause = document.createElement("button");
     pause.type = "button";
@@ -19124,6 +19319,8 @@ async function saveSkillSchedule(row, input) {
   const draft = scheduleFormValue(input);
   if (draft.error) throw new Error(draft.error);
   const name = skillName(row) || skillId;
+  const editors = [...document.querySelectorAll(".skill-schedule")].filter((box) => box.dataset.skillId === skillId);
+  const snapshots = new Map(editors.map((box) => [box, skillScheduleSnapshot(box)]));
   if (draft.action === "delete") {
     if (!row || row.schedule === "disabled" || !row.schedule) {
       setSkillStatus(name + " already runs only when you ask.", false);
@@ -19139,6 +19336,7 @@ async function saveSkillSchedule(row, input) {
     await call("emailBrain:setSkillSchedule", payload);
     setSkillStatus("Saved the schedule for " + name + ".", false);
   }
+  for (const [box, snapshot] of snapshots) box.dataset.baseline = snapshot;
   await Promise.all([loadBrainSkills(), loadStudio()]);
   refreshBrainSkillDialog(true);
 }
@@ -19177,8 +19375,10 @@ function onScheduleFired(payload) {
 }
 
 function paintSkillList(root, rows, empty, mode) {
-  root.replaceChildren();
+  const previous = new Map([...root.children].filter((row) => row.dataset.skillId).map((row) => [row.dataset.skillId, row]));
+  const rendered = [];
   if (!rows.length) {
+    root.replaceChildren();
     const note = document.createElement("p");
     note.className = "hint";
     note.textContent = empty;
@@ -19189,8 +19389,14 @@ function paintSkillList(root, rows, empty, mode) {
     const name = skillName(row) || "Skill";
     const detail = skillDetail(row);
     const skillId = skillIdOf(row);
+    const retained = previous.get(skillId);
+    if (retained && keepSkillSchedule(retained)) {
+      rendered.push(retained);
+      continue;
+    }
     const wrap = document.createElement("div");
     wrap.className = "studio-row";
+    if (skillId) wrap.dataset.skillId = skillId;
     const copy = document.createElement("div");
     copy.className = "studio-copy";
     const title = document.createElement("p");
@@ -19215,7 +19421,7 @@ function paintSkillList(root, rows, empty, mode) {
     if (modeLine.textContent) copy.appendChild(modeLine);
     wrap.appendChild(copy);
     if (!skillId) {
-      root.appendChild(wrap);
+      rendered.push(wrap);
       continue;
     }
     const actions = document.createElement("div");
@@ -19253,8 +19459,13 @@ function paintSkillList(root, rows, empty, mode) {
     }
     wrap.appendChild(actions);
     if (mode === "run") appendSkillSchedule(wrap, row);
-    root.appendChild(wrap);
+    rendered.push(wrap);
   }
+  const wanted = new Set(rendered);
+  for (const child of [...root.children]) if (!wanted.has(child)) child.remove();
+  rendered.forEach((child, index) => {
+    if (root.children[index] !== child) root.insertBefore(child, root.children[index] || null);
+  });
 }
 
 function skillActionButton(className, action, busy) {
@@ -19542,7 +19753,7 @@ async function reviewDraft(draft) {
   await presentCompose(withSuggestion(seed, body));
 }
 
-function paintMailBody(pane, email, repaint) {
+function paintMailBody(pane, email, repaint, refresh) {
   pane.replaceChildren();
   const from = document.createElement("p");
   from.className = "meta";
@@ -19562,7 +19773,7 @@ function paintMailBody(pane, email, repaint) {
   }
   renderRemoteGate(pane, email, repaint);
   renderAttachments(pane, email);
-  renderBody(pane, email);
+  renderBody(pane, email, refresh);
 }
 
 function paintPeek(email) {
@@ -19570,7 +19781,7 @@ function paintPeek(email) {
   if (title) title.textContent = (email && String(email.subject || "").trim()) || "Message";
   const pane = $("agent-peek-body");
   if (!pane || !email) return;
-  paintMailBody(pane, email, () => paintPeek(email));
+  paintMailBody(pane, email, () => paintPeek(email), () => peekMessage(email.id, true));
 }
 
 function invalidatePeek() {
@@ -19581,13 +19792,14 @@ function invalidatePeek() {
   pruneBodyNotices();
 }
 
-async function peekMessage(messageId) {
+async function peekMessage(messageId, full) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
   const gen = ++peekGen;
-  pendingPeekId = String(messageId); pendingPeekAccountId = listedMessage(messageId)?.accountId || "";
+  pendingPeekId = String(messageId); pendingPeekAccountId = peekEmail?.id === messageId ? peekEmail.accountId : listedMessage(messageId)?.accountId || "";
+  const accountId = pendingPeekAccountId;
   let data;
   try {
-    data = await call("mail:openEmail", { emailId: messageId });
+    data = await call("mail:openEmail", { emailId: messageId, ...(accountId ? { accountId } : {}), ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== peekGen) return;
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
@@ -19595,7 +19807,7 @@ async function peekMessage(messageId) {
   }
   if (gen !== peekGen) return;
   const email = data && data.email;
-  if (!email || (email.bodyEpoch != null && !bodyIdentity(email))) {
+  if (!email || (accountId && email.accountId !== accountId) || (email.bodyEpoch != null && !bodyIdentity(email))) {
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
     throw new Error("That message is no longer available for this mailbox.");
   }
@@ -19643,7 +19855,7 @@ async function runBrainSkill(row) {
     return;
   }
   if (!brainIsOpen() && state.view === "agent") {
-    await sendAgentText(skillName(row) || skillId);
+    await sendAgentText(skillName(row) || skillId, skillId);
     return;
   }
   if (brainSkillBusy) return;
@@ -19741,10 +19953,10 @@ async function confirmProposal(proposal) {
   const answer = await askConfirm({ title: "Confirm provider filing", body: proposalContext(proposal, "filing") + "\nThis changes mail on your server. It is separate from marking a local todo done.", confirm: "Apply filing", cancel: "Cancel" });
   if (!answer?.ok) return null;
   const data = await call("emailBrain:confirmProposal", { proposalId: proposal && proposal.id });
-  if (data && data.accepted === false) throw new Error(data.error || "That move was not applied.");
-  if (proposal) proposal.status = "confirmed";
-  showStatus((data && data.detail) || "Move confirmed.", false);
   paintProposals($("agent-proposals"), data && data.proposals);
+  if (data && data.accepted === false && !data.pending) throw new Error(data.error || "That move was not applied.");
+  if (proposal && data?.accepted === true) proposal.status = "confirmed";
+  showStatus(data?.pending ? data.error || "Waiting for mailbox confirmation." : (data && data.detail) || "Move confirmed.", false);
   if ($("agent-panel") && !$("agent-panel").hidden) await loadAgent();
   return data;
 }
@@ -19802,13 +20014,15 @@ function paintSkillChips(rows) {
     button.type = "button";
     button.textContent = name;
     button.addEventListener("click", () => {
-      sendAgentText(name).catch((error) => setAgentSkillStatus(error instanceof Error ? error.message : String(error), true));
+      sendAgentText(name, skillIdOf(row)).catch((error) => setAgentSkillStatus(error instanceof Error ? error.message : String(error), true));
     });
     root.appendChild(button);
   }
 }
 
+let studioGen = 0;
 async function loadStudio() {
+  const gen = ++studioGen;
   const lists = {};
   const errors = [];
   for (const [id, channel] of studioLists()) {
@@ -19819,7 +20033,7 @@ async function loadStudio() {
     }
   }
   const panel = $("agent-panel");
-  if (panel && !panel.hidden) paintStudio(lists, errors.filter(Boolean).join(" "));
+  if (gen === studioGen && panel && !panel.hidden) paintStudio(lists, errors.filter(Boolean).join(" "));
 }
 
 function shownProposals(list) {
@@ -20672,11 +20886,10 @@ async function updateTodo(messageId, status, accountId) {
   paintAgent(data, "");
 }
 
-function applyChatPayload(data) {
+function applyChatPayload(data, memoryVersion = agentMemoryVersion) {
   if (!data) return;
   if (Array.isArray(data.turns)) agentTurns = data.turns;
-  const notes = $("agent-memory");
-  if (notes && data.memory && document.activeElement !== notes) notes.value = updateMemoryBaseline = data.memory.notes || "";
+  if (data.memory && memoryVersion === agentMemoryVersion) applyAgentMemory(data.memory.notes || "");
   if (data.triage) paintAgent(data.triage, "");
   else {
     const status = $("agent-status");
@@ -20725,7 +20938,7 @@ function setAgentBusy(busy) {
   syncAgentPageBusy();
 }
 
-async function sendAgentText(text) {
+async function sendAgentText(text, skillId) {
   const trimmed = String(text || "").trim();
   if (!trimmed || agentChatBusy) return;
   showAgentTab("conversation");
@@ -20738,8 +20951,11 @@ async function sendAgentText(text) {
     status.classList.remove("error");
   }
   try {
-    const data = await call("nativeAgent:chat", agentChatRequest(trimmed));
-    applyChatPayload(data);
+    const memoryVersion = agentMemoryVersion;
+    const request = agentChatRequest(trimmed);
+    if (skillId) request.skillId = skillId;
+    const data = await call("nativeAgent:chat", request);
+    applyChatPayload(data, memoryVersion);
     if (data && (data.intent === "skill" || data.intent === "triage")) {
       const history = await call("nativeAgent:history");
       paintHistory($("agent-history"), history && history.runs);
@@ -20749,17 +20965,38 @@ async function sendAgentText(text) {
   }
 }
 
+function applyAgentMemory(value) {
+  const notes = $("agent-memory");
+  if (notes && !agentMemoryPending && notes.value === updateMemoryBaseline) notes.value = updateMemoryBaseline = value;
+}
+
 async function saveAgentMemory() {
   const notes = $("agent-memory");
-  const data = await call("nativeAgent:memorySet", { notes: notes ? notes.value : "" });
-  if (notes && data && typeof data.notes === "string") notes.value = updateMemoryBaseline = data.notes;
-  const status = $("agent-memory-status");
-  if (status) status.textContent = "Notes saved.";
+  const submitted = notes ? notes.value : "";
+  ++agentMemoryVersion;
+  ++agentMemoryPending;
+  const pending = agentMemorySaveQueue.catch(() => {}).then(async () => {
+    try {
+      const data = await call("nativeAgent:memorySet", { notes: submitted });
+      if (data && typeof data.notes === "string") {
+        updateMemoryBaseline = data.notes;
+        if (notes && notes.value === submitted) notes.value = data.notes;
+      }
+      const status = $("agent-memory-status");
+      if (status) status.textContent = notes && notes.value !== updateMemoryBaseline ? "Notes saved. Newer edits are not saved yet." : "Notes saved.";
+    } finally {
+      --agentMemoryPending;
+      ++agentMemoryVersion;
+    }
+  });
+  agentMemorySaveQueue = pending;
+  return pending;
 }
 
 async function loadAgent(options) {
   const quiet = !!(options && options.overlay === false);
   const gen = ++agentGen;
+  const memoryVersion = agentMemoryVersion;
   const hold = (on) => {
     if (gen !== agentGen) return;
     agentLoadOverlay = !!on;
@@ -20774,8 +21011,7 @@ async function loadAgent(options) {
     ]);
     if (gen !== agentGen || state.view !== "agent") return;
     agentTurns = chat && Array.isArray(chat.turns) ? chat.turns : [];
-    const notes = $("agent-memory");
-    if (notes && document.activeElement !== notes) notes.value = updateMemoryBaseline = (chat && chat.memory && chat.memory.notes) || "";
+    if (memoryVersion === agentMemoryVersion) applyAgentMemory((chat && chat.memory && chat.memory.notes) || "");
     const runs = history && Array.isArray(history.runs) ? history.runs : triage && triage.runs;
     const payload = Object.assign({}, triage, { runs });
     paintAgent(payload, "");
@@ -21867,9 +22103,11 @@ function showBotSecret(secret) {
   openDialog("bot-secret");
 }
 
+let botAccessVersion = 0;
 async function loadBotAccess() {
+  const version = botAccessVersion;
   const data = await call("bot:getAccess");
-  state.botAccess = data;
+  if (version !== botAccessVersion) return state.botAccess;
   paintBotAccess(data);
   return data;
 }
@@ -22019,7 +22257,7 @@ function paintBotGrants(grants) {
       botGuard(async () => {
         paintBotAccess(await call("bot:revokeGrant", { clientId: grant.clientId }));
         setBotStatus(`Access revoked for ${grant.label}. The secret no longer works. Other bots are unchanged.`);
-      });
+      }, true);
     });
     const remove = document.createElement("button");
     remove.type = "button";
@@ -22039,7 +22277,7 @@ function paintBotGrants(grants) {
         if (!answer || !answer.ok) return;
         paintBotAccess(await call("bot:deleteGrant", { clientId: grant.clientId }));
         setBotStatus(`Deleted ${grant.label}. Its secret no longer works.`);
-      });
+      }, true);
     });
     row.append(rotate, revoke, remove);
     item.append(title, meta, used, row);
@@ -22138,6 +22376,7 @@ function paintBotSends(rows) {
 }
 
 function paintBotAccess(data) {
+  ++botAccessVersion;
   const access = data || {};
   state.botAccess = access;
   $("bot-listen").textContent = botListenerStatus(access);
@@ -22287,17 +22526,26 @@ async function openBotDraft(proposalId) {
 }
 
 let botBusy = false;
-function botGuard(fn) {
-  if (botBusy) return Promise.resolve();
+let botStatusBusy = false;
+let botMutationCount = 0;
+let botMutationQueue = Promise.resolve();
+function botGuard(fn, mutation) {
+  if (!mutation && botBusy) return Promise.resolve();
+  if (mutation) botMutationCount += 1;
+  else botStatusBusy = true;
   botBusy = true;
-  return Promise.resolve()
+  const pending = (mutation ? botMutationQueue : Promise.resolve())
     .then(fn)
     .catch((error) => {
       setBotStatus(error instanceof Error ? error.message : String(error), true);
     })
     .finally(() => {
-      botBusy = false;
+      if (mutation) botMutationCount -= 1;
+      else botStatusBusy = false;
+      botBusy = botStatusBusy || botMutationCount > 0;
     });
+  if (mutation) botMutationQueue = pending;
+  return pending;
 }
 
 function selectedBotAccounts() {
@@ -22417,19 +22665,19 @@ function wireBot() {
     const access = await call("bot:setEnabled", { enabled: true });
     paintBotAccess(access);
     setBotStatus(botListenerStatus(access), !(access.listen && access.listen.listening));
-  }));
+  }, true));
   $("bot-enabled").addEventListener("change", () => {
     const want = $("bot-enabled").checked === true;
     botGuard(async () => {
       try {
         const access = await call("bot:setEnabled", { enabled: want });
         paintBotAccess(access);
-        setBotStatus(want ? botListenerStatus(access) : "Bot access off. Existing bots keep their access.", want && !(access.listen && access.listen.listening));
+        setBotStatus(want ? botListenerStatus(access) : "Bot access off. New bot calls are blocked; saved grants are retained.", want && !(access.listen && access.listen.listening));
       } catch (error) {
         await loadBotAccess().catch(() => {});
         throw error;
       }
-    });
+    }, true);
   });
   $("bot-serve-save").addEventListener("click", () => {
     botGuard(async () => {

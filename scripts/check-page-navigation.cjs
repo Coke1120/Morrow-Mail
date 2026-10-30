@@ -32,6 +32,7 @@ ipcMain.handle('fixture:invoke', async (_event, channel, payload) => {
   if (channel === 'host:aiGetConfig') return { hasKey: false, baseUrl: 'https://example.test', model: 'fixture' };
   if (channel.startsWith('host:update')) return { downloaded: true, version: 'fixture', lastCheckedAt: Date.now() };
   if (channel === 'mail:listAccounts') return ok(accounts);
+  if (channel === 'nativeAgent:learning:list') return ok({ patterns: [], suppressed: [] });
   if (channel === 'mail:listFromCache' || channel === 'mail:listFromNetwork') return ok({ emails: [] });
   if (channel === 'mail:listSnoozed') return ok({ records: [] });
   if (channel === 'mail:listProviderFolders') return ok(providerGranted ? { api: true, folders: providerFolders } : { api: false, reason: 'scope_missing', folders: [] });
@@ -90,7 +91,7 @@ app.whenReady().then(async () => {
   const immediate = await run(`(()=>{openSettings();return {open:$('settings').open,options:$('settings-account').options.length};})()`);
   assert.deepEqual(immediate, { open: true, options: 0 }, 'dialog opens before deferred mailbox paint');
   await waitFor(`settingsFoldLoaded.has('prefs:')`);
-  assert.equal(calls.length, 0, 'opening Preferences reuses saved prefs and loads no closed folds');
+  assert.deepEqual(calls.map(row => row.channel), ['nativeAgent:learning:list'], 'General reads only local Learned state, not preferences or closed provider/AI/Bot folds');
   assert.equal(await run(`document.querySelectorAll('#settings [role="tabpanel"]:not([hidden])').length`), 1);
   assert.equal(await run(`$('settings-log')===null && $('settings-about')===null`), true, 'rail links are not duplicated');
   await run(`$('settings-tab-prefs').focus();$('settings-tab-prefs').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));`);
@@ -151,9 +152,9 @@ app.whenReady().then(async () => {
   await key('RETURN');
   await run(`$('ooo-mode').value='always';$('ooo-mode').dispatchEvent(new Event('change'));$('ooo-save').click()`);
   await waitFor(`$('confirm').open`);
-  assert.equal(count('mail:vacationSet'), 0, 'save still requires a review');
+  assert.equal(count('mail:vacationPut'), 0, 'save still requires a review');
   await run(`$('confirm-cancel').click()`);await waitFor(`!$('confirm').open`);
-  assert.equal(count('mail:vacationSet'), 0);
+  assert.equal(count('mail:vacationPut'), 0);
   await run(`setSettingsFold('mailbox',true,false)`);await waitFor(`settingsFoldLoaded.has('mailbox:box-0')`);
   assert.equal(await run(`$('settings-account').checkVisibility() && $('settings-reconnect').checkVisibility()`), true);
   assert.equal(await run(`$('settings-capabilities').checkVisibility() || $('remove').checkVisibility()`), false);

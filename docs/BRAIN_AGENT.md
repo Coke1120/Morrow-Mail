@@ -1,5 +1,22 @@
 # Brain skills and Agent triage
 
+Explicit Agent Run buttons and Home chips retain the selected skill ID; free-form
+chat keeps name matching. Dirty standing notes and keyed skill schedule editors
+survive polling and page reopen. Save acknowledgments update saved baselines
+without replacing newer edits. Peek Retry download remains a peek and never marks
+read or changes the Mail selection. Conversation triage and mail cards honor the
+same Learned suppression and Delete restoration as Home.
+
+Filing confirmations update only their current proposal after provider awaits.
+IMAP journal acceptance is not completion: the proposal remains visible while
+pending, failed or uncertain, and a matching completed receipt confirms it. A
+pending or uncertain filing cannot be submitted again automatically; open the
+message in Mail to check its folder. Journal links persist for reconciliation
+after restart. Other todos, schedules, proposals, triage and run history are not
+replaced by the older filing snapshot. Scheduled preflight refusals currently
+appear in schedule status only; recording those attempts in run history remains
+unavailable and is deferred from this wave.
+
 Morrow Mail uses the mailbox cache and the saved API/custom endpoint or ChatGPT account. Before any AI transfer, review **AI data permission** in Settings → AI or Morrow Mail → AI Setup and explicitly approve the disclosed destination/data use. Existing configurations start blocked. Automatic profile refresh, page-open triage, compose-open reply suggestions and scheduled skills require a separate background opt-in. Cancel / revoke stops queued and active AI requests; it cannot recall data already delivered. [Data categories, local/remote behavior and permission management](AI_DATA_USE.md). Errors never switch billing paths. The host has no sample mailbox.
 
 ## Skills

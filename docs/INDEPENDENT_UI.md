@@ -4,6 +4,16 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Wave1 review fixes retain uncertain Outbox deliveries in Scheduled delivery review,
+including their content and Message-ID, without opening an editable retry draft.
+Folder/search responses from before Outbox selection are retired. Queue errors
+show Unknown and Retry on Outbox itself. Split-account removal receipts share one
+Undo session, and separate readers subscribe to definitive action settlements.
+CSS image functions outside the supported safe-function set are discarded;
+ordinary CSS URL and table backgrounds share the per-message remote-content gate.
+Agent peek retries never use Mail's read-on-open path. See
+[settlement and editor ownership](adr/2026-10-30-wave1-settlement-and-editor-ownership.md).
+
 Phase-two mail responsiveness batches action generations for lists/thread rows
 and reuses account IDs already present in list metadata for prefetch admission.
 Body notifications contain availability and scoped versions; open readers and
