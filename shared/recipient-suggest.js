@@ -93,6 +93,7 @@
     let cut = -1;
     for (let i = 0; i < text.length; i++) {
       const ch = text[i];
+      if (quote && ch === "\\") { i += 1; continue; }
       if (ch === '"') { quote = !quote; continue; }
       if (!quote && ch === "<") { angle = true; continue; }
       if (!quote && ch === ">") { angle = false; continue; }

@@ -89,9 +89,10 @@ function triageSystemPrompt(brief) {
 
 function compactFact(text) {
   return String(text || "")
+    .normalize("NFKC")
     .toLowerCase()
     .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -123,7 +124,10 @@ function factsNearDuplicate(leftLabel, leftValue, rightLabel, rightValue) {
   const labelB = compactFact(rightLabel);
   const valueA = compactFact(leftValue);
   const valueB = compactFact(rightValue);
-  if (!labelA && !valueA) return true;
+  if ((!labelA && !valueA) || (!labelB && !valueB)) {
+    return String(leftLabel || "").trim() === String(rightLabel || "").trim()
+      && String(leftValue || "").trim() === String(rightValue || "").trim();
+  }
   if (labelA === labelB && valueA === valueB) return true;
   const labelsClose = !!(labelA && labelB && (labelA === labelB || labelA.includes(labelB) || labelB.includes(labelA)));
   const sameSlot = labelsClose || (!labelA && !labelB);

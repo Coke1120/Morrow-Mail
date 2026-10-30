@@ -7,6 +7,24 @@
   return {
     items: [
       {
+        id: "compose-work-preservation",
+        title: "Compose recovery and preparation",
+        category: "Mail",
+        blurb: "Unrelated, completed and canceled AI draft events cannot replace manual edits. Selected files show Preparing attachment and block Save, previews, Send and Schedule until preparation settles; closing Compose abandons unfinished preparation. Undo atomically saves an inert recovery draft before opening Compose. Exact recipients and body, including cleared Cc/Bcc and one existing signature, are preserved. If Compose fails, resume from local Drafts; Undo never requeues delivery. Failed-send snapshots also bypass new-message defaults. Untouched multiline HTML signatures follow same-mailbox aliases; edited signatures stay intact. Changing recipient input retires old suggestion choices immediately, and escaped display-name quotes round-trip.",
+      },
+      {
+        id: "brain-edit-preservation",
+        title: "Profile edit preservation",
+        category: "Agent",
+        blurb: "Refresh and Rebuild preserve saved user-rule and category edits made during analysis. A changed learned profile rejects an obsolete analysis. Learned facts retain non-Latin names and text. Fix persists the selected row, including voice quotes, only while its stored version still matches; an obsolete Fix asks you to reload. Category-save readback preserves newer local edits and reports them as unsaved. Domain CC/BCC recipients may contain = in the address.",
+      },
+      {
+        id: "calendar-write-safety",
+        title: "Calendar write safety",
+        category: "Calendar",
+        blurb: "Known authorization failures offer Reauthorize calendar; ordinary refresh reuses valid grants. Retrying unchanged creation in the same editor reuses its Google event ID or Microsoft transaction ID. Check the provider before changing an uncertain submission and starting another event. Plain-text descriptions preserve literal angle brackets; readable HTML descriptions retain link targets. Non-time edits omit time fields, preserving offsets and seconds through repeated daylight-saving hours. Ambiguous or nonexistent local time edits require another time or the provider editor with an explicit offset. Confirmed saves and deletes invalidate all cached months for the changed mailbox, even after closing the editor. Google calendar enumeration follows up to five pages; incomplete lists leave saved selections unchanged. Timed agenda and day-cell rows sort by actual instants across UTC offsets.",
+      },
+      {
         id: "ai-connection",
         title: "ChatGPT or API key",
         category: "Agent",
@@ -94,7 +112,7 @@
         id: "outbox",
         title: "Outbox",
         category: "Mail",
-        blurb: "Send closes compose and keeps the message in Outbox, a child of the collapsible All Account Mail section beside Inbox, until the undo delay ends (30 seconds unless a shorter one is set). Choosing the All Account Mail header only expands or collapses. Inbox opens the same merged list and keeps the Unread chip. Local only, every mailbox. Undo cancels and reopens the draft. Opening a waiting message does not send it. After the delay, send works as before and the message leaves Outbox. A partial delivery receipt stays open for review and is not a normal Outbox close. Quitting with a message still in Outbox asks first; it sends the next time Morrow is open. Restart and install waits while a message is still in Outbox. Zero undo delay sends immediately and skips Outbox. Uncertain submission keeps its content, Message-ID and recovery record in Scheduled delivery review across restart; check Sent and acknowledge recovery before creating a retry draft. It never auto-restores to an editable send. Entering Outbox retires earlier folder and search reads. A queue-read failure shows Unknown and Retry in Outbox, retaining any stale rows without claiming the queue is empty.",
+        blurb: "Send closes compose and keeps the message in Outbox, a child of the collapsible All Account Mail section beside Inbox, until the undo delay ends (30 seconds unless a shorter one is set). Choosing the All Account Mail header only expands or collapses. Inbox opens the same merged list and keeps the Unread chip. Local only, every mailbox. Undo cancels the queued send and saves an inert recovery draft before opening Compose. If Compose cannot open, resume it from local Drafts; the recovery draft never sends automatically. Recovery failure leaves the queued send unchanged. Once delivery starts, Undo cannot cancel it. Opening a waiting message does not send it. After the delay, send works as before and the message leaves Outbox. A partial delivery receipt stays open for review and is not a normal Outbox close. Quitting with a message still in Outbox asks first; it sends the next time Morrow is open. Restart and install waits while a message is still in Outbox. Zero undo delay sends immediately and skips Outbox. Uncertain submission keeps its content, Message-ID and recovery record in Scheduled delivery review across restart; check Sent and acknowledge recovery before creating a retry draft. It never auto-restores to an editable send. Entering Outbox retires earlier folder and search reads. A queue-read failure shows Unknown and Retry in Outbox, retaining any stale rows without claiming the queue is empty.",
       },
       {
         id: "out-of-office",

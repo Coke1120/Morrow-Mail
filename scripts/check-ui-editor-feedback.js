@@ -282,7 +282,7 @@ function help() {
   assert.match(node("shortcuts-note").textContent, /list.*Mail page/i);
   assert.match(node("shortcuts-note").textContent, /Focused buttons and links keep their own keys/);
   assert.match(html, /<form id="calendar-create" aria-describedby="calendar-save-note">/);
-  assert.match(html, /id="calendar-save-note"[^>]*>Cancel closes this editor\. A save already in progress can still finish/);
+  assert.match(html, /id="calendar-save-note"[^>]*>Cancel closes this editor, not a pending save or delete/);
 }
 
 async function run() {
