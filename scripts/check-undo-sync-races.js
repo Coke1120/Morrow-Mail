@@ -1,4 +1,4 @@
-// Dependency-free state/race regressions. Production renderer, synthetic nodes/IPC/timers only.
+// Production renderer regressions, synthetic DOM/IPC/timers only.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -27,6 +27,103 @@ function fixture() {
     startRemovalSession('Archive: 3 completed.', items.map(item=>item.opId), false, items);`);
   return { run, nodes, timers, json: code => JSON.parse(run(`JSON.stringify(${code})`)) };
 }
+
+function detailsFixture(context) {
+  const { JSDOM } = require('jsdom');
+  const rendererRoot = path.join(__dirname, '../renderer');
+  const html = fs.readFileSync(path.join(rendererRoot, 'index.html'), 'utf8');
+  const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true });
+  context.after(() => dom.window.close());
+  let timer = 0;
+  dom.window.morrow = { on() {}, invoke: async () => ({ success: true, data: null }) };
+  dom.window.setTimeout = () => ++timer;
+  dom.window.clearTimeout = () => {};
+  const run = code => vm.runInContext(code, dom.getInternalVMContext());
+  for (const script of dom.window.document.querySelectorAll('script[src]')) {
+    const file = script.getAttribute('src');
+    if (file === './app.js' || file === './motion.bundle.js') continue;
+    run(fs.readFileSync(path.resolve(rendererRoot, file), 'utf8'));
+  }
+  run(source);
+  run(`wire(); loadList = async () => {}; loadScheduled = async () => {}; renderList = () => {}; renderReader = () => {};
+    state.accounts = [{id:'alpha',label:'Work',email:'work@example.test'}, {id:'beta',label:'Personal',email:'home@example.test'}];
+    globalThis.items = ['a','b','c'].map((id,index) => ({opId:'op-'+id,messageId:id,accountId:index < 2 ? 'alpha' : 'beta',
+      subject:'Report',from:'Ada <ada@example.test>',action:'archive',destinationLabel:'Archive'}));`);
+  return { run, document: dom.window.document, settle: batch => run('applyActionSettlement(' + JSON.stringify(batch) + ')'),
+    json: code => JSON.parse(run(`JSON.stringify(${code})`)) };
+}
+
+function expireScheduleOffer(ui) {
+  const timer = ui.run('scheduleUndoTimer');
+  const expire = ui.timers.get(timer);
+  assert.equal(typeof expire, 'function');
+  ui.timers.delete(timer);
+  expire();
+}
+
+function outboxTodoFixture(agentTodo) {
+  const ui = fixture();
+  ui.run(`clearUndo();
+    state.outbox = true;
+    state.outboxRows = [{id:'queued-reply',accountId:'a',status:'pending',outbox:true}];
+    state.emails = outboxEmails(state.outboxRows);
+    globalThis.recoveredTodo = ${JSON.stringify(agentTodo)};
+    globalThis.opened = null;
+    globalThis.failSend = false;
+    call = async (channel, payload) => {
+      calls.push({channel, payload});
+      if (channel === 'mail:cancelScheduled') return {emailId:'recovered-reply',accountId:'a',agentTodo:recoveredTodo};
+      if (channel === 'mail:openEmail') return {email:{id:'recovered-reply',accountId:'a',isDraft:true,
+        fromAddress:'a@example.test',bodyComplete:true,textBody:'Reply',inReplyTo:'<source@example.test>'}};
+      if (channel === 'mail:send' && failSend) throw new Error('Synthetic send failure');
+      return {};
+    };
+    presentCompose = async seed => {
+      opened = seed;
+      state.composeSession += 1;
+      state.agentReplyTodo = explicitAgentTodo(seed.agentTodo);
+    };
+    syncCompose = () => {}; setComposeStatus = () => {}; composeSnapshot = () => '';
+    closeDialog = async () => {}; openDialog = () => {}; scheduleComposeLayout = () => {};`);
+  return ui;
+}
+
+test('Outbox Undo forwards the validated original Agent todo through draft resume and confirmed resend', async () => {
+  const ui = outboxTodoFixture({messageId:' original-todo ',accountId:' a ',status:'done'});
+  await ui.run('undoOutboxItem(state.emails[0])');
+  assert.deepEqual(ui.json('opened').agentTodo, {messageId:'original-todo',accountId:'a'});
+  assert.equal(ui.run('opened.draftId'), 'recovered-reply');
+  assert.equal(ui.run('opened.inReplyTo'), '<source@example.test>');
+  assert.match(ui.run('opened.status'), /nothing sends automatically/);
+  assert.deepEqual(ui.json('calls.map(item => item.channel)'), ['mail:cancelScheduled','mail:openEmail']);
+  assert.deepEqual(ui.json('calls[0].payload'), {id:'queued-reply',recoverDraft:true});
+  assert.deepEqual(ui.json('state.outboxRows'), []);
+  await ui.run("deliverMail(withAgentReplyTodo({accountId:'a',to:'recipient@example.test',body:'Reply'}))");
+  const sent = ui.json("calls.find(item => item.channel === 'mail:send')");
+  assert.deepEqual(sent.payload.agentTodo, {messageId:'original-todo',accountId:'a'});
+  const completed = ui.json("calls.filter(item => item.channel === 'nativeAgent:home:todoUpdate')");
+  assert.deepEqual(completed, [{channel:'nativeAgent:home:todoUpdate',payload:{messageId:'original-todo',accountId:'a',status:'done'}}]);
+  assert.equal(ui.run('state.agentReplyTodo'), null);
+});
+
+test('Outbox Undo omits missing or malformed Agent todo metadata', async () => {
+  for (const agentTodo of [undefined, null, [], 'original-todo', {}, {accountId:'a'}, {messageId:'  ',accountId:'a'}]) {
+    const ui = outboxTodoFixture(agentTodo);
+    await ui.run('undoOutboxItem(state.emails[0])');
+    assert.equal(ui.run("Object.hasOwn(opened, 'agentTodo')"), false);
+    assert.equal(ui.run('state.agentReplyTodo'), null);
+    assert.deepEqual(ui.json('calls.map(item => item.channel)'), ['mail:cancelScheduled','mail:openEmail']);
+  }
+});
+
+test('Outbox Undo keeps the original Agent todo open after a failed resend', async () => {
+  const ui = outboxTodoFixture({messageId:'original-todo',accountId:'a'});
+  await ui.run('undoOutboxItem(state.emails[0])');
+  ui.run('failSend = true');
+  await ui.run("deliverMail(withAgentReplyTodo({accountId:'a',to:'recipient@example.test',body:'Reply'}))");
+  assert.deepEqual(ui.json('state.agentReplyTodo'), {messageId:'original-todo',accountId:'a'});
+  assert.equal(ui.run("calls.some(item => item.channel === 'nativeAgent:home:todoUpdate')"), false);
+});
 
 test('failed-first settlement retains unreported rows and their pending ownership', async () => {
   const f = fixture();
@@ -128,4 +225,166 @@ test('Details cancels the notice dwell timer until dismissed', () => {
   assert.equal(f.run('statusCollapseTimer'), 0);
   f.run('closeUndoDetails(false)');
   assert.notEqual(f.run('statusCollapseTimer'), 0);
+});
+
+test('late same-session account completions preserve Details, checks, scroll and checkbox focus', async context => {
+  const ui = detailsFixture(context);
+  ui.run(`beginRemovalRequest(items.map(item => ({...item,id:item.messageId})), 'archive', 'Archive');
+    rememberRemovalReceipt({pending:items.map(item => ({id:item.messageId,actionId:'action-'+item.messageId,kind:'remove'}))}, undoEpoch);`);
+  ui.settle({ outcomes: ['a','b'].map(id => ({ id, actionId: 'action-' + id, kind: 'remove', status: 'completed', opId: 'op-' + id })), opIds: ['op-a','op-b'] });
+  const epoch = ui.run('undoEpoch');
+  ui.document.getElementById('undo-details').click();
+  ui.run('setUndoDetailChecks(true)');
+  const list = ui.document.getElementById('undo-details-list');
+  list.querySelectorAll('input')[1].focus();
+  list.scrollTop = 84;
+  ui.settle({ outcomes: [{ id: 'c', actionId: 'action-c', kind: 'remove', status: 'completed', opId: 'op-c' }], opIds: ['op-c'] });
+  await Promise.resolve();
+  assert.equal(ui.run('undoEpoch'), epoch);
+  assert.equal(ui.run('undoPopoverOpen()'), true);
+  assert.deepEqual(ui.json('selectedUndoOpIds()'), ['op-a','op-b']);
+  assert.deepEqual([...list.querySelectorAll('input')].map(box => box.checked), [true,true,false]);
+  assert.equal(list.scrollTop, 84);
+  assert.equal(ui.document.activeElement.value, 'op-b');
+  assert.equal(ui.document.getElementById('undo-details').getAttribute('aria-expanded'), 'true');
+  assert.equal(ui.document.getElementById('undo-details-selected').textContent, 'Undo selected (2)');
+  assert.equal(ui.run('statusCollapseTimer'), 0);
+  assert.match(list.children[0].textContent, /Work.*work@example\.test/);
+  assert.match(list.children[2].textContent, /Personal.*home@example\.test/);
+
+  ui.run(`showUndo('Updated rows.', ['op-c','op-b'], false, [items[2],items[1]])`);
+  await Promise.resolve();
+  assert.equal(ui.run('undoPopoverOpen()'), true);
+  assert.deepEqual(ui.json('selectedUndoOpIds()'), ['op-b']);
+  assert.equal(ui.document.activeElement.value, 'op-b');
+  assert.equal(list.scrollTop, 84);
+
+  ui.run(`startRemovalSession('New removal.', ['op-c','op-b'], false, [items[2],items[1]])`);
+  assert.notEqual(ui.run('undoEpoch'), epoch);
+  assert.equal(ui.run('undoPopoverOpen()'), false);
+  assert.deepEqual(ui.json('selectedUndoOpIds()'), []);
+  assert.equal(ui.document.activeElement.id, 'undo-details');
+  ui.document.getElementById('undo-details').click();
+  assert.deepEqual([...list.querySelectorAll('input')].map(box => box.checked), [false,false]);
+});
+
+test('closed Details retain surviving checks when the current session grows', context => {
+  const ui = detailsFixture(context);
+  ui.run(`startRemovalSession('First completion.', ['op-a'], false, [items[0]]); openUndoDetails();
+    setUndoDetailChecks(true); closeUndoDetails(true);
+    showUndo('More completions.', ['op-a','op-c'], false, [items[0],items[2]]);`);
+  assert.equal(ui.run('undoPopoverOpen()'), false);
+  ui.document.getElementById('undo-details').click();
+  assert.deepEqual(ui.json('selectedUndoOpIds()'), ['op-a']);
+  assert.deepEqual([...ui.document.getElementById('undo-details-list').querySelectorAll('input')].map(box => box.checked), [true,false]);
+});
+
+test('duplicate and absent subjects describe sender, action, destination and owning mailbox', context => {
+  const ui = detailsFixture(context);
+  ui.run(`items = [
+    {...items[0]}, {...items[0],opId:'op-b',messageId:'b',accountId:'beta'},
+    {...items[0],opId:'op-c',messageId:'c',subject:'',from:'Ben <ben@example.test>',action:'trash',destinationLabel:'Trash'},
+    {...items[0],opId:'op-d',messageId:'d',subject:'',from:'Dee <dee@example.test>',action:'move',destinationLabel:'Projects',accountId:'beta'}
+  ]; startRemovalSession('Completed.', items.map(item => item.opId), false, items); openUndoDetails();`);
+  const rows = [...ui.document.getElementById('undo-details-list').children];
+  const descriptions = rows.map((row, index) => {
+    const box = row.querySelector('input');
+    const item = ui.json('items[' + index + ']');
+    assert.equal(box.getAttribute('aria-label'), item.subject || '(No subject)');
+    const descriptionId = box.getAttribute('aria-describedby');
+    assert.ok(descriptionId);
+    const description = ui.document.getElementById(descriptionId);
+    assert.equal(description, row.querySelector('.undo-details-meta'));
+    assert.equal(description.hidden, false);
+    const mailbox = item.accountId === 'alpha' ? 'Work · work@example.test' : 'Personal · home@example.test';
+    assert.equal(description.textContent, [mailbox, item.from, item.action + ' → ' + item.destinationLabel].join(' · '));
+    box.focus();
+    assert.equal(ui.document.activeElement, box);
+    box.click();
+    return description;
+  });
+  assert.equal(new Set(descriptions.map(description => description.id)).size, 4);
+  assert.equal(new Set(descriptions.map(description => description.textContent)).size, 4);
+  assert.equal(ui.document.getElementById('undo-details-selected').textContent, 'Undo selected (4)');
+});
+
+test('single-mailbox Details stay compact and unavailable mailboxes never expose opaque account IDs', context => {
+  const ui = detailsFixture(context);
+  ui.run(`startRemovalSession('One mailbox.', ['op-a','op-b'], false, items.slice(0,2)); openUndoDetails()`);
+  const list = ui.document.getElementById('undo-details-list');
+  assert.equal(list.querySelector('.undo-details-meta').textContent, 'Ada <ada@example.test> · archive → Archive');
+  ui.run(`state.accounts = [{id:'alpha',email:'work@example.test'}, {id:'beta'}];
+    showUndo('Multiple mailboxes.', items.map(item => item.opId), false, items)`);
+  const meta = list.children[2].querySelector('.undo-details-meta');
+  assert.match(meta.textContent, /Unavailable mailbox/);
+  assert.doesNotMatch(meta.textContent, /beta/);
+  assert.equal(ui.document.getElementById(list.children[2].querySelector('input').getAttribute('aria-describedby')), meta);
+});
+
+test('rendered Features describe preserved late Details updates and accepted scheduled restores', context => {
+  const ui = detailsFixture(context);
+  ui.run(`paintFeatureCatalog(); showFeaturesTab('catalog')`);
+  const cards = [...ui.document.querySelectorAll('#features-catalog .feature-card')];
+  const undo = cards.find(card => card.querySelector('h4').textContent === 'Undo removal details');
+  const scheduled = cards.find(card => card.querySelector('h4').textContent === 'Send later');
+  assert.equal(ui.document.getElementById('features-pane-catalog').hidden, false);
+  assert.match(undo.textContent, /mailbox.*multiple accounts/);
+  assert.match(undo.textContent, /checkbox.*description.*sender.*action.*destination.*mailbox/i);
+  assert.match(undo.textContent, /late completions.*selection.*scroll.*focus/i);
+  assert.match(scheduled.textContent, /eight seconds/);
+  assert.match(scheduled.textContent, /started.*feedback.*expires/);
+  assert.match(scheduled.textContent, /older restore cannot consume it/);
+});
+
+for (const result of ['success','failure']) {
+  test('an accepted scheduled restore reports ' + result + ' after its offer expires', async () => {
+    const ui = fixture();
+    ui.run(`clearUndo(); armScheduleUndo({id:'old'}); showStatus('Scheduled delivery canceled.');
+      call = () => new Promise((resolve,reject) => { globalThis.resolveRestore = resolve; globalThis.rejectRestore = reject; });`);
+    const pending = ui.run('undoCancelScheduled()');
+    assert.equal(ui.run('scheduleUndoBusy'), true);
+    expireScheduleOffer(ui);
+    assert.equal(ui.run('scheduleUndo'), null);
+    assert.equal(ui.nodes.get('undo-schedule').hidden, true);
+    ui.run(result === 'success' ? 'resolveRestore({})' : `rejectRestore(new Error('Restore rejected.'))`);
+    await pending;
+    const expected = result === 'success' ? 'Scheduled send restored.' : 'Restore rejected.';
+    assert.equal(ui.nodes.get('scheduled-status').textContent, expected);
+    assert.equal(ui.nodes.get('status').textContent, expected);
+    assert.equal(ui.run('statusIsError'), result === 'failure');
+    assert.equal(ui.run('scheduleUndoBusy'), false);
+    assert.equal(ui.nodes.get('scheduled-undo').hidden, true);
+  });
+
+  for (const expired of [false,true]) {
+    test('an old scheduled restore ' + result + ' cannot overwrite a newer ' + (expired ? 'expired' : 'active') + ' cancellation offer', async () => {
+      const ui = fixture();
+      ui.run(`clearUndo(); armScheduleUndo({id:'old'});
+        call = () => new Promise((resolve,reject) => { globalThis.resolveRestore = resolve; globalThis.rejectRestore = reject; });`);
+      const pending = ui.run('undoCancelScheduled()');
+      expireScheduleOffer(ui);
+      ui.run(`armScheduleUndo({id:'new'}); $('scheduled-status').textContent = 'New cancellation.'; showStatus('New cancellation.');`);
+      if (expired) expireScheduleOffer(ui);
+      ui.run(result === 'success' ? 'resolveRestore({})' : `rejectRestore(new Error('Old restore failed.'))`);
+      await pending;
+      assert.equal(ui.run('scheduleUndo && scheduleUndo.id'), expired ? null : 'new');
+      assert.equal(ui.nodes.get('undo-schedule').hidden, expired);
+      assert.equal(ui.nodes.get('undo-schedule').disabled, false);
+      assert.equal(ui.nodes.get('scheduled-status').textContent, 'New cancellation.');
+      assert.equal(ui.nodes.get('status').textContent, 'New cancellation.');
+    });
+  }
+}
+
+test('unclaimed scheduled offers still expire and restore failures can retry only before expiry', async () => {
+  const ui = fixture();
+  ui.run(`clearUndo(); armScheduleUndo({id:'old'}); call = async () => { throw new Error('Try again.'); }`);
+  await ui.run('undoCancelScheduled()');
+  assert.equal(ui.run('scheduleUndo.id'), 'old');
+  assert.equal(ui.nodes.get('undo-schedule').disabled, false);
+  expireScheduleOffer(ui);
+  ui.run('globalThis.restoreCalls = 0; call = async () => { restoreCalls += 1; }');
+  await ui.run('undoCancelScheduled()');
+  assert.equal(ui.run('restoreCalls'), 0);
+  assert.equal(ui.run('SCHEDULE_UNDO_MS'), 8000);
 });

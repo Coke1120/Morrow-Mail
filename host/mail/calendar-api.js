@@ -428,7 +428,7 @@ async function updateEvent(provider, accessToken, calendarId, eventId, draft, fe
       : current.body && typeof current.body.content === "string"
         ? String(current.body.contentType).toLowerCase() === "text" ? current.body.content : plainDescription(current.body.content, 0) : null;
     if (safeId(current.id) !== id || full == null || full.length > 8000 || provider === "microsoft" && current.isOnlineMeeting === true
-        || typeof draft.descriptionBase !== "string" || full !== draft.descriptionBase.trim()) {
+        || typeof draft.descriptionBase !== "string" || full.trim() !== draft.descriptionBase.trim()) {
       const error = new Error(`The full ${providerName} description cannot be safely replaced from this preview. Edit it with the calendar provider, or leave it unchanged to save other fields.`);
       error.code = "conflict";
       throw error;

@@ -564,7 +564,7 @@ assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app pa
 assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
 assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.3.10");
+assert.strictEqual(pkg.version, "0.3.11");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -818,7 +818,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.3.10");
+assert.strictEqual(pkg.version, "0.3.11");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -1490,10 +1490,137 @@ assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "gmail.com"), "s1"
 assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "mail.hkbscl.com"), "s1");
 assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada"), "s1");
 assert.strictEqual(chosenSignatureId(domainPack, "other", "hkbscl.com"), "s2");
+assert.strictEqual(chosenSignatureId({ signatures: [{ id: "only", accountId: "gmail-ada", text: "Hi" }] }, "gmail-ada"), "only");
+assert.strictEqual(chosenSignatureId({
+  signatures: [{ id: "only", accountId: "gmail-ada", text: "Hi" }],
+  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "only" } },
+}, "gmail-ada"), "");
+assert.strictEqual(chosenSignatureId({
+  signatures: [{ id: "only", accountId: "gmail-ada", text: "Hi" }],
+  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "only" } },
+}, "gmail-ada", "hkbscl.com"), "only");
 const signatureDomainField = extractFunction(appJs, "signatureDomainField");
 assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s2"), "hkbscl.com");
 assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s1"), "mail.hkbscl.com");
 assert.strictEqual(signatureDomainField(domainPack, "other", "s2"), "");
+const signatureIdentity = loadFunctions(appJs, [
+  "signatureRows", "chosenSignatureId", "signatureName", "signatureBareAddress", "signaturePolicyDomain",
+  "signatureDomainField", "signatureDomainList", "signatureRecordPayload", "signatureDraft",
+  "signatureIdentityRows", "signatureSavePlan", "signatureDeletePlan", "signatureFocusRow",
+]);
+const plainAccount = { id: "gmail-ada", email: "leo@gmail.com" };
+const sendAsAccount = {
+  id: "gmail-ada",
+  email: "leo@gmail.com",
+  sendAs: [
+    { email: "leo@gmail.com", verified: true },
+    { email: "leo@hkbscl.com", verified: true },
+    { email: "pending@hkbscl.com", verificationStatus: "pending" },
+    { email: "nope@hkbscl.com", verified: false },
+  ],
+};
+const emptySettings = { accounts: {} };
+const identityRows = signatureIdentity.signatureIdentityRows({ signatures: [], signatureByDomainPerAccount: {} }, sendAsAccount, emptySettings);
+assert.deepStrictEqual(identityRows.map((row) => row.key), ["default", "domain:hkbscl.com"]);
+assert.equal(identityRows[1].detail.includes("pending@"), false);
+assert.equal(identityRows[1].detail.includes("nope@"), false);
+assert.match(identityRows[1].detail, /leo@hkbscl.com/);
+const primaryOnly = signatureIdentity.signatureIdentityRows(
+  { signatures: [{ id: "s1", accountId: "gmail-ada", name: "Work", text: "Hi" }], defaultSignaturePerAccount: { "gmail-ada": "s1" } },
+  plainAccount,
+  emptySettings,
+);
+assert.deepStrictEqual(primaryOnly.map((row) => row.key), ["default"]);
+assert.equal(primaryOnly[0].signatureId, "s1");
+assert.match(primaryOnly[0].detail, /Work/);
+const boundHost = signatureIdentity.signatureIdentityRows(
+  { signatures: [{ id: "s2", accountId: "gmail-ada", name: "G", text: "G" }], signatureByDomainPerAccount: { "gmail-ada": { "gmail.com": "s2" } } },
+  plainAccount,
+  emptySettings,
+);
+assert.ok(boundHost.some((row) => row.key === "domain:gmail.com" && row.signatureId === "s2"));
+const sharedHost = signatureIdentity.signatureIdentityRows(
+  { signatures: [] },
+  { id: "gmail-ada", email: "leo@gmail.com", sendAs: [{ email: "ada@gmail.com", verified: true }] },
+  emptySettings,
+);
+assert.ok(sharedHost.some((row) => row.domain === "gmail.com"));
+const aliasAccount = plainAccount;
+const aliasSettings = { accounts: { "gmail-ada": { aliases: [{ address: "leo@gmail.com", domain: "hkbscl.com" }] } } };
+const composePolicy = require("../shared/compose-policy");
+assert.strictEqual(
+  signatureIdentity.signaturePolicyDomain("Leo <leo@gmail.com>", aliasAccount, aliasSettings),
+  composePolicy.policyDomain("Leo <leo@gmail.com>", aliasAccount, aliasSettings),
+);
+const aliasRows = signatureIdentity.signatureIdentityRows(
+  { signatures: [{ id: "s1", accountId: "gmail-ada", name: "Work", text: "Hi" }], defaultSignaturePerAccount: { "gmail-ada": "s1" } },
+  aliasAccount,
+  aliasSettings,
+);
+assert.ok(aliasRows.some((row) => row.key === "domain:hkbscl.com"));
+const domainOnly = signatureIdentity.signatureIdentityRows(
+  {
+    signatures: [{ id: "only", accountId: "gmail-ada", name: "Only", text: "Hi" }],
+    signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "only" } },
+  },
+  sendAsAccount,
+  emptySettings,
+);
+assert.equal(domainOnly[0].signatureId, "");
+assert.equal(domainOnly.find((row) => row.domain === "hkbscl.com").signatureId, "only");
+const domainAccount = { id: "gmail-ada", email: "leo@gmail.com", sendAs: [{ email: "leo@hkbscl.com", verified: true }] };
+const exclusivePack = {
+  signatures: [
+    { id: "s1", accountId: "gmail-ada", name: "Account", text: "Account" },
+    { id: "s2", accountId: "gmail-ada", name: "Domain", text: "Old" },
+  ],
+  defaultSignaturePerAccount: { "gmail-ada": "s1" },
+  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "s2" } },
+};
+const exclusive = signatureIdentity.signatureSavePlan(exclusivePack, domainAccount, emptySettings, { key: "domain:hkbscl.com" }, { name: "hkbscl.com", body: "Domain only", html: false });
+assert.equal(exclusive.length, 1);
+assert.equal(exclusive[0].id, "s2");
+assert.equal(exclusive[0].isDefault, false);
+assert.deepStrictEqual(exclusive[0].domains, ["hkbscl.com"]);
+assert.equal(exclusive[0].text, "Domain only");
+const sharedPack = {
+  signatures: [{ id: "s1", accountId: "gmail-ada", name: "Shared", text: "Shared" }],
+  defaultSignaturePerAccount: { "gmail-ada": "s1" },
+  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "s1" } },
+};
+const split = signatureIdentity.signatureSavePlan(sharedPack, domainAccount, emptySettings, { key: "domain:hkbscl.com" }, { name: "hkbscl.com", body: "New", html: false });
+assert.equal(split.length, 2);
+assert.equal(split[0].id, "s1");
+assert.equal(split[0].text, "Shared");
+assert.deepStrictEqual(split[0].domains, []);
+assert.equal(Object.hasOwn(split[0], "isDefault"), false);
+assert.equal(split[1].id, undefined);
+assert.equal(split[1].isDefault, false);
+assert.deepStrictEqual(split[1].domains, ["hkbscl.com"]);
+assert.equal(split[1].text, "New");
+const defaultSplit = signatureIdentity.signatureSavePlan(sharedPack, domainAccount, emptySettings, { key: "default" }, { name: "Account default", body: "Only default", html: false });
+assert.equal(defaultSplit.length, 1);
+assert.equal(defaultSplit[0].id, undefined);
+assert.equal(defaultSplit[0].isDefault, true);
+assert.equal(defaultSplit[0].text, "Only default");
+assert.equal(defaultSplit[0].domains, undefined);
+const unbound = signatureIdentity.signatureDeletePlan(sharedPack, domainAccount, emptySettings, { key: "domain:hkbscl.com" });
+assert.deepStrictEqual(unbound[0].domains, []);
+assert.equal(unbound[0].text, "Shared");
+assert.equal(Object.hasOwn(unbound[0], "isDefault"), false);
+const clearDefault = signatureIdentity.signatureDeletePlan(sharedPack, domainAccount, emptySettings, { key: "default" });
+assert.equal(clearDefault[0].isDefault, false);
+assert.equal(clearDefault[0].domains, undefined);
+assert.equal(clearDefault[0].id, "s1");
+const soleDelete = signatureIdentity.signatureDeletePlan(
+  { signatures: [{ id: "s1", accountId: "gmail-ada", name: "Account", text: "Account" }], defaultSignaturePerAccount: { "gmail-ada": "s1" } },
+  plainAccount,
+  emptySettings,
+  { key: "default" },
+);
+assert.deepStrictEqual(soleDelete, [{ delete: true, id: "s1" }]);
+assert.equal(signatureIdentity.signatureFocusRow(aliasRows, { email: "Leo <leo@gmail.com>" }, aliasAccount, aliasSettings).key, "domain:hkbscl.com");
+assert.equal(signatureIdentity.signatureFocusRow(aliasRows, { key: "default" }, aliasAccount, aliasSettings).key, "default");
 assert.strictEqual(signaturePlain(pack.signatures[0]), "Thanks,\nAda");
 assert.strictEqual(signaturePlain(pack.signatures[1]), "— Ada");
 assert.strictEqual(applySignature("Hello", "", "— Ada"), "Hello\n\n— Ada");
@@ -1600,7 +1727,7 @@ for (const channel of ["mail:upsertSignature", "mail:deleteSignature"]) {
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
 assert.ok(html.includes('id="signatures"') && html.includes('id="signature-name"') && html.includes('id="signature-body"'));
-assert.ok(html.includes('id="signature-html" type="checkbox" checked') && html.includes('id="signature-default"') && html.includes('id="signatures-open"'));
+assert.ok(html.includes('id="signature-html" type="checkbox" checked') && html.includes('id="signature-identity-help"') && html.includes('id="signatures-open"'));
 assert.ok(html.includes('id="signature-editor"') && html.includes('id="signature-format"') && html.includes('class="compose-editor"'));
 assert.ok(html.includes('data-command="foreColor"') && html.includes('data-command="hiliteColor"'));
 assert.ok(html.split('aria-label="Text color"').length - 1 >= 2);
@@ -1611,10 +1738,11 @@ assert.ok(functionSource(appJs, "wireComposeFormat").includes('$("signature-edit
 assert.ok(functionSource(appJs, "bindRichEditor").includes("sanitizeComposeHtml"));
 assert.ok(functionSource(appJs, "revealEditorStyles").includes("background-color"));
 assert.ok(css.includes(".compose-color") && css.includes("#signature-form .compose-editor") && css.includes("#signature-form textarea"));
-assert.ok(html.includes('id="signature-domains"') && html.includes('id="brain-compose-bcc"'));
+assert.ok(html.includes('id="brain-compose-bcc"') && html.includes("Account default is used when From has no domain signature"));
 assert.ok(html.includes('id="signatures-from-compose"'));
 assert.ok(html.includes("Saved on this computer for the selected account"));
-assert.ok(html.includes("Default for this account"));
+assert.ok(html.includes("does not replace the account default"));
+assert.ok(fs.readFileSync(path.join(root, "renderer/brain-compose.js"), "utf8").includes("Edit signature"));
 assert.ok(html.includes("Sends while the app is open"));
 assert.ok(!html.includes("Sample signatures"));
 assert.ok(!appJs.includes("Sample mailbox"));
@@ -1746,7 +1874,7 @@ assert.ok(functionSource(appJs, "paintPrefs").includes("repaintClockSurfaces"));
 assert.ok(!html.includes("hkbscl"));
 assert.ok(html.includes("@example.com = colleague@example.com, team@example.org"));
 assert.ok(html.includes("ada@example.org = example.com"));
-assert.ok(html.includes("example.com, example.org"));
+assert.ok(html.includes("A domain row applies only to that From domain"));
 assert.ok(!fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8").includes("hkbscl"));
 assert.ok(functionSource(appJs, "chooseFetchedModel").includes("paintAiDirty"));
 assert.ok(functionSource(appJs, "chooseFetchedModel").includes('new Event("input"'));
@@ -4093,7 +4221,7 @@ const featureCatalog = require("../renderer/features-catalog.js");
 const featureSeed = [
   ["compose-work-preservation", "Compose recovery and preparation", "Mail", "Unrelated, completed and canceled AI draft events cannot replace manual edits. Selected files show Preparing attachment and block Save, previews, Send and Schedule until preparation settles; closing Compose abandons unfinished preparation. Undo atomically saves an inert recovery draft before opening Compose. Exact recipients and body, including cleared Cc/Bcc and one existing signature, are preserved. If Compose fails, resume from local Drafts; Undo never requeues delivery. Failed-send snapshots also bypass new-message defaults. Untouched multiline HTML signatures follow same-mailbox aliases; edited signatures stay intact. Changing recipient input retires old suggestion choices immediately, and escaped display-name quotes round-trip."],
   ["brain-edit-preservation", "Profile edit preservation", "Agent", "Refresh and Rebuild preserve saved user-rule and category edits made during analysis. A changed learned profile rejects an obsolete analysis. Learned facts retain non-Latin names and text. Fix persists the selected row, including voice quotes, only while its stored version still matches; an obsolete Fix asks you to reload. Category-save readback preserves newer local edits and reports them as unsaved. Domain CC/BCC recipients may contain = in the address."],
-  ["calendar-write-safety", "Calendar write safety", "Calendar", "Known authorization failures offer Reauthorize calendar; ordinary refresh reuses valid grants. Retrying unchanged creation in the same editor reuses its Google event ID or Microsoft transaction ID. Check the provider before changing an uncertain submission and starting another event. Plain-text descriptions preserve literal angle brackets; readable HTML descriptions retain link targets. Non-time edits omit time fields, preserving offsets and seconds through repeated daylight-saving hours. Ambiguous or nonexistent local time edits require another time or the provider editor with an explicit offset. Confirmed saves and deletes invalidate all cached months for the changed mailbox, even after closing the editor. Google calendar enumeration follows up to five pages; incomplete lists leave saved selections unchanged. Timed agenda and day-cell rows sort by actual instants across UTC offsets."],
+  ["calendar-write-safety", "Calendar write safety", "Calendar", "Known authorization failures offer Reauthorize calendar; ordinary refresh reuses valid grants. Retrying unchanged creation in the same editor reuses its Google event ID or Microsoft transaction ID. Check the provider before changing an uncertain submission and starting another event. Plain-text descriptions preserve literal angle brackets; readable HTML descriptions retain link targets. Outlook description edits tolerate surrounding whitespace in an unchanged baseline and still require the provider revision to match. Non-time edits omit time fields, preserving offsets and seconds through repeated daylight-saving hours. Ambiguous or nonexistent local time edits require another time or the provider editor with an explicit offset. Confirmed saves and deletes invalidate all cached months for the changed mailbox, even after closing the editor. Google calendar enumeration follows up to five pages; incomplete lists leave saved selections unchanged. Timed agenda and day-cell rows sort by actual instants across UTC offsets."],
   ["ai-connection", "ChatGPT or API key", "Agent", "AI settings preserve API keys and custom endpoints, and add Continue with ChatGPT for eligible plans. Browser sign-in uses Morrow Mail's own registered client, automatic loopback and optional one-time paste-back. Cancel, timeout, account selection, reauthorization and sign-out are available. Cancellation permits a fresh retry without waiting for an old discovery response; obsolete attempts cannot change the new one. Save keeps newer edits unsaved, and connection test results apply only to the current settings. Fetch account-specific models before choosing one. AI data permission discloses mail, calendar, drafts, profile and conversation context and the saved destination before an affirmative choice. Settings → AI and AI Setup support review, allow and revoke; Allow requires a ready saved connection and the explicit-action checkbox. If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step. Unsaved edits, saves and pending permission reads block Allow with an actionable reason. Save & review connection saves without approving; choose permission after reviewing the saved destination. Reopening Settings preserves unsaved connection edits and requires a fresh permission choice. Material disclosure stays visible, with full details in an accessible accordion. Existing API and ChatGPT connections start with AI data use off. Saving a key or signing in is not consent. Explicit AI actions need approval; Background profile refresh, page-open triage, compose-open reply suggestions and scheduled skills need separate background opt-in. Destination, model, account and material data-use changes need fresh permission. Cancel / revoke stops queued and active AI requests; data already delivered cannot be recalled. ChatGPT requests set store: false; no retention or training guarantee is made. Plan, app and workspace limits apply; Manage usage opens ChatGPT settings. No automatic billing fallback, provider switching, extra allowance, hosted tools or general proxy. ChatGPT credentials use OS-encrypted storage and require unlocked OS secure storage. API keys are saved in ai.json with restricted file permissions, not OS encryption. AI Setup announces connection results as live status; setup readiness follows the selected authentication mode. Native and live sign-in validation remains pending."],
   ["email-brain", "Email Brain", "Agent", "Profile, categories, skills, and inbox rules built from your mail. Skills can draft a reply or propose a move. You still press Send. Explicit Run buttons and Home chips run the selected skill ID, even when names repeat or resemble chat commands. Dirty schedule editors survive polls and background schedule events. Scheduled preflight refusals are currently visible in schedule status, not run history."],
   ["agent-triage", "Agent triage", "Agent", "Files recent inbox mail into your Brain categories and stacks todos. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Forward, a new message, a saved draft, a canceled compose, a failed send, and a queued or scheduled send leave that todo open until the send succeeds. Mark as read leaves it open. The Settings opt-in \"Mark as read also completes Agent todos\" is off by default. Mark read & done marks the message read and completes the todo. Explicit reads wait for mailbox confirmation before completing a todo or counting for Learned; failed, unknown, superseded, and unattempted operations do not count. FYI and Other offer Mark category as read for the messages listed there, with Undo, and do not complete todos. Needs You has no Mark-all. Select rows, then Mark selected as read or Complete selected. The label says all only after every listed row is selected. Done and Dismiss stay on this computer. The Todos switcher includes List and Card. Card shows the sender, subject, one Agent reason line, and Reply and Done. Hover, Tab focus, or a tap opens the same detail: a fuller summary, the classification reason, one thread line, and Reply, Done, and Dismiss. Escape or leaving the card dismisses it. The page header does not repeat that detail. Opening the detail does not open the message or complete the todo. Settings → Learned lists explicit moves among Needs You, FYI, and Other, repeated Mark as read or a successful reply for one sender or thread, and opened or dismissed suggestion labels. Replies in any category can count after non-partial delivery, even without an open todo. Thread hints also appear for multi-sender threads. The same pattern is Learned after 3 times. Delete removes that pattern and its count and refreshes suggestions in open conversations, skills, and proposals. Learned rows stay on this computer and do not rewrite Brain categories, triage prompts, or mailbox rules, and they do not send mail or move it. Conversation triage and mail cards use the same Learned suppression and Delete restoration. Peek Retry download stays in peek without marking read or changing Mail selection. Unsaved standing notes survive background refresh and page reopen; save replies preserve newer typing. IMAP filing remains visible while its journal receipt is pending, confirms only a matching completed move, and keeps failed or uncertain outcomes for review. Uncertain filing is not retried automatically; check the message in Mail."],
@@ -4101,14 +4229,14 @@ const featureSeed = [
   ["conversation-members", "Conversation messages", "Mail", "Gmail label copies appear once in a conversation, using the provider message ID within the same account. The selected folder copy stays selected. Folder records remain stored. Distinct provider messages and rows without a reliable provider ID stay separate, even when RFC Message-ID matches. A single message has no Earlier section."],
   ["reading-header", "Reading header", "Mail", "The open message shows its date and time on the From row, right-aligned, in the main reading pane and in a separate reader window. That text uses the reader's existing date and time format. To and Cc stay on the lines below. Main and separate readers apply definitive flag and removal receipts; terminal refusals restore the authoritative flags instead of announcing success. Remote images are on for new profiles. When disabled, normal image, CSS URL and table backgrounds stay blocked until Load remote content is chosen for that message. Unsupported CSS image functions, including image-set, are discarded."],
   ["sender-identities", "Sender identities", "Mail", "Settings → Compose previews each exact From address and its Morrow-only display name. Verified Gmail send-as names are the default; local overrides survive refresh. Clear a name for address-only sending or reset to the default. Most people only need a display name. Domain CC/BCC, aliases, and the fallback CC domain stay under Advanced, collapsed until one of those rules is saved. Compose From lists authorized addresses for every connected mailbox; choosing another mailbox sends and saves drafts there. Switching mailboxes preserves body formatting and links, and keeps a signature you edited. Only untouched automatic signatures, including multiline HTML signatures, follow the new mailbox. Drafts and scheduled mail retain the selected name and address, including punctuation and Unicode in names. Bot mail.send uses these defaults on the granted account only. Provider sending permissions still apply; Gmail settings and OAuth scopes stay unchanged. Providers or recipient contacts may affect the delivered display. The Compose mailbox selector is in Basic, above sender names, Preferred From and Signatures; alias and domain rules remain in Advanced."],
-  ["signatures", "Signatures", "Mail", "Settings → Signatures shows Saving… and ignores repeated saves in the current editor while it waits. Switching signatures keeps the new editing target."],
+  ["signatures", "Signatures", "Mail", "Settings → Signatures lists an Account default and one row per send-as domain. Saving a domain row does not replace the account default. Compose uses that domain signature, then the account default, then no signature. Saving… shows while a save waits, and switching identities keeps the new editing target. Edit signature on a From card opens the same dialog."],
   ["mail-keyboard", "Mail list keyboard navigation", "Mail", "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus."],
   ["unread-filter", "Unread filter", "Mail", "The sidebar Unread filter and the All Account Mail Unread chip list downloaded unread mail. Opening an unread message may mark it read and keeps that one row in the list until a different unread message is opened. Opening a message that is already read, opening the held row again, or highlighting a row without opening it leaves the hold. Mark read on the held row from the row button leaves it listed. Mark unread clears the hold and the row stays because it is unread. Mark read on a row that is not held removes it immediately. Multi-select Mark read removes every selected row immediately, including the held row when it is selected, even when only that row is selected. A held row outside the selection stays. Leaving Unread, switching folder or account, searching, or turning the filter off clears the hold, and coming back does not restore it. Refresh and Sync keep the held row unless the message is gone from that filtered mail. Other filters do not keep a read row this way."],
-  ["undo-removal", "Undo removal details", "Mail", "Archive, Trash, and Move keep Undo for every completed change in the current removal. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Select all or Clear, then Undo selected. The status chip only shows or hides the notice, anchored at the bottom-right. Details keeps its selection and stays open while you use it; Escape closes it and returns focus. Restore controls wait until pending changes settle, and unreported rows stay available. Mark as read keeps its own Undo and does not replace a removal Undo. A newer removal replaces that list. Outbox undo send is separate and is not in this checklist. Separate account settlements from one reviewed removal join that same session in either order; late settlements from an older removal cannot replace the newer checklist."],
+  ["undo-removal", "Undo removal details", "Mail", "Archive, Trash, and Move keep Undo for every completed change in the current removal. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Rows also show the mailbox label/address when the session spans multiple accounts. Each checkbox keeps its subject as its name; its description includes the sender, action, destination and mailbox when shown. Select all or Clear, then Undo selected. The status chip only shows or hides the notice, anchored at the bottom-right. Details stays open during same-session late completions, preserving surviving selection, scroll and checkbox focus; new rows start unchecked. Escape closes it and returns focus. Restore controls wait until pending changes settle, and unreported rows stay available. Mark as read keeps its own Undo and does not replace a removal Undo. A newer removal replaces that list. Outbox undo send is separate and is not in this checklist. Separate account settlements from one reviewed removal join that same session in either order; late settlements from an older removal cannot replace the newer checklist."],
   ["attachment-downloads", "Attachment downloads", "Mail", "Preview, Open and Save share downloads. Complete files up to 32 MiB can be reused for five minutes while Morrow is open; larger files remain on demand. Save asks for a location first. Attachment transfers show progress and individual Cancel controls; closing Preview keeps another Save or Open running. Downloads allow 64 MiB per file and 128 MiB per ZIP, with existing provider limits. Changed identities stop reuse; reopen legacy Gmail selections. Resuming a server draft prepares every attachment before editing, within the 25 MiB outgoing limit. Preparation shares the download cache and Cancel controls. Failure keeps the saved draft for retry. Inline file identities are retained. Bot access remains metadata only."],
   ["local-search", "Search on this computer", "Mail", "Toolbar search reads subject, from, and body already synced to this computer. When the local index needs repair, opening shows preparation progress and works in saved batches, yielding between them. Mail and search become available after verification. Quitting keeps committed progress for the next open. No mail is downloaded by rebuilding. A large individual message or disk call can still cause a pause."],
-  ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Cancel asks twice, then Undo cancel is available for about eight seconds to restore that record. A newer cancellation replaces the Undo offer, and an older restore cannot consume it. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved. Default schedule-delay saves keep newer Hours and Minutes edits and report when they are still unsaved."],
-  ["outbox", "Outbox", "Mail", "Send closes compose and keeps the message in Outbox, a child of the collapsible All Account Mail section beside Inbox, until the undo delay ends (30 seconds unless a shorter one is set). Choosing the All Account Mail header only expands or collapses. Inbox opens the same merged list and keeps the Unread chip. Local only, every mailbox. Undo cancels the queued send and saves an inert recovery draft before opening Compose. If Compose cannot open, resume it from local Drafts; the recovery draft never sends automatically. Recovery failure leaves the queued send unchanged. Once delivery starts, Undo cannot cancel it. Opening a waiting message does not send it. After the delay, send works as before and the message leaves Outbox. A partial delivery receipt stays open for review and is not a normal Outbox close. Quitting with a message still in Outbox asks first; it sends the next time Morrow is open. Restart and install waits while a message is still in Outbox. Zero undo delay sends immediately and skips Outbox. Uncertain submission keeps its content, Message-ID and recovery record in Scheduled delivery review across restart; check Sent and acknowledge recovery before creating a retry draft. It never auto-restores to an editable send. Entering Outbox retires earlier folder and search reads. A queue-read failure shows Unknown and Retry in Outbox, retaining any stale rows without claiming the queue is empty."],
+  ["schedule-send", "Send later", "Mail", "Schedule send keeps the message on this computer and delivers it while Morrow is open. Cancel asks twice, then Undo cancel is available for about eight seconds to restore that record. An Undo started in time keeps its success or failure feedback after the offer expires. A newer cancellation replaces the Undo offer, and an older restore cannot consume it or overwrite its feedback, even after the newer offer expires. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved. Default schedule-delay saves keep newer Hours and Minutes edits and report when they are still unsaved."],
+  ["outbox", "Outbox", "Mail", "Send closes compose and keeps the message in Outbox, a child of the collapsible All Account Mail section beside Inbox, until the undo delay ends (30 seconds unless a shorter one is set). Choosing the All Account Mail header only expands or collapses. Inbox opens the same merged list and keeps the Unread chip. Local only, every mailbox. Undo cancels the queued send and saves an inert recovery draft before opening Compose. When Undo reopens Compose, the original reply's Agent todo stays linked and completes only after a confirmed send. If Compose cannot open, resume it from local Drafts; the recovery draft never sends automatically. Recovery failure leaves the queued send unchanged. Once delivery starts, Undo cannot cancel it. Opening a waiting message does not send it. After the delay, send works as before and the message leaves Outbox. A partial delivery receipt stays open for review and is not a normal Outbox close. Quitting with a message still in Outbox asks first; it sends the next time Morrow is open. Restart and install waits while a message is still in Outbox. Zero undo delay sends immediately and skips Outbox. Uncertain submission keeps its content, Message-ID and recovery record in Scheduled delivery review across restart; check Sent and acknowledge recovery before creating a retry draft. It never auto-restores to an editable send. Entering Outbox retires earlier folder and search reads. A queue-read failure shows Unknown and Retry in Outbox, retaining any stale rows without claiming the queue is empty."],
   ["out-of-office", "Out of Office", "Mail", "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself. Provider replies preserve edits made during Save or Refresh as unsaved while updating the reviewed revision. Switching mailbox during a read cannot cache an unapplied result. Google mail/settings permission excludes Calendar; Microsoft uses its separate Graph bundle."],
   ["imap-recovery", "IMAP connection recovery", "Mail", "Connection timeouts during IMAP sync use the usual connection-error and retry status. Inbox push falls back to polling and reconnects with backoff."],
   ["overnight-body-fill", "Full message bodies", "Mail", "Hover or focus Sync to see per-mailbox body activity, separately from list sync. Move into the panel to scroll, or Tab into it and use the arrow keys; it stays open while hovered or focused. Message requests and the listed page download as needed. If a foreground download fails before any body is available, the reader shows Retry download and leaves the message unread. A server response without the requested message is treated as a failed download. Partial cached content stays visible with a download warning and retry. While the app is awake/open, 00:00–07:00 local adds one indexed body after each background folder pass, within Mail & Sync history; trash, spam and drafts are excluded. It yields to mail work and rate limits. Gmail API body downloads use the same per-user read spacing as sync. Activity has no whole-mailbox total or percentage. IMAP messages can remain incomplete at the 3 MiB source limit; this shows Limited with No action needed and keeps available content. Download and decoding failures still show Needs attention; Gmail API handles MIME parts within its response limit; attachment files stay on demand. Gmail decodes legacy mail encodings including cp932 and UTF-7, and retains ISO-2022-JP decoding. Malformed MIME or an unknown charset leaves available content with an incomplete-body warning and does not stop other messages from syncing."],
