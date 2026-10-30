@@ -6135,7 +6135,7 @@ async function checkComposeMailbox() {
   }).map(([id, value]) => [id, { value }]));
   const calls = [];
   const call = async (channel, payload) => { calls.push({ channel, payload }); return {draftId:"saved"}; };
-  const syncNames = ["selectedAccount", "composeAccount", "isLive", "composeFileMeta", "composeAttachmentList", "attachmentPayload", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml", "joinComposeHtml", "blankComposeHtml", "readComposeEditorHtml", "explicitAgentTodo", "withAgentReplyTodo"];
+  const syncNames = ["selectedAccount", "composeAccount", "isLive", "composeFileMeta", "composeAttachmentList", "attachmentPayload", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml", "joinComposeHtml", "blankComposeHtml", "readComposeEditorHtml", "explicitAgentTodo", "withAgentReplyTodo", "composeFilesPending"];
   const asyncNames = ["saveDraft", "scheduleMail", "sendMail"];
   const methods = new Function("state", "$", "call", "showStatus", "scheduleAt", "loadScheduled", "sendDelayMs", "hideUndoSend", "deliverMail", `
     const composeOperation = async work => { await work(); return true; };
