@@ -5770,7 +5770,11 @@ async function checkAiDraft() {
   const afterEmpty = brain.answer("emailBrain:getCached", []);
   assert.ok(brainUi.brainUserRules(brainUi.brainSections(afterEmpty.data)).some((row) => row.value === "Keep categories apart."));
   assert.ok(brainUi.brainProfileMeta(afterEmpty.data).some((row) => row.key === "factsLearned"));
-  const fixedItem = await brain.answer("emailBrain:fixItem", [{ itemId: "how-you-write:0", prompt: "shorter" }]);
+  const missingItem = await brain.answer("emailBrain:fixItem", [{ itemId: "how-you-write:0", prompt: "shorter" }]);
+  assert.strictEqual(missingItem.success, false);
+  assert.match(missingItem.error.message, /profile row changed/i);
+  const writingRuleId = brainUi.brainUserRules(brainUi.brainSections(afterEmpty.data)).find((row) => row.value === "Keep categories apart.").id;
+  const fixedItem = await brain.answer("emailBrain:fixItem", [{ itemId: writingRuleId, prompt: "shorter" }]);
   assert.strictEqual(fixedItem.success, false);
   assert.match(fixedItem.error.message, /API key/);
   const fixedCategory = await brain.answer("emailBrain:fixCategory", [{ itemId: "needs-you", prompt: "shorter" }]);
