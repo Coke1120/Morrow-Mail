@@ -61,6 +61,70 @@ function expireScheduleOffer(ui) {
   expire();
 }
 
+function outboxTodoFixture(agentTodo) {
+  const ui = fixture();
+  ui.run(`clearUndo();
+    state.outbox = true;
+    state.outboxRows = [{id:'queued-reply',accountId:'a',status:'pending',outbox:true}];
+    state.emails = outboxEmails(state.outboxRows);
+    globalThis.recoveredTodo = ${JSON.stringify(agentTodo)};
+    globalThis.opened = null;
+    globalThis.failSend = false;
+    call = async (channel, payload) => {
+      calls.push({channel, payload});
+      if (channel === 'mail:cancelScheduled') return {emailId:'recovered-reply',accountId:'a',agentTodo:recoveredTodo};
+      if (channel === 'mail:openEmail') return {email:{id:'recovered-reply',accountId:'a',isDraft:true,
+        fromAddress:'a@example.test',bodyComplete:true,textBody:'Reply',inReplyTo:'<source@example.test>'}};
+      if (channel === 'mail:send' && failSend) throw new Error('Synthetic send failure');
+      return {};
+    };
+    presentCompose = async seed => {
+      opened = seed;
+      state.composeSession += 1;
+      state.agentReplyTodo = explicitAgentTodo(seed.agentTodo);
+    };
+    syncCompose = () => {}; setComposeStatus = () => {}; composeSnapshot = () => '';
+    closeDialog = async () => {}; openDialog = () => {}; scheduleComposeLayout = () => {};`);
+  return ui;
+}
+
+test('Outbox Undo forwards the validated original Agent todo through draft resume and confirmed resend', async () => {
+  const ui = outboxTodoFixture({messageId:' original-todo ',accountId:' a ',status:'done'});
+  await ui.run('undoOutboxItem(state.emails[0])');
+  assert.deepEqual(ui.json('opened').agentTodo, {messageId:'original-todo',accountId:'a'});
+  assert.equal(ui.run('opened.draftId'), 'recovered-reply');
+  assert.equal(ui.run('opened.inReplyTo'), '<source@example.test>');
+  assert.match(ui.run('opened.status'), /nothing sends automatically/);
+  assert.deepEqual(ui.json('calls.map(item => item.channel)'), ['mail:cancelScheduled','mail:openEmail']);
+  assert.deepEqual(ui.json('calls[0].payload'), {id:'queued-reply',recoverDraft:true});
+  assert.deepEqual(ui.json('state.outboxRows'), []);
+  await ui.run("deliverMail(withAgentReplyTodo({accountId:'a',to:'recipient@example.test',body:'Reply'}))");
+  const sent = ui.json("calls.find(item => item.channel === 'mail:send')");
+  assert.deepEqual(sent.payload.agentTodo, {messageId:'original-todo',accountId:'a'});
+  const completed = ui.json("calls.filter(item => item.channel === 'nativeAgent:home:todoUpdate')");
+  assert.deepEqual(completed, [{channel:'nativeAgent:home:todoUpdate',payload:{messageId:'original-todo',accountId:'a',status:'done'}}]);
+  assert.equal(ui.run('state.agentReplyTodo'), null);
+});
+
+test('Outbox Undo omits missing or malformed Agent todo metadata', async () => {
+  for (const agentTodo of [undefined, null, [], 'original-todo', {}, {accountId:'a'}, {messageId:'  ',accountId:'a'}]) {
+    const ui = outboxTodoFixture(agentTodo);
+    await ui.run('undoOutboxItem(state.emails[0])');
+    assert.equal(ui.run("Object.hasOwn(opened, 'agentTodo')"), false);
+    assert.equal(ui.run('state.agentReplyTodo'), null);
+    assert.deepEqual(ui.json('calls.map(item => item.channel)'), ['mail:cancelScheduled','mail:openEmail']);
+  }
+});
+
+test('Outbox Undo keeps the original Agent todo open after a failed resend', async () => {
+  const ui = outboxTodoFixture({messageId:'original-todo',accountId:'a'});
+  await ui.run('undoOutboxItem(state.emails[0])');
+  ui.run('failSend = true');
+  await ui.run("deliverMail(withAgentReplyTodo({accountId:'a',to:'recipient@example.test',body:'Reply'}))");
+  assert.deepEqual(ui.json('state.agentReplyTodo'), {messageId:'original-todo',accountId:'a'});
+  assert.equal(ui.run("calls.some(item => item.channel === 'nativeAgent:home:todoUpdate')"), false);
+});
+
 test('failed-first settlement retains unreported rows and their pending ownership', async () => {
   const f = fixture();
   await f.run('undoRemoval()');

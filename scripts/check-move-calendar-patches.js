@@ -166,15 +166,33 @@ async function calendarChecks() {
     await assert.rejects(() => update("microsoft", f, { description: "New notes", descriptionBase: "Original" }));
     assert(f.requests.every(r => r.method === "GET")); assert.equal(f.stored.body.content, "Original");
   }
+  for (const content of ["Original\n", "\t Original", "\r\n Original <literal>  text \t\r\n", " \t\r\n", ""]) {
+    const padded = fixture("microsoft", { body: { contentType: "Text", content } });
+    const baseline = api.normalizeGraphEvent(padded.stored, "cal-1").description;
+    assert.equal(baseline, content);
+    const result = await update("microsoft", padded, { description: "Edited <literal> text", descriptionBase: baseline });
+    assert.deepEqual(padded.requests.map(request => request.method), ["GET", "PATCH"]);
+    assert.equal(padded.requests[1].headers["if-match"], 'W/"1"');
+    assert.equal(padded.stored.body.content, "Edited <literal> text");
+    assert.equal(result.description, "Edited <literal> text");
+  }
+  const changed = fixture("microsoft", { body: { contentType: "Text", content: " Original  text\n" } });
+  await assert.rejects(() => update("microsoft", changed, { description: "Edited", descriptionBase: " Original text\n" }), error => error.code === "conflict");
+  assert.deepEqual(changed.requests.map(request => request.method), ["GET"]);
+  assert.equal(changed.stored.body.content, " Original  text\n");
   const safe = fixture("microsoft", { body: { contentType: "Text", content: "Original" } });
   await update("microsoft", safe, { description: "New notes", descriptionBase: "Original" });
   assert.deepEqual(safe.requests.map(r => r.method), ["GET", "PATCH"]);
   assert.equal(safe.requests[1].headers["if-match"], 'W/"1"'); assert.equal(safe.stored.body.content, "New notes");
   await update("microsoft", safe, { description: "", descriptionBase: "New notes" });
   assert.equal(safe.stored.body.content, "", "explicit clearing of a complete description remains available");
-  const concurrent = fixture("microsoft", { body: { contentType: "Text", content: "Original" } }); concurrent.changeAfterRead = true;
-  await assert.rejects(() => update("microsoft", concurrent, { description: "New notes", descriptionBase: "Original" }), e => e.code === "conflict" && e.status === 412);
-  assert.equal(concurrent.stored.body.content, "External change");
+  for (const content of ["Original", " \tOriginal\r\n"]) {
+    const concurrent = fixture("microsoft", { body: { contentType: "Text", content } }); concurrent.changeAfterRead = true;
+    const baseline = api.normalizeGraphEvent(concurrent.stored, "cal-1").description;
+    await assert.rejects(() => update("microsoft", concurrent, { description: "New notes", descriptionBase: baseline }), error => error.code === "conflict" && error.status === 412);
+    assert.equal(concurrent.requests[1].headers["if-match"], 'W/"1"');
+    assert.equal(concurrent.stored.body.content, "External change");
+  }
   const lost = fixture("microsoft", { body: { contentType: "Text", content: "Original" } }); lost.loseReply = true;
   await assert.rejects(() => update("microsoft", lost, { description: "New notes", descriptionBase: "Original" }), e => e.code === "provider_network");
   lost.loseReply = false;
@@ -197,5 +215,5 @@ async function run() {
   }
   console.log("move-calendar-patches-ok (COPYUID generations, preview preservation, explicit clears, conflicts/retries)");
 }
-module.exports = { run };
+module.exports = { run, calendarChecks };
 if (require.main === module) run().then(() => process.exit(0), error => { console.error(error); process.exit(1); });
