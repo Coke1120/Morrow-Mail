@@ -8687,6 +8687,8 @@ async function setRead(email, isRead) {
     renderList();
     throw new Error(rejected.error || "The mailbox did not confirm the read change. Refresh before retrying.");
   }
+  // Re-paint after success so a list reload during the network wait still gets the confirmed unread flag.
+  paint(!isRead);
   await settleOpenView();
   return data;
 }
