@@ -19,6 +19,9 @@ async function run() {
       calls.push({channel,payload});
       if (channel === 'mail:getComposeContext') return {...window.morrowComposePolicy.resolve(state.accounts[0], null, {ccByDomain:{},accounts:{}}, 'new', payload.fromAddress), settings:{ccByDomain:{},accounts:{}}};
       if (channel === 'mail:upsertDraft') { if(failSave) throw new Error('Save failed; text retained'); return {draftId:'same-draft'}; }
+      if (channel === 'mail:editScheduled') return {emailId:'recovered-draft',accountId:'a'};
+      if (channel === 'mail:openEmail') return {email:{id:payload.emailId,accountId:'a',isDraft:true,bodyComplete:true,
+        fromAddress:'me@example.test',to:queued.to,subject:queued.subject,textBody:'Edited same draft',htmlBody:queued.body,inReplyTo:queued.inReplyTo}};
       if (channel === 'mail:send' && failSend) throw new Error('Delivery failed');
       return {};
     };
@@ -55,6 +58,7 @@ async function run() {
   await ui.run('sendMail()');
   assert.equal(get('compose').open,false);
   const queued = ui.run(`calls.find(x=>x.channel==='mail:scheduleSend')`);
+  ui.context.queued = queued.payload;
   assert.equal(queued.payload.outbox, true);
   assert.match(queued.payload.body, /Edited same draft/);
   assert.equal(queued.payload.draftId, 'same-draft');
@@ -63,7 +67,7 @@ async function run() {
   ui.context.row = { id: 'outbox-1', accountId: 'a', outboxStatus: 'pending', status: 'pending', subject: queued.payload.subject, htmlBody: queued.payload.body, draftId: queued.payload.draftId, inReplyTo: queued.payload.inReplyTo, to: queued.payload.to, fromAddress: queued.payload.fromAddress };
   await ui.run('undoOutboxItem(row)');
   assert.equal(get('compose').open, true);
-  assert.equal(ui.run('state.draftId'), 'same-draft');
+  assert.equal(ui.run('state.draftId'), 'recovered-draft');
   assert.equal(ui.run('state.composeMeta.inReplyTo'), 'original');
   assert.match(get('compose-body').value, /Edited same draft/);
   assert.equal(ui.run(`calls.filter(x=>x.channel==='mail:send').length`),0);
@@ -71,7 +75,7 @@ async function run() {
   await ui.run('sendMail()');
   assert.equal(get('compose').open,true);
   assert.equal(get('compose-body').value,'Edited same draft');
-  assert.equal(ui.run('state.draftId'),'same-draft');
+  assert.equal(ui.run('state.draftId'),'recovered-draft');
   assert.match(get('compose-status').textContent,/Delivery was not confirmed/);
   closing=ui.run('requestComposeClose()'); get('draft-close-discard').onclick(); assert.equal(await closing,true);
   await ui.run(`openCompose({to:'recipient@example.test',body:'Schedule once'})`);

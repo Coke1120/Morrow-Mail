@@ -276,14 +276,14 @@
         <input id="calendar-location" type="text" maxlength="200" />
         <label for="calendar-description">Description <span class="optional">(optional)</span></label>
         <textarea id="calendar-description" maxlength="8000" rows="4" aria-describedby="calendar-description-note"></textarea>
-        <p id="calendar-description-note" class="hint" hidden>This description is longer than this editor can display. Edit it in Google Calendar; other fields can still be saved here.</p>
+        <p id="calendar-description-note" class="hint" hidden>This description is longer than this editor can display. Edit it with the calendar provider; other fields can still be saved here.</p>
         <label class="calendar-all-day-label" for="calendar-all-day"><input id="calendar-all-day" type="checkbox" /> All day</label>
         <label for="calendar-start">Start</label>
         <input id="calendar-start" type="datetime-local" />
         <label for="calendar-end">End</label>
         <input id="calendar-end" type="datetime-local" />
         <p id="calendar-form-status" role="alert" tabindex="-1"></p>
-        <p id="calendar-save-note" class="hint">Cancel closes this editor. A save already in progress can still finish; confirmed changes appear when the calendar refreshes. Switching All day keeps the dates; an all-day end is exclusive. Switching back without changing the all-day range restores the previous times; otherwise timed defaults are 09:00/10:00.</p>
+        <p id="calendar-save-note" class="hint">Cancel closes this editor, not a pending save or delete. Confirmed changes invalidate this mailbox's cached months. Retry unchanged creation in this editor to reuse the same provider operation; check the provider before starting another event after an uncertain result. Non-time edits preserve exact event instants. Ambiguous local time edits need an explicit offset in the provider editor. Switching All day keeps the dates; an all-day end is exclusive. Switching back without changing the all-day range restores the previous times; otherwise timed defaults are 09:00/10:00.</p>
         <div class="row">
           <button type="submit" class="primary" id="calendar-save">Add event</button>
           <button type="button" class="ghost" id="calendar-delete" hidden>Delete</button>
@@ -406,7 +406,7 @@
             <button type="button" class="ghost" id="brain-refresh">Refresh</button>
             <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
           </div>
-          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay.</p>
+          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay, including saved edits made during analysis. A conflicting learned-profile change requires another refresh.</p>
         </section>
         <div id="brain-sections"></div>
         <p class="hint" id="brain-compose-pointer">Compose defaults live in <button type="button" class="inline-link" id="brain-open-compose-settings">Settings → Compose</button>.</p>
@@ -424,7 +424,7 @@
         </form>
         <label for="brain-fix-note">Fix note <span class="optional">(optional)</span></label>
         <input id="brain-fix-note" type="text" autocomplete="off" />
-        <p class="hint">Fix rewrites a learned row. Forget removes it. A missing AI key points to Morrow Mail → AI Setup. Rebuild uses a connected mailbox and never sample mail.</p>
+        <p class="hint">Fix rewrites the selected learned row, including a voice quote. If that row changes while Fix is running, reload and choose it again. Forget removes it. A missing AI key points to Morrow Mail → AI Setup. Rebuild uses a connected mailbox and never sample mail.</p>
       </section>
       <section id="brain-categories" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-categories" hidden>
         <h3 id="brain-categories-title">Categories</h3>
@@ -556,6 +556,7 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
+        <p class="hint" id="cli-page-recovery">Compose attachment preparation, inert Undo recovery and Calendar retry identities are desktop operations; bot capabilities and permissions are unchanged. Calendar reauthorization uses the existing provider grant, separately from Google mail. These fixes do not expose calendar writes through the Node bot client.</p>
         <p class="hint" id="cli-performance">For a POSIX development checkout, <code>MORROW_PERF=1 npm start</code> opts into bounded local performance summaries in Debug log every 30 seconds. The flag does not send telemetry or grant access to accounts. Restart without it to disable tracing. The offline benchmark is <code>node --expose-gc scripts/benchmark-mail-responsiveness.js</code>; it always creates synthetic temporary mail data, and does not measure native Mac rendering or a real Keychain.</p>
         <p class="hint" id="cli-body-updates">The phase-two offline benchmark is <code>node scripts/benchmark-mail-phase-two.js</code>. It measures synthetic list query counts, body-notification size and unopened-body retention. The cached-body refresh is an internal desktop operation; bot capabilities and permissions are unchanged.</p>
         <p class="hint" id="cli-ai-connection">AI authentication and AI data permission are configured in desktop Settings → AI or Morrow Mail → AI Setup. Existing connections require disclosure and affirmative approval before AI transfers. Background AI needs a separate opt-in. Cancel / revoke blocks pending and future AI transfers. ChatGPT sign-in, callback paste-back and credentials are not exposed through the CLI or bot bridge. The existing API key/custom endpoint choice remains available. ChatGPT adds no general-purpose model proxy. Ordinary bot mail operations do not grant AI permission.</p>
@@ -871,6 +872,7 @@
           </button>
           <ul id="compose-attachments" class="compose-attachments" hidden></ul>
           <p id="compose-attach-error" class="error" role="status" hidden></p>
+          <p class="hint">Wait for Preparing attachment to finish before Save, preview, Send or Schedule. Closing Compose abandons unfinished file preparation. Undo saves an inert recovery draft before reopening; if the window fails, resume from local Drafts. Recovered recipients and signatures stay exactly as queued.</p>
         </div>
         <details id="compose-schedule-tools"><summary>Send later</summary>
           <label for="schedule-preset">When</label>

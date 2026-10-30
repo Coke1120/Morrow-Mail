@@ -28,6 +28,7 @@ const state = {
   agentReplySource: null,
   agentLearning: null,
   composeAttachments: [],
+  composeFileJobs: [],
   composeSuggestions: null,
   composeMeta: null,
   composeBaseline: "",
@@ -175,6 +176,7 @@ let customSkillCreating = false;
 let customSkillSaving = false;
 let brainFixBusy = false;
 let brainCategoryBusy = false;
+let brainCategorySaving = false;
 let brainSkillCache = {};
 let brainCategoriesReady = false;
 let calendarGen = 0;
@@ -1616,19 +1618,19 @@ function calendarCopy(reason, email) {
   return `Enable calendar and mailbox features${who}. Google requests Calendar separately from mail; Microsoft connects mail first, then checks feature permissions for the same account.`;
 }
 
-function calendarConnection(status, account, listed) {
+function calendarConnection(status, account, listed, reauthorize = false) {
   const grant = calendarGrantState(status, account);
   if (!account || grant.disabled) {
     return { connected: false, canGrant: false, reason: grant.reason, label: "Enable mailbox features" };
   }
   const rows = status && Array.isArray(status.accounts) ? status.accounts : [];
   const row = rows.find((item) => item && item.id === account.id);
-  const connected = (row && row.calendar === true) || (listed && listed.api === true);
+  const connected = !reauthorize && ((row && row.calendar === true) || (listed && listed.api === true));
   return {
     connected,
     canGrant: true,
     reason: connected ? "" : ((row && row.calendarReason) || "needs_auth"),
-    label: connected ? "Refresh calendar" : (account.imapSmtpProfile || account.profile) === "gmail" ? "Enable Google Calendar" : "Enable mailbox features",
+    label: reauthorize ? "Reauthorize calendar" : connected ? "Refresh calendar" : (account.imapSmtpProfile || account.profile) === "gmail" ? "Enable Google Calendar" : "Enable mailbox features",
   };
 }
 
@@ -1776,8 +1778,14 @@ function eventChip(event) {
 
 function agendaEvents(events) {
   return (Array.isArray(events) ? events : []).slice().sort((left, right) => {
-    return String((left && left.start) || "").localeCompare(String((right && right.start) || ""));
+    return compareCalendarStarts(left, right);
   });
+}
+
+function compareCalendarStarts(left, right) {
+  const startOf = (event) => Date.parse(event?.allDay ? String(event.start).slice(0, 10) + "T00:00:00" : event?.start);
+  const difference = startOf(left) - startOf(right);
+  return Number.isFinite(difference) ? difference : String(left?.start || "").localeCompare(String(right?.start || ""));
 }
 
 function agendaLine(event) {
@@ -1986,7 +1994,7 @@ function vacationConfirm(kind, owner, options) {
   };
 }
 
-function calendarDraft(input, omitTitle = false) {
+function calendarDraft(input, omitTitle = false, omitTime = false) {
   const title = String((input && input.title) || "").trim();
   const startRaw = String((input && input.start) || "").trim();
   const endRaw = String((input && input.end) || "").trim();
@@ -2000,6 +2008,8 @@ function calendarDraft(input, omitTitle = false) {
   const description = String((input && input.description) || "").trim();
   const allDay = !!(input && input.allDay);
   const eventId = String((input && input.eventId) || "").trim();
+  if (omitTime && eventId) return { error: "", accountId, calendarId, eventId,
+    ...(omitTitle ? {} : { title }), location, description };
   if (allDay) {
     const start = startRaw.slice(0, 10);
     const end = endRaw.slice(0, 10);
@@ -2023,6 +2033,15 @@ function calendarDraft(input, omitTitle = false) {
   const start = Date.parse(startRaw);
   const end = Date.parse(endRaw);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return { error: "Pick a start and a later end." };
+  for (const raw of [startRaw, endRaw]) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(raw)) continue;
+    const parsed = new Date(raw);
+    const offsets = [-86400000, 86400000].map((shift) => new Date(parsed.getTime() + shift).getTimezoneOffset());
+    if (toDateTimeLocal(raw) !== raw.slice(0, 16) || offsets.some((offset) => {
+      const alternate = parsed.getTime() + (offset - parsed.getTimezoneOffset()) * 60000;
+      return alternate !== parsed.getTime() && toDateTimeLocal(new Date(alternate).toISOString()) === raw.slice(0, 16);
+    })) return { error: "This local time is missing or ambiguous at a daylight-saving change. Choose another time or edit it with the calendar provider using an explicit offset." };
+  }
   const body = {
     error: "",
     accountId: accountId,
@@ -2794,6 +2813,7 @@ function outboxComposeSeed(row, payload) {
   const html = typeof source.body === "string" ? source.body : (row && row.htmlBody) || "";
   const subject = source.subject || (row && row.subject) || "";
   const seed = {
+    recoveredSnapshot: true,
     title: subject || "Message",
     accountId: source.accountId || (row && row.accountId),
     fromAddress: source.fromAddress || (row && row.fromAddress),
@@ -11587,6 +11607,7 @@ function syncComposePlainFromEditor() {
   const editor = $("compose-editor");
   const body = $("compose-body");
   if (!composeEditorLive() || !body) return;
+  if (state.draftWrite && !state.draftWrite.pending) state.draftWrite = null;
   const sig = editor.querySelector("[data-compose-signature]");
   if (sig) {
     const clone = editor.cloneNode(true);
@@ -11907,7 +11928,7 @@ function syncComposeRecipientRows() {
 function syncComposeActions() {
   const account = composeAccount();
   const live = isLive(account);
-  const locked = state.composePending || state.composeQueued || state.composeInitializing || !!state.draftWrite?.pending;
+  const locked = state.composePending || state.composeQueued || state.composeInitializing || !!state.draftWrite?.pending || composeFilesPending();
   for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked || !!state.composeIdentityError;
   $("compose-schedule").disabled = !live || locked || !!state.composeIdentityError || !!state.botDraftReview;
   const sendButton = $("compose-send");
@@ -11983,7 +12004,13 @@ function paintComposeAttachments() {
   if (!list || typeof list.replaceChildren !== "function") return;
   const rows = composeAttachmentList(state.composeAttachments);
   list.replaceChildren();
-  list.hidden = !rows.length;
+  const pending = (state.composeFileJobs || []).filter((job) => job.session === state.composeSession);
+  list.hidden = !rows.length && !pending.length;
+  for (const job of pending) {
+    const item = document.createElement("li");
+    item.textContent = "Preparing attachment: " + job.names.join(", ");
+    list.appendChild(item);
+  }
   const locked = !!(state.composePending || state.composeQueued || state.composeInitializing);
   for (const row of rows) {
     const item = typeof document.createElement === "function" ? document.createElement("li") : null;
@@ -12024,6 +12051,10 @@ function removeComposeAttachment(storageUrl) {
   paintComposeNote();
 }
 
+function composeFilesPending() {
+  return (state.composeFileJobs || []).some((job) => job.session === state.composeSession);
+}
+
 async function addComposeFiles(list) {
   const incoming = Array.from(list || []);
   if (!incoming.length || state.composePending || state.composeQueued || state.composeInitializing) return;
@@ -12033,41 +12064,57 @@ async function addComposeFiles(list) {
     size: file && file.size,
   })), provider);
   const errors = review.errors.slice();
-  for (const row of review.accepted) {
-    const file = incoming[row.index];
-    const name = row.filename;
-    try {
-      const bytes = file && typeof file.arrayBuffer === "function" ? new Uint8Array(await file.arrayBuffer()) : null;
-      if (!bytes || !bytes.length) {
-        errors.push(`${name} is empty.`);
-        continue;
+  const job = { session: state.composeSession, names: review.accepted.map((row) => row.filename) };
+  const active = () => job.session === state.composeSession && !state.composeQueued && $("compose").open;
+  state.composeFileJobs.push(job);
+  syncComposeActions();
+  paintComposeAttachments();
+  try {
+    for (const row of review.accepted) {
+      if (!active()) return;
+      const file = incoming[row.index];
+      const name = row.filename;
+      try {
+        const bytes = file && typeof file.arrayBuffer === "function" ? new Uint8Array(await file.arrayBuffer()) : null;
+        if (!active()) return;
+        if (!bytes || !bytes.length) {
+          errors.push(`${name} is empty.`);
+          continue;
+        }
+        const saved = await call("mail:uploadAttachment", {
+          filename: name,
+          mimeType: (file && file.type) || "application/octet-stream",
+          fileBytes: bytes,
+        });
+        if (!active()) return;
+        const meta = composeFileMeta(saved);
+        if (!meta) {
+          errors.push(`Could not read ${name}. Remove it and attach the file again.`);
+          continue;
+        }
+        const next = composeAttachmentList(state.composeAttachments.concat([meta]));
+        const sum = next.reduce((total, item) => total + (Number(item.size) || 0), 0);
+        const over = attachmentCapCopy(meta.filename, meta.size, sum, provider);
+        if (over) {
+          errors.push(over);
+          continue;
+        }
+        state.composeAttachments = next;
+        paintComposeAttachments();
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
       }
-      const saved = await call("mail:uploadAttachment", {
-        filename: name,
-        mimeType: (file && file.type) || "application/octet-stream",
-        fileBytes: bytes,
-      });
-      const meta = composeFileMeta(saved);
-      if (!meta) {
-        errors.push(`Could not read ${name}. Remove it and attach the file again.`);
-        continue;
-      }
-      const next = composeAttachmentList(state.composeAttachments.concat([meta]));
-      const sum = next.reduce((total, item) => total + (Number(item.size) || 0), 0);
-      const over = attachmentCapCopy(meta.filename, meta.size, sum, provider);
-      if (over) {
-        errors.push(over);
-        continue;
-      }
-      state.composeAttachments = next;
+    }
+    if (!active()) return;
+    setComposeAttachError(errors[0] || "");
+    paintComposeNote();
+  } finally {
+    state.composeFileJobs = state.composeFileJobs.filter((item) => item !== job);
+    if (active()) {
+      syncComposeActions();
       paintComposeAttachments();
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
     }
   }
-  setComposeAttachError(errors[0] || "");
-  paintComposeAttachments();
-  paintComposeNote();
 }
 
 let composeDropDepth = 0;
@@ -12819,6 +12866,8 @@ function paintDraft() {
 }
 
 function onDraftEvent(event) {
+  if (!state.draftWrite?.pending || !event || event.reqId !== state.draftWrite.reqId) return;
+  if (!["chunk", "error", "done"].includes(event.type)) return;
   applyDraftEvent(state.draftWrite, event);
   if (!$("compose").open) return;
   paintDraft();
@@ -12860,7 +12909,7 @@ async function startDraftWrite() {
       body: draftInstruction(mode, prompt, draftExisting, $("compose-subject").value, source),
     });
   } catch (error) {
-    if (!state.draftWrite || state.draftWrite.reqId !== reqId) return;
+    if (!state.draftWrite?.pending || state.draftWrite.reqId !== reqId) return;
     state.draftWrite.pending = false;
     state.draftWrite.error = error instanceof Error ? error.message : String(error);
     paintDraft();
@@ -13174,7 +13223,7 @@ async function initializeComposeIdentity(fields) {
     $("compose-to").value = parties.to;
     $("compose-cc").value = parties.cc;
   }
-  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt;
+  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot;
   state.composeIdentity = { ...context, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
   paintComposeFromPicker(state.composeIdentity);
@@ -13231,8 +13280,14 @@ function changeComposeFrom() {
   context.defaultCc = defaults.cc;
   context.defaultBcc = defaults.bcc;
   applyComposeRecipients();
+  const untouched = composeSignatureUntouched();
+  if (untouched && composeEditorLive()) {
+    const node = $("compose-editor").querySelector("[data-compose-signature]");
+    state.signatureText = node ? plainFromComposeHtml(node.innerHTML) : "";
+    syncComposePlainFromEditor();
+  }
   const signature = applyFromSignature({
-    follows: context.signatureFollowsFrom,
+    follows: context.signatureFollowsFrom && untouched,
     body: $("compose-body").value,
     previous: state.signatureText,
     pack: state.signaturePack,
@@ -13627,6 +13682,7 @@ async function openCompose(seed) {
   hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
+  state.composeFileJobs = [];
   const replySession = state.composeSession;
   state.agentReplyTodo = explicitAgentTodo(fields.agentTodo);
   state.agentReplySource = freshReplyLearningSource(fields);
@@ -13691,7 +13747,7 @@ async function openCompose(seed) {
     setComposeStatus("From address could not be loaded. Your text is retained.", true);
   }
   const initial = composeSnapshot();
-  await Promise.all([fields.partialReceipt ? Promise.resolve() : fillSignatures(!!fields.draftId), loadScheduled()]);
+  await Promise.all([fields.partialReceipt ? Promise.resolve() : fillSignatures(!!fields.draftId || !!fields.recoveredSnapshot), loadScheduled()]);
   if (replySession === state.composeSession && !state.agentReplyTodo && freshReplyTodoSeed(fields)) {
     try {
       const target = await call("nativeAgent:home:replyTarget", freshReplyTodoSeed(fields));
@@ -13712,7 +13768,7 @@ async function openCompose(seed) {
   }
   // A supplied proposal is unsaved work; an untouched new message is not.
   const baseline = JSON.parse(initial);
-  baseline.body = fields.draftId ? baseline.body : applySignature(baseline.body, "", state.signatureText);
+  baseline.body = fields.draftId || fields.recoveredSnapshot ? baseline.body : applySignature(baseline.body, "", state.signatureText);
   baseline.html = composeEditorSnapshot();
   state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
   syncCompose();
@@ -13750,7 +13806,8 @@ function composeSnapshot() {
     subject: $("compose-subject").value, body: $("compose-body").value,
     html: composeEditorSnapshot(),
     quote: state.composeQuote && state.composeQuote.text,
-    attachments: attachmentKey(state.composeAttachments) });
+    attachments: attachmentKey(state.composeAttachments),
+    pendingAttachments: (state.composeFileJobs || []).filter((job) => job.session === state.composeSession).map((job) => job.names) });
 }
 
 async function requestComposeClose() {
@@ -14088,7 +14145,7 @@ async function editScheduledMail(row) {
 }
 
 async function composeOperation(work) {
-  if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending) return false;
+  if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending || composeFilesPending()) return false;
   state.composePending = true;
   syncCompose();
   try { await work(); return true; }
@@ -14144,6 +14201,10 @@ function composeReady() {
   const account = composeAccount();
   if (!isLive(account)) return false;
   if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError) return false;
+  if (composeFilesPending()) {
+    setComposeStatus("Wait for attachment preparation before saving, sending or scheduling.", true);
+    return false;
+  }
   if (state.draftWrite?.pending) {
     setComposeStatus("Finish or cancel AI writing before reviewing this message.", true);
     return false;
@@ -14238,7 +14299,7 @@ async function confirmComposePreview() {
   if (!draft) return false;
   previewDraftState = null;
   await closeDialog("compose-preview");
-  if (draft.session !== state.composeSession || draft.snapshot !== composeSnapshot() || state.draftWrite?.pending) {
+  if (draft.session !== state.composeSession || draft.snapshot !== composeSnapshot() || state.draftWrite?.pending || composeFilesPending()) {
     setComposeStatus("The message changed. Review a new preview before sending or scheduling.", true);
     return false;
   }
@@ -14364,19 +14425,13 @@ async function undoOutboxItem(row) {
     showStatus("Delivery has started. It can no longer be canceled. Check Sent before retrying.", true);
     return;
   }
-  let snapshot;
+  let recovered;
   try {
-    const result = await call("mail:cancelScheduled", { id: row.id });
-    snapshot = result && result.snapshot;
+    recovered = await call("mail:editScheduled", { id: row.id });
   } catch (error) {
     showStatus(error.message || "Delivery has started. It can no longer be canceled. Check Sent before retrying.", true);
     return;
   }
-  let payload = {};
-  if (snapshot && typeof snapshot.payloadJson === "string") {
-    try { payload = JSON.parse(snapshot.payloadJson) || {}; } catch { payload = {}; }
-  }
-  const seed = outboxComposeSeed(row, payload);
   state.outboxRows = (state.outboxRows || []).filter((item) => item && item.id !== row.id);
   const nav = $("folders");
   if (nav && typeof nav.querySelector === "function") applyOutboxChrome(nav.querySelector(".outbox-mail"));
@@ -14391,14 +14446,19 @@ async function undoOutboxItem(row) {
     renderList();
     renderReader(false);
   }
-  await presentCompose(seed);
-  showStatus(seed.status);
+  const status = "Send canceled. A recovery copy is saved in local Drafts; nothing sends automatically.";
+  try {
+    await resumeDraft({ id: recovered.emailId, accountId: recovered.accountId }, { status });
+    showStatus(status);
+  } catch (error) {
+    showStatus("Send canceled and saved in local Drafts, but Compose could not open. Resume it from Drafts. " + (error.message || String(error)), true);
+  }
 }
 
 // The local delay can be canceled only before mail:send begins.
 async function sendMail(reviewedPayload) {
   const account = composeAccount();
-  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending || sendTimer) return;
+  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || state.draftWrite?.pending || composeFilesPending() || sendTimer) return;
   if (reviewedPayload && reviewedPayload.accountId !== account.id) return;
   if (!composeHasRecipient()) {
     setComposeStatus("Add at least one recipient.", true);
@@ -17823,7 +17883,7 @@ function paintCategories() {
   $("brain-category-add").textContent = brainCategoryIndex >= 0 ? "Update" : "Add";
   $("brain-category-add").disabled = locked;
   $("brain-category-cancel").hidden = brainCategoryIndex < 0;
-  $("brain-category-save").disabled = locked;
+  $("brain-category-save").disabled = locked || brainCategorySaving;
   $("brain-category-ai").disabled = locked;
 }
 
@@ -17911,23 +17971,35 @@ async function loadBrainCategories(gen) {
 }
 
 async function saveBrainCategories() {
-  if (!brainCategoriesReady) return;
-  const wasEmpty = brainCategories.length === 0;
-  await call("emailBrain:saveCategories", { categories: brainCategories });
+  if (!brainCategoriesReady || brainCategorySaving) return;
   const gen = brainCategoryGen;
-  const parsed = readCategoryPayload(await call("emailBrain:getCategories"));
-  if (gen !== brainCategoryGen) return;
-  brainCategories = parsed.categories;
-  updateCategoriesBaseline = JSON.stringify(brainCategories);
-  brainCategoryDefaults = parsed.defaults;
-  resetCategoryForm();
-  // shortcut: an empty save reads back as the host defaults, change readStore if an empty list must stick
-  showCategoryStatus(wasEmpty ? "Saved. An empty list uses the defaults." : "Saved.", false);
+  const submitted = JSON.stringify(brainCategories);
+  const formState = () => JSON.stringify([brainCategoryIndex, $("brain-category-name").value,
+    $("brain-category-description").value, $("brain-category-collapse").checked]);
+  const submittedForm = formState();
+  const wasEmpty = brainCategories.length === 0;
+  brainCategorySaving = true;
   paintCategories();
-  const home = await call("nativeAgent:home:refreshTaxonomy");
-  if (state.view === "agent") {
-    paintAgent(home, "");
-    await loadAgent();
+  try {
+    await call("emailBrain:saveCategories", { categories: JSON.parse(submitted) });
+    const parsed = readCategoryPayload(await call("emailBrain:getCategories"));
+    if (gen !== brainCategoryGen) return;
+    const unchanged = JSON.stringify(brainCategories) === submitted && formState() === submittedForm;
+    if (unchanged) brainCategories = parsed.categories;
+    updateCategoriesBaseline = JSON.stringify(parsed.categories);
+    brainCategoryDefaults = parsed.defaults;
+    if (unchanged) resetCategoryForm();
+    showCategoryStatus(!unchanged ? "Submitted list saved. Newer edits are not saved."
+      : wasEmpty ? "Saved. An empty list uses the defaults." : "Saved.", false);
+    paintCategories();
+    const home = await call("nativeAgent:home:refreshTaxonomy");
+    if (state.view === "agent") {
+      paintAgent(home, "");
+      await loadAgent();
+    }
+  } finally {
+    brainCategorySaving = false;
+    if (gen === brainCategoryGen) paintCategories();
   }
 }
 
@@ -21183,6 +21255,18 @@ let calendarDetailKey = "";
 let calendarEditingId = "";
 let calendarEditingIdentity = null;
 let calendarTimedSnapshot = null;
+let calendarCreateAttempt = null;
+const calendarAuthFailures = new Set();
+
+function recordCalendarAuthFailure(accountId, error) {
+  if (!["needs_auth", "scope_missing", "oauth", "google_client_changed"].includes(error?.code)) return false;
+  calendarAuthFailures.add(accountId);
+  if (calendarAccount()?.id === accountId) {
+    const grant = $("calendar-grant");
+    if (grant) grant.textContent = "Reauthorize calendar";
+  }
+  return true;
+}
 let calendarEditorGeneration = 0;
 let calendarWritePending = false;
 
@@ -21315,7 +21399,7 @@ function paintCalendar(payload) {
   const month = cursor.getMonth();
   const range = monthRange(year, month);
   const account = calendarAccount();
-  const connection = calendarConnection(state.calendarStatus || state.oauthStatus, account, payload);
+  const connection = calendarConnection(state.calendarStatus || state.oauthStatus, account, payload, calendarAuthFailures.has(account?.id));
   let status = view.status;
   if (!view.showGrid && payload && payload.reason === "needs_auth" && account && account.email) {
     status = calendarCopy("needs_auth", account.email);
@@ -21356,7 +21440,7 @@ function paintCalendar(payload) {
     for (const item of bucket.querySelectorAll(".calendar-event")) item.remove();
     const rows = eventsOnDay(events, key).slice().sort((left, right) => {
       if (!!left.allDay !== !!right.allDay) return left.allDay ? -1 : 1;
-      return String((left && left.start) || "").localeCompare(String((right && right.start) || ""));
+      return compareCalendarStarts(left, right);
     });
     for (const event of rows) appendCalendarEvent(bucket, event, key, calendarColor(event.calendarId || state.calendarId));
   }
@@ -21604,6 +21688,7 @@ function openCalendarEditor(event, dayStamp) {
   }
   calendarEditorGeneration += 1;
   calendarTimedSnapshot = null;
+  calendarCreateAttempt = null;
   const dialogTitle = $("calendar-dialog-title");
   const save = $("calendar-save");
   const remove = $("calendar-delete");
@@ -21652,6 +21737,7 @@ function openCalendarEditor(event, dayStamp) {
     end.value = stamp + "T10:00";
   }
   syncAllDayInputs();
+  if (editing) calendarEditingIdentity.timeInputs = [start.value, end.value, !!allDay.checked];
   const pick = $("calendar-pick");
   if (pick) pick.disabled = editing;
   const wanted = editing && event.calendarId ? event.calendarId : (state.calendarId || state.calendarIds[0] || "");
@@ -21685,14 +21771,20 @@ async function deleteCalendarEvent(event) {
       calendarId: identity.calendarId,
       eventId: id,
     });
-    if (generation !== calendarEditorGeneration || calendarAccount()?.id !== ownerId) return;
+    invalidateCalendarAccount(ownerId);
+    if (generation !== calendarEditorGeneration || calendarAccount()?.id !== ownerId) {
+      if (state.view === "calendar" && calendarAccount()?.id === ownerId && !$("calendar-event-dialog").open) await loadCalendar({ fresh: true });
+      return;
+    }
     calendarEditingId = "";
     calendarEditingIdentity = null;
     if (event && calendarEventKey(event) === state.calendarEventId) state.calendarEventId = "";
     closeDialog("calendar-event-dialog");
     showStatus("Event deleted.");
-    calendarCache.clear();
     await loadCalendar({ fresh: true });
+  } catch (error) {
+    recordCalendarAuthFailure(ownerId, error);
+    throw error;
   } finally { calendarWritePending = false; }
 }
 
@@ -21880,7 +21972,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
   calendarStatusPending.then(status => {
     if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
     state.calendarStatus = status;
-    const connection = calendarConnection(status, calendarAccount(), state.calendarPayload);
+    const connection = calendarConnection(status, calendarAccount(), state.calendarPayload, calendarAuthFailures.has(account.id));
     $("calendar-grant").disabled = !connection.canGrant;
     $("calendar-grant").textContent = connection.label;
     $("calendar-grant").title = connection.reason;
@@ -21896,12 +21988,14 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
     }
     const payload = await calendarPending.get(key);
     if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
+    if (payload?.api) calendarAuthFailures.delete(account.id);
     applyCalendarPayload(payload);
     rememberCalendar(key, payload);
     rememberCalendar(calendarCacheKey(account, range, state.calendarIds), payload);
   } catch (error) {
     if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
     const message = error instanceof Error ? error.message : String(error);
+    recordCalendarAuthFailure(account.id, error);
     if (cached?.payload?.api) {
       $("calendar-status").textContent = "Could not refresh. Showing the saved month. " + message;
       $("calendar-status").classList.add("error");
@@ -21942,9 +22036,11 @@ async function grantCalendar() {
   if (!account) throw new Error("Connect a Google or Microsoft mailbox first.");
   showStatus("Enabling mailbox features…");
   try {
-    const saved = await call("calendar:connect", { accountId: account.id });
+    const saved = await call("calendar:connect", { accountId: account.id,
+      ...(calendarAuthFailures.has(account.id) ? { forceReauthorize: true } : {}) });
     const outcome = grantApiOutcome(saved, "Calendar connected.", "Approve mailbox feature permissions in your browser.");
     if (!outcome.ok) throw new Error(outcome.message);
+    calendarAuthFailures.delete(account.id);
     showStatus(outcome.message);
   } finally {
     await loadCalendar({ fresh: true });
@@ -21980,6 +22076,8 @@ async function submitCalendarEvent(event) {
     throw new Error("The calendar account changed. Reopen the event before saving it.");
   }
   const title = $("calendar-event-title").value;
+  const unchangedTime = !!editing && JSON.stringify(identity.timeInputs) === JSON.stringify([
+    $("calendar-start").value, $("calendar-end").value, !!$("calendar-all-day").checked]);
   if (editing && identity.titleTruncated && title !== identity.title) {
     throw new Error("This title is incomplete. Leave it unchanged or edit it with the calendar provider.");
   }
@@ -21993,7 +22091,7 @@ async function submitCalendarEvent(event) {
     start: $("calendar-start").value,
     end: $("calendar-end").value,
     eventId: editing,
-  }, !!editing && title === identity.title);
+  }, !!editing && title === identity.title, unchangedTime);
   const status = $("calendar-form-status");
   if (draft.error) {
     if (status) {
@@ -22009,6 +22107,17 @@ async function submitCalendarEvent(event) {
       draft.descriptionBase = identity.description;
     }
     if (draft.location === identity.location.trim()) delete draft.location;
+  } else {
+    const fingerprint = JSON.stringify(draft);
+    if (calendarCreateAttempt && calendarCreateAttempt.fingerprint !== fingerprint) {
+      throw new Error("The earlier creation may already exist. Restore the submitted fields to retry safely, or check the provider before starting another event.");
+    }
+    if (!calendarCreateAttempt) {
+      const operationId = window.crypto?.randomUUID?.().replace(/-/g, "")
+        || Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+      calendarCreateAttempt = { operationId, fingerprint };
+    }
+    draft.operationId = calendarCreateAttempt.operationId;
   }
   if (status) {
     status.textContent = "";
@@ -22018,6 +22127,10 @@ async function submitCalendarEvent(event) {
   try {
     if (editing) await call("calendar:updateEvent", draft);
     else await call("calendar:createEvent", draft);
+  } catch (error) {
+    const refused = recordCalendarAuthFailure(account.id, error) || ["invalid", "oauth_not_ready", "imap_only", "no_account"].includes(error.code);
+    if (!editing && refused && generation === calendarEditorGeneration) calendarCreateAttempt = null;
+    throw error;
   } finally { calendarWritePending = false; }
   invalidateCalendarAccount(account.id);
   if (generation !== calendarEditorGeneration || calendarAccount()?.id !== account.id) {
@@ -22783,7 +22896,10 @@ function wireBot() {
   $("bot-secret-close").addEventListener("click", () => closeDialog("bot-secret"));
   $("bot-secret").addEventListener("close", clearBotSecret);
   for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body"]) {
-    $(id).addEventListener("input", paintComposeNote);
+    $(id).addEventListener("input", () => {
+      if (id === "compose-body" && state.draftWrite && !state.draftWrite.pending) state.draftWrite = null;
+      paintComposeNote();
+    });
   }
 }
 
@@ -23098,6 +23214,7 @@ let recipientSuggestIndex = -1;
 let recipientSuggestRows = [];
 let recipientSuggestInput = null;
 let recipientSuggestEscape = false;
+let recipientSuggestSnapshot = null;
 
 function recipientSuggestApi() {
   return typeof window !== "undefined" ? window.morrowRecipientSuggest : null;
@@ -23115,6 +23232,7 @@ function hideRecipientSuggest() {
   recipientSuggestIndex = -1;
   recipientSuggestRows = [];
   recipientSuggestInput = null;
+  recipientSuggestSnapshot = null;
   if (input && typeof input.setAttribute === "function") {
     input.setAttribute("aria-expanded", "false");
     if (typeof input.removeAttribute === "function") input.removeAttribute("aria-activedescendant");
@@ -23132,6 +23250,7 @@ function scheduleRecipientSuggest(input) {
     hideRecipientSuggest();
     return;
   }
+  hideRecipientSuggest();
   const gen = ++recipientSuggestGen;
   if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
   recipientSuggestTimer = setTimeout(() => {
@@ -23183,6 +23302,7 @@ function paintRecipientSuggest(input, rows) {
   box.replaceChildren();
   recipientSuggestRows = rows;
   recipientSuggestInput = input;
+  recipientSuggestSnapshot = { value: input.value, gen: recipientSuggestGen };
   recipientSuggestIndex = -1;
   for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
     const node = document.getElementById(id);
@@ -23245,6 +23365,10 @@ function chooseRecipientSuggest(email) {
   const input = recipientSuggestInput;
   const choice = recipientSuggestRows.find((row) => row.email === email);
   if (!api || !input || !choice) return;
+  if (!recipientSuggestSnapshot || recipientSuggestSnapshot.value !== input.value || recipientSuggestSnapshot.gen !== recipientSuggestGen) {
+    hideRecipientSuggest();
+    return;
+  }
   input.value = api.applyChoice(input.value, choice);
   hideRecipientSuggest();
   input.dispatchEvent(new Event("input", { bubbles: true }));

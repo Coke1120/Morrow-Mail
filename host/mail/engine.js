@@ -3154,6 +3154,7 @@ function agentTodoOf(input) {
 function outboxNoticeSeed(row, payload, presented) {
   const html = presented && typeof presented.htmlBody === "string" ? presented.htmlBody : (typeof payload.body === "string" ? payload.body : "");
   const seed = {
+    recoveredSnapshot: true,
     accountId: row.account_id,
     to: payload.to,
     cc: payload.cc,

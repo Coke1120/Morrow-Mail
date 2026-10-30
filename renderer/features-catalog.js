@@ -7,6 +7,24 @@
   return {
     items: [
       {
+        id: "compose-work-preservation",
+        title: "Compose recovery and preparation",
+        category: "Mail",
+        blurb: "Unrelated, completed and canceled AI draft events cannot replace manual edits. Selected files show Preparing attachment and block Save, previews, Send and Schedule until preparation settles; closing Compose abandons unfinished preparation. Undo atomically saves an inert recovery draft before opening Compose. Exact recipients and body, including cleared Cc/Bcc and one existing signature, are preserved. If Compose fails, resume from local Drafts; Undo never requeues delivery. Failed-send snapshots also bypass new-message defaults. Untouched multiline HTML signatures follow same-mailbox aliases; edited signatures stay intact. Changing recipient input retires old suggestion choices immediately, and escaped display-name quotes round-trip.",
+      },
+      {
+        id: "brain-edit-preservation",
+        title: "Profile edit preservation",
+        category: "Agent",
+        blurb: "Refresh and Rebuild preserve saved user-rule and category edits made during analysis. A changed learned profile rejects an obsolete analysis. Learned facts retain non-Latin names and text. Fix persists the selected row, including voice quotes, only while its stored version still matches; an obsolete Fix asks you to reload. Category-save readback preserves newer local edits and reports them as unsaved. Domain CC/BCC recipients may contain = in the address.",
+      },
+      {
+        id: "calendar-write-safety",
+        title: "Calendar write safety",
+        category: "Calendar",
+        blurb: "Known authorization failures offer Reauthorize calendar; ordinary refresh reuses valid grants. Retrying unchanged creation in the same editor reuses its Google event ID or Microsoft transaction ID. Check the provider before changing an uncertain submission and starting another event. Plain-text descriptions preserve literal angle brackets; readable HTML descriptions retain link targets. Non-time edits omit time fields, preserving offsets and seconds through repeated daylight-saving hours. Ambiguous or nonexistent local time edits require another time or the provider editor with an explicit offset. Confirmed saves and deletes invalidate all cached months for the changed mailbox, even after closing the editor. Google calendar enumeration follows up to five pages; incomplete lists leave saved selections unchanged. Timed agenda and day-cell rows sort by actual instants across UTC offsets.",
+      },
+      {
         id: "ai-connection",
         title: "ChatGPT or API key",
         category: "Agent",

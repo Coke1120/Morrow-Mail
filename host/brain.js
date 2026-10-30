@@ -308,8 +308,13 @@ async function analyzeMailAdmitted(mode) {
   }
   try {
     if (!refresh) emit("emailBrain:rebuildState", { rebuilding: true, phase: "rebuilding", percent: 55, error: null });
+    const initial = readStore();
+    const generatedVersion = JSON.stringify(initial.generated);
+    const parsed = await runPersona(mode, sample, initial.generated);
     const store = readStore();
-    const parsed = await runPersona(mode, sample, store.generated);
+    if (JSON.stringify(store.generated) !== generatedVersion) {
+      throw new Error("The learned profile changed during analysis. Refresh again to use the latest profile.");
+    }
     if (!refresh) emit("emailBrain:rebuildState", { rebuilding: true, phase: "saving", percent: 85, error: null });
     const priorEmails = store.generated && store.generated.identity && store.generated.identity.emails;
     applyGenerated(store, parsed, sample, mode, collectAccountEmails(priorEmails));
@@ -569,9 +574,18 @@ function persistItemValue(store, itemId, value) {
     rule.value = value;
     return true;
   }
+  let wrote = false;
+  if (store.generated && Array.isArray(store.generated.voiceQuotes)) {
+    store.generated.voiceQuotes = store.generated.voiceQuotes.map((item, index) => {
+      if (`voice:${index}` !== itemId) return item;
+      wrote = true;
+      return value;
+    });
+  }
   if (store.generated && Array.isArray(store.generated.writing)) {
     store.generated.writing = store.generated.writing.map((item, index) => {
       if (writingKey(item, index) !== itemId) return item;
+      wrote = true;
       if (item && typeof item === "object") return { ...item, value };
       return value;
     });
@@ -580,11 +594,13 @@ function persistItemValue(store, itemId, value) {
     for (const section of store.generated.sections) {
       section.rows = (section.rows || []).map((item, index) => {
         const id = item.id || `${section.id}:${index}`;
-        return id === itemId ? { ...item, value } : item;
+        if (id !== itemId) return item;
+        wrote = true;
+        return { ...item, value };
       });
     }
   }
-  return true;
+  return wrote;
 }
 
 async function fixItem(params) {
@@ -593,6 +609,14 @@ async function fixItem(params) {
     if (identityFixTarget(itemId) === "emails") {
       return fail(new Error("Account addresses stay with the connected mailbox."));
     }
+    const initial = readStore();
+    const selected = personaFrom(initial).profile.sections.flatMap((section) => section.rows || []).find((item) => item.id === itemId)
+      || Object.values(initial.generated && initial.generated.identity || {}).flat().find((item) => item && item.id === itemId);
+    if (!selected || (typeof params.value === "string" && params.value !== selected.value)) {
+      throw new Error("That profile row changed. Reload the profile and choose Fix again.");
+    }
+    const versionOf = (store) => JSON.stringify(store.userRules.find((item) => item.id === itemId) || store.generated);
+    const selectedVersion = versionOf(initial);
     const text = await complete([
       {
         role: "system",
@@ -603,8 +627,11 @@ async function fixItem(params) {
     const value = text.trim();
     if (!value) return fail(new Error("The model returned an empty rewrite."));
     const store = readStore();
+    if (versionOf(store) !== selectedVersion) {
+      throw new Error("That profile row changed while Fix was running. Reload the profile and choose Fix again.");
+    }
     const wrote = persistItemValue(store, itemId, value);
-    if (wrote === false) return ok({ value });
+    if (!wrote) throw new Error("That profile row is no longer available. Reload the profile.");
     pushActivity(store, "fix", "Rewrote one profile row.");
     writeStore(store);
     emit("emailBrain:updated", {});
