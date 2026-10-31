@@ -13783,13 +13783,13 @@ async function initializeComposeIdentity(fields) {
     ? window.morrowComposePolicy.displayName(fields.fromDisplayName) : context.fromDisplayName || "";
   if ((fields.kind === "reply" || fields.kind === "all") && fields.quoteEmail && !fields.draftId && !fields.botDraft) {
     const parties = replyParties({ ...fields.quoteEmail, ...(Array.isArray(context.replyTo) ? { replyTo: context.replyTo } : {}) }, context.selfAddresses, fields.kind === "all");
-    if (edits.to === versions.to) $("compose-to").value = parties.to;
-    if (edits.cc === versions.cc) $("compose-cc").value = parties.cc;
+    if (!edits || edits.to === versions.to) $("compose-to").value = parties.to;
+    if (!edits || edits.cc === versions.cc) $("compose-cc").value = parties.cc;
   }
   const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot;
   state.composeIdentity = { ...context, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
-  for (const field of ["cc", "bcc"]) if (edits[field] !== versions[field]) state.composeIdentity.seeds[field].locked = true;
+  for (const field of ["cc", "bcc"]) if (edits && edits[field] !== versions[field]) state.composeIdentity.seeds[field].locked = true;
   paintComposeFromPicker(state.composeIdentity);
   applyComposeRecipients();
   paintComposeIdentity();

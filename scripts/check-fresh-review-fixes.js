@@ -181,6 +181,7 @@ async function hostChecks() {
     assert.equal(refreshed.replyTo[0].address,"customer@fixture.invalid","reply preparation enriches legacy header metadata");
     ui.context.refreshed=refreshed;
     ui.run("call=async()=>refreshed");
+    ui.run("state.composeInputVersions={to:0,cc:0,bcc:0,subject:0,body:0}");
     await ui.run("initializeComposeIdentity({kind:'reply',quoteEmail:{from:'no-reply@fixture.invalid'}})");
     assert.match(ui.node("compose-to").value,/customer@fixture.invalid/);
     for (const all of [false,true]) {
