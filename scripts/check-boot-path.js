@@ -7783,7 +7783,7 @@ async function checkProviderApi() {
       rateSeen.push(String(url));
       return jsonResponse({}, 429);
     }));
-    assert.deepStrictEqual(rateSeen.map((url) => url.includes("/calendars/b/")), [false]);
+    assert.deepStrictEqual(rateSeen.map((url) => url.includes("/calendars/b/")), [false, true]);
     assert.strictEqual(calendarApi.googleEventBody({
       title: "Standup",
       start: "2026-10-17T10:00:00.000Z",
