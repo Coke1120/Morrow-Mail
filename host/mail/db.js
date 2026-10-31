@@ -396,9 +396,15 @@ function migrate() {
           SELECT ${source}.account_id, ${table === "messages" ? `${source}.folder_path` : "''"}, value FROM mail_list_revision WHERE id = 1
           ON CONFLICT(account_id, folder_path) DO UPDATE SET revision = excluded.revision;`).join("\n") : "";
       const trigger = `mail_list_${table}_${operation.toLowerCase()}`;
-      run(`DROP TRIGGER IF EXISTS ${trigger}`);
-      run(`CREATE TRIGGER ${trigger} AFTER ${operation} ON ${table}
-        ${condition} BEGIN UPDATE mail_list_revision SET value = value + 1 WHERE id = 1; ${notices} END`);
+      const sql = `CREATE TRIGGER ${trigger} AFTER ${operation} ON ${table}
+        ${condition} BEGIN UPDATE mail_list_revision SET value = value + 1 WHERE id = 1; ${notices} END`;
+      // DROP+CREATE every migrate rewrites sqlite_master (fails persistence reopen=0).
+      // Refresh only when missing or body differs (upgrades OR REPLACE → ON CONFLICT).
+      const existing = get("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", [trigger])?.sql;
+      if (existing !== sql) {
+        run(`DROP TRIGGER IF EXISTS ${trigger}`);
+        run(sql);
+      }
     }
   }
   ensureSearchSchema();
