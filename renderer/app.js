@@ -15729,8 +15729,11 @@ function paintFeatureCatalog() {
         blurb.textContent = row.blurb || "";
         card.append(title, blurb);
         if (row.id === "sponsor-support") {
-          const links = $("settings-support")?.querySelector(".about-links");
-          if (links) card.appendChild(links.cloneNode(true));
+          const support = $("settings-support");
+          const links = support && typeof support.querySelector === "function"
+            ? support.querySelector(".about-links")
+            : null;
+          if (links && typeof links.cloneNode === "function") card.appendChild(links.cloneNode(true));
         }
         list.appendChild(card);
       }
