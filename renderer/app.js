@@ -10399,18 +10399,18 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   const action = (extra && extra.action) || removalAction(label);
   rememberUndoSnapshots(snapshotEmails(ids, extra), action, extra && extra.destinationLabel);
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed" && !restoredUndoOpIds.has(row.opId)).map((row) => row.id));
-  if (state.email && completed.has(state.email.id)) {
-    state.email = null;
-    state.thread = [];
-    renderReader(false);
-  }
-  state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
   const text = receiptText(label, outcome);
   const waiting = (outcome.outcomes || []).some((row) => row.phase === "accepted");
   if (outcome.removalEpoch == null) startRemovalSession(text, [], !!outcome.error, []);
   const epoch = outcome.removalEpoch ?? undoEpoch;
   rememberRemovalReceipt(outcome, epoch);
   if (epoch === undoEpoch) {
+    if (state.email && completed.has(state.email.id)) {
+      state.email = null;
+      state.thread = [];
+      renderReader(false);
+    }
+    state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
     if (outcome.opIds.length && (undoBusy || undoPending.size)) undoSettleQueue.push(outcome);
     else if (outcome.opIds.length) {
       applyRemovalSettlement(outcome, text, !!outcome.error);

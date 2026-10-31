@@ -192,6 +192,67 @@ test('clearing a session rejects its late completion instead of reviving Undo', 
   assert.equal(ui.run('undoOpIds'), null);
 });
 
+for (const response of ['accepted', 'completed']) {
+  for (const restore of ['all', 'subset', 'replacement', 'none']) {
+    test('delayed bulk ' + response + ' keeps reader ownership after ' + restore + ' Undo', {timeout:5000}, async () => {
+      const ui = fixture();
+      ui.run(`clearUndo(); state.view = 'mail';
+        globalThis.messages = Array.from({length:5}, (_unused,index) => ({id:'m'+index,accountId:'alpha',subject:'Mail '+index}));
+        state.emails = messages.slice(); state.email = messages[0]; state.thread = [messages[0]];
+        state.selectedIds = messages.map(row => row.id);
+        globalThis.settlements = messages.map(row => ({id:row.id,kind:'remove',actionId:'action-'+row.id,generation:1,status:'completed',opId:'op-'+row.id}));
+        globalThis.lastBatchStarted = new Promise(resolve => { globalThis.notifyLastBatch = resolve; });
+        globalThis.bulkFinished = new Promise((resolve,reject) => {
+          const finish = finishBulkRemoval;
+          finishBulkRemoval = (...args) => finish(...args).then(resolve,reject);
+        });
+        afterPaint = work => work();
+        call = async (channel,payload) => {
+          calls.push({channel,payload});
+          if (channel === 'mail:archiveBatch') {
+            const outcomes = settlements.filter(row => payload.items.some(item => item.emailId === row.id));
+            if (payload.items.some(item => item.emailId === 'm4')) {
+              notifyLastBatch();
+              await new Promise(resolve => { globalThis.releaseBulk = resolve; });
+            }
+            return ${JSON.stringify(response)} === 'accepted' ? {pending:outcomes,outcomes:[]} : {outcomes};
+          }
+          return {outcomes:payload.opIds.map(opId => ({id:opId.slice(3),kind:'undo',generation:2,status:'completed'}))};
+        };
+        queueBulkRemoval('Archive', [{channel:'mail:archiveBatch',params:{items:messages.map(row => ({emailId:row.id}))}}], messages, 'archive');`);
+      await ui.run('lastBatchStarted');
+      assert.deepEqual(ui.json("calls.filter(row => row.channel === 'mail:archiveBatch').map(row => row.payload.items.length)"), [4,1]);
+      const epoch = ui.run('undoEpoch');
+      ui.run('applyActionSettlement({outcomes:settlements,opIds:settlements.map(row => row.opId)})');
+      assert.equal(ui.run('undoOpIds.length'), 5);
+      if (restore !== 'none') await ui.run(restore === 'subset' ? "undoRemoval(['op-m0'])" : 'undoRemoval()');
+      if (restore === 'all' || restore === 'replacement') {
+        assert.notEqual(ui.run('undoEpoch'), epoch);
+        assert.equal(ui.run('restoredUndoOpIds.size'), 0, 'full Undo retires its per-operation tracking');
+      } else assert.equal(ui.run('undoEpoch'), epoch);
+      if (restore === 'replacement') ui.run(`beginRemovalRequest([{id:'new',accountId:'beta',subject:'New removal'}], 'trash');
+        applyActionSettlement({outcomes:[{id:'new',kind:'remove',actionId:'action-new',generation:1,status:'completed',opId:'op-new'}],opIds:['op-new']});`);
+      ui.run(`state.email = messages[0]; state.thread = [messages[0]];
+        state.selectedIds = ['m0','m1'];
+        globalThis.refreshes = 0; loadList = async () => { refreshes += 1; };
+        globalThis.receipt = $('status').textContent;
+        releaseBulk();`);
+      await ui.run('bulkFinished');
+      assert.equal(ui.run('state.email && state.email.id'), restore === 'none' ? null : 'm0');
+      assert.deepEqual(ui.json('state.thread.map(row => row.id)'), restore === 'none' ? [] : ['m0']);
+      assert.deepEqual(ui.json('state.selectedIds'), restore === 'none' ? [] : restore === 'subset' ? ['m0'] : ['m0','m1']);
+      assert.equal(ui.run("state.emails.some(row => row.id === 'm0')"), true);
+      if (restore === 'all' || restore === 'replacement') {
+        assert.equal(ui.run("$('status').textContent"), ui.run('receipt'));
+      }
+      assert.equal(ui.run('refreshes'), 1, 'completed changes still reconcile the current list');
+      assert.equal(ui.run('undoOpIds && undoOpIds.length'), restore === 'none' ? 5 : restore === 'subset' ? 4 : restore === 'replacement' ? 1 : null);
+      if (restore === 'replacement') assert.deepEqual(ui.json('undoOpIds'), ['op-new']);
+      assert.equal(ui.run('optimisticRemovals.size'), 0);
+    });
+  }
+}
+
 test('a replayed removal receipt cannot resurrect a restored item in the accumulated session', async () => {
   const ui = fixture();
   ui.run(`call = async () => ({outcomes:[{id:'a',kind:'undo',status:'completed'}]});`);
@@ -427,10 +488,14 @@ test('rendered Features describe preserved late Details updates and accepted sch
   const cards = [...ui.document.querySelectorAll('#features-catalog .feature-card')];
   const undo = cards.find(card => card.querySelector('h4').textContent === 'Undo removal details');
   const scheduled = cards.find(card => card.querySelector('h4').textContent === 'Send later');
+  const bodies = cards.find(card => card.querySelector('h4').textContent === 'Full message bodies');
   assert.equal(ui.document.getElementById('features-pane-catalog').hidden, false);
   assert.match(undo.textContent, /mailbox.*multiple accounts/);
   assert.match(undo.textContent, /checkbox.*description.*sender.*action.*destination.*mailbox/i);
   assert.match(undo.textContent, /late completions.*selection.*scroll.*focus/i);
+  assert.match(undo.textContent, /reopened message or selection, even after all changes have been restored/);
+  assert.match(bodies.textContent, /at most two 200-header pages.*across nightly windows while the app stays open/);
+  assert.match(bodies.textContent, /exhausted scan restarts from newest only on a later pass/);
   assert.match(scheduled.textContent, /eight seconds/);
   assert.match(scheduled.textContent, /started.*feedback.*expires/);
   assert.match(scheduled.textContent, /older restore cannot consume it/);
