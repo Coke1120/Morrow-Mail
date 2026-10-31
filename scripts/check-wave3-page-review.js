@@ -489,5 +489,5 @@ test("Features: wave3 catalog, rendered Features/Shortcuts/CLI tabs and identity
   }
   const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
   assert.match(html, /id="cli-folder-labels"[^]*ambiguous legacy Message-ID matches are refused/);
-  assert.equal(require("../package.json").version, "0.3.11");
+  assert.equal(require("../package.json").version, "0.3.12");
 });
