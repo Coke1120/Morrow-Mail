@@ -2239,9 +2239,13 @@ function resetOvernightForTest() {
 
 function nextOvernightRow(now) {
   const days = syncHorizonDays();
-  const query = { needsBody: true, limit: 200, beforeMessage: overnightCursor };
+  // Each poll starts at the newest incomplete body; overnightCursor only pages
+  // within this call so a later newer insert is not skipped after a success.
+  overnightCursor = null;
+  const query = { needsBody: true, limit: 200 };
   if (days) query.sinceTs = now - days * DAY_MS;
   while (true) {
+    query.beforeMessage = overnightCursor;
     const rows = db.selectMessages(query, { headersOnly: true });
     for (const row of rows) {
       if (!row) continue;
@@ -2254,7 +2258,6 @@ function nextOvernightRow(now) {
       return row;
     }
     if (rows.length < 200) { overnightCursor = null; return null; }
-    query.beforeMessage = overnightCursor;
   }
 }
 
