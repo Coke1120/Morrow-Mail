@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.12": [
+      "Mail sync and related work stay bounded: credential reads stay async, recipient aggregates use header deltas, sync batches yield, and invalidations stay scoped. Outbox summaries, coalesced reads, and body backfill keep Calendar, Agent, and UI retention.",
+      "Folders and labels keep provider organize identity. Support-rail Open in Mail navigation is hardened.",
+      "The All Account unread chip uses the primary-mailbox unread sum and stays fresh while you view Secondary or other folders. Bulk Archive and Trash run in non-blocking chunks with accumulated Undo and Details across batches. Agent navigation is cache-first: the overlay shows only on a cold load or Refresh. All Account Out of Office opens a mailbox chooser instead of silently picking one account.",
+      "The Electron/Node security bump is not in this version.",
+    ],
     "0.3.11": [
       "Compose Signatures is one Settings entry. The dialog lists Account default and each send-as or domain on the left, and edits that identity's signature on the right. An optional Edit signature link still opens the same dialog for the active From.",
       "The status chip and Undo Details keep the active session while restores finish, preserve scheduled-restore feedback, and keep focus and selection stable when the offer changes.",
