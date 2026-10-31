@@ -42,10 +42,11 @@ function gmailModifyUrl(messageId) {
 
 function gmailMessageQuery(rfcMessageId) {
   const bare = String(rfcMessageId || "").trim().replace(/^<|>$/g, "");
-  if (!bare || bare.length > 998 || /[\u0000-\u001f\u007f]/.test(bare)) return "";
+  if (!bare || bare.length > 998 || /[\s"\\<>\u0000-\u001f\u007f]/.test(bare)) return "";
   const url = new URL(`${GMAIL_ROOT}/messages`);
   url.searchParams.set("q", `rfc822msgid:${bare}`);
-  url.searchParams.set("maxResults", "1");
+  url.searchParams.set("maxResults", "2");
+  url.searchParams.set("includeSpamTrash", "true");
   return url.toString();
 }
 
@@ -60,14 +61,16 @@ function graphFolderMoveUrl(id) {
   return base ? `${base}/move` : "";
 }
 
-function graphMessageLookup(rfcMessageId) {
+function graphMessageLookup(rfcMessageId, folderId) {
   const raw = String(rfcMessageId || "").trim();
   if (!raw || raw.length > 998 || /['"\\\u0000-\u001f\u007f]/.test(raw)) return "";
   const wrapped = raw.startsWith("<") ? raw : `<${raw}>`;
-  const url = new URL(`${GRAPH_ROOT}/messages`);
+  const folder = folderId && graphFolderUrl(folderId);
+  if (folderId && !folder) return "";
+  const url = new URL(`${folder || GRAPH_ROOT}/messages`);
   url.searchParams.set("$filter", `internetMessageId eq '${wrapped}'`);
   url.searchParams.set("$select", "id");
-  url.searchParams.set("$top", "1");
+  url.searchParams.set("$top", "2");
   return url.toString();
 }
 
@@ -334,24 +337,48 @@ async function deleteLabel(accessToken, id, fetchImpl) {
   return { id: labelId };
 }
 
-async function gmailMessageId(accessToken, rfcMessageId, fetchImpl) {
-  const url = gmailMessageQuery(rfcMessageId);
+function messageIdentityError() {
+  return Object.assign(new Error("This message cannot be matched uniquely in its source mailbox folder. Refresh before retrying; no mail was changed."), { code: "conflict" });
+}
+
+async function gmailMessageId(accessToken, identity, fetchImpl) {
+  if (identity && typeof identity === "object" && identity.providerId) {
+    const id = safeId(identity.providerId);
+    if (!id || id !== identity.providerId) throw messageIdentityError();
+    return id;
+  }
+  const url = gmailMessageQuery(typeof identity === "string" ? identity : identity?.rfcMessageId);
   if (!url) {
     const error = new Error("This message has no RFC Message-ID, so Gmail labels cannot be changed.");
     error.code = "invalid";
     throw error;
   }
   const json = await apiJson(url, accessToken, { fetchImpl });
-  const id = json.messages && json.messages[0] && safeId(json.messages[0].id);
+  if (json.nextPageToken || !Array.isArray(json.messages) || json.messages.length > 1) throw messageIdentityError();
+  const id = json.messages[0] && safeId(json.messages[0].id);
   if (!id) {
     const error = new Error("Gmail has no message with that Message-ID.");
     error.code = "not-found";
     throw error;
   }
+  if (identity && typeof identity === "object") {
+    const source = identity.sourceFolder;
+    if (!source) throw messageIdentityError();
+    let labelId = source.providerId;
+    if (!labelId && source.wellKnown !== "all") {
+      const labels = await listLabels(accessToken, fetchImpl);
+      const matches = labels.filter(label => source.wellKnown ? label.wellKnown === source.wellKnown : label.name === source.path);
+      if (matches.length !== 1) throw messageIdentityError();
+      labelId = matches[0].id;
+    }
+    const message = await apiJson(`${GMAIL_ROOT}/messages/${encodeURIComponent(id)}?format=metadata&fields=id,labelIds`, accessToken, { fetchImpl });
+    if (message.id !== id || !Array.isArray(message.labelIds) || (source.wellKnown === "all"
+      ? message.labelIds.includes("TRASH") || message.labelIds.includes("SPAM") : !message.labelIds.includes(labelId))) throw messageIdentityError();
+  }
   return id;
 }
 
-async function modifyLabels(accessToken, rfcMessageId, addLabelIds, removeLabelIds, fetchImpl) {
+async function modifyLabels(accessToken, identity, addLabelIds, removeLabelIds, fetchImpl) {
   const add = idList(addLabelIds);
   const remove = idList(removeLabelIds);
   if (!add || !remove) {
@@ -364,13 +391,15 @@ async function modifyLabels(accessToken, rfcMessageId, addLabelIds, removeLabelI
     error.code = "invalid";
     throw error;
   }
-  const messageId = await gmailMessageId(accessToken, rfcMessageId, fetchImpl);
-  await apiJson(gmailModifyUrl(messageId), accessToken, {
+  const messageId = await gmailMessageId(accessToken, identity, fetchImpl);
+  if (identity && typeof identity.check === "function") identity.check();
+  const json = await apiJson(gmailModifyUrl(messageId), accessToken, {
     method: "POST",
     fetchImpl,
     body: { addLabelIds: add, removeLabelIds: remove },
   });
-  return { messageId, addLabelIds: add, removeLabelIds: remove };
+  return { messageId, addLabelIds: add, removeLabelIds: remove,
+    ...(Array.isArray(json.labelIds) ? { labelIds: idList(json.labelIds, MAX_LABELS) } : {}) };
 }
 
 async function graphCollect(accessToken, startUrl, fetchImpl) {
@@ -628,15 +657,42 @@ async function deleteMailFolder(accessToken, id, fetchImpl) {
   return { id: folderId };
 }
 
-async function graphMessageId(accessToken, rfcMessageId, fetchImpl) {
-  const url = graphMessageLookup(rfcMessageId);
+async function graphSourceFolder(accessToken, source, fetchImpl) {
+  if (!source || !source.path) throw messageIdentityError();
+  if (source.providerId) {
+    const id = safeId(source.providerId);
+    if (!id || id !== source.providerId) throw messageIdentityError();
+    return id;
+  }
+  const folders = await listMailFolders(accessToken, fetchImpl);
+  const byId = new Map(folders.map(folder => [folder.id, folder]));
+  const matches = folders.filter(folder => {
+    if (source.wellKnown) return folder.wellKnown === source.wellKnown;
+    const names = [folder.name], seen = new Set([folder.id]);
+    let parent = byId.get(folder.parentId);
+    while (parent) {
+      if (seen.has(parent.id)) return false;
+      seen.add(parent.id);
+      names.unshift(parent.name);
+      parent = byId.get(parent.parentId);
+    }
+    return names.join(source.delimiter || "/") === source.path;
+  });
+  if (matches.length !== 1) throw messageIdentityError();
+  return matches[0].id;
+}
+
+async function graphMessageId(accessToken, identity, fetchImpl) {
+  const sourceId = await graphSourceFolder(accessToken, identity?.sourceFolder, fetchImpl);
+  const url = graphMessageLookup(identity?.rfcMessageId, sourceId);
   if (!url) {
     const error = new Error("This message has no RFC Message-ID, so Outlook cannot move it.");
     error.code = "invalid";
     throw error;
   }
   const json = await apiJson(url, accessToken, { fetchImpl });
-  const id = json.value && json.value[0] && safeId(json.value[0].id);
+  if (json["@odata.nextLink"] || !Array.isArray(json.value) || json.value.length > 1) throw messageIdentityError();
+  const id = json.value[0] && safeId(json.value[0].id);
   if (!id) {
     const error = new Error("Outlook has no message with that Message-ID.");
     error.code = "not-found";
@@ -645,14 +701,16 @@ async function graphMessageId(accessToken, rfcMessageId, fetchImpl) {
   return id;
 }
 
-async function moveMessage(accessToken, rfcMessageId, destinationId, fetchImpl) {
+async function moveMessage(accessToken, identity, destinationId, fetchImpl) {
   const destination = safeId(destinationId);
   if (!destination) {
     const error = new Error("Choose an Outlook folder.");
     error.code = "invalid";
     throw error;
   }
-  const messageId = await graphMessageId(accessToken, rfcMessageId, fetchImpl);
+  if (identity && typeof identity.check === "function") identity.check();
+  const messageId = await graphMessageId(accessToken, identity, fetchImpl);
+  if (identity && typeof identity.check === "function") identity.check();
   const json = await apiJson(graphMoveUrl(messageId), accessToken, {
     method: "POST",
     fetchImpl,

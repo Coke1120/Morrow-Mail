@@ -2101,6 +2101,26 @@ function gmailMap(accountId, providerId) {
   return get("SELECT * FROM gmail_messages WHERE account_id = ? AND provider_id = ?", [accountId, providerId]);
 }
 
+function gmailLabelMemberships(rows) {
+  const accounts = new Map(), result = new Map();
+  for (const row of rows) {
+    if (!row.gmail_id) continue;
+    if (!accounts.has(row.account_id)) accounts.set(row.account_id, new Set());
+    accounts.get(row.account_id).add(row.gmail_id);
+  }
+  for (const [accountId, providerIds] of accounts) {
+    const ids = [...providerIds];
+    for (let offset = 0; offset < ids.length; offset += 400) {
+      const page = ids.slice(offset, offset + 400);
+      for (const row of all(`SELECT provider_id, labels_json FROM gmail_messages
+        WHERE account_id = ? AND provider_id IN (${page.map(() => "?").join(",")})`, [accountId, ...page])) {
+        result.set(JSON.stringify([accountId, row.provider_id]), row);
+      }
+    }
+  }
+  return result;
+}
+
 function rememberGmail(accountId, message) {
   return transaction(() => {
     assertAccountPresent(accountId);
@@ -2251,7 +2271,7 @@ function gmailVerifyPage(accountId, folderPath, beforeUid = 0) {
 }
 
 module.exports = {
-  enableGmail, setMailTransport, gmailMigrationBlockers, gmailMap, rememberGmail, gmailAlias, bindGmailAlias,
+  enableGmail, setMailTransport, gmailMigrationBlockers, gmailMap, gmailLabelMemberships, rememberGmail, gmailAlias, bindGmailAlias,
   gmailLegacy, applyGmailMessage, gmailCopies, pruneGmailCopies, gmailSyncState, gmailVerifyPage,
   open,
   close,

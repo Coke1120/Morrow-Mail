@@ -220,6 +220,7 @@ function accountView(row, index) {
     const well = remote.isAllMail(folder) ? "all" : folder.well_known;
     const view = {
       id: folder.path,
+      providerId: folder.provider_id || null,
       name: remote.isAllMail(folder) ? remote.allMailLabel(folder) : folder.name,
       wellKnownName: well,
       unreadCount: folder.unread || 0,
@@ -289,12 +290,14 @@ function publicAttachment(item) {
   return out;
 }
 
-function listRow(row, generations) {
+function listRow(row, generations, memberships) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
   const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
   const sender = row.from_address || row.from_addr || "";
   const parsedAddress = composePolicy.address(sender);
   const bareSender = parsedAddress && parsedAddress === sender.trim().toLowerCase() ? parsedAddress : "";
+  const membership = row.gmail_id ? (memberships instanceof Map
+    ? memberships.get(JSON.stringify([row.account_id, row.gmail_id])) : db.gmailMap(row.account_id, row.gmail_id)) : null;
   return {
     id: row.id,
     accountId: row.account_id,
@@ -302,6 +305,7 @@ function listRow(row, generations) {
     conversationId: row.thread_id,
     folderId: row.folder_path,
     folders: [row.folder_path],
+    ...(membership ? { labelIds: db.jsonList(membership.labels_json) } : {}),
     subject: textEncoding.repairMojibake(row.subject || ""),
     snippet: textEncoding.repairMojibake(row.snippet || ""),
     from: row.from_display_name && bareSender ? composePolicy.senderPreview(bareSender, row.from_display_name) : row.from_addr || "",
@@ -334,7 +338,8 @@ function listRow(row, generations) {
 
 function listRows(rows, details = false) {
   const generations = db.maxActionGenerations(rows.map(row => row.id));
-  return rows.map(row => details ? detailOf(row, generations) : listRow(row, generations));
+  const memberships = db.gmailLabelMemberships(rows);
+  return rows.map(row => details ? detailOf(row, generations, memberships) : listRow(row, generations, memberships));
 }
 
 function conversationRows(rows, selectedId) {
@@ -356,14 +361,14 @@ function conversationRows(rows, selectedId) {
   return unique;
 }
 
-function detailOf(row, generations) {
+function detailOf(row, generations, memberships) {
   const presented = textEncoding.presentMessage({
     subject: row.subject || "",
     htmlBody: row.html_body,
     textBody: row.text_body,
   });
   return {
-    ...listRow(row, generations),
+    ...listRow(row, generations, memberships),
     subject: presented.subject,
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,

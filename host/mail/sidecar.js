@@ -574,20 +574,60 @@ function messageRfc(params) {
   return { row, rfc: row.rfc_message_id || "" };
 }
 
+function messageStillCurrent(row, account) {
+  const current = db.messageById(row.id), mailbox = db.accountById(account.id);
+  return current && mailbox
+    && ["account_id", "folder_path", "uid", "uid_validity", "rfc_message_id", "gmail_id", "draft_pending"].every(key => current[key] === row[key])
+    && ["created_at", "auth_kind", "mail_transport", "profile", "imap_host", "username", "email", "gmail_generation"].every(key => mailbox[key] === account[key]);
+}
+
+function providerMessageIdentity(row, ready) {
+  const folder = db.folderByPath(row.account_id, row.folder_path);
+  const mapping = ready.provider === "google" && !row.gmail_id
+    ? db.gmailAlias(row.account_id, row.folder_path, row.uid, row.uid_validity) : null;
+  return {
+    providerId: ready.provider === "google" ? row.gmail_id || mapping?.provider_id || "" : "",
+    rfcMessageId: row.rfc_message_id || "",
+    sourceFolder: folder && { path: folder.path, providerId: folder.provider_id, wellKnown: folder.well_known, delimiter: ready.account.delimiter || "/" },
+    check() {
+      if (row.draft_pending || !messageStillCurrent(row, ready.account)) {
+        throw Object.assign(new Error("This selected message or mailbox connection changed. Refresh before retrying."), { code: "conflict" });
+      }
+    },
+  };
+}
+
 async function modifyMessageLabels(params) {
   const opened = messageRfc(params);
   if (opened.error) return opened.error;
   const ready = await withPurpose({ accountId: opened.row.account_id }, "organize");
   if (ready.error) return ready.error;
   if (ready.provider !== "google") return fail("invalid", "Outlook moves the message instead of editing Gmail labels.");
-  if (!opened.rfc) return fail("invalid", "This message has no RFC Message-ID, so Gmail labels cannot be changed.");
   try {
+    const identity = providerMessageIdentity(opened.row, ready);
+    identity.check();
+    const removed = Array.isArray(params.removeLabelIds) ? params.removeLabelIds : [];
+    const folders = db.foldersFor(opened.row.account_id);
+    const labels = removed.length && folders.some(folder => !folder.provider_id)
+      ? await gmail.listLabels(ready.token.accessToken) : [];
     const result = await gmail.modifyLabels(
       ready.token.accessToken,
-      opened.rfc,
+      identity,
       params && params.addLabelIds,
       params && params.removeLabelIds
     );
+    if (messageStillCurrent(opened.row, ready.account)) {
+      const absent = removed.filter(id => !Array.isArray(result.labelIds) || !result.labelIds.includes(id));
+      const removedPaths = folders.filter(folder => absent.includes(folder.provider_id) || labels.some(label => absent.includes(label.id)
+        && (folder.path === label.name || (folder.well_known && folder.well_known === label.wellKnown)))).map(folder => folder.path);
+      db.transaction(() => {
+        db.bindGmailAlias(opened.row, result.messageId);
+        if (Array.isArray(result.labelIds)) db.rememberGmail(opened.row.account_id, { providerId: result.messageId, labelIds: result.labelIds });
+        const livePaths = db.gmailCopies(opened.row.account_id, result.messageId)
+          .filter(row => !removedPaths.includes(row.folder_path)).map(row => row.folder_path);
+        db.pruneGmailCopies(opened.row.account_id, result.messageId, livePaths);
+      });
+    }
     return ok(result);
   } catch (error) {
     return failFrom(error);
@@ -604,7 +644,7 @@ async function moveProviderMessage(params) {
   try {
     const result = await gmail.moveMessage(
       ready.token.accessToken,
-      opened.rfc,
+      providerMessageIdentity(opened.row, ready),
       params && params.destinationId
     );
     return ok(result);

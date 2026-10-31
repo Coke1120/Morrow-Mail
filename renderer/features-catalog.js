@@ -7,6 +7,18 @@
   return {
     items: [
       {
+        id: "folder-label-safety",
+        title: "Folders and Gmail labels",
+        category: "Mail",
+        blurb: "Switching folders retires the previous list before loading downloaded mail. Folder-move completion follows only its original mailbox selection, not a newer folder or account visit. Open in Mail matches provider identity or the complete folder hierarchy, never a same-named leaf. Gmail label checkboxes use saved provider memberships, including labels outside the current folder; confirmed removal of the current label refreshes that view and clears only removed messages from its reader and selection. Provider label edits and Outlook moves target the selected cached identity. Legacy RFC Message-ID lookup must be unique and match the source folder; ambiguous or paginated matches are refused. Existing provider grants are required; no new scopes or bot operations are added.",
+      },
+      {
+        id: "support-navigation",
+        title: "Support and mailbox selection",
+        category: "Support",
+        blurb: "Features, Shortcuts and Debug log preserve the hidden Mail selection. Escape clears selected messages only on the Mail page when no overlay or text input owns it. Open in Mail switches pages immediately; a delayed folder read cannot pull you out of a newer Support visit.",
+      },
+      {
         id: "compose-work-preservation",
         title: "Compose recovery and preparation",
         category: "Mail",

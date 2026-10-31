@@ -98,6 +98,7 @@ const state = {
 
 let accountGen = 0;
 let listGen = 0;
+let mailboxNavigationGen = 0;
 const LIST_PAGE_SIZE = 200;
 let openGen = 0;
 let pendingOpenId = "";
@@ -4929,17 +4930,28 @@ function openProviderColumn(index, id) {
   state.providerColumnPath = path;
 }
 
-function imapFolderForProvider(account, folder) {
+function imapFolderForProvider(account, folder, tree) {
   if (!account || !folder) return null;
   const id = String(folder.id || "");
-  const name = String(folder.name || "");
-  const label = String(folder.label || "");
-  return foldersOf(account).find((item) => {
-    if (!item) return false;
-    const itemId = String(item.id || "");
-    const itemName = String(item.name || "");
-    return itemId === id || (name && itemName === name) || (label && itemName === label);
-  }) || null;
+  const folders = foldersOf(account).filter(Boolean);
+  const unique = (rows) => rows.length === 1 ? rows[0] : null;
+  const exact = folders.filter(item => item.providerId && String(item.providerId) === id);
+  if (exact.length) return unique(exact);
+  const well = folder.wellKnown || folder.wellKnownName;
+  if (well) return unique(folders.filter(item => item.wellKnownName === well));
+  const rows = tree || providerPayloadFor(account)?.folders || [];
+  const byId = new Map(rows.map(item => [String(item.id), item]));
+  const names = [String(folder.name || "")], seen = new Set([id]);
+  let parentId = folder.parentId;
+  while (parentId) {
+    const parent = byId.get(String(parentId));
+    if (!parent || seen.has(String(parent.id))) return null;
+    seen.add(String(parent.id));
+    if (!names[0].startsWith(String(parent.name) + "/")) names.unshift(String(parent.name));
+    parentId = parent.parentId;
+  }
+  const path = names.join(accountDelimiter(account));
+  return path ? unique(folders.filter(item => String(item.id || "") === path)) : null;
 }
 
 function paintProviderActions(block, account, provider, tree, path) {
@@ -4965,12 +4977,13 @@ function paintProviderActions(block, account, provider, tree, path) {
   open.type = "button";
   open.className = "ghost";
   open.textContent = "Open in Mail";
-  const imap = imapFolderForProvider(account, folder);
+  const imap = imapFolderForProvider(account, folder, tree);
   open.disabled = !imap;
   open.title = imap ? "Open this folder in Mail" : "No matching mailbox folder";
   open.addEventListener("click", () => {
     if (!imap) return;
-    selectFolder(account.id, imap.id).then(() => showMail()).catch((error) => showStatus(error.message, true));
+    showMail();
+    selectFolder(account.id, imap.id).catch((error) => showStatus(error.message, true));
   });
   row.appendChild(open);
   if (provider === "gmail") {
@@ -5536,10 +5549,39 @@ function confirmedCalls(action, answer, calls, detail) {
   return list;
 }
 
-function labelRemovesFromView(folderId, labelId) {
+function labelRemovesFromView(folderId, labelId, labels, account) {
   const folder = String(folderId || "");
   const label = String(labelId || "");
-  return !!(folder && label && folder === label);
+  if (!folder || !label) return false;
+  const current = account ? foldersOf(account).find(item => String(item.id) === folder) : null;
+  if (current && current.providerId) return String(current.providerId) === label;
+  if (!Array.isArray(labels)) return folder === label;
+  const providerFolder = (labels || []).find(item => String(item.id) === label);
+  if (!providerFolder) return false;
+  return account ? imapFolderForProvider(account, providerFolder, labels)?.id === folder : providerFolder.name === folder;
+}
+
+function mailboxViewKey() {
+  return JSON.stringify([mailboxNavigationGen, state.accountId, state.folderId, state.query, state.allInbox, state.outbox]);
+}
+
+async function reconcileLabelView(plans, labels, viewKey) {
+  if (viewKey !== mailboxViewKey() || state.allInbox || state.outbox || state.query) return;
+  const account = selectedAccount();
+  const removed = new Set(plans.filter(plan => plan.email.accountId === state.accountId
+    && (plan.removeLabelIds || []).some(id => labelRemovesFromView(state.folderId, id, labels, account))).map(plan => String(plan.email.id)));
+  if (!removed.size) return;
+  state.emails = state.emails.filter(email => !removed.has(String(email.id)));
+  state.selectedIds = state.selectedIds.filter(id => !removed.has(String(id)));
+  if (removed.has(String(state.selectionAnchor))) state.selectionAnchor = "";
+  if (removed.has(String(readerCurrentId()))) {
+    invalidateReaderOpen();
+    state.email = null;
+    state.thread = [];
+    renderReader(false);
+  }
+  renderList();
+  await loadList();
 }
 
 function bulkBlockedByPause(sync, accountId) {
@@ -9170,12 +9212,17 @@ async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   noteUnreadScope();
   const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
-  if (state.listScope !== scope) {
+  const scopeChanged = state.listScope !== scope;
+  if (scopeChanged) {
     state.listScope = scope;
     state.listOffset = 0;
     state.listTotal = 0;
   }
   state.listLoading = true;
+  if (scopeChanged) {
+    state.emails = [];
+    renderList();
+  }
   paintListPaging();
   try {
     if (state.outbox && !state.query) {
@@ -9364,15 +9411,20 @@ async function confirmDeleteFolder(folder, provider) {
   await deleteProviderFolder(folder.id);
 }
 
-async function changeLabels(email, addLabelIds, removeLabelIds) {
+async function changeLabels(email, addLabelIds, removeLabelIds, labels) {
   const add = Array.isArray(addLabelIds) ? addLabelIds : [];
   const remove = Array.isArray(removeLabelIds) ? removeLabelIds : [];
-  await call("mail:modifyMessageLabels", {
+  const viewKey = mailboxViewKey();
+  const account = state.accounts.find(item => item.id === email.accountId);
+  const folders = labels || providerLabelTree(providerPayloadFor(account)?.folders || []);
+  const data = await call("mail:modifyMessageLabels", {
     accountId: email.accountId,
     emailId: email.id,
     addLabelIds: add,
     removeLabelIds: remove,
   });
+  stampLabelIds(email, folders, add, remove, data?.labelIds);
+  await reconcileLabelView([{ email, removeLabelIds: remove.filter(id => !Array.isArray(data?.labelIds) || !data.labelIds.includes(id)) }], folders, viewKey);
   const text = add.length && remove.length
     ? "Labels updated in Gmail."
     : add.length
@@ -9823,14 +9875,14 @@ function paintLabelPicker() {
   }
 }
 
-function stampLabelIds(email, labels, addLabelIds, removeLabelIds) {
+function stampLabelIds(email, labels, addLabelIds, removeLabelIds, labelIds) {
   if (!email || !email.id) return;
-  const next = new Set(appliedEditableLabels(email, labels));
+  const next = new Set(Array.isArray(email.labelIds) ? messageLabelKeys(email) : appliedEditableLabels(email, labels));
   for (const id of addLabelIds || []) next.add(String(id));
   for (const id of removeLabelIds || []) next.delete(String(id));
-  const ids = [...next];
+  const ids = Array.isArray(labelIds) ? labelIds.slice() : [...next];
   const write = (row) => {
-    if (row && String(row.id) === String(email.id)) row.labelIds = ids.slice();
+    if (row && row.accountId === email.accountId && String(row.id) === String(email.id)) row.labelIds = ids.slice();
   };
   write(email);
   for (const row of state.emails || []) write(row);
@@ -9866,16 +9918,17 @@ function finishLabelPick() {
 
 async function applyLabelPlans(snapshot) {
   const plans = snapshot.plans || [];
+  const viewKey = mailboxViewKey();
   if (!snapshot.bulk && plans.length === 1) {
     const plan = plans[0];
-    await changeLabels(plan.email, plan.addLabelIds, plan.removeLabelIds);
-    stampLabelIds(plan.email, snapshot.labels, plan.addLabelIds, plan.removeLabelIds);
+    await changeLabels(plan.email, plan.addLabelIds, plan.removeLabelIds, snapshot.labels);
     return;
   }
   const messages = plans.map((plan) => plan.email);
   if (refusePaused(messages)) return;
   let calls = labelEditCalls(plans);
-  const removes = plans.some((plan) => (plan.removeLabelIds || []).some((id) => labelRemovesFromView(state.folderId, id)));
+  const removes = !state.allInbox && !state.outbox && !state.query && plans.some(plan => plan.email.accountId === state.accountId
+    && (plan.removeLabelIds || []).some(id => labelRemovesFromView(state.folderId, id, snapshot.labels, selectedAccount())));
   const excluded = selectedMessages().length !== (snapshot.messages || []).length;
   if (removes || excluded) {
     const answer = await askConfirm(labelApplyConfirm(plans, snapshot.labels, selectionScopeCopy(messages, snapshot.messages)));
@@ -9889,8 +9942,8 @@ async function applyLabelPlans(snapshot) {
     if (!completed.has(String(plan.email.id))) continue;
     stampLabelIds(plan.email, snapshot.labels, plan.addLabelIds, plan.removeLabelIds);
   }
-  if (removes) await finishBulkRemoval("Labels", outcome, messages.map((row) => row.id), { messages, action: "move" });
-  else showStatus(receiptText("Labels", outcome), !!outcome.error);
+  await reconcileLabelView(plans.filter(plan => completed.has(String(plan.email.id))), snapshot.labels, viewKey);
+  showStatus(receiptText("Labels", outcome), !!outcome.error);
 }
 
 function closeMovePicker() {
@@ -9922,6 +9975,8 @@ function finishMovePick() {
 }
 
 async function commitFolderMove(session, target) {
+  const viewKey = mailboxViewKey();
+  const ownsSelection = state.accountId === session.accountId;
   const channel = session.kind === "imap" ? "mail:moveFolder" : "mail:moveProviderFolder";
   const params = {
     accountId: session.accountId,
@@ -9939,18 +9994,20 @@ async function commitFolderMove(session, target) {
   if (!request) return;
   if (session.kind === "imap") {
     const data = await call("mail:moveFolder", request);
-    const next = relocatedFolderId(state.folderId, data && data.renames);
-    if (next) state.folderId = next;
+    if (ownsSelection && viewKey === mailboxViewKey()) {
+      const next = relocatedFolderId(state.folderId, data && data.renames);
+      if (next) state.folderId = next;
+    }
     if (data && data.warning) showStatus(data.warning, true);
     else showStatus("Folder moved.");
-    await loadAccounts(state.accountId);
+    await loadAccounts();
     return;
   }
   try {
     await call("mail:moveProviderFolder", request);
     showStatus(session.kind === "outlook" ? "Folder moved." : "Label moved.");
   } finally {
-    await loadProviderFolders(accountGen);
+    if (state.accountId === session.accountId) await loadProviderFolders(accountGen);
   }
 }
 
@@ -10466,6 +10523,7 @@ function wireSelection() {
 }
 
 function onSelectionKey(event) {
+  if (state.view !== "mail") return;
   const menu = $("organize-menu");
   const menuOpen = menu && !menu.hidden;
   if (event.key === "Escape") {
@@ -10860,6 +10918,7 @@ function wireOrganize() {
 
 async function selectOutbox() {
   if (!state.accounts.length) return;
+  ++mailboxNavigationGen;
   ++listGen;
   state.listLoading = false;
   invalidateReaderOpen();
@@ -10890,6 +10949,7 @@ async function selectOutbox() {
 
 async function selectAllInbox(unreadOnly) {
   if (!state.accounts.length) return;
+  ++mailboxNavigationGen;
   const nextUnread = unreadOnly === true;
   const staying = state.allInbox && !state.query;
   if (!staying) {
@@ -10919,6 +10979,7 @@ async function selectAllInbox(unreadOnly) {
 }
 
 async function selectFolder(accountId, folderId) {
+  ++mailboxNavigationGen;
   invalidateReaderOpen();
   const previous = state.accountId;
   state.outbox = false;
@@ -11258,6 +11319,7 @@ async function openMessage(emailId, focus, full = false) {
 }
 
 async function applySearch() {
+  ++mailboxNavigationGen;
   invalidateReaderOpen();
   const query = $("search-query").value.trim();
   if (query) state.outbox = false;
@@ -15012,7 +15074,7 @@ function shortcutCatalog(platform) {
     { group: "Mail", keys: chord("F") + " or /", action: "Focus mail search" },
     { group: "Compose", keys: chord("Enter"), action: "Send" },
     { group: "Compose", keys: chord("S"), action: "Save draft" },
-    { group: "Window", keys: "Esc", action: "Close the compose window or dismiss an overlay. Also clears a message selection when that is already the Esc action." },
+    { group: "Window", keys: "Esc", action: "Close the compose window or dismiss an overlay. Clears a message selection only on the Mail page when no overlay or text input owns Escape." },
     { group: "Window", keys: chord(","), action: "Settings" },
     { group: "List", keys: "↑ or ↓", action: "Move through the message list" },
     { group: "List", keys: "Enter", action: "Open the highlighted message" },
