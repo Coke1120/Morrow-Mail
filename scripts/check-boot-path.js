@@ -8294,7 +8294,7 @@ async function checkProviderApi() {
     }]);
     assert.strictEqual(wide.success, false);
     assert.strictEqual(wide.error.code, "invalid");
-    const status = engine.answer("mail:oauthStatus", []);
+    const status = await engine.answer("mail:oauthStatus", []);
     const statusText = JSON.stringify(status);
     assert.ok(!statusText.includes("refresh-cal"));
     assert.ok(!statusText.includes("access-cal"));

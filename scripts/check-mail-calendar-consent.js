@@ -179,7 +179,7 @@ async function run() {
         assert.notEqual(mail.refreshToken, api.refreshToken);
         assert.deepEqual(posts.slice(-2).map((post) => post.grant), ["authorization_code", "authorization_code"]);
       }
-      const status = engine.answer("mail:oauthStatus", []);
+      const status = await engine.answer("mail:oauthStatus", []);
       for (const purpose of Object.keys(channels)) {
         assert.equal(status.data.accounts.find((row) => row.id === id)[purpose], provider !== "google" || purpose !== "calendar");
         const result = await feature(id, purpose);
