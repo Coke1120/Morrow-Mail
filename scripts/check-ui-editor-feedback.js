@@ -146,7 +146,10 @@ async function signatureStaleFailureAndClose() {
 
 async function signatureListOrder() {
   const { ui, node } = signatures();
+  // Pre-seed settings so ensureSignatureSettings does not consume a reads[] slot;
+  // concurrent loadSignatureEditor() must each call listSignatures (race / gen LWW).
   ui.run(`globalThis.reads=[];
+    signatureEditorSettings = {};
     call=()=>new Promise(resolve=>reads.push(resolve));
     globalThis.oldRead=loadSignatureEditor(); globalThis.newRead=loadSignatureEditor();
     reads[1]({signatures:[sigB]});`);

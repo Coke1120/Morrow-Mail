@@ -8,6 +8,60 @@ const inboxRules = require("./inbox-rules");
 const vacationApi = require("./vacation-api");
 const sieve = require("./sieve-vacation");
 const crypto = require("node:crypto");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const grantRequests = new AsyncLocalStorage();
+
+function connectionKey(account) {
+  return JSON.stringify([account.id, account.created_at, account.email, account.username, account.profile,
+    account.auth_kind, account.mail_transport, account.imap_host, account.smtp_host]);
+}
+
+async function withGrantSnapshot(accounts, work) {
+  if (grantRequests.getStore()) return work();
+  const records = new Map();
+  const rows = (Array.isArray(accounts) ? accounts : [accounts]).filter(Boolean);
+  const clientKey = () => { try { return config.loadGoogleClient()?.clientId || ""; } catch { return "invalid"; } };
+  const client = clientKey();
+  const owners = rows.map(account => ({ account, key: connectionKey(account) }));
+  const assertCurrent = () => {
+    if (client !== clientKey() || owners.some(owner => {
+      const current = db.accountById(owner.account.id);
+      return !current || connectionKey(current) !== owner.key;
+    }) || [...records].some(([key, record]) => secrets.revision(key) !== record.revision)) {
+      throw Object.assign(new Error("This mailbox connection changed. Refresh the feature and try again."), { code: "conflict" });
+    }
+  };
+  const keys = rows.flatMap(account => [account.id, ...(["google", "microsoft"].includes(providerOf(account))
+    ? ["bundle", "calendar", "organize", "rules", "vacation"].map(purpose => `${account.id}:${purpose}`) : [])]);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(4, keys.length) }, async () => {
+    while (cursor < keys.length) {
+      const key = keys[cursor++];
+      const revision = secrets.revision(key);
+      const raw = await secrets.getPasswordAsync(key);
+      records.set(key, { raw, revision });
+      assertCurrent();
+    }
+  }));
+  assertCurrent();
+  return grantRequests.run({ records, assertCurrent }, work);
+}
+
+function readRaw(key) {
+  const request = grantRequests.getStore();
+  if (!request) return secrets.getPassword(key);
+  request.assertCurrent();
+  if (!request.records.has(key)) throw Object.assign(new Error("Refresh the mailbox feature and try again."), { code: "conflict" });
+  return request.records.get(key).raw;
+}
+
+function storeRefresh(key, value) {
+  const request = grantRequests.getStore();
+  const previous = request?.records.get(key);
+  let stored = false;
+  try { secrets.setPassword(key, value); stored = true; } catch {}
+  if (previous) request.records.set(key, { raw: stored ? value : previous.raw, revision: secrets.revision(key) });
+}
 
 const CHANNELS = new Set([
   "mail:oauthStatus",
@@ -74,7 +128,7 @@ function sameEmail(left, right) {
 }
 
 function readJson(key) {
-  const raw = secrets.getPassword(key);
+  const raw = readRaw(key);
   if (!raw || typeof raw !== "string" || raw[0] !== "{") return null;
   try {
     const parsed = JSON.parse(raw);
@@ -88,6 +142,7 @@ function readJson(key) {
 const API_PURPOSES = ["organize", "calendar", "rules", "vacation"];
 
 function scopeText(account, purpose) {
+  if (purpose !== "imap" && !["google", "microsoft"].includes(providerOf(account))) return "";
   const blob = account && readJson(secretKey(account, purpose));
   return (blob && blob.grantedScopes) || "";
 }
@@ -230,9 +285,9 @@ async function gmailSendAsToken(account) {
 }
 
 async function tokenFor(account, purpose) {
+  if (!grantRequests.getStore()) return withGrantSnapshot(account, () => tokenFor(account, purpose));
   const key = secretKey(account, purpose);
-  const raw = secrets.getPassword(key);
-  const primary = secrets.getPassword(account.id);
+  const raw = readRaw(key);
   const parsed = readJson(key);
   if (!raw || !parsed || !parsed.refreshToken) {
     const error = new Error(
@@ -246,13 +301,8 @@ async function tokenFor(account, purpose) {
     throw error;
   }
   const result = await oauth.accessTokenFor(account, raw, purpose);
-  const current = db.accountById(account.id);
-  if (!current || current.created_at !== account.created_at || current.auth_kind !== account.auth_kind
-      || current.mail_transport !== account.mail_transport || secrets.getPassword(key) !== raw || secrets.getPassword(account.id) !== primary) {
-    const error = new Error("This mailbox connection changed. Refresh the feature and try again.");
-    error.code = "conflict";
-    throw error;
-  }
+  grantRequests.getStore().assertCurrent();
+  if (providerOf(account) === "google") config.requireGoogleGrantClient(parsed);
   if (typeof result === "string") return { accessToken: result, grantedScopes: parsed.grantedScopes || "" };
   if (result && result.token) {
     let granted = parsed.grantedScopes || "";
@@ -266,7 +316,7 @@ async function tokenFor(account, purpose) {
       throw error;
     }
     if (result.store) {
-      try { secrets.setPassword(key, result.store); } catch { /* this call can still use the token */ }
+      storeRefresh(key, result.store);
     }
     return {
       accessToken: result.token,
@@ -296,7 +346,7 @@ function accountGrants() {
       gmailMigrationAvailable: providerOf(row) === "google" && row.auth_kind === "oauth2" && row.mail_transport !== "gmail_api",
       broadGoogleGrant: providerOf(row) === "google" && [row.id, `${row.id}:bundle`, `${row.id}:calendar`, `${row.id}:organize`, `${row.id}:rules`, `${row.id}:vacation`]
         .some(key => config.hasScopes(readJson(key)?.grantedScopes || "", "https://mail.google.com/")),
-      requestedScopes: { mail: readJson(row.id)?.requestedScopes || "", calendar: readJson(secretKey(row, "calendar"))?.requestedScopes || "" },
+      requestedScopes: { mail: readJson(row.id)?.requestedScopes || "", calendar: ["google", "microsoft"].includes(providerOf(row)) ? readJson(secretKey(row, "calendar"))?.requestedScopes || "" : "" },
       organize: organize.ok,
       calendar: calendarGate.ok,
       rules: rulesGate.ok,
@@ -574,20 +624,60 @@ function messageRfc(params) {
   return { row, rfc: row.rfc_message_id || "" };
 }
 
+function messageStillCurrent(row, account) {
+  const current = db.messageById(row.id), mailbox = db.accountById(account.id);
+  return current && mailbox
+    && ["account_id", "folder_path", "uid", "uid_validity", "rfc_message_id", "gmail_id", "draft_pending"].every(key => current[key] === row[key])
+    && ["created_at", "auth_kind", "mail_transport", "profile", "imap_host", "username", "email", "gmail_generation"].every(key => mailbox[key] === account[key]);
+}
+
+function providerMessageIdentity(row, ready) {
+  const folder = db.folderByPath(row.account_id, row.folder_path);
+  const mapping = ready.provider === "google" && !row.gmail_id
+    ? db.gmailAlias(row.account_id, row.folder_path, row.uid, row.uid_validity) : null;
+  return {
+    providerId: ready.provider === "google" ? row.gmail_id || mapping?.provider_id || "" : "",
+    rfcMessageId: row.rfc_message_id || "",
+    sourceFolder: folder && { path: folder.path, providerId: folder.provider_id, wellKnown: folder.well_known, delimiter: ready.account.delimiter || "/" },
+    check() {
+      if (row.draft_pending || !messageStillCurrent(row, ready.account)) {
+        throw Object.assign(new Error("This selected message or mailbox connection changed. Refresh before retrying."), { code: "conflict" });
+      }
+    },
+  };
+}
+
 async function modifyMessageLabels(params) {
   const opened = messageRfc(params);
   if (opened.error) return opened.error;
   const ready = await withPurpose({ accountId: opened.row.account_id }, "organize");
   if (ready.error) return ready.error;
   if (ready.provider !== "google") return fail("invalid", "Outlook moves the message instead of editing Gmail labels.");
-  if (!opened.rfc) return fail("invalid", "This message has no RFC Message-ID, so Gmail labels cannot be changed.");
   try {
+    const identity = providerMessageIdentity(opened.row, ready);
+    identity.check();
+    const removed = Array.isArray(params.removeLabelIds) ? params.removeLabelIds : [];
+    const folders = db.foldersFor(opened.row.account_id);
+    const labels = removed.length && folders.some(folder => !folder.provider_id)
+      ? await gmail.listLabels(ready.token.accessToken) : [];
     const result = await gmail.modifyLabels(
       ready.token.accessToken,
-      opened.rfc,
+      identity,
       params && params.addLabelIds,
       params && params.removeLabelIds
     );
+    if (messageStillCurrent(opened.row, ready.account)) {
+      const absent = removed.filter(id => !Array.isArray(result.labelIds) || !result.labelIds.includes(id));
+      const removedPaths = folders.filter(folder => absent.includes(folder.provider_id) || labels.some(label => absent.includes(label.id)
+        && (folder.path === label.name || (folder.well_known && folder.well_known === label.wellKnown)))).map(folder => folder.path);
+      db.transaction(() => {
+        db.bindGmailAlias(opened.row, result.messageId);
+        if (Array.isArray(result.labelIds)) db.rememberGmail(opened.row.account_id, { providerId: result.messageId, labelIds: result.labelIds });
+        const livePaths = db.gmailCopies(opened.row.account_id, result.messageId)
+          .filter(row => !removedPaths.includes(row.folder_path)).map(row => row.folder_path);
+        db.pruneGmailCopies(opened.row.account_id, result.messageId, livePaths);
+      });
+    }
     return ok(result);
   } catch (error) {
     return failFrom(error);
@@ -604,7 +694,7 @@ async function moveProviderMessage(params) {
   try {
     const result = await gmail.moveMessage(
       ready.token.accessToken,
-      opened.rfc,
+      providerMessageIdentity(opened.row, ready),
       params && params.destinationId
     );
     return ok(result);
@@ -737,7 +827,7 @@ function vacationIdentity(account) {
 
 function imapPassword(account) {
   if (!account || account.auth_kind === "oauth2") return "";
-  const raw = secrets.getPassword(account.id);
+  const raw = readRaw(account.id);
   if (!raw || raw[0] === "{") return "";
   return raw;
 }
@@ -1301,12 +1391,19 @@ function answer(channel, args) {
 
 module.exports = {
   handles,
-  answer,
+  async answer(channel, args) {
+    if (!handles(channel)) return undefined;
+    if (["mail:grantOrganize", "mail:grantVacation", "mail:grantRules", "calendar:connect"].includes(channel)) return answer(channel, args);
+    try {
+      const rows = ["mail:oauthStatus", "calendar:status"].includes(channel) ? db.listAccountRows() : accountFrom(args?.[0]);
+      return await withGrantSnapshot(rows, () => answer(channel, args));
+    } catch (error) { return failFrom(error); }
+  },
   providerOf,
   gateAccount,
   monthWindow,
-  organizeToken,
-  gmailSendAsToken,
+  organizeToken: account => withGrantSnapshot(account, () => organizeToken(account)),
+  gmailSendAsToken: account => withGrantSnapshot(account, () => gmailSendAsToken(account)),
   rememberVacation,
   grantPurpose,
   grantForPreservation,

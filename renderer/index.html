@@ -145,6 +145,7 @@
       <button type="button" class="ghost" id="undo" hidden>Undo</button>
       <button type="button" class="ghost" id="undo-details" hidden aria-expanded="false" aria-haspopup="dialog" aria-controls="undo-details-popover">Details</button>
       <div id="undo-details-popover" class="undo-details-popover" role="dialog" aria-label="Undo details" hidden>
+        <p class="hint">Completed Archive, Trash and Move changes accumulate across batches. Select one change per message; restore its latest change first. Clear only unchecks this list.</p>
         <div class="undo-details-tools">
           <button type="button" class="ghost" id="undo-details-all">Select all</button>
           <button type="button" class="ghost" id="undo-details-clear">Clear</button>
@@ -163,7 +164,7 @@
       <div class="side">
         <div id="side-mail" class="side-pane">
           <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled<span id="scheduled-review-count" hidden></span></button>
-          <section id="mail-ooo" class="mail-ooo" aria-label="Mailbox automatic replies" hidden><p id="mail-ooo-status" class="hint" role="status"></p><div class="row"><button type="button" class="ghost" id="mail-ooo-manage">Manage / disable</button><button type="button" class="ghost" id="mail-ooo-refresh">Refresh status</button></div></section>
+          <section id="mail-ooo" class="mail-ooo" aria-label="Mailbox automatic replies" hidden><p id="mail-ooo-status" class="hint" role="status"></p><div class="row"><select id="mail-ooo-account" aria-label="Mailbox for Out of Office" hidden></select><button type="button" class="ghost" id="mail-ooo-manage">Manage / disable</button><button type="button" class="ghost" id="mail-ooo-refresh">Refresh status</button></div></section>
           <div class="folder-tools">
           <div class="folder-filter">
             <label class="sr" for="folder-filter">Filter folders and labels</label>
@@ -557,7 +558,9 @@
         </div>
         <p class="hint" id="cli-note"></p>
         <p class="hint" id="cli-page-recovery">Compose attachment preparation, inert Undo recovery and Calendar retry identities are desktop operations; bot capabilities and permissions are unchanged. Calendar reauthorization uses the existing provider grant, separately from Google mail. These fixes do not expose calendar writes through the Node bot client.</p>
-        <p class="hint" id="cli-performance">For a POSIX development checkout, <code>MORROW_PERF=1 npm start</code> opts into bounded local performance summaries in Debug log every 30 seconds. The flag does not send telemetry or grant access to accounts. Restart without it to disable tracing. The offline benchmark is <code>node --expose-gc scripts/benchmark-mail-responsiveness.js</code>; it always creates synthetic temporary mail data, and does not measure native Mac rendering or a real Keychain.</p>
+        <p class="hint" id="cli-folder-labels">Folders &amp; labels and Open in Mail are desktop actions. Label edits and Outlook moves use the selected message identity; ambiguous legacy Message-ID matches are refused. These fixes add no bot operations, command-line options or provider scopes.</p>
+        <p class="hint" id="cli-mail-feedback">Downloaded-primary unread counts, background bulk Archive/Trash, accumulated removal Undo, the per-mailbox Out of Office chooser and cache-first Agent navigation are desktop behaviors. They add no bot commands, permissions, bulk cancellation or automatic retries. Out of Office changes still require review in Settings for one mailbox.</p>
+        <p class="hint" id="cli-performance">For a POSIX development checkout, <code>MORROW_PERF=1 npm start</code> opts into bounded local performance summaries in Debug log every 30 seconds. The flag does not send telemetry or grant access to accounts. Restart without it to disable tracing. The offline benchmark is <code>node --expose-gc scripts/benchmark-mail-responsiveness.js</code>; it always creates synthetic temporary mail data, and does not measure native Mac rendering, Windows frame times or real secure storage. <code>node scripts/check-performance-followups.js</code> checks synthetic credential, queue and renderer paths; <code>node scripts/check-performance-storage.js</code> checks temporary SQLite stores and worker recipient history. Desktop autocomplete is asynchronous; Scheduled summaries omit bodies and page at 200, with full content fetched on demand. These are internal desktop changes, not new CLI commands or bot permissions. Bot sends remain immediate; bot draft proposals remain inert.</p>
         <p class="hint" id="cli-body-updates">The phase-two offline benchmark is <code>node scripts/benchmark-mail-phase-two.js</code>. It measures synthetic list query counts, body-notification size and unopened-body retention. The cached-body refresh is an internal desktop operation; bot capabilities and permissions are unchanged.</p>
         <p class="hint" id="cli-ai-connection">AI authentication and AI data permission are configured in desktop Settings → AI or Morrow Mail → AI Setup. Existing connections require disclosure and affirmative approval before AI transfers. Background AI needs a separate opt-in. Cancel / revoke blocks pending and future AI transfers. ChatGPT sign-in, callback paste-back and credentials are not exposed through the CLI or bot bridge. The existing API key/custom endpoint choice remains available. ChatGPT adds no general-purpose model proxy. Ordinary bot mail operations do not grant AI permission.</p>
         <section class="cli-guide" aria-labelledby="cli-bot-title">
@@ -666,7 +669,7 @@
     <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>
-        <p class="hint">Pending messages send while Morrow is open; a missed time sends on the next launch. Uncertain or provider-accepted deliveries never resend automatically: check Sent before recovering a draft copy. This list includes every account, whichever mailbox is selected. Edit/reschedule saves a local draft and requires an explicit new schedule. Cancel or dismiss asks twice; Undo restores the record with its existing delivery status.</p>
+        <p class="hint">Pending messages send while Morrow is open; a missed time sends on the next launch. Uncertain or provider-accepted deliveries never resend automatically: check Sent before recovering a draft copy. This list includes every account, whichever mailbox is selected, and loads 200 summaries at a time; Load more scheduled records fetches the next page. Full content loads when editing or recovering. Edit/reschedule saves a local draft and requires an explicit new schedule. Cancel or dismiss asks twice; Undo restores the record with its existing delivery status.</p>
         <p id="scheduled-summary" class="hint"></p>
         <p id="scheduled-status" role="status"></p>
         <div class="row">
@@ -674,6 +677,7 @@
           <button type="button" class="ghost" id="scheduled-undo" hidden>Undo cancel</button>
         </div>
         <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
+        <button type="button" id="scheduled-more" class="ghost" hidden>Load more scheduled records</button>
       </div>
     </dialog>
 
@@ -1199,7 +1203,7 @@
           </div>
           <div class="settings-group">
           <h4>Connected accounts</h4>
-          <p class="hint" id="mail-secure-storage-help">On macOS, routine mail credential reads and startup checks wait asynchronously and time out after 30 seconds. Read errors keep your saved credentials; check secure-storage access and retry. Some account setup/status checks and credential writes still wait synchronously, with a 30-second limit per command. A workflow with several commands can take longer. This does not change provider sign-in, permissions or your saved mailbox.</p>
+          <p class="hint" id="mail-secure-storage-help">On Windows and macOS, routine mail credential reads and startup checks wait asynchronously and time out after 30 seconds. Feature/status checks share guarded grant reads within each request, without a global completed-credential cache. Read errors keep your saved credentials; check secure-storage access and retry. Account setup and credential writes retain synchronous compatibility commands with a 30-second limit per command; several commands can take longer. This does not change provider sign-in, permissions or your saved mailbox.</p>
           <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
           <div class="row">
             <button type="button" class="ghost icon-label" id="connect-open">

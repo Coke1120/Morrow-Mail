@@ -96,7 +96,7 @@ async function run() {
     assert.equal(signins.at(-1).purpose,'calendar');
     assert.equal(JSON.parse(secrets.getPassword('gmail:calendar')).grantedScopes,config.CALENDAR_SCOPES.google);
     assert.equal(JSON.parse(secrets.getPassword('gmail')).grantedScopes,config.SCOPES.google);
-    assert.equal(answer('mail:oauthStatus').data.accounts.find(row=>row.id==='gmail').broadGoogleGrant,false);
+    assert.equal((await answer('mail:oauthStatus')).data.accounts.find(row=>row.id==='gmail').broadGoogleGrant,false);
     const calendarSecret=secrets.getPassword('gmail:calendar'), primarySecret=secrets.getPassword('gmail');
     for (const scopes of [config.SCOPES.google,'openid email https://www.googleapis.com/auth/calendar.events']) {
       scenario={scopes}; const denied=await answer('calendar:connect',{accountId:'gmail',forceReauthorize:true});

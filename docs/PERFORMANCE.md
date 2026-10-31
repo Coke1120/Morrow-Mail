@@ -32,8 +32,8 @@ through the existing in-memory 200-line Debug log. The monitor timer is unref'd;
 there is no separate timing file or remote telemetry. Other existing Debug log
 entries can retain account/folder context, so still review support copies.
 
-The macOS `security` bridge is measured as `keychain.wait`. Routine mail credential
-reads and startup/missing-credential checks now use an asynchronous child with a
+The macOS `security` and Windows PowerShell DPAPI bridges are measured as `keychain.wait`.
+Routine mail credential reads and startup/missing-credential checks use an asynchronous child with a
 30-second deadline including queue time, at most four live children, and a 1 MiB
 stdout limit. Same-account concurrent reads share pending work; no completed
 credential cache is added. A caller can abandon its read without cancelling a
@@ -41,11 +41,13 @@ remaining consumer. In-app writes/deletes invalidate pending reads and opaque
 revisions protect post-await account/refresh checks. Errors from the subprocess
 runner use fixed messages rather than child output or command arguments.
 
-Compatibility reads in feature/status gates and existing synchronous reconnect,
-write, delete and compensation blocks remain synchronous, now with a 30-second
-limit per `security` command and `SIGKILL` on timeout. Several commands can take
-longer in total. Windows DPAPI is unchanged. This is a partial API migration,
-not a claim that every credential path or native Mac freeze has been fixed.
+Read-only feature/status gates share guarded grant snapshots within each request,
+including account incarnation, credential revisions and configured Google client checks.
+Existing reconnect, write, delete and compensation compatibility blocks stay synchronous,
+with a 30-second limit per OS command and `SIGKILL` on timeout. Several commands can take
+longer in total. DPAPI encryption and storage locations are unchanged. Sync error text
+uses the credential already in flight for redaction rather than rereading secure storage.
+This is not a claim that every credential path or native freeze has been fixed.
 See [coverage, concurrency and validation limits](adr/2026-10-27-keychain-read-deadlines.md).
 The separate [cooperative startup search repair](adr/2026-10-27-cooperative-search-index.md)
 now commits durable batches and yields between them, retaining the existing
@@ -56,9 +58,9 @@ records the proposal and deferred worker/interactive-search extensions.
 
 - The mail list, open-message thread strip and header-only thread requests use an
   explicit metadata projection. Bodies are omitted from the JavaScript rows.
-  SQLite still inspects body values to preserve the existing `hasBody` meaning,
-  including JavaScript-compatible whitespace. This does not promise zero body
-  disk I/O. Full-message and full-thread requests retain their bodies; thread
+  Stored availability metadata preserves the existing `hasBody` meaning, including
+  JavaScript-compatible whitespace, without trimming body values on every page.
+  A bounded startup backfill runs before admission. Full-message and full-thread requests retain their bodies; thread
   membership, ordering, counts, sender names, Reply-To and attachment metadata
   remain unchanged. Long threads still return all requested header rows.
 - IMAP upserts compare the five indexed source fields in SQLite before writing.
@@ -68,7 +70,23 @@ records the proposal and deferred worker/interactive-search extensions.
   reindexing and keeps that behavior.
 - Transaction acknowledgement, journal hashing/append/fsync, recovery,
   checkpoints and provider/account identity guards are retained. All normal
-  database transactions still run on the main thread.
+  database transactions still run on the main thread, but sync commits at most
+  24 messages, 128 flags or 64 deletions per batch and yields outside transactions.
+  Startup journal replay and initial checkpoint publication run in workers; mail
+  admission stays closed until recovery and search verification finish.
+- Header-specific revisions and paged deltas drive worker-owned recipient aggregates.
+  Body/flag writes do not trigger a history rebuild. Notifications route by mailbox,
+  folder and visible surface. Outbox/Scheduled badges read counts, lists page at
+  200 body-free summaries, and opening/editing fetches full saved content on demand.
+- Merged Inbox bounds each ordered mailbox page before merging and shares revisioned
+  exact total/oldest results across offsets. Snooze expiry invalidates cached counts.
+  Cold exact counts and individual live SQL/index/journal/fsync calls can still stall.
+
+The mechanism regressions are `node scripts/check-performance-followups.js` (synthetic
+children/queues/renderer) and `node scripts/check-performance-storage.js` (temporary
+stores, worker address history, durable batch failure/reopen and query plans).
+See [bounded mail work](adr/2026-10-31-bounded-mail-work.md). These tests do not measure
+native Windows/macOS frames; packaged SQLite plans and native traces remain required.
 
 ## Repeatable synthetic benchmark
 

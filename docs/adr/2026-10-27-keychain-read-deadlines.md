@@ -4,6 +4,11 @@ Status: proposed implementation in a draft PR. Native validation is pending.
 
 Base: `163146384267909f527a399891304efd6f1bc0e3` (v0.3.3).
 
+Follow-up, 2026-10-31: [bounded mail work](2026-10-31-bounded-mail-work.md) extends
+async reads to Windows and migrates read-only feature/status gates to request
+snapshots. The synchronous mutation/compensation contract below remains in force;
+the descriptions of Windows and read-only gate coverage are historical.
+
 ## Problem and chosen scope
 
 `host/mail/mac-secrets.js` invoked `security` through `spawnSync` without a

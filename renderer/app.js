@@ -98,6 +98,7 @@ const state = {
 
 let accountGen = 0;
 let listGen = 0;
+let mailboxNavigationGen = 0;
 const LIST_PAGE_SIZE = 200;
 let openGen = 0;
 let pendingOpenId = "";
@@ -123,11 +124,16 @@ let undoDetailsEpoch = -1;
 const undoEpochByOp = new Map();
 const removalEpochByAction = new Map();
 const removalEpochByMessage = new Map();
+const pendingRemovalMessages = new Map();
+const removalSnapshotsByAction = new Map();
+const removalSnapshotsByOp = new Map();
 const undoPending = new Set();
+const restoredUndoOpIds = new Set();
 let undoInflight = null;
 let undoFlightSerial = 0;
 const undoSettleQueue = [];
 const undoSnapshots = new Map();
+const optimisticRemovals = new Map();
 let readUndoItems = null;
 let readUndoTimer = 0;
 let undoReceipt = "";
@@ -148,6 +154,30 @@ let signatureEditorGeneration = 0;
 let signatureListGen = 0;
 let signatureSavePending = null;
 let scheduledGen = 0;
+let scheduledPending = null;
+let scheduledRequestKey = "";
+let scheduledDirty = false;
+let scheduledRecords = [];
+let scheduledMore = false;
+let outboxMore = false;
+const retainedLists = new WeakMap();
+
+function reconcileRows(root, rows, keyOf, signatureOf, create) {
+  const previous = retainedLists.get(root) || new Map();
+  const next = new Map();
+  const nodes = rows.map((row, index) => {
+    const key = keyOf(row, index);
+    const signature = signatureOf(row, index);
+    const cached = previous.get(key);
+    const node = cached?.signature === signature && cached.node.parentNode === root ? cached.node : create(row, index);
+    next.set(key, { node, signature });
+    return node;
+  });
+  const keep = new Set(nodes);
+  for (const node of [...root.children]) if (!keep.has(node)) node.remove();
+  nodes.forEach((node, index) => { if (root.children[index] !== node) root.insertBefore(node, root.children[index] || null); });
+  retainedLists.set(root, next);
+}
 let scheduleUndo = null;
 let scheduleUndoTimer = null;
 let scheduleUndoBusy = false;
@@ -2223,6 +2253,7 @@ function clearFieldErrors(ids) {
 
 let agentLoadOverlay = false;
 let agentLoaded = false;
+let agentTriageLoad = null;
 
 function syncAgentPageBusy() {
   setPageBusy("agent-panel", !!(agentChatBusy || agentLoadOverlay), "Working…");
@@ -2800,7 +2831,7 @@ function outboxEmails(rows) {
     date: row.sendAt,
     snippet: outboxSnippet(row),
     htmlBody: row.htmlBody || "",
-    textBody: plainFromMailHtml(row.htmlBody || ""),
+    textBody: row.htmlBody ? plainFromMailHtml(row.htmlBody) : "",
     unread: false,
     isStarred: false,
     draftId: row.draftId,
@@ -4351,7 +4382,7 @@ function allAccountInboxRow() {
 
 function applyOutboxChrome(root) {
   if (!root) return;
-  const count = Array.isArray(state.outboxRows) ? state.outboxRows.length : 0;
+  const count = state.outboxCount ?? (Array.isArray(state.outboxRows) ? state.outboxRows.length : 0);
   const button = root.querySelector("button.outbox");
   if (button) {
     if (state.outbox) button.setAttribute("aria-current", "true");
@@ -4591,12 +4622,14 @@ function onFolderNavKey(event) {
 
 function renderAccounts() {
   renderSettingsAccounts();
-  refreshMailVacation();
+  if (state.view === "mail") refreshMailVacation();
   const nav = $("folders");
   const folderQuery = String(folderFilterQuery() || "").trim().toLowerCase();
   // Sync status and folder selection do not change the folder tree.
   const key = JSON.stringify([
-    state.accounts,
+    state.accounts.map(account => [account.id, account.email, account.label, account.senderName, account.imapSmtpProfile,
+      account.needsReauth, account.reauthReason, account.delimiter,
+      foldersOf(account).map(folder => [folder.id, folder.name, folder.wellKnownName, folder.type])]),
     state.accountId,
     state.prefs.gmailOpen,
     state.prefs.outlookOpen,
@@ -4605,6 +4638,16 @@ function renderAccounts() {
   ]);
   if (key === folderRenderKey) {
     for (const button of nav.querySelectorAll("button.folder")) {
+      const account = state.accounts.find(row => row.id === button.dataset.accountId);
+      const folder = foldersOf(account).find(row => row.id === button.dataset.folderId);
+      if (folder) {
+        let count = button.querySelector(".count");
+        if (folder.unreadCount && !count) { count = document.createElement("span"); count.className = "count"; button.appendChild(count); }
+        if (count) { count.textContent = String(folder.unreadCount || ""); count.hidden = !folder.unreadCount; }
+        const name = button.querySelector(".name");
+        const label = name?.textContent || folder.name;
+        button.setAttribute("aria-label", label + (folder.unreadCount ? `, ${folder.unreadCount} unread` : ""));
+      }
       const current = !state.allInbox && !state.outbox && button.dataset.accountId === state.accountId && button.dataset.folderId === state.folderId;
       if (current) button.setAttribute("aria-current", "true");
       else button.removeAttribute("aria-current");
@@ -4929,17 +4972,28 @@ function openProviderColumn(index, id) {
   state.providerColumnPath = path;
 }
 
-function imapFolderForProvider(account, folder) {
+function imapFolderForProvider(account, folder, tree) {
   if (!account || !folder) return null;
   const id = String(folder.id || "");
-  const name = String(folder.name || "");
-  const label = String(folder.label || "");
-  return foldersOf(account).find((item) => {
-    if (!item) return false;
-    const itemId = String(item.id || "");
-    const itemName = String(item.name || "");
-    return itemId === id || (name && itemName === name) || (label && itemName === label);
-  }) || null;
+  const folders = foldersOf(account).filter(Boolean);
+  const unique = (rows) => rows.length === 1 ? rows[0] : null;
+  const exact = folders.filter(item => item.providerId && String(item.providerId) === id);
+  if (exact.length) return unique(exact);
+  const well = folder.wellKnown || folder.wellKnownName;
+  if (well) return unique(folders.filter(item => item.wellKnownName === well));
+  const rows = tree || providerPayloadFor(account)?.folders || [];
+  const byId = new Map(rows.map(item => [String(item.id), item]));
+  const names = [String(folder.name || "")], seen = new Set([id]);
+  let parentId = folder.parentId;
+  while (parentId) {
+    const parent = byId.get(String(parentId));
+    if (!parent || seen.has(String(parent.id))) return null;
+    seen.add(String(parent.id));
+    if (!names[0].startsWith(String(parent.name) + "/")) names.unshift(String(parent.name));
+    parentId = parent.parentId;
+  }
+  const path = names.join(accountDelimiter(account));
+  return path ? unique(folders.filter(item => String(item.id || "") === path)) : null;
 }
 
 function paintProviderActions(block, account, provider, tree, path) {
@@ -4965,12 +5019,13 @@ function paintProviderActions(block, account, provider, tree, path) {
   open.type = "button";
   open.className = "ghost";
   open.textContent = "Open in Mail";
-  const imap = imapFolderForProvider(account, folder);
+  const imap = imapFolderForProvider(account, folder, tree);
   open.disabled = !imap;
   open.title = imap ? "Open this folder in Mail" : "No matching mailbox folder";
   open.addEventListener("click", () => {
     if (!imap) return;
-    selectFolder(account.id, imap.id).then(() => showMail()).catch((error) => showStatus(error.message, true));
+    showMail();
+    selectFolder(account.id, imap.id).catch((error) => showStatus(error.message, true));
   });
   row.appendChild(open);
   if (provider === "gmail") {
@@ -5536,10 +5591,39 @@ function confirmedCalls(action, answer, calls, detail) {
   return list;
 }
 
-function labelRemovesFromView(folderId, labelId) {
+function labelRemovesFromView(folderId, labelId, labels, account) {
   const folder = String(folderId || "");
   const label = String(labelId || "");
-  return !!(folder && label && folder === label);
+  if (!folder || !label) return false;
+  const current = account ? foldersOf(account).find(item => String(item.id) === folder) : null;
+  if (current && current.providerId) return String(current.providerId) === label;
+  if (!Array.isArray(labels)) return folder === label;
+  const providerFolder = (labels || []).find(item => String(item.id) === label);
+  if (!providerFolder) return false;
+  return account ? imapFolderForProvider(account, providerFolder, labels)?.id === folder : providerFolder.name === folder;
+}
+
+function mailboxViewKey() {
+  return JSON.stringify([mailboxNavigationGen, state.accountId, state.folderId, state.query, state.allInbox, state.outbox]);
+}
+
+async function reconcileLabelView(plans, labels, viewKey) {
+  if (viewKey !== mailboxViewKey() || state.allInbox || state.outbox || state.query) return;
+  const account = selectedAccount();
+  const removed = new Set(plans.filter(plan => plan.email.accountId === state.accountId
+    && (plan.removeLabelIds || []).some(id => labelRemovesFromView(state.folderId, id, labels, account))).map(plan => String(plan.email.id)));
+  if (!removed.size) return;
+  state.emails = state.emails.filter(email => !removed.has(String(email.id)));
+  state.selectedIds = state.selectedIds.filter(id => !removed.has(String(id)));
+  if (removed.has(String(state.selectionAnchor))) state.selectionAnchor = "";
+  if (removed.has(String(readerCurrentId()))) {
+    invalidateReaderOpen();
+    state.email = null;
+    state.thread = [];
+    renderReader(false);
+  }
+  renderList();
+  await loadList();
 }
 
 function bulkBlockedByPause(sync, accountId) {
@@ -5940,10 +6024,9 @@ function paintLog(lines) {
   supportLogLines = (Array.isArray(lines) ? lines : []).slice(-200);
   const sources = $("log-source");
   const previous = sources.value;
-  sources.replaceChildren();
-  for (const value of ["", ...new Set(supportLogLines.map(row => row.source || "host"))]) {
-    const option = document.createElement("option"); option.value = value; option.textContent = value ? redactDebugText(value) : "All sources"; sources.append(option);
-  }
+  reconcileRows(sources, ["", ...new Set(supportLogLines.map(row => row.source || "host"))], value => value, value => value, value => {
+    const choice = document.createElement("option"); choice.value = value; choice.textContent = value ? redactDebugText(value) : "All sources"; return choice;
+  });
   sources.value = [...sources.options].some(row => row.value === previous) ? previous : "";
   filterSupportLog();
 }
@@ -5952,10 +6035,17 @@ function filteredSupportLog() {
   return supportLogLines.filter(row => !source || (row.source || "host") === source);
 }
 function filterSupportLog() {
-  const list = $("log-lines"); list.replaceChildren();
+  const list = $("log-lines");
   const rows = filteredSupportLog();
-  for (const row of rows) { const item = document.createElement("li"); item.textContent = logLine(row); list.append(item); }
-  if (!rows.length) { const item = document.createElement("li"); item.textContent = "No recent session lines for this source."; list.append(item); }
+  const occurrences = new Map();
+  reconcileRows(list, rows.length ? rows : [null], row => {
+    const base = row ? `${row.at}\0${logLine(row)}` : "empty";
+    const count = occurrences.get(base) || 0;
+    occurrences.set(base, count + 1);
+    return `${base}\0${count}`;
+  }, row => row ? logLine(row) : "empty", row => {
+    const item = document.createElement("li"); item.textContent = row ? logLine(row) : "No recent session lines for this source."; return item;
+  });
 }
 function refreshLog() {
   if (!logRefreshPending) logRefreshPending = readSupportLog().finally(() => { logRefreshPending = null; });
@@ -6240,12 +6330,13 @@ function unreadRetainIds() {
 function shownEmails() {
   const input = $("list-filter");
   const query = input ? input.value : "";
-  if (state.outbox) return visibleList(state.emails, query, null);
+  const emails = state.emails.filter((email) => !optimisticRemovals.has(email.id));
+  if (state.outbox) return visibleList(emails, query, null);
   const folder = state.allInbox
     ? (state.allInboxUnreadOnly ? { view: { unread: true } } : null)
     : selectedFolderNode();
   const holdId = unreadListActive(currentUnreadView()) && state.unreadHold ? state.unreadHold.id : "";
-  return visibleList(state.emails, query, folder, holdId);
+  return visibleList(emails, query, folder, holdId);
 }
 
 function rememberLoadedSelection() {
@@ -6954,12 +7045,19 @@ function readerFromLine(email) {
   return row;
 }
 
-function renderReader(focus) {
+function renderReader(focus, onlyChanged = false) {
   if (pendingOpenBody && pendingOpenId) {
     paintReaderPending(listedMessage(pendingOpenId));
     return;
   }
   const pane = $("reader");
+  const emailView = state.email;
+  const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.bodyError,
+    emailView?.unread, emailView?.isStarred, emailView?.outboxStatus, emailView?.subject, emailView?.from, emailView?.date,
+    state.thread, state.translate, state.prefs.images, state.prefs.snooze,
+    state.remoteAllowed?.[emailView?.id], snoozedUntilOf(emailView), state.accounts.length, state.providerFolders];
+  if (onlyChanged && pane.morrowReaderSignature?.every((value, index) => value === signature[index])) return;
+  pane.morrowReaderSignature = signature;
   pane.removeAttribute("aria-busy");
   const email = state.email;
   if (state.translate && (!email || state.translate.emailId !== email.id)) {
@@ -8128,7 +8226,7 @@ function undoItemsForOutcomes(outcome) {
     if (!row || row.status !== "completed" || !row.opId || seen.has(row.opId)) continue;
     if (row.kind && row.kind !== "remove") continue;
     seen.add(row.opId);
-    const snap = undoSnapshots.get(String(row.id)) || {};
+    const snap = removalSnapshotsByAction.get(row.actionId) || removalSnapshotsByOp.get(row.opId) || undoSnapshots.get(String(row.id)) || {};
     items.push(normalizeUndoItem({
       opId: row.opId,
       messageId: row.id || snap.messageId || "",
@@ -8162,24 +8260,42 @@ function startRemovalSession(text, opIds, isError, items) {
   undoEpoch += 1;
   undoInflight = null;
   undoPending.clear();
+  restoredUndoOpIds.clear();
+  pendingRemovalMessages.clear();
   showUndo(text, opIds, isError, items);
 }
 
 function beginRemovalRequest(messages, action, destinationLabel) {
   rememberUndoSnapshots(messages, action, destinationLabel);
-  startRemovalSession("Applying mailbox changes…", [], false, []);
+  if (undoKind !== "removal") startRemovalSession("Applying mailbox changes…", [], false, []);
+  else showStatus("Applying mailbox changes…");
   for (const message of messages || []) {
-    if (message?.id) removalEpochByMessage.set(String(message.id), { epoch: undoEpoch, generation: (actionGeneration.get(message.id) || 0) + 1 });
+    if (!message?.id) continue;
+    const request = { epoch: undoEpoch, generation: (actionGeneration.get(message.id) || 0) + 1 };
+    removalEpochByMessage.set(String(message.id), request);
+    pendingRemovalMessages.set(String(message.id), request);
   }
   return undoEpoch;
 }
 
-function rememberRemovalReceipt(data, epoch) {
+function rememberRemovalReceipt(data, epoch, snapshots) {
   if (epoch == null) return;
   for (const row of [...(data?.pending || []), ...(data?.outcomes || [])]) {
     if (row.actionId) removalEpochByAction.set(row.actionId, epoch);
     if (row.opId) undoEpochByOp.set(row.opId, epoch);
+    const snapshot = snapshots?.get(String(row.id)) || undoSnapshots.get(String(row.id));
+    if (snapshot && row.actionId && !removalSnapshotsByAction.has(row.actionId)) removalSnapshotsByAction.set(row.actionId, snapshot);
+    if (snapshot && row.opId && !removalSnapshotsByOp.has(row.opId)) removalSnapshotsByOp.set(row.opId, snapshot);
   }
+  for (const row of data?.outcomes || []) {
+    const pending = pendingRemovalMessages.get(String(row.id));
+    if (pending?.epoch === epoch && row.phase !== "accepted" && (typeof row.generation !== "number" || row.generation >= pending.generation)) pendingRemovalMessages.delete(String(row.id));
+  }
+}
+
+function hasPendingRemovalUndo() {
+  return [...pendingRemovalMessages.values()].some((request) => request.epoch === undoEpoch)
+    || undoSettleQueue.some((batch) => batch.outcomes?.some((row) => row.kind === "remove" && row.opId && removalSettlementEpoch(row) === undoEpoch));
 }
 
 function removalSettlementEpoch(row) {
@@ -8195,7 +8311,11 @@ function removalSettlementEpoch(row) {
 function showRemovalUndo(text, opIds, isError, items) {
   const ids = opIds || [];
   const sameEpoch = ids.length > 0 && ids.every((id) => undoEpochByOp.get(id) === undoEpoch);
-  if (sameEpoch) showUndo(text, ids, isError, items);
+  if (sameEpoch || undoKind === "removal") {
+    const merged = new Map((undoItems || []).map((item) => [item.opId, item]));
+    for (const item of undoListFor(ids, items) || []) merged.set(item.opId, item);
+    showUndo(text, [...merged.keys()], isError, [...merged.values()]);
+  }
   else startRemovalSession(text, ids, isError, items);
 }
 
@@ -8213,6 +8333,7 @@ function settleUndoInflight(batch) {
   if (!rows.length) return false;
   const requested = [...undoInflight.opIds];
   const retained = new Set(retainedUndoOpIds(requested, rows, undoItems));
+  for (const id of requested) if (!retained.has(id)) restoredUndoOpIds.add(id);
   const resolved = new Set();
   for (const row of rows) {
     const opId = row.retryOpId || ((undoItems || []).find((item) => item && String(item.messageId) === String(row.id)) || {}).opId;
@@ -8225,7 +8346,7 @@ function settleUndoInflight(batch) {
   const kept = (undoItems || []).filter((item) => !requested.includes(item.opId) || retained.has(item.opId));
   const receipt = receiptText("Restore", { outcomes: rows });
   const incomplete = rows.some((row) => row && row.status !== "completed");
-  if (!kept.length) {
+  if (!kept.length && !hasPendingRemovalUndo()) {
     clearUndo();
     showStatus(receipt, incomplete);
   } else {
@@ -8240,8 +8361,10 @@ function settleUndoInflight(batch) {
 }
 
 function applyRemovalSettlement(batch, receipt, bad) {
+  if (batch?.opIds) batch = { ...batch, opIds: batch.opIds.filter((id) => !restoredUndoOpIds.has(id)) };
   if (batch?.outcomes) {
     const outcomes = batch.outcomes.filter((row) => {
+      if (row.opId && restoredUndoOpIds.has(row.opId)) return false;
       const epoch = removalSettlementEpoch(row);
       return epoch == null || epoch === undoEpoch;
     });
@@ -8254,7 +8377,7 @@ function applyRemovalSettlement(batch, receipt, bad) {
     return;
   }
   const current = $("status") && $("status").textContent;
-  const text = bad || !current ? receipt : current;
+  const text = bad || !current || /awaiting confirmation|background…|Applying mailbox changes/.test(current) ? receipt : current;
   const { live } = undoRetriesByEpoch(batch);
   if (live.length && undoKind === "removal" && undoOpIds && undoOpIds.length) {
     const merged = (undoItems || []).slice();
@@ -8367,8 +8490,8 @@ function paintUndoDetails() {
   const focused = list.contains(document.activeElement) ? document.activeElement.value : null;
   const scrollTop = list.scrollTop;
   const multipleAccounts = new Set((undoItems || []).map((item) => item.accountId).filter(Boolean)).size > 1;
-  list.replaceChildren();
-  for (const [index, item] of (undoItems || []).entries()) {
+  reconcileRows(list, undoItems || [], item => item.opId, item => JSON.stringify([item, undoPending.has(item.opId), multipleAccounts,
+    state.accounts.find(account => account.id === item.accountId)?.label]), (item, index) => {
     const li = document.createElement("li");
     const label = document.createElement("label");
     label.className = "check";
@@ -8386,7 +8509,7 @@ function paintUndoDetails() {
     subject.textContent = item.subject || "(No subject)";
     const meta = document.createElement("span");
     meta.className = "undo-details-meta";
-    meta.id = "undo-details-meta-" + index;
+    meta.id = "undo-details-meta-" + String(item.opId).replace(/[^A-Za-z0-9_-]/g, "_");
     box.setAttribute("aria-describedby", meta.id);
     const action = item.action || "move";
     const where = item.destinationLabel ? " → " + item.destinationLabel : "";
@@ -8396,9 +8519,9 @@ function paintUndoDetails() {
     text.append(subject, meta);
     label.append(box, text);
     li.appendChild(label);
-    list.appendChild(li);
-    if (focused === item.opId) box.focus({ preventScroll: true });
-  }
+    return li;
+  });
+  if (focused) [...list.querySelectorAll('input[type="checkbox"]')].find(box => box.value === focused)?.focus({ preventScroll: true });
   list.scrollTop = scrollTop;
   paintUndoSelectedCount();
 }
@@ -8478,7 +8601,7 @@ function showUndo(text, opIds, isError, items) {
 }
 
 function showReadUndo(text, items) {
-  if (undoKind === "removal" && undoOpIds && undoOpIds.length) {
+  if (undoKind === "removal" && (undoOpIds?.length || hasPendingRemovalUndo())) {
     showStatus(text);
     return;
   }
@@ -8511,6 +8634,9 @@ function showReadUndo(text, items) {
 
 function clearUndo() {
   clearReadUndoTimer();
+  undoEpoch += 1;
+  pendingRemovalMessages.clear();
+  restoredUndoOpIds.clear();
   undoKind = "";
   undoOpIds = null;
   undoItems = null;
@@ -8619,6 +8745,14 @@ function applyActionSettlement(batch) {
   for (const outcome of outcomes) {
     if (!outcome || !outcome.id) continue;
     if (typeof settleAgentReadOutcome === "function") settleAgentReadOutcome(outcome).catch((error) => showStatus(error.message || String(error), true));
+    const pendingRemoval = pendingRemovalMessages.get(String(outcome.id));
+    if (outcome.kind === "remove" && pendingRemoval && (typeof outcome.generation !== "number" || outcome.generation >= pendingRemoval.generation)) pendingRemovalMessages.delete(String(outcome.id));
+    const optimistic = optimisticRemovals.get(outcome.id);
+    if (optimistic && outcome.kind === "remove" && (typeof outcome.generation !== "number" || outcome.generation >= optimistic.generation)) {
+      optimistic.settlement = outcome;
+      optimisticRemovals.delete(outcome.id);
+    }
+    if (outcome.kind === "remove" || outcome.kind === "undo") moved = true;
     const memory = actionGeneration.get(outcome.id) || 0;
     if (typeof outcome.generation === "number" && outcome.generation < memory) continue;
     if (typeof outcome.generation === "number") actionGeneration.set(outcome.id, outcome.generation);
@@ -8632,11 +8766,11 @@ function applyActionSettlement(batch) {
       });
       paintStars([{ id: outcome.id }], !!projection.isStarred);
     }
-    if (outcome.kind === "remove" || outcome.kind === "undo") moved = true;
   }
   const bad = outcomes.some((row) => row.status && row.status !== "completed");
   const receipt = receiptText("Mailbox", { outcomes });
   if (settleUndoInflight(batch)) {
+    if (!undoBusy && !undoPending.size) flushUndoSettleQueue();
     if (moved) loadList(false).catch(() => {});
     return;
   }
@@ -8647,7 +8781,7 @@ function applyActionSettlement(batch) {
     if (moved) loadList(false).catch(() => {});
     return;
   }
-  if (undoBusy) {
+  if (undoBusy || undoPending.size) {
     undoSettleQueue.push(batch);
     if (moved) loadList(false).catch(() => {});
     return;
@@ -8899,10 +9033,16 @@ async function undoRemoval(requested) {
     : (undoOpIds || []).slice()
   ).filter((id) => !undoPending.has(id));
   if (!opIds.length) return;
+  const selectedItems = (undoItems || []).filter((item) => opIds.includes(item.opId) && item.messageId);
+  if (new Set(selectedItems.map((item) => item.messageId)).size !== selectedItems.length) {
+    showStatus("Select one change per message in Details. Restore its latest change first; earlier changes remain separate.", true);
+    return;
+  }
   const prior = undoReceipt || (($("status") && $("status").textContent) || "");
   const previousItems = (undoItems || []).slice();
   const previousError = undoReceiptError;
   const epoch = undoEpoch;
+  let resultEpoch = epoch;
   const serial = ++undoFlightSerial;
   const messages = new Map();
   for (const item of previousItems) {
@@ -8947,12 +9087,14 @@ async function undoRemoval(requested) {
       for (const id of opIds) undoPending.delete(id);
       undoInflight = null;
       const failed = new Set(retainedUndoOpIds(opIds, outcomes, previousItems));
+      for (const id of opIds) if (!failed.has(id)) restoredUndoOpIds.add(id);
       const kept = previousItems.filter((item) => !opIds.includes(item.opId) || failed.has(item.opId));
       const receipt = receiptText("Restore", { outcomes });
       const incomplete = outcomes.some((row) => row && row.status !== "completed");
       applied = true;
-      if (!kept.length) {
+      if (!kept.length && !hasPendingRemovalUndo()) {
         clearUndo();
+        resultEpoch = undoEpoch;
         showStatus(prior + " " + receipt, incomplete);
       } else {
         undoKind = "removal";
@@ -8966,7 +9108,7 @@ async function undoRemoval(requested) {
     } else applied = true;
     await loadList();
   } catch (error) {
-    if (epoch !== undoEpoch) return;
+    if (resultEpoch !== undoEpoch) return;
     // A settlement can arrive before an IPC rejection. Never resurrect its rows.
     if (!applied && (!undoInflight || undoInflight.serial !== serial || undoInflight.settled)) return;
     if (!applied) {
@@ -9044,6 +9186,7 @@ function rememberSelection(preferredId) {
     state.allInboxUnreadOnly = false;
     state.outbox = false;
     state.outboxRows = [];
+    state.outboxCount = 0;
   }
   if (preferredId && state.accounts.some((account) => account.id === preferredId)) {
     if (state.accountId !== preferredId) {
@@ -9072,9 +9215,9 @@ function rememberSelection(preferredId) {
 function paintListPaging() {
   const pager = $("list-paging");
   if (!pager) return;
-  pager.hidden = !!state.query || !!state.outbox || (!state.allInbox && (!state.accountId || !state.folderId));
+  pager.hidden = !!state.query || (state.outbox ? !(state.outboxCount > 200) : !state.allInbox && (!state.accountId || !state.folderId));
   const end = state.listOffset + state.emails.length;
-  $("list-prev").disabled = state.listLoading || state.listOffset === 0;
+  $("list-prev").disabled = state.listLoading || state.outbox || state.listOffset === 0;
   $("list-next").disabled = state.listLoading || end >= state.listTotal;
   $("list-sync-more").hidden = !!state.outbox || state.allInbox || state.listSyncDone || selectedFolderNode()?.syncs === false;
   $("list-sync-more").disabled = state.listLoading || currentFolderSync()?.state === "syncing";
@@ -9085,6 +9228,10 @@ function paintListPaging() {
 
 async function changeListPage(direction) {
   if (state.listLoading || state.query) return;
+  if (state.outbox) {
+    if (direction > 0 && outboxMore) await loadScheduled({ more: true });
+    return;
+  }
   const offset = Math.max(0, state.listOffset + direction * LIST_PAGE_SIZE);
   if (direction > 0 && offset >= state.listTotal) return;
   const data = await loadList(false, offset);
@@ -9170,18 +9317,25 @@ async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   noteUnreadScope();
   const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
-  if (state.listScope !== scope) {
+  const scopeChanged = state.listScope !== scope;
+  if (scopeChanged) {
     state.listScope = scope;
     state.listOffset = 0;
     state.listTotal = 0;
   }
   state.listLoading = true;
+  if (scopeChanged) {
+    state.emails = [];
+    renderList();
+  }
   paintListPaging();
   try {
     if (state.outbox && !state.query) {
+      await loadScheduled();
+      if (gen !== listGen) return null;
       state.emails = outboxEmails(state.outboxRows);
       state.listOffset = 0;
-      state.listTotal = state.emails.length;
+      state.listTotal = state.outboxCount ?? state.emails.length;
       state.listSyncDone = true;
       renderList();
       noteMailListLoaded(gen);
@@ -9235,7 +9389,7 @@ async function loadList(fromNetwork, requestedOffset) {
     }
     state.listOffset = offset;
     state.emails = takeEmails((data && data.emails) || []);
-    if (unreadListActive(currentUnreadView())) {
+    if (unreadListActive(currentUnreadView()) && !optimisticRemovals.has(state.unreadHold?.id)) {
       state.unreadHold = applyUnreadHold(state.unreadHold, {
         kind: "refresh",
         ids: state.emails.map((row) => row && row.id),
@@ -9252,27 +9406,41 @@ async function loadList(fromNetwork, requestedOffset) {
   }
 }
 
-async function loadAccounts(preferredId) {
+let mailAccountKey = "";
+function accountFolderKey(account) {
+  return JSON.stringify([account?.id, account?.bodyEpoch, account?.authKind, account?.mailTransport, account?.needsReauth,
+    foldersOf(account).map(folder => [folder.id, folder.name])]);
+}
+
+async function loadAccounts(preferredId, supplied) {
   const gen = ++accountGen;
-  const data = await call("mail:listAccounts");
+  const previous = selectedAccount();
+  const data = supplied || await call("mail:listAccounts");
   if (gen !== accountGen) return;
   acceptBodyAccounts(Array.isArray(data) ? data : []);
   rememberSelection(preferredId);
   renderAccounts();
   paintBodySyncStatus();
-  loadScheduled().catch(() => {});
   if (state.view === "calendar" && (calendarAccount()?.id || "") !== calendarPaintedAccountId) {
     loadCalendar({ preferCache: true }).catch(error => showStatus(error.message, true));
   }
   syncRemove();
   if (window.morrowBrainCompose && typeof window.morrowBrainCompose.sync === "function") window.morrowBrainCompose.sync();
-  await loadSnoozed();
+  const account = selectedAccount();
+  const key = accountFolderKey(account);
+  const providerChanged = mailAccountKey !== key;
+  mailAccountKey = key;
+  if (state.view === "folders" && (providerChanged || !state.providerFolders)) loadProviderFolders(gen);
+  if (state.view !== "mail") { mailListDirty = true; return; }
+  if (supplied && !providerChanged) return;
+  if (!supplied || previous?.id !== account?.id) await loadSnoozed();
   if (gen !== accountGen) return;
   await loadList();
   if (gen !== accountGen) return;
-  loadProviderFolders(gen);
+  if (providerChanged || !state.providerFolders) loadProviderFolders(gen);
   if (state.view === "folders") paintProviderPage();
-  renderReader(false);
+  renderReader(false, true);
+  return true;
 }
 
 const providerFolderPending = new Map();
@@ -9284,16 +9452,17 @@ async function loadProviderFolders(gen) {
     return;
   }
   const requestId = account.id;
+  const requestKey = accountFolderKey(account);
   try {
     if (!providerFolderPending.has(requestId)) {
       const pending = call("mail:listProviderFolders", { accountId: requestId }).finally(() => providerFolderPending.delete(requestId));
       providerFolderPending.set(requestId, pending);
     }
     const payload = await providerFolderPending.get(requestId);
-    if (gen !== accountGen || state.accountId !== requestId) return;
+    if (state.accountId !== requestId || accountFolderKey(selectedAccount()) !== requestKey) return;
     state.providerFolders = { ...(payload || {}), accountId: requestId };
   } catch (error) {
-    if (gen !== accountGen || state.accountId !== requestId) return;
+    if (state.accountId !== requestId || accountFolderKey(selectedAccount()) !== requestKey) return;
     state.providerFolders = {
       accountId: requestId,
       api: false,
@@ -9364,15 +9533,20 @@ async function confirmDeleteFolder(folder, provider) {
   await deleteProviderFolder(folder.id);
 }
 
-async function changeLabels(email, addLabelIds, removeLabelIds) {
+async function changeLabels(email, addLabelIds, removeLabelIds, labels) {
   const add = Array.isArray(addLabelIds) ? addLabelIds : [];
   const remove = Array.isArray(removeLabelIds) ? removeLabelIds : [];
-  await call("mail:modifyMessageLabels", {
+  const viewKey = mailboxViewKey();
+  const account = state.accounts.find(item => item.id === email.accountId);
+  const folders = labels || providerLabelTree(providerPayloadFor(account)?.folders || []);
+  const data = await call("mail:modifyMessageLabels", {
     accountId: email.accountId,
     emailId: email.id,
     addLabelIds: add,
     removeLabelIds: remove,
   });
+  stampLabelIds(email, folders, add, remove, data?.labelIds);
+  await reconcileLabelView([{ email, removeLabelIds: remove.filter(id => !Array.isArray(data?.labelIds) || !data.labelIds.includes(id)) }], folders, viewKey);
   const text = add.length && remove.length
     ? "Labels updated in Gmail."
     : add.length
@@ -9823,14 +9997,14 @@ function paintLabelPicker() {
   }
 }
 
-function stampLabelIds(email, labels, addLabelIds, removeLabelIds) {
+function stampLabelIds(email, labels, addLabelIds, removeLabelIds, labelIds) {
   if (!email || !email.id) return;
-  const next = new Set(appliedEditableLabels(email, labels));
+  const next = new Set(Array.isArray(email.labelIds) ? messageLabelKeys(email) : appliedEditableLabels(email, labels));
   for (const id of addLabelIds || []) next.add(String(id));
   for (const id of removeLabelIds || []) next.delete(String(id));
-  const ids = [...next];
+  const ids = Array.isArray(labelIds) ? labelIds.slice() : [...next];
   const write = (row) => {
-    if (row && String(row.id) === String(email.id)) row.labelIds = ids.slice();
+    if (row && row.accountId === email.accountId && String(row.id) === String(email.id)) row.labelIds = ids.slice();
   };
   write(email);
   for (const row of state.emails || []) write(row);
@@ -9866,16 +10040,17 @@ function finishLabelPick() {
 
 async function applyLabelPlans(snapshot) {
   const plans = snapshot.plans || [];
+  const viewKey = mailboxViewKey();
   if (!snapshot.bulk && plans.length === 1) {
     const plan = plans[0];
-    await changeLabels(plan.email, plan.addLabelIds, plan.removeLabelIds);
-    stampLabelIds(plan.email, snapshot.labels, plan.addLabelIds, plan.removeLabelIds);
+    await changeLabels(plan.email, plan.addLabelIds, plan.removeLabelIds, snapshot.labels);
     return;
   }
   const messages = plans.map((plan) => plan.email);
   if (refusePaused(messages)) return;
   let calls = labelEditCalls(plans);
-  const removes = plans.some((plan) => (plan.removeLabelIds || []).some((id) => labelRemovesFromView(state.folderId, id)));
+  const removes = !state.allInbox && !state.outbox && !state.query && plans.some(plan => plan.email.accountId === state.accountId
+    && (plan.removeLabelIds || []).some(id => labelRemovesFromView(state.folderId, id, snapshot.labels, selectedAccount())));
   const excluded = selectedMessages().length !== (snapshot.messages || []).length;
   if (removes || excluded) {
     const answer = await askConfirm(labelApplyConfirm(plans, snapshot.labels, selectionScopeCopy(messages, snapshot.messages)));
@@ -9889,8 +10064,8 @@ async function applyLabelPlans(snapshot) {
     if (!completed.has(String(plan.email.id))) continue;
     stampLabelIds(plan.email, snapshot.labels, plan.addLabelIds, plan.removeLabelIds);
   }
-  if (removes) await finishBulkRemoval("Labels", outcome, messages.map((row) => row.id), { messages, action: "move" });
-  else showStatus(receiptText("Labels", outcome), !!outcome.error);
+  await reconcileLabelView(plans.filter(plan => completed.has(String(plan.email.id))), snapshot.labels, viewKey);
+  showStatus(receiptText("Labels", outcome), !!outcome.error);
 }
 
 function closeMovePicker() {
@@ -9922,6 +10097,8 @@ function finishMovePick() {
 }
 
 async function commitFolderMove(session, target) {
+  const viewKey = mailboxViewKey();
+  const ownsSelection = state.accountId === session.accountId;
   const channel = session.kind === "imap" ? "mail:moveFolder" : "mail:moveProviderFolder";
   const params = {
     accountId: session.accountId,
@@ -9939,18 +10116,20 @@ async function commitFolderMove(session, target) {
   if (!request) return;
   if (session.kind === "imap") {
     const data = await call("mail:moveFolder", request);
-    const next = relocatedFolderId(state.folderId, data && data.renames);
-    if (next) state.folderId = next;
+    if (ownsSelection && viewKey === mailboxViewKey()) {
+      const next = relocatedFolderId(state.folderId, data && data.renames);
+      if (next) state.folderId = next;
+    }
     if (data && data.warning) showStatus(data.warning, true);
     else showStatus("Folder moved.");
-    await loadAccounts(state.accountId);
+    await loadAccounts();
     return;
   }
   try {
     await call("mail:moveProviderFolder", request);
     showStatus(session.kind === "outlook" ? "Folder moved." : "Label moved.");
   } finally {
-    await loadProviderFolders(accountGen);
+    if (state.accountId === session.accountId) await loadProviderFolders(accountGen);
   }
 }
 
@@ -10160,8 +10339,10 @@ function receiptRows(data, spec) {
 
 function receiptText(label, outcome) {
   const rows = outcome.outcomes || [];
-  const count = (status) => rows.filter((row) => row.status === status).length;
+  const count = (status) => rows.filter((row) => row.status === status && row.phase !== "accepted").length;
   const parts = [count("completed") + " completed", count("failed") + " failed", count("unknown") + " unknown", count("not_attempted") + " not attempted"];
+  const accepted = rows.filter((row) => row.phase === "accepted").length;
+  if (accepted) parts.splice(1, 0, accepted + " awaiting confirmation");
   const errors = [...new Set(rows.map((row) => row.error).filter(Boolean))];
   if (outcome.error && !errors.includes(outcome.error)) errors.push(outcome.error);
   return label.replace(/[.]$/, "") + ": " + parts.join(" · ") + "." + (errors.length ? " " + errors.join(" ") : "")
@@ -10170,6 +10351,7 @@ function receiptText(label, outcome) {
 
 async function runBulk(calls, removalEpoch) {
   const outcome = { opIds: [], outcomes: [], done: 0, paused: false, error: "" };
+  const snapshots = removalEpoch == null ? null : new Map(calls.flatMap((spec) => operationIds(spec).map((id) => [String(id), undoSnapshots.get(String(id))])));
   if (removalEpoch != null) outcome.removalEpoch = removalEpoch;
   let stopped = false;
   for (const spec of calls) {
@@ -10179,8 +10361,9 @@ async function runBulk(calls, removalEpoch) {
     }
     let rows;
     try {
+      if (removalEpoch != null) await new Promise((resolve) => afterPaint(resolve));
       const data = await call(spec.channel, spec.params);
-      rememberRemovalReceipt(data, removalEpoch);
+      rememberRemovalReceipt(data, removalEpoch, snapshots);
       rows = receiptRows(data, spec);
     } catch (error) {
       const message = error.message || String(error);
@@ -10201,7 +10384,17 @@ async function runBulk(calls, removalEpoch) {
 }
 
 async function finishBulkRemoval(label, outcome, ids, extra) {
+  if (extra?.optimistic) {
+    const outcomes = (outcome.outcomes || []).map((row) => row.phase === "accepted" ? extra.optimistic.get(row.id)?.settlement || row : row);
+    outcome = { ...outcome, outcomes,
+      opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId),
+      error: outcome.error || (outcomes.some((row) => row.status !== "completed") ? "Some changes could not be verified." : ""),
+    };
+  }
   rememberActionGeneration(outcome.outcomes);
+  for (const row of outcome.outcomes || []) {
+    if (row.phase !== "accepted" && (!extra?.optimistic || optimisticRemovals.get(row.id) === extra.optimistic.get(row.id))) optimisticRemovals.delete(row.id);
+  }
   const action = (extra && extra.action) || removalAction(label);
   rememberUndoSnapshots(snapshotEmails(ids, extra), action, extra && extra.destinationLabel);
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => row.id));
@@ -10217,12 +10410,60 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   const epoch = outcome.removalEpoch ?? undoEpoch;
   rememberRemovalReceipt(outcome, epoch);
   if (epoch === undoEpoch) {
-    if (outcome.opIds.length) applyRemovalSettlement(outcome, text, !!outcome.error);
+    if (outcome.opIds.length && (undoBusy || undoPending.size)) undoSettleQueue.push(outcome);
+    else if (outcome.opIds.length) {
+      // Fresh finishBulkRemoval reclaim: this batch's opIds are new undoable removals, not restored replays.
+      for (const id of outcome.opIds) restoredUndoOpIds.delete(id);
+      applyRemovalSettlement(outcome, text, !!outcome.error);
+    }
     else if (waiting || undoOpIds?.length) showStatus(text, !!outcome.error);
+    else if (hasPendingRemovalUndo()) showStatus(text, !!outcome.error);
     else { clearUndo(); showStatus(text, !!outcome.error); }
   }
   if (completed.size) await loadList();
   else renderList();
+}
+
+function queueBulkRemoval(label, calls, messages, action) {
+  const epoch = beginRemovalRequest(messages, action);
+  const optimistic = new Map();
+  for (const message of messages) {
+    const entry = { generation: (actionGeneration.get(message.id) || 0) + 1 };
+    optimistic.set(message.id, entry);
+    optimisticRemovals.set(message.id, entry);
+  }
+  const ids = new Set(messages.map((message) => message.id));
+  state.selectedIds = state.selectedIds.filter((id) => !ids.has(id));
+  if (ids.has(pendingOpenId) || (state.email && ids.has(state.email.id))) {
+    invalidateReaderOpen();
+    state.email = null;
+    state.thread = [];
+    renderReader(false);
+  }
+  renderList();
+  showStatus(label + ": applying " + messages.length + " mailbox changes in the background… Undo appears after confirmation.");
+  const chunks = calls.flatMap((spec) => {
+    if (!spec.params.items) return [spec];
+    const batches = [];
+    for (let offset = 0; offset < spec.params.items.length; offset += 4) {
+      batches.push({ ...spec, params: { ...spec.params, items: spec.params.items.slice(offset, offset + 4) } });
+    }
+    return batches;
+  });
+  afterPaint(() => {
+    runBulk(chunks, epoch).then(async (outcome) => {
+      try {
+        await finishBulkRemoval(label, outcome, [...ids], { messages, action, optimistic });
+      } catch (error) {
+        renderList();
+        showStatus(label + ": result received, but the message list could not refresh. " + (error.message || String(error)), true);
+      }
+    }).catch((error) => {
+      for (const [id, entry] of optimistic) if (optimisticRemovals.get(id) === entry) optimisticRemovals.delete(id);
+      renderList();
+      showStatus(label + ": outcome is unknown. Refresh before retrying. " + (error.message || String(error)), true);
+    });
+  });
 }
 
 async function bulkArchive() {
@@ -10232,11 +10473,7 @@ async function bulkArchive() {
   const answer = await askConfirm(bulkConfirmCopy("archive", review.rows.length, review.detail));
   const gated = confirmedCalls("archive", answer, review.calls, review.detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated, beginRemovalRequest(review.rows, "archive"));
-  await finishBulkRemoval("Archive", outcome, review.rows.map((item) => item.id), {
-    messages: review.rows,
-    action: "archive",
-  });
+  queueBulkRemoval("Archive", gated, review.rows, "archive");
 }
 
 async function bulkTrash() {
@@ -10246,11 +10483,7 @@ async function bulkTrash() {
   const answer = await askConfirm(bulkConfirmCopy("trash", review.rows.length, review.detail));
   const gated = confirmedCalls("trash", answer, review.calls, review.detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated, beginRemovalRequest(review.rows, "trash"));
-  await finishBulkRemoval("Move to Trash", outcome, review.rows.map((item) => item.id), {
-    messages: review.rows,
-    action: "trash",
-  });
+  queueBulkRemoval("Move to Trash", gated, review.rows, "trash");
 }
 
 async function bulkSetRead(isRead) {
@@ -10466,6 +10699,7 @@ function wireSelection() {
 }
 
 function onSelectionKey(event) {
+  if (state.view !== "mail") return;
   const menu = $("organize-menu");
   const menuOpen = menu && !menu.hidden;
   if (event.key === "Escape") {
@@ -10860,6 +11094,7 @@ function wireOrganize() {
 
 async function selectOutbox() {
   if (!state.accounts.length) return;
+  ++mailboxNavigationGen;
   ++listGen;
   state.listLoading = false;
   invalidateReaderOpen();
@@ -10883,13 +11118,14 @@ async function selectOutbox() {
   if (!state.outbox) return;
   state.emails = outboxEmails(state.outboxRows);
   state.listOffset = 0;
-  state.listTotal = state.emails.length;
+  state.listTotal = state.outboxCount ?? state.emails.length;
   state.listSyncDone = true;
   renderList();
 }
 
 async function selectAllInbox(unreadOnly) {
   if (!state.accounts.length) return;
+  ++mailboxNavigationGen;
   const nextUnread = unreadOnly === true;
   const staying = state.allInbox && !state.query;
   if (!staying) {
@@ -10919,6 +11155,7 @@ async function selectAllInbox(unreadOnly) {
 }
 
 async function selectFolder(accountId, folderId) {
+  ++mailboxNavigationGen;
   invalidateReaderOpen();
   const previous = state.accountId;
   state.outbox = false;
@@ -11186,7 +11423,12 @@ async function openMessage(emailId, focus, full = false) {
   const openedUnread = !!(known && known.unread);
   if (known && known.outbox) {
     invalidateReaderOpen();
-    state.email = known;
+    const generation = ++openGen;
+    const rows = await call("mail:listScheduled", { id: known.id, accountId: known.accountId });
+    if (generation !== openGen || !state.outbox) return;
+    const row = Array.isArray(rows) && rows.find(item => item.id === known.id);
+    if (!row) { await loadScheduled(); return; }
+    state.email = outboxEmails([row])[0];
     state.thread = [];
     renderReader(focus !== false);
     renderList();
@@ -11258,6 +11500,7 @@ async function openMessage(emailId, focus, full = false) {
 }
 
 async function applySearch() {
+  ++mailboxNavigationGen;
   invalidateReaderOpen();
   const query = $("search-query").value.trim();
   if (query) state.outbox = false;
@@ -11280,10 +11523,32 @@ async function applySearch() {
 
 let reloadAccounts = false;
 let reloadPreferred = "";
+let reloadSnapshot = null;
+let mailListDirty = false;
+let reloadMail = false;
+let snoozeDirty = false;
+
+function onEmailsUpdated(payload) {
+  if (state.outbox) return;
+  const request = mailListRequest({ allInbox: state.allInbox, accountId: state.accountId, folderId: state.folderId,
+    accounts: state.accounts, query: state.query, searchAccountId: state.searchAccountId });
+  const params = request.params || {};
+  if (payload?.accountId) {
+    if (params.accountId && params.accountId !== payload.accountId) return;
+    const paths = payload.folderIds || (payload.folderId ? [payload.folderId] : []);
+    if (paths.length && params.folderId && !paths.includes(params.folderId)) return;
+    if (params.mailboxes?.length && !params.mailboxes.some(box => box.accountId === payload.accountId && (!paths.length || paths.includes(box.path)))) return;
+  }
+  if (!payload?.folderId && !payload?.folderIds?.length) snoozeDirty = true;
+  if (state.view !== "mail") { mailListDirty = true; return; }
+  scheduleReload();
+}
 let reloadRunning = false;
 let reloadAgain = false;
-function scheduleReload(preferredId, accountsChanged = false) {
+function scheduleReload(preferredId, accountsChanged = false, snapshot = null) {
   reloadAccounts ||= accountsChanged;
+  reloadMail ||= !accountsChanged;
+  if (snapshot) reloadSnapshot = snapshot;
   if (typeof preferredId === "string" && preferredId) reloadPreferred = preferredId;
   reloadAgain = true;
   if (reloadTimer || reloadRunning) return;
@@ -11291,15 +11556,20 @@ function scheduleReload(preferredId, accountsChanged = false) {
     reloadTimer = null;
     reloadRunning = true;
     reloadAgain = false;
-    const accounts = reloadAccounts, preferred = reloadPreferred;
+    const accounts = reloadAccounts, preferred = reloadPreferred, snapshot = reloadSnapshot, mail = reloadMail;
     reloadAccounts = false; reloadPreferred = "";
+    reloadSnapshot = null;
+    reloadMail = false;
     try {
-      if (accounts) await loadAccounts(preferred || undefined);
-      else await loadList();
+      const loaded = accounts ? await loadAccounts(preferred || undefined, snapshot) : false;
+      if (mail && state.view === "mail") {
+        if (snoozeDirty) { snoozeDirty = false; await loadSnoozed(); renderReader(false, true); }
+        if (!loaded) { mailListDirty = false; await loadList(); }
+      } else if (mail) mailListDirty = true;
     } catch (error) { pushDebug("sync", error.message); }
     finally {
       reloadRunning = false;
-      if (reloadAgain) scheduleReload();
+      if (reloadAgain) scheduleReload(reloadPreferred, reloadAccounts, reloadSnapshot);
     }
   }, 150);
 }
@@ -11353,8 +11623,8 @@ function onAccountsUpdated(payload) {
     }).catch(() => {});
     showStatus(message, true);
   }
-  scheduleReload(preferred, true);
-  if (payload?.scheduledUpdated || $("scheduled-dialog")?.open) loadScheduled().catch(() => {});
+  scheduleReload(preferred, true, accounts);
+  if (payload?.scheduledUpdated) loadScheduled({ invalidate: true }).catch(() => {});
 }
 
 function connectPayload() {
@@ -11961,12 +12231,15 @@ function syncComposeActions() {
 }
 
 function syncCompose() {
-  const locked = state.composePending || state.composeQueued || state.composeInitializing;
+  const locked = state.composePending || state.composeQueued;
   syncComposeActions();
-  $("compose-close").disabled = state.composePending || state.composeInitializing;
+  $("compose-close").disabled = state.composePending;
   for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at", "compose-attach", "compose-file"]) {
     const control = $(id);
     if (control) control.disabled = locked;
+  }
+  if (state.composeInitializing) {
+    for (const id of ["compose-from", "signature", "ai-generate", "compose-attach", "compose-file"]) $(id).disabled = true;
   }
   for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body"]) {
     const control = $(id);
@@ -11986,6 +12259,7 @@ function paintComposeNote() {
   let text = live
     ? "From " + window.morrowComposePolicy.senderPreview((state.composeMeta && state.composeMeta.fromAddress) || account.preferredFromAddress || account.email, state.composeMeta?.fromDisplayName || "")
     : "Connect an account before saving or sending.";
+  if (state.composeInitializing) text += " Checking sender identities. You can edit text or close; Save, Send and Schedule wait for this check.";
   const review = state.botDraftReview;
   if (review) {
     const accountId = (state.composeMeta && state.composeMeta.accountId) || "";
@@ -12313,15 +12587,15 @@ function renderScheduled(rows) {
   if (attention) { attention.textContent = reviewCount ? ` (${reviewCount} need review)` : ""; attention.hidden = !reviewCount; }
   const open = $("scheduled-open");
   if (open) open.title = reviewCount ? "Check Sent and review saved delivery records. These messages will not resend automatically." : "Scheduled mail";
+  if (!$("scheduled-dialog")?.open) return;
   if (summary) summary.textContent = scheduledSummary(rows);
-  list.replaceChildren();
   if (!rows.length) {
     const item = document.createElement("li");
     item.textContent = scheduledEmptyCopy();
-    list.append(item);
+    list.replaceChildren(item);
     return;
   }
-  for (const row of rows) {
+  reconcileRows(list, rows, row => row.id, row => JSON.stringify([row, scheduledLine(row, state.accounts)]), row => {
     const item = document.createElement("li");
     const text = document.createElement("span");
     text.textContent = scheduledLine(row, state.accounts);
@@ -12345,8 +12619,8 @@ function renderScheduled(rows) {
     edit.disabled = row.status === "sending";
     edit.onclick = () => editScheduledMail(row).catch(error => { $("scheduled-status").textContent = error.message; });
     item.append(text, cancel, edit);
-    list.append(item);
-  }
+    return item;
+  });
 }
 
 function showSignatureEmpty(message) {
@@ -12361,6 +12635,9 @@ function showSignatureEmpty(message) {
 async function fillSignatures(preserveBody, fromChange = false) {
   const gen = signatureGen += 1;
   const accountId = composeAccount()?.id;
+  const session = state.composeSession;
+  const body = $("compose-body").value;
+  const html = composeEditorSnapshot();
   let pack = null;
   try {
     pack = await call("mail:listSignatures", accountId ? { accountId } : {});
@@ -12370,12 +12647,13 @@ async function fillSignatures(preserveBody, fromChange = false) {
     showSignatureEmpty(error instanceof Error ? error.message : String(error));
     return;
   }
-  if (gen !== signatureGen || state.composeQueued || state.composePending) return;
+  if (gen !== signatureGen || session !== state.composeSession || accountId !== composeAccount()?.id || state.composeQueued || state.composePending) return;
   const rows = signatureRows(pack);
   state.signaturePack = pack;
   state.signatures = rows;
   const identity = state.composeIdentity;
-  const replaceBody = !preserveBody && (!fromChange || composeSignatureUntouched());
+  const replaceBody = !preserveBody && body === $("compose-body").value && html === composeEditorSnapshot()
+    && (!fromChange || composeSignatureUntouched());
   if (replaceBody && fromChange && composeEditorLive()) {
     const signature = $("compose-editor").querySelector("[data-compose-signature]");
     // Align both text baselines before commitComposeSignature so an intact
@@ -12872,26 +13150,30 @@ function startSignatureEdit(row, isDefault) {
   $("signature-name").focus();
 }
 
-async function loadSignatureEditor() {
+async function loadSignatureEditor(fresh = false) {
+  // Concurrent callers each get their own gen + listSignatures call (race OK).
+  // signatureListGen last-write-wins paint; `fresh` kept for call-site API compat.
+  void fresh;
   const gen = ++signatureListGen;
   const generation = signatureEditorGeneration;
   const accountId = signatureAccount()?.id;
+  if (!signatureEditorSettings) await ensureSignatureSettings();
+  if (generation !== signatureEditorGeneration || accountId !== signatureAccount()?.id || !$("signatures").open) return;
   const pack = await call("mail:listSignatures", accountId ? { accountId } : {});
   if (gen === signatureListGen && generation === signatureEditorGeneration
       && $("signatures").open && signatureAccount()?.id === accountId) paintSignatures(pack);
   return pack;
 }
 
+let signatureSettingsPending = null;
 function ensureSignatureSettings() {
   const generation = signatureEditorGeneration;
   const accountId = signatureEditorAccountId;
-  call("emailBrain:getComposeSettings").then((value) => {
+  if (!signatureSettingsPending) signatureSettingsPending = call("emailBrain:getComposeSettings").finally(() => { signatureSettingsPending = null; });
+  return signatureSettingsPending.then((value) => {
     if (!$("signatures").open || signatureEditorGeneration !== generation || signatureEditorAccountId !== accountId) return;
     if (!value || signatureEditorSettings) return;
     signatureEditorSettings = value;
-    loadSignatureEditor().catch((error) => {
-      showSignatureStatus(error instanceof Error ? error.message : String(error), true);
-    });
   }).catch(() => {});
 }
 
@@ -12913,7 +13195,6 @@ function openSignatures(accountId, focus) {
   signatureEditorFocus = request;
   showSignatureStatus("");
   openDialog("signatures");
-  if (!signatureEditorSettings) ensureSignatureSettings();
   loadSignatureEditor().catch((error) => {
     showSignatureStatus(error instanceof Error ? error.message : String(error), true);
   });
@@ -12981,7 +13262,7 @@ async function submitSignature(event) {
     signatureEditId = saved && saved.id ? String(saved.id) : "";
     if (signatureEditorIdentity && signatureEditId) signatureEditorIdentity.signatureId = signatureEditId;
     showSignatureStatus("Saved.");
-    await loadSignatureEditor();
+    await loadSignatureEditor(true);
     if (!ownsEditor()) return;
     await refreshComposeSignatures();
   } catch (error) {
@@ -12996,7 +13277,7 @@ async function removeSignature(id) {
   await call("mail:deleteSignature", { id });
   if (signatureEditId === id) clearSignatureForm();
   showSignatureStatus("Deleted.");
-  await loadSignatureEditor();
+  await loadSignatureEditor(true);
   await refreshComposeSignatures();
 }
 
@@ -13010,7 +13291,7 @@ async function removeSignatureIdentity(identity) {
   }
   if (signatureEditorIdentity && identity && signatureEditorIdentity.key === identity.key) clearSignatureForm();
   showSignatureStatus("Deleted.");
-  await loadSignatureEditor();
+  await loadSignatureEditor(true);
   await refreshComposeSignatures();
 }
 
@@ -13589,21 +13870,26 @@ async function initializeComposeIdentity(fields) {
   picker.replaceChildren();
   $("compose-from-note").textContent = "";
   if (!account) return;
+  const session = state.composeSession;
+  const edits = state.composeInputVersions;
+  const versions = { ...edits };
   const context = await call("mail:getComposeContext", { accountId: account.id,
     sourceMessageId: fields.sourceMessageId || undefined, kind: fields.kind || "new",
     fromAddress: fields.fromAddress || undefined });
+  if (session !== state.composeSession || edits !== state.composeInputVersions) return;
   if (!context || !context.fromAddress) throw new Error("The mailbox did not return a From address.");
   state.composeMeta.fromAddress = context.fromAddress;
   state.composeMeta.fromDisplayName = typeof fields.fromDisplayName === "string"
     ? window.morrowComposePolicy.displayName(fields.fromDisplayName) : context.fromDisplayName || "";
   if ((fields.kind === "reply" || fields.kind === "all") && fields.quoteEmail && !fields.draftId && !fields.botDraft) {
     const parties = replyParties({ ...fields.quoteEmail, ...(Array.isArray(context.replyTo) ? { replyTo: context.replyTo } : {}) }, context.selfAddresses, fields.kind === "all");
-    $("compose-to").value = parties.to;
-    $("compose-cc").value = parties.cc;
+    if (!edits || edits.to === versions.to) $("compose-to").value = parties.to;
+    if (!edits || edits.cc === versions.cc) $("compose-cc").value = parties.cc;
   }
   const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot;
   state.composeIdentity = { ...context, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
+  for (const field of ["cc", "bcc"]) if (edits && edits[field] !== versions[field]) state.composeIdentity.seeds[field].locked = true;
   paintComposeFromPicker(state.composeIdentity);
   applyComposeRecipients();
   paintComposeIdentity();
@@ -13832,10 +14118,6 @@ function dismissComposeSurface() {
 async function requestComposeWindowClose() {
   if (!isComposeWindow()) return requestComposeClose();
   if (composeWindowClosing) return;
-  if (state.composeInitializing) {
-    composeCloseQueued = true;
-    return;
-  }
   if (state.composePending && !sendTimer) {
     setComposeStatus("Finish the current action before closing.", true);
     showStatus("Finish the current action before closing.", true);
@@ -14052,7 +14334,7 @@ async function bootReaderWindow() {
 }
 
 async function openCompose(seed) {
-  if (sendTimer || state.composePending || state.composeInitializing) {
+  if (sendTimer || state.composePending) {
     showStatus("Finish the pending message first.");
     return;
   }
@@ -14060,6 +14342,7 @@ async function openCompose(seed) {
   hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
+  state.composeInputVersions = { to: 0, cc: 0, bcc: 0, subject: 0, body: 0 };
   state.composeFileJobs = [];
   const replySession = state.composeSession;
   state.agentReplyTodo = explicitAgentTodo(fields.agentTodo);
@@ -14116,22 +14399,27 @@ async function openCompose(seed) {
   syncCompose();
   paintComposeChrome();
   paintQuoteBody();
+  state.composeBaseline = fields.body && !fields.draftId ? "" : composeSnapshot();
   openDialog("compose");
   scheduleComposeLayout();
   try { await initializeComposeIdentity(fields); }
   catch (error) {
+    if (replySession !== state.composeSession) return;
     state.composeIdentityError = true;
     $("compose-from-note").textContent = "Could not resolve the From address. Close and reopen compose to retry. " + error.message;
     setComposeStatus("From address could not be loaded. Your text is retained.", true);
   }
+  if (replySession !== state.composeSession) return;
   const initial = composeSnapshot();
-  await Promise.all([fields.partialReceipt ? Promise.resolve() : fillSignatures(!!fields.draftId || !!fields.recoveredSnapshot), loadScheduled()]);
+  if (!fields.partialReceipt) await fillSignatures(!!fields.draftId || !!fields.recoveredSnapshot || state.composeInputVersions.body > 0);
+  if (replySession !== state.composeSession) return;
   if (replySession === state.composeSession && !state.agentReplyTodo && freshReplyTodoSeed(fields)) {
     try {
       const target = await call("nativeAgent:home:replyTarget", freshReplyTodoSeed(fields));
       if (replySession === state.composeSession) state.agentReplyTodo = explicitAgentTodo(target);
     } catch { /* the reply can still send; this todo stays open */ }
   }
+  if (replySession !== state.composeSession) return;
   state.composeInitializing = false;
   if (fields.partialReceipt) {
     state.composeQueued = true;
@@ -14148,7 +14436,7 @@ async function openCompose(seed) {
   const baseline = JSON.parse(initial);
   baseline.body = fields.draftId || fields.recoveredSnapshot ? baseline.body : applySignature(baseline.body, "", state.signatureText);
   baseline.html = composeEditorSnapshot();
-  state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
+  if (!Object.values(state.composeInputVersions).some(Boolean)) state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
   syncCompose();
   paintComposeNote();
   if (!$("compose").open) {
@@ -14191,7 +14479,7 @@ function composeSnapshot() {
 async function requestComposeClose() {
   const preview = $("compose-preview");
   if (preview && preview.open) return false;
-  if (state.composePending || state.composeInitializing) return false;
+  if (state.composePending) return false;
   if (!state.composeQueued && composeSnapshot() !== state.composeBaseline) {
     const choice = await new Promise((resolve) => {
       const dialog = $("compose-close-review");
@@ -14204,6 +14492,9 @@ async function requestComposeClose() {
     if (choice !== "discard") return false;
   }
   // Await the exit before another composition reuses this dialog.
+  state.composeSession += 1;
+  state.composeInitializing = false;
+  signatureGen += 1;
   await closeDialog("compose");
   return true;
 }
@@ -14244,25 +14535,65 @@ async function prepareDraftCompose(email, extra) {
     ...(extra || {}) });
 }
 
-async function loadScheduled() {
+function loadScheduled(options = {}) {
+  const visibleOutbox = state.view === "mail" && state.outbox;
+  const dialogOpen = !!$("scheduled-dialog")?.open;
+  const outbox = visibleOutbox && !dialogOpen;
+  const includeRows = visibleOutbox || dialogOpen;
+  const offset = options.more ? (outbox ? state.outboxRows.length : scheduledRecords.length) : 0;
+  const selectedId = outbox && state.email?.outbox ? state.email.id : "";
+  const key = JSON.stringify([outbox, includeRows, offset, selectedId]);
+  if (scheduledPending) {
+    if (options.invalidate) scheduledDirty = true;
+    return key === scheduledRequestKey ? scheduledPending : scheduledPending.then(() => loadScheduled(options));
+  }
+  scheduledRequestKey = key;
+  scheduledPending = readScheduled({ outbox, includeRows, offset, selectedId }).finally(() => {
+    scheduledPending = null;
+    if (scheduledDirty) { scheduledDirty = false; loadScheduled().catch(() => {}); }
+  });
+  return scheduledPending;
+}
+
+async function readScheduled(request) {
   const gen = scheduledGen += 1;
   try {
-    const data = await call("mail:listScheduled", {});
+    const data = await call("mail:listScheduled", { summary: true, ...request, limit: 200 });
     if (gen !== scheduledGen) return;
     state.outboxError = "";
-    state.outboxRows = outboxRowsFrom(data);
-    renderScheduled(scheduledRows(data));
+    const rows = Array.isArray(data) ? data : data?.rows || [];
+    state.outboxCount = Array.isArray(data) ? outboxRowsFrom(data).length : data.outboxTotal;
+    if (request.includeRows && request.outbox) {
+      state.outboxRows = request.offset ? state.outboxRows.concat(outboxRowsFrom(rows)) : outboxRowsFrom(rows);
+      outboxMore = !!data.hasMore;
+    } else if (request.includeRows) {
+      scheduledRecords = request.offset ? scheduledRecords.concat(scheduledRows(rows)) : scheduledRows(rows);
+      scheduledMore = !!data.hasMore;
+      renderScheduled(scheduledRecords);
+      const more = $("scheduled-more");
+      if (more) more.hidden = !scheduledMore;
+    }
+    const attention = $("scheduled-review-count");
+    const reviews = Array.isArray(data) ? scheduledRows(rows).filter(row => ["unknown", "sent", "partial"].includes(row.status)).length : data.reviewCount;
+    if (attention) { attention.textContent = reviews ? ` (${reviews} need review)` : ""; attention.hidden = !reviews; }
     const nav = $("folders");
     if (nav && typeof nav.querySelector === "function") applyOutboxChrome(nav.querySelector(".outbox-mail"));
-    if (state.outbox) {
+    if (state.view === "mail" && state.outbox && request.outbox) {
       state.emails = outboxEmails(state.outboxRows);
       state.listOffset = 0;
-      state.listTotal = state.emails.length;
+      state.listTotal = state.outboxCount;
       state.listSyncDone = true;
-      if (state.email && !state.emails.some((row) => row && row.id === state.email.id)) {
+      const selected = state.emails.find(row => row.id === state.email?.id)
+        || (data.selected && data.selected.id === state.email?.id ? outboxEmails([data.selected])[0] : null);
+      if (state.email && !selected) {
         state.email = null;
         state.thread = [];
         renderReader(false);
+      } else if (state.email?.outbox) {
+        if (selected && state.email.outboxStatus !== selected.outboxStatus) {
+          state.email = { ...state.email, outboxStatus: selected.outboxStatus, snippet: selected.snippet };
+          renderReader(false, true);
+        }
       }
       renderList();
     }
@@ -14270,6 +14601,7 @@ async function loadScheduled() {
     if (gen !== scheduledGen) return;
     state.outboxError = error instanceof Error ? error.message : String(error);
     if (state.outbox) renderList();
+    if (!$("scheduled-dialog")?.open) return;
     $("scheduled").replaceChildren();
     const item = document.createElement("li");
     item.textContent = "Unknown — Scheduled mail could not be loaded. ";
@@ -14813,12 +15145,13 @@ async function undoOutboxItem(row) {
     return;
   }
   state.outboxRows = (state.outboxRows || []).filter((item) => item && item.id !== row.id);
+  state.outboxCount = Math.max(0, (state.outboxCount ?? state.outboxRows.length + 1) - 1);
   const nav = $("folders");
   if (nav && typeof nav.querySelector === "function") applyOutboxChrome(nav.querySelector(".outbox-mail"));
   if (state.outbox) {
     state.emails = outboxEmails(state.outboxRows);
     state.listOffset = 0;
-    state.listTotal = state.emails.length;
+    state.listTotal = state.outboxCount;
     if (state.email && String(state.email.id) === String(row.id)) {
       state.email = null;
       state.thread = [];
@@ -14904,7 +15237,7 @@ async function removeAccount() {
 }
 
 async function refresh() {
-  const pages = { calendar: [loadCalendar, "Calendar refreshed."], agent: [loadAgent, "Agent refreshed."],
+  const pages = { calendar: [loadCalendar, "Calendar refreshed."], agent: [() => loadAgent({ overlay: true }), "Agent refreshed."],
     brain: [loadBrain, "Profile reloaded."], log: [refreshLog, "Log refreshed."],
     shortcuts: [paintShortcuts, "Shortcuts refreshed."],
     folders: [() => loadProviderFolders(accountGen), "Folders and labels refreshed."] };
@@ -15012,7 +15345,7 @@ function shortcutCatalog(platform) {
     { group: "Mail", keys: chord("F") + " or /", action: "Focus mail search" },
     { group: "Compose", keys: chord("Enter"), action: "Send" },
     { group: "Compose", keys: chord("S"), action: "Save draft" },
-    { group: "Window", keys: "Esc", action: "Close the compose window or dismiss an overlay. Also clears a message selection when that is already the Esc action." },
+    { group: "Window", keys: "Esc", action: "Close the compose window or dismiss an overlay. Clears a message selection only on the Mail page when no overlay or text input owns Escape." },
     { group: "Window", keys: chord(","), action: "Settings" },
     { group: "List", keys: "↑ or ↓", action: "Move through the message list" },
     { group: "List", keys: "Enter", action: "Open the highlighted message" },
@@ -15516,12 +15849,12 @@ function sideColumn() {
   return document.querySelector(".side");
 }
 
-function setPane(which, width) {
+function setPane(which, width, geometry) {
   const shell = document.querySelector(".shell");
   if (!shell) return;
-  const total = shell.getBoundingClientRect().width;
-  const folders = sideColumn().getBoundingClientRect().width;
-  const list = $("messages").getBoundingClientRect().width;
+  const total = geometry?.total ?? shell.getBoundingClientRect().width;
+  const folders = geometry?.folders ?? sideColumn().getBoundingClientRect().width;
+  const list = geometry?.list ?? $("messages").getBoundingClientRect().width;
   const readerMin = 260;
   const handle = 12;
   if (which === "folders") {
@@ -15550,10 +15883,16 @@ function wireSplits() {
       const which = handle.dataset.split;
       const startX = event.clientX;
       const start = (which === "folders" ? sideColumn() : $("messages")).getBoundingClientRect().width;
+      const geometry = { total: document.querySelector(".shell").getBoundingClientRect().width,
+        folders: sideColumn().getBoundingClientRect().width, list: $("messages").getBoundingClientRect().width };
+      let frame = 0, nextWidth = start;
+      const paint = () => { frame = 0; setPane(which, nextWidth, geometry); };
       function move(ev) {
-        setPane(which, start + ev.clientX - startX);
+        nextWidth = start + ev.clientX - startX;
+        if (!frame) frame = requestAnimationFrame(paint);
       }
       function stop() {
+        if (frame) { cancelAnimationFrame(frame); paint(); }
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", stop);
         window.removeEventListener("pointercancel", stop);
@@ -15586,10 +15925,14 @@ function wireQuoteSplit() {
     const start = state.prefs.quoteWidth || 420;
     document.documentElement.style.cursor = "col-resize";
     document.documentElement.style.userSelect = "none";
+    let frame = 0, nextWidth = start;
+    const paint = () => { frame = 0; dragQuoteWidth(nextWidth); };
     function move(ev) {
-      dragQuoteWidth(start + ev.clientX - startX);
+      nextWidth = start + ev.clientX - startX;
+      if (!frame) frame = requestAnimationFrame(paint);
     }
     function stop() {
+      if (frame) { cancelAnimationFrame(frame); paint(); }
       document.documentElement.style.cursor = "";
       document.documentElement.style.userSelect = "";
       window.removeEventListener("pointermove", move);
@@ -16138,7 +16481,7 @@ async function loadSettings() {
   }
   syncAccentPicker(state.prefs.accent);
   paintScheduleDelay(state.prefs.scheduleDelay);
-  await paintAgentLearned();
+  if (!$("settings-prefs").hidden) await paintAgentLearned();
 }
 
 function paintScheduleDelay(minutes) {
@@ -17011,6 +17354,7 @@ function showAgentTab(name) {
     const thread = $("agent-sections");
     thread.scrollTop = thread.scrollHeight;
   } else panel.scrollTop = 0;
+  if (name === "tools") loadStudio().catch(error => setAgentSkillStatus(error.message, true));
 }
 
 function wireAgentTabs() {
@@ -17105,8 +17449,25 @@ function rememberVacation(data) {
 function paintMailVacation() {
   const box = $("mail-ooo");
   if (!box) return;
+  const picker = $("mail-ooo-account");
+  if (picker) picker.hidden = !state.allInbox;
   if (state.allInbox) {
-    box.hidden = true;
+    box.hidden = !state.accounts.length;
+    const key = JSON.stringify(state.accounts.map((account) => [account.id, accountLabel(account)]));
+    if (picker && picker.dataset.accounts !== key) {
+      const selected = picker.value || state.accountId;
+      picker.replaceChildren(...state.accounts.map((account) => option(account.id, accountLabel(account))));
+      picker.value = state.accounts.some((account) => account.id === selected) ? selected : state.accounts[0]?.id || "";
+      picker.dataset.accounts = key;
+    }
+    const detail = "Out of Office is set per mailbox. Choose a mailbox to review or manage its automatic replies.";
+    box.classList.remove("is-off");
+    box.title = detail;
+    $("mail-ooo-status").textContent = detail;
+    $("mail-ooo-status").setAttribute("aria-label", detail);
+    $("mail-ooo-status").setAttribute("aria-busy", "false");
+    $("mail-ooo-manage").textContent = "Manage selected mailbox…";
+    $("mail-ooo-refresh").hidden = true;
     return;
   }
   const account = selectedAccount();
@@ -17131,7 +17492,7 @@ function releaseVacationRetry(accountId) {
   if (entry && entry.retrying) mailVacation.delete(accountId);
 }
 async function refreshMailVacation(force = false) {
-  const account = selectedAccount();
+  const account = state.allInbox ? null : selectedAccount();
   if (oooRetryAccount && (!account || oooRetryAccount !== account.id)) releaseVacationRetry(oooRetryAccount);
   oooRetryAccount = account ? account.id : null;
   paintMailVacation();
@@ -17163,8 +17524,8 @@ async function refreshMailVacation(force = false) {
   } finally { mailVacationPending.delete(id); }
 }
 async function manageMailVacation() {
-  const id = state.accountId;
-  if (!id) return;
+  const id = state.allInbox ? $("mail-ooo-account")?.value : state.accountId;
+  if (!state.accounts.some((account) => account.id === id)) return;
   openSettings();
   if (settingsAccount()?.id !== id && !(await changeSettingsMailbox(id))) return;
   revealSettingsFold("ooo");
@@ -18946,6 +19307,9 @@ async function moveAgentCategory(item, toCategoryId, toName, fromName) {
 function renderAgentLearned(view) {
   const list = $("agent-learned-list");
   if (!list) return;
+  const stamp = JSON.stringify(view || null);
+  if (list.morrowLearnedStamp === stamp) return;
+  list.morrowLearnedStamp = stamp;
   list.replaceChildren();
   const patterns = view && Array.isArray(view.patterns) ? view.patterns : [];
   if (!patterns.length) {
@@ -18982,14 +19346,17 @@ function renderAgentLearned(view) {
   }
 }
 
+let learnedPending = null;
 async function paintAgentLearned() {
   const list = $("agent-learned-list");
-  if (!list) return;
+  if (!list || !$("settings").open || $("settings-prefs").hidden) return;
   try {
-    const view = await call("nativeAgent:learning:list");
+    if (!learnedPending) learnedPending = call("nativeAgent:learning:list").finally(() => { learnedPending = null; });
+    const view = await learnedPending;
     if (view) state.agentLearning = view;
-    renderAgentLearned(view);
+    if ($("settings").open && !$("settings-prefs").hidden) renderAgentLearned(view);
   } catch (error) {
+    if (!$("settings").open || $("settings-prefs").hidden) return;
     list.replaceChildren();
     const empty = document.createElement("li");
     empty.className = "empty";
@@ -19377,6 +19744,9 @@ function paintSkillBlocks(root, data) {
 
 function paintProposals(root, proposals, append) {
   if (!root) return;
+  const stamp = JSON.stringify([proposals, learningApplyStamp(state.agentLearning)]);
+  if (!append && root.morrowProposalStamp === stamp) return;
+  if (!append) root.morrowProposalStamp = stamp;
   if (!append && root.isConnected) agentSuggestionSurfaces.set(root, { kind: "proposal", data: proposals });
   if (!append) root.replaceChildren();
   const rows = Array.isArray(proposals) ? proposals.filter((item) => item && item.status !== "dismissed" && item.status !== "confirmed" && !suggestionSuppressed(item.labelName || "Filing")) : [];
@@ -19654,16 +20024,16 @@ function paintStoredRun(run) {
 
 function paintHistory(root, runs) {
   if (!root) return;
-  root.replaceChildren();
   const rows = Array.isArray(runs) ? runs : [];
   if (!rows.length) {
     const note = document.createElement("p");
     note.className = "hint";
     note.textContent = "No runs yet.";
-    root.appendChild(note);
+    root.replaceChildren(note);
     return;
   }
-  for (const run of rows.slice(0, 12)) {
+  reconcileRows(root, rows.slice(0, 12), (run, index) => run.id || run.runId || `${run.at || ""}:${index}`,
+    run => JSON.stringify([run.id, historyLine(run)]), run => {
     const line = document.createElement("button");
     line.type = "button";
     line.className = "history-row";
@@ -19671,8 +20041,8 @@ function paintHistory(root, runs) {
     line.addEventListener("click", () => {
       showStoredRun(run).catch((error) => setAgentSkillStatus(error instanceof Error ? error.message : String(error), true));
     });
-    root.appendChild(line);
-  }
+    return line;
+  });
 }
 
 function scheduleChoice(row) {
@@ -20477,17 +20847,23 @@ function paintSkillChips(rows) {
 }
 
 let studioGen = 0;
-async function loadStudio() {
+let studioPending = null;
+function loadStudio() {
+  if (!studioPending) studioPending = readStudio().finally(() => { studioPending = null; });
+  return studioPending;
+}
+
+async function readStudio() {
   const gen = ++studioGen;
   const lists = {};
   const errors = [];
-  for (const [id, channel] of studioLists()) {
+  await Promise.all(studioLists().map(async ([id, channel]) => {
     try {
       lists[id] = await call(channel);
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
-  }
+  }));
   const panel = $("agent-panel");
   if (gen === studioGen && panel && !panel.hidden) paintStudio(lists, errors.filter(Boolean).join(" "));
 }
@@ -20601,15 +20977,15 @@ function paintThread() {
   const followEnd = turnsKey !== agentThreadTurns;
   agentThreadKey = key;
   agentThreadTurns = turnsKey;
-  root.replaceChildren();
   if (!agentTurns.length) {
     const empty = document.createElement("p");
     empty.className = "agent-empty hint";
     empty.textContent = "No Agent conversations saved on this computer. Ask a question or run a skill.";
-    root.appendChild(empty);
+    root.replaceChildren(empty);
     return;
   }
-  for (const turn of agentTurns) root.appendChild(paintTurn(turn));
+  reconcileRows(root, agentTurns, (turn, index) => turn.id || `${turn.role}:${turn.at || ""}:${index}`,
+    turn => JSON.stringify([turn, agentProposalIds, learningApplyStamp(state.agentLearning)]), paintTurn);
   if (followEnd && agentTab === "conversation") root.scrollTop = root.scrollHeight;
 }
 
@@ -20635,16 +21011,38 @@ function paintAgent(payload, errorText) {
   paintThread();
 }
 
+const agentHomeCards = new Map();
+let agentHomeUsed = new Set();
+
+function retainedAgentCard(item, section) {
+  const key = `${section.id || section.name}\0${item.accountId || ""}\0${item.messageId || item.id || JSON.stringify(item)}`;
+  const signature = JSON.stringify([item, section.name, section.title, agentTodoView, agentLooksUnread(item), agentWhen(item.date),
+    agentReplySelection.has(String(item.messageId)), agentPendingReads.has(String(item.messageId)), learningApplyStamp(state.agentLearning)]);
+  agentHomeUsed.add(key);
+  const previous = agentHomeCards.get(key);
+  if (previous?.signature === signature) return previous.node;
+  const node = agentTodoCard(item, section);
+  agentHomeCards.set(key, { node, signature });
+  return node;
+}
+
 function paintAgentHome(payload) {
   const root = $("agent-home");
   if (!root) return;
-  agentDetailSeq = 0;
   syncAgentTodoViewControls();
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
-  root.replaceChildren();
   const reason = payload && payload.reason;
   const sections = agentSections(payload);
+  const key = JSON.stringify([sections, reason, agentTodoView, [...agentReplySelection], [...agentMarkedRead], [...agentPendingReads.keys()],
+    learningApplyStamp(state.agentLearning), state.prefs.markReadCompletesTodos, sections.flatMap(section => (section.items || []).map(item => agentWhen(item.date)))]);
+  if (root.morrowHomeKey === key) return;
+  root.morrowHomeKey = key;
+  const focused = root.contains(document.activeElement) ? document.activeElement : null;
+  const panel = $("agent-panel");
+  const scrollTop = panel ? panel.scrollTop : 0;
+  agentHomeUsed = new Set();
+  root.replaceChildren();
   if (!sections.length) {
     const empty = document.createElement("p");
     empty.className = "agent-empty";
@@ -20706,12 +21104,12 @@ function paintAgentHome(payload) {
       const grid = document.createElement("div");
       grid.className = "agent-card-grid";
       for (const item of items) {
-        if (item && typeof item === "object") grid.appendChild(agentTodoCard(item, section));
+        if (item && typeof item === "object") grid.appendChild(retainedAgentCard(item, section));
       }
       if (grid.childNodes.length) block.appendChild(grid);
     } else {
       for (const item of items) {
-        if (item && typeof item === "object") block.appendChild(agentTodoCard(item, section));
+        if (item && typeof item === "object") block.appendChild(retainedAgentCard(item, section));
       }
     }
     root.appendChild(block);
@@ -20721,6 +21119,9 @@ function paintAgentHome(payload) {
   note.className = "agent-note";
   note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. Both wait for mailbox confirmation before completing a todo or counting a read for Learned. FYI and Other can mark the listed messages read, with Undo, and do not complete todos. Successful replies in any category can count for Learned without an open todo. Settings → Learned keeps a correction after the same pattern happens 3 times. Delete removes that one pattern and refreshes suggestions in open views.";
   root.appendChild(note);
+  for (const cardKey of agentHomeCards.keys()) if (!agentHomeUsed.has(cardKey)) agentHomeCards.delete(cardKey);
+  if (focused?.isConnected) focused.focus({ preventScroll: true });
+  if (panel) panel.scrollTop = scrollTop;
   paintReplySelectionLabels(root);
   paintMotionRows("agent", root.querySelectorAll(".agent-section"));
 }
@@ -20831,6 +21232,10 @@ function paintAgentReadProjection(messageId, unread, original) {
   }
   if (unread) agentMarkedRead.delete(messageId);
   else agentMarkedRead.add(messageId);
+  // Out-of-band unread mutation must bust Agent home retention; otherwise a later
+  // paintAgentHome with an equivalent key keeps stale category-read item closures.
+  const home = $("agent-home");
+  if (home) home.morrowHomeKey = "";
   if (state.view === "agent" && agentPaintPayload) paintAgentHome(agentPaintPayload);
 }
 
@@ -21141,6 +21546,7 @@ function syncAgentCardDisclosure(card) {
 
 function openAgentCardDetail(card) {
   if (!card || (card.dataset && card.dataset.detailBlock === "1") || card.classList.contains("is-open")) return;
+  card.morrowFillDetail?.();
   const home = $("agent-home");
   if (home && typeof home.querySelectorAll === "function") {
     for (const other of home.querySelectorAll(".agent-card.is-open")) {
@@ -21322,7 +21728,7 @@ function agentSkimCard(item, section) {
 }
 
 function agentTodoCard(item, section) {
-  if (section && item && typeof item === "object" && !item.categoryId) item.categoryId = section.id || "";
+  if (section && item && typeof item === "object" && !item.categoryId) item = { ...item, categoryId: section.id || "" };
   if (!agentMessageContext(item)) return agentCard(item);
   if (agentTodoView === "card") return agentSkimCard(item, section);
   const card = agentCard(item, { actions: false });
@@ -21450,7 +21856,7 @@ async function saveAgentMemory() {
 }
 
 async function loadAgent(options) {
-  const quiet = !!(options && options.overlay === false);
+  const quiet = options?.overlay === false || (options?.overlay !== true && agentLoaded);
   const gen = ++agentGen;
   const memoryVersion = agentMemoryVersion;
   const hold = (on) => {
@@ -21458,7 +21864,8 @@ async function loadAgent(options) {
     agentLoadOverlay = !!on;
     syncAgentPageBusy();
   };
-  if (!quiet) hold(true);
+  if (agentLoaded && agentPaintPayload) paintAgent(agentPaintPayload, "");
+  hold(!quiet);
   try {
     const [triage, history, chat] = await Promise.all([
       call("nativeAgent:home:todosCached"),
@@ -21472,16 +21879,28 @@ async function loadAgent(options) {
     const payload = Object.assign({}, triage, { runs });
     paintAgent(payload, "");
     agentLoaded = true;
-    await loadStudio();
+    if (agentTab === "tools") loadStudio().catch(error => setAgentSkillStatus(error.message, true));
     if (gen !== agentGen || state.view !== "agent") return;
     const reason = triage && triage.reason;
     if (!(triage && triage.stale) || reason === "needs_key" || reason === "needs_mailbox") return;
-    hold(true);
-    const fresh = await call("nativeAgent:triage", { source: "open" });
+    if (!quiet) hold(true);
+    const status = $("agent-status");
+    if (quiet && status && !agentChatBusy) {
+      status.textContent = "Updating triage… Showing saved suggestions.";
+      status.setAttribute("aria-busy", "true");
+    }
+    if (!agentTriageLoad) agentTriageLoad = call("nativeAgent:triage", { source: "open" }).finally(() => { agentTriageLoad = null; });
+    const fresh = await agentTriageLoad;
     if (gen !== agentGen || state.view !== "agent") return;
     paintAgent(Object.assign({}, fresh, { runs }), "");
+  } catch (error) {
+    if (gen === agentGen && state.view === "agent") paintAgent(agentPaintPayload, error.message || String(error));
+    throw error;
   } finally {
-    if (gen === agentGen) hold(false);
+    if (gen === agentGen) {
+      hold(false);
+      $("agent-status")?.removeAttribute("aria-busy");
+    }
   }
 }
 
@@ -21545,6 +21964,7 @@ function showPrimary(view, id) {
   const swap = state.view !== view;
   if (view !== "agent") stopAgentPoll();
   markRail(view);
+  if (view === "mail" && mailListDirty) { mailListDirty = false; scheduleReload(); }
   paintBodySyncStatus();
   for (const pane of ["shell", "calendar-panel", "agent-panel", "brain", "provider-panel", "log-panel", "features-panel"]) {
     if (pane === id) continue;
@@ -21573,9 +21993,7 @@ function showAgent() {
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
   startAgentPoll();
-  loadAgent({ overlay: !agentLoaded }).catch((error) => {
-    paintAgent(null, error instanceof Error ? error.message : String(error));
-  });
+  loadAgent({ overlay: !agentLoaded }).catch(() => {});
 }
 
 function closeBrain() {
@@ -21730,16 +22148,15 @@ function paintCalendarDetail(event, calendarName) {
 function paintAgenda(events) {
   const root = $("calendar-agenda");
   if (!root) return;
-  root.replaceChildren();
   const rows = agendaEvents(events);
   if (!rows.length) {
     const note = document.createElement("p");
     note.className = "hint";
     note.textContent = "No events this month.";
-    root.appendChild(note);
+    root.replaceChildren(note);
     return;
   }
-  for (const event of rows) {
+  reconcileRows(root, rows, calendarEventKey, event => calendarDisplayedRevision(event), event => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "agenda-item";
@@ -21748,14 +22165,15 @@ function paintAgenda(events) {
     button.style.setProperty("--event-color", calendarColor(event.calendarId));
     if (button.dataset.eventKey === state.calendarEventId) button.classList.add("is-selected");
     button.textContent = agendaLine(event);
-    button.addEventListener("click", () => selectCalendarEvent(event));
+    button.addEventListener("click", () => selectCalendarEvent(calendarEventRecords.get(calendarEventKey(event)) || event));
     button.addEventListener("dblclick", (click) => {
       click.preventDefault();
-      selectCalendarEvent(event);
-      openCalendarEditor(event);
+      const current = calendarEventRecords.get(calendarEventKey(event)) || event;
+      selectCalendarEvent(current);
+      openCalendarEditor(current);
     });
-    root.appendChild(button);
-  }
+    return button;
+  });
 }
 
 function selectCalendarEvent(event) {
@@ -21775,6 +22193,38 @@ function paintCalendarSelection(payload) {
 
 let calendarGridKey = "";
 let calendarEventsKey = "";
+const calendarEventRecords = new Map();
+
+function calendarDisplayedRevision(event) {
+  return JSON.stringify([calendarEventKey(event), event.title, event.start, event.end, event.allDay, event.location,
+    calendarColor(event.calendarId), state.prefs.timeFormat, state.prefs.dateFormat]);
+}
+
+function calendarBuckets(events, year, month) {
+  const buckets = new Map();
+  const first = new Date(year, month, 1);
+  const after = new Date(year, month + 1, 1);
+  for (const event of events) {
+    const start = eventDay(event);
+    if (!start) continue;
+    const at = new Date(Math.max(first.getTime(), new Date(start + "T00:00:00").getTime()));
+    const end = event.allDay ? new Date(String(event.end || start).slice(0, 10) + "T00:00:00").getTime() : Date.parse(event.end);
+    const until = Number.isFinite(end) ? Math.min(after.getTime(), Math.max(end, at.getTime())) : at.getTime();
+    while (at < after && at.getTime() <= until) {
+      const key = dayKey(year, month, at.getDate());
+      if (eventCoversDay(event, key)) {
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(event);
+      }
+      at.setDate(at.getDate() + 1);
+    }
+  }
+  for (const rows of buckets.values()) rows.sort((left, right) => {
+    if (!!left.allDay !== !!right.allDay) return left.allDay ? -1 : 1;
+    return compareCalendarStarts(left, right);
+  });
+  return buckets;
+}
 function paintCalendar(payload) {
   calendarPaintedAccountId = calendarAccount()?.id || "";
   const view = calendarView(payload);
@@ -21814,19 +22264,18 @@ function paintCalendar(payload) {
   paintMiniMonth(year, month);
   ensureCalendarGrid(year, month);
   const events = checkedCalendarEvents(view.events);
-  const eventsKey = JSON.stringify([account?.id, state.calendarIds, events]);
+  calendarEventRecords.clear();
+  for (const event of events) calendarEventRecords.set(calendarEventKey(event), event);
+  const eventsKey = JSON.stringify([account?.id, state.calendarIds, events.map(calendarDisplayedRevision)]);
   const changed = eventsKey !== calendarEventsKey;
+  const buckets = changed ? calendarBuckets(events, year, month) : null;
   for (const cell of body.querySelectorAll("[data-day]")) {
     const day = Number(cell.dataset.day);
     const key = dayKey(year, month, day);
     if (!changed) continue;
     const bucket = cell.querySelector(".calendar-day-events") || cell;
-    for (const item of bucket.querySelectorAll(".calendar-event")) item.remove();
-    const rows = eventsOnDay(events, key).slice().sort((left, right) => {
-      if (!!left.allDay !== !!right.allDay) return left.allDay ? -1 : 1;
-      return compareCalendarStarts(left, right);
-    });
-    for (const event of rows) appendCalendarEvent(bucket, event, key, calendarColor(event.calendarId || state.calendarId));
+    reconcileRows(bucket, buckets.get(key) || [], calendarEventKey,
+      event => calendarDisplayedRevision(event), event => appendCalendarEvent(null, event, key, calendarColor(event.calendarId || state.calendarId)));
   }
   paintCalendarFocus(year, month);
   if (changed) {
@@ -21863,15 +22312,17 @@ function appendCalendarEvent(parent, event, key, color) {
   item.title = [event.title || "(no title)", event.location].filter(Boolean).join(" — ");
   item.addEventListener("click", (click) => {
     click.stopPropagation();
-    selectCalendarEvent(event);
+    selectCalendarEvent(calendarEventRecords.get(calendarEventKey(event)) || event);
   });
   item.addEventListener("dblclick", (click) => {
     click.stopPropagation();
     click.preventDefault();
-    selectCalendarEvent(event);
-    openCalendarEditor(event);
+    const current = calendarEventRecords.get(calendarEventKey(event)) || event;
+    selectCalendarEvent(current);
+    openCalendarEditor(current);
   });
-  parent.appendChild(item);
+  parent?.appendChild(item);
+  return item;
 }
 
 function paintCalendarFocus(year, month) {
@@ -23836,6 +24287,11 @@ function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
   wireRecipientSuggest();
   wireComposeFormat();
+  $("scheduled-more")?.addEventListener("click", () => guard(() => loadScheduled({ more: true })));
+  for (const field of ["to", "cc", "bcc", "subject", "body"]) $("compose-" + field).addEventListener("input", () => {
+    if (state.composeInputVersions) state.composeInputVersions[field] += 1;
+  });
+  $("compose-editor")?.addEventListener("input", () => { if (state.composeInputVersions) state.composeInputVersions.body += 1; });
   $("compose-from").addEventListener("change", changeComposeFrom);
   $("compose-cc").addEventListener("input", () => {
     if (state.composeIdentity && state.composeIdentity.seeds) state.composeIdentity.seeds.cc.locked = true;
@@ -24691,7 +25147,7 @@ async function boot() {
     agentPaintPayload = payload;
     if (state.view === "agent") paintAgent(payload, "");
   });
-  api.on("mail:emailsUpdated", () => scheduleReload());
+  api.on("mail:emailsUpdated", onEmailsUpdated);
   api.on("mail:bodyUpdated", applyBodyUpdate);
   api.on("mail:bodySyncStatus", acceptBodySync);
   api.on("mail:actionsSettled", applyActionSettlement);
@@ -24732,6 +25188,7 @@ async function boot() {
   await loadShellPrefs();
   await loadAccounts();
   applyFeaturesHash();
+  loadScheduled().catch(() => {});
   if (typeof api.reportUpdateReady === "function") api.reportUpdateReady();
 }
 

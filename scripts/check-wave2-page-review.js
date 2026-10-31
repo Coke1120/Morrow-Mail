@@ -503,10 +503,14 @@ test("Calendar P2: the actual sidecar reenters consent for a revoked stored gran
   const credentials = new Map([["box", JSON.stringify({ refreshToken: "synthetic-mail", grantedScopes: "IMAP" })],
     ["box:bundle", JSON.stringify({ refreshToken: "synthetic-revoked", grantedScopes: "Calendars.ReadWrite" })]]);
   const original = [...credentials];
+  const credentialRevisions = new Map();
   let signIns = 0;
   const sidecar = load("host/mail/sidecar.js", {
     "./db": { accountById: () => account, listAccountRows: () => [account] },
-    "./secrets": { getPassword: (key) => credentials.get(key) || null, setPassword: (key, value) => credentials.set(key, value), deletePassword: (key) => credentials.delete(key) },
+    "./secrets": { getPassword: (key) => credentials.get(key) || null, getPasswordAsync: async (key) => credentials.get(key) || null,
+      revision: (key) => credentialRevisions.get(key) || 0,
+      setPassword(key, value) { credentials.set(key, value); credentialRevisions.set(key, (credentialRevisions.get(key) || 0) + 1); },
+      deletePassword(key) { credentials.delete(key); credentialRevisions.set(key, (credentialRevisions.get(key) || 0) + 1); } },
     "./oauth": { oauthReady: () => ({ microsoft: true }),
       accessTokenFor: async () => { throw Object.assign(new Error("Grant expired"), { code: "needs_auth" }); },
       signIn: async () => { signIns += 1; throw new Error("Synthetic consent canceled"); } },

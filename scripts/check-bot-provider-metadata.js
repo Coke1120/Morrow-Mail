@@ -52,7 +52,7 @@ async function run() {
     const joined = service.execute(ctx);
     await active;
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(aliasLookups, 2);
+    assert.equal(aliasLookups, 1, "concurrent sends share one in-flight Gmail send-as discovery");
     release();
     const receipts = await Promise.all([first, joined]);
     assert.equal(smtpFixtureCalls, 1);
@@ -61,13 +61,13 @@ async function run() {
     const replay = await service.execute(ctx);
     assert.equal(replay.data.idempotentReplay, true);
     assert.equal(smtpFixtureCalls, 1, "metadata changes cannot duplicate SMTP submission");
-    assert.equal(aliasLookups, 3, "join and replay still resolve Gmail From via the provider adapter");
+    assert.equal(aliasLookups, 2, "replay forces a fresh Gmail From discovery after the shared join");
     for (const receipt of [...receipts, replay]) assert.ok(!Object.hasOwn(receipt.meta, "providerCalls"), "receipts do not pretend to measure provider traffic");
     const stored = JSON.parse(fs.readFileSync(path.join(dir, "bot-send-receipts.json"), "utf8"));
     assert.equal(stored.receipts.length, 1);
     assert.equal(stored.receipts[0].state, "submitted");
     assert.ok(!Object.hasOwn(stored.receipts[0], "providerCalls"));
-    console.log("bot-provider-metadata-ok (reader local, sender may call; 3 intercepted alias lookups, 1 synthetic SMTP for join/replay)");
+    console.log("bot-provider-metadata-ok (reader local, sender may call; 2 intercepted alias lookups, 1 synthetic SMTP for join/replay)");
   } finally {
     release();
     engine.setSmtpSenderForTest(null);
