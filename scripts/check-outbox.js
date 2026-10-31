@@ -330,9 +330,67 @@ function rendererChecks() {
   });
 }
 
+async function scheduledOutboxRefresh() {
+  const { renderer } = require("./check-ux-workflows");
+  const html = fs.readFileSync(path.join(__dirname, "../renderer/index.html"), "utf8");
+  for (const status of ["sent", "canceled", "sending"]) {
+    const dom = new JSDOM(html);
+    const document = dom.window.document;
+    dom.window.morrow = {};
+    dom.window.HTMLElement.prototype.scrollIntoView = function () {};
+    dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+    dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+    const ui = renderer({ document, window: dom.window });
+    try {
+      ui.run(`state.accounts=[{id:'ada',email:'ada@example.test',platform:'imap'}];state.accountId='ada';
+        state.view='mail';state.outbox=true;
+        globalThis.calls=[];
+        globalThis.queue=[{id:'sent-now',accountId:'ada',outbox:true,status:'pending',subject:'Delivery now',
+          to:'bob@example.test',sendAt:'2026-10-31T03:30:00.000Z'}];
+        call=async(channel,params)=>{
+          calls.push({channel,params});
+          if(channel!=='mail:listScheduled') throw Error('Unexpected channel '+channel);
+          return {rows:params.outbox?queue:[],outboxTotal:queue.length,reviewCount:0,hasMore:false};
+        };`);
+      await ui.run("loadScheduled()");
+      ui.run("state.email={...state.emails[0],htmlBody:'<p>Frozen body</p>',textBody:'Frozen body'};state.thread=[state.email];renderReader(false)");
+      assert.match(document.getElementById("message-list").textContent, /Delivery now/);
+      assert.match(document.getElementById("reader").textContent, /Frozen body/);
+      await ui.run("showScheduled()");
+      assert.equal(document.getElementById("scheduled-dialog").open, true);
+      if (status === "sending") ui.run("queue[0].status='sending'");
+      else ui.run("queue=[]");
+      await ui.run("loadScheduled({invalidate:true})");
+      assert.equal(ui.run("state.outboxError"), "");
+      if (status === "sending") {
+        assert.equal(ui.run("state.outboxCount"), 1);
+        assert.equal(ui.run("state.email.outboxStatus"), "sending");
+        assert.equal(ui.run("state.email.htmlBody"), "<p>Frozen body</p>");
+        assert.match(document.getElementById("message-list").textContent, /Sending/);
+        assert.equal(document.querySelector('[data-testid="outbox-undo"]').disabled, true);
+      } else {
+        assert.equal(ui.run("state.outboxCount"), 0);
+        assert.equal(ui.run("state.outboxRows.length"), 0);
+        assert.equal(ui.run("state.emails.length"), 0);
+        assert.equal(ui.run("state.email"), null);
+        assert.equal(ui.run("state.thread.length"), 0);
+        assert.match(document.getElementById("message-list").textContent, /Nothing is waiting to send/);
+        assert.doesNotMatch(document.getElementById("reader").textContent, /Frozen body/);
+      }
+      ui.run("closeDialog('scheduled-dialog')");
+      assert.equal(document.getElementById("scheduled-dialog").open, false);
+      assert.equal(ui.run("state.emails.length"), status === "sending" ? 1 : 0);
+      assert.equal(ui.run("calls.every(row=>row.channel==='mail:listScheduled')"), true);
+    } finally {
+      dom.window.close();
+    }
+  }
+}
+
 async function run() {
   await engineChecks();
   await rendererChecks();
+  await scheduledOutboxRefresh();
   console.log("outbox-ok");
 }
 module.exports = { run };

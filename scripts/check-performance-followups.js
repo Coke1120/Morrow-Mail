@@ -229,6 +229,49 @@ test("overnight selection advances beyond 200 attempted headers and Limited bodi
   assert.equal(context.rowNeedsBody(rows[0]), true);
 });
 
+test("overnight selection bounds paused-backlog scans and resumes without wrapping in the same poll", async () => {
+  const source = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
+  const rows = Array.from({ length: 100000 }, (_unused, index) => ({ id: String(index), uid: index + 1,
+    account_id: "paused", body_complete: 0, list_sort_ts: 100000 - index }));
+  let pages = 0, visits = 0, paused = true, yielded = false;
+  const starts = [];
+  const context = vm.createContext({ Date, Set, Number, JSON, accountEpochs: new Map(), DAY_MS: 86400000,
+    overnightCursor: null, overnightTried: new Set(), syncHorizonDays: () => 0,
+    gateOpen: () => { visits++; return !paused; }, priorityWaiting: () => false,
+    db: { accountById: () => ({}), selectMessages(query, options) {
+      pages++;
+      assert.equal(options.headersOnly, true);
+      assert.equal(query.limit, 200);
+      const offset = query.beforeMessage ? Number(query.beforeMessage.id) + 1 : 0;
+      starts.push(offset);
+      return rows.slice(offset, offset + query.limit);
+    } } });
+  vm.runInContext(["rowNeedsBody", "nextOvernightRow", "overnightIdentity"].map(name => productionFunction(source, name)).join("\n"), context);
+  const turn = new Promise(resolve => setImmediate(() => { yielded = true; resolve(); }));
+  assert.equal(context.nextOvernightRow(Date.now()), null);
+  assert.equal(pages, 2);
+  assert.equal(visits, 400);
+  assert.equal(context.overnightCursor.id, "399");
+  await turn;
+  assert.equal(yielded, true);
+  assert.equal(context.nextOvernightRow(Date.now()), null);
+  assert.equal(pages, 4);
+  assert.equal(visits, 800);
+  assert.deepEqual(starts, [0,200,400,600]);
+  paused = false;
+  assert.equal(context.nextOvernightRow(Date.now()).id, "800", "eligible rows beyond the first budget remain reachable");
+  paused = true;
+  context.overnightCursor = { ts: rows[99899].list_sort_ts, id: "99899" };
+  pages = 0;
+  visits = 0;
+  assert.equal(context.nextOvernightRow(Date.now()), null);
+  assert.equal(pages, 1, "exhaustion must not restart the backlog within this call");
+  assert.equal(visits, 100);
+  assert.equal(context.overnightCursor, null);
+  paused = false;
+  assert.equal(context.nextOvernightRow(Date.now()).id, "0", "the next poll can see newer candidates after exhaustion");
+});
+
 test("hidden mail notifications avoid reads, scope routing skips unrelated mail, bursts coalesce", async () => {
   const timers = [];
   const ui = uiFixture({ setTimeout: work => { timers.push(work); return timers.length; }, clearTimeout() {} });

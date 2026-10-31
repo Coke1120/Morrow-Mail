@@ -269,6 +269,9 @@ async function checkEngine() {
       throw Object.assign(new Error("slow down"), { status: 429, retryAfterMs: 60000 });
     };
     events.length = 0;
+    const exhausted = await engine.fillOvernightBodies();
+    assert.equal(exhausted.fetched, 0, "exhaustion retires the cursor without wrapping in the same poll");
+    assert.deepEqual(events, [], "a newer mid-window insert waits for the next bounded scan");
     const limited = await engine.fillOvernightBodies();
     assert.equal(limited.fetched, 0);
     assert.deepEqual(events, [30]);
