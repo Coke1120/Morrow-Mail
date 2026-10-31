@@ -71,6 +71,7 @@ const syntax = [
   "scripts/check-agent-learning-followups.js",
   "scripts/check-wave1-review.js",
   "scripts/check-wave2-page-review.js",
+  "scripts/check-wave3-page-review.js",
   "scripts/check-agent-learning-journal.js",
   "scripts/check-account-calendar-attachments.js",
   "scripts/check-account-liveness.js",
@@ -171,6 +172,8 @@ const wave1Review = spawnSync(process.execPath, [path.join(__dirname, "check-wav
 if (wave1Review.status !== 0) process.exit(wave1Review.status || 1);
 const wave2Review = spawnSync(process.execPath, [path.join(__dirname, "check-wave2-page-review.js")], { stdio: "inherit", timeout: 15000 });
 if (wave2Review.status !== 0) process.exit(wave2Review.status || 1);
+const wave3Review = spawnSync(process.execPath, [path.join(__dirname, "check-wave3-page-review.js")], { stdio: "inherit", timeout: 15000 });
+if (wave3Review.status !== 0) process.exit(wave3Review.status || 1);
 const unreadHold = spawnSync(process.execPath, [path.join(__dirname, "check-unread-hold.js")], { stdio: "inherit", timeout: 15000 });
 if (unreadHold.status !== 0) process.exit(unreadHold.status || 1);
 const recipientSuggest = spawnSync(process.execPath, [path.join(__dirname, "check-recipient-suggest.js")], { stdio: "inherit", timeout: 30000 });
@@ -4219,6 +4222,8 @@ assert.ok(html.includes('id="features-title"') && html.includes('id="features-ca
 assert.ok(html.indexOf('src="./features-catalog.js"') < html.indexOf('src="./app.js"'));
 const featureCatalog = require("../renderer/features-catalog.js");
 const featureSeed = [
+  ["folder-label-safety", "Folders and Gmail labels", "Mail", "Switching folders retires the previous list before loading downloaded mail. Folder-move completion follows only its original mailbox selection, not a newer folder or account visit. Open in Mail matches provider identity or the complete folder hierarchy, never a same-named leaf. Gmail label checkboxes use saved provider memberships, including labels outside the current folder; confirmed removal of the current label refreshes that view and clears only removed messages from its reader and selection. Provider label edits and Outlook moves target the selected cached identity. Legacy RFC Message-ID lookup must be unique and match the source folder; ambiguous or paginated matches are refused. Existing provider grants are required; no new scopes or bot operations are added."],
+  ["support-navigation", "Support and mailbox selection", "Support", "Features, Shortcuts and Debug log preserve the hidden Mail selection. Escape clears selected messages only on the Mail page when no overlay or text input owns it. Open in Mail switches pages immediately; a delayed folder read cannot pull you out of a newer Support visit."],
   ["compose-work-preservation", "Compose recovery and preparation", "Mail", "Unrelated, completed and canceled AI draft events cannot replace manual edits. Selected files show Preparing attachment and block Save, previews, Send and Schedule until preparation settles; closing Compose abandons unfinished preparation. Undo atomically saves an inert recovery draft before opening Compose. Exact recipients and body, including cleared Cc/Bcc and one existing signature, are preserved. If Compose fails, resume from local Drafts; Undo never requeues delivery. Failed-send snapshots also bypass new-message defaults. Untouched multiline HTML signatures follow same-mailbox aliases; edited signatures stay intact. Changing recipient input retires old suggestion choices immediately, and escaped display-name quotes round-trip."],
   ["brain-edit-preservation", "Profile edit preservation", "Agent", "Refresh and Rebuild preserve saved user-rule and category edits made during analysis. A changed learned profile rejects an obsolete analysis. Learned facts retain non-Latin names and text. Fix persists the selected row, including voice quotes, only while its stored version still matches; an obsolete Fix asks you to reload. Category-save readback preserves newer local edits and reports them as unsaved. Domain CC/BCC recipients may contain = in the address."],
   ["calendar-write-safety", "Calendar write safety", "Calendar", "Known authorization failures offer Reauthorize calendar; ordinary refresh reuses valid grants. Retrying unchanged creation in the same editor reuses its Google event ID or Microsoft transaction ID. Check the provider before changing an uncertain submission and starting another event. Plain-text descriptions preserve literal angle brackets; readable HTML descriptions retain link targets. Outlook description edits tolerate surrounding whitespace in an unchanged baseline and still require the provider revision to match. Non-time edits omit time fields, preserving offsets and seconds through repeated daylight-saving hours. Ambiguous or nonexistent local time edits require another time or the provider editor with an explicit offset. Confirmed saves and deletes invalidate all cached months for the changed mailbox, even after closing the editor. Google calendar enumeration follows up to five pages; incomplete lists leave saved selections unchanged. Timed agenda and day-cell rows sort by actual instants across UTC offsets."],
@@ -7969,7 +7974,8 @@ async function checkProviderApi() {
         return jsonResponse({ id, name: body.name, type: "user" });
       }
       if (href.includes("rfc822msgid")) return jsonResponse({ messages: [{ id: "msg-1" }] });
-      if (method === "POST" && href.includes("/messages/msg-1/modify")) return jsonResponse({});
+      if (method === "GET" && href.includes("/messages/msg-1?")) return jsonResponse({ id: "msg-1", labelIds: ["INBOX"] });
+      if (method === "POST" && href.includes("/messages/msg-1/modify")) return jsonResponse({ id: "msg-1", labelIds: ["INBOX", "Label_9"] });
       if (href.startsWith("https://graph.microsoft.com/v1.0/me/mailFolders") && method === "GET") {
         if (new URL(href).searchParams.get("$select") === "id") return href.includes("/inbox?") ? jsonResponse({ id: "inbox-id" }) : jsonResponse({}, 404);
         if (href.includes("/childFolders")) return jsonResponse({ value: [] });
