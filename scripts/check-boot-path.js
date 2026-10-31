@@ -8050,6 +8050,10 @@ async function checkProviderApi() {
       subject: "Hi",
       from: "Ada <ada.live@example.com>",
     });
+    // F1 label writes verify source-folder membership; seed the cached Inbox row.
+    db.replaceFolders("gmail-live", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox", providerId: "INBOX" },
+    ]);
     const missingScope = await engine.answer("mail:modifyMessageLabels", [{
       accountId: "gmail-live",
       emailId: "m-live",
