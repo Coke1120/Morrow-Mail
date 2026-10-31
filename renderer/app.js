@@ -21581,8 +21581,6 @@ function agentSkimCard(item, section) {
   detail.hidden = true;
   detail.setAttribute("role", "group");
   detail.setAttribute("aria-label", "Message detail");
-  card.morrowFillDetail = () => {
-  if (detail.childNodes.length) return;
   const summary = document.createElement("p");
   summary.className = "agent-card-summary";
   summary.id = summaryId;
@@ -21605,7 +21603,6 @@ function agentSkimCard(item, section) {
   for (const button of agentMoveButtons(item, section)) moves.appendChild(button);
   detail.append(summary, classification, thread, quick);
   if (moves.childNodes.length) detail.appendChild(moves);
-  };
   card.append(face, chips, detail);
   syncAgentCardDisclosure(card);
   bindAgentCardDetail(card);
