@@ -210,6 +210,12 @@ id: "mail-workflow-feedback",
         category: "Support",
         blurb: "IPC trace records known channels and argument counts, plus renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries may retain account/folder context.",
       },
+      {
+        id: "sponsor-support",
+        title: "Support the project",
+        category: "Support",
+        blurb: "Morrow Mail is free and open source. You can support development on GitHub Sponsors (https://github.com/sponsors/Coke1120) or Buy Me a Coffee (https://buymeacoffee.com/coke1120).",
+      },
     ],
   };
 });
