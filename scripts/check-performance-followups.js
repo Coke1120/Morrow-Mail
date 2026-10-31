@@ -272,6 +272,66 @@ test("overnight selection bounds paused-backlog scans and resumes without wrappi
   assert.equal(context.nextOvernightRow(Date.now()).id, "0", "the next poll can see newer candidates after exhaustion");
 });
 
+test("overnight bounded scan crosses daily windows to reach mail behind a disconnected backlog", async () => {
+  const source = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
+  const rows = Array.from({ length: 1201 }, (_unused, index) => ({ id: String(index), uid: index + 1,
+    account_id: index < 1200 ? "disconnected" : "healthy", body_complete: 0, list_sort_ts: 2000 - index }));
+  let at = Date.UTC(2026, 5, 15, 3, 30), disconnected = true, pages = 0, visited = 0;
+  const fetched = [];
+  const context = vm.createContext({ Date, Set, Number, JSON, accountEpochs: new Map(), DAY_MS: 86400000,
+    overnight: require("../host/mail/overnight"), overnightNow: () => at, overnightZone: () => "UTC",
+    overnightCursor: null, overnightTried: new Set(), overnightSawWindow: false, overnightRunning: false,
+    fillRunning: false, fillQueue: [], syncHorizonDays: () => 0, gateOpen: () => true, priorityWaiting: () => false,
+    fillBodyInBackground: async row => { fetched.push(row.id); row.body_complete = 1; },
+    db: { accountById: id => ({ auth_error: id === "disconnected" && disconnected ? "Reconnect required" : null }),
+      messageById: id => rows.find(row => row.id === id), selectMessages(query, options) {
+        pages += 1;
+        assert.equal(options.headersOnly, true);
+        assert.equal(query.needsBody, true);
+        assert.equal(query.limit, 200);
+        const selected = rows.filter(row => row.body_complete !== 1 && (!query.beforeMessage || row.list_sort_ts < query.beforeMessage.ts)).slice(0, query.limit);
+        visited += selected.length;
+        return selected;
+      } } });
+  vm.runInContext(["rowNeedsBody", "nextOvernightRow", "overnightIdentity", "fillOvernightBodies"]
+    .map(name => productionFunction(source, name)).join("\n"), context);
+  for (let night = 0; night < 3; night += 1) {
+    at = Date.UTC(2026, 5, 15 + night, 3, 30);
+    pages = 0;
+    visited = 0;
+    const result = await context.fillOvernightBodies();
+    assert.equal(result.fetched, 0);
+    assert.equal(result.window, true);
+    assert.equal(pages, 2);
+    assert.equal(visited, 400, "disconnected headers count toward the per-poll scan bound");
+    const cursor = context.overnightCursor;
+    assert.equal(cursor.id, String((night + 1) * 400 - 1));
+    context.overnightTried.add("previous-night-attempt");
+    at = Date.UTC(2026, 5, 15 + night, 15);
+    const daytime = await context.fillOvernightBodies();
+    assert.equal(daytime.window, false);
+    assert.equal(daytime.ran, false);
+    assert.equal(context.overnightCursor, cursor, "closing the nightly window must preserve an unfinished scan");
+    assert.equal(context.overnightTried.size, 0, "attempt tracking still resets between nightly windows");
+    assert.equal(pages, 2, "daytime polls do not scan or fetch bodies");
+    assert.deepEqual(fetched, []);
+  }
+  at = Date.UTC(2026, 5, 18, 3, 30);
+  pages = 0;
+  const older = await context.fillOvernightBodies();
+  assert.equal(older.fetched, 1);
+  assert.equal(pages, 1);
+  assert.deepEqual(fetched, ["1200"], "the healthy older message remains reachable across windows");
+  const exhausted = await context.fillOvernightBodies();
+  assert.equal(exhausted.fetched, 0);
+  assert.equal(context.overnightCursor, null);
+  assert.deepEqual(fetched, ["1200"], "exhaustion does not wrap within the same poll");
+  disconnected = false;
+  const recovered = await context.fillOvernightBodies();
+  assert.equal(recovered.fetched, 1);
+  assert.deepEqual(fetched, ["1200", "0"], "a later scan revisits newer mail after the account recovers");
+});
+
 test("hidden mail notifications avoid reads, scope routing skips unrelated mail, bursts coalesce", async () => {
   const timers = [];
   const ui = uiFixture({ setTimeout: work => { timers.push(work); return timers.length; }, clearTimeout() {} });
@@ -601,4 +661,10 @@ test("actual Features catalog and mounted CLI/storage help describe the mechanis
   assert.match(cli.textContent, /does not measure native Mac rendering, Windows frame times or real secure storage/);
   assert.match(ui.nodes.get("mail-secure-storage-help").textContent, /Read errors keep your saved credentials/);
   assert.match(ui.nodes.get("mail-secure-storage-help").textContent, /synchronous compatibility commands/);
+  ui.run("showFeaturesTab('catalog')");
+  assert.equal(ui.nodes.get("features-pane-catalog").hidden, false);
+  assert.equal(cli.hidden, true);
+  assert.match(catalog.textContent, /reopened message or selection, even after all changes have been restored/);
+  assert.match(catalog.textContent, /at most two 200-header pages.*across nightly windows while the app stays open/);
+  assert.match(catalog.textContent, /exhausted scan restarts from newest only on a later pass/);
 });
