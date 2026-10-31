@@ -162,6 +162,65 @@ async function signatureListOrder() {
   assert.doesNotMatch(pick.children[1].textContent, /Signature A/);
 }
 
+async function signatureInitialTyping() {
+  const { JSDOM } = require("jsdom");
+  const html = fs.readFileSync(path.join(__dirname, "../renderer/index.html"), "utf8");
+  for (const mode of ["name", "plain", "rich", "cleared", "generation", "untouched"]) {
+    const dom = new JSDOM(html);
+    const document = dom.window.document;
+    dom.window.morrow = {};
+    dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+    const ui = renderer({ document, window: dom.window });
+    const node = id => document.getElementById(id);
+    const input = id => node(id).dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    try {
+      ui.run(`state.accounts=[{id:'box',email:'box@example.test',platform:'imap'}];state.accountId='box';
+        globalThis.reads=0;
+        call=(channel)=>{
+          if(channel!=='mail:listSignatures') throw Error('Unexpected channel '+channel);
+          reads++;return new Promise(resolve=>{globalThis.finishList=resolve;});
+        };
+        wireComposeFormat();openSignatures('box',{settings:{}});`);
+      assert.equal(ui.run("reads"), 1);
+      if (mode !== "untouched") {
+        if (mode === "generation") ui.run("clearSignatureForm()");
+        node("signature-name").value = "New typing";
+        if (mode !== "generation") input("signature-name");
+        if (mode === "rich") {
+          node("signature-editor").innerHTML = "<p>My <b>unsaved</b> signature</p>";
+          input("signature-editor");
+        } else if (mode !== "name" && mode !== "cleared") {
+          node("signature-html").checked = false;
+          if (mode !== "generation") ui.run("onSignatureHtmlToggle()");
+          node("signature-body").value = "My unsaved signature";
+          if (mode !== "generation") input("signature-body");
+        }
+        if (mode === "cleared") {
+          node("signature-name").value = "";
+          node("signature-body").value = "";
+          input("signature-name");
+          input("signature-body");
+        }
+      }
+      const before = { name: node("signature-name").value, body: node("signature-body").value,
+        rich: node("signature-editor").innerHTML, html: node("signature-html").checked };
+      ui.run(`finishList({signatures:[{id:'stored',accountId:'box',name:'Stored signature',text:'Previously saved'}],
+        defaultSignaturePerAccount:{box:'stored'}})`);
+      await new Promise(setImmediate);
+      if (mode === "untouched") {
+        assert.equal(node("signature-name").value, "Stored signature");
+        assert.equal(node("signature-body").value, "Previously saved");
+      } else {
+        assert.deepEqual({ name: node("signature-name").value, body: node("signature-body").value,
+          rich: node("signature-editor").innerHTML, html: node("signature-html").checked }, before, mode);
+        assert.equal(ui.run("signatureEditId"), "", mode + " must not silently adopt the saved identity");
+      }
+    } finally {
+      dom.window.close();
+    }
+  }
+}
+
 async function signatureIdentitySave() {
   const { ui, node, event } = signatures();
   ui.context.submit = event();
@@ -311,6 +370,8 @@ function help() {
   ui.run("paintFeatureCatalog(); paintShortcuts()");
   const text = el => [el.textContent, ...el.children.map(text)].join(" ");
   assert.match(text(node("features-catalog")), /Signatures.*Saving…/);
+  assert.match(text(node("features-catalog")), /edits made before the first list returns stay in the editor/);
+  assert.match(html, /id="signature-identity-help"[^>]*>[^<]*Typing before signatures finish loading is kept/);
   assert.match(text(node("features-catalog")), /Save errors appear in the event dialog/);
   assert.match(text(node("features-catalog")), /On the Mail page/);
   assert.match(text(node("features-catalog")), /Timed events appear on each local date they overlap/);
@@ -324,7 +385,7 @@ function help() {
 
 async function run() {
   const checks = [signatureSwitch, signatureReordered, signatureRepeatedAdd, signatureStaleFailureAndClose,
-    signatureListOrder, signatureIdentitySave, keyboard, calendarErrors, calendarStaleError, help];
+    signatureListOrder, signatureInitialTyping, signatureIdentitySave, keyboard, calendarErrors, calendarStaleError, help];
   const failures = [];
   let timer;
   try {

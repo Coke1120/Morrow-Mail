@@ -827,6 +827,8 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 
 .feature-card-blurb { margin-top: 6px; }
 
+.feature-card .about-links { margin: 10px 0 0; }
+
 .shortcut-list {
   list-style: none;
   margin: 8px 0 0;
