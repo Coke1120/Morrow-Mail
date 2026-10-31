@@ -383,11 +383,21 @@ function migrate() {
     for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
       const condition = table === "messages" && operation === "UPDATE"
         ? `WHEN ${summaryFields.map(field => `OLD.${field} IS NOT NEW.${field}`).join(" OR ")}` : "";
-      const sources = operation === "UPDATE" ? ["OLD", "NEW"] : [operation === "DELETE" ? "OLD" : "NEW"];
+      // Snooze always notices folder_path '' — OLD+NEW would duplicate the same PK.
+      // Prefer NEW-only on UPDATE; messages still need OLD+NEW when folder_path moves.
+      const sources = operation === "UPDATE"
+        ? (table === "snooze" ? ["NEW"] : ["OLD", "NEW"])
+        : [operation === "DELETE" ? "OLD" : "NEW"];
+      // INSERT OR REPLACE inside an AFTER UPDATE fired by INSERT…ON CONFLICT DO UPDATE
+      // raises UNIQUE on mail_changes when the row already exists (nested UPSERT quirk).
+      // Explicit ON CONFLICT DO UPDATE is safe under setSnooze and plain updates.
       const notices = ["messages", "snooze"].includes(table) ? sources.map(source =>
-        `INSERT OR REPLACE INTO mail_changes(account_id, folder_path, revision)
-          SELECT ${source}.account_id, ${table === "messages" ? `${source}.folder_path` : "''"}, value FROM mail_list_revision WHERE id = 1;`).join("\n") : "";
-      run(`CREATE TRIGGER IF NOT EXISTS mail_list_${table}_${operation.toLowerCase()} AFTER ${operation} ON ${table}
+        `INSERT INTO mail_changes(account_id, folder_path, revision)
+          SELECT ${source}.account_id, ${table === "messages" ? `${source}.folder_path` : "''"}, value FROM mail_list_revision WHERE id = 1
+          ON CONFLICT(account_id, folder_path) DO UPDATE SET revision = excluded.revision;`).join("\n") : "";
+      const trigger = `mail_list_${table}_${operation.toLowerCase()}`;
+      run(`DROP TRIGGER IF EXISTS ${trigger}`);
+      run(`CREATE TRIGGER ${trigger} AFTER ${operation} ON ${table}
         ${condition} BEGIN UPDATE mail_list_revision SET value = value + 1 WHERE id = 1; ${notices} END`);
     }
   }
