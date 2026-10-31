@@ -87,18 +87,21 @@ async function run() {
     }
 
     await choose(180);
+    // windowStart uses Date.now() at sync start; refresh so a slow first sync cannot stale the assert.
+    let syncAt = Date.now();
     await sync();
     assert.equal(list().total, 1005);
     assert.equal(db.folderByPath("horizon", "INBOX").sync_horizon_days, 180);
-    assert.ok(searches.every(({ query }) => Math.abs(now - query.since.getTime() - 180 * day) < 10000));
+    assert.ok(searches.every(({ query }) => Math.abs(syncAt - query.since.getTime() - 180 * day) < 10000));
     assert.ok(fetched.every(({ uids }) => uids.length <= 100), "header downloads stay bounded");
     await choose(365);
     assert.equal(list().initialSyncDone, false, "a completed shorter horizon must catch up");
     searches.length = 0;
+    syncAt = Date.now();
     await sync();
     assert.equal(list().total, 1605);
     assert.equal(db.folderByPath("horizon", "INBOX").sync_horizon_days, 365);
-    assert.ok(searches.every(({ query }) => !query.uid && Math.abs(now - query.since.getTime() - 365 * day) < 10000));
+    assert.ok(searches.every(({ query }) => !query.uid && Math.abs(syncAt - query.since.getTime() - 365 * day) < 10000));
     await choose(0);
     assert.equal(list().initialSyncDone, false);
     searches.length = 0;
