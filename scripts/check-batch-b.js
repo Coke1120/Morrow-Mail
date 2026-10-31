@@ -9,8 +9,20 @@ const root = path.join(__dirname, "..");
 function functionSource(source, name) {
   const start = source.indexOf(`function ${name}(`);
   assert.ok(start >= 0, `missing ${name}`);
+  const paren = source.indexOf("(", start);
   let depth = 0;
-  for (let i = source.indexOf("{", start); i < source.length; i++) {
+  let i = paren;
+  for (; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) { i += 1; break; }
+    }
+  }
+  const bodyStart = source.indexOf("{", i);
+  depth = 0;
+  for (i = bodyStart; i < source.length; i++) {
     const ch = source[i];
     if (ch === "{") depth += 1;
     else if (ch === "}") {
@@ -120,7 +132,8 @@ function checkSources() {
   assert.ok(main.includes("CommandOrControl+Plus"));
   assert.ok(main.includes("CommandOrControl+0"));
   assert.ok(main.includes("ZOOM_STEP"));
-  assert.ok(functionSource(appJs, "loadScheduled").includes('call("mail:listScheduled", {})'));
+  assert.ok(functionSource(appJs, "loadScheduled").includes("readScheduled("));
+  assert.ok(functionSource(appJs, "readScheduled").includes('call("mail:listScheduled", { summary: true'));
   assert.ok(!functionSource(appJs, "renderScheduled").includes("state.accountId"));
   assert.ok(functionSource(appJs, "requestSendPreview").includes("openComposePreview"));
   assert.ok(!functionSource(appJs, "requestSendPreview").includes("mail:send"));
