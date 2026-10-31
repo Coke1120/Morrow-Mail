@@ -21115,6 +21115,10 @@ function paintAgentReadProjection(messageId, unread, original) {
   }
   if (unread) agentMarkedRead.delete(messageId);
   else agentMarkedRead.add(messageId);
+  // Out-of-band unread mutation must bust Agent home retention; otherwise a later
+  // paintAgentHome with an equivalent key keeps stale category-read item closures.
+  const home = $("agent-home");
+  if (home) home.morrowHomeKey = "";
   if (state.view === "agent" && agentPaintPayload) paintAgentHome(agentPaintPayload);
 }
 

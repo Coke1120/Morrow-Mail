@@ -346,6 +346,7 @@ async function rendererChecks() {
   calls.length = 0;
   await ui.run("undoRemoval()");
   const restore = calls.find((row) => row.channel === "mail:markReadBatch");
+  assert.ok(restore, "undoRemoval should call mail:markReadBatch");
   assert.equal(restore.payload.restoreRead, true);
   assert.equal(restore.payload.isRead, false);
   assert.deepEqual([...restore.payload.items.map((item) => item.emailId)], ["m4", "m5"]);
