@@ -312,8 +312,13 @@ test("F4: provider IDs and complete Gmail/Outlook paths outrank repeated leaf na
 
 test("F4: production account views carry provider folder identity independently of IMAP paths", () => {
   const { accountView } = functions("host/mail/engine.js", ["accountView"], {
-    db: { foldersFor: () => [{ path: "Projects/Archive", name: "Archive", provider_id: "provider-nested" }], inboxUnread: () => 0 },
+    db: {
+      foldersFor: () => [{ path: "Projects/Archive", name: "Archive", provider_id: "provider-nested" }],
+      inboxUnread: () => 0,
+      countMessages: () => 0,
+    },
     remote: { isAllMail: () => false }, composeIdentity: { accountIdentity: () => ({}) }, virtuals: { place() {} },
+    primaryMailboxes: require("../shared/primary-mailboxes"),
     PRIMARY_ORDER: [], accountEpochs: new Map(), bodyVersion: 1, idlePush: () => null,
   });
   assert.equal(accountView({ id: "a", profile: "gmail" }, 0).folders.more[0].providerId, "provider-nested");
