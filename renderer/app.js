@@ -151,6 +151,7 @@ let signatureEditorIdentity = null;
 let signatureEditorFocus = null;
 let signatureEditorSettings = null;
 let signatureEditorGeneration = 0;
+let signatureEditorDirty = false;
 let signatureListGen = 0;
 let signatureSavePending = null;
 let scheduledGen = 0;
@@ -10397,7 +10398,7 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   }
   const action = (extra && extra.action) || removalAction(label);
   rememberUndoSnapshots(snapshotEmails(ids, extra), action, extra && extra.destinationLabel);
-  const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => row.id));
+  const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed" && !restoredUndoOpIds.has(row.opId)).map((row) => row.id));
   if (state.email && completed.has(state.email.id)) {
     state.email = null;
     state.thread = [];
@@ -10412,8 +10413,6 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   if (epoch === undoEpoch) {
     if (outcome.opIds.length && (undoBusy || undoPending.size)) undoSettleQueue.push(outcome);
     else if (outcome.opIds.length) {
-      // Fresh finishBulkRemoval reclaim: this batch's opIds are new undoable removals, not restored replays.
-      for (const id of outcome.opIds) restoredUndoOpIds.delete(id);
       applyRemovalSettlement(outcome, text, !!outcome.error);
     }
     else if (waiting || undoOpIds?.length) showStatus(text, !!outcome.error);
@@ -12163,7 +12162,11 @@ function bindRichEditor(bar, editor, onInput) {
 
 function wireComposeFormat() {
   bindRichEditor($("compose-format"), $("compose-editor"), syncComposePlainFromEditor);
-  bindRichEditor($("signature-format"), $("signature-editor"), syncSignatureSource);
+  $("signature-form")?.addEventListener("input", () => { signatureEditorDirty = true; });
+  bindRichEditor($("signature-format"), $("signature-editor"), () => {
+    signatureEditorDirty = true;
+    syncSignatureSource();
+  });
 }
 
 function composePayload(account) {
@@ -12742,6 +12745,7 @@ function syncSignatureSource() {
 }
 
 function onSignatureHtmlToggle() {
+  signatureEditorDirty = true;
   const box = $("signature-html");
   const area = $("signature-body");
   const editor = $("signature-editor");
@@ -12759,6 +12763,7 @@ function onSignatureHtmlToggle() {
 
 function clearSignatureForm() {
   signatureEditorGeneration += 1;
+  signatureEditorDirty = false;
   signatureEditId = "";
   signatureEditorIdentity = null;
   signatureEditorFocus = null;
@@ -13066,6 +13071,7 @@ function markSignatureSelection(key) {
 function selectSignatureIdentity(identity, focus) {
   if (!identity) return;
   if (focus) signatureEditorGeneration += 1;
+  signatureEditorDirty = false;
   signatureEditorIdentity = {
     key: identity.key,
     kind: identity.kind,
@@ -13127,12 +13133,14 @@ function paintSignatures(pack) {
   }
   const request = signatureEditorFocus;
   signatureEditorFocus = null;
+  if (signatureEditorDirty) return;
   const picked = signatureFocusRow(rows, request, account, settings);
   if (picked) selectSignatureIdentity(picked, !!request);
 }
 
 function startSignatureEdit(row, isDefault) {
   signatureEditorGeneration += 1;
+  signatureEditorDirty = false;
   signatureEditorIdentity = null;
   const fields = signatureFields(row, isDefault);
   signatureEditId = fields.id;
@@ -14597,6 +14605,9 @@ async function readScheduled(request) {
       }
       renderList();
     }
+    if (!request.outbox && state.view === "mail" && state.outbox) {
+      await readScheduled({ outbox: true, includeRows: true, offset: 0, selectedId: state.email?.outbox ? state.email.id : "" });
+    }
   } catch (error) {
     if (gen !== scheduledGen) return;
     state.outboxError = error instanceof Error ? error.message : String(error);
@@ -15717,6 +15728,13 @@ function paintFeatureCatalog() {
         blurb.className = "feature-card-blurb";
         blurb.textContent = row.blurb || "";
         card.append(title, blurb);
+        if (row.id === "sponsor-support") {
+          const support = $("settings-support");
+          const links = support && typeof support.querySelector === "function"
+            ? support.querySelector(".about-links")
+            : null;
+          if (links && typeof links.cloneNode === "function") card.appendChild(links.cloneNode(true));
+        }
         list.appendChild(card);
       }
       if (group.heading) {
@@ -16598,6 +16616,7 @@ function loadComposeSettings() {
 }
 function loadSettingsFold(name) {
   if (!$("settings").open) return Promise.resolve();
+  if (name === "support") return Promise.resolve();
   const key = settingsFoldKey(name);
   if (settingsFoldLoaded.has(key)) {
     if (name === "compose") return loadComposeSettings();
@@ -19357,6 +19376,7 @@ async function paintAgentLearned() {
     if ($("settings").open && !$("settings-prefs").hidden) renderAgentLearned(view);
   } catch (error) {
     if (!$("settings").open || $("settings-prefs").hidden) return;
+    list.morrowLearnedStamp = null;
     list.replaceChildren();
     const empty = document.createElement("li");
     empty.className = "empty";

@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.13": [
+      "Features and Settings Support include GitHub Sponsors and Buy Me a Coffee links; sponsor destinations in Features are clickable.",
+      "Undo, signature loading, Outbox, and overnight scan P2 fixes; Learned recoveries after a read failure no longer stick on a stale error.",
+      "The Electron/Node security bump is not in this version.",
+    ],
     "0.3.12": [
       "Mail sync and related work stay bounded: credential reads stay async, recipient aggregates use header deltas, sync batches yield, and invalidations stay scoped. Outbox summaries, coalesced reads, and body backfill keep Calendar, Agent, and UI retention.",
       "Folders and labels keep provider organize identity. Support-rail Open in Mail navigation is hardened.",

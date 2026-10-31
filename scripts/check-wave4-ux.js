@@ -292,6 +292,48 @@ test('W4-3 terminal settlement before the acceptance reply wins, even after a ne
   assert.doesNotMatch(ui.nodes.get('status').textContent, /awaiting confirmation/);
 });
 
+for (const kind of ['trash', 'archive']) {
+  test('W4-3 late bulk ' + kind + ' completion keeps an early selective restore retired and open', async () => {
+    const ui = fixture();
+    ui.run(`state.emails=Array.from({length:5},(_,index)=>({id:'m'+index,accountId:'alpha',subject:'Mail '+index}));
+      globalThis.originalRows=state.emails; globalThis.storeRows=state.emails;
+      state.selectedIds=state.emails.map(row=>row.id); state.unreadHold={id:'m0'};
+      loadList=async()=>{state.emails=takeEmails(storeRows);renderList();};
+      call=async(channel,params)=>{
+        calls.push({channel,params});
+        if(channel==='mail:undoRemoval') {
+          storeRows=[originalRows[0],...storeRows];
+          return {outcomes:[{id:'m0',kind:'undo',generation:2,status:'completed'}],opIds:[]};
+        }
+        if(params.items.length===1) return new Promise(resolve=>{globalThis.finishLast=()=>{
+          storeRows=storeRows.filter(row=>row.id!=='m4');
+          resolve({outcomes:[{id:'m4',kind:'remove',generation:1,status:'completed',opId:'op-m4'}],opIds:['op-m4']});
+        };});
+        return {pending:params.items.map(item=>({id:item.emailId,actionId:'remove-'+item.emailId,kind:'remove',generation:1})),outcomes:[]};
+      };`);
+    await ui.run(kind === 'trash' ? 'bulkTrash()' : 'bulkArchive()');
+    await drainFrames(ui);
+    assert.equal(ui.run('calls.length'), 2);
+    ui.run(`storeRows=storeRows.filter(row=>row.id==='m4');
+      applyActionSettlement({outcomes:originalRows.slice(0,4).map(row=>({id:row.id,actionId:'remove-'+row.id,
+        kind:'remove',generation:1,status:'completed',opId:'op-'+row.id})),opIds:['op-m0','op-m1','op-m2','op-m3']});`);
+    await ui.run("undoRemoval(['op-m0'])");
+    ui.run("state.email=state.emails.find(row=>row.id==='m0');state.thread=[state.email];state.selectedIds=['m0']");
+    assert.equal(ui.run('state.email.id'), 'm0');
+    assert.equal(ui.run("restoredUndoOpIds.has('op-m0')"), true);
+    ui.run('finishLast()');
+    await drainFrames(ui);
+    assert.equal(ui.run("restoredUndoOpIds.has('op-m0')"), true);
+    assert.deepEqual(ui.json('undoOpIds'), ['op-m1','op-m2','op-m3','op-m4']);
+    assert.equal(ui.run('state.email.id'), 'm0');
+    assert.deepEqual(ui.json('state.thread.map(row=>row.id)'), ['m0']);
+    assert.deepEqual(ui.json('state.selectedIds'), ['m0']);
+    assert.equal(ui.run('state.unreadHold.id'), 'm0');
+    ui.run('openUndoDetails()');
+    assert.deepEqual(ui.json('undoItems.map(row=>row.messageId)'), ['m1','m2','m3','m4']);
+  });
+}
+
 test('W4-2 rendered Details preserves checked rows, focus and scroll across batches and restores only the selection', async () => {
   const ui = fixture();
   ui.run(`startRemovalSession('First batch.', ['op-one'], false, [{opId:'op-one',messageId:'one',accountId:'alpha',subject:'First'}]);
@@ -418,7 +460,10 @@ test('Wave4 rendered Features catalog and CLI describe implemented scope and set
   const text = ui.nodes.get('features-catalog').textContent;
   for (const claim of [/downloaded unread messages in each account's primary folder/,/Snoozed messages and a read row held open are excluded/,
     /groups of at most four messages between paints/,/Accepted writes await mailbox confirmation before joining Undo/,
-    /accumulate completed changes across batches/,/select one change per message/i,/not a merged on\/off status/,/Agent reopens with its last payload/]) assert.match(text, claim);
+    /accumulate completed changes across batches/,/select one change per message/i,/not a merged on\/off status/,/Agent reopens with its last payload/,
+    /restored before the rest of its bulk request finishes stays out of Undo/,
+    /Refreshing Scheduled also updates visible Outbox rows and the open message/,
+    /Each background pass scans at most two 200-header pages/]) assert.match(text, claim);
   assert.doesNotMatch(text, /A newer removal replaces that list/);
   const html = fs.readFileSync(path.join(__dirname, '../renderer/index.html'), 'utf8');
   assert.match(html, /id="cli-mail-feedback"[^>]*>[^<]*add no bot commands, permissions, bulk cancellation or automatic retries/);

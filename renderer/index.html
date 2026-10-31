@@ -918,7 +918,7 @@
       <div class="settings-layout">
         <div>
           <p class="hint">Saved on this computer for the selected account. They are not stored on the mail server.</p>
-          <p class="hint" id="signature-identity-help">Account default is used when From has no domain signature. A domain row applies only to that From domain and does not replace the account default.</p>
+          <p class="hint" id="signature-identity-help">Account default is used when From has no domain signature. A domain row applies only to that From domain and does not replace the account default. Typing before signatures finish loading is kept; an untouched editor may select its default.</p>
           <p id="signatures-status" role="status"></p>
           <div id="signature-list"></div>
         </div>
@@ -1008,6 +1008,7 @@
         <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" aria-current="false" tabindex="-1">AI</button>
         <button type="button" id="settings-tab-ooo" data-fold="ooo" role="tab" aria-controls="settings-ooo" aria-selected="false" aria-current="false" tabindex="-1">Out of Office</button>
         <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
+        <button type="button" id="settings-tab-support" data-fold="support" role="tab" aria-controls="settings-support" aria-selected="false" aria-current="false" tabindex="-1">Support</button>
       </nav>
       <section class="settings-account-context" aria-label="Settings mailbox" hidden>
           <label for="settings-account">Mailbox</label>
@@ -1079,7 +1080,7 @@
               <label class="check" for="pref-agent-read-done"><input id="pref-agent-read-done" type="checkbox" aria-describedby="pref-agent-read-done-help" /> Mark as read also completes Agent todos</label>
               <p class="hint" id="pref-agent-read-done-help">Off by default. Explicit read actions wait for mailbox confirmation before completing a todo. Opening a message, and Mark category as read on FYI or Other, stay mark-read only.</p>
               <h4>Learned</h4>
-              <p class="hint" id="agent-learned-help">Category moves among Needs You, FYI, and Other, repeated Mark as read or a successful reply for one sender or thread, and opened or dismissed suggestion labels. Reads count only after mailbox confirmation. Replies in any category count only after non-partial delivery, even without an open todo; queued, canceled, and failed sends do not count. The same pattern is Learned after 3 times. Delete removes that pattern and its count and immediately refreshes open suggestion views. This stays on this computer. It does not rewrite Brain categories, triage prompts, or mailbox rules, and it does not send or move mail.</p>
+              <p class="hint" id="agent-learned-help">Category moves among Needs You, FYI, and Other, repeated Mark as read or a successful reply for one sender or thread, and opened or dismissed suggestion labels. Reads count only after mailbox confirmation. Replies in any category count only after non-partial delivery, even without an open todo; queued, canceled, and failed sends do not count. The same pattern is Learned after 3 times. Delete removes that pattern and its count and immediately refreshes open suggestion views. After a temporary loading error, a successful read restores the list and Delete. This stays on this computer. It does not rewrite Brain categories, triage prompts, or mailbox rules, and it does not send or move mail.</p>
               <ul id="agent-learned-list" class="settings-accounts" aria-label="Learned Agent patterns"></ul>
             </div>
           </div>
@@ -1529,6 +1530,16 @@
             <button type="button" class="ghost" id="bot-download-skill">Download SKILL.md</button>
           </div>
           </div>
+          </div>
+        </section>
+        <section class="fold" id="settings-support" data-fold="support" role="tabpanel" aria-labelledby="settings-tab-support" tabindex="0" hidden>
+          <div class="fold-panel" id="settings-support-panel" hidden>
+          <h3 id="settings-support-title">Support</h3>
+          <p class="hint">Morrow Mail is free and open source. These links open in your browser.</p>
+          <nav class="about-links" aria-label="Support">
+            <a href="https://github.com/sponsors/Coke1120" target="_blank" rel="noreferrer">GitHub Sponsors</a>
+            <a href="https://buymeacoffee.com/coke1120" target="_blank" rel="noreferrer">Buy Me a Coffee</a>
+          </nav>
           </div>
         </section>
       </div>
