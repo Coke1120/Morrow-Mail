@@ -20922,7 +20922,8 @@ function paintAgentHome(payload) {
   if (root.morrowHomeKey === key) return;
   root.morrowHomeKey = key;
   const focused = root.contains(document.activeElement) ? document.activeElement : null;
-  const scrollTop = $("agent-panel").scrollTop;
+  const panel = $("agent-panel");
+  const scrollTop = panel ? panel.scrollTop : 0;
   agentHomeUsed = new Set();
   root.replaceChildren();
   if (!sections.length) {
@@ -21003,7 +21004,7 @@ function paintAgentHome(payload) {
   root.appendChild(note);
   for (const cardKey of agentHomeCards.keys()) if (!agentHomeUsed.has(cardKey)) agentHomeCards.delete(cardKey);
   if (focused?.isConnected) focused.focus({ preventScroll: true });
-  $("agent-panel").scrollTop = scrollTop;
+  if (panel) panel.scrollTop = scrollTop;
   paintReplySelectionLabels(root);
   paintMotionRows("agent", root.querySelectorAll(".agent-section"));
 }
