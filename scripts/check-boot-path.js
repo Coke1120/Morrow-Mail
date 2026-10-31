@@ -130,6 +130,7 @@ const syntax = [
   "renderer/pdf-preview.js",
   "scripts/bundle-pdf.js",
   "renderer/features-catalog.js",
+  "scripts/check-sponsor-ui.js",
   "scripts/check-ui-editor-feedback.js",
   "scripts/check-google-oauth-default-ui.js",
   "scripts/check-calendar-keyboard-followup.js",
@@ -150,6 +151,9 @@ for (const file of syntax) {
   const result = spawnSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
 }
+
+const sponsorUi = spawnSync(process.execPath, [path.join(__dirname, "check-sponsor-ui.js")], { stdio: "inherit", timeout: 15000 });
+if (sponsorUi.status !== 0) process.exit(sponsorUi.status || 1);
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
 for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-keychain-reads.js", "check-outbox.js", "check-agent-todos.js", "check-agent-card-view.js", "check-agent-learning.js"]) {
@@ -4257,6 +4261,7 @@ const featureSeed = [
   ["mail-responsiveness","Mail responsiveness","Support","Cached lists and thread headers avoid copying message bodies into JavaScript. IMAP sync keeps existing search terms when indexed content is unchanged. On Windows and macOS, routine mail credential reads and startup checks wait asynchronously, share pending reads and stop waiting after 30 seconds. Feature/status checks use guarded per-request grant snapshots; completed credentials are not cached globally. Read failures retain saved credentials. Account setup and credential writes keep synchronous compatibility commands bounded to 30 seconds per command. Search repair yields between saved batches. Sync commits bounded message, flag and deletion batches, yielding with no open transaction; startup journal replay and initial checkpoints run in workers before mail admission. Individual SQL, index and durable disk calls can still pause work. Durable acknowledgement, journal recovery and fsync are unchanged. Mail notifications route by mailbox, folder and visible surface, reuse supplied accounts and preserve unchanged readers. Debug rows are retained and splitters batch writes per animation frame. MORROW_PERF=1 enables bounded local timings in Debug log every 30 seconds, without mail contents or telemetry. Native Mac freezes still need profiling. Windows frame times have not been measured."],
   ["gmail-error-diagnostics", "Gmail API error details", "Support", "Gmail sync activity and Debug log show HTTP status, a fixed operation and recognized Google reason/status codes. They distinguish quota or rate limits, missing mail permission, a disabled API and domain policy when Google supplies evidence. Unknown causes stay unknown. Raw error bodies, provider text, URLs, ids, mail content, addresses and tokens are omitted from these diagnostics. Gmail sync Debug records omit the mailbox address, folder name and folder id; sync activity still shows that mailbox and folder. Other Debug entries may still identify an account or folder. Only a quota classification pauses for quota or rate limits. Sync fetches up to 20 Gmail messages per folder pass. This counts actual message reads across history, bootstrap and cached verification. Pending pages resume from saved positions; a waiting message open goes ahead after the current read. Gmail sync and body downloads space reads to stay under the per-user quota. A quota pause honors Retry-After, capped at 15 minutes. The first two pauses are 30 seconds when Google does not say how long; later pauses grow from 2 minutes up to 15 minutes. Reads are spaced; writes are not. Sign-in success alone does not identify a later 403; these details do not prove its cause. No new scopes or automatic write retries are added."],
   ["ipc-diagnostics", "IPC diagnostics", "Support", "IPC trace records known channels and argument counts, plus renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries may retain account/folder context."],
+  ["sponsor-support", "Support the project", "Support", "Morrow Mail is free and open source. You can support development on GitHub Sponsors (https://github.com/sponsors/Coke1120) or Buy Me a Coffee (https://buymeacoffee.com/coke1120)."],
 ];
 assert.deepStrictEqual(featureCatalog.items.map((row) => [row.id, row.title, row.category, row.blurb]), featureSeed);
 const featureUi = loadFunctions(appJs, ["normalizeFeatureCatalog", "groupFeatureCatalog"]);

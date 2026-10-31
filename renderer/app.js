@@ -16598,6 +16598,7 @@ function loadComposeSettings() {
 }
 function loadSettingsFold(name) {
   if (!$("settings").open) return Promise.resolve();
+  if (name === "support") return Promise.resolve();
   const key = settingsFoldKey(name);
   if (settingsFoldLoaded.has(key)) {
     if (name === "compose") return loadComposeSettings();
