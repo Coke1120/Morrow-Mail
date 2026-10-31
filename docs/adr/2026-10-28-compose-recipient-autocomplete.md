@@ -4,6 +4,11 @@ Issue: https://github.com/Coke1120/Morrow-Mail/issues/362
 
 Status: Accepted. Phase 1 is implemented. Phase 2 is not.
 
+Performance follow-up, 2026-10-31: [bounded mail work](2026-10-31-bounded-mail-work.md)
+keeps this authorization/ranking contract, but moves parsing and aggregates to a
+worker fed by header-only revisions and bounded deltas. `mail:suggestRecipients`
+is asynchronous. Flag/body writes no longer invalidate the history.
+
 Compose asks `mail:suggestRecipients` with the address being typed in To, Cc, or Bcc. The host reads From, To, Cc, and Bcc on non-draft messages already stored on this computer, skips message bodies, and returns at most eight addresses. The same address on one message, including Gmail label copies that share a provider id, counts once. Each extra sighting is worth seven days against the latest time that address was seen. Arrow keys then Enter, or a click, inserts the address. Enter without a highlighted suggestion still previews send. An address you type is kept. This does not read a contacts directory and does not add a provider scope.
 
 ## Decision

@@ -14,8 +14,10 @@ const observedSync = new Map();
 let admitted = false;
 let internalDepth = 0;
 let opening = null;
+let storeGeneration = 0;
 let indexState = { phase: "idle", completed: 0, total: 0, resumed: false };
 const indexListeners = new Set();
+const listSummaries = new Map();
 
 function openingError(code = "mail_not_ready") {
   return Object.assign(new Error(code === "mail_open_cancelled" ? "Opening the mailbox was cancelled."
@@ -216,6 +218,13 @@ function migrate() {
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "body_warning")) {
     run("ALTER TABLE messages ADD COLUMN body_warning TEXT");
   }
+  for (const column of ["body_retry_blocked", "body_retry_after"]) {
+    if (!all("PRAGMA table_info(messages)").some(row => row.name === column)) run(`ALTER TABLE messages ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+  }
+  run(`CREATE TRIGGER IF NOT EXISTS body_retry_identity AFTER UPDATE OF account_id, folder_path, uid, uid_validity, gmail_id ON messages
+    WHEN OLD.account_id IS NOT NEW.account_id OR OLD.folder_path IS NOT NEW.folder_path OR OLD.uid IS NOT NEW.uid
+      OR OLD.uid_validity IS NOT NEW.uid_validity OR OLD.gmail_id IS NOT NEW.gmail_id
+    BEGIN UPDATE messages SET body_retry_blocked = 0, body_retry_after = 0 WHERE id = NEW.id; END`);
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "draft_pending")) {
     run("ALTER TABLE messages ADD COLUMN draft_pending INTEGER NOT NULL DEFAULT 0");
   }
@@ -323,6 +332,7 @@ function migrate() {
   if (!all("PRAGMA table_info(scheduled_sends)").some(row => row.name === "receipt_json")) {
     run("ALTER TABLE scheduled_sends ADD COLUMN receipt_json TEXT");
   }
+  if (!all("PRAGMA table_info(scheduled_sends)").some(row => row.name === "summary_json")) run("ALTER TABLE scheduled_sends ADD COLUMN summary_json TEXT");
   run(`CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_sends(status, send_at)`);
   run(`CREATE TABLE IF NOT EXISTS inbox_rules (
     account_id TEXT NOT NULL,
@@ -337,6 +347,66 @@ function migrate() {
     PRIMARY KEY (account_id, id)
   )`);
   run(`CREATE INDEX IF NOT EXISTS inbox_rules_account ON inbox_rules(account_id, position)`);
+  run("CREATE TABLE IF NOT EXISTS recipient_revision (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)");
+  run("INSERT OR IGNORE INTO recipient_revision VALUES (1, 0)");
+  run("CREATE TABLE IF NOT EXISTS recipient_changes (id TEXT PRIMARY KEY, revision INTEGER NOT NULL)");
+  run("CREATE INDEX IF NOT EXISTS recipient_changes_revision ON recipient_changes(revision)");
+  run("CREATE INDEX IF NOT EXISTS recipient_headers_page ON messages(is_draft, id)");
+  const headerFields = ["account_id", "gmail_id", "from_addr", "from_address", "from_display_name", "to_json", "cc_json", "bcc_json", "list_sort_ts", "is_draft"];
+  for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+    const source = operation === "DELETE" ? "OLD" : "NEW";
+    const condition = operation === "UPDATE"
+      ? `(OLD.is_draft = 0 OR NEW.is_draft = 0) AND (${headerFields.map(field => `OLD.${field} IS NOT NEW.${field}`).join(" OR ")})`
+      : `${source}.is_draft = 0`;
+    run(`CREATE TRIGGER IF NOT EXISTS recipient_headers_${operation.toLowerCase()} AFTER ${operation} ON messages
+      WHEN ${condition} BEGIN
+        UPDATE recipient_revision SET value = value + 1 WHERE id = 1;
+        INSERT OR REPLACE INTO recipient_changes(id, revision) SELECT ${source}.id, value FROM recipient_revision WHERE id = 1;
+      END`);
+  }
+  if (!all("PRAGMA table_info(messages)").some(row => row.name === "has_body")) run("ALTER TABLE messages ADD COLUMN has_body INTEGER");
+  run("CREATE INDEX IF NOT EXISTS messages_body_metadata_pending ON messages(id) WHERE has_body IS NULL");
+  for (const operation of ["INSERT", "UPDATE OF html_body, text_body"]) {
+    run(`CREATE TRIGGER IF NOT EXISTS message_body_metadata_${operation === "INSERT" ? "insert" : "update"} AFTER ${operation} ON messages
+      BEGIN UPDATE messages SET has_body = (COALESCE(trim(NEW.html_body, ${BODY_SPACE}), '') != ''
+        OR COALESCE(trim(NEW.text_body, ${BODY_SPACE}), '') != '') WHERE id = NEW.id; END`);
+  }
+  run("CREATE INDEX IF NOT EXISTS messages_folder_page ON messages(account_id, folder_path, list_sort_ts DESC, id DESC)");
+  run("CREATE INDEX IF NOT EXISTS messages_global_page ON messages(list_sort_ts DESC, id DESC)");
+  run("CREATE INDEX IF NOT EXISTS snooze_expiry ON snooze(until_iso)");
+  run("CREATE TABLE IF NOT EXISTS mail_list_revision (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)");
+  run("INSERT OR IGNORE INTO mail_list_revision VALUES (1, 0)");
+  run("CREATE TABLE IF NOT EXISTS mail_changes (account_id TEXT NOT NULL, folder_path TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(account_id, folder_path))");
+  run("CREATE INDEX IF NOT EXISTS mail_changes_revision ON mail_changes(revision)");
+  const summaryFields = ["account_id", "folder_path", "thread_id", "uid", "list_sort_ts", "unread", "starred", "is_draft", "has_attachments", "body_complete", "body_retry_blocked", "body_retry_after", "subject", "from_addr", "to_json", "cc_json", "snippet"];
+  for (const table of ["messages", "folders", "snooze", "accounts"]) {
+    for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+      const condition = table === "messages" && operation === "UPDATE"
+        ? `WHEN ${summaryFields.map(field => `OLD.${field} IS NOT NEW.${field}`).join(" OR ")}` : "";
+      // Snooze always notices folder_path '' — OLD+NEW would duplicate the same PK.
+      // Prefer NEW-only on UPDATE; messages still need OLD+NEW when folder_path moves.
+      const sources = operation === "UPDATE"
+        ? (table === "snooze" ? ["NEW"] : ["OLD", "NEW"])
+        : [operation === "DELETE" ? "OLD" : "NEW"];
+      // INSERT OR REPLACE inside an AFTER UPDATE fired by INSERT…ON CONFLICT DO UPDATE
+      // raises UNIQUE on mail_changes when the row already exists (nested UPSERT quirk).
+      // Explicit ON CONFLICT DO UPDATE is safe under setSnooze and plain updates.
+      const notices = ["messages", "snooze"].includes(table) ? sources.map(source =>
+        `INSERT INTO mail_changes(account_id, folder_path, revision)
+          SELECT ${source}.account_id, ${table === "messages" ? `${source}.folder_path` : "''"}, value FROM mail_list_revision WHERE id = 1
+          ON CONFLICT(account_id, folder_path) DO UPDATE SET revision = excluded.revision;`).join("\n") : "";
+      const trigger = `mail_list_${table}_${operation.toLowerCase()}`;
+      const sql = `CREATE TRIGGER ${trigger} AFTER ${operation} ON ${table}
+        ${condition} BEGIN UPDATE mail_list_revision SET value = value + 1 WHERE id = 1; ${notices} END`;
+      // DROP+CREATE every migrate rewrites sqlite_master (fails persistence reopen=0).
+      // Refresh only when missing or body differs (upgrades OR REPLACE → ON CONFLICT).
+      const existing = get("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", [trigger])?.sql;
+      if (existing !== sql) {
+        run(`DROP TRIGGER IF EXISTS ${trigger}`);
+        run(sql);
+      }
+    }
+  }
   ensureSearchSchema();
 }
 
@@ -371,6 +441,7 @@ async function openDatabase(target, operation) {
   reportIndex({ phase: "idle", completed: 0, total: 0, resumed: false });
   assertOpening(operation);
   filePath = target;
+  storeGeneration++;
   const ownedStorage = new Persistence(target);
   let ownedDb;
   try {
@@ -380,8 +451,11 @@ async function openDatabase(target, operation) {
     storage = ownedStorage;
     internal(() => {
       perf.sync("startup.migrate", () => transaction(migrate));
-      if (!storage.initialized) storage.initialize(db);
     });
+    if (!storage.initialized) await storage.initialize(db);
+    assertOpening(operation);
+    await ensureBodyMetadata(operation);
+    await ensureScheduledSummaries(operation);
     await perf.measure("startup.index", () => ensureSearchIndex(operation));
     assertOpening(operation);
     admitted = true;
@@ -412,6 +486,7 @@ function closeStore() {
   db = null;
   storage = null;
   observedSync.clear();
+  listSummaries.clear();
   return closing;
 }
 
@@ -1071,16 +1146,10 @@ function applyFolderSync(accountId, folderPath, report) {
         [accountId, folderPath]
       );
     }
-    if (Array.isArray(report.uids) && !report.keepOthers) {
-      const keep = new Set(report.uids.map((uid) => Number(uid)));
-      const stored = all(
-        "SELECT id, uid, list_sort_ts, draft_pending FROM messages WHERE account_id = ? AND folder_path = ?",
-        [accountId, folderPath]
-      );
+    if (Array.isArray(report.uids) && !report.keepOthers && !report.pruned) {
+      const stored = missingFolderRows(accountId, folderPath, report);
       for (const row of stored) {
         // uid <= 0 is a local-only copy (a send or draft not yet given a server uid).
-        if (row.draft_pending || Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
-        if (report.retainOlderThan && Number(row.list_sort_ts) < report.retainOlderThan) continue;
         if (messageHeld(row.id)) continue;
         forgetIndex(row.id);
         run("DELETE FROM messages WHERE id = ?", [row.id]);
@@ -1210,6 +1279,63 @@ function applyFolderSync(accountId, folderPath, report) {
   // not make an otherwise unchanged mailbox dirty on every background poll.
   if (!report.keepOthers) observedSync.set(JSON.stringify([accountId, folderPath, report.validity || null]), Date.now());
   return result || flagsChanged;
+}
+
+function missingFolderRows(accountId, folderPath, report, after = "", limit = -1) {
+  return perf.sync("db.sync.reconcile", () => all(`SELECT id FROM messages WHERE account_id = ? AND folder_path = ?
+    AND draft_pending = 0 AND uid > 0 AND id > ? ${report.retainOlderThan ? "AND list_sort_ts >= ?" : ""}
+    AND uid NOT IN (SELECT value FROM json_each(?)) ORDER BY id LIMIT ?`,
+  [accountId, folderPath, after, ...(report.retainOlderThan ? [report.retainOlderThan] : []), JSON.stringify(report.uids), limit]));
+}
+
+async function applyFolderSyncAsync(accountId, folderPath, report, validate = () => {}) {
+  const generation = storeGeneration;
+  const owner = accountById(accountId);
+  const assertCurrent = () => {
+    assertAdmitted();
+    const current = accountById(accountId);
+    if (generation !== storeGeneration || !current || current.created_at !== owner?.created_at
+        || current.auth_kind !== owner?.auth_kind || current.mail_transport !== owner?.mail_transport) throw openingError("mail_open_cancelled");
+    validate();
+  };
+  const yieldTurn = async () => { await new Promise(resolve => setImmediate(resolve)); assertCurrent(); };
+  assertCurrent();
+  applyFolderSync(accountId, folderPath, { messages: [], validity: report.validity, keepOthers: true });
+  let changed = false;
+  if (Array.isArray(report.uids) && !report.keepOthers) {
+    let cursor = "";
+    while (true) {
+      const rows = missingFolderRows(accountId, folderPath, report, cursor, 64);
+      if (!rows.length) break;
+      transaction(() => {
+        for (const row of rows) {
+          if (messageHeld(row.id)) continue;
+          forgetIndex(row.id);
+          run("DELETE FROM messages WHERE id = ?", [row.id]);
+          changed = true;
+        }
+      });
+      cursor = rows[rows.length - 1].id;
+      await yieldTurn();
+    }
+  }
+  for (let offset = 0; offset < report.messages.length; offset += 24) {
+    applyFolderSync(accountId, folderPath, { messages: report.messages.slice(offset, offset + 24), validity: report.validity, keepOthers: true });
+    changed = true;
+    await yieldTurn();
+  }
+  for (let offset = 0; offset < (report.flags || []).length; offset += 128) {
+    changed = applyFolderSync(accountId, folderPath, { messages: [], flags: report.flags.slice(offset, offset + 128), validity: report.validity, keepOthers: true }) || changed;
+    await yieldTurn();
+  }
+  assertCurrent();
+  return applyFolderSync(accountId, folderPath, { ...report, messages: [], flags: [], pruned: true }) || changed;
+}
+
+function missingUidsFor(accountId, folderPath, uids, validity) {
+  return all(`SELECT value AS uid FROM json_each(?) live WHERE NOT EXISTS (
+    SELECT 1 FROM messages m WHERE m.account_id = ? AND m.folder_path = ? AND m.uid = live.value AND m.uid_validity = ?)
+    ORDER BY value DESC`, [JSON.stringify(uids), accountId, folderPath, validity]).map(row => row.uid);
 }
 
 function uidsFor(accountId, folderPath) {
@@ -1440,11 +1566,17 @@ function whereFor(query) {
     clauses.push("m.uid > 0");
     clauses.push("m.body_complete != 1");
     clauses.push("m.is_draft = 0");
+    clauses.push("m.body_retry_blocked = 0 AND m.body_retry_after <= ?");
+    params.push(Date.now());
     clauses.push(`NOT EXISTS (
       SELECT 1 FROM folders f
       WHERE f.account_id = m.account_id AND f.path = m.folder_path
         AND f.well_known IN ('deleteditems', 'junkemail')
     )`);
+  }
+  if (query.beforeMessage) {
+    clauses.push("(m.list_sort_ts < ? OR (m.list_sort_ts = ? AND m.id < ?))");
+    params.push(query.beforeMessage.ts, query.beforeMessage.ts, query.beforeMessage.id);
   }
   if (query.beforeTs) {
     clauses.push("m.list_sort_ts < ?");
@@ -1521,10 +1653,9 @@ function resolveScope(query) {
 const BODY_SPACE = "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)";
 const METADATA_COLUMNS = ["id", "account_id", "folder_path", "uid", "uid_validity", "thread_id", "rfc_message_id", "in_reply_to", "subject", "snippet",
   "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "list_sort_ts", "unread", "starred", "is_draft",
-  "has_attachments", "attachments_json", "body_complete", "body_warning", "recipient_headers_json", "draft_pending", "gmail_id"];
+  "has_attachments", "attachments_json", "body_complete", "body_warning", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id"];
 function metadataColumns(table) {
-  return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")},
-    (COALESCE(trim(${table}.html_body, ${BODY_SPACE}), '') != '' OR COALESCE(trim(${table}.text_body, ${BODY_SPACE}), '') != '') AS has_body`;
+  return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
 }
 
 function selectMessages(query, { headersOnly = false } = {}) {
@@ -1534,6 +1665,17 @@ function selectMessages(query, { headersOnly = false } = {}) {
   const limit = Math.min(Math.max(Math.floor(Number(query.limit)) || 2000, 1), 2000);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const join = query.fromMe ? "JOIN accounts a ON a.id = m.account_id" : "";
+  if (scope.mailboxes?.length > 1 && !query.fromMe) {
+    const bindings = [];
+    const parts = scope.mailboxes.map(box => {
+      const filtered = whereFor({ ...scope, mailboxes: null, folderPaths: null, accountId: box.accountId, folderPath: box.path });
+      bindings.push(...filtered.params, limit + offset);
+      return `SELECT * FROM (SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m
+        WHERE ${filtered.clauses.join(" AND ")} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ?)`;
+    });
+    return perf.sync("db.list.merged", () => all(`SELECT * FROM (${parts.join(" UNION ALL ")})
+      ORDER BY list_sort_ts DESC, id DESC LIMIT ? OFFSET ?`, [...bindings, limit, offset]));
+  }
   return perf.sync(headersOnly ? "db.list.headers" : "db.list.full", () => all(
     `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join} ${where} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?`,
     [...params, limit, offset]
@@ -1541,19 +1683,35 @@ function selectMessages(query, { headersOnly = false } = {}) {
 }
 
 function countMessages(query) {
+  return messageSummary(query).total;
+}
+
+function mailInvalidations(since) {
+  return { revision: get("SELECT value FROM mail_list_revision WHERE id = 1").value,
+    scopes: all("SELECT account_id, folder_path FROM mail_changes WHERE revision > ?", [since]) };
+}
+
+function messageSummary(query) {
   const scope = resolveScope(query);
+  const version = get("SELECT value FROM mail_list_revision WHERE id = 1").value;
+  const { offset, limit, ...shape } = scope;
+  const key = `${version}:${JSON.stringify(shape)}`;
+  const cached = listSummaries.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached;
   const { clauses, params } = whereFor(scope);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const join = query.fromMe ? "JOIN accounts a ON a.id = m.account_id" : "";
-  return get(`SELECT COUNT(*) AS n FROM messages m ${join} ${where}`, params).n;
+  const row = perf.sync("db.list.summary", () => get(`SELECT COUNT(*) AS total, MIN(m.list_sort_ts) AS oldest FROM messages m ${join} ${where}`, params));
+  const expiry = get("SELECT MIN(until_iso) AS next FROM snooze WHERE until_iso > ?", [new Date().toISOString()])?.next;
+  const result = { ...row, expiresAt: expiry ? Date.parse(expiry) : Infinity };
+  if (query.tokens?.length || query.needsBody) return result;
+  listSummaries.set(key, result);
+  if (listSummaries.size > 64) listSummaries.delete(listSummaries.keys().next().value);
+  return result;
 }
 
 function oldestTs(query) {
-  const scope = resolveScope(query);
-  const { clauses, params } = whereFor(scope);
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const row = get(`SELECT MIN(m.list_sort_ts) AS ts FROM messages m ${where}`, params);
-  return row && row.ts != null ? row.ts : null;
+  return messageSummary(query).oldest ?? null;
 }
 
 function inboxUnread(accountId) {
@@ -1845,8 +2003,45 @@ function insertScheduled(row) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [row.id, row.accountId, row.payloadJson, row.sendAt, status, error, row.messageId || null, row.receiptJson || null, row.createdAt]
     );
+    run("UPDATE scheduled_sends SET summary_json = ? WHERE id = ?", [scheduledHeader(row.payloadJson), row.id]);
   });
   return get("SELECT * FROM scheduled_sends WHERE id = ?", [row.id]);
+}
+
+function scheduledHeader(raw) {
+  let payload = {};
+  try { payload = JSON.parse(raw) || {}; } catch {}
+  const { body, attachments, ...metadata } = payload;
+  return JSON.stringify(metadata);
+}
+
+async function ensureScheduledSummaries(operation) {
+  while (true) {
+    assertOpening(operation);
+    const rows = internal(() => all("SELECT id, payload_json FROM scheduled_sends WHERE summary_json IS NULL LIMIT 8"));
+    if (!rows.length) return;
+    internal(() => transaction(() => {
+      for (const row of rows) run("UPDATE scheduled_sends SET summary_json = ? WHERE id = ?", [scheduledHeader(row.payload_json), row.id]);
+    }));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
+
+function scheduledOverview(accountId, { includeRows = false, outbox = false, offset = 0, limit = 200, selectedId = "" } = {}) {
+  const where = accountId ? "WHERE account_id = ?" : "";
+  const params = accountId ? [accountId] : [];
+  const active = "(json_extract(summary_json, '$.outbox') = 1 AND status IN ('pending', 'sending'))";
+  const counts = get(`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ${active} THEN 1 ELSE 0 END), 0) AS outboxTotal,
+    COALESCE(SUM(CASE WHEN status IN ('unknown', 'sent', 'partial') THEN 1 ELSE 0 END), 0) AS reviewCount FROM scheduled_sends ${where}`, params);
+  const total = outbox ? counts.outboxTotal : counts.total - counts.outboxTotal;
+  const size = Math.min(200, Math.max(1, Math.floor(Number(limit)) || 200));
+  const start = Math.max(0, Math.floor(Number(offset)) || 0);
+  const rows = includeRows ? all(`SELECT id, account_id, summary_json AS payload_json, send_at, status, error, message_id, receipt_json, created_at
+    FROM scheduled_sends ${where} ${where ? "AND" : "WHERE"} ${outbox ? active : `NOT COALESCE(${active}, 0)`}
+    ORDER BY send_at, created_at, id LIMIT ? OFFSET ?`, [...params, size, start]) : [];
+  const selected = includeRows && outbox && selectedId ? get(`SELECT id, account_id, summary_json AS payload_json, send_at, status, error, message_id, receipt_json, created_at
+    FROM scheduled_sends WHERE id = ? AND ${active} ${accountId ? "AND account_id = ?" : ""}`, [String(selectedId), ...params]) : null;
+  return { ...counts, total, rows, selected: selected || null, offset: start, hasMore: includeRows && start + rows.length < total };
 }
 
 function listScheduled(accountId) {
@@ -2254,14 +2449,34 @@ function gmailSyncState(accountId, folderPath, next) {
   observedSync.set(JSON.stringify([accountId, folderPath, accountById(accountId).gmail_generation]), Date.now());
 }
 
-function recipientHeaderRows() {
+function recipientHeaderRows(after = "", limit = 128) {
   return all(`SELECT account_id, id, gmail_id, from_addr, from_address, from_display_name, to_json, cc_json, bcc_json, list_sort_ts, is_draft
-    FROM messages WHERE is_draft = 0`);
+    FROM messages WHERE is_draft = 0 AND id > ? ORDER BY id LIMIT ?`, [after, limit]);
+}
+
+async function ensureBodyMetadata(operation) {
+  while (true) {
+    assertOpening(operation);
+    const rows = internal(() => all("SELECT id FROM messages WHERE has_body IS NULL ORDER BY id LIMIT 64"));
+    if (!rows.length) return;
+    internal(() => transaction(() => {
+      for (const row of rows) run(`UPDATE messages SET has_body = (COALESCE(trim(html_body, ${BODY_SPACE}), '') != ''
+        OR COALESCE(trim(text_body, ${BODY_SPACE}), '') != '') WHERE id = ?`, [row.id]);
+    }));
+    await new Promise(resolve => setImmediate(resolve));
+  }
 }
 
 function recipientHeaderStamp() {
-  const row = get("SELECT COUNT(*) AS n, COALESCE(MAX(list_sort_ts), 0) AS ts FROM messages");
-  return `${changeStamp()}:${row.n}:${row.ts}`;
+  return `${storeGeneration}:${get("SELECT value FROM recipient_revision WHERE id = 1").value}`;
+}
+
+function recipientHeaderChanges(after, through, limit = 128) {
+  return all(`SELECT c.id, c.revision, m.account_id, m.gmail_id, m.from_addr, m.from_address,
+    m.from_display_name, m.to_json, m.cc_json, m.bcc_json, m.list_sort_ts, m.is_draft,
+    CASE WHEN m.id IS NULL THEN 1 ELSE 0 END AS removed
+    FROM (SELECT id, revision FROM recipient_changes WHERE revision > ? AND revision <= ? ORDER BY revision LIMIT ?) c
+    LEFT JOIN messages m ON m.id = c.id ORDER BY c.revision`, [after, through, limit]);
 }
 
 function gmailVerifyPage(accountId, folderPath, beforeUid = 0) {
@@ -2304,6 +2519,8 @@ module.exports = {
   pathsForKey,
   primaryMailboxes,
   applyFolderSync,
+  applyFolderSyncAsync,
+  missingUidsFor,
   uidsFor,
   flagUidsFor,
   messageByUid,
@@ -2317,12 +2534,14 @@ module.exports = {
   messageById,
   recipientHeaderRows,
   recipientHeaderStamp,
+  recipientHeaderChanges,
   draftRevision,
   messagesByThread,
   updateMessage,
   deleteMessage,
   selectMessages,
   countMessages,
+  mailInvalidations,
   countInFolder,
   oldestTs,
   inboxUnread,
@@ -2363,6 +2582,7 @@ module.exports = {
   scheduledToDraft,
   insertScheduled,
   listScheduled,
+  scheduledOverview,
   dueScheduled,
   deleteScheduled,
   markScheduledFailed,

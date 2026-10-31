@@ -35,6 +35,7 @@ async function run() {
   const engine = require("../host/mail/engine");
   const db = require("../host/mail/db");
   const memory = require("../host/mail/memory-secrets");
+  const secrets = require("../host/mail/secrets");
   const remote = require("../host/mail/remote");
   const sidecar = require("../host/mail/sidecar");
   const original = { signIn: oauth.signIn, accessTokenFor: oauth.accessTokenFor, fetch: global.fetch, setPassword: memory.setPassword, update: db.updateAccountLogin, insert: db.insertAccount };
@@ -179,7 +180,7 @@ async function run() {
         assert.notEqual(mail.refreshToken, api.refreshToken);
         assert.deepEqual(posts.slice(-2).map((post) => post.grant), ["authorization_code", "authorization_code"]);
       }
-      const status = engine.answer("mail:oauthStatus", []);
+      const status = await engine.answer("mail:oauthStatus", []);
       for (const purpose of Object.keys(channels)) {
         assert.equal(status.data.accounts.find((row) => row.id === id)[purpose], provider !== "google" || purpose !== "calendar");
         const result = await feature(id, purpose);
@@ -367,9 +368,11 @@ async function run() {
     memory.setPassword(ms.id, primary);
     memory.setPassword(`${ms.id}:bundle`, keptBundle);
     // An older feature refresh cannot overwrite a newer shared consent.
+    // withGrantSnapshot watches secrets.revision — write through secrets.setPassword
+    // so invalidate bumps revision (raw memory.setPassword would miss the conflict).
     const newerBundle = JSON.stringify({ ...JSON.parse(keptBundle), refreshToken: "fixture-newer-consent" });
     oauth.accessTokenFor = async (_account, raw) => {
-      memory.setPassword(`${ms.id}:bundle`, newerBundle);
+      secrets.setPassword(`${ms.id}:bundle`, newerBundle);
       return { token: JSON.parse(raw).accessToken, store: raw };
     };
     const staleRefresh = await engine.answer("calendar:list", [{ accountId: ms.id, timeMin: "2026-10-01T00:00:00Z", timeMax: "2026-11-01T00:00:00Z" }]);

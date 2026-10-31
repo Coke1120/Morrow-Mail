@@ -657,6 +657,7 @@ test("Settings F4: ordinary preference readback does not replace a newer unsaved
 test("Settings F5: General reads only local learning and the rendered navigation fixture uses the real write channel", async () => {
   const calls = [];
   const ui = uiFixture(async (channel) => { calls.push(channel); return ok({ patterns: [], suppressed: [] }); });
+  ui.run("$('settings').open=true;$('settings-prefs').hidden=false");
   await ui.run("loadSettings()");
   assert.deepEqual(calls, ["nativeAgent:learning:list"]);
   const fixture = fs.readFileSync(path.join(__dirname, "check-page-navigation.cjs"), "utf8");
@@ -702,6 +703,7 @@ test("Features: actual catalog render and tab switching keep recovery, privacy a
   for (const claim of [/uncertain.*Scheduled delivery review/i, /Split|Separate account settlements/, /terminal refusals/, /ai\.json.*not OS encryption/, /Disable and Revoke/, /selected skill ID/, /newer typing/]) assert.match(rendered, claim);
   assert.match(rendered, /Undo reopens Compose.*Agent todo.*confirmed send/);
   assert.match(rendered, /Outlook description edits.*surrounding whitespace.*provider revision/);
+  for (const claim of [/On Windows and macOS/, /guarded per-request grant snapshots/, /Durable acknowledgement, journal recovery and fsync are unchanged/, /only for changed headers/, /Next loads more/, /source-limited message is not downloaded automatically again/, /Skills load on the Tools tab/, /in-flight reads are allowed to settle/]) assert.match(rendered, claim);
   assert.doesNotMatch(rendered, /Credentials stay encrypted on this computer/);
   const nav = ui.nodes.get("features-tabs");
   for (const name of ["catalog", "shortcuts", "cli"]) {
@@ -712,6 +714,9 @@ test("Features: actual catalog render and tab switching keep recovery, privacy a
   assert.equal(ui.nodes.get("features-pane-cli").hidden, false);
   assert.equal(ui.nodes.get("features-pane-catalog").hidden, true);
   assert.match(html, /Disable and Revoke remain actionable during connection checks/);
+  assert.match(html, /Desktop autocomplete is asynchronous; Scheduled summaries omit bodies and page at 200/);
+  assert.match(html, /not new CLI commands or bot permissions/);
+  assert.match(html, /Windows frame times or real secure storage/);
   ui.run("showFeaturesTab('catalog')");
   assert.equal(ui.nodes.get("features-pane-catalog").hidden, false);
   const boot = fs.readFileSync(path.join(__dirname, "check-boot-path.js"), "utf8");

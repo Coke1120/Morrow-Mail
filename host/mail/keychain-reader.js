@@ -14,7 +14,8 @@ function cancelled() {
 // Read-only children. Queue time is part of the deadline; a child that does not
 // close after being killed retains its slot so it cannot accumulate successors.
 function createReader({ launch = spawn, setTimer = setTimeout, clearTimer = clearTimeout,
-  timeoutMs = TIMEOUT_MS, maxConcurrent = 4, maxOutput = MAX_OUTPUT } = {}) {
+  timeoutMs = TIMEOUT_MS, maxConcurrent = 4, maxOutput = MAX_OUTPUT,
+  command = "security", decode = output => output.replace(/\n$/, "") } = {}) {
   const queue = [];
   let active = 0;
 
@@ -57,7 +58,7 @@ function createReader({ launch = spawn, setTimer = setTimeout, clearTimer = clea
         start() {
           active++;
           try {
-            child = launch("security", args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+            child = launch(command, args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
             child.on("error", () => {
               finish(storageError("secure_storage_unavailable", "Secure storage could not be read. Try again."));
               if (!child.pid) release();
@@ -77,7 +78,7 @@ function createReader({ launch = spawn, setTimer = setTimeout, clearTimer = clea
               } else chunks.push(data);
             });
             child.on("close", status => {
-              if (!job.done) finish(null, status === 0 ? Buffer.concat(chunks).toString("utf8").replace(/\n$/, "") : null);
+              if (!job.done) finish(null, status === 0 ? decode(Buffer.concat(chunks).toString("utf8")) : null);
               release();
             });
           } catch {

@@ -75,7 +75,22 @@ function providerFixture(provider = "google", overrides = {}) {
   };
   const api = load("host/mail/provider-api.js", { "./provider-http": { ...http, apiJson: (url, token, options) => http.apiJson(url, token, { ...options, fetchImpl: fetcher }) } });
   const ready = { account: { ...account }, provider, token: { accessToken: "synthetic-token" } };
-  const sidecar = load("host/mail/sidecar.js", { "./db": database, "./secrets": {}, "./oauth": { ready }, "./oauth-config": {},
+  const oauthConfig = {
+    providerKey(profile) {
+      const raw = String(profile || "").toLowerCase();
+      if (raw === "gmail" || raw === "google") return "google";
+      if (raw === "outlook" || raw === "microsoft" || raw === "office365") return "microsoft";
+      return "";
+    },
+    loadGoogleClient: () => ({ clientId: "synthetic" }),
+  };
+  const secrets = {
+    revision: () => 1,
+    getPassword: () => null,
+    getPasswordAsync: async () => null,
+    setPassword() {},
+  };
+  const sidecar = load("host/mail/sidecar.js", { "./db": database, "./secrets": secrets, "./oauth": { ready }, "./oauth-config": oauthConfig,
     "./provider-api": api, "./calendar-api": {}, "./inbox-rules": {}, "./vacation-api": {}, "./sieve-vacation": {} },
   source => source + "\nwithPurpose=async()=>oauth.ready;\n");
   return { ...fixture, api, sidecar, answer: (channel, params = {}) => sidecar.answer(channel, [{ accountId: "a", emailId: selected.id, ...params }]),

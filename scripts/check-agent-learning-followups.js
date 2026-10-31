@@ -26,9 +26,17 @@ class Element {
     };
   }
   get isConnected() { return this.tagName === "body" || !!this.parentNode?.isConnected; }
+  get children() { return this.childNodes; }
   get textContent() { return this.text + this.childNodes.map((node) => node.textContent).join(""); }
   set textContent(value) { this.replaceChildren(); this.text = String(value); }
   appendChild(node) { node.remove(); node.parentNode = this; this.childNodes.push(node); return node; }
+  insertBefore(node, before) {
+    if (node === before) return node;
+    node.remove(); node.parentNode = this;
+    const index = before ? this.childNodes.indexOf(before) : -1;
+    if (index < 0) this.childNodes.push(node); else this.childNodes.splice(index, 0, node);
+    return node;
+  }
   append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
   replaceChildren(...nodes) { this.childNodes.forEach((node) => { node.parentNode = null; }); this.childNodes = []; this.text = ""; this.append(...nodes); }
   remove() { if (this.parentNode) this.parentNode.childNodes = this.parentNode.childNodes.filter((node) => node !== this); this.parentNode = null; }

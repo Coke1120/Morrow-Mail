@@ -1,14 +1,17 @@
 const { spawnSync } = require("child_process");
 const { SERVICE } = require("./secret-service");
+const perf = require("../performance-diagnostics");
+const { createReader, TIMEOUT_MS, MAX_OUTPUT } = require("./keychain-reader");
+const read = createReader({ command: "powershell.exe", decode: output => Buffer.from(output.trim(), "base64").toString("utf8") });
 
 const STORE_DIR = "morrow-mail";
 
 function ps(script) {
-  return spawnSync(
+  return perf.sync("keychain.wait", () => spawnSync(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-Command", script],
-    { encoding: "utf8", windowsHide: true }
-  );
+    { encoding: "utf8", windowsHide: true, timeout: TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: MAX_OUTPUT }
+  ));
 }
 
 function targetOf(service, account) {
@@ -37,10 +40,10 @@ New-Item -ItemType Directory -Force -Path \$dir | Out-Null
   }
 }
 
-function readPassword(dirName, service, account) {
+function readScript(dirName, service, account, encoded = false) {
   const target = targetOf(service, account);
   const dir = String(dirName).replace(/'/g, "''");
-  const script = `
+  return `
 \$ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Security
 \$dir = Join-Path \$env:LOCALAPPDATA '${dir}\\secrets'
@@ -48,9 +51,15 @@ Add-Type -AssemblyName System.Security
 if (-not (Test-Path -LiteralPath \$path)) { exit 2 }
 \$prot = [IO.File]::ReadAllBytes(\$path)
 \$bytes = [Security.Cryptography.ProtectedData]::Unprotect(\$prot, \$null, 'CurrentUser')
-[Console]::Out.Write([Text.Encoding]::UTF8.GetString(\$bytes))
+[Console]::Out.Write(${encoded ? "[Convert]::ToBase64String(\$bytes)" : "[Text.Encoding]::UTF8.GetString(\$bytes)"})
 `;
-  const result = ps(script);
+}
+
+function readPassword(dirName, service, account) {
+  const result = ps(readScript(dirName, service, account));
+  if (result.error) throw Object.assign(new Error("Secure storage could not be read. Try again."), {
+    code: result.error.code === "ETIMEDOUT" ? "secure_storage_timeout" : "secure_storage_unavailable",
+  });
   if (result.status === 2) return null;
   if (result.status !== 0) return null;
   return result.stdout;
@@ -75,6 +84,10 @@ function getPassword(account) {
   return readPassword(STORE_DIR, SERVICE, account);
 }
 
+function getPasswordAsync(account, options) {
+  return perf.measure("keychain.wait", () => read(["-NoProfile", "-NonInteractive", "-Command", readScript(STORE_DIR, SERVICE, account, true)], options));
+}
+
 function deletePassword(account) {
   deleteAt(STORE_DIR, SERVICE, account);
 }
@@ -82,6 +95,7 @@ function deletePassword(account) {
 module.exports = {
   setPassword,
   getPassword,
+  getPasswordAsync,
   deletePassword,
   SERVICE,
   STORE_DIR,

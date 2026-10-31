@@ -132,8 +132,10 @@ function sourceChecks() {
   assert.equal(oauth.SCOPES.google.includes("contacts"), false);
   assert.equal(oauth.SCOPES.google.includes("people"), false);
   assert.equal(oauth.SCOPES.microsoft.includes("Contacts"), false);
-  assert.match(dbSrc, /function recipientHeaderRows\(\) \{\s*return all\(`SELECT account_id, id, gmail_id[\s\S]*?WHERE is_draft = 0`\)/);
-  assert.doesNotMatch(dbSrc.slice(dbSrc.indexOf("function recipientHeaderRows"), dbSrc.indexOf("function recipientHeaderStamp")), /html_body|text_body/);
+  assert.match(dbSrc, /function recipientHeaderRows\(after = "", limit = 128\)/);
+  assert.match(dbSrc, /WHERE is_draft = 0 AND id > \? ORDER BY id LIMIT \?/);
+  assert.doesNotMatch(dbSrc.slice(dbSrc.indexOf("function recipientHeaderStamp"), dbSrc.indexOf("function recipientHeaderChanges")), /total_changes|COUNT\(|MAX\(/);
+  assert.match(host, /new Worker/);
   assert.match(engine, /case "mail:suggestRecipients"/);
   assert.match(preload, /"mail:suggestRecipients"/);
   assert.match(app, /mail:suggestRecipients/);
@@ -180,22 +182,36 @@ async function engineChecks() {
       });
       if (item.gmail_id) db.updateMessage(item.id, { gmail_id: item.gmail_id });
     }
-    const listed = engine.answer("mail:suggestRecipients", [{ query: "example.test" }]);
+    const listed = await engine.answer("mail:suggestRecipients", [{ query: "example.test" }]);
     assert.equal(listed.success, true);
     assert.deepEqual(listed.data.suggestions, suggest.filter(suggest.rank(rows), "example.test"));
     assert.equal(JSON.stringify(listed.data).includes("secret"), false);
     assert.equal(listed.data.suggestions.some((item) => item.email === "draft-only@example.test"), false);
     assert.deepEqual(Object.keys(listed.data.suggestions[0]).sort(), ["email", "name"]);
-    assert.deepEqual(engine.answer("mail:suggestRecipients", [{ query: "" }]).data.suggestions, []);
-    assert.deepEqual(engine.answer("mail:suggestRecipients", [{ query: { bad: true } }]).data.suggestions, []);
-    assert.equal(engine.answer("mail:suggestRecipients", [{ query: "Ada Lovelace" }]).data.suggestions[0].name, "Ada Lovelace");
+    assert.deepEqual((await engine.answer("mail:suggestRecipients", [{ query: "" }])).data.suggestions, []);
+    assert.deepEqual((await engine.answer("mail:suggestRecipients", [{ query: { bad: true } }])).data.suggestions, []);
+    assert.equal((await engine.answer("mail:suggestRecipients", [{ query: "Ada Lovelace" }])).data.suggestions[0].name, "Ada Lovelace");
+    const before = db.recipientHeaderStamp();
+    const readRows = db.recipientHeaderRows;
+    let scans = 0;
+    db.recipientHeaderRows = (...args) => { scans++; return readRows(...args); };
+    try {
+      db.updateMessage("ada-1", { unread: 1, starred: 1, text_body: "Unrelated body fill" });
+      assert.equal(db.recipientHeaderStamp(), before);
+      await engine.answer("mail:suggestRecipients", [{ query: "example.test" }]);
+      assert.equal(scans, 0, "flag and body writes cannot trigger a cold history scan");
+      db.updateMessage("ada-1", { from_display_name: "Updated Ada" });
+      assert.notEqual(db.recipientHeaderStamp(), before);
+      await engine.answer("mail:suggestRecipients", [{ query: "Updated Ada" }]);
+      assert.equal(scans, 0, "real header changes update aggregates, not the complete history");
+    } finally { db.recipientHeaderRows = readRows; }
     db.insertMessage({
       id: "late", accountId: "box", folderPath: "INBOX", uid: 80,
       date: new Date(T + DAY).toISOString(), listSortTs: T + DAY,
       from: "Late <late@example.test>", fromAddress: "late@example.test",
       to: [], cc: [], bcc: [], subject: "later",
     });
-    const late = engine.answer("mail:suggestRecipients", [{ query: "late@" }]);
+    const late = await engine.answer("mail:suggestRecipients", [{ query: "late@" }]);
     assert.deepEqual(late.data.suggestions, [{ email: "late@example.test", name: "Late" }]);
   } finally {
     await db.close();

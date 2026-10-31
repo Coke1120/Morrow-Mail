@@ -6,6 +6,7 @@ const { performance, monitorEventLoopDelay } = require("node:perf_hooks");
 const STAGES = new Set([
   "startup.mail", "startup.db", "startup.migrate", "startup.index",
   "db.transaction", "db.index", "db.list.headers", "db.list.full",
+  "db.sync.reconcile", "db.list.merged", "db.list.summary",
   "db.thread.headers", "db.thread.full", "storage.journal", "storage.replay",
   "keychain.wait", "ipc.mail.list", "ipc.mail.open", "ipc.mail.thread",
   "ipc.mail.sync", "ipc.other",
