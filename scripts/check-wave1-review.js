@@ -194,10 +194,12 @@ for (const order of [["one", "two"], ["two", "one"]]) test("Mail F3: split-accou
   assert.deepEqual(ui.json("undoOpIds").sort(), ["op-one", "op-two"]);
   assert.deepEqual(ui.json("undoItems.map(item=>item.subject)").sort(), ["one", "two"]);
   ui.run(`beginRemovalRequest([{id:'new',accountId:'a'}],'trash'); applyActionSettlement({outcomes:[{id:'one',actionId:'action-one',kind:'remove',generation:1,status:'completed',opId:'op-one'}],opIds:['op-one']});`);
+  assert.deepEqual(ui.json("undoOpIds").sort(), ["op-one", "op-two"]);
+  ui.run(`clearUndo(); beginRemovalRequest([{id:'replacement',accountId:'a'}],'trash'); applyActionSettlement({outcomes:[{id:'one',actionId:'action-one',kind:'remove',generation:1,status:'completed',opId:'op-one'}],opIds:['op-one']});`);
   assert.equal(ui.run("undoOpIds"), null);
 });
 
-test("Mail F3: settlement before invoke return joins its request and cannot claim a newer removal", async () => {
+test("Mail F3: settlement before invoke return accumulates across batches but cannot revive a cleared session", async () => {
   const ui = uiFixture();
   ui.run(`globalThis.messages=[{id:'one',accountId:'a',subject:'Early'},{id:'two',accountId:'b',subject:'Later'}]; globalThis.epoch=beginRemovalRequest(messages,'archive');
     call=async()=>{ applyActionSettlement({outcomes:[{id:'one',actionId:'early',generation:1,kind:'remove',status:'completed',opId:'early-op'}],opIds:['early-op']}); return {pending:[{id:'one',actionId:'early',generation:1},{id:'two',actionId:'late',generation:1}],outcomes:[]}; };`);
@@ -205,6 +207,8 @@ test("Mail F3: settlement before invoke return joins its request and cannot clai
   ui.run("applyActionSettlement({outcomes:[{id:'two',actionId:'late',generation:1,kind:'remove',status:'completed',opId:'late-op'}],opIds:['late-op']})");
   assert.deepEqual(ui.json("undoOpIds"), ["early-op", "late-op"]);
   ui.run("beginRemovalRequest([{id:'one',accountId:'a'}],'trash'); applyActionSettlement({outcomes:[{id:'one',actionId:'early',generation:1,kind:'remove',status:'completed',opId:'early-op'}],opIds:['early-op']})");
+  assert.deepEqual(ui.json("undoOpIds"), ["early-op", "late-op"]);
+  ui.run("clearUndo(); beginRemovalRequest([{id:'replacement',accountId:'a'}],'trash'); applyActionSettlement({outcomes:[{id:'one',actionId:'early',generation:1,kind:'remove',status:'completed',opId:'early-op'}],opIds:['early-op']})");
   assert.equal(ui.run("undoOpIds"), null);
 });
 
@@ -700,7 +704,7 @@ test("Features: actual catalog render and tab switching keep recovery, privacy a
   ui.context.window.morrowFeaturesCatalog = catalog;
   ui.run("paintFeatureCatalog()");
   const rendered = ui.nodes.get("features-catalog").textContent;
-  for (const claim of [/uncertain.*Scheduled delivery review/i, /Split|Separate account settlements/, /terminal refusals/, /ai\.json.*not OS encryption/, /Disable and Revoke/, /selected skill ID/, /newer typing/]) assert.match(rendered, claim);
+  for (const claim of [/uncertain.*Scheduled delivery review/i, /accumulate completed changes across batches/, /retired session cannot revive/, /terminal refusals/, /ai\.json.*not OS encryption/, /Disable and Revoke/, /selected skill ID/, /newer typing/]) assert.match(rendered, claim);
   assert.match(rendered, /Undo reopens Compose.*Agent todo.*confirmed send/);
   assert.match(rendered, /Outlook description edits.*surrounding whitespace.*provider revision/);
   for (const claim of [/On Windows and macOS/, /guarded per-request grant snapshots/, /Durable acknowledgement, journal recovery and fsync are unchanged/, /only for changed headers/, /Next loads more/, /source-limited message is not downloaded automatically again/, /Skills load on the Tools tab/, /in-flight reads are allowed to settle/]) assert.match(rendered, claim);

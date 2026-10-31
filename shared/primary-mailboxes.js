@@ -84,6 +84,7 @@
     const list = Array.isArray(accounts) ? accounts : [];
     const read = typeof foldersOf === "function" ? foldersOf : function () { return []; };
     return list.reduce((sum, account) => {
+      if (Number.isFinite(account && account.cachedPrimaryUnreadCount)) return sum + positiveCount(account.cachedPrimaryUnreadCount);
       const chosen = choosePrimary(account, read(account));
       if (chosen) return sum + folderUnread(chosen.folder);
       return sum + positiveCount(account && account.unreadCount);

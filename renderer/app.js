@@ -124,11 +124,16 @@ let undoDetailsEpoch = -1;
 const undoEpochByOp = new Map();
 const removalEpochByAction = new Map();
 const removalEpochByMessage = new Map();
+const pendingRemovalMessages = new Map();
+const removalSnapshotsByAction = new Map();
+const removalSnapshotsByOp = new Map();
 const undoPending = new Set();
+const restoredUndoOpIds = new Set();
 let undoInflight = null;
 let undoFlightSerial = 0;
 const undoSettleQueue = [];
 const undoSnapshots = new Map();
+const optimisticRemovals = new Map();
 let readUndoItems = null;
 let readUndoTimer = 0;
 let undoReceipt = "";
@@ -2248,6 +2253,7 @@ function clearFieldErrors(ids) {
 
 let agentLoadOverlay = false;
 let agentLoaded = false;
+let agentTriageLoad = null;
 
 function syncAgentPageBusy() {
   setPageBusy("agent-panel", !!(agentChatBusy || agentLoadOverlay), "Working…");
@@ -6324,12 +6330,13 @@ function unreadRetainIds() {
 function shownEmails() {
   const input = $("list-filter");
   const query = input ? input.value : "";
-  if (state.outbox) return visibleList(state.emails, query, null);
+  const emails = state.emails.filter((email) => !optimisticRemovals.has(email.id));
+  if (state.outbox) return visibleList(emails, query, null);
   const folder = state.allInbox
     ? (state.allInboxUnreadOnly ? { view: { unread: true } } : null)
     : selectedFolderNode();
   const holdId = unreadListActive(currentUnreadView()) && state.unreadHold ? state.unreadHold.id : "";
-  return visibleList(state.emails, query, folder, holdId);
+  return visibleList(emails, query, folder, holdId);
 }
 
 function rememberLoadedSelection() {
@@ -8219,7 +8226,7 @@ function undoItemsForOutcomes(outcome) {
     if (!row || row.status !== "completed" || !row.opId || seen.has(row.opId)) continue;
     if (row.kind && row.kind !== "remove") continue;
     seen.add(row.opId);
-    const snap = undoSnapshots.get(String(row.id)) || {};
+    const snap = removalSnapshotsByAction.get(row.actionId) || removalSnapshotsByOp.get(row.opId) || undoSnapshots.get(String(row.id)) || {};
     items.push(normalizeUndoItem({
       opId: row.opId,
       messageId: row.id || snap.messageId || "",
@@ -8253,24 +8260,42 @@ function startRemovalSession(text, opIds, isError, items) {
   undoEpoch += 1;
   undoInflight = null;
   undoPending.clear();
+  restoredUndoOpIds.clear();
+  pendingRemovalMessages.clear();
   showUndo(text, opIds, isError, items);
 }
 
 function beginRemovalRequest(messages, action, destinationLabel) {
   rememberUndoSnapshots(messages, action, destinationLabel);
-  startRemovalSession("Applying mailbox changes…", [], false, []);
+  if (undoKind !== "removal") startRemovalSession("Applying mailbox changes…", [], false, []);
+  else showStatus("Applying mailbox changes…");
   for (const message of messages || []) {
-    if (message?.id) removalEpochByMessage.set(String(message.id), { epoch: undoEpoch, generation: (actionGeneration.get(message.id) || 0) + 1 });
+    if (!message?.id) continue;
+    const request = { epoch: undoEpoch, generation: (actionGeneration.get(message.id) || 0) + 1 };
+    removalEpochByMessage.set(String(message.id), request);
+    pendingRemovalMessages.set(String(message.id), request);
   }
   return undoEpoch;
 }
 
-function rememberRemovalReceipt(data, epoch) {
+function rememberRemovalReceipt(data, epoch, snapshots) {
   if (epoch == null) return;
   for (const row of [...(data?.pending || []), ...(data?.outcomes || [])]) {
     if (row.actionId) removalEpochByAction.set(row.actionId, epoch);
     if (row.opId) undoEpochByOp.set(row.opId, epoch);
+    const snapshot = snapshots?.get(String(row.id)) || undoSnapshots.get(String(row.id));
+    if (snapshot && row.actionId && !removalSnapshotsByAction.has(row.actionId)) removalSnapshotsByAction.set(row.actionId, snapshot);
+    if (snapshot && row.opId && !removalSnapshotsByOp.has(row.opId)) removalSnapshotsByOp.set(row.opId, snapshot);
   }
+  for (const row of data?.outcomes || []) {
+    const pending = pendingRemovalMessages.get(String(row.id));
+    if (pending?.epoch === epoch && row.phase !== "accepted" && (typeof row.generation !== "number" || row.generation >= pending.generation)) pendingRemovalMessages.delete(String(row.id));
+  }
+}
+
+function hasPendingRemovalUndo() {
+  return [...pendingRemovalMessages.values()].some((request) => request.epoch === undoEpoch)
+    || undoSettleQueue.some((batch) => batch.outcomes?.some((row) => row.kind === "remove" && row.opId && removalSettlementEpoch(row) === undoEpoch));
 }
 
 function removalSettlementEpoch(row) {
@@ -8286,7 +8311,11 @@ function removalSettlementEpoch(row) {
 function showRemovalUndo(text, opIds, isError, items) {
   const ids = opIds || [];
   const sameEpoch = ids.length > 0 && ids.every((id) => undoEpochByOp.get(id) === undoEpoch);
-  if (sameEpoch) showUndo(text, ids, isError, items);
+  if (sameEpoch || undoKind === "removal") {
+    const merged = new Map((undoItems || []).map((item) => [item.opId, item]));
+    for (const item of undoListFor(ids, items) || []) merged.set(item.opId, item);
+    showUndo(text, [...merged.keys()], isError, [...merged.values()]);
+  }
   else startRemovalSession(text, ids, isError, items);
 }
 
@@ -8304,6 +8333,7 @@ function settleUndoInflight(batch) {
   if (!rows.length) return false;
   const requested = [...undoInflight.opIds];
   const retained = new Set(retainedUndoOpIds(requested, rows, undoItems));
+  for (const id of requested) if (!retained.has(id)) restoredUndoOpIds.add(id);
   const resolved = new Set();
   for (const row of rows) {
     const opId = row.retryOpId || ((undoItems || []).find((item) => item && String(item.messageId) === String(row.id)) || {}).opId;
@@ -8316,7 +8346,7 @@ function settleUndoInflight(batch) {
   const kept = (undoItems || []).filter((item) => !requested.includes(item.opId) || retained.has(item.opId));
   const receipt = receiptText("Restore", { outcomes: rows });
   const incomplete = rows.some((row) => row && row.status !== "completed");
-  if (!kept.length) {
+  if (!kept.length && !hasPendingRemovalUndo()) {
     clearUndo();
     showStatus(receipt, incomplete);
   } else {
@@ -8331,8 +8361,10 @@ function settleUndoInflight(batch) {
 }
 
 function applyRemovalSettlement(batch, receipt, bad) {
+  if (batch?.opIds) batch = { ...batch, opIds: batch.opIds.filter((id) => !restoredUndoOpIds.has(id)) };
   if (batch?.outcomes) {
     const outcomes = batch.outcomes.filter((row) => {
+      if (row.opId && restoredUndoOpIds.has(row.opId)) return false;
       const epoch = removalSettlementEpoch(row);
       return epoch == null || epoch === undoEpoch;
     });
@@ -8345,7 +8377,7 @@ function applyRemovalSettlement(batch, receipt, bad) {
     return;
   }
   const current = $("status") && $("status").textContent;
-  const text = bad || !current ? receipt : current;
+  const text = bad || !current || /awaiting confirmation|background…|Applying mailbox changes/.test(current) ? receipt : current;
   const { live } = undoRetriesByEpoch(batch);
   if (live.length && undoKind === "removal" && undoOpIds && undoOpIds.length) {
     const merged = (undoItems || []).slice();
@@ -8569,7 +8601,7 @@ function showUndo(text, opIds, isError, items) {
 }
 
 function showReadUndo(text, items) {
-  if (undoKind === "removal" && undoOpIds && undoOpIds.length) {
+  if (undoKind === "removal" && (undoOpIds?.length || hasPendingRemovalUndo())) {
     showStatus(text);
     return;
   }
@@ -8602,6 +8634,9 @@ function showReadUndo(text, items) {
 
 function clearUndo() {
   clearReadUndoTimer();
+  undoEpoch += 1;
+  pendingRemovalMessages.clear();
+  restoredUndoOpIds.clear();
   undoKind = "";
   undoOpIds = null;
   undoItems = null;
@@ -8710,6 +8745,14 @@ function applyActionSettlement(batch) {
   for (const outcome of outcomes) {
     if (!outcome || !outcome.id) continue;
     if (typeof settleAgentReadOutcome === "function") settleAgentReadOutcome(outcome).catch((error) => showStatus(error.message || String(error), true));
+    const pendingRemoval = pendingRemovalMessages.get(String(outcome.id));
+    if (outcome.kind === "remove" && pendingRemoval && (typeof outcome.generation !== "number" || outcome.generation >= pendingRemoval.generation)) pendingRemovalMessages.delete(String(outcome.id));
+    const optimistic = optimisticRemovals.get(outcome.id);
+    if (optimistic && outcome.kind === "remove" && (typeof outcome.generation !== "number" || outcome.generation >= optimistic.generation)) {
+      optimistic.settlement = outcome;
+      optimisticRemovals.delete(outcome.id);
+    }
+    if (outcome.kind === "remove" || outcome.kind === "undo") moved = true;
     const memory = actionGeneration.get(outcome.id) || 0;
     if (typeof outcome.generation === "number" && outcome.generation < memory) continue;
     if (typeof outcome.generation === "number") actionGeneration.set(outcome.id, outcome.generation);
@@ -8723,11 +8766,11 @@ function applyActionSettlement(batch) {
       });
       paintStars([{ id: outcome.id }], !!projection.isStarred);
     }
-    if (outcome.kind === "remove" || outcome.kind === "undo") moved = true;
   }
   const bad = outcomes.some((row) => row.status && row.status !== "completed");
   const receipt = receiptText("Mailbox", { outcomes });
   if (settleUndoInflight(batch)) {
+    if (!undoBusy && !undoPending.size) flushUndoSettleQueue();
     if (moved) loadList(false).catch(() => {});
     return;
   }
@@ -8738,7 +8781,7 @@ function applyActionSettlement(batch) {
     if (moved) loadList(false).catch(() => {});
     return;
   }
-  if (undoBusy) {
+  if (undoBusy || undoPending.size) {
     undoSettleQueue.push(batch);
     if (moved) loadList(false).catch(() => {});
     return;
@@ -8990,10 +9033,16 @@ async function undoRemoval(requested) {
     : (undoOpIds || []).slice()
   ).filter((id) => !undoPending.has(id));
   if (!opIds.length) return;
+  const selectedItems = (undoItems || []).filter((item) => opIds.includes(item.opId) && item.messageId);
+  if (new Set(selectedItems.map((item) => item.messageId)).size !== selectedItems.length) {
+    showStatus("Select one change per message in Details. Restore its latest change first; earlier changes remain separate.", true);
+    return;
+  }
   const prior = undoReceipt || (($("status") && $("status").textContent) || "");
   const previousItems = (undoItems || []).slice();
   const previousError = undoReceiptError;
   const epoch = undoEpoch;
+  let resultEpoch = epoch;
   const serial = ++undoFlightSerial;
   const messages = new Map();
   for (const item of previousItems) {
@@ -9038,12 +9087,14 @@ async function undoRemoval(requested) {
       for (const id of opIds) undoPending.delete(id);
       undoInflight = null;
       const failed = new Set(retainedUndoOpIds(opIds, outcomes, previousItems));
+      for (const id of opIds) if (!failed.has(id)) restoredUndoOpIds.add(id);
       const kept = previousItems.filter((item) => !opIds.includes(item.opId) || failed.has(item.opId));
       const receipt = receiptText("Restore", { outcomes });
       const incomplete = outcomes.some((row) => row && row.status !== "completed");
       applied = true;
-      if (!kept.length) {
+      if (!kept.length && !hasPendingRemovalUndo()) {
         clearUndo();
+        resultEpoch = undoEpoch;
         showStatus(prior + " " + receipt, incomplete);
       } else {
         undoKind = "removal";
@@ -9057,7 +9108,7 @@ async function undoRemoval(requested) {
     } else applied = true;
     await loadList();
   } catch (error) {
-    if (epoch !== undoEpoch) return;
+    if (resultEpoch !== undoEpoch) return;
     // A settlement can arrive before an IPC rejection. Never resurrect its rows.
     if (!applied && (!undoInflight || undoInflight.serial !== serial || undoInflight.settled)) return;
     if (!applied) {
@@ -9338,7 +9389,7 @@ async function loadList(fromNetwork, requestedOffset) {
     }
     state.listOffset = offset;
     state.emails = takeEmails((data && data.emails) || []);
-    if (unreadListActive(currentUnreadView())) {
+    if (unreadListActive(currentUnreadView()) && !optimisticRemovals.has(state.unreadHold?.id)) {
       state.unreadHold = applyUnreadHold(state.unreadHold, {
         kind: "refresh",
         ids: state.emails.map((row) => row && row.id),
@@ -10288,8 +10339,10 @@ function receiptRows(data, spec) {
 
 function receiptText(label, outcome) {
   const rows = outcome.outcomes || [];
-  const count = (status) => rows.filter((row) => row.status === status).length;
+  const count = (status) => rows.filter((row) => row.status === status && row.phase !== "accepted").length;
   const parts = [count("completed") + " completed", count("failed") + " failed", count("unknown") + " unknown", count("not_attempted") + " not attempted"];
+  const accepted = rows.filter((row) => row.phase === "accepted").length;
+  if (accepted) parts.splice(1, 0, accepted + " awaiting confirmation");
   const errors = [...new Set(rows.map((row) => row.error).filter(Boolean))];
   if (outcome.error && !errors.includes(outcome.error)) errors.push(outcome.error);
   return label.replace(/[.]$/, "") + ": " + parts.join(" · ") + "." + (errors.length ? " " + errors.join(" ") : "")
@@ -10298,6 +10351,7 @@ function receiptText(label, outcome) {
 
 async function runBulk(calls, removalEpoch) {
   const outcome = { opIds: [], outcomes: [], done: 0, paused: false, error: "" };
+  const snapshots = removalEpoch == null ? null : new Map(calls.flatMap((spec) => operationIds(spec).map((id) => [String(id), undoSnapshots.get(String(id))])));
   if (removalEpoch != null) outcome.removalEpoch = removalEpoch;
   let stopped = false;
   for (const spec of calls) {
@@ -10307,8 +10361,9 @@ async function runBulk(calls, removalEpoch) {
     }
     let rows;
     try {
+      if (removalEpoch != null) await new Promise((resolve) => afterPaint(resolve));
       const data = await call(spec.channel, spec.params);
-      rememberRemovalReceipt(data, removalEpoch);
+      rememberRemovalReceipt(data, removalEpoch, snapshots);
       rows = receiptRows(data, spec);
     } catch (error) {
       const message = error.message || String(error);
@@ -10329,7 +10384,17 @@ async function runBulk(calls, removalEpoch) {
 }
 
 async function finishBulkRemoval(label, outcome, ids, extra) {
+  if (extra?.optimistic) {
+    const outcomes = (outcome.outcomes || []).map((row) => row.phase === "accepted" ? extra.optimistic.get(row.id)?.settlement || row : row);
+    outcome = { ...outcome, outcomes,
+      opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId),
+      error: outcome.error || (outcomes.some((row) => row.status !== "completed") ? "Some changes could not be verified." : ""),
+    };
+  }
   rememberActionGeneration(outcome.outcomes);
+  for (const row of outcome.outcomes || []) {
+    if (row.phase !== "accepted" && (!extra?.optimistic || optimisticRemovals.get(row.id) === extra.optimistic.get(row.id))) optimisticRemovals.delete(row.id);
+  }
   const action = (extra && extra.action) || removalAction(label);
   rememberUndoSnapshots(snapshotEmails(ids, extra), action, extra && extra.destinationLabel);
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => row.id));
@@ -10345,12 +10410,60 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   const epoch = outcome.removalEpoch ?? undoEpoch;
   rememberRemovalReceipt(outcome, epoch);
   if (epoch === undoEpoch) {
-    if (outcome.opIds.length) applyRemovalSettlement(outcome, text, !!outcome.error);
+    if (outcome.opIds.length && (undoBusy || undoPending.size)) undoSettleQueue.push(outcome);
+    else if (outcome.opIds.length) {
+      // Fresh finishBulkRemoval reclaim: this batch's opIds are new undoable removals, not restored replays.
+      for (const id of outcome.opIds) restoredUndoOpIds.delete(id);
+      applyRemovalSettlement(outcome, text, !!outcome.error);
+    }
     else if (waiting || undoOpIds?.length) showStatus(text, !!outcome.error);
+    else if (hasPendingRemovalUndo()) showStatus(text, !!outcome.error);
     else { clearUndo(); showStatus(text, !!outcome.error); }
   }
   if (completed.size) await loadList();
   else renderList();
+}
+
+function queueBulkRemoval(label, calls, messages, action) {
+  const epoch = beginRemovalRequest(messages, action);
+  const optimistic = new Map();
+  for (const message of messages) {
+    const entry = { generation: (actionGeneration.get(message.id) || 0) + 1 };
+    optimistic.set(message.id, entry);
+    optimisticRemovals.set(message.id, entry);
+  }
+  const ids = new Set(messages.map((message) => message.id));
+  state.selectedIds = state.selectedIds.filter((id) => !ids.has(id));
+  if (ids.has(pendingOpenId) || (state.email && ids.has(state.email.id))) {
+    invalidateReaderOpen();
+    state.email = null;
+    state.thread = [];
+    renderReader(false);
+  }
+  renderList();
+  showStatus(label + ": applying " + messages.length + " mailbox changes in the background… Undo appears after confirmation.");
+  const chunks = calls.flatMap((spec) => {
+    if (!spec.params.items) return [spec];
+    const batches = [];
+    for (let offset = 0; offset < spec.params.items.length; offset += 4) {
+      batches.push({ ...spec, params: { ...spec.params, items: spec.params.items.slice(offset, offset + 4) } });
+    }
+    return batches;
+  });
+  afterPaint(() => {
+    runBulk(chunks, epoch).then(async (outcome) => {
+      try {
+        await finishBulkRemoval(label, outcome, [...ids], { messages, action, optimistic });
+      } catch (error) {
+        renderList();
+        showStatus(label + ": result received, but the message list could not refresh. " + (error.message || String(error)), true);
+      }
+    }).catch((error) => {
+      for (const [id, entry] of optimistic) if (optimisticRemovals.get(id) === entry) optimisticRemovals.delete(id);
+      renderList();
+      showStatus(label + ": outcome is unknown. Refresh before retrying. " + (error.message || String(error)), true);
+    });
+  });
 }
 
 async function bulkArchive() {
@@ -10360,11 +10473,7 @@ async function bulkArchive() {
   const answer = await askConfirm(bulkConfirmCopy("archive", review.rows.length, review.detail));
   const gated = confirmedCalls("archive", answer, review.calls, review.detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated, beginRemovalRequest(review.rows, "archive"));
-  await finishBulkRemoval("Archive", outcome, review.rows.map((item) => item.id), {
-    messages: review.rows,
-    action: "archive",
-  });
+  queueBulkRemoval("Archive", gated, review.rows, "archive");
 }
 
 async function bulkTrash() {
@@ -10374,11 +10483,7 @@ async function bulkTrash() {
   const answer = await askConfirm(bulkConfirmCopy("trash", review.rows.length, review.detail));
   const gated = confirmedCalls("trash", answer, review.calls, review.detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated, beginRemovalRequest(review.rows, "trash"));
-  await finishBulkRemoval("Move to Trash", outcome, review.rows.map((item) => item.id), {
-    messages: review.rows,
-    action: "trash",
-  });
+  queueBulkRemoval("Move to Trash", gated, review.rows, "trash");
 }
 
 async function bulkSetRead(isRead) {
@@ -15132,7 +15237,7 @@ async function removeAccount() {
 }
 
 async function refresh() {
-  const pages = { calendar: [loadCalendar, "Calendar refreshed."], agent: [loadAgent, "Agent refreshed."],
+  const pages = { calendar: [loadCalendar, "Calendar refreshed."], agent: [() => loadAgent({ overlay: true }), "Agent refreshed."],
     brain: [loadBrain, "Profile reloaded."], log: [refreshLog, "Log refreshed."],
     shortcuts: [paintShortcuts, "Shortcuts refreshed."],
     folders: [() => loadProviderFolders(accountGen), "Folders and labels refreshed."] };
@@ -17344,8 +17449,25 @@ function rememberVacation(data) {
 function paintMailVacation() {
   const box = $("mail-ooo");
   if (!box) return;
+  const picker = $("mail-ooo-account");
+  if (picker) picker.hidden = !state.allInbox;
   if (state.allInbox) {
-    box.hidden = true;
+    box.hidden = !state.accounts.length;
+    const key = JSON.stringify(state.accounts.map((account) => [account.id, accountLabel(account)]));
+    if (picker && picker.dataset.accounts !== key) {
+      const selected = picker.value || state.accountId;
+      picker.replaceChildren(...state.accounts.map((account) => option(account.id, accountLabel(account))));
+      picker.value = state.accounts.some((account) => account.id === selected) ? selected : state.accounts[0]?.id || "";
+      picker.dataset.accounts = key;
+    }
+    const detail = "Out of Office is set per mailbox. Choose a mailbox to review or manage its automatic replies.";
+    box.classList.remove("is-off");
+    box.title = detail;
+    $("mail-ooo-status").textContent = detail;
+    $("mail-ooo-status").setAttribute("aria-label", detail);
+    $("mail-ooo-status").setAttribute("aria-busy", "false");
+    $("mail-ooo-manage").textContent = "Manage selected mailbox…";
+    $("mail-ooo-refresh").hidden = true;
     return;
   }
   const account = selectedAccount();
@@ -17370,7 +17492,7 @@ function releaseVacationRetry(accountId) {
   if (entry && entry.retrying) mailVacation.delete(accountId);
 }
 async function refreshMailVacation(force = false) {
-  const account = selectedAccount();
+  const account = state.allInbox ? null : selectedAccount();
   if (oooRetryAccount && (!account || oooRetryAccount !== account.id)) releaseVacationRetry(oooRetryAccount);
   oooRetryAccount = account ? account.id : null;
   paintMailVacation();
@@ -17402,8 +17524,8 @@ async function refreshMailVacation(force = false) {
   } finally { mailVacationPending.delete(id); }
 }
 async function manageMailVacation() {
-  const id = state.accountId;
-  if (!id) return;
+  const id = state.allInbox ? $("mail-ooo-account")?.value : state.accountId;
+  if (!state.accounts.some((account) => account.id === id)) return;
   openSettings();
   if (settingsAccount()?.id !== id && !(await changeSettingsMailbox(id))) return;
   revealSettingsFold("ooo");
@@ -21734,7 +21856,7 @@ async function saveAgentMemory() {
 }
 
 async function loadAgent(options) {
-  const quiet = !!(options && options.overlay === false);
+  const quiet = options?.overlay === false || (options?.overlay !== true && agentLoaded);
   const gen = ++agentGen;
   const memoryVersion = agentMemoryVersion;
   const hold = (on) => {
@@ -21742,7 +21864,8 @@ async function loadAgent(options) {
     agentLoadOverlay = !!on;
     syncAgentPageBusy();
   };
-  if (!quiet) hold(true);
+  if (agentLoaded && agentPaintPayload) paintAgent(agentPaintPayload, "");
+  hold(!quiet);
   try {
     const [triage, history, chat] = await Promise.all([
       call("nativeAgent:home:todosCached"),
@@ -21760,12 +21883,24 @@ async function loadAgent(options) {
     if (gen !== agentGen || state.view !== "agent") return;
     const reason = triage && triage.reason;
     if (!(triage && triage.stale) || reason === "needs_key" || reason === "needs_mailbox") return;
-    hold(true);
-    const fresh = await call("nativeAgent:triage", { source: "open" });
+    if (!quiet) hold(true);
+    const status = $("agent-status");
+    if (quiet && status && !agentChatBusy) {
+      status.textContent = "Updating triage… Showing saved suggestions.";
+      status.setAttribute("aria-busy", "true");
+    }
+    if (!agentTriageLoad) agentTriageLoad = call("nativeAgent:triage", { source: "open" }).finally(() => { agentTriageLoad = null; });
+    const fresh = await agentTriageLoad;
     if (gen !== agentGen || state.view !== "agent") return;
     paintAgent(Object.assign({}, fresh, { runs }), "");
+  } catch (error) {
+    if (gen === agentGen && state.view === "agent") paintAgent(agentPaintPayload, error.message || String(error));
+    throw error;
   } finally {
-    if (gen === agentGen) hold(false);
+    if (gen === agentGen) {
+      hold(false);
+      $("agent-status")?.removeAttribute("aria-busy");
+    }
   }
 }
 
@@ -21858,9 +21993,7 @@ function showAgent() {
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
   startAgentPoll();
-  loadAgent({ overlay: !agentLoaded }).catch((error) => {
-    paintAgent(null, error instanceof Error ? error.message : String(error));
-  });
+  loadAgent({ overlay: !agentLoaded }).catch(() => {});
 }
 
 function closeBrain() {

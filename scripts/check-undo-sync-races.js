@@ -138,6 +138,106 @@ test('failed-first settlement retains unreported rows and their pending ownershi
   assert.equal(f.nodes.get('undo').disabled, false);
 });
 
+test('separate Archive, Trash and Move batches accumulate without replacing earlier Undo', () => {
+  const ui = fixture();
+  const epoch = ui.run('undoEpoch');
+  ui.run(`beginRemovalRequest([{id:'d',accountId:'alpha',subject:'Fourth'}], 'trash', 'Trash');
+    rememberRemovalReceipt({pending:[{id:'d',actionId:'action-d',generation:1,kind:'remove'}]}, undoEpoch);
+    applyActionSettlement({outcomes:[{id:'d',actionId:'action-d',generation:1,kind:'remove',status:'completed',opId:'op-d'}],opIds:['op-d']});
+    beginRemovalRequest([{id:'e',accountId:'beta',subject:'Fifth'}], 'move', 'Projects');
+    rememberRemovalReceipt({pending:[{id:'e',actionId:'action-e',generation:1,kind:'remove'}]}, undoEpoch);
+    applyActionSettlement({outcomes:[{id:'e',actionId:'action-e',generation:1,kind:'remove',status:'completed',opId:'op-e'}],opIds:['op-e']});`);
+  assert.equal(ui.run('undoEpoch'), epoch);
+  assert.deepEqual(ui.json('undoOpIds'), ['op-a','op-b','op-c','op-d','op-e']);
+  assert.deepEqual(ui.json('undoItems.slice(3).map(item => [item.subject,item.action,item.destinationLabel])'), [['Fourth','trash','Trash'],['Fifth','move','Projects']]);
+  ui.run(`showReadUndo('Read.', [{emailId:'read'}])`);
+  assert.equal(ui.run('undoKind'), 'removal');
+  assert.equal(ui.run('undoOpIds.length'), 5);
+});
+
+test('restoring the completed checklist does not retire another pending batch', async () => {
+  const ui = fixture();
+  ui.run(`beginRemovalRequest([{id:'d',accountId:'alpha'}], 'trash');
+    rememberRemovalReceipt({pending:[{id:'d',actionId:'action-d',kind:'remove',generation:1}]}, undoEpoch);
+    call = async () => ({outcomes:items.map(item=>({id:item.messageId,kind:'undo',status:'completed'}))});`);
+  const epoch = ui.run('undoEpoch');
+  await ui.run('undoRemoval()');
+  assert.equal(ui.run('undoEpoch'), epoch);
+  assert.equal(ui.run('undoKind'), 'removal');
+  assert.deepEqual(ui.json('undoOpIds'), []);
+  ui.run(`showReadUndo('Read.', [{emailId:'read'}]);
+    applyActionSettlement({outcomes:[{id:'d',actionId:'action-d',kind:'remove',generation:1,status:'completed',opId:'op-d'}],opIds:['op-d']});`);
+  assert.deepEqual(ui.json('undoOpIds'), ['op-d']);
+});
+
+test('new batch settlements wait for an in-flight restore and preserve both results', async () => {
+  const ui = fixture();
+  ui.run(`call = () => new Promise(resolve => { globalThis.finishRestore = resolve; });`);
+  const restore = ui.run(`undoRemoval(['op-a'])`);
+  ui.run(`beginRemovalRequest([{id:'d',accountId:'alpha'}], 'archive');
+    rememberRemovalReceipt({pending:[{id:'d',actionId:'action-d',kind:'remove',generation:1}]}, undoEpoch);
+    applyActionSettlement({outcomes:[{id:'d',actionId:'action-d',kind:'remove',generation:1,status:'completed',opId:'op-d'}],opIds:['op-d']});
+    finishRestore({outcomes:[{id:'a',kind:'undo',status:'completed'}]});`);
+  await restore;
+  assert.deepEqual(ui.json('undoOpIds'), ['op-b','op-c','op-d']);
+});
+
+test('clearing a session rejects its late completion instead of reviving Undo', () => {
+  const ui = fixture();
+  ui.run(`beginRemovalRequest([{id:'d',accountId:'alpha'}], 'archive');
+    rememberRemovalReceipt({pending:[{id:'d',actionId:'action-d',kind:'remove',generation:1}]}, undoEpoch);
+    clearUndo();
+    applyActionSettlement({outcomes:[{id:'d',actionId:'action-d',kind:'remove',generation:1,status:'completed',opId:'op-d'}],opIds:['op-d']});`);
+  assert.equal(ui.run('undoKind'), '');
+  assert.equal(ui.run('undoOpIds'), null);
+});
+
+test('a replayed removal receipt cannot resurrect a restored item in the accumulated session', async () => {
+  const ui = fixture();
+  ui.run(`call = async () => ({outcomes:[{id:'a',kind:'undo',status:'completed'}]});`);
+  await ui.run(`undoRemoval(['op-a'])`);
+  ui.run(`applyActionSettlement({outcomes:[{id:'a',kind:'remove',status:'completed',opId:'op-a'}],opIds:['op-a']});`);
+  assert.deepEqual(ui.json('undoOpIds'), ['op-b','op-c']);
+});
+
+test('pending restore settlements drain queued later batches without losing their Undo', async () => {
+  const ui = fixture();
+  await ui.run('undoRemoval()');
+  ui.run(`beginRemovalRequest([{id:'d',accountId:'alpha'}], 'trash');
+    rememberRemovalReceipt({pending:[{id:'d',actionId:'action-d',kind:'remove',generation:1}]}, undoEpoch);
+    applyActionSettlement({outcomes:[{id:'d',actionId:'action-d',kind:'remove',generation:1,status:'completed',opId:'op-d'}],opIds:['op-d']});`);
+  assert.equal(ui.run('undoSettleQueue.length'), 1);
+  ui.run(`applyActionSettlement({outcomes:items.map(item=>({id:item.messageId,kind:'undo',status:'completed'})),opIds:[]});`);
+  assert.equal(ui.run('undoSettleQueue.length'), 0);
+  assert.deepEqual(ui.json('undoOpIds'), ['op-d']);
+});
+
+test('conflicting changes to one message remain distinct and cannot restore together', async () => {
+  const ui = fixture();
+  ui.run(`startRemovalSession('Two changes.', ['old','latest'], false, [
+    {opId:'old',messageId:'a',action:'archive'}, {opId:'latest',messageId:'a',action:'trash'}]);`);
+  await ui.run('undoRemoval()');
+  assert.equal(ui.run('calls.length'), 0);
+  assert.deepEqual(ui.json('undoOpIds'), ['old','latest']);
+  assert.match(ui.nodes.get('status').textContent, /one change per message.*latest change first/);
+  await ui.run(`undoRemoval(['latest'])`);
+  assert.deepEqual(ui.json('calls[0].payload.opIds'), ['latest']);
+});
+
+test('later batches preserve an open Details selection until Undo selected', async context => {
+  const ui = detailsFixture(context);
+  ui.run(`startRemovalSession('First batch.', ['op-a'], false, [items[0]]); openUndoDetails(); setUndoDetailChecks(true);
+    beginRemovalRequest([{id:'b',accountId:'alpha',subject:'Second batch'}], 'trash', 'Trash');
+    rememberRemovalReceipt({pending:[{id:'b',actionId:'action-b',kind:'remove',generation:1}]}, undoEpoch);
+    applyActionSettlement({outcomes:[{id:'b',actionId:'action-b',kind:'remove',generation:1,status:'completed',opId:'op-b'}],opIds:['op-b']});`);
+  assert.equal(ui.run('undoPopoverOpen()'), true);
+  assert.deepEqual(ui.json('selectedUndoOpIds()'), ['op-a']);
+  assert.deepEqual(ui.json('undoOpIds'), ['op-a','op-b']);
+  ui.run(`call = async (channel,payload) => ({outcomes:payload.opIds.map(opId=>({id:opId.slice(3),kind:'undo',status:'completed'}))});`);
+  await ui.run('undoSelected()');
+  assert.deepEqual(ui.json('undoOpIds'), ['op-b']);
+});
+
 test('a second subset cannot overwrite a pending Undo tracker', async () => {
   const f = fixture();
   await f.run(`undoRemoval(['op-a'])`);

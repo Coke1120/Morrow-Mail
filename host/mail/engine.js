@@ -36,6 +36,7 @@ const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
 const composePolicy = require("../../shared/compose-policy");
 const senderHistory = require("../../shared/sender-history");
+const primaryMailboxes = require("../../shared/primary-mailboxes");
 const { syncHorizonDays } = require("../settings");
 const { planBackgroundFolders } = require("./background-jobs");
 
@@ -228,6 +229,7 @@ function accountViews() {
 
 function accountView(row, index) {
   const folders = db.foldersFor(row.id);
+  const primaryMailbox = primaryMailboxes.primaryMailbox(row, folders);
   const primary = [];
   const more = [];
   for (const folder of folders) {
@@ -264,6 +266,12 @@ function accountView(row, index) {
     isConnected: !row.auth_error,
     isDefault: index === 0,
     unreadCount: db.inboxUnread(row.id),
+    cachedPrimaryUnreadCount: primaryMailbox ? db.countMessages({
+      accountId: row.id,
+      folderPath: primaryMailbox.path,
+      filterUnread: true,
+      excludeSnoozed: true,
+    }) : 0,
     promoSignatureEnabled: false,
     folders: { primary, more },
     groups: [],

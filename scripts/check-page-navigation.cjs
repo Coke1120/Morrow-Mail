@@ -702,6 +702,23 @@ app.whenReady().then(async () => {
   assert.equal(compact.snippet, 'none');
   assert.equal(compact.oneLine, true, 'sender and subject share a single line');
   await shot('message-compact-page');
+  const vacationReadsBeforeAll = count('mail:vacationGet');
+  await run(`state.allInbox=true;paintMailVacation();refreshMailVacation()`);
+  assert.equal(count('mail:vacationGet'), vacationReadsBeforeAll, 'All Account OOO does not probe an arbitrary mailbox');
+  assert.equal(await run(`$('mail-ooo').checkVisibility() && $('mail-ooo-account').checkVisibility()`), true);
+  assert.match(await run(`$('mail-ooo-status').textContent`), /set per mailbox/);
+  assert.equal(await run(`$('mail-ooo-refresh').hidden`), true);
+  await run(`$('mail-ooo-account').value='box-1';$('mail-ooo-manage').click()`);
+  await waitFor(`state.settingsAccountId==='box-1' && $('settings-tab-ooo').getAttribute('aria-selected')==='true' && settingsFoldLoaded.has('ooo:box-1')`);
+  assert.equal(count('mail:vacationPut'), 0, 'Manage opens the chosen mailbox without writing');
+  await shot('all-account-ooo-manage');
+  await run(`$('settings').close();state.allInbox=false;paintMailVacation();showPrimary('features','features-panel');paintFeatureCatalog();showFeaturesTab('catalog')`);
+  assert.equal(await run(`$('features-pane-catalog').checkVisibility()`), true);
+  assert.match(await run(`$('features-catalog').textContent`), /accumulate completed changes across batches/);
+  assert.match(await run(`$('features-catalog').textContent`), /Accepted writes await mailbox confirmation before joining Undo/);
+  await run(`showFeaturesTab('cli')`);
+  assert.equal(await run(`$('cli-mail-feedback').checkVisibility()`), true);
+  await run(`showPrimary('mail','shell')`);
   // Reduced motion and a short window retain one tab panel and reachable controls.
   win.webContents.debugger.attach('1.3');
   await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]});
