@@ -7,6 +7,12 @@
   return {
     items: [
       {
+id: "mail-workflow-feedback",
+        title: "Mail and Agent feedback",
+        category: "Mail",
+        blurb: "The All Account Mail Unread chip counts downloaded unread messages in each account's primary folder: Gmail All Mail (Inbox until All Mail is available), otherwise Inbox. Snoozed messages and a read row held open are excluded from the count. Provider folder badges can include mail not downloaded here. Local read changes and definitive mailbox receipts refresh the chip. Confirmed bulk Archive and Trash hide the reviewed rows immediately and submit groups of at most four messages between paints; the rest of Mail stays usable. This is not a cancellation window. Accepted writes await mailbox confirmation before joining Undo. Failed, unknown and unattempted rows reconcile with downloaded mail; refresh before retrying an unknown change. Agent reopens with its last payload, refreshes quietly and shows a non-blocking triage notice when stale; first load and explicit Refresh may show Working. Failed refresh keeps saved suggestions visible.",
+      },
+      {
         id: "folder-label-safety",
         title: "Folders and Gmail labels",
         category: "Mail",
@@ -16,7 +22,7 @@
         id: "support-navigation",
         title: "Support and mailbox selection",
         category: "Support",
-        blurb: "Features, Shortcuts and Debug log preserve the hidden Mail selection. Escape clears selected messages only on the Mail page when no overlay or text input owns it. Open in Mail switches pages immediately; a delayed folder read cannot pull you out of a newer Support visit.",
+        blurb: "Features, Shortcuts and Debug log preserve the hidden Mail selection. Escape clears selected messages only on the Mail page when no overlay or text input owns it. Open in Mail switches pages immediately; a delayed folder read cannot pull you out of a newer Support visit."
       },
       {
         id: "compose-work-preservation",
@@ -100,7 +106,7 @@
         id: "undo-removal",
         title: "Undo removal details",
         category: "Mail",
-        blurb: "Archive, Trash, and Move keep Undo for every completed change in the current removal. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Rows also show the mailbox label/address when the session spans multiple accounts. Each checkbox keeps its subject as its name; its description includes the sender, action, destination and mailbox when shown. Select all or Clear, then Undo selected. The status chip only shows or hides the notice, anchored at the bottom-right. Details stays open during same-session late completions, preserving surviving selection, scroll and checkbox focus; new rows start unchecked. Escape closes it and returns focus. Restore controls wait until pending changes settle, and unreported rows stay available. Mark as read keeps its own Undo and does not replace a removal Undo. A newer removal replaces that list. Outbox undo send is separate and is not in this checklist. Separate account settlements from one reviewed removal join that same session in either order; late settlements from an older removal cannot replace the newer checklist. Unchanged detail rows retain their DOM nodes as well as selection, focus and scroll; opening Details does not query the provider.",
+        blurb: "Archive, Trash, and Move accumulate completed changes across batches in one removal Undo session until restored or cleared. Details, beside Undo, opens a checklist with the subject, sender, and action (archive, trash, or move), plus the destination when it is known. Rows also show the mailbox label/address when the session spans multiple accounts. Each checkbox keeps its subject as its name; its description includes the sender, action, destination and mailbox when shown. Select all or Clear selection, then Undo selected. Clear selection only unchecks rows; it does not discard Undo. The status chip only shows or hides the notice, anchored at the bottom-right. Details stays open as batches and late completions join, preserving surviving selection, scroll and checkbox focus; new rows start unchecked. Escape closes it and returns focus. Restore controls wait until pending restores settle, and unreported rows stay available. Mark as read keeps its own Undo and does not replace a removal Undo, including a pending removal. Different changes to the same message stay separate: select one change per message and restore its latest change first. Provider identity checks can refuse an obsolete restore. Outbox undo send is separate and is not in this checklist. Settlements belonging to a retired session cannot revive its checklist.",
       },
       {
         id: "attachment-downloads",
@@ -130,7 +136,7 @@
         id: "out-of-office",
         title: "Out of Office",
         category: "Mail",
-        blurb: "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself. Provider replies preserve edits made during Save or Refresh as unsaved while updating the reviewed revision. Switching mailbox during a read cannot cache an unapplied result. Google mail/settings permission excludes Calendar; Microsoft uses its separate Graph bundle.",
+        blurb: "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself. All Account Mail shows a mailbox chooser and Manage selected mailbox, not a merged on/off status; it opens that mailbox's Out of Office settings without writing or checking every account. A single mailbox retains its own status and Refresh. Provider replies preserve edits made during Save or Refresh as unsaved while updating the reviewed revision. Switching mailbox during a read cannot cache an unapplied result. Google mail/settings permission excludes Calendar; Microsoft uses its separate Graph bundle.",
       },
       {
         id: "imap-recovery",

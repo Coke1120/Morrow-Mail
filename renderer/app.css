@@ -5544,6 +5544,7 @@ textarea { min-height: 140px; resize: vertical; }
 .mail-ooo { margin: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; }
 .mail-ooo p { overflow-wrap: anywhere; }
 .mail-ooo .row { flex-wrap: wrap; }
+.mail-ooo select { min-width: 0; max-width: 100%; }
 #scheduled-dialog { width: min(760px, calc(100vw - 32px)); }
 #scheduled li { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 #scheduled li > span { flex-basis: 100%; overflow-wrap: anywhere; }
