@@ -13045,24 +13045,19 @@ function startSignatureEdit(row, isDefault) {
   $("signature-name").focus();
 }
 
-let signatureListPending = null;
-function loadSignatureEditor(fresh = false) {
+async function loadSignatureEditor(fresh = false) {
+  // Concurrent callers each get their own gen + listSignatures call (race OK).
+  // signatureListGen last-write-wins paint; `fresh` kept for call-site API compat.
+  void fresh;
+  const gen = ++signatureListGen;
   const generation = signatureEditorGeneration;
   const accountId = signatureAccount()?.id;
-  const key = JSON.stringify([generation, accountId]);
-  if (!fresh && signatureListPending?.key === key) return signatureListPending.promise;
-  const gen = ++signatureListGen;
-  const request = { key };
-  signatureListPending = request;
-  request.promise = (async () => {
-    if (!signatureEditorSettings) await ensureSignatureSettings();
-    if (generation !== signatureEditorGeneration || accountId !== signatureAccount()?.id || !$("signatures").open) return;
-    const pack = await call("mail:listSignatures", accountId ? { accountId } : {});
-    if (gen === signatureListGen && generation === signatureEditorGeneration
-        && $("signatures").open && signatureAccount()?.id === accountId) paintSignatures(pack);
-    return pack;
-  })().finally(() => { if (signatureListPending === request) signatureListPending = null; });
-  return request.promise;
+  if (!signatureEditorSettings) await ensureSignatureSettings();
+  if (generation !== signatureEditorGeneration || accountId !== signatureAccount()?.id || !$("signatures").open) return;
+  const pack = await call("mail:listSignatures", accountId ? { accountId } : {});
+  if (gen === signatureListGen && generation === signatureEditorGeneration
+      && $("signatures").open && signatureAccount()?.id === accountId) paintSignatures(pack);
+  return pack;
 }
 
 let signatureSettingsPending = null;

@@ -146,12 +146,12 @@ async function signatureStaleFailureAndClose() {
 
 async function signatureListOrder() {
   const { ui, node } = signatures();
-  // Perf dedupes same-key in-flight listSignatures; force fresh so two gens race.
-  // Pre-seed settings so ensureSignatureSettings does not consume a reads[] slot.
+  // Pre-seed settings so ensureSignatureSettings does not consume a reads[] slot;
+  // concurrent loadSignatureEditor() must each call listSignatures (race / gen LWW).
   ui.run(`globalThis.reads=[];
     signatureEditorSettings = {};
     call=()=>new Promise(resolve=>reads.push(resolve));
-    globalThis.oldRead=loadSignatureEditor(true); globalThis.newRead=loadSignatureEditor(true);
+    globalThis.oldRead=loadSignatureEditor(); globalThis.newRead=loadSignatureEditor();
     reads[1]({signatures:[sigB]});`);
   await ui.run("newRead");
   ui.run("reads[0]({signatures:[sigA]})"); await ui.run("oldRead");

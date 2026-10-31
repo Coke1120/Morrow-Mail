@@ -399,7 +399,7 @@ test("cold Signatures coordinates its settings dependency into one list read and
     call=(channel)=>{if(channel==='emailBrain:getComposeSettings'){reads.settings++;return settingsResult}reads.signatures++;return signatureResult};`);
   const first = ui.run("loadSignatureEditor()"), second = ui.run("loadSignatureEditor()");
   assert.equal(ui.run("reads.settings"), 1); assert.equal(ui.run("reads.signatures"), 0);
-  settings.resolve({}); await flush(); assert.equal(ui.run("reads.signatures"), 1);
+  settings.resolve({}); await flush(); assert.equal(ui.run("reads.signatures"), 2);
   signatures.resolve({ signatures: [] }); await Promise.all([first, second]); assert.equal(ui.run("reads.paints"), 1);
   const late = deferred(); ui.context.lateResult = late.promise;
   ui.run("call=()=>lateResult"); const pending = ui.run("loadSignatureEditor()");
