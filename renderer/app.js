@@ -10406,12 +10406,16 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
   const text = receiptText(label, outcome);
   const waiting = (outcome.outcomes || []).some((row) => row.phase === "accepted");
-  if (outcome.removalEpoch == null && undoKind !== "removal") startRemovalSession(text, [], !!outcome.error, []);
+  if (outcome.removalEpoch == null) startRemovalSession(text, [], !!outcome.error, []);
   const epoch = outcome.removalEpoch ?? undoEpoch;
   rememberRemovalReceipt(outcome, epoch);
   if (epoch === undoEpoch) {
     if (outcome.opIds.length && (undoBusy || undoPending.size)) undoSettleQueue.push(outcome);
-    else if (outcome.opIds.length) applyRemovalSettlement(outcome, text, !!outcome.error);
+    else if (outcome.opIds.length) {
+      // Fresh finishBulkRemoval reclaim: this batch's opIds are new undoable removals, not restored replays.
+      for (const id of outcome.opIds) restoredUndoOpIds.delete(id);
+      applyRemovalSettlement(outcome, text, !!outcome.error);
+    }
     else if (waiting || undoOpIds?.length) showStatus(text, !!outcome.error);
     else if (hasPendingRemovalUndo()) showStatus(text, !!outcome.error);
     else { clearUndo(); showStatus(text, !!outcome.error); }
