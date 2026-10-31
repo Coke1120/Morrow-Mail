@@ -2239,13 +2239,12 @@ function resetOvernightForTest() {
 
 function nextOvernightRow(now) {
   const days = syncHorizonDays();
-  // Each poll starts at the newest incomplete body; overnightCursor only pages
-  // within this call so a later newer insert is not skipped after a success.
-  overnightCursor = null;
-  const query = { needsBody: true, limit: 200 };
+  const query = { needsBody: true, limit: 200, beforeMessage: overnightCursor };
   if (days) query.sinceTs = now - days * DAY_MS;
+  // One wrap: after walking older than the cursor, rescan from newest so a
+  // mid-window insert (or test fixture) newer than overnightCursor stays visible.
+  let wrapped = false;
   while (true) {
-    query.beforeMessage = overnightCursor;
     const rows = db.selectMessages(query, { headersOnly: true });
     for (const row of rows) {
       if (!row) continue;
@@ -2257,7 +2256,17 @@ function nextOvernightRow(now) {
       if (!account || account.auth_error) continue;
       return row;
     }
-    if (rows.length < 200) { overnightCursor = null; return null; }
+    if (rows.length < 200) {
+      if (!wrapped && query.beforeMessage) {
+        overnightCursor = null;
+        query.beforeMessage = null;
+        wrapped = true;
+        continue;
+      }
+      overnightCursor = null;
+      return null;
+    }
+    query.beforeMessage = overnightCursor;
   }
 }
 
