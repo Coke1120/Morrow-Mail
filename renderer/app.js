@@ -12482,7 +12482,7 @@ function renderScheduled(rows) {
   if (attention) { attention.textContent = reviewCount ? ` (${reviewCount} need review)` : ""; attention.hidden = !reviewCount; }
   const open = $("scheduled-open");
   if (open) open.title = reviewCount ? "Check Sent and review saved delivery records. These messages will not resend automatically." : "Scheduled mail";
-  if (!$("scheduled-dialog").open) return;
+  if (!$("scheduled-dialog")?.open) return;
   if (summary) summary.textContent = scheduledSummary(rows);
   if (!rows.length) {
     const item = document.createElement("li");
@@ -14437,8 +14437,9 @@ async function prepareDraftCompose(email, extra) {
 
 function loadScheduled(options = {}) {
   const visibleOutbox = state.view === "mail" && state.outbox;
-  const outbox = visibleOutbox && !$("scheduled-dialog").open;
-  const includeRows = visibleOutbox || $("scheduled-dialog").open;
+  const dialogOpen = !!$("scheduled-dialog")?.open;
+  const outbox = visibleOutbox && !dialogOpen;
+  const includeRows = visibleOutbox || dialogOpen;
   const offset = options.more ? (outbox ? state.outboxRows.length : scheduledRecords.length) : 0;
   const selectedId = outbox && state.email?.outbox ? state.email.id : "";
   const key = JSON.stringify([outbox, includeRows, offset, selectedId]);
@@ -14500,7 +14501,7 @@ async function readScheduled(request) {
     if (gen !== scheduledGen) return;
     state.outboxError = error instanceof Error ? error.message : String(error);
     if (state.outbox) renderList();
-    if (!$("scheduled-dialog").open) return;
+    if (!$("scheduled-dialog")?.open) return;
     $("scheduled").replaceChildren();
     const item = document.createElement("li");
     item.textContent = "Unknown — Scheduled mail could not be loaded. ";
