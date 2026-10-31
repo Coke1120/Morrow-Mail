@@ -15,17 +15,36 @@ function fixture() {
     createElement(tagName) {
       const attributes = new Map();
       const classes = new Set();
-      return {
-        tagName, nodeType: 1, children: [], dataset: {}, hidden: false, disabled: false, value: '', content: '', scrollTop: 0,
+      const node = {
+        tagName, nodeType: 1, children: [], parentNode: null, dataset: {}, hidden: false, disabled: false, value: '', content: '', scrollTop: 0,
         get textContent() { return this.content + this.children.map(child => child.textContent || '').join(' '); },
-        set textContent(value) { this.content = String(value); this.children = []; },
+        set textContent(value) { this.content = String(value); for (const child of [...this.children]) child.remove(); },
         classList: {
           toggle(name, on) { if (on) classes.add(name); else classes.delete(name); },
           add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
         },
-        append(...children) { this.children.push(...children); },
-        appendChild(child) { this.append(child); return child; },
-        replaceChildren(...children) { this.content = ''; this.children = children; },
+        append(...kids) { for (const child of kids) this.appendChild(child); },
+        appendChild(child) { return this.insertBefore(child, null); },
+        insertBefore(child, ref) {
+          if (!child) return child;
+          child.remove();
+          child.parentNode = this;
+          const idx = ref == null ? -1 : this.children.indexOf(ref);
+          if (idx >= 0) this.children.splice(idx, 0, child);
+          else this.children.push(child);
+          return child;
+        },
+        remove() {
+          if (this.parentNode) {
+            this.parentNode.children = this.parentNode.children.filter(row => row !== this);
+            this.parentNode = null;
+          }
+        },
+        replaceChildren(...kids) {
+          this.content = '';
+          for (const child of [...this.children]) child.remove();
+          for (const child of kids) this.appendChild(child);
+        },
         setAttribute: (name, value) => attributes.set(name, String(value)),
         getAttribute: name => attributes.get(name) || null,
         removeAttribute: name => attributes.delete(name),
@@ -36,10 +55,11 @@ function fixture() {
             ? child.tagName === 'input' && child.type === 'checkbox' : part.trim() === child.tagName));
         },
         querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
-        contains(node) { return this === node || this.children.some(child => child.contains(node)); },
+        contains(other) { return this === other || this.children.some(child => child.contains(other)); },
         addEventListener() {},
         focus() { document.activeElement = this; },
       };
+      return node;
     },
   };
   for (const id of ['notice','status','status-chip','undo','undo-details','undo-details-popover','list-filter',
