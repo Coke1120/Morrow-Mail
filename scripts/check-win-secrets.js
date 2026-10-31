@@ -11,6 +11,8 @@ function run() {
     module,
     require(name) {
       if (name === "./secret-service") return require("../host/mail/secret-service");
+      if (name === "../performance-diagnostics") return { sync: (_stage, work) => work(), measure: (_stage, work) => work() };
+      if (name === "./keychain-reader") return { TIMEOUT_MS: 30000, MAX_OUTPUT: 1024 * 1024, createReader: () => () => Promise.resolve("fixture") };
       assert.equal(name, "child_process");
       return {
         spawnSync(command, args, options) {
