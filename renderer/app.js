@@ -15728,6 +15728,13 @@ function paintFeatureCatalog() {
         blurb.className = "feature-card-blurb";
         blurb.textContent = row.blurb || "";
         card.append(title, blurb);
+        if (row.id === "sponsor-support") {
+          const support = $("settings-support");
+          const links = support && typeof support.querySelector === "function"
+            ? support.querySelector(".about-links")
+            : null;
+          if (links && typeof links.cloneNode === "function") card.appendChild(links.cloneNode(true));
+        }
         list.appendChild(card);
       }
       if (group.heading) {
@@ -19369,6 +19376,7 @@ async function paintAgentLearned() {
     if ($("settings").open && !$("settings-prefs").hidden) renderAgentLearned(view);
   } catch (error) {
     if (!$("settings").open || $("settings-prefs").hidden) return;
+    list.morrowLearnedStamp = null;
     list.replaceChildren();
     const empty = document.createElement("li");
     empty.className = "empty";

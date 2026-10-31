@@ -15,8 +15,9 @@ assert.equal(card.category, "Support");
 assert.equal(card.title, "Support the project");
 assert.match(card.blurb, /GitHub Sponsors/);
 assert.match(card.blurb, /Buy Me a Coffee/);
-assert.ok(card.blurb.includes(SPONSORS), "catalog blurb missing GitHub Sponsors URL");
-assert.ok(card.blurb.includes(COFFEE), "catalog blurb missing Buy Me a Coffee URL");
+assert.match(card.blurb, /These links open in your browser/);
+assert.ok(!card.blurb.includes(SPONSORS), "sponsor URL belongs in the rendered link, not plain text");
+assert.ok(!card.blurb.includes(COFFEE), "coffee URL belongs in the rendered link, not plain text");
 
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 const about = html.slice(html.indexOf('id="about-dialog"'), html.indexOf('id="changelog"'));

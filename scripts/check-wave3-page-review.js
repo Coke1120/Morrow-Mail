@@ -42,6 +42,14 @@ const { uiFixture, Element } = load("scripts/check-wave1-review.js", {}, source 
 Element.prototype.append = function (...nodes) {
   for (const node of nodes) this.appendChild(typeof node === "string" ? this.ownerDocument.createTextNode(node) : node);
 };
+Element.prototype.cloneNode = function (deep) {
+  const clone = this.ownerDocument.createElement(this.tagName);
+  clone.className = this.className;
+  clone.text = this.text;
+  for (const [name, value] of Object.entries(this.attributes)) clone.setAttribute(name, value);
+  if (deep) for (const child of this.childNodes) clone.appendChild(child.cloneNode(true));
+  return clone;
+};
 
 function providerFixture(provider = "google", overrides = {}) {
   const account = { id: "a", created_at: 1, auth_kind: "oauth2", mail_transport: provider === "google" ? "gmail_api" : "imap", delimiter: "/" };
@@ -473,11 +481,118 @@ test("F8: Escape preserves hidden Mail selection on every non-Mail page and reta
   assert.equal(ui.run("state.email.id"), "chosen");
 });
 
+for (const view of ["mail", "agent"]) {
+  for (const populated of [true, false]) {
+    test(`P3 R5: Learned ${populated ? "patterns and Delete" : "empty state"} recover after a failed read over ${view}`, async () => {
+      const original = {
+        threshold: 3,
+        patterns: populated ? [{ id: "synthetic-pattern", label: "Mark as read for sender", count: 3, learned: true }] : [],
+        suppressed: [],
+      };
+      let current = original;
+      let failNextRead = false;
+      const calls = [];
+      const ui = uiFixture(async (channel, payload) => {
+        calls.push({ channel, payload });
+        if (channel === "nativeAgent:learning:list") {
+          if (failNextRead) {
+            failNextRead = false;
+            return { success: false, error: { message: "Synthetic Learned read failure" } };
+          }
+          return ok(copy(current));
+        }
+        assert.equal(channel, "nativeAgent:learning:forget");
+        assert.equal(payload.id, "synthetic-pattern");
+        current = { ...original, patterns: [] };
+        return ok(copy(current));
+      });
+      ui.run(`state.view=${JSON.stringify(view)};$("settings").open=true;$("settings-prefs").hidden=false;paintThread=()=>{};`);
+      const list = ui.nodes.get("agent-learned-list");
+      await ui.run("paintAgentLearned()");
+      const originalRow = list.firstChild;
+      const originalDelete = list.querySelector("button");
+      assert.match(list.textContent, populated ? /Mark as read for sender — LearnedDelete/ : /Nothing learned yet/);
+      assert.equal(list.querySelectorAll("button").length, populated ? 1 : 0);
+      await ui.run("paintAgentLearned()");
+      assert.equal(list.firstChild, originalRow, "healthy unchanged reads retain their DOM");
+      assert.equal(list.querySelector("button"), originalDelete);
+
+      failNextRead = true;
+      await ui.run("paintAgentLearned()");
+      assert.equal(list.textContent, "Synthetic Learned read failure");
+      assert.equal(list.querySelectorAll("button").length, 0);
+      await ui.run("paintAgentLearned()");
+      assert.doesNotMatch(list.textContent, /read failure/);
+      assert.match(list.textContent, populated ? /Mark as read for sender — LearnedDelete/ : /Nothing learned yet/);
+      assert.equal(list.querySelectorAll("button").length, populated ? 1 : 0);
+      const recoveredRow = list.firstChild;
+      const recoveredDelete = list.querySelector("button");
+      assert.notEqual(recoveredRow, originalRow);
+      await ui.run("paintAgentLearned()");
+      assert.equal(list.firstChild, recoveredRow);
+      assert.equal(list.querySelector("button"), recoveredDelete);
+      assert.equal(calls.filter(call => call.channel === "nativeAgent:learning:list").length, 5);
+      if (populated) {
+        recoveredDelete.click();
+        await tick();
+        assert.match(list.textContent, /Nothing learned yet/);
+        assert.equal(list.querySelectorAll("button").length, 0);
+        assert.equal(calls.filter(call => call.channel === "nativeAgent:learning:forget").length, 1);
+      }
+    });
+  }
+}
+
+test("P3 R6: rendered Features reuses clickable Settings Support destinations without moving or changing them", () => {
+  const ui = uiFixture(async () => { throw new Error("Features must not invoke IPC"); });
+  const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
+  const supportHtml = html.match(/<section class="fold" id="settings-support"[^]*?<\/section>/)[0];
+  const settings = ui.nodes.get("settings-support");
+  settings.hidden = true;
+  const links = ui.context.document.createElement("nav");
+  links.className = "about-links";
+  links.setAttribute("aria-label", "Support");
+  for (const match of supportHtml.matchAll(/<a ([^>]+)>([^<]+)<\/a>/g)) {
+    const anchor = ui.context.document.createElement("a");
+    for (const attribute of match[1].matchAll(/([\w-]+)="([^"]*)"/g)) anchor.setAttribute(attribute[1], attribute[2]);
+    anchor.textContent = match[2];
+    links.appendChild(anchor);
+  }
+  settings.appendChild(links);
+  const settingsLinks = links.querySelectorAll("a");
+  assert.equal(settingsLinks.length, 2);
+  ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
+  for (const pass of [1, 2]) {
+    ui.run("paintFeatureCatalog()");
+    const cards = ui.nodes.get("features-catalog").querySelectorAll(".feature-card");
+    const card = cards.find(node => node.querySelector("h4").textContent === "Support the project");
+    assert.ok(card);
+    const anchors = card.querySelectorAll("a");
+    assert.equal(anchors.length, 2, "Support destinations must be clickable on paint " + pass);
+    assert.equal(card.querySelector("nav").getAttribute("aria-label"), "Support");
+    assert.deepEqual(anchors.map(anchor => [anchor.getAttribute("href"), anchor.textContent]), [
+      ["https://github.com/sponsors/Coke1120", "GitHub Sponsors"],
+      ["https://buymeacoffee.com/coke1120", "Buy Me a Coffee"],
+    ]);
+    for (const [index, anchor] of anchors.entries()) {
+      assert.equal(anchor.getAttribute("target"), "_blank");
+      assert.equal(anchor.getAttribute("rel"), "noreferrer");
+      assert.notEqual(anchor, settingsLinks[index]);
+    }
+    assert.equal(ui.nodes.get("features-catalog").querySelectorAll("a").length, 2);
+    assert.deepEqual(links.querySelectorAll("a"), settingsLinks);
+    assert.equal(links.parentNode, settings);
+    assert.equal(settings.hidden, true);
+    assert.equal(ui.nodes.get("features-empty").hidden, true);
+  }
+});
+
 test("Features: wave3 catalog, rendered Features/Shortcuts/CLI tabs and identity claims stay aligned", () => {
   const ui = mailFixture();
   ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
   ui.run("paintFeatureCatalog();paintShortcuts();paintCli()");
   const rendered = ui.nodes.get("features-catalog").textContent;
+  assert.match(rendered, /After a temporary loading error, a successful read restores the list and Delete/);
   for (const claim of [/complete folder hierarchy/, /saved provider memberships/, /unique.*source folder/, /Escape clears selected messages only on the Mail page/, /delayed folder read/]) assert.match(rendered, claim);
   assert.match(ui.nodes.get("shortcuts-list").textContent, /only on the Mail page/);
   const nav = ui.nodes.get("features-tabs");
@@ -488,6 +603,7 @@ test("Features: wave3 catalog, rendered Features/Shortcuts/CLI tabs and identity
     assert.equal(ui.nodes.get("features-pane-" + name).hidden, false);
   }
   const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
+  assert.match(html, /id="agent-learned-help"[^<]*After a temporary loading error, a successful read restores the list and Delete/);
   assert.match(html, /id="cli-folder-labels"[^]*ambiguous legacy Message-ID matches are refused/);
   assert.equal(require("../package.json").version, "0.3.12");
 });
