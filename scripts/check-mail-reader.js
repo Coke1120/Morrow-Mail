@@ -560,6 +560,7 @@ async function assertCachedIncompleteSkipsTheSpinner() {
   let release;
   ui.call = (channel, payload) => {
     if (channel !== 'mail:openEmail') return Promise.resolve({});
+    assert.equal(payload.includeThread, false, 'conversation-disabled opens omit thread enumeration');
     return new Promise((resolve) => {
       release = () => resolve({
         email: { ...cached, textBody: 'Cached newsletter', htmlBody: null, bodyComplete: false, threadId: 'C' },

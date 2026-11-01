@@ -33,6 +33,7 @@ async function run() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-performance-storage-"));
   const file = path.join(directory, "mail.sqlite");
   const originalAppend = Persistence.prototype.append, originalStage = perf.sync;
+  const originalPrepare = Database.prototype.prepare;
   const readHeaders = db.recipientHeaderRows, readChanges = db.recipientHeaderChanges;
   try {
     await db.open(file);
@@ -125,6 +126,81 @@ async function run() {
       console.log("bounded-list-plan", JSON.stringify(plan));
     } finally { raw.close(); }
 
+    db.insertAccount(account("reconcile")); db.replaceFolders("reconcile", [{ path: "Inbox", name: "Inbox", wellKnown: "inbox" }]);
+    db.applyFolderSync("reconcile", "Inbox", { messages: Array.from({ length: 210 }, (_unused, index) => message("reconcile", index)), validity: 1, keepOthers: true });
+    for (let index = 0; index < 6; index++) db.insertMessage({ ...message("reconcile", 63), id: `duplicate-${index}`, accountId: "reconcile", folderPath: "Inbox", uidValidity: 1 });
+    db.insertMessage({ ...message("reconcile", 9997), id: "old-reconcile", accountId: "reconcile", folderPath: "Inbox", uidValidity: 1, listSortTs: 1 });
+    db.insertMessage({ ...message("reconcile", 9998), id: "pending-reconcile", accountId: "reconcile", folderPath: "Inbox", uidValidity: 1, draftPending: true });
+    db.insertMessage({ ...message("reconcile", 9999), id: "local-reconcile", accountId: "reconcile", folderPath: "Inbox", uidValidity: 1, uid: 0 });
+    const uidReport = { messages: [], validity: 1, exists: 210, unseen: 0, retainOlderThan: 1700000000000,
+      uids: Array.from({ length: 210 }, (_unused, index) => index + 1) };
+    const visits = [];
+    Database.prototype.prepare = function(sql) {
+      const statement = originalPrepare.call(this, sql), read = statement.all;
+      statement.all = function(...args) {
+        const rows = read.apply(this, args);
+        if (sql.includes("rowid AS position")) visits.push({ sql, params: args[0], rows });
+        return rows;
+      };
+      return statement;
+    };
+    let turns = 0;
+    await db.applyFolderSyncAsync("reconcile", "Inbox", uidReport, () => { turns++; });
+    assert.ok(turns >= 5, "unchanged visited pages yield even when no deletion was found");
+    assert.equal(visits.reduce((total, visit) => total + visit.rows.length, 0), 219);
+    assert.ok(visits.every(visit => visit.rows.length <= 64 && !/NOT IN|json_each|OFFSET/.test(visit.sql)));
+    const reconciliationPlan = new Database(`${file}.live`, { readonly: true });
+    try {
+      const page = visits[1];
+      const plan = originalPrepare.call(reconciliationPlan, `EXPLAIN QUERY PLAN ${page.sql}`).all(page.params);
+      assert.match(JSON.stringify(plan), /messages_uid.*\(uid_validity,uid\)>/);
+      assert.doesNotMatch(JSON.stringify(plan), /TEMP B-TREE/);
+      console.log("visited-reconciliation-plan", JSON.stringify(plan));
+    } finally { reconciliationPlan.close(); }
+    Database.prototype.prepare = originalPrepare;
+    await db.applyFolderSyncAsync("reconcile", "Inbox", { ...uidReport, uids: null });
+    await db.applyFolderSyncAsync("reconcile", "Inbox", { ...uidReport, uids: uidReport.uids.map(String) });
+    await db.applyFolderSyncAsync("reconcile", "Inbox", { ...uidReport, uids: [], keepOthers: true });
+    assert.equal(db.countMessages({ accountId: "reconcile" }), 219, "absent UID coverage and keepOthers cannot imply deletions");
+    let invalidationChecks = 0;
+    await assert.rejects(db.applyFolderSyncAsync("reconcile", "Inbox", uidReport, () => {
+      if (++invalidationChecks === 2) throw new Error("Synthetic reconciliation incarnation changed");
+    }), /Synthetic reconciliation incarnation changed/);
+    Persistence.prototype.append = () => { throw new Error("Synthetic reconciliation journal failure"); };
+    await assert.rejects(db.applyFolderSyncAsync("reconcile", "Inbox", { ...uidReport, uids: [] }), /Synthetic reconciliation journal failure/);
+    Persistence.prototype.append = originalAppend;
+    assert.equal(db.countMessages({ accountId: "reconcile" }), 219);
+    db.insertMailAction({ id: "held-reconciliation", batchId: "held-reconciliation", messageId: "reconcile-0064", accountId: "reconcile", generation: 1,
+      intentJson: JSON.stringify({ kind: "remove" }), priorJson: "{}", sourceJson: "{}", phase: "accepted", createdAt: 1 });
+    await db.applyFolderSyncAsync("reconcile", "Inbox", { ...uidReport, uids: uidReport.uids.filter(uid => uid !== 64 && uid !== 65) });
+    assert.equal(db.countMessages({ accountId: "reconcile" }), 212, "tuple paging handles duplicate UIDs without skipping their rowid ties");
+    assert.ok(db.messageById("reconcile-0064"), "accepted local removals remain protected from reconciliation");
+    for (const id of ["old-reconcile", "pending-reconcile", "local-reconcile"]) assert.ok(db.messageById(id));
+    const remote = require("../host/mail/remote");
+    let released = 0;
+    const incomplete = { getMailboxLock: async () => ({ release() { released++; } }), search: async () => undefined, mailbox: { uidValidity: 1 } };
+    await assert.rejects(remote.searchUids(incomplete, "Inbox", {}), { code: "imap_search_incomplete" });
+    assert.equal(released, 1);
+    incomplete.search = async () => [];
+    assert.deepEqual((await remote.searchUids(incomplete, "Inbox", {})).uids, []);
+    incomplete.search = async () => [1, undefined];
+    await assert.rejects(remote.searchUids(incomplete, "Inbox", {}), { code: "imap_search_incomplete" });
+    incomplete.search = async () => ["64"];
+    assert.deepEqual((await remote.searchUids(incomplete, "Inbox", {})).uids, [64]);
+    db.removeAccount("reconcile");
+    db.insertAccount(account("reconcile-generation")); db.replaceFolders("reconcile-generation", [{ path: "Inbox", name: "Inbox", wellKnown: "inbox" }]);
+    db.applyFolderSync("reconcile-generation", "Inbox", { messages: Array.from({ length: 130 }, (_unused, index) => message("reconcile-generation", index)), validity: 1, keepOthers: true });
+    const superseded = db.applyFolderSyncAsync("reconcile-generation", "Inbox", { ...uidReport, uids: Array.from({ length: 130 }, (_unused, index) => index + 1) });
+    const replaced = new Promise(resolve => setImmediate(() => {
+      db.applyFolderSync("reconcile-generation", "Inbox", { messages: [message("reconcile-generation", 9999)], validity: 2, keepOthers: true });
+      resolve();
+    }));
+    await assert.rejects(superseded, { code: "mail_open_cancelled" });
+    await replaced;
+    assert.equal(db.countMessages({ accountId: "reconcile-generation" }), 1);
+    assert.equal(db.messageById("reconcile-generation-9999").uid_validity, 2, "old UID coverage cannot delete a newer mailbox generation after yielding");
+    db.removeAccount("reconcile-generation");
+
     db.insertAccount(account("partial")); db.replaceFolders("partial", [{ path: "Inbox", name: "Inbox", wellKnown: "inbox" }]);
     let changedBatches = 0;
     Persistence.prototype.append = function (commands) {
@@ -148,6 +224,7 @@ async function run() {
     assert.notEqual(db.folderByPath("invalidated", "Inbox").uid_cursor, 60, "invalidated work cannot publish its final cursor");
     console.log("performance-storage-ok: bounded sync/recovery, header deltas, metadata/counts, scope/hold/snooze, queue summaries and pagination");
   } finally {
+    Database.prototype.prepare = originalPrepare;
     Persistence.prototype.append = originalAppend; perf.sync = originalStage;
     db.recipientHeaderRows = readHeaders; db.recipientHeaderChanges = readChanges;
     await db.close(); fs.rmSync(directory, { recursive: true, force: true });

@@ -71,7 +71,9 @@ the restart cursor. Smaller batches can increase fsync overhead and do not avoid
 rewriting body-bearing SQLite records; individual SQL and disk calls remain
 unbounded. Automatic checkpoints coalesce startup work, account for mailbox size,
 previous copy cost and journal age, and defer with bounded retry backoff when
-staging headroom is low. The estimate concerns an incremental staging copy plus a
+staging headroom is low. Tiny journals use a size/cost-aware soft age and retain
+their own first-dirty time after rotation; separate one-hour age / large-backlog
+gates bound dispatch eligibility, not publication or recovery time. The estimate concerns an incremental staging copy plus a
 reserve, not three database sizes of free space. Unknown headroom allows a copy
 attempt; explicit checkpoints retain target-sequence semantics and bypass this
 advisory gate. Actual disk-full writes still fail safely and may require freeing
@@ -182,7 +184,7 @@ renderer HTML/CSS/layout work or a synchronous OS/disk wait by itself.
 two-account fixture with large bodies and duplicate timestamps. It covers
 metadata-only search and original-query ranking parity, account/folder/field
 summary dependencies, count-only badges, snooze expiry, staged cache rollback,
-Gmail cursor count reuse, IMAP supplied-count reuse, partial-index migrations,
+Gmail per-message durable count deltas and cursor reuse, IMAP supplied-count reuse, partial-index migrations,
 tuple query plans and bounded real-renderer Previous/Next state. It prints local
 query-plan observations, optional SQLite dbstat index bytes and three warm raw
 query samples; these are not thresholds or native frame/I/O measurements.
@@ -191,11 +193,19 @@ Unfiltered pages support optional versioned forward boundaries. Each merged
 branch admits one page after the tuple, not offset plus page size. Exact totals
 remain whole-scope. Changed scope/order/snoozes reject stale boundaries and retain
 offset compatibility; filtered pages and missing Back history also use offsets.
-The renderer keeps at most 32 boundaries and one message page. Search remains
+The renderer keeps at most 32 boundaries and one message page, preserving the
+current boundary across refresh only when the host accepts its version. Unread
+holds share an indexed base aggregate plus a separately scoped read-row lookup.
+Gmail counts seed once, then update transactionally with content/resume commits.
+IMAP reconciliation visits 64 identity/flag rows per yielding page, including
+unchanged pages; incomplete UID searches never imply deletion. Thread actions
+enumerate body-free identities; callers not using conversation summaries omit
+them without removing post-await freshness. Search remains
 exact, not approximate; the bounded selectivity probe changes access paths only.
 Unscoped prefix ranking, sparse residual filters, deep offset fallbacks and
 individual durable calls can still be expensive. Partial indexes and summary
 triggers add storage/write work; target-device flag/sync overhead remains to be
-profiled. Runtime checkpoint scheduling is unchanged (Astra R07 deferred for
-physical-I/O evidence and startup-job coordination). See
-[the runtime query decision](adr/2026-11-01-runtime-mail-queries.md).
+profiled. Tiny-journal age/cost gates are conservative synthetic policy choices,
+not native tuning. Broad ranking, warm negative search verification and
+conversation-enabled full header enumeration remain expensive. See
+[the residual decisions and deferrals](adr/2026-11-01-residual-mail-performance.md).
