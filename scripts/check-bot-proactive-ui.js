@@ -63,7 +63,7 @@ async function run() {
     assert.equal(field("webhookUrl").value, "https://bot.tail.ts.net:8443/notify");
     assert.equal(field("secret").value, "synthetic-ui-bearer");
     field("allow").checked = true;
-    form.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
+    form.requestSubmit();
     await tick(); await tick();
     const configured = auth.view().grants[0];
     assert.equal(configured.proactive.enabled, true);
@@ -74,6 +74,39 @@ async function run() {
     form = $("bot-grants").querySelector(".bot-proactive form");
     assert.equal(field("secret").value, ""); assert.equal(field("allow").checked, false);
     assert.match($("bot-grants").textContent, /Paused until bot access is listening/);
+    let submits = 0;
+    form.addEventListener("submit", () => { submits++; });
+    field("everyMinutes").value = "0";
+    field("everyMinutes").dispatchEvent(new dom.window.Event("input"));
+    assert.equal(form.checkValidity(), false, "active invalid interval blocks native submission");
+    field("kind").value = "cron";
+    field("kind").dispatchEvent(new dom.window.Event("input"));
+    field("kind").dispatchEvent(new dom.window.Event("change"));
+    assert.equal(field("everyMinutes").parentElement.hidden, true);
+    field("allow").checked = true;
+    form.requestSubmit();
+    await tick(); await tick();
+    assert.equal(submits, 1, "valid cron submits natively despite the stale invalid interval");
+    assert.equal(field("everyMinutes").disabled, true, "inactive interval is excluded from native validation");
+    assert.equal(field("cron").disabled, false);
+    assert.deepEqual(auth.view().grants[0].proactive.schedule, { kind: "cron", cron: "0 9 * * 1-5" });
+    assert.equal(calls.filter(row => row.channel === "bot:configureProactive").length, 2);
+    form = $("bot-grants").querySelector(".bot-proactive form");
+    assert.equal(field("everyMinutes").disabled, true, "saved cron mounts with interval validation disabled");
+    field("cron").setCustomValidity("Synthetic invalid cron");
+    assert.equal(form.checkValidity(), false);
+    field("kind").value = "interval";
+    field("kind").dispatchEvent(new dom.window.Event("input"));
+    field("kind").dispatchEvent(new dom.window.Event("change"));
+    field("everyMinutes").value = "7";
+    field("allow").checked = true;
+    form.requestSubmit();
+    await tick(); await tick();
+    assert.equal(field("cron").disabled, true, "inactive cron is excluded from native validation");
+    assert.equal(field("everyMinutes").disabled, false);
+    assert.deepEqual(auth.view().grants[0].proactive.schedule, { kind: "interval", everyMinutes: 7 });
+    assert.equal(calls.filter(row => row.channel === "bot:configureProactive").length, 3);
+    form = $("bot-grants").querySelector(".bot-proactive form");
     $("bot-copy-setup").click(); await tick(); await tick();
     assert.match(copied, /Hermes Agent/); assert.match(copied, /inbound webhook.*proactive.mail_digest/);
     assert.match(copied, /platform bot owns every decision/); assert.doesNotMatch(copied, /synthetic-ui-bearer/);
@@ -91,7 +124,7 @@ async function run() {
     for (const file of ["host/bot/proactive.js", "host/bot/proactive-config.js", "host/bot/proactive-transport.js"]) {
       assert.doesNotMatch(source(file), /require\(["'].*(?:openai-client|\/agent["']|\/engine|\/drafts|\/send)/, "push must not import action/model paths");
     }
-    console.log("bot-proactive-ui-ok (actual preload, Settings DOM, host validation, Features and CLI)");
+    console.log("bot-proactive-ui-ok (actual preload, Settings DOM, native submission, host validation, Features and CLI)");
   } finally {
     dom.window.close(); await db.close(); fs.rmSync(temp, { recursive: true, force: true });
     for (const [key, value] of [["MORROW_USER_DATA", previous.data], ["MORROW_MAIL_SECRETS", previous.secrets]]) {

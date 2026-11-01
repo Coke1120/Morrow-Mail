@@ -23225,7 +23225,10 @@ function botProactiveForm(grant) {
   const minutes = field("everyMinutes", "Interval minutes (1–10080)", "number", saved.schedule?.everyMinutes || 30);
   minutes.min = "1"; minutes.max = "10080";
   const cron = field("cron", "Cron: minute hour day month weekday", "text", saved.schedule?.cron || "0 9 * * 1-5");
-  const showSchedule = () => { minutes.parentElement.hidden = kind.value !== "interval"; cron.parentElement.hidden = kind.value !== "cron"; };
+  const showSchedule = () => {
+    minutes.disabled = minutes.parentElement.hidden = kind.value !== "interval";
+    cron.disabled = cron.parentElement.hidden = kind.value !== "cron";
+  };
   kind.addEventListener("change", showSchedule); showSchedule();
   select("folder", "Cached folder", ["inbox", "sent", "drafts", "archive", "trash", "spam"].map(name => [name, name]), saved.folder || "inbox");
   const boxes = document.createElement("fieldset");
