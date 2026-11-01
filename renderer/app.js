@@ -13,6 +13,7 @@ const state = {
   folderId: null,
   emails: [],
   listOffset: 0,
+  listCursors: [],
   listTotal: 0,
   listSyncDone: true,
   listLoading: false,
@@ -653,6 +654,7 @@ function mailListRequest(view) {
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
   if (source.allInbox) {
     const params = { folderKey: "primary", limit, offset };
+    if (source.pageCursor) params.pageCursor = source.pageCursor;
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
     if (helper && typeof helper.primaryMailboxes === "function") {
       const mailboxes = helper.primaryMailboxes(source.accounts, foldersOf);
@@ -663,6 +665,7 @@ function mailListRequest(view) {
     return { channel: "mail:listFromCache", params };
   }
   const params = { accountId: source.accountId, folderId: source.folderId, limit, offset };
+  if (source.pageCursor) params.pageCursor = source.pageCursor;
   if (retainId) params.retainIds = [retainId];
   return {
     channel: source.fromNetwork ? "mail:listFromNetwork" : "mail:listFromCache",
@@ -9323,6 +9326,7 @@ async function loadList(fromNetwork, requestedOffset) {
     state.listScope = scope;
     state.listOffset = 0;
     state.listTotal = 0;
+    state.listCursors = [];
   }
   state.listLoading = true;
   if (scopeChanged) {
@@ -9358,6 +9362,8 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
+    if (requestedOffset == null) state.listCursors = [];
+    const pageCursor = state.listCursors.find(entry => entry.offset === offset)?.cursor;
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
       allInbox: state.allInbox,
@@ -9369,6 +9375,7 @@ async function loadList(fromNetwork, requestedOffset) {
       retainIds,
       limit: LIST_PAGE_SIZE,
       offset,
+      pageCursor,
     });
     let data = await call(request.channel, request.params);
     if (gen !== listGen) return null;
@@ -9389,6 +9396,12 @@ async function loadList(fromNetwork, requestedOffset) {
       if (gen !== listGen) return null;
     }
     state.listOffset = offset;
+    if (data?.cursorReset) state.listCursors = [];
+    if (data?.nextCursor) {
+      state.listCursors = state.listCursors.filter(entry => entry.offset !== data.nextCursor.offset);
+      state.listCursors.push({ offset: data.nextCursor.offset, cursor: data.nextCursor });
+      if (state.listCursors.length > 32) state.listCursors.shift();
+    }
     state.emails = takeEmails((data && data.emails) || []);
     if (unreadListActive(currentUnreadView()) && !optimisticRemovals.has(state.unreadHold?.id)) {
       state.unreadHold = applyUnreadHold(state.unreadHold, {

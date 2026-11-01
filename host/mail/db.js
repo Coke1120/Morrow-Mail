@@ -24,6 +24,7 @@ let startupState = Object.freeze({ phase: "idle", elapsedMs: 0 });
 let startupPhaseBegan = 0;
 const startupListeners = new Set();
 const listSummaries = new Map();
+let pendingSummaries = null;
 
 function openingError(code = "mail_not_ready") {
   return Object.assign(new Error(code === "mail_open_cancelled" ? "Opening the mailbox was cancelled."
@@ -128,6 +129,8 @@ function transact(fn) {
   db.run("BEGIN");
   const before = changeStamp();
   writes = [];
+  const summaries = new Map();
+  pendingSummaries = summaries;
   let journalOffset = null;
   let value;
   try {
@@ -150,7 +153,9 @@ function transact(fn) {
     throw error;
   } finally {
     writes = null;
+    pendingSummaries = null;
   }
+  for (const [key, summary] of summaries) cacheSummary(key, summary);
   if (journalOffset != null) storage.committed();
   return value;
 }
@@ -410,6 +415,8 @@ function migrate() {
   }
   run("CREATE INDEX IF NOT EXISTS messages_folder_page ON messages(account_id, folder_path, list_sort_ts DESC, id DESC)");
   run("CREATE INDEX IF NOT EXISTS messages_global_page ON messages(list_sort_ts DESC, id DESC)");
+  run("CREATE INDEX IF NOT EXISTS messages_unread_page ON messages(account_id, list_sort_ts DESC, id DESC, folder_path, thread_id) WHERE unread = 1");
+  run("CREATE INDEX IF NOT EXISTS messages_starred_page ON messages(account_id, list_sort_ts DESC, id DESC, folder_path, thread_id) WHERE starred = 1");
   run("CREATE INDEX IF NOT EXISTS snooze_expiry ON snooze(until_iso)");
   run("CREATE TABLE IF NOT EXISTS mail_list_revision (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)");
   run("INSERT OR IGNORE INTO mail_list_revision VALUES (1, 0)");
@@ -444,7 +451,39 @@ function migrate() {
       }
     }
   }
+  ensureSummarySchema();
   ensureSearchSchema();
+}
+
+function ensureSummarySchema() {
+  const dependencies = {
+    membership: ["id", "account_id", "folder_path"],
+    unread: ["unread"], flagged: ["starred"], attachments: ["has_attachments"], ordering: ["list_sort_ts"],
+    snoozed: ["thread_id"],
+  };
+  const columns = Object.keys(dependencies);
+  run(`CREATE TABLE IF NOT EXISTS mail_summary_revision (account_id TEXT NOT NULL, folder_path TEXT NOT NULL,
+    ${columns.map(column => `${column} INTEGER NOT NULL DEFAULT 0`).join(", ")}, PRIMARY KEY(account_id, folder_path))`);
+  for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+    const changed = fields => fields.map(field => `OLD.${field} IS NOT NEW.${field}`).join(" OR ");
+    const condition = operation === "UPDATE" ? `WHEN ${changed(Object.values(dependencies).flat())}` : "";
+    const values = columns.map(column => operation === "UPDATE" ? `(${changed(dependencies[column])})` : column === "membership" ? "1" : "0");
+    const sources = operation === "UPDATE" ? ["OLD", "NEW"] : [operation === "DELETE" ? "OLD" : "NEW"];
+    const scopes = sources.flatMap(source => [
+      `SELECT ${source}.account_id AS account_id, ${source}.folder_path AS folder_path`,
+      `SELECT ${source}.account_id, ''`,
+    ]).join(" UNION ");
+    run(`CREATE TRIGGER IF NOT EXISTS mail_summary_messages_${operation.toLowerCase()} AFTER ${operation} ON messages ${condition}
+      BEGIN INSERT INTO mail_summary_revision(account_id, folder_path, ${columns.join(", ")})
+        SELECT account_id, folder_path, ${values.join(", ")} FROM (${scopes}) WHERE true
+        ON CONFLICT(account_id, folder_path) DO UPDATE SET
+        ${columns.map(column => `${column} = ${column} + excluded.${column}`).join(", ")}; END`);
+    const snoozeSources = sources.map(source => `SELECT ${source}.account_id AS account_id`).join(" UNION ");
+    run(`CREATE TRIGGER IF NOT EXISTS mail_summary_snooze_${operation.toLowerCase()} AFTER ${operation} ON snooze
+      BEGIN INSERT INTO mail_summary_revision(account_id, folder_path, snoozed)
+        SELECT account_id, '', 1 FROM (${snoozeSources}) WHERE true
+        ON CONFLICT(account_id, folder_path) DO UPDATE SET snoozed = snoozed + 1; END`);
+  }
 }
 
 function open(target, options = {}) {
@@ -682,11 +721,15 @@ function primaryMailboxes() {
 function mailboxPairs(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
+  const seen = new Set();
   for (const box of list) {
     if (!box || typeof box !== "object") continue;
     const accountId = String(box.accountId || box.account_id || "");
     const path = box.path == null ? "" : String(box.path);
     if (!accountId || !path) continue;
+    const key = JSON.stringify([accountId, path]);
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({ accountId, path });
   }
   return out;
@@ -855,6 +898,7 @@ const SEARCH_BODY_CAP = 200000;
 const SEARCH_TERM_CAP = 4000;
 const SEARCH_QUERY_CAP = 16;
 const SEARCH_RESULT_CAP = 100;
+const SEARCH_SCOPE_PROBE = 2048;
 const INDEXED_PATCH = new Set(["subject", "from_addr", "text_body", "html_body", "snippet"]);
 
 function safePoint(code) {
@@ -1114,7 +1158,7 @@ function inspectSearchTokens(value) {
   return { tokens, overlong };
 }
 
-function searchMessages(options) {
+function searchMessages(options, { headersOnly = false } = {}) {
   if (!db) return [];
   const query = options || {};
   if (query.accountRequired && !query.accountId) return [];
@@ -1133,15 +1177,20 @@ function searchMessages(options) {
   const joins = [];
   const params = [];
   tokens.forEach((token, index) => {
+    const upper = termUpper(token);
+    const selective = query.accountId && get(`SELECT COUNT(*) AS n FROM
+      (SELECT 1 FROM message_fts WHERE term >= ? AND term < ? LIMIT ?)`, [token, upper, SEARCH_SCOPE_PROBE + 1]).n <= SEARCH_SCOPE_PROBE;
+    const scopeJoin = query.accountId ? `${selective ? "CROSS JOIN" : "JOIN"} messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?` : "";
     joins.push(
       `JOIN (
-        SELECT message_id, MAX(CASE field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight
-        FROM message_fts
-        WHERE term >= ? AND term < ?
-        GROUP BY message_id
+        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight
+        FROM message_fts f ${scopeJoin}
+        WHERE f.term >= ? AND f.term < ?
+        GROUP BY f.message_id
       ) t${index} ON t${index}.message_id = m.id`
     );
-    params.push(token, termUpper(token));
+    if (query.accountId) params.push(query.accountId);
+    params.push(token, upper);
   });
   const rank = tokens.map((_token, index) => `t${index}.weight`).join(" + ");
   let where = "";
@@ -1151,7 +1200,7 @@ function searchMessages(options) {
   }
   params.push(searchResultLimit(query.limit));
   return all(
-    `SELECT m.* FROM messages m JOIN accounts connected ON connected.id = m.account_id
+    `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m JOIN accounts connected ON connected.id = m.account_id
      ${joins.join("\n")}
      ${where}
      ORDER BY (${rank}) DESC, m.list_sort_ts DESC, m.id DESC
@@ -1299,11 +1348,10 @@ function applyFolderSync(accountId, folderPath, report) {
       }
       return;
     }
-    const cachedUnread = get(
+    const unread = typeof report.unseen === "number" ? report.unseen : get(
       "SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND folder_path = ? AND unread = 1",
       [accountId, folderPath]
     ).n;
-    const unread = typeof report.unseen === "number" ? report.unseen : cachedUnread;
     const total = typeof report.exists === "number" ? report.exists : get(
       "SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND folder_path = ?",
       [accountId, folderPath]
@@ -1564,7 +1612,7 @@ const WELL_TO_KEY = {
   junkemail: "spam",
 };
 
-function whereFor(query) {
+function whereFor(query, now = Date.now()) {
   const clauses = [];
   const params = [];
   if (query.accountId) {
@@ -1611,7 +1659,7 @@ function whereFor(query) {
     clauses.push("m.body_complete != 1");
     clauses.push("m.is_draft = 0");
     clauses.push("m.body_retry_blocked = 0 AND m.body_retry_after <= ?");
-    params.push(Date.now());
+    params.push(now);
     clauses.push(`NOT EXISTS (
       SELECT 1 FROM folders f
       WHERE f.account_id = m.account_id AND f.path = m.folder_path
@@ -1619,8 +1667,8 @@ function whereFor(query) {
     )`);
   }
   if (query.beforeMessage) {
-    clauses.push("(m.list_sort_ts < ? OR (m.list_sort_ts = ? AND m.id < ?))");
-    params.push(query.beforeMessage.ts, query.beforeMessage.ts, query.beforeMessage.id);
+    clauses.push("(m.list_sort_ts, m.id) < (?, ?)");
+    params.push(query.beforeMessage.ts, query.beforeMessage.id);
   }
   if (query.beforeTs) {
     clauses.push("m.list_sort_ts < ?");
@@ -1635,14 +1683,14 @@ function whereFor(query) {
       SELECT 1 FROM snooze s
       WHERE s.account_id = m.account_id AND s.thread_id = m.thread_id AND s.until_iso > ?
     )`);
-    params.push(new Date().toISOString());
+    params.push(new Date(now).toISOString());
   }
   if (query.onlySnoozed) {
     clauses.push(`EXISTS (
       SELECT 1 FROM snooze s
       WHERE s.account_id = m.account_id AND s.thread_id = m.thread_id AND s.until_iso > ?
     )`);
-    params.push(new Date().toISOString());
+    params.push(new Date(now).toISOString());
   }
   for (const token of query.tokens || []) {
     clauses.push(`(
@@ -1702,19 +1750,29 @@ function metadataColumns(table) {
   return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
 }
 
-function selectMessages(query, { headersOnly = false } = {}) {
+function selectMessages(query, { headersOnly = false, now = Date.now() } = {}) {
   const scope = resolveScope(query);
-  const { clauses, params } = whereFor(scope);
+  const { clauses, params } = whereFor(scope, now);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const limit = Math.min(Math.max(Math.floor(Number(query.limit)) || 2000, 1), 2000);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const join = query.fromMe ? "JOIN accounts a ON a.id = m.account_id" : "";
-  if (scope.mailboxes?.length > 1 && !query.fromMe) {
+  const held = Array.isArray(scope.retainIds) ? scope.retainIds[0] : null;
+  const retainId = scope.filterUnread && !scope.retainOnly && typeof held === "string" && held ? held : null;
+  const merged = scope.mailboxes?.length > 1 && !query.fromMe;
+  if (merged || retainId) {
     const bindings = [];
-    const parts = scope.mailboxes.map(box => {
-      const filtered = whereFor({ ...scope, mailboxes: null, folderPaths: null, accountId: box.accountId, folderPath: box.path });
+    const branches = merged ? scope.mailboxes.filter(box => !scope.accountId || box.accountId === scope.accountId)
+      .map(box => ({ ...scope, mailboxes: null, folderPaths: null, accountId: box.accountId, folderPath: box.path })) : [scope];
+    if (!branches.length) return [];
+    const parts = branches.flatMap(branch => retainId ? [
+      { ...branch, retainIds: null },
+      { ...branch, filterUnread: false, retainIds: null, retainOnly: retainId },
+    ] : [branch]).map(branch => {
+      const filtered = whereFor(branch, now);
+      if (retainId && branch.retainOnly) filtered.clauses.push("m.unread != 1");
       bindings.push(...filtered.params, limit + offset);
-      return `SELECT * FROM (SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m
+      return `SELECT * FROM (SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join}
         WHERE ${filtered.clauses.join(" AND ")} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ?)`;
     });
     return perf.sync("db.list.merged", () => all(`SELECT * FROM (${parts.join(" UNION ALL ")})
@@ -1727,7 +1785,7 @@ function selectMessages(query, { headersOnly = false } = {}) {
 }
 
 function countMessages(query) {
-  return messageSummary(query).total;
+  return messageSummary(query, { includeOldest: false }).total;
 }
 
 function mailInvalidations(since) {
@@ -1735,22 +1793,77 @@ function mailInvalidations(since) {
     scopes: all("SELECT account_id, folder_path FROM mail_changes WHERE revision > ?", [since]) };
 }
 
-function messageSummary(query) {
+function summaryScope(query) {
   const scope = resolveScope(query);
-  const version = get("SELECT value FROM mail_list_revision WHERE id = 1").value;
-  const { offset, limit, ...shape } = scope;
-  const key = `${version}:${JSON.stringify(shape)}`;
-  const cached = listSummaries.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached;
-  const { clauses, params } = whereFor(scope);
+  for (const field of ["folderPaths", "excludeFolderPaths"]) {
+    if (scope[field]?.length) scope[field] = [...new Set(scope[field])].sort();
+  }
+  if (scope.mailboxes?.length) scope.mailboxes = mailboxPairs(scope.mailboxes).sort((left, right) =>
+    left.accountId.localeCompare(right.accountId) || left.path.localeCompare(right.path));
+  return scope;
+}
+
+function summaryAccounts(scope) {
+  const clauses = [], params = [];
+  if (scope.accountId) { clauses.push("account_id = ?"); params.push(scope.accountId); }
+  if (scope.mailboxes?.length) {
+    const accounts = [...new Set(scope.mailboxes.map(box => box.accountId))].sort();
+    clauses.push(`account_id IN (${accounts.map(() => "?").join(", ")})`);
+    params.push(...accounts);
+  }
+  return { clauses, params };
+}
+
+function summaryVersion(scope, includeOldest) {
+  const dependencies = ["membership"];
+  if (scope.filterUnread) dependencies.push("unread");
+  if (scope.filterFlagged) dependencies.push("flagged");
+  if (typeof scope.filterAttachments === "boolean") dependencies.push("attachments");
+  if (includeOldest || scope.beforeMessage || scope.beforeTs || scope.sinceTs) dependencies.push("ordering");
+  const snoozed = scope.excludeSnoozed || scope.onlySnoozed;
+  if (snoozed) dependencies.push("snoozed");
+  const { clauses, params } = summaryAccounts(scope);
+  if (scope.mailboxes?.length) {
+    clauses.push(`(${scope.mailboxes.map(() => "(account_id = ? AND folder_path = ?)").join(" OR ")})`);
+    for (const box of scope.mailboxes) params.push(box.accountId, box.path);
+  } else if (scope.folderPaths?.length) {
+    clauses.push(`folder_path IN (${scope.folderPaths.map(() => "?").join(", ")})`);
+    params.push(...scope.folderPaths);
+  } else {
+    clauses.push("folder_path = ?"); params.push(scope.folderPath || "");
+  }
+  const versions = all(`SELECT account_id, folder_path, ${dependencies.join(", ")} FROM mail_summary_revision
+    WHERE ${clauses.join(" AND ")} ORDER BY account_id, folder_path`, params);
+  if (snoozed) {
+    const accounts = summaryAccounts(scope);
+    versions.push(...all(`SELECT account_id, snoozed FROM mail_summary_revision
+      WHERE folder_path = '' ${accounts.clauses.length ? `AND ${accounts.clauses.join(" AND ")}` : ""} ORDER BY account_id`, accounts.params));
+  }
+  return versions;
+}
+
+function cacheSummary(key, result, cache = listSummaries) {
+  cache.set(key, result);
+  if (cache.size > 128) cache.delete(cache.keys().next().value);
+}
+
+function messageSummary(query, { includeOldest = true, now = Date.now() } = {}) {
+  const scope = summaryScope(query);
+  const key = JSON.stringify([includeOldest, whereFor(scope, 0), !!scope.fromMe, summaryVersion(scope, includeOldest)]);
+  const cacheable = !query.tokens?.length && !query.needsBody && !query.participant && !query.fromMe;
+  const cached = cacheable && (pendingSummaries?.get(key) || listSummaries.get(key));
+  if (cached && cached.expiresAt > now) return cached;
+  const { clauses, params } = whereFor(scope, now);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const join = query.fromMe ? "JOIN accounts a ON a.id = m.account_id" : "";
-  const row = perf.sync("db.list.summary", () => get(`SELECT COUNT(*) AS total, MIN(m.list_sort_ts) AS oldest FROM messages m ${join} ${where}`, params));
-  const expiry = get("SELECT MIN(until_iso) AS next FROM snooze WHERE until_iso > ?", [new Date().toISOString()])?.next;
-  const result = { ...row, expiresAt: expiry ? Date.parse(expiry) : Infinity };
-  if (query.tokens?.length || query.needsBody) return result;
-  listSummaries.set(key, result);
-  if (listSummaries.size > 64) listSummaries.delete(listSummaries.keys().next().value);
+  const row = perf.sync("db.list.summary", () => get(`SELECT COUNT(*) AS total${includeOldest ? ", MIN(m.list_sort_ts) AS oldest" : ""} FROM messages m ${join} ${where}`, params));
+  const accounts = summaryAccounts(scope);
+  const expiry = scope.excludeSnoozed || scope.onlySnoozed ? get(`SELECT MIN(until_iso) AS next FROM snooze WHERE until_iso > ?
+    ${accounts.clauses.length ? `AND ${accounts.clauses.join(" AND ")}` : ""}`, [new Date(now).toISOString(), ...accounts.params])?.next : null;
+  const expiresAt = expiry ? Date.parse(expiry) : Infinity;
+  const result = { ...row, expiresAt, version: crypto.createHash("sha256").update(`${key}:${expiresAt}`).digest("hex") };
+  if (!cacheable) return result;
+  cacheSummary(key, result, pendingSummaries || listSummaries);
   return result;
 }
 
@@ -2481,11 +2594,12 @@ function gmailSyncState(accountId, folderPath, next) {
     const previous = get("SELECT state_json FROM gmail_sync WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]);
     if (previous) updateChanged("gmail_sync", { state_json: json }, "account_id = ? AND folder_path = ?", [accountId, folderPath]);
     else run("INSERT INTO gmail_sync (account_id, folder_path, state_json) VALUES (?, ?, ?)", [accountId, folderPath, json]);
-    const count = countInFolder(accountId, folderPath);
+    const count = countMessages({ accountId, folderPath });
+    const unread = countMessages({ accountId, folderPath, filterUnread: true });
     const folder = folderByPath(accountId, folderPath);
     const patch = { uid_validity: accountById(accountId).gmail_generation, window_done: next.complete ? 1 : 0,
       sync_horizon_days: next.horizonDays ?? null, total: count,
-      unread: get("SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND folder_path = ? AND unread = 1", [accountId, folderPath]).n };
+      unread };
     if (previous?.state_json !== json || Object.entries(patch).some(([key, value]) => folder?.[key] !== value)) patch.synced_at = Date.now();
     updateChanged("folders", patch,
     "account_id = ? AND path = ?", [accountId, folderPath]);
@@ -2606,6 +2720,7 @@ module.exports = {
   deleteMessage,
   selectMessages,
   countMessages,
+  messageSummary,
   mailInvalidations,
   countInFolder,
   oldestTs,

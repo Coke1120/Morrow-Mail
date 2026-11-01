@@ -455,6 +455,7 @@ function queryFrom(params) {
     filterAttachments: query.filterAttachments,
     limit: query.limit,
     offset: query.offset,
+    pageCursor: query.pageCursor,
   };
   out = virtuals.apply(out);
   if (!out.folderKey && out.folderId && !out.accountId && KEY_TO_WELL[out.folderId]) {
@@ -504,8 +505,15 @@ function synced(query, days) {
 }
 
 function listPayload(params) {
+  const now = Date.now();
   const query = queryFrom(params);
-  let stored = db.selectMessages(query, { headersOnly: true });
+  const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
+  const summary = db.messageSummary(query, { now });
+  const cursor = query.pageCursor;
+  const cursorEligible = !query.filterUnread && !query.filterFlagged && typeof query.filterAttachments !== "boolean" && !query.beforeTs;
+  const cursorValid = cursorEligible && cursor && cursor.version === summary.version && cursor.offset === offset
+    && Number.isSafeInteger(cursor.ts) && typeof cursor.id === "string" && cursor.id.length > 0 && cursor.id.length <= 200;
+  let stored = db.selectMessages(cursorValid ? { ...query, offset: 0, beforeMessage: { ts: cursor.ts, id: cursor.id } } : query, { headersOnly: true, now });
   const retainId = query.retainIds && query.retainIds[0];
   // A read row can fall outside this page and still belong in the Unread list.
   if (retainId && query.filterUnread === true && !stored.some((row) => row.id === retainId)) {
@@ -516,14 +524,13 @@ function listPayload(params) {
       filterUnread: false,
       retainIds: null,
       retainOnly: retainId,
-    }, { headersOnly: true });
+    }, { headersOnly: true, now });
     if (extra.length) stored = stored.concat(extra);
   }
   const rows = listRows(stored);
-  const total = db.countMessages(query);
-  const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
+  const total = summary.total;
   const days = syncHorizonDays();
-  const oldest = db.oldestTs(query);
+  const oldest = summary.oldest;
   const moreInCache = offset + rows.length < total;
   const more = moreInCache || serverHasMore(query, days);
   return {
@@ -534,6 +541,9 @@ function listPayload(params) {
     hasMoreInCache: moreInCache,
     truncated: false,
     total,
+    nextCursor: cursorEligible && moreInCache && stored.length ? { version: summary.version, offset: offset + stored.length,
+      ts: stored.at(-1).list_sort_ts, id: stored.at(-1).id } : null,
+    cursorReset: !!cursor && !cursorValid,
     syncedOldestDateTs: oldest,
     initialSyncDone: synced(query, days),
     pageToken: more ? String(oldest || offset) : null,
@@ -2572,7 +2582,7 @@ function searchLocal(params) {
     query: query.query,
     accountId: query.accountId || null,
     limit: query.limit,
-  }));
+  }, { headersOnly: true }));
 }
 
 async function searchRemote(params) {
