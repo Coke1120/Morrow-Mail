@@ -6,7 +6,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { EventEmitter } = require("node:events");
+const { EventEmitter, once } = require("node:events");
+const { Worker } = require("node:worker_threads");
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-proactive-"));
 const originalEnv = { data: process.env.MORROW_USER_DATA, secrets: process.env.MORROW_MAIL_SECRETS };
 process.env.MORROW_USER_DATA = temp;
@@ -93,6 +94,152 @@ async function transportChecks() {
     assert.equal((await transport.post("https://bot.tail.ts.net/n", "x".repeat(transport.MAX_BYTES + 1))).code, "PAYLOAD_TOO_LARGE");
     assert.equal(calls, before);
   } finally { https.request = oldRequest; }
+}
+
+async function stateChecks(clientId) {
+  const grant = auth.load().store.grants.find(row => row.clientId === clientId);
+  const file = path.join(temp, "bot-proactive-state.json");
+  const original = fs.readFileSync(file, "utf8");
+  let now = new Date(), posts = 0, scheduler;
+  const codes = [];
+  const state = seen => ({ version: 1, bots: { [clientId]: {
+    binding: config.binding(grant), revision: grant.revision, seen, nextRunAt: now.toISOString(),
+  } } });
+  const deps = { now: () => now, listening: () => true, gate: { closed: false, run: work => work() },
+    record: row => codes.push(row.code), post: async () => { posts++; return { code: "OK" }; } };
+  try {
+    for (const seen of [true, false, 1, 0, "cursor", [], null]) {
+      fs.writeFileSync(file, JSON.stringify(state(seen)));
+      assert.throws(() => proactive.readState(), /STATE_UNAVAILABLE/, `reject malformed seen: ${JSON.stringify(seen)}`);
+      scheduler = proactive.createScheduler(deps);
+      await scheduler.tick(); now = new Date(+now + 60000); await scheduler.tick();
+      assert.equal(posts, 0, "corrupt cursor fails closed before a successful POST can be attempted");
+      assert.deepEqual(codes.splice(0), ["STATE_UNAVAILABLE", "STATE_UNAVAILABLE"]);
+      scheduler.dispose(); scheduler = null;
+    }
+    for (const bots of [true, false, 1, "cursor", [], null]) {
+      fs.writeFileSync(file, JSON.stringify({ version: 1, bots }));
+      assert.throws(() => proactive.readState(), /STATE_UNAVAILABLE/, "cursor bot map must be a plain object");
+    }
+    for (const fault of ["seen-type", "seen-write", "cursor-write", "acknowledgement-write"]) {
+      let persisted = state({}), loaded;
+      posts = 0;
+      scheduler = proactive.createScheduler({ ...deps,
+        readState: () => (loaded = structuredClone(persisted)),
+        writeState(next) {
+          if (fault === "acknowledgement-write" && posts) throw Error("synthetic acknowledgement write failure");
+          persisted = structuredClone(next);
+        },
+        post: async () => {
+          posts++;
+          if (fault === "seen-type") loaded.bots[clientId].seen = true;
+          if (fault === "seen-write") Object.freeze(loaded.bots[clientId].seen);
+          if (fault === "cursor-write") Object.freeze(loaded.bots[clientId]);
+          return { code: "OK" };
+        },
+      });
+      await scheduler.tick();
+      assert.equal(posts, 1, `${fault}: POST succeeded before the cursor failure`);
+      assert.deepEqual(codes.splice(0), ["OK", "STATE_UNAVAILABLE"], `${fault}: cursor failure is audited`);
+      assert.deepEqual(persisted.bots[clientId].seen, {}, "delivery acknowledgement was not persisted");
+      now = new Date(+now + 60000); await scheduler.tick();
+      now = new Date(+now + 60000); await scheduler.tick();
+      assert.equal(posts, 1, `${fault}: halted bot cannot re-POST the same cached mail`);
+      assert.deepEqual(codes.splice(0), [], "halted bots are skipped rather than retried");
+      scheduler.dispose(); scheduler = null;
+    }
+  } finally {
+    scheduler?.dispose(); fs.writeFileSync(file, original);
+  }
+}
+
+async function isolatedSchedulerChecks(root) {
+  const assert = require("node:assert/strict"), path = require("node:path"), Module = require("node:module");
+  const load = Module.createRequire(path.join(root, "package.json"));
+  const forbidden = new Set(["host/agent.js", "host/openai-client.js", "host/bot/drafts.js", "host/bot/send.js",
+    "host/mail/engine.js", "host/mail/actions.js"].map(file => path.join(root, file)));
+  const blocked = [];
+  let probeService = false;
+  const originalLoad = Module._load;
+  Module._load = function(request, parent, isMain) {
+    const file = Module._resolveFilename(request, parent, isMain);
+    if (probeService && file === path.join(root, "host/bot/service.js")) return {};
+    if (forbidden.has(file)) { blocked.push(file); throw Error("Scheduler loaded an action/model dependency: " + file); }
+    return originalLoad.apply(this, arguments);
+  };
+  let scheduler, listener, http, createServer;
+  try {
+    const proactive = load("./host/bot/proactive");
+    listener = load("./host/bot/listener-status");
+    const grant = { clientId: "isolation-bot", installationId: "synthetic-installation", platform: "hermes_agent", revision: 1,
+      accountIds: ["a"], capabilities: ["mail.headers.read"], expiry: { kind: "never" },
+      proactive: { enabled: true, consentedAt: "2026-11-01T00:00:00.000Z", accountIds: ["a"], folder: "inbox", includeBody: false,
+        webhookUrl: "https://bot.tail.ts.net/notify", schedule: { kind: "interval", everyMinutes: 1 } } };
+    let now = new Date("2026-11-01T00:00:00.000Z"), state = { version: 1, bots: {} }, posts = 0;
+    const items = [{ messageId: "synthetic-mail" }];
+    scheduler = proactive.createScheduler({
+      loadAccess: () => ({ ok: true, store: { enabled: true, installationId: grant.installationId, grants: [grant] } }),
+      readState: () => structuredClone(state), writeState: next => { state = structuredClone(next); },
+      now: () => now, db: { isReady: () => true, accountById: id => ({ id, created_at: 1 }) },
+      reads: { listCached: () => ({ items, warnings: [], moreAvailable: false }) },
+      onChange: () => () => {}, record() {}, post: async () => { posts++; return { code: "OK" }; },
+    });
+    await scheduler.tick(); assert.equal(posts, 0, "default listener starts stopped");
+    listener.state.listening = true;
+    await scheduler.tick(); now = new Date(+now + 60000); await scheduler.tick();
+    assert.deepEqual(blocked, [], "transitive CommonJS loads must not reach Agent/model/mail-action modules");
+    assert.equal(posts, 1, "default production listener and gate admit a synthetic delivery");
+    now = new Date(+now + 60000); await scheduler.tick(); assert.equal(posts, 1, "successful delivery advances its cursor");
+    items.push({ messageId: "second-synthetic-mail" }); listener.state.listening = false;
+    now = new Date(+now + 60000); await scheduler.tick(); assert.equal(posts, 1, "listener loss blocks delivery");
+    listener.state.listening = true;
+    await scheduler.tick(); assert.equal(posts, 2, "listener recovery admits newly cached mail");
+    assert.deepEqual(blocked, [], "caught load failures must not silently pass the import guard");
+    const { EventEmitter } = require("node:events");
+    const { HOST, PORT } = load("./host/bot/constants");
+    http = load("node:http"); createServer = http.createServer;
+    let bind = "ok";
+    http.createServer = () => {
+      const server = new EventEmitter();
+      server.listen = (port, host, ready) => {
+        assert.equal(port, PORT); assert.equal(host, HOST);
+        queueMicrotask(() => { if (bind === "busy") server.emit("error", { code: "EADDRINUSE" }); else ready(); });
+      };
+      server.address = () => ({ address: bind === "bad" ? "0.0.0.0" : HOST, port: PORT });
+      server.close = callback => callback?.(); server.closeAllConnections = () => {};
+      return server;
+    };
+    probeService = true;
+    const server = load("./host/bot/server");
+    assert.equal(server.status, listener.status, "server and scheduler share the same status probe");
+    listener.state.listening = false;
+    const started = server.start();
+    assert.equal(listener.status().listening, false, "pending binds do not admit proactive delivery");
+    assert.deepEqual(await started, { listening: true, error: "", host: HOST, port: PORT, address: HOST });
+    assert.equal(listener.status().listening, true, "successful binds publish listener readiness");
+    await server.stop(); assert.equal(listener.status().listening, false, "stop clears shared readiness");
+    for (const [mode, error] of [["busy", "port_in_use"], ["bad", "bad_bind"]]) {
+      bind = mode;
+      const status = await server.start();
+      assert.equal(status.listening, false); assert.equal(status.error, error);
+      assert.equal(listener.status().listening, false, "failed binds keep delivery closed");
+      await server.stop(); assert.equal(listener.status().error, "");
+    }
+    assert.deepEqual(blocked, [], "listener lifecycle probes need no action/model modules");
+  } finally {
+    scheduler?.dispose(); if (listener) listener.state.listening = false;
+    if (http) http.createServer = createServer;
+    Module._load = originalLoad;
+  }
+}
+
+async function importIsolationChecks() {
+  const worker = new Worker(`(${isolatedSchedulerChecks.toString()})(${JSON.stringify(path.join(__dirname, ".."))}).catch(error => { throw error; });`, { eval: true });
+  const timeout = setTimeout(() => { worker.terminate(); }, 30000);
+  try {
+    const [code] = await once(worker, "exit");
+    assert.equal(code, 0, "cold scheduler import isolation failed or timed out");
+  } finally { clearTimeout(timeout); await worker.terminate(); }
 }
 
 async function run() {
@@ -242,8 +389,11 @@ async function run() {
     assert.ok(Buffer.byteLength(packed.body) <= contract.proactiveNotify.maxPayloadBytes);
     assert.ok(packed.payload.accounts.every(account => account.messages.length > 0 && account.messages.length <= contract.proactiveNotify.maxMessagesPerAccount));
     assert.ok(packed.payload.accounts.every(account => account.messages.every(row => row.messageId !== "0")), "oversized first row cannot starve smaller rows");
+    scheduler.dispose(); scheduler = null;
+    await stateChecks(cronBot.grant.clientId);
+    await importIsolationChecks();
     await transportChecks();
-    console.log("bot-proactive-ok (synthetic cache, consent, lifecycle, dedup, retry and transport)");
+    console.log("bot-proactive-ok (synthetic cache, consent, lifecycle, cursor failures, import isolation, dedup, retry and transport)");
   } finally {
     scheduler?.dispose(); await db.close(); fs.rmSync(temp, { recursive: true, force: true });
     for (const [key, value] of [["MORROW_USER_DATA", originalEnv.data], ["MORROW_MAIL_SECRETS", originalEnv.secrets]]) {

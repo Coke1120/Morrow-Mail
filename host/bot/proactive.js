@@ -21,15 +21,16 @@ const PER_ACCOUNT = 10;
 const RETRY_MS = 20000;
 const hash = value => crypto.createHash("sha256").update(value).digest("hex");
 const statePath = () => path.join(storage.bridgeDir(), "bot-proactive-state.json");
+const isPlainObject = value => value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype;
 
 function readState() {
   if (!fs.existsSync(statePath())) return { version: 1, bots: {} };
   if (fs.statSync(statePath()).size > 4 * 1024 * 1024) throw new Error("STATE_UNAVAILABLE");
   const state = JSON.parse(fs.readFileSync(statePath(), "utf8"));
-  if (!state || state.version !== 1 || !state.bots || Array.isArray(state.bots)) throw new Error("STATE_UNAVAILABLE");
+  if (!isPlainObject(state) || state.version !== 1 || !isPlainObject(state.bots)) throw new Error("STATE_UNAVAILABLE");
   for (const row of Object.values(state.bots)) {
-    if (!row || !/^[a-f0-9]{64}$/.test(row.binding) || !Number.isInteger(row.revision)
-      || !Number.isFinite(Date.parse(row.nextRunAt)) || !row.seen || Array.isArray(row.seen)
+    if (!isPlainObject(row) || !/^[a-f0-9]{64}$/.test(row.binding) || !Number.isInteger(row.revision)
+      || !Number.isFinite(Date.parse(row.nextRunAt)) || !isPlainObject(row.seen)
       || Object.values(row.seen).some(ids => !Array.isArray(ids) || ids.length > SEEN_LIMIT || ids.some(id => !/^[a-f0-9]{64}$/.test(id)))) {
       throw new Error("STATE_UNAVAILABLE");
     }
@@ -94,7 +95,7 @@ function createScheduler(deps = {}) {
   const secretStore = deps.secrets || secrets;
   const post = deps.post || transport.post;
   const record = deps.record || audit.record;
-  const listening = deps.listening || (() => require("./server").status().listening);
+  const listening = deps.listening || (() => require("./listener-status").status().listening);
   const gate = deps.gate || require("../update-quiescence").gate;
   const pending = new Map();
   const controllers = new Map();
@@ -162,16 +163,18 @@ function createScheduler(deps = {}) {
     // A Settings mutation owns the newer configuration. Do not publish a stale
     // cursor into it or revive work cancelled during a secret read/POST.
     if (!allowed(grant) || controller.signal.aborted) return;
-    row.lastRunAt = clock().toISOString();
-    row.lastCode = result.code;
-    if (result.code === "OK") {
-      for (const [accountId, ids] of Object.entries(job.delivered)) {
-        row.seen[accountId] = [...new Set([...(row.seen[accountId] || []), ...ids])].slice(-SEEN_LIMIT);
+    try {
+      row.lastRunAt = clock().toISOString();
+      row.lastCode = result.code;
+      if (result.code === "OK") {
+        for (const [accountId, ids] of Object.entries(job.delivered)) {
+          row.seen[accountId] = [...new Set([...(row.seen[accountId] || []), ...ids])].slice(-SEEN_LIMIT);
+        }
+      } else if (result.retryable && job.attempt < 2) {
+        pending.set(grant.clientId, { ...job, attempt: job.attempt + 1, retryAt: clock().getTime() + RETRY_MS, revision: grant.revision });
       }
-    } else if (result.retryable && job.attempt < 2) {
-      pending.set(grant.clientId, { ...job, attempt: job.attempt + 1, retryAt: clock().getTime() + RETRY_MS, revision: grant.revision });
-    }
-    try { saveState(state); } catch {
+      saveState(state);
+    } catch {
       pending.delete(grant.clientId);
       halted.add(grant.clientId);
       activity(grant, "STATE_UNAVAILABLE", started);
