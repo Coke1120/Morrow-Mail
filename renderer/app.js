@@ -21245,6 +21245,10 @@ function agentCategoryReadButton(role, items) {
   button.dataset.pile = role;
   button.textContent = "Mark category as read";
   const snapshot = items.slice();
+  if (!agentUnreadSnapshot(snapshot).length) {
+    button.disabled = true;
+    button.title = "Nothing unread in this category";
+  }
   button.addEventListener("click", () => guard(() => markAgentCategoryRead(snapshot)));
   return button;
 }
@@ -21385,7 +21389,10 @@ async function applyReplySelection(items, mode) {
 async function markAgentCategoryRead(items) {
   const begunAt = Date.now();
   const snapshot = agentUnreadSnapshot(items);
-  if (!snapshot.length) return;
+  if (!snapshot.length) {
+    showStatus("Already read.");
+    return;
+  }
   const entries = snapshot.map((row) => beginAgentRead(items.find((item) => item.messageId === row.messageId), begunAt, false));
   let data;
   try {
@@ -23180,19 +23187,21 @@ function botPlatformLabel(platform) {
 
 function botProactiveForm(grant) {
   const saved = grant.proactive || {};
+  const delivery = grant.proactiveStatus;
   const details = document.createElement("details");
   details.className = "settings-disclosure bot-proactive";
   details.dataset.botId = grant.clientId;
   const summary = document.createElement("summary");
-  summary.textContent = "Proactive notify · " + (saved.enabled ? "allowed" : "off");
+  summary.textContent = "Proactive notify · " + (delivery?.halted ? "halted" : saved.enabled ? "allowed" : "off");
   const status = document.createElement("p");
   status.className = "hint";
   status.dataset.notifyStatus = "true";
-  const delivery = grant.proactiveStatus;
-  status.textContent = saved.enabled
+  status.textContent = delivery?.halted
+    ? "Halted: delivery state could not be saved (STATE_UNAVAILABLE). Inspect local storage before restarting Morrow; a lost acknowledgement can cause a repeat. Saving settings or toggling access does not resume delivery."
+    : saved.enabled
     ? `Saved for ${saved.webhookUrl}. ${state.botAccess?.enabled && state.botAccess?.listen?.listening ? "Runs while Morrow is open and awake." : "Paused until bot access is listening."}`
     : "No background delivery is allowed for this bot.";
-  if (delivery) status.textContent += ` Last result: ${delivery.lastCode || "—"}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
+  if (delivery && !delivery.halted) status.textContent += ` Last result: ${delivery.lastCode || "—"}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
   const form = document.createElement("form");
   const fields = {};
   function field(name, title, type, value) {
@@ -23285,8 +23294,10 @@ function botProactiveForm(grant) {
     const controls = [...form.querySelectorAll("input, select")].map(input => ({ input, disabled: input.disabled }));
     controls.forEach(({ input }) => { input.disabled = true; });
     botGuard(async () => {
-      paintBotAccess(await call("bot:configureProactive", payload));
-      setBotStatus(payload.enabled ? "Proactive notify saved. Delivery requires bot access to be listening and this grant to remain valid." : "Proactive settings saved with background delivery off.");
+      const access = await call("bot:configureProactive", payload);
+      paintBotAccess(access);
+      const halted = access.grants?.find(row => row.clientId === grant.clientId)?.proactiveStatus?.halted;
+      setBotStatus(halted ? "Proactive settings saved. Delivery remains halted; inspect local storage before restarting Morrow." : payload.enabled ? "Proactive notify saved. Delivery requires bot access to be listening and this grant to remain valid." : "Proactive settings saved with background delivery off.");
     }, true).finally(() => { save.disabled = false; controls.forEach(({ input, disabled }) => { input.disabled = disabled; }); });
   });
   details.append(summary, status, form);
@@ -23399,6 +23410,7 @@ function paintBotGrants(grants) {
       const previous = editors.get(grant.clientId);
       editor.dataset.notifyRevision = key;
       if (previous && previous.dataset.notifyRevision === key) {
+        previous.querySelector("summary").textContent = editor.querySelector("summary").textContent;
         previous.querySelector("[data-notify-status]").textContent = editor.querySelector("[data-notify-status]").textContent;
         item.append(previous);
       } else item.append(editor);
