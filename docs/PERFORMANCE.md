@@ -175,3 +175,27 @@ for startup, active sync and message switching. Correlate blocked-loop intervals
 with stage durations, CPU, GC and memory pressure before choosing broader worker
 extraction or selective Rust work. A backend language change cannot resolve
 renderer HTML/CSS/layout work or a synchronous OS/disk wait by itself.
+
+## Runtime query follow-up (2026-11-01)
+
+`node scripts/check-runtime-10k.js` checks an isolated 11,101-row, uneven
+two-account fixture with large bodies and duplicate timestamps. It covers
+metadata-only search and original-query ranking parity, account/folder/field
+summary dependencies, count-only badges, snooze expiry, staged cache rollback,
+Gmail cursor count reuse, IMAP supplied-count reuse, partial-index migrations,
+tuple query plans and bounded real-renderer Previous/Next state. It prints local
+query-plan observations, optional SQLite dbstat index bytes and three warm raw
+query samples; these are not thresholds or native frame/I/O measurements.
+
+Unfiltered pages support optional versioned forward boundaries. Each merged
+branch admits one page after the tuple, not offset plus page size. Exact totals
+remain whole-scope. Changed scope/order/snoozes reject stale boundaries and retain
+offset compatibility; filtered pages and missing Back history also use offsets.
+The renderer keeps at most 32 boundaries and one message page. Search remains
+exact, not approximate; the bounded selectivity probe changes access paths only.
+Unscoped prefix ranking, sparse residual filters, deep offset fallbacks and
+individual durable calls can still be expensive. Partial indexes and summary
+triggers add storage/write work; target-device flag/sync overhead remains to be
+profiled. Runtime checkpoint scheduling is unchanged (Astra R07 deferred for
+physical-I/O evidence and startup-job coordination). See
+[the runtime query decision](adr/2026-11-01-runtime-mail-queries.md).

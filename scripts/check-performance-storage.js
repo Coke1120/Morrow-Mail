@@ -56,7 +56,7 @@ async function run() {
     let summaries = 0;
     perf.sync = (stage, work) => { if (stage === "db.list.summary") summaries++; return originalStage(stage, work); };
     assert.equal(db.countMessages(query), 420); db.oldestTs({ ...query, offset: 200 }); db.countMessages({ ...query, offset: 400 });
-    assert.equal(summaries, 1, "pages share exact revisioned counts and oldest-date results");
+    assert.equal(summaries, 2, "pages share count-only and full summaries without adding MIN work to count-only reads");
     const headerStamp = db.recipientHeaderStamp();
     const expected = suggest.filter(suggest.rank(allHeaders()), "example.test");
     assert.deepEqual(await recipients.list("example.test"), expected);
@@ -65,7 +65,7 @@ async function run() {
     db.recipientHeaderChanges = (...args) => { deltaPages++; return readChanges(...args); };
     db.updateMessage("a-0000", { text_body: "A changed stored body" });
     db.countMessages(query);
-    assert.equal(summaries, 1, "body-only changes do not invalidate list counts");
+    assert.equal(summaries, 2, "body-only changes do not invalidate list counts");
     db.updateMessage("a-0000", { unread: 1, starred: 1 });
     assert.equal(db.recipientHeaderStamp(), headerStamp);
     assert.deepEqual(await recipients.list("example.test"), expected);
