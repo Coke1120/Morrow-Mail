@@ -9,11 +9,11 @@ const crypto = require("node:crypto");
 const { Worker, isMainThread, parentPort, workerData } = require("node:worker_threads");
 const Database = require("better-sqlite3");
 const perf = require("../performance-diagnostics");
+const { performance } = require("node:perf_hooks");
+const { checkpointDelay, checkpointHeadroom, checkpointRetry } = require("./checkpoint-policy");
 
 const MAGIC = Buffer.from("MORROWJ1");
 const HEADER_SIZE = 80;
-const CHECKPOINT_BYTES = 8 * 1024 * 1024;
-const CHECKPOINT_TRANSACTIONS = 256;
 const CHECKPOINT_TIMEOUT_MS = 60000;
 
 // shortcut: checkpoint wait is 60s plus 30s per 256 MiB, raise it when a healthy copy of a large mailbox is still killed
@@ -65,6 +65,23 @@ function dropSidecars(file) {
   for (const suffix of ["-journal", "-wal", "-shm"]) {
     try { fs.rmSync(file + suffix, { force: true }); } catch { /* absent */ }
   }
+}
+
+function removeCheckpointCopy(file) {
+  const tmp = `${file}.tmp`;
+  try { fs.rmSync(tmp, { force: true }); } catch {}
+  dropSidecars(tmp);
+}
+
+function fileBytes(file) {
+  try { return fs.statSync(file).size; } catch { return 0; }
+}
+
+function availableBytes(file) {
+  try {
+    const space = fs.statfsSync(path.dirname(file));
+    return space.bavail * space.bsize;
+  } catch { return null; }
 }
 
 function adapt(raw, file) {
@@ -234,11 +251,11 @@ function readAll(fd, length, position) {
 
 // A short final frame is an interrupted append. A complete but invalid frame,
 // wrong database generation, or sequence gap is corruption: fail closed.
-function replay(database, file, { repairTail = false } = {}) {
-  return perf.sync("storage.replay", () => replayJournal(database, file, { repairTail }));
+function replay(database, file, options = {}) {
+  return perf.sync("storage.replay", () => replayJournal(database, file, options));
 }
 
-function replayJournal(database, file, { repairTail = false } = {}) {
+function replayJournal(database, file, { repairTail = false, onProgress } = {}) {
   if (!fs.existsSync(file)) return;
   const current = state(database);
   if (!current) throw new Error("Mail journal has no matching SQLite checkpoint.");
@@ -295,6 +312,7 @@ function replayJournal(database, file, { repairTail = false } = {}) {
         }
       }
       offset += HEADER_SIZE + length;
+      onProgress?.(offset);
     }
     if (offset !== size) {
       if (!repairTail) throw new Error("Incomplete sealed mail journal.");
@@ -305,7 +323,7 @@ function replayJournal(database, file, { repairTail = false } = {}) {
 }
 
 class Persistence {
-  constructor(file) {
+  constructor(file, { startup = false, onProgress } = {}) {
     this.file = file;
     this.journal = `${file}.journal`;
     this.pending = `${file}.journal.pending`;
@@ -318,17 +336,41 @@ class Persistence {
     this.job = null;
     this.closed = false;
     this.initialized = false;
+    this.startup = startup;
+    this.onProgress = onProgress;
+    this.databaseBytes = fileBytes(file);
+    this.pendingBytes = fileBytes(this.pending);
+    this.dirtySince = null;
+    this.lastCheckpointAt = -Infinity;
+    this.checkpointMs = 0;
+    this.failures = 0;
+    this.retryAt = 0;
+    this.timerAt = 0;
+  }
+
+  progress(value) {
+    try { this.onProgress?.(value); } catch {}
+  }
+
+  finishStartup() {
+    this.startup = false;
+    this.schedule();
   }
 
   async open() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    let database = await loadDatabase(this.file);
+    this.progress({ phase: "copy", sourceBytes: this.databaseBytes });
+    let database = await perf.measure("startup.copy", () => {
+      removeCheckpointCopy(this.file);
+      return loadDatabase(this.file);
+    });
     try {
       const saved = state(database);
       if (saved) {
         database.close();
         database = null;
-        await this.startupWork("replay");
+        this.progress({ phase: "journal", completedBytes: 0, totalBytes: this.pendingBytes + fileBytes(this.journal) });
+        await perf.measure("startup.journal", () => this.startupWork("replay"));
         if (this.closed) throw new Error("Mail storage opening cancelled.");
         database = openAdapted(`${this.file}.live`);
         Object.assign(this, state(database));
@@ -372,7 +414,14 @@ class Persistence {
         worker.unref();
         if (failure || error) reject(failure || error); else resolve(report);
       };
-      worker.once("message", message => finish(message.error ? Object.assign(new Error(message.error.message), { code: message.error.code }) : null, message.report));
+      worker.on("message", message => {
+        if (message.progress) { this.progress(message.progress); return; }
+        if (message.report) {
+          perf.record("storage.replay", message.report.replayMs);
+          perf.record("storage.checkpoint.publish", message.report.publishMs);
+        }
+        finish(message.error ? Object.assign(new Error(message.error.message), { code: message.error.code }) : null, message.report);
+      });
       worker.once("error", error => finish(error));
       worker.once("exit", code => finish(new Error(`Mail storage worker stopped (${code}).`)));
     });
@@ -436,31 +485,54 @@ class Persistence {
   }
 
   schedule(delay = 1000) {
-    if (this.closed || this.timer || this.running) return;
-    if (this.bytes < CHECKPOINT_BYTES && this.transactions < CHECKPOINT_TRANSACTIONS && !fs.existsSync(this.pending)) return;
+    if (this.closed || this.running) return;
+    const now = performance.now();
+    const pending = fs.existsSync(this.pending);
+    if (this.dirtySince == null && (this.bytes || this.transactions || pending)) this.dirtySince = now;
+    const wait = checkpointDelay({ databaseBytes: this.databaseBytes, journalBytes: this.bytes + this.pendingBytes,
+      transactions: this.transactions, pending, startup: this.startup,
+      ageMs: this.dirtySince == null ? 0 : now - this.dirtySince,
+      sinceCheckpointMs: now - this.lastCheckpointAt, checkpointMs: this.checkpointMs });
+    if (wait == null) return;
+    const timerAt = now + Math.max(delay, wait, this.retryAt - now);
+    if (this.timer && this.timerAt <= timerAt && this.timerAt >= this.retryAt) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timerAt = timerAt;
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.checkpoint().catch((error) => {
+      this.checkpoint({ automatic: true }).catch((error) => {
         console.warn("[mail] Checkpoint deferred; durable journal retained:", error.code || error.name);
-        this.schedule(30000);
       });
-    }, delay);
+    }, Math.max(0, timerAt - now));
     this.timer.unref();
   }
 
-  async checkpoint() {
+  async checkpoint(options = {}) {
     const target = this.sequence;
     let report;
-    do { report = await this.checkpointOnce(); }
-    while (!this.closed && report && report.sequence < target);
-    return report;
+    try {
+      do { report = await this.checkpointOnce(options); }
+      while (!options.automatic && !this.closed && report && report.sequence < target);
+      return report;
+    } catch (error) {
+      this.failures++;
+      const lowSpace = ["ENOSPC", "SQLITE_FULL", "mail_checkpoint_low_space"].includes(error.code);
+      this.retryAt = performance.now() + checkpointRetry(this.failures, lowSpace);
+      this.schedule(0);
+      throw error;
+    }
   }
 
-  checkpointOnce() {
+  checkpointOnce({ automatic = false } = {}) {
     if (this.running) return this.running;
     if (this.closed) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    removeCheckpointCopy(this.file);
+    this.databaseBytes = Math.max(fileBytes(this.file), fileBytes(`${this.file}.live`));
+    if (automatic && !checkpointHeadroom(this.databaseBytes, availableBytes(this.file))) {
+      throw Object.assign(new Error("Automatic mail checkpoint deferred for disk headroom; durable journal retained."), { code: "mail_checkpoint_low_space" });
+    }
     this.openJournal();
     if (!fs.existsSync(this.pending)) {
       if (!this.bytes) return;
@@ -468,18 +540,28 @@ class Persistence {
       this.fd = null;
       fs.renameSync(this.journal, this.pending);
       syncDirectory(this.pending);
+      this.pendingBytes = this.bytes;
       this.openJournal();
       this.transactions = 0;
     }
     let succeeded = false;
+    const began = performance.now();
     this.running = this.dispatchCheckpoint().then((report) => {
       if (!report || !Number.isSafeInteger(report.sequence)) throw new Error("Invalid mail checkpoint result.");
       fs.unlinkSync(this.pending);
       syncDirectory(this.pending);
+      this.pendingBytes = 0;
+      this.databaseBytes = Number.isSafeInteger(report.bytes) && report.bytes >= 0 ? report.bytes : fileBytes(this.file);
+      this.dirtySince = this.bytes ? began : null;
+      this.failures = 0;
+      this.retryAt = 0;
       succeeded = true;
       return report;
     }).finally(() => {
       this.running = null;
+      this.checkpointMs = performance.now() - began;
+      this.lastCheckpointAt = performance.now();
+      perf.record("storage.checkpoint", this.checkpointMs);
       if (succeeded) this.schedule();
     });
     return this.running;
@@ -500,16 +582,22 @@ class Persistence {
       };
       worker.on("message", ({ error, report }) => {
         if (error) finish(Object.assign(new Error(error.message), { code: error.code }));
-        else finish(null, report);
+        else {
+          perf.record("storage.checkpoint.copy", report?.copyMs);
+          perf.record("storage.checkpoint.replay", report?.replayMs);
+          perf.record("storage.checkpoint.publish", report?.publishMs);
+          finish(null, report);
+        }
       });
       worker.on("error", (error) => {
-        finish(error);
-        if (this.worker === worker) this.worker = null;
+        if (this.worker === worker && this.job) this.job.failure = error;
         worker.unref();
       });
       worker.on("exit", () => {
+        if (this.worker !== worker) return;
+        removeCheckpointCopy(this.file);
         finish((this.job && this.job.failure) || new Error("Mail checkpoint worker stopped."));
-        if (this.worker === worker) this.worker = null;
+        this.worker = null;
       });
     }
     const worker = this.worker;
@@ -557,32 +645,52 @@ if (!isMainThread && workerData?.morrowStartupWorker) {
   try {
     const file = workerData.file;
     database = openAdapted(`${file}.live`);
+    const began = performance.now();
     if (workerData.morrowStartupWorker === "replay") {
-      replay(database, `${file}.journal.pending`);
-      replay(database, `${file}.journal`, { repairTail: true });
+      const pendingBytes = fileBytes(`${file}.journal.pending`);
+      const totalBytes = pendingBytes + fileBytes(`${file}.journal`);
+      let lastProgress = -Infinity;
+      const progress = (completedBytes, final = false) => {
+        const now = performance.now();
+        if (!final && now - lastProgress < 100) return;
+        lastProgress = now;
+        parentPort.postMessage({ progress: { phase: "journal", completedBytes, totalBytes } });
+      };
+      replay(database, `${file}.journal.pending`, { onProgress: offset => progress(offset) });
+      replay(database, `${file}.journal`, { repairTail: true, onProgress: offset => progress(pendingBytes + offset) });
+      progress(totalBytes, true);
     } else snapshot(database, file);
     database.close();
     database = null;
-    parentPort.postMessage({ report: { complete: true } });
+    parentPort.postMessage({ report: { complete: true,
+      [workerData.morrowStartupWorker === "replay" ? "replayMs" : "publishMs"]: performance.now() - began } });
   } catch (error) {
     try { database?.close(); } catch {}
+    if (workerData.morrowStartupWorker === "initialize") removeCheckpointCopy(workerData.file);
     parentPort.postMessage({ error: { message: error.message, code: error.code } });
   }
 } else if (!isMainThread && workerData && workerData.morrowCheckpointWorker) {
   parentPort.on("message", ({ file, pending }) => {
     let database;
     try {
+      let began = performance.now();
       database = loadCheckpointCopy(file);
+      const copyMs = performance.now() - began;
+      began = performance.now();
       replay(database, pending);
+      const replayMs = performance.now() - began;
       const current = state(database);
+      began = performance.now();
       const bytes = snapshot(database, file);
+      const publishMs = performance.now() - began;
       if (database && !database.closed) database.close();
       database = null;
       // All disk and DB work is complete before acknowledging. Reuse this worker
       // for later checkpoints. The copy is paged from disk, not a WASM snapshot.
-      parentPort.postMessage({ report: { bytes, sequence: current.sequence } });
+      parentPort.postMessage({ report: { bytes, sequence: current.sequence, copyMs, replayMs, publishMs } });
     } catch (error) {
       try { if (database && !database.closed) database.close(); } catch { /* report the original failure */ }
+      removeCheckpointCopy(file);
       parentPort.postMessage({ error: { message: error.message, code: error.code } });
     }
   });

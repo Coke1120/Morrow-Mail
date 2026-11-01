@@ -235,7 +235,7 @@ if (process.argv[2] === "--crash") {
   db.subscribeIndexProgress(event => {
     if ((boundary === "partial" && event.completed > 0 && event.completed < COUNT)
         || (boundary === "ready" && event.phase === "ready")) {
-      process.stdout.write(JSON.stringify(event)); process.exit(0);
+      fs.writeSync(process.stdout.fd, JSON.stringify(event)); process.exit(0);
     }
   });
   db.open(file).then(() => { throw new Error("Expected durable crash boundary was not reached"); }).catch(error => { console.error(error); process.exitCode = 1; });

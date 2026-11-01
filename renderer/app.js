@@ -13,6 +13,7 @@ const state = {
   folderId: null,
   emails: [],
   listOffset: 0,
+  listCursors: [],
   listTotal: 0,
   listSyncDone: true,
   listLoading: false,
@@ -653,6 +654,7 @@ function mailListRequest(view) {
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
   if (source.allInbox) {
     const params = { folderKey: "primary", limit, offset };
+    if (source.pageCursor) params.pageCursor = source.pageCursor;
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
     if (helper && typeof helper.primaryMailboxes === "function") {
       const mailboxes = helper.primaryMailboxes(source.accounts, foldersOf);
@@ -663,6 +665,7 @@ function mailListRequest(view) {
     return { channel: "mail:listFromCache", params };
   }
   const params = { accountId: source.accountId, folderId: source.folderId, limit, offset };
+  if (source.pageCursor) params.pageCursor = source.pageCursor;
   if (retainId) params.retainIds = [retainId];
   return {
     channel: source.fromNetwork ? "mail:listFromNetwork" : "mail:listFromCache",
@@ -9323,6 +9326,7 @@ async function loadList(fromNetwork, requestedOffset) {
     state.listScope = scope;
     state.listOffset = 0;
     state.listTotal = 0;
+    state.listCursors = [];
   }
   state.listLoading = true;
   if (scopeChanged) {
@@ -9358,6 +9362,8 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
+    if (requestedOffset == null) state.listCursors = [];
+    const pageCursor = state.listCursors.find(entry => entry.offset === offset)?.cursor;
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
       allInbox: state.allInbox,
@@ -9369,6 +9375,7 @@ async function loadList(fromNetwork, requestedOffset) {
       retainIds,
       limit: LIST_PAGE_SIZE,
       offset,
+      pageCursor,
     });
     let data = await call(request.channel, request.params);
     if (gen !== listGen) return null;
@@ -9389,6 +9396,12 @@ async function loadList(fromNetwork, requestedOffset) {
       if (gen !== listGen) return null;
     }
     state.listOffset = offset;
+    if (data?.cursorReset) state.listCursors = [];
+    if (data?.nextCursor) {
+      state.listCursors = state.listCursors.filter(entry => entry.offset !== data.nextCursor.offset);
+      state.listCursors.push({ offset: data.nextCursor.offset, cursor: data.nextCursor });
+      if (state.listCursors.length > 32) state.listCursors.shift();
+    }
     state.emails = takeEmails((data && data.emails) || []);
     if (unreadListActive(currentUnreadView()) && !optimisticRemovals.has(state.unreadHold?.id)) {
       state.unreadHold = applyUnreadHold(state.unreadHold, {
@@ -17410,6 +17423,11 @@ function openSettings() {
 const mailVacation = new Map();
 const mailVacationPending = new Set();
 let oooRetryAccount = null;
+function mailVacationAccount() {
+  return state.allInbox
+    ? state.accounts.find((account) => account.id === $("mail-ooo-account")?.value) || null
+    : selectedAccount();
+}
 function vacationChipSummary(entry) {
   if (entry && entry.retrying) return "Out of Office: Retrying…";
   if (entry && entry.error) return "Out of Office: unknown — refresh to retry";
@@ -17429,7 +17447,7 @@ const oooRetry = (window.morrowSyncRetry
   ? window.morrowSyncRetry.createRetryScheduler({
     delays: window.morrowSyncRetry.OOO_RETRY_DELAYS_MS,
     onRetry(accountId) {
-      if (!selectedAccount() || selectedAccount().id !== accountId) {
+      if (mailVacationAccount()?.id !== accountId) {
         oooRetry.clear(accountId);
         if (mailVacation.get(accountId) && mailVacation.get(accountId).retrying) mailVacation.delete(accountId);
         return;
@@ -17471,7 +17489,6 @@ function paintMailVacation() {
   const picker = $("mail-ooo-account");
   if (picker) picker.hidden = !state.allInbox;
   if (state.allInbox) {
-    box.hidden = !state.accounts.length;
     const key = JSON.stringify(state.accounts.map((account) => [account.id, accountLabel(account)]));
     if (picker && picker.dataset.accounts !== key) {
       const selected = picker.value || state.accountId;
@@ -17479,17 +17496,8 @@ function paintMailVacation() {
       picker.value = state.accounts.some((account) => account.id === selected) ? selected : state.accounts[0]?.id || "";
       picker.dataset.accounts = key;
     }
-    const detail = "Out of Office is set per mailbox. Choose a mailbox to review or manage its automatic replies.";
-    box.classList.remove("is-off");
-    box.title = detail;
-    $("mail-ooo-status").textContent = detail;
-    $("mail-ooo-status").setAttribute("aria-label", detail);
-    $("mail-ooo-status").setAttribute("aria-busy", "false");
-    $("mail-ooo-manage").textContent = "Manage selected mailbox…";
-    $("mail-ooo-refresh").hidden = true;
-    return;
   }
-  const account = selectedAccount();
+  const account = mailVacationAccount();
   box.hidden = !account;
   if (!account) return;
   const entry = mailVacation.get(account.id);
@@ -17511,10 +17519,10 @@ function releaseVacationRetry(accountId) {
   if (entry && entry.retrying) mailVacation.delete(accountId);
 }
 async function refreshMailVacation(force = false) {
-  const account = state.allInbox ? null : selectedAccount();
+  paintMailVacation();
+  const account = mailVacationAccount();
   if (oooRetryAccount && (!account || oooRetryAccount !== account.id)) releaseVacationRetry(oooRetryAccount);
   oooRetryAccount = account ? account.id : null;
-  paintMailVacation();
   if (!account || mailVacationPending.has(account.id)) return;
   const id = account.id;
   if (force) oooRetry.clear(id);
@@ -17530,12 +17538,12 @@ async function refreshMailVacation(force = false) {
   mailVacationPending.add(id);
   try {
     const data = await call("mail:vacationGet", { accountId: id });
-    if (selectedAccount()?.id !== id) return;
+    if (mailVacationAccount()?.id !== id) return;
     if (!data || data.accountId !== id) throw new Error("Mailbox did not match");
     oooRetry.noteSuccess(id);
     rememberVacation(data);
   } catch (error) {
-    if (selectedAccount()?.id !== id) return;
+    if (mailVacationAccount()?.id !== id) return;
     const plan = oooRetry.noteFailure(id, "", { stickyAuth: false });
     if (plan.retry) mailVacation.set(id, { error: true, retrying: true, at: previous && previous.at });
     else mailVacation.set(id, { error: true, at: Date.now() });
@@ -24731,6 +24739,7 @@ function wire() {
   $("scheduled-close").addEventListener("click", () => closeDialog("scheduled-dialog"));
   $("mail-ooo-manage").addEventListener("click", () => manageMailVacation());
   $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
+  $("mail-ooo-account").addEventListener("change", () => refreshMailVacation());
   $("settings-account").addEventListener("change", () => changeSettingsMailbox($("settings-account").value));
   $("settings-reconnect").addEventListener("click", () => openConnectFor(settingsAccount()));
   $("google-oauth-import").addEventListener("click", () => changeGoogleOauthClient("mail:importGoogleOauth"));
