@@ -198,6 +198,7 @@ const INVOKE = [
   "bot:setEnabled",
   "bot:setServeHost",
   "bot:mintGrant",
+  "bot:configureProactive",
   "bot:rotateGrant",
   "bot:revokeGrant",
   "bot:deleteGrant",

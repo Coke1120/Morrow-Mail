@@ -13,10 +13,15 @@ const { accessPath, writePrivate } = require("./store");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN = /^mmb_v1_([A-Za-z0-9_-]{8,32})\.([A-Za-z0-9_-]{40,80})$/;
 const STORE_KEYS = ["version", "enabled", "installationId", "serveHost", "grants"];
+const PLATFORMS = { grok_bot: "Grok Bot", hermes_agent: "Hermes Agent" };
+const listeners = new Set();
+function changed(clientId) { for (const fn of listeners) { try { fn(clientId); } catch { /* invalidation is best effort */ } } }
+function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+
 const GRANT_KEYS = [
   "clientId", "label", "keyId", "verifier", "accountIds", "capabilities",
   "installationId", "createdAt", "expiry", "revokedAt", "revision",
-  "lastUsedAt", "bytesDay", "bytesToday", "draftsDay", "draftsToday",
+  "lastUsedAt", "bytesDay", "bytesToday", "draftsDay", "draftsToday", "platform", "proactive",
 ];
 
 function publicError(message, code) {
@@ -69,12 +74,12 @@ function copyExpiry(expiry) {
 
 function migrateStore(parsed) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  if (parsed.version === 2) return parsed;
+  if (parsed.version === 2 && Array.isArray(parsed.grants)) return { ...parsed, grants: parsed.grants.map(grant => ({ platform: "grok_bot", proactive: null, ...grant })) };
   if (parsed.version !== 1 || !Array.isArray(parsed.grants)) return null;
   const grants = [];
   for (const grant of parsed.grants) {
     if (!grant || typeof grant !== "object" || Array.isArray(grant)) return null;
-    const next = { ...grant, expiry: { kind: "finite", expiresAt: grant.expiresAt } };
+    const next = { platform: "grok_bot", proactive: null, ...grant, expiry: { kind: "finite", expiresAt: grant.expiresAt } };
     delete next.expiresAt;
     grants.push(next);
   }
@@ -83,6 +88,8 @@ function migrateStore(parsed) {
 
 function validGrant(grant, installationId) {
   if (!sameKeys(grant, GRANT_KEYS)) return false;
+  if (!Object.hasOwn(PLATFORMS, grant.platform)) return false;
+  if (grant.proactive !== null && !require("./proactive-config").validStored(grant.proactive, grant)) return false;
   if (!UUID.test(grant.clientId) || !UUID.test(grant.installationId)) return false;
   if (grant.installationId !== installationId) return false;
   if (typeof grant.label !== "string" || grant.label.length < 1 || grant.label.length > 60) return false;
@@ -143,6 +150,8 @@ function publicGrant(grant, now = Date.now()) {
   return {
     clientId: grant.clientId,
     label: grant.label,
+    platform: grant.platform,
+    proactive: require("./proactive-config").publicConfig(grant.proactive),
     keyId: grant.keyId,
     accountIds: grant.accountIds.slice(),
     capabilities: grant.capabilities.slice(),
@@ -293,6 +302,8 @@ function mint(input) {
   const body = input || {};
   const label = typeof body.label === "string" ? body.label.trim() : "";
   if (!label || label.length > 60) throw publicError("Name the client in 1 to 60 characters.");
+  const platform = body.platform === undefined ? "grok_bot" : body.platform;
+  if (!Object.hasOwn(PLATFORMS, platform)) throw publicError("Choose Grok Bot or Hermes Agent.");
   const accountIds = normalizeAccounts(body.accountIds);
   const capabilities = normalizeCapabilities(body.capabilities || DEFAULT_CAPABILITIES);
   const expiry = parseExpiry(body.expiry);
@@ -306,6 +317,8 @@ function mint(input) {
   const grant = {
     clientId: crypto.randomUUID(),
     label,
+    platform,
+    proactive: null,
     keyId: token.keyId,
     verifier: token.verifier,
     accountIds,
@@ -338,6 +351,7 @@ function mutate(clientId, change) {
   } catch {
     throw publicError("Morrow could not store the grant.");
   }
+  changed(clientId);
   return publicGrant(grant);
 }
 
@@ -374,6 +388,7 @@ function removeGrant(clientId) {
   } catch {
     throw publicError("Morrow could not store the grant.");
   }
+  changed(clientId);
   return view();
 }
 
@@ -385,6 +400,7 @@ function setEnabledFlag(enabled) {
   }
   store.enabled = enabled;
   save(store);
+  changed();
   return view();
 }
 
@@ -502,6 +518,9 @@ function draftsToday(clientId) {
 }
 
 module.exports = {
+  PLATFORMS,
+  onChange,
+  mutate,
   CAPABILITIES,
   DEFAULT_CAPABILITIES,
   publicError,
