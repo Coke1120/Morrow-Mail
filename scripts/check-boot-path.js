@@ -162,7 +162,11 @@ if (sponsorUi.status !== 0) process.exit(sponsorUi.status || 1);
 for (const name of ["check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-startup-preparation.js", "check-startup-upgrade.js", "check-keychain-reads.js", "check-outbox.js", "check-agent-todos.js", "check-agent-card-view.js", "check-agent-learning.js"]) {
   // Forty reviewed-flow cases include durable SQLite commits and restarts;
   // allow their full assertions to finish on the Windows runner's filesystem.
-  const timeout = name === "check-reviewed-mail-flows.js" ? 90000 : 30000;
+  // Startup-upgrade fixture seeds 300 legacy rows + oversized bodies; Windows needs longer than 30s.
+  const timeout =
+    name === "check-reviewed-mail-flows.js" ? 90000 :
+    name === "check-startup-upgrade.js" ? 120000 :
+    30000;
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout });
   assert.ifError(fixture.error);
   assert.strictEqual(fixture.status, 0, name + " failed");
