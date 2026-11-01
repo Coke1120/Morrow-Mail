@@ -136,7 +136,7 @@ id: "mail-workflow-feedback",
         id: "out-of-office",
         title: "Out of Office",
         category: "Mail",
-        blurb: "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself. All Account Mail shows a mailbox chooser and Manage selected mailbox, not a merged on/off status; it opens that mailbox's Out of Office settings without writing or checking every account. A single mailbox retains its own status and Refresh. Provider replies preserve edits made during Save or Refresh as unsaved while updating the reviewed revision. Switching mailbox during a read cannot cache an unapplied result. Google mail/settings permission excludes Calendar; Microsoft uses its separate Graph bundle.",
+        blurb: "After you confirm, Settings writes a Gmail vacation reply, a Microsoft automatic reply, or an IMAP sieve script. Morrow does not send those replies itself. All Account Mail keeps a mailbox chooser and shows the selected mailbox's Out of Office status, not a merged on/off status. Status reads and Refresh check only that mailbox, never every account. When off, both single-mailbox and All Account Mail views show compact Out of Office: off with Manage and no Refresh. Manage opens the selected mailbox's Out of Office settings without writing. Provider replies preserve edits made during Save or Refresh as unsaved while updating the reviewed revision. Switching mailbox during a read cannot cache an unapplied result. Google mail/settings permission excludes Calendar; Microsoft uses its separate Graph bundle.",
       },
       {
         id: "imap-recovery",

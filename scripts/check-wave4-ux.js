@@ -6,7 +6,7 @@ const { test } = require('node:test');
 const { renderer } = require('./check-ux-workflows');
 const primaryMailboxes = require('../shared/primary-mailboxes');
 
-function fixture() {
+function fixture(syncRetry) {
   const nodes = new Map();
   const document = {
     activeElement: null,
@@ -70,7 +70,7 @@ function fixture() {
     nodes.set(id, node);
   }
   nodes.get('undo-details-popover').append(nodes.get('undo-details-list'), nodes.get('undo-details-selected'));
-  const ui = renderer({ document, setTimeout: () => 1, clearTimeout() {} });
+  const ui = renderer({ document, window: { morrow: {}, morrowSyncRetry: syncRetry }, setTimeout: () => 1, clearTimeout() {} });
   ui.context.window.morrowPrimaryMailboxes = primaryMailboxes;
   ui.context.window.morrowFeaturesCatalog = require('../renderer/features-catalog');
   ui.run(`globalThis.morrowPrimaryMailboxes = window.morrowPrimaryMailboxes;
@@ -428,30 +428,202 @@ test('W4-5 an obsolete triage failure cannot blank or repaint a newer cached loa
   assert.equal(ui.run('agentPaintPayload.sections[0].name'), 'Current');
 });
 
-test('W4-4 All Account OOO chooses a mailbox without inventing status or fetching every provider', async () => {
+test('W4-4 All Account OOO reads only the selected mailbox and keeps its compact off controls', async () => {
   const ui = fixture();
-  ui.run(`call = async (channel,params) => {calls.push({channel,params});throw Error('No provider calls authorized');}; paintMailVacation();`);
+  ui.run(`call = async (channel,params) => {
+    calls.push({channel,params});
+    return {accountId:params.accountId,provider:'google',supported:true,settings:{mode:params.accountId==='alpha'?'always':'disabled'}};
+  }; paintMailVacation();`);
   assert.equal(ui.nodes.get('mail-ooo').hidden, false);
   assert.equal(ui.nodes.get('mail-ooo-account').hidden, false);
   assert.equal(ui.nodes.get('mail-ooo-account').children.length, 2);
-  assert.match(ui.nodes.get('mail-ooo-status').textContent, /set per mailbox/);
-  assert.doesNotMatch(ui.nodes.get('mail-ooo-status').textContent, /Out of Office: (?:on|off)/);
-  assert.equal(ui.nodes.get('mail-ooo-refresh').hidden, true);
+  assert.match(ui.nodes.get('mail-ooo-status').textContent, /alpha@example.test · Out of Office: unknown/);
+  assert.equal(ui.nodes.get('mail-ooo-refresh').hidden, false);
   await ui.run('refreshMailVacation()');
-  assert.equal(ui.run('calls.length'), 0);
-  ui.run(`$('mail-ooo-account').value='beta'; globalThis.openedFold='';
+  assert.match(ui.nodes.get('mail-ooo-status').textContent, /alpha@example.test · Out of Office: on until disabled/);
+  ui.run(`$('mail-ooo-account').value='beta'`);
+  await ui.run('refreshMailVacation()');
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
+  assert.equal(ui.nodes.get('mail-ooo').classList.contains('is-off'), true);
+  assert.equal(ui.nodes.get('mail-ooo-manage').textContent, 'Manage');
+  assert.equal(ui.nodes.get('mail-ooo-refresh').hidden, true);
+  assert.match(ui.nodes.get('mail-ooo').title, /^beta@example.test · Out of Office: off · Checked /);
+  assert.equal(ui.nodes.get('mail-ooo-status').getAttribute('aria-label'), ui.nodes.get('mail-ooo').title);
+  assert.equal(ui.nodes.get('mail-ooo-status').getAttribute('aria-busy'), 'false');
+  ui.run('paintMailVacation(); paintMailVacation()');
+  await ui.run('refreshMailVacation()');
+  await ui.run('refreshMailVacation(true)');
+  assert.deepEqual(ui.json('calls.map(row => [row.channel,row.params.accountId])'),
+    [['mail:vacationGet','alpha'],['mail:vacationGet','beta'],['mail:vacationGet','beta']]);
+  ui.run(`globalThis.openedFold='';
     openSettings = () => {state.settingsAccountId='alpha';}; changeSettingsMailbox = async id => {state.settingsAccountId=id;return true;};
     revealSettingsFold = fold => {openedFold=fold;};`);
   await ui.run('manageMailVacation()');
   assert.equal(ui.run('state.settingsAccountId'), 'beta');
   assert.equal(ui.run('state.accountId'), 'alpha');
   assert.equal(ui.run('openedFold'), 'ooo');
-  assert.equal(ui.run('calls.length'), 0);
-  ui.run(`state.allInbox=false; rememberVacation({accountId:'alpha',provider:'google',supported:true,settings:{mode:'disabled'}});`);
+  assert.equal(ui.run('calls.length'), 3);
+  assert.equal(ui.context.document.activeElement, ui.nodes.get('ooo-refresh'));
+  ui.run('state.allInbox=false;paintMailVacation()');
   assert.equal(ui.nodes.get('mail-ooo-account').hidden, true);
+  assert.match(ui.nodes.get('mail-ooo-status').textContent, /alpha@example.test · Out of Office: on until disabled/);
+  ui.run(`state.accountId='beta';paintMailVacation()`);
   assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
-  ui.run('state.allInbox=true;state.accounts=[];paintMailVacation()');
+  ui.run('state.allInbox=true;state.accounts=[]');
+  await ui.run('refreshMailVacation()');
   assert.equal(ui.nodes.get('mail-ooo').hidden, true);
+  assert.equal(ui.run('calls.length'), 3);
+});
+
+test('W4-4 All Account OOO uses the same status and compact conditions as a single mailbox', () => {
+  const ui = fixture();
+  const snapshot = () => ({
+    text: ui.nodes.get('mail-ooo-status').textContent,
+    title: ui.nodes.get('mail-ooo').title,
+    label: ui.nodes.get('mail-ooo-status').getAttribute('aria-label'),
+    busy: ui.nodes.get('mail-ooo-status').getAttribute('aria-busy'),
+    compact: ui.nodes.get('mail-ooo').classList.contains('is-off'),
+    manage: ui.nodes.get('mail-ooo-manage').textContent,
+    refreshHidden: ui.nodes.get('mail-ooo-refresh').hidden,
+  });
+  for (const data of [null, {supported:false}, {supported:true,requiresReconnect:true},
+    {supported:true,scheduleWarning:'Review provider dates'}, {supported:true,settings:null},
+    {supported:true,settings:{mode:'disabled'}}, {supported:true,settings:{mode:'always'}},
+    {supported:true,settings:{mode:'scheduled',start:'2099-01-01T00:00:00Z',end:'2099-01-02T00:00:00Z'}}]) {
+    ui.context.entry = {data: data && {accountId:'beta',provider:'google',settings:{mode:'disabled'},...data}, at: Date.now()};
+    ui.run(`mailVacation.set('beta',entry);state.allInbox=false;state.accountId='beta';paintMailVacation()`);
+    const single = snapshot();
+    ui.run(`state.allInbox=true;state.accountId='alpha';paintMailVacation();$('mail-ooo-account').value='beta';paintMailVacation()`);
+    assert.deepEqual(snapshot(), single);
+    assert.equal(ui.nodes.get('mail-ooo-account').hidden, false);
+    assert.equal(single.compact, data?.settings?.mode === 'disabled');
+  }
+  for (const retrying of [true, false]) {
+    ui.context.entry = {error:true,retrying,at:Date.now()};
+    ui.run(`mailVacation.set('beta',entry);paintMailVacation()`);
+    assert.equal(snapshot().compact, false);
+    assert.equal(snapshot().refreshHidden, false);
+    assert.equal(snapshot().busy, String(retrying));
+    assert.match(snapshot().text, retrying ? /beta@example.test · Out of Office: Retrying…/ : /beta@example.test · Out of Office: unknown — refresh to retry/);
+  }
+});
+
+test('W4-4 All Account OOO coalesces pending reads and ignores obsolete picker success or failure', async () => {
+  const ui = fixture();
+  ui.run(`globalThis.requests=[];call = (channel,params) => new Promise((resolve,reject) => {
+    calls.push({channel,params});requests.push({resolve,reject});
+  });`);
+  const alpha = ui.run('refreshMailVacation()');
+  await ui.run('refreshMailVacation()');
+  assert.equal(ui.run('calls.length'), 1);
+  ui.run(`$('mail-ooo-account').value='beta'`);
+  const beta = ui.run('refreshMailVacation()');
+  ui.run(`requests[1].resolve({accountId:'beta',supported:true,settings:{mode:'disabled'}})`);
+  await beta;
+  ui.run(`requests[0].resolve({accountId:'alpha',supported:true,settings:{mode:'always'}})`);
+  await alpha;
+  assert.equal(ui.run(`mailVacation.has('alpha')`), false);
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
+  ui.run(`$('mail-ooo-account').value='alpha'`);
+  const obsolete = ui.run('refreshMailVacation()');
+  ui.run(`$('mail-ooo-account').value='beta'`);
+  await ui.run('refreshMailVacation()');
+  ui.run(`requests[2].reject(Error('Obsolete provider failure'))`);
+  await obsolete;
+  assert.equal(ui.run(`mailVacation.has('alpha')`), false);
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
+  assert.deepEqual(ui.json('calls.map(row => row.params.accountId)'), ['alpha','beta','alpha']);
+});
+
+test('W4-4 All Account OOO retries the picker mailbox and cancels retries after changing it', async () => {
+  const syncRetry = require('../shared/sync-retry');
+  const timers = new Map();
+  let nextTimer = 0;
+  const ui = fixture({...syncRetry,createRetryScheduler: options => syncRetry.createRetryScheduler({...options,
+    setTimer(callback, delay) { const id = ++nextTimer; timers.set(id, {callback,delay}); return id; },
+    clearTimer: id => timers.delete(id),
+  })});
+  ui.run(`paintMailVacation();$('mail-ooo-account').value='beta';globalThis.failVacation=true;
+    call = async (channel,params) => {
+      calls.push({channel,params});if(failVacation)throw Error('Temporary provider failure');
+      return {accountId:params.accountId,supported:true,settings:{mode:'disabled'}};
+    };`);
+  await ui.run('refreshMailVacation()');
+  assert.match(ui.nodes.get('mail-ooo-status').textContent, /beta@example.test · Out of Office: Retrying…/);
+  assert.equal(ui.nodes.get('mail-ooo-status').getAttribute('aria-busy'), 'true');
+  await ui.run('refreshMailVacation()');
+  assert.equal(ui.run('calls.length'), 1);
+  const [timerId, timer] = timers.entries().next().value;
+  assert.equal(timer.delay, 5000);
+  ui.run('failVacation=false');
+  timers.delete(timerId);
+  timer.callback();
+  await new Promise(setImmediate);
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
+  assert.equal(ui.run('calls.length'), 2);
+  ui.run('failVacation=true');
+  await ui.run('refreshMailVacation(true)');
+  const obsoleteTimer = timers.values().next().value;
+  ui.run(`failVacation=false;$('mail-ooo-account').value='alpha'`);
+  await ui.run('refreshMailVacation()');
+  assert.equal(timers.size, 0);
+  assert.equal(ui.run(`oooRetry.status('beta')`), null);
+  assert.equal(ui.run(`mailVacation.has('beta')`), false);
+  obsoleteTimer.callback();
+  await new Promise(setImmediate);
+  assert.deepEqual(ui.json('calls.map(row => row.params.accountId)'), ['beta','beta','beta','alpha']);
+});
+
+test('W4-4 real DOM paint, picker and Refresh events check only the selected mailbox and render Features help', async () => {
+  const { JSDOM } = require('jsdom');
+  const dom = new JSDOM(fs.readFileSync(path.join(__dirname, '../renderer/index.html'), 'utf8'), {
+    runScripts: 'outside-only', pretendToBeVisual: true,
+  });
+  const calls = [];
+  dom.window.morrow = {async invoke(channel, params) {
+    assert.equal(channel, 'mail:vacationGet');
+    calls.push(params.accountId);
+    return {success:true,data:{accountId:params.accountId,supported:true,settings:{mode:params.accountId==='alpha'?'disabled':'always'}}};
+  }};
+  dom.window.morrowFeaturesCatalog = require('../renderer/features-catalog');
+  dom.window.morrowPrimaryMailboxes = primaryMailboxes;
+  const context = dom.getInternalVMContext();
+  const run = code => vm.runInContext(code, context);
+  const document = dom.window.document;
+  const css = fs.readFileSync(path.join(__dirname, '../renderer/app.css'), 'utf8');
+  const compactStart = css.indexOf('.mail-ooo.is-off {');
+  const style = document.createElement('style');
+  style.textContent = css.slice(compactStart, css.indexOf('@media', compactStart));
+  document.head.appendChild(style);
+  try {
+    run(fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8').replace(/boot\(\)\.catch\([^\n]+\);\s*$/, ''));
+    run(`wire();state.accounts=[{id:'alpha',email:'alpha@example.test'},{id:'beta',email:'beta@example.test'}];
+      state.accountId='alpha';state.allInbox=true;renderAccounts()`);
+    await new Promise(setImmediate);
+    assert.deepEqual(calls, ['alpha']);
+    assert.equal(document.getElementById('mail-ooo-account').hidden, false);
+    assert.equal(document.getElementById('mail-ooo-status').textContent, 'Out of Office: off');
+    assert.equal(document.getElementById('mail-ooo').classList.contains('is-off'), true);
+    assert.equal(document.getElementById('mail-ooo-manage').textContent, 'Manage');
+    assert.equal(document.getElementById('mail-ooo-refresh').hidden, true);
+    assert.equal(dom.window.getComputedStyle(document.getElementById('mail-ooo')).flexWrap, 'wrap');
+    assert.equal(dom.window.getComputedStyle(document.querySelector('#mail-ooo .row')).flexBasis, '100%');
+    run(`renderAccounts();renderAccounts();$('mail-ooo-account').value='beta';$('mail-ooo-account').dispatchEvent(new Event('change'))`);
+    await new Promise(setImmediate);
+    assert.deepEqual(calls, ['alpha','beta']);
+    assert.match(document.getElementById('mail-ooo-status').textContent, /^beta@example.test · Out of Office: on until disabled · Checked /);
+    assert.equal(document.getElementById('mail-ooo-refresh').hidden, false);
+    document.getElementById('mail-ooo-refresh').click();
+    await new Promise(setImmediate);
+    assert.deepEqual(calls, ['alpha','beta','beta']);
+    run(`showPrimary('features','features-panel');paintFeatureCatalog();showFeaturesTab('catalog')`);
+    assert.equal(document.getElementById('features-panel').hidden, false);
+    assert.equal(document.getElementById('features-pane-catalog').hidden, false);
+    const card = [...document.querySelectorAll('.feature-card')].find(node => node.querySelector('h4').textContent === 'Out of Office');
+    assert.match(card.textContent, /selected mailbox's Out of Office status/);
+    assert.match(card.textContent, /Status reads and Refresh check only that mailbox, never every account/);
+    assert.match(card.textContent, /compact Out of Office: off with Manage and no Refresh/);
+  } finally { dom.window.close(); }
 });
 
 test('Wave4 rendered Features catalog and CLI describe implemented scope and settlement boundaries', () => {
@@ -460,7 +632,8 @@ test('Wave4 rendered Features catalog and CLI describe implemented scope and set
   const text = ui.nodes.get('features-catalog').textContent;
   for (const claim of [/downloaded unread messages in each account's primary folder/,/Snoozed messages and a read row held open are excluded/,
     /groups of at most four messages between paints/,/Accepted writes await mailbox confirmation before joining Undo/,
-    /accumulate completed changes across batches/,/select one change per message/i,/not a merged on\/off status/,/Agent reopens with its last payload/,
+    /accumulate completed changes across batches/,/select one change per message/i,/not a merged on\/off status/,/selected mailbox's Out of Office status/,
+    /Status reads and Refresh check only that mailbox, never every account/,/compact Out of Office: off with Manage and no Refresh/,/Agent reopens with its last payload/,
     /restored before the rest of its bulk request finishes stays out of Undo/,
     /Refreshing Scheduled also updates visible Outbox rows and the open message/,
     /Each background pass scans at most two 200-header pages/]) assert.match(text, claim);
