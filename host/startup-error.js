@@ -7,6 +7,9 @@ const path = require("path");
 function startupFailureDialog(error, file) {
   const reason = String(error instanceof Error ? error.message : error || "Unknown error").slice(0, 2000);
   const lines = [reason, "", "Your mailbox files were not deleted."];
+  if (["ENOSPC", "SQLITE_FULL"].includes(error?.code) || /\bENOSPC\b|\bSQLITE_FULL\b|database or disk is full|no space left on device/i.test(reason)) {
+    lines.unshift("There is not enough free disk space to prepare the local mailbox. Free space on the mailbox drive, then reopen Morrow. Do not delete or rename Morrow's database or journal files.", "");
+  }
   if (file) lines.push(String(file));
   return {
     type: "error",
@@ -103,4 +106,30 @@ function startupIndexProgressScript(progress) {
   return `(() => { const node = document.getElementById("startup-index-progress"); if (node) { node.hidden = false; node.textContent = ${JSON.stringify(text)}; } })();`;
 }
 
-module.exports = { startupFailureDialog, startupStatusHtml, startupIndexProgressScript };
+function startupProgressScript(progress) {
+  if (!progress) return "";
+  if (progress.phase === "search" && ["building", "ready"].includes(progress.searchPhase)) {
+    return startupIndexProgressScript({ ...progress, phase: progress.searchPhase });
+  }
+  const bytes = Number.isSafeInteger(progress.sourceBytes) && progress.sourceBytes > 0 ? progress.sourceBytes : 0;
+  const size = bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GiB` : `${Math.ceil(bytes / 1024 ** 2)} MiB`;
+  const total = Number.isSafeInteger(progress.total) && progress.total >= 0 ? progress.total : 0;
+  const completed = Number.isSafeInteger(progress.completed) ? Math.max(0, Math.min(progress.completed, total)) : 0;
+  const totalBytes = Number.isSafeInteger(progress.totalBytes) && progress.totalBytes > 0 ? progress.totalBytes : 0;
+  const checked = Number.isSafeInteger(progress.completedBytes) ? Math.max(0, Math.min(progress.completedBytes, totalBytes)) : 0;
+  const texts = {
+    copy: `Copying the local mailbox${bytes ? ` (${size})` : ""}… Copy progress is indeterminate. Your mail stays on this computer.`,
+    journal: `Recovering the durable mail journal${totalBytes ? `: ${Math.floor(checked / totalBytes * 100)}% checked` : ""}… This is not overall startup progress.`,
+    migrate: "Updating the local mailbox schema… An individual database update can take a while.",
+    initialize: "Publishing the initial local mailbox checkpoint… Waiting for durable disk writes.",
+    "body-backfill": `Preparing saved body metadata${Number.isSafeInteger(progress.total) ? `: ${completed} of ${total} pending messages committed` : ""}. You can quit and continue next time.`,
+    summaries: "Preparing saved message summaries… Your saved delivery choices are unchanged.",
+    search: "Checking local search before opening mail… No mail is downloaded by these checks.",
+    admit: "Local search is verified. Finishing local mailbox preparation…",
+    ready: "Local mailbox checks are complete. Finishing startup…",
+  };
+  if (!Object.hasOwn(texts, progress.phase)) return "";
+  return `(() => { const node = document.getElementById("startup-index-progress"); if (node) { node.hidden = false; node.textContent = ${JSON.stringify(texts[progress.phase])}; } })();`;
+}
+
+module.exports = { startupFailureDialog, startupStatusHtml, startupIndexProgressScript, startupProgressScript };

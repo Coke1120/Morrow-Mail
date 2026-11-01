@@ -21,7 +21,7 @@ function deferred() {
   const db = require("../host/mail/db"), engine = require("../host/mail/engine");
   const memory = require("../host/mail/memory-secrets"), secrets = require("../host/mail/secrets");
   const quitScheduled = require("../host/quit-scheduled");
-  const { startupIndexProgressScript } = require("../host/startup-error");
+  const { startupProgressScript } = require("../host/startup-error");
   const main = fs.readFileSync(path.join(__dirname, "../host/main.js"), "utf8");
   const original = { get: memory.getPasswordAsync, fetch: global.fetch, connect: require("node:net").Socket.prototype.connect };
   let network = 0;
@@ -47,7 +47,7 @@ function deferred() {
       const event = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
       const context = {
         interactiveBoot: true, bootWindow: null, bootFinished: false, bootFailed: false, bootCancelled: false, startupContinued: false,
-        process: { env: {}, platform: process.platform }, console, startupIndexProgressScript,
+        process: { env: {}, platform: process.platform }, console, startupProgressScript,
         startupStatusHtml: () => "<html>synthetic startup</html>", initMail: () => engine.init(),
         presentBootFailure: async () => { calls.errors++; }, scheduledQuitTime: () => "synthetic time",
         requestQuitChoice(prompt) { calls.prompt++; assert.equal(prompt.count, 1); return choice.promise; },
@@ -83,7 +83,7 @@ function deferred() {
         + main.slice(quitStart, main.indexOf('app.on("will-quit"', quitStart))
         + main.slice(statusStart, main.indexOf("async function presentBootFailure", statusStart)), ctx);
       await ctx.presentBootStatus();
-      const flowStart = main.indexOf("  let lastIndexPaint = -Infinity;");
+      const flowStart = main.indexOf("  let lastStartupPaint = -Infinity;");
       const flow = main.slice(flowStart, main.indexOf('  if (process.env.MORROW_MAIL_SELFTEST', flowStart));
       const initializing = vm.runInContext("(async () => {" + flow + ";globalThis.startupContinued=true;})()", ctx);
       await Promise.race([entered.promise, initializing.then(() => { throw new Error("Startup did not reach its held credential scan"); })]);

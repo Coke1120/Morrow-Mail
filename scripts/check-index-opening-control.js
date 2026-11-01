@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const flush = () => new Promise(setImmediate);
 
 async function bootControls(source = fs.readFileSync(path.join(__dirname, "../host/main.js"), "utf8")) {
-  const { startupIndexProgressScript } = require("../host/startup-error");
+  const { startupProgressScript } = require("../host/startup-error");
   const realQuit = require("../host/quit-scheduled");
   async function fixture(pendingMail = true) {
     const load = deferred(), choice = deferred(), close = deferred(), events = new Map();
@@ -13,11 +13,11 @@ async function bootControls(source = fs.readFileSync(path.join(__dirname, "../ho
     let window, progress, controller, now = 1000;
     const calls = { close: 0, quit: 0, errors: 0, paints: 0, prompts: 0, unsubscribed: 0 };
     const event = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
-    const database = { subscribeIndexProgress(callback) { progress = callback; return () => { calls.unsubscribed++; }; },
+    const database = { subscribeStartupProgress(callback) { progress = callback; return () => { calls.unsubscribed++; }; },
       close() { calls.close++; return close.promise; } };
     const context = {
       interactiveBoot: true, bootWindow: null, bootFinished: false, bootFailed: false, bootCancelled: false, startupContinued: false,
-      process: { env: {}, platform: process.platform }, console, Date: { now: () => now }, startupIndexProgressScript,
+      process: { env: {}, platform: process.platform }, console, Date: { now: () => now }, startupProgressScript,
       startupStatusHtml: () => "<html>synthetic opening window</html>", initMail: () => load.promise,
       presentBootFailure: async () => { calls.errors++; context.bootFailed = true; }, onBootRejection() {},
       listScheduledRows: () => pendingMail ? [{ status: "pending", subject: "Synthetic scheduled mail", sendAt: "2026-11-01T00:00:00Z" }] : [],
@@ -59,7 +59,7 @@ async function bootControls(source = fs.readFileSync(path.join(__dirname, "../ho
     const statusStart = source.indexOf("async function presentBootStatus()");
     vm.runInContext(source.slice(statusStart, source.indexOf("async function presentBootFailure", statusStart)), ctx);
     await ctx.presentBootStatus();
-    const flowStart = source.indexOf("  let lastIndexPaint = -Infinity;");
+    const flowStart = source.indexOf("  let lastStartupPaint = -Infinity;");
     const flow = source.slice(flowStart, source.indexOf('  if (process.env.MORROW_MAIL_SELFTEST', flowStart));
     const task = vm.runInContext("(async () => {" + flow + ";globalThis.startupContinued = true;})()", ctx);
     return { ctx, task, load, choice, close, calls, window, controller, node,
@@ -106,17 +106,31 @@ async function bootControls(source = fs.readFileSync(path.join(__dirname, "../ho
   }
 
   const progress = await fixture(false);
-  progress.paint({ phase: "building", completed: 10, total: 100, resumed: false });
+  const phases = await fixture(false);
+  phases.paint({ phase: "copy", sourceBytes: 1024 });
+  assert.match(phases.node.textContent, /Copying/);
+  phases.paint({ phase: "journal", completedBytes: 1, totalBytes: 10 });
+  assert.match(phases.node.textContent, /10% checked/);
+  phases.paint({ phase: "journal", completedBytes: 2, totalBytes: 10 });
+  assert.equal(phases.calls.paints, 2, "in-phase journal paints are throttled");
+  phases.paint({ phase: "body-backfill", completed: 0, total: 10 });
+  assert.equal(phases.calls.paints, 3, "phase transitions paint without waiting for the throttle");
+  phases.paint({ phase: "body-backfill", completed: 1, total: 10 });
+  assert.equal(phases.calls.paints, 3);
+  phases.paint({ phase: "body-backfill", completed: 10, total: 10 });
+  assert.equal(phases.calls.paints, 4, "final committed counts bypass the throttle");
+  phases.load.resolve(); await phases.task;
+  progress.paint({ phase: "search", searchPhase: "building", completed: 10, total: 100, resumed: false });
   assert.match(progress.node.textContent, /10 of 100/);
-  progress.paint({ phase: "building", completed: 20, total: 100 }); assert.equal(progress.calls.paints, 1);
-  progress.advance(100); progress.paint({ phase: "building", completed: 20, total: 100 });
-  progress.paint({ phase: "ready", completed: 100, total: 100 });
+  progress.paint({ phase: "search", searchPhase: "building", completed: 20, total: 100 }); assert.equal(progress.calls.paints, 1);
+  progress.advance(100); progress.paint({ phase: "search", searchPhase: "building", completed: 20, total: 100 });
+  progress.paint({ phase: "search", searchPhase: "ready", completed: 100, total: 100 });
   assert.equal(progress.calls.paints, 3); assert.equal(progress.node.textContent, "Local search is ready.");
   progress.request("window-close"); await flush();
   assert.equal(progress.ctx.bootCancelled, true); assert.equal(progress.calls.close, 1);
   progress.load.resolve(); await progress.task; assert.equal(progress.ctx.startupContinued, false);
   progress.close.resolve(); await flush(); progress.window.close();
-  progress.paint({ phase: "building", completed: 30, total: 100 }); assert.equal(progress.calls.paints, 3);
+  progress.paint({ phase: "search", searchPhase: "building", completed: 30, total: 100 }); assert.equal(progress.calls.paints, 3);
 
   const failed = await fixture();
   failed.load.reject(new Error("Synthetic genuine startup failure")); await failed.task;

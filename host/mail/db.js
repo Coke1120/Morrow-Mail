@@ -17,6 +17,12 @@ let opening = null;
 let storeGeneration = 0;
 let indexState = { phase: "idle", completed: 0, total: 0, resumed: false };
 const indexListeners = new Set();
+const STARTUP_STAGES = Object.freeze({ copy: "startup.copy", journal: "startup.journal", migrate: "startup.migrate",
+  initialize: "startup.initialize", "body-backfill": "startup.body-backfill", summaries: "startup.summaries",
+  search: "startup.index", admit: "startup.admit" });
+let startupState = Object.freeze({ phase: "idle", elapsedMs: 0 });
+let startupPhaseBegan = 0;
+const startupListeners = new Set();
 const listSummaries = new Map();
 
 function openingError(code = "mail_not_ready") {
@@ -38,6 +44,37 @@ function reportIndex(next) {
   for (const listener of indexListeners) {
     try { listener({ ...indexState }); } catch { /* UI observers cannot change storage */ }
   }
+  if (opening && !opening.cancelled && startupState.phase === "search") {
+    reportStartup({ phase: "search", searchPhase: next.phase, completed: next.completed, total: next.total, resumed: next.resumed });
+  }
+}
+
+function reportStartup(next) {
+  if (!Object.hasOwn(STARTUP_STAGES, next.phase) && !["idle", "ready", "failed", "cancelled"].includes(next.phase)) return;
+  if (startupState.phase !== next.phase) {
+    const previous = STARTUP_STAGES[startupState.phase];
+    if (previous) perf.phase?.(previous, ["failed", "cancelled"].includes(next.phase) ? next.phase : "complete");
+    startupPhaseBegan = performance.now();
+    const stage = STARTUP_STAGES[next.phase];
+    if (stage) perf.phase?.(stage, "start");
+  }
+  const value = { phase: next.phase, elapsedMs: Math.max(0, Math.round(performance.now() - startupPhaseBegan)) };
+  for (const key of ["completed", "total", "sourceBytes", "completedBytes", "totalBytes"]) {
+    if (Number.isSafeInteger(next[key]) && next[key] >= 0) value[key] = next[key];
+  }
+  if (["idle", "building", "ready"].includes(next.searchPhase)) value.searchPhase = next.searchPhase;
+  if (next.resumed === true) value.resumed = true;
+  startupState = Object.freeze(value);
+  for (const listener of startupListeners) {
+    try { listener({ ...startupState }); } catch {}
+  }
+}
+
+async function startupPhase(operation, phase, stage, work) {
+  reportStartup({ phase });
+  await new Promise(resolve => setImmediate(resolve));
+  assertOpening(operation);
+  return perf.measure(stage, work);
 }
 
 function all(sql, params = []) {
@@ -439,27 +476,34 @@ async function openDatabase(target, operation) {
   await closing;
   assertOpening(operation);
   reportIndex({ phase: "idle", completed: 0, total: 0, resumed: false });
+  reportStartup({ phase: "idle" });
   assertOpening(operation);
   filePath = target;
   storeGeneration++;
-  const ownedStorage = new Persistence(target);
+  const ownedStorage = new Persistence(target, { startup: true, onProgress: progress => {
+    if (opening === operation && !operation.cancelled) reportStartup(progress);
+  } });
   let ownedDb;
   try {
     ownedDb = await ownedStorage.open();
     assertOpening(operation);
     db = ownedDb;
     storage = ownedStorage;
-    internal(() => {
-      perf.sync("startup.migrate", () => transaction(migrate));
+    await startupPhase(operation, "migrate", "startup.migrate", () => internal(() => transaction(migrate)));
+    if (!storage.initialized) await startupPhase(operation, "initialize", "startup.initialize", () => storage.initialize(db));
+    assertOpening(operation);
+    await startupPhase(operation, "body-backfill", "startup.body-backfill", () => ensureBodyMetadata(operation));
+    await startupPhase(operation, "summaries", "startup.summaries", () => ensureScheduledSummaries(operation));
+    await startupPhase(operation, "search", "startup.index", () => ensureSearchIndex(operation));
+    assertOpening(operation);
+    await startupPhase(operation, "admit", "startup.admit", () => {
+      admitted = true;
+      ownedStorage.finishStartup();
     });
-    if (!storage.initialized) await storage.initialize(db);
+    reportStartup({ phase: "ready" });
     assertOpening(operation);
-    await ensureBodyMetadata(operation);
-    await ensureScheduledSummaries(operation);
-    await perf.measure("startup.index", () => ensureSearchIndex(operation));
-    assertOpening(operation);
-    admitted = true;
   } catch (error) {
+    reportStartup({ phase: operation.cancelled ? "cancelled" : "failed" });
     if (storage === ownedStorage) await closeStore();
     else {
       if (ownedDb) ownedDb.close();
@@ -2454,15 +2498,29 @@ function recipientHeaderRows(after = "", limit = 128) {
     FROM messages WHERE is_draft = 0 AND id > ? ORDER BY id LIMIT ?`, [after, limit]);
 }
 
+const BODY_METADATA_BATCH_IDS = 64;
+const BODY_METADATA_SLICE_MS = 8;
+
 async function ensureBodyMetadata(operation) {
+  const total = internal(() => get("SELECT COUNT(*) AS n FROM messages WHERE has_body IS NULL").n);
+  let completed = 0;
+  reportStartup({ phase: "body-backfill", completed, total });
   while (true) {
     assertOpening(operation);
-    const rows = internal(() => all("SELECT id FROM messages WHERE has_body IS NULL ORDER BY id LIMIT 64"));
+    const rows = internal(() => all("SELECT id FROM messages WHERE has_body IS NULL ORDER BY id LIMIT ?", [BODY_METADATA_BATCH_IDS]));
     if (!rows.length) return;
+    let processed = 0;
     internal(() => transaction(() => {
-      for (const row of rows) run(`UPDATE messages SET has_body = (COALESCE(trim(html_body, ${BODY_SPACE}), '') != ''
-        OR COALESCE(trim(text_body, ${BODY_SPACE}), '') != '') WHERE id = ?`, [row.id]);
+      const began = performance.now();
+      for (const row of rows) {
+        run(`UPDATE messages SET has_body = (COALESCE(trim(html_body, ${BODY_SPACE}), '') != ''
+          OR COALESCE(trim(text_body, ${BODY_SPACE}), '') != '') WHERE id = ? AND has_body IS NULL`, [row.id]);
+        processed++;
+        if (performance.now() - began >= BODY_METADATA_SLICE_MS) break;
+      }
     }));
+    completed += processed;
+    reportStartup({ phase: "body-backfill", completed, total });
     await new Promise(resolve => setImmediate(resolve));
   }
 }
@@ -2491,12 +2549,19 @@ module.exports = {
   open,
   close,
   indexProgress: () => ({ ...indexState }),
+  startupProgress: () => ({ ...startupState }),
+  subscribeStartupProgress(listener) {
+    if (typeof listener !== "function") throw new TypeError("Startup progress requires a callback.");
+    startupListeners.add(listener);
+    return () => startupListeners.delete(listener);
+  },
   subscribeIndexProgress(listener) {
     if (typeof listener !== "function") throw new TypeError("Index progress requires a callback.");
     indexListeners.add(listener);
     return () => indexListeners.delete(listener);
   },
-  checkpoint: () => storage ? storage.checkpoint() : Promise.resolve(),
+  checkpoint: () => storage && !storage.initialized ? Promise.reject(openingError())
+    : storage ? storage.checkpoint() : Promise.resolve(),
   hasAccounts,
   isReady,
   listAccountRows,

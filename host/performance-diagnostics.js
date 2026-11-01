@@ -4,10 +4,12 @@ const { performance, monitorEventLoopDelay } = require("node:perf_hooks");
 
 // Fixed labels only: never accept SQL, request values, errors, paths or ids.
 const STAGES = new Set([
-  "startup.mail", "startup.db", "startup.migrate", "startup.index",
+  "startup.mail", "startup.db", "startup.copy", "startup.journal", "startup.migrate", "startup.initialize",
+  "startup.body-backfill", "startup.summaries", "startup.index", "startup.admit",
   "db.transaction", "db.index", "db.list.headers", "db.list.full",
   "db.sync.reconcile", "db.list.merged", "db.list.summary",
   "db.thread.headers", "db.thread.full", "storage.journal", "storage.replay",
+  "storage.checkpoint", "storage.checkpoint.copy", "storage.checkpoint.replay", "storage.checkpoint.publish",
   "keychain.wait", "ipc.mail.list", "ipc.mail.open", "ipc.mail.thread",
   "ipc.mail.sync", "ipc.other",
 ]);
@@ -63,6 +65,11 @@ function createRecorder({ enabled = false, now = () => performance.now() } = {})
 }
 
 const recorder = createRecorder({ enabled: process.env.MORROW_PERF === "1" });
+function phase(stage, event) {
+  if (!recorder.enabled || !STAGES.has(stage) || !["start", "complete", "failed", "cancelled"].includes(event)) return;
+  try { require("./debug-log").note("performance", JSON.stringify({ stage, event })); } catch {}
+}
+
 let monitor, timer;
 function startMonitoring(report = line => require("./debug-log").note("performance", line)) {
   if (!recorder.enabled || timer) return;
@@ -85,4 +92,4 @@ function stopMonitoring() {
   monitor?.disable(); timer = null; monitor = null;
 }
 
-module.exports = { ...recorder, createRecorder, startMonitoring, stopMonitoring };
+module.exports = { ...recorder, phase, createRecorder, startMonitoring, stopMonitoring };

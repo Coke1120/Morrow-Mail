@@ -41,9 +41,24 @@ async function diagnosticChecks() {
   assert.match(document.body.textContent,/On Windows and macOS/);
   assert.match(document.body.textContent,/guarded per-request grant snapshots/);
   assert.match(document.body.textContent,/Durable acknowledgement, journal recovery and fsync are unchanged/);
+  assert.match(document.body.textContent,/Opening also names copy, journal recovery, schema, body metadata/);
+  assert.match(document.body.textContent,/Body metadata preparation checks an 8 ms budget after each message/);
+  assert.match(document.body.textContent,/Automatic checkpoints coalesce startup commits/);
+  assert.match(document.body.textContent,/fixed-label startup phase events/);
   const help=new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"),"utf8")).window.document;
   assert.match(help.getElementById("cli-performance").textContent,/MORROW_PERF=1 npm start/);
   assert.match(help.getElementById("performance-diagnostics-note").textContent,/paths and credentials/);
+  assert.match(help.getElementById("performance-diagnostics-note").textContent,/Worker replay and checkpoint copy\/replay\/publication durations/);
+  assert.match(help.getElementById("search-rebuild-help").textContent,/not an overall startup percentage/);
+  assert.match(help.getElementById("cli-performance").textContent,/check-startup-preparation.js/);
+  const { startupStatusHtml, startupProgressScript } = require("../host/startup-error");
+  const splash = new JSDOM(startupStatusHtml(), { runScripts: "outside-only" });
+  for (const [phase, text] of [["copy", /Copying/], ["journal", /journal/], ["migrate", /schema/],
+    ["body-backfill", /body metadata: 2 of 10/], ["search", /Checking local search/], ["admit", /verified/]]) {
+    splash.window.eval(startupProgressScript({ phase, completed: 2, total: 10 }));
+    assert.match(splash.window.document.getElementById("startup-index-progress").textContent, text);
+  }
+  splash.window.close();
   assert.match(help.getElementById("mail-secure-storage-help").textContent,/Read errors keep your saved credentials/);
   assert.match(help.getElementById("mail-secure-storage-help").textContent,/several commands can take longer/);
 }
@@ -143,8 +158,10 @@ async function run() {
       global.clearInterval = () => {};
       perf.startMonitoring(line=>lines.push(line)); assert.ok(unref);
       perf.startMonitoring(()=>{throw new Error("monitor must start only once");});
+      const expectedLines = perf.snapshot().stages.length + 1;
       flush();
-      assert.ok(lines.length>1&&lines.length<=19);
+      assert.equal(lines.length, expectedLines);
+      assert.ok(lines.length>1&&lines.length<=32);
       assert.ok(lines.every(line=>line.length<400),"summaries must fit bounded Debug lines");
       assert.ok(lines.some(line=>JSON.parse(line).stage==="main.loop"));
       for(const privateText of [account.email,directory,"replacementneedle","Synthetic subject","synthetic-private"]) assert.ok(!lines.join(" ").includes(privateText));
