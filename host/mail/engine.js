@@ -4115,7 +4115,8 @@ function answer(channel, args, event) {
         row = db.messageById(row.id);
         if (!row || row.account_id !== stored.account_id) return fail("email-gone", "That message is no longer in the mailbox.");
         if (paintFirst) queueOpenFill(stored);
-        const members = listRows(conversationRows(db.messagesByThread(row.account_id, row.thread_id, { headersOnly: true }), row.id));
+        const members = params?.includeThread === false ? []
+          : listRows(conversationRows(db.messagesByThread(row.account_id, row.thread_id, { headersOnly: true }), row.id));
         return ok({
           email: detailOf(row),
           isThread: members.length > 1,

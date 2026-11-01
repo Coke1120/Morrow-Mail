@@ -43,7 +43,8 @@ async function diagnosticChecks() {
   assert.match(document.body.textContent,/Durable acknowledgement, journal recovery and fsync are unchanged/);
   assert.match(document.body.textContent,/Opening also names copy, journal recovery, schema, body metadata/);
   assert.match(document.body.textContent,/Body metadata preparation checks an 8 ms budget after each message/);
-  assert.match(document.body.textContent,/Automatic checkpoints coalesce startup commits/);
+  assert.match(document.body.textContent,/Tiny journals use a mailbox-size\/copy-cost soft age/);
+  assert.match(document.body.textContent,/not hard recovery-time limits/);
   assert.match(document.body.textContent,/fixed-label startup phase events/);
   const help=new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"),"utf8")).window.document;
   assert.match(help.getElementById("cli-performance").textContent,/MORROW_PERF=1 npm start/);

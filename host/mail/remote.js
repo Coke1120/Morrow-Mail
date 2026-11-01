@@ -446,6 +446,9 @@ async function searchUids(client, folderPath, query, flagPage) {
       throwRate(error);
       throw error;
     }
+    if (!Array.isArray(uids) || uids.some(uid => !Number.isSafeInteger(Number(uid)) || Number(uid) <= 0)) {
+      throw Object.assign(new Error("IMAP UID search was incomplete. Cached mail was retained."), { code: "imap_search_incomplete" });
+    }
     const flags = [];
     // Share the selection/lock with UID reconciliation. Never fetch bodies for
     // this rotating page, or apply flags from a different mailbox generation.
@@ -460,7 +463,7 @@ async function searchUids(client, folderPath, query, flagPage) {
       }
     }
     return {
-      uids: (uids || []).map(Number).filter((uid) => uid > 0),
+      uids: uids.map(Number),
       validity,
       flags,
       exists: Number(box.exists) || 0,

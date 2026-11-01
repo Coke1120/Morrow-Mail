@@ -456,6 +456,18 @@ function migrate() {
 }
 
 function ensureSummarySchema() {
+  run(`CREATE TABLE IF NOT EXISTS mail_folder_counts (account_id TEXT NOT NULL, folder_path TEXT NOT NULL,
+    total INTEGER NOT NULL, unread INTEGER NOT NULL, PRIMARY KEY(account_id, folder_path))`);
+  for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+    const condition = operation === "UPDATE"
+      ? "WHEN OLD.account_id IS NOT NEW.account_id OR OLD.folder_path IS NOT NEW.folder_path OR OLD.unread IS NOT NEW.unread" : "";
+    run(`CREATE TRIGGER IF NOT EXISTS mail_folder_counts_${operation.toLowerCase()} AFTER ${operation} ON messages ${condition} BEGIN
+      ${operation !== "INSERT" ? `UPDATE mail_folder_counts SET total = total - 1, unread = unread - (OLD.unread = 1)
+        WHERE account_id = OLD.account_id AND folder_path = OLD.folder_path;` : ""}
+      ${operation !== "DELETE" ? `UPDATE mail_folder_counts SET total = total + 1, unread = unread + (NEW.unread = 1)
+        WHERE account_id = NEW.account_id AND folder_path = NEW.folder_path;` : ""}
+    END`);
+  }
   const dependencies = {
     membership: ["id", "account_id", "folder_path"],
     unread: ["unread"], flagged: ["starred"], attachments: ["has_attachments"], ordering: ["list_sort_ts"],
@@ -649,6 +661,7 @@ function removeAccount(id) {
   transaction(() => {
     forgetIds(all("SELECT id FROM messages WHERE account_id = ?", [id]));
     run("DELETE FROM messages WHERE account_id = ?", [id]);
+    run("DELETE FROM mail_folder_counts WHERE account_id = ?", [id]);
     run("DELETE FROM folders WHERE account_id = ?", [id]);
     run("DELETE FROM snooze WHERE account_id = ?", [id]);
     run("DELETE FROM signature_domains WHERE account_id = ?", [id]);
@@ -1380,34 +1393,49 @@ function missingFolderRows(accountId, folderPath, report, after = "", limit = -1
   [accountId, folderPath, after, ...(report.retainOlderThan ? [report.retainOlderThan] : []), JSON.stringify(report.uids), limit]));
 }
 
+function visitedFolderRows(accountId, folderPath, cursor) {
+  return perf.sync("db.sync.reconcile", () => all(`SELECT id, uid, uid_validity, draft_pending, list_sort_ts, rowid AS position
+    FROM messages INDEXED BY messages_uid WHERE account_id = ? AND folder_path = ?
+    ${cursor ? "AND (uid_validity, uid, rowid) > (?, ?, ?)" : ""}
+    ORDER BY uid_validity, uid, rowid LIMIT 64`,
+  [accountId, folderPath, ...(cursor ? [cursor.uid_validity, cursor.uid, cursor.position] : [])]));
+}
+
 async function applyFolderSyncAsync(accountId, folderPath, report, validate = () => {}) {
   const generation = storeGeneration;
   const owner = accountById(accountId);
+  let folderValidity;
   const assertCurrent = () => {
     assertAdmitted();
     const current = accountById(accountId);
     if (generation !== storeGeneration || !current || current.created_at !== owner?.created_at
         || current.auth_kind !== owner?.auth_kind || current.mail_transport !== owner?.mail_transport) throw openingError("mail_open_cancelled");
+    if (folderValidity !== undefined && folderByPath(accountId, folderPath)?.uid_validity !== folderValidity) throw openingError("mail_open_cancelled");
     validate();
   };
   const yieldTurn = async () => { await new Promise(resolve => setImmediate(resolve)); assertCurrent(); };
   assertCurrent();
   applyFolderSync(accountId, folderPath, { messages: [], validity: report.validity, keepOthers: true });
+  folderValidity = folderByPath(accountId, folderPath)?.uid_validity;
   let changed = false;
   if (Array.isArray(report.uids) && !report.keepOthers) {
-    let cursor = "";
+    const live = new Set();
+    for (const uid of report.uids) live.add(Number(uid));
+    let cursor = null;
     while (true) {
-      const rows = missingFolderRows(accountId, folderPath, report, cursor, 64);
+      const rows = visitedFolderRows(accountId, folderPath, cursor);
       if (!rows.length) break;
-      transaction(() => {
-        for (const row of rows) {
+      const missing = rows.filter(row => row.uid > 0 && !row.draft_pending && !live.has(row.uid)
+        && (!report.retainOlderThan || row.list_sort_ts >= report.retainOlderThan));
+      if (missing.length) transaction(() => {
+        for (const row of missing) {
           if (messageHeld(row.id)) continue;
           forgetIndex(row.id);
           run("DELETE FROM messages WHERE id = ?", [row.id]);
           changed = true;
         }
       });
-      cursor = rows[rows.length - 1].id;
+      cursor = rows[rows.length - 1];
       await yieldTurn();
     }
   }
@@ -1577,6 +1605,11 @@ function messagesByThread(accountId, threadId, { headersOnly = false } = {}) {
     `SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE account_id = ? AND thread_id = ? ORDER BY list_sort_ts ASC`,
     [accountId, threadId]
   ));
+}
+
+function threadMembership(accountId, threadId) {
+  return perf.sync("db.thread.headers", () => all(`SELECT id, account_id, folder_path, thread_id, uid, uid_validity, gmail_id FROM messages
+    WHERE account_id = ? AND thread_id = ? ORDER BY list_sort_ts ASC`, [accountId, threadId]));
 }
 
 function updateMessage(id, patch) {
@@ -1849,6 +1882,16 @@ function cacheSummary(key, result, cache = listSummaries) {
 
 function messageSummary(query, { includeOldest = true, now = Date.now() } = {}) {
   const scope = summaryScope(query);
+  const held = scope.filterUnread && !scope.retainOnly && Array.isArray(scope.retainIds) && scope.retainIds[0];
+  if (typeof held === "string" && held) {
+    const base = messageSummary({ ...scope, retainIds: null }, { includeOldest, now });
+    const { clauses, params } = whereFor({ ...scope, retainOnly: held }, now);
+    const join = scope.fromMe ? "JOIN accounts a ON a.id = m.account_id" : "";
+    const extra = get(`SELECT m.list_sort_ts FROM messages m ${join} WHERE ${clauses.join(" AND ")} AND m.unread != 1`, params);
+    return { ...base, total: base.total + (extra ? 1 : 0),
+      version: crypto.createHash("sha256").update(JSON.stringify([base.version, held, extra?.list_sort_ts])).digest("hex"),
+      ...(includeOldest ? { oldest: extra ? Math.min(base.oldest ?? Infinity, extra.list_sort_ts) : base.oldest } : {}) };
+  }
   const key = JSON.stringify([includeOldest, whereFor(scope, 0), !!scope.fromMe, summaryVersion(scope, includeOldest)]);
   const cacheable = !query.tokens?.length && !query.needsBody && !query.participant && !query.fromMe;
   const cached = cacheable && (pendingSummaries?.get(key) || listSummaries.get(key));
@@ -2594,12 +2637,15 @@ function gmailSyncState(accountId, folderPath, next) {
     const previous = get("SELECT state_json FROM gmail_sync WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]);
     if (previous) updateChanged("gmail_sync", { state_json: json }, "account_id = ? AND folder_path = ?", [accountId, folderPath]);
     else run("INSERT INTO gmail_sync (account_id, folder_path, state_json) VALUES (?, ?, ?)", [accountId, folderPath, json]);
-    const count = countMessages({ accountId, folderPath });
-    const unread = countMessages({ accountId, folderPath, filterUnread: true });
+    let counts = get("SELECT total, unread FROM mail_folder_counts WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]);
+    if (!counts) {
+      counts = { total: countMessages({ accountId, folderPath }), unread: countMessages({ accountId, folderPath, filterUnread: true }) };
+      run("INSERT INTO mail_folder_counts (account_id, folder_path, total, unread) VALUES (?, ?, ?, ?)",
+        [accountId, folderPath, counts.total, counts.unread]);
+    }
     const folder = folderByPath(accountId, folderPath);
     const patch = { uid_validity: accountById(accountId).gmail_generation, window_done: next.complete ? 1 : 0,
-      sync_horizon_days: next.horizonDays ?? null, total: count,
-      unread };
+      sync_horizon_days: next.horizonDays ?? null, total: counts.total, unread: counts.unread };
     if (previous?.state_json !== json || Object.entries(patch).some(([key, value]) => folder?.[key] !== value)) patch.synced_at = Date.now();
     updateChanged("folders", patch,
     "account_id = ? AND path = ?", [accountId, folderPath]);
@@ -2716,6 +2762,7 @@ module.exports = {
   recipientHeaderChanges,
   draftRevision,
   messagesByThread,
+  threadMembership,
   updateMessage,
   deleteMessage,
   selectMessages,

@@ -133,9 +133,7 @@ function configure(input) {
   }
 }
 
-function forgetSecret(clientId) {
-  const loaded = require("./auth").load();
-  const grant = loaded.store && loaded.store.grants.find(row => row.clientId === clientId);
+function forgetSecret(grant) {
   const key = grant && grant.proactive && grant.proactive.secretKey;
   if (key) { try { require("../mail/secrets").deletePassword(key); } catch { /* revoked/deleted grants cannot use it */ } }
 }

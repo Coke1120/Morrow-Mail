@@ -1,5 +1,9 @@
 # Large-mailbox startup preparation and checkpoint scheduling
 
+Follow-up: [residual mailbox performance](2026-11-01-residual-mail-performance.md)
+supersedes the minute-age/cooldown policy below and records independent active
+journal age across worker publication. Ownership and recovery authority stay unchanged.
+
 Date: 2026-11-01
 
 ## Context

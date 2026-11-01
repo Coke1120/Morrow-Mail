@@ -109,14 +109,13 @@ async function apply(channel, payload) {
     proactiveConfig.configure(payload || {});
     return snapshot();
   }
-  if (channel === "bot:revokeGrant") {
-    auth.revoke(payload && payload.clientId);
-    proactiveConfig.forgetSecret(payload && payload.clientId);
-    return snapshot();
-  }
-  if (channel === "bot:deleteGrant") {
-    proactiveConfig.forgetSecret(payload && payload.clientId);
-    auth.removeGrant(payload && payload.clientId);
+  if (channel === "bot:revokeGrant" || channel === "bot:deleteGrant") {
+    const clientId = payload && payload.clientId;
+    const loaded = auth.load();
+    const grant = loaded.store && loaded.store.grants.find(row => row.clientId === clientId);
+    if (channel === "bot:revokeGrant") auth.revoke(clientId);
+    else auth.removeGrant(clientId);
+    proactiveConfig.forgetSecret(grant);
     return snapshot();
   }
   if (channel === "bot:probeServe") return probe.probeServeHost(auth.serveHost());
