@@ -19,7 +19,8 @@ const persistenceContext = vm.createContext({
   __filename: path.join(root, 'host/mail/persistence.js'),
   require(name) {
     if (name === 'better-sqlite3') return class { constructor() { throw new Error('No database needed by bounded scheduler fixtures'); } };
-    if (name === '../performance-diagnostics') return { sync: (_label, fn) => fn() };
+    if (name === '../performance-diagnostics') return { sync: (_label, fn) => fn(), record() {} };
+    if (name === './checkpoint-policy') return native('../host/mail/checkpoint-policy');
     return native(name);
   },
 });

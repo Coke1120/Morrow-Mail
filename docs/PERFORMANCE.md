@@ -56,6 +56,41 @@ records the proposal and deferred worker/interactive-search extensions.
 
 ## Data-path changes
 
+### Large-mailbox opening
+
+The opening window names local copy, journal recovery, schema migration, initial
+checkpoint publication when necessary, body metadata, summaries, search and final
+admission. Copy/schema phases are indeterminate. Journal percentages describe
+checked journal bytes; body counts describe durably committed pending rows, not
+an overall startup percentage or ETA. The existing search progress/resume contract
+is unchanged. Mail remains closed until search verification finishes.
+
+Body metadata preparation retains the 64-row maximum and checks an 8 ms budget
+after each message, then commits before progress and yielding. NULL metadata is
+the restart cursor. Smaller batches can increase fsync overhead and do not avoid
+rewriting body-bearing SQLite records; individual SQL and disk calls remain
+unbounded. Automatic checkpoints coalesce startup work, account for mailbox size,
+previous copy cost and journal age, and defer with bounded retry backoff when
+staging headroom is low. The estimate concerns an incremental staging copy plus a
+reserve, not three database sizes of free space. Unknown headroom allows a copy
+attempt; explicit checkpoints retain target-sequence semantics and bypass this
+advisory gate. Actual disk-full writes still fail safely and may require freeing
+unrelated space. Never delete or rename the active mailbox or recovery journals.
+
+With `MORROW_PERF=1`, fixed-label phase entry/completion events accompany the
+30-second aggregates. Labels include `startup.copy`, `startup.journal`,
+`startup.migrate`, `startup.initialize`, `startup.body-backfill`, `startup.summaries`,
+`startup.index` and `startup.admit`. Worker numeric summaries also populate
+`storage.replay` and `storage.checkpoint.copy` / `.replay` / `.publish` in the main
+recorder; `storage.checkpoint` measures the dispatched checkpoint as a whole.
+
+Run `node scripts/check-startup-preparation.js` without native dependencies and
+`node scripts/check-startup-upgrade.js` with the development SQLite dependency.
+Both use synthetic stores/state only. See the
+[startup decision and policy bounds](adr/2026-11-01-large-mailbox-startup.md).
+
+### Existing data paths
+
 - The mail list, open-message thread strip and header-only thread requests use an
   explicit metadata projection. Bodies are omitted from the JavaScript rows.
   Stored availability metadata preserves the existing `hasBody` meaning, including

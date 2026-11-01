@@ -11,7 +11,7 @@ const { complete, extractJson, modelIds, listModels } = require("./openai-client
 
 const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels", "host:aiConsentStatus", "host:aiConsentGrant", "host:aiConsentRevoke", "host:chatgptStatus", "host:chatgptStart", "host:chatgptCallback", "host:chatgptCancel", "host:chatgptSignOut", "host:chatgptSelect", "host:chatgptPreferences", "host:chatgptResumeUsage"];
 const { init: initMail, startBackgroundSync } = require("./mail/engine");
-const { startupFailureDialog, startupStatusHtml, startupIndexProgressScript } = require("./startup-error");
+const { startupFailureDialog, startupStatusHtml, startupProgressScript } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
 
@@ -854,15 +854,19 @@ app.whenReady().then(async () => {
     process.on("unhandledRejection", onBootRejection);
     try { await presentBootStatus(); } catch (error) { console.error(error instanceof Error ? error.message : error); }
   }
-  let lastIndexPaint = -Infinity;
-  const stopIndexProgress = require("./mail/db").subscribeIndexProgress(progress => {
+  let lastStartupPaint = -Infinity;
+  let lastStartupPhase = "";
+  const stopStartupProgress = require("./mail/db").subscribeStartupProgress(progress => {
     const win = bootWindow;
     if (!interactiveBoot || !win || win.isDestroyed()) return;
     const now = Date.now();
-    if (progress.phase === "building" && now - lastIndexPaint < 100) return;
-    const script = startupIndexProgressScript(progress);
+    const complete = progress.phase === "ready" || progress.searchPhase === "ready"
+      || (progress.phase === "body-backfill" && progress.completed === progress.total && Number.isSafeInteger(progress.total));
+    if (progress.phase === lastStartupPhase && !complete && now - lastStartupPaint < 100) return;
+    const script = startupProgressScript(progress);
     if (!script) return;
-    lastIndexPaint = now;
+    lastStartupPaint = now;
+    lastStartupPhase = progress.phase;
     try { Promise.resolve(win.webContents.executeJavaScript(script)).catch(() => {}); } catch { /* window closed */ }
   });
   try {
@@ -877,7 +881,7 @@ app.whenReady().then(async () => {
     await presentBootFailure(error);
     return;
   } finally {
-    stopIndexProgress();
+    stopStartupProgress();
   }
   if (bootCancelled) return;
   if (process.env.MORROW_MAIL_SELFTEST === "1") {
