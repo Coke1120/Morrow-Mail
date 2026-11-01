@@ -341,6 +341,7 @@ class Persistence {
     this.databaseBytes = fileBytes(file);
     this.pendingBytes = fileBytes(this.pending);
     this.dirtySince = null;
+    this.pendingDirtySince = null;
     this.lastCheckpointAt = -Infinity;
     this.checkpointMs = 0;
     this.failures = 0;
@@ -481,6 +482,7 @@ class Persistence {
   committed() {
     this.sequence += 1;
     this.transactions += 1;
+    if (this.dirtySince == null) this.dirtySince = performance.now();
     this.schedule();
   }
 
@@ -488,10 +490,12 @@ class Persistence {
     if (this.closed || this.running) return;
     const now = performance.now();
     const pending = fs.existsSync(this.pending);
-    if (this.dirtySince == null && (this.bytes || this.transactions || pending)) this.dirtySince = now;
+    if (this.dirtySince == null && this.bytes) this.dirtySince = now;
+    if (this.pendingDirtySince == null && pending) this.pendingDirtySince = now;
+    const oldest = Math.min(this.dirtySince ?? Infinity, this.pendingDirtySince ?? Infinity);
     const wait = checkpointDelay({ databaseBytes: this.databaseBytes, journalBytes: this.bytes + this.pendingBytes,
       transactions: this.transactions, pending, startup: this.startup,
-      ageMs: this.dirtySince == null ? 0 : now - this.dirtySince,
+      ageMs: Number.isFinite(oldest) ? now - oldest : 0,
       sinceCheckpointMs: now - this.lastCheckpointAt, checkpointMs: this.checkpointMs });
     if (wait == null) return;
     const timerAt = now + Math.max(delay, wait, this.retryAt - now);
@@ -539,10 +543,13 @@ class Persistence {
       fs.closeSync(this.fd);
       this.fd = null;
       fs.renameSync(this.journal, this.pending);
-      syncDirectory(this.pending);
       this.pendingBytes = this.bytes;
-      this.openJournal();
+      this.pendingDirtySince = this.dirtySince;
+      this.dirtySince = null;
+      this.bytes = 0;
       this.transactions = 0;
+      syncDirectory(this.pending);
+      this.openJournal();
     }
     let succeeded = false;
     const began = performance.now();
@@ -551,8 +558,8 @@ class Persistence {
       fs.unlinkSync(this.pending);
       syncDirectory(this.pending);
       this.pendingBytes = 0;
+      this.pendingDirtySince = null;
       this.databaseBytes = Number.isSafeInteger(report.bytes) && report.bytes >= 0 ? report.bytes : fileBytes(this.file);
-      this.dirtySince = this.bytes ? began : null;
       this.failures = 0;
       this.retryAt = 0;
       succeeded = true;

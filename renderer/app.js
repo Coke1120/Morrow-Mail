@@ -8880,7 +8880,7 @@ async function deleteFromList(email) {
 async function replyFromList(email, kind) {
   let opened = state.email && state.email.id === email.id ? state.email : null;
   if (!opened) {
-    const data = await call("mail:openEmail", { emailId: email.id, full: true });
+    const data = await call("mail:openEmail", { emailId: email.id, full: true, includeThread: false });
     opened = data && data.email;
   }
   if (!opened) throw new Error("That message is no longer in the mailbox.");
@@ -9362,7 +9362,6 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
-    if (requestedOffset == null) state.listCursors = [];
     const pageCursor = state.listCursors.find(entry => entry.offset === offset)?.cursor;
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
@@ -11456,7 +11455,7 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId, includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -14318,7 +14317,7 @@ async function bootReaderWindow() {
   pendingOpenId = messageId; pendingOpenBody = true;
   let opened;
   try {
-    opened = await call("mail:openEmail", { emailId: messageId, accountId: accountId });
+    opened = await call("mail:openEmail", { emailId: messageId, accountId: accountId, includeThread: false });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     showReaderOpenError(message, messageId);
@@ -14530,7 +14529,7 @@ function resumeDraft(email, extra) {
 }
 
 async function prepareDraftCompose(email, extra) {
-  const data = await call("mail:openEmail", { emailId: email.id, full: true });
+  const data = await call("mail:openEmail", { emailId: email.id, full: true, includeThread: false });
   let draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
   if (!draft.fromAddress) throw new Error("This draft's sender address could not be resolved. The saved draft was retained.");
@@ -19655,7 +19654,7 @@ function proposalContext(proposal, kind) {
 async function describeDraftSource(node, draft) {
   if (!draft.messageId) { node.textContent += "\nSource missing — request a new draft from a message."; return; }
   try {
-    const data = await call("mail:openEmail", { emailId: draft.messageId, full: true });
+    const data = await call("mail:openEmail", { emailId: draft.messageId, full: true, includeThread: false });
     const source = data?.email;
     if (!source || (draft.accountId && source.accountId !== draft.accountId)) throw new Error("Source unavailable or mailbox mismatch");
     const account = state.accounts.find(row => row.id === source.accountId);
@@ -20595,7 +20594,7 @@ async function reviewDraft(draft) {
   if (!body) throw new Error("That draft is empty.");
   const messageId = draft && draft.messageId;
   if (!messageId) throw new Error("This proposal has no source message. Open the intended message and request a new draft.");
-  const data = await call("mail:openEmail", { emailId: messageId, full: true });
+  const data = await call("mail:openEmail", { emailId: messageId, full: true, includeThread: false });
   const email = data && data.email;
   if (!email || email.id !== messageId || !email.accountId || (draft.accountId && draft.accountId !== email.accountId)) {
     throw new Error("The proposal's source message or account is unavailable. Open the intended message and request a new draft.");
@@ -20653,7 +20652,7 @@ async function peekMessage(messageId, full) {
   const accountId = pendingPeekAccountId;
   let data;
   try {
-    data = await call("mail:openEmail", { emailId: messageId, ...(accountId ? { accountId } : {}), ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId: messageId, includeThread: false, ...(accountId ? { accountId } : {}), ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== peekGen) return;
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
@@ -20684,7 +20683,7 @@ async function openPeekInMail() {
 
 async function openReplyCompose(messageId) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
-  const data = await call("mail:openEmail", { emailId: messageId, full: true });
+  const data = await call("mail:openEmail", { emailId: messageId, full: true, includeThread: false });
   const email = data && data.email;
   if (!email || !email.accountId) throw new Error("That message is no longer in the mailbox.");
   const account = state.accounts.find((item) => item.id === email.accountId);
@@ -21157,7 +21156,7 @@ function paintAgentHome(payload) {
 async function replyToAgentItem(item, kind) {
   const context = agentMessageContext(item);
   if (!context) return;
-  const data = await call("mail:openEmail", { emailId: context.messageId, full: true });
+  const data = await call("mail:openEmail", { emailId: context.messageId, full: true, includeThread: false });
   const email = data && data.email;
   if (!email || !email.accountId) throw new Error("That message is no longer in the mailbox.");
   const account = state.accounts.find((row) => row.id === email.accountId);

@@ -1,5 +1,9 @@
 # Runtime mail queries beyond 10k rows
 
+Follow-up: [residual mailbox performance](2026-11-01-residual-mail-performance.md)
+supersedes the refresh reset and deferred checkpoint-policy statements below,
+and adds durable Gmail count deltas and independent unread-hold summaries.
+
 ## Decision
 
 Local search's list caller requests the existing explicit metadata projection.

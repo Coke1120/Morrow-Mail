@@ -37,7 +37,7 @@ async function run() {
     captured = [];
     try { return { value: await work(), statements: captured }; } finally { captured = null; }
   };
-  const aggregates = sample => sample.statements.filter(entry => /SELECT COUNT\(\*\) AS total.*FROM messages m/s.test(entry.sql));
+  const aggregates = sample => sample.statements.filter(entry => /SELECT COUNT\(\*\) AS total.*FROM messages\s/s.test(entry.sql));
   const ids = rows => rows.map(row => row.id);
   const plan = entry => originals.prepare.call(raw, `EXPLAIN QUERY PLAN ${entry.sql}`).all(entry.params).map(row => row.detail).join("\n");
   try {
@@ -196,6 +196,49 @@ async function run() {
         assert.match(plan(retained.statements.find(row => row.sql.includes("UNION ALL"))), /messages_unread_page/);
       }
     }
+    for (const scope of [attention, { ...physical, filterUnread: true }, { folderKey: "primary", filterUnread: true }]) {
+      db.insertMessage({ ...message(40001), id: "summary-plan-probe", accountId: "a", folderPath: "INBOX", uidValidity: 7 });
+      const query = scope;
+      const base = await trace(() => db.messageSummary(query));
+      assert.equal(aggregates(base).length, 1);
+      assert.match(plan(aggregates(base)[0]), /messages_unread_page/, "the aggregate, not just the page, must visit the unread index");
+      console.log("unread-aggregate-plan", plan(aggregates(base)[0]));
+      const heldRows = db.selectMessages({ ...scope, filterUnread: false, limit: 2000 }, { headersOnly: true }).filter(row => !row.unread).slice(0, 20);
+      const summaries = await trace(() => heldRows.map(row => {
+        const held = db.messageSummary({ ...query, retainIds: [row.id] });
+        assert.equal(held.total, base.value.total + 1);
+        assert.equal(held.oldest, Math.min(base.value.oldest, row.list_sort_ts));
+        return held;
+      }));
+      assert.equal(aggregates(summaries).length, 0, "different held selections share the ordinary unread aggregate");
+      const heldUnread = db.selectMessages({ ...query, limit: 1 }, { headersOnly: true })[0];
+      assert.equal(db.messageSummary({ ...query, retainIds: [heldUnread.id] }).total, base.value.total, "held unread contribution is disjoint");
+      assert.equal(db.messageSummary({ ...query, retainIds: ["absent-held-id"] }).total, base.value.total);
+      db.deleteMessage("summary-plan-probe");
+    }
+    const heldQuery = { ...physical, filterUnread: true };
+    const holdId = "synthetic-held-read";
+    db.insertMessage({ ...message(40000), id: holdId, accountId: "a", folderPath: "INBOX", uidValidity: 7, listSortTs: 1, unread: false });
+    const unheld = db.messageSummary(heldQuery);
+    assert.equal(db.messageSummary({ ...heldQuery, retainIds: [holdId] }).oldest, 1);
+    db.updateMessage(holdId, { folder_path: "Archive" });
+    assert.equal(db.messageSummary({ ...heldQuery, retainIds: [holdId] }).total, unheld.total, "moved held rows are checked against physical scope");
+    assert.equal(db.messageSummary({ ...heldQuery, excludeFolderPaths: ["Archive"], folderId: null, retainIds: [holdId] }).total,
+      db.messageSummary({ ...heldQuery, excludeFolderPaths: ["Archive"], folderId: null }).total);
+    db.updateMessage(holdId, { folder_path: "INBOX" });
+    const holdClock = originals.now();
+    db.setSnooze("a", "thread-40000", new Date(holdClock + 1000).toISOString());
+    assert.equal(db.messageSummary({ ...heldQuery, retainIds: [holdId] }, { now: holdClock }).total, unheld.total);
+    assert.equal(db.messageSummary({ ...heldQuery, retainIds: [holdId] }, { now: holdClock + 1001 }).total, unheld.total + 1);
+    db.clearSnooze("a", "thread-40000");
+    Persistence.prototype.append = () => { throw new Error("Synthetic held rollback"); };
+    assert.throws(() => db.transaction(() => {
+      db.updateMessage(holdId, { unread: 1 });
+      assert.equal(db.messageSummary({ ...heldQuery, retainIds: [holdId] }).total, unheld.total + 1);
+    }), /Synthetic held rollback/);
+    Persistence.prototype.append = originals.append;
+    db.deleteMessage(holdId);
+    assert.equal(db.messageSummary({ ...heldQuery, retainIds: [holdId] }).total, unheld.total);
     const imap = await trace(() => db.applyFolderSync("a", "INBOX", { messages: [], validity: 7, exists: 12000, unseen: 81 }));
     assert.equal(imap.statements.filter(entry => /SELECT COUNT/.test(entry.sql)).length, 0);
     assert.equal(db.folderByPath("a", "INBOX").unread, 81);
@@ -243,8 +286,18 @@ async function run() {
     assert.ok(unique.every(row => row.account_id === "b"));
     assert.equal(new Set(ids(unique)).size, unique.length);
     const first = await ask("mail:listFromCache", { ...physical, limit: 200 });
+    db.updateMessage("a-10639", { starred: 1, body_retry_after: 1001 });
+    const unchangedOrder = await trace(() => ask("mail:listFromCache", { ...physical, limit: 200, offset: 200, pageCursor: first.nextCursor }));
+    assert.equal(unchangedOrder.value.cursorReset, false, "non-ordering changes keep the host-validated boundary");
+    assert.equal(unchangedOrder.statements.find(entry => entry.sql.includes("ORDER BY m.list_sort_ts DESC")).params.at(-1), 0);
     const wrongScope = await ask("mail:listFromCache", { accountId: "b", folderId: "INBOX", offset: 200, pageCursor: first.nextCursor });
     assert.equal(wrongScope.cursorReset, true);
+    db.insertMessage({ ...message(60000), id: "cursor-fresh-arrival", accountId: "a", folderPath: "INBOX", uidValidity: 7, listSortTs: 1800000000000 });
+    const arrived = await ask("mail:listFromCache", { ...physical, limit: 200, offset: 200, pageCursor: first.nextCursor });
+    assert.equal(arrived.cursorReset, true, "fresh membership invalidates a retained page boundary");
+    assert.equal(arrived.geometry.aboveTop, 200);
+    assert.deepEqual(ids(arrived.emails), ids(db.selectMessages({ ...physical, limit: 200, offset: 200 }, { headersOnly: true })));
+    db.deleteMessage("cursor-fresh-arrival");
     db.updateMessage("a-10638", { list_sort_ts: 1700000100000 });
     const changed = await ask("mail:listFromCache", { ...physical, limit: 200, offset: 200, pageCursor: first.nextCursor });
     assert.equal(changed.cursorReset, true);
@@ -272,11 +325,22 @@ async function run() {
     assert.equal(ui.run("state.listCursors.length"), 32);
     const status = document.getElementById("list-page-status").textContent;
     assert.match(status, /6,801–7,000/);
+    const refresh = await trace(() => ui.run("loadList(false)"));
+    assert.equal(ui.run("state.listOffset"), 6800);
+    assert.equal(refresh.value.cursorReset, false);
+    assert.equal(refresh.statements.find(entry => entry.sql.includes("UNION ALL")).params.at(-1), 0, "ordinary deep-page refresh preserves its validated seek");
+    db.updateMessage("a-10637", { list_sort_ts: 1700000200000 });
+    const refreshChanged = await ui.run("loadList(false)");
+    assert.equal(refreshChanged.cursorReset, true, "the host, not the renderer, decides whether a retained boundary is stale");
     ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
     ui.run("paintFeatureCatalog()");
     assert.match(document.getElementById("features-catalog").textContent, /search results.*without copying message bodies/);
+    assert.match(document.getElementById("features-catalog").textContent, /held read row.*scope, exclusions and snoozes/);
+    assert.match(document.getElementById("features-catalog").textContent, /identity-only rows/);
+    assert.match(document.getElementById("features-catalog").textContent, /one-hour age.*dispatch gates/);
     const help = new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"), "utf8")).window.document;
     assert.match(help.getElementById("runtime-paging-help").textContent, /cursor.*Previous.*offset/i);
+    assert.match(help.getElementById("runtime-paging-help").textContent, /host validation.*Gmail commits exact local count deltas/);
     assert.match(help.getElementById("cli-runtime-queries").textContent, /node scripts\/check-runtime-10k\.js.*bot offset pagination is unchanged/);
 
     const oldPrimary = db.countMessages({ folderKey: "primary" });
@@ -301,9 +365,123 @@ async function run() {
     }
     db.insertMessage({ ...message(1), id: "single", accountId: "empty", folderPath: "INBOX", unread: true, starred: true });
     for (const folderId of [virtuals.UNREAD_ID, virtuals.STARRED_ID]) assert.equal(db.countMessages(virtuals.apply({ accountId: "empty", folderId })), 1);
+    db.updateMessage("single", { unread: 0 });
+    const emptyUnread = { accountId: "empty", folderId: "INBOX", filterUnread: true };
+    assert.equal(db.messageSummary(emptyUnread).oldest, null);
+    assert.equal(db.messageSummary({ ...emptyUnread, retainIds: ["single"] }).oldest, 1);
+    assert.equal(db.countMessages({ ...emptyUnread, retainIds: ["single"] }), 1);
+    assert.equal(db.countMessages({ ...emptyUnread, retainIds: ["a-10639"] }), 0, "another account's held row cannot contribute");
     db.removeAccount("empty");
     assert.equal(db.countMessages({ accountId: "empty" }), 0);
 
+    db.enableGmail("a");
+    for (const path of ["INBOX", "Archive", "Trash"]) db.gmailSyncState("a", path, { cursor: 20, complete: true });
+    const exactFolder = path => {
+      const expected = originals.prepare.call(raw, `SELECT COUNT(*) AS total, COALESCE(SUM(unread = 1), 0) AS unread
+        FROM messages WHERE account_id = ? AND folder_path = ?`).get("a", path);
+      const stored = originals.prepare.call(raw, "SELECT total, unread FROM mail_folder_counts WHERE account_id = ? AND folder_path = ?").get("a", path);
+      assert.deepEqual(stored, expected);
+      const folder = db.folderByPath("a", path);
+      assert.equal(folder.total, expected.total); assert.equal(folder.unread, expected.unread);
+    };
+    const gmailMessage = cursor => ({ ...message(50000 + cursor), providerId: `perf-delta-${cursor}`, unread: true });
+    let acknowledgements = 0;
+    Persistence.prototype.append = function(commands) { acknowledgements++; return originals.append.call(this, commands); };
+    const contentCommits = await trace(() => {
+      for (let cursor = 0; cursor < 20; cursor++) db.transaction(() => {
+        db.applyGmailMessage("a", ["INBOX", "Archive"], gmailMessage(cursor));
+        for (const path of ["INBOX", "Archive"]) db.gmailSyncState("a", path, { cursor: cursor + 21, complete: true });
+      });
+    });
+    Persistence.prototype.append = originals.append;
+    assert.equal(acknowledgements, 20, "each content/resume pair retains its own durable acknowledgement");
+    assert.equal(contentCommits.statements.filter(entry => /SELECT COUNT.*FROM messages/s.test(entry.sql)).length, 0);
+    for (const path of ["INBOX", "Archive"]) exactFolder(path);
+    const unreadCommits = await trace(() => {
+      for (let cursor = 0; cursor < 20; cursor++) db.transaction(() => {
+        db.applyGmailMessage("a", ["INBOX", "Archive"], { ...gmailMessage(cursor), unread: false });
+        for (const path of ["INBOX", "Archive"]) db.gmailSyncState("a", path, { cursor: cursor + 41, complete: true });
+      });
+    });
+    assert.equal(unreadCommits.statements.filter(entry => /SELECT COUNT.*FROM messages/s.test(entry.sql)).length, 0);
+    for (const path of ["INBOX", "Archive"]) exactFolder(path);
+    const pendingCopy = db.gmailCopies("a", "perf-delta-0").find(row => row.folder_path === "INBOX");
+    db.updateMessage(pendingCopy.id, { draft_pending: 1 });
+    db.transaction(() => {
+      db.applyGmailMessage("a", ["INBOX"], gmailMessage(0));
+      db.pruneGmailCopies("a", "perf-delta-0", []);
+      for (const path of ["INBOX", "Archive"]) db.gmailSyncState("a", path, { cursor: 60, complete: true });
+    });
+    assert.equal(db.messageById(pendingCopy.id).unread, 0, "pending local work remains protected");
+    for (const path of ["INBOX", "Archive"]) exactFolder(path);
+    db.updateMessage(pendingCopy.id, { draft_pending: 0, folder_path: "Trash", unread: 1 });
+    for (const path of ["INBOX", "Archive", "Trash"]) db.gmailSyncState("a", path, { cursor: 60, complete: true });
+    for (const path of ["INBOX", "Archive", "Trash"]) exactFolder(path);
+    db.gmailSyncState("b", "Trash", { complete: true });
+    db.transaction(() => {
+      db.updateMessage(pendingCopy.id, { account_id: "b" });
+      db.gmailSyncState("a", "Trash", { cursor: 60, complete: true });
+      db.gmailSyncState("b", "Trash", { complete: true });
+    });
+    exactFolder("Trash");
+    assert.equal(db.folderByPath("b", "Trash").total, 1);
+    assert.equal(db.folderByPath("b", "Trash").unread, 1);
+    db.transaction(() => {
+      db.updateMessage(pendingCopy.id, { account_id: "a" });
+      db.gmailSyncState("a", "Trash", { cursor: 60, complete: true });
+      db.gmailSyncState("b", "Trash", { complete: true });
+    });
+    exactFolder("Trash");
+    assert.equal(db.folderByPath("b", "Trash").total, 0);
+    Persistence.prototype.append = () => { throw new Error("Synthetic content/resume journal failure"); };
+    assert.throws(() => db.transaction(() => {
+      db.applyGmailMessage("a", ["INBOX", "Archive"], gmailMessage(21));
+      db.gmailSyncState("a", "INBOX", { cursor: 61, complete: true });
+    }), /Synthetic content\/resume journal failure/);
+    Persistence.prototype.append = originals.append;
+    assert.equal(db.gmailMap("a", "perf-delta-21"), null);
+    assert.equal(db.gmailSyncState("a", "INBOX").cursor, 60, "failed content cannot advance the resume cursor");
+    exactFolder("INBOX");
+    const deletions = await trace(() => {
+      for (let cursor = 0; cursor < 20; cursor++) db.transaction(() => {
+        db.pruneGmailCopies("a", `perf-delta-${cursor}`, []);
+        for (const path of ["INBOX", "Archive", "Trash"]) db.gmailSyncState("a", path, { cursor: 20, complete: true });
+      });
+    });
+    assert.equal(deletions.statements.filter(entry => /SELECT COUNT.*FROM messages/s.test(entry.sql)).length, 0);
+    for (const path of ["INBOX", "Archive", "Trash"]) exactFolder(path);
+    console.log("gmail-content-counts", JSON.stringify({ messages: 20, acknowledgements, insertScans: 0, unreadScans: 0, deletionScans: 0 }));
+
+    for (let index = 10610; index < 10630; index++) db.updateMessage(`a-${index}`, { thread_id: "performance-wide-thread" });
+    const membership = await trace(() => db.threadMembership("a", "performance-wide-thread"));
+    assert.equal(membership.value.length, 20);
+    assert.ok(membership.value.every(row => Object.keys(row).sort().join(",") === "account_id,folder_path,gmail_id,id,thread_id,uid,uid_validity"));
+    assert.doesNotMatch(membership.statements[0].sql, /\*|html_body|text_body|attachments_json/);
+    assert.deepEqual(ids(membership.value), ids(db.messagesByThread("a", "performance-wide-thread", { headersOnly: true })));
+    const noThread = await trace(() => ask("mail:openEmail", { emailId: "a-10629", includeThread: false }));
+    assert.deepEqual(noThread.value.threadMessages, []); assert.equal(noThread.value.isThread, false);
+    assert.ok(!noThread.statements.some(entry => /FROM messages WHERE account_id = \? AND thread_id = \?/.test(entry.sql)));
+    const withThread = await ask("mail:openEmail", { emailId: "a-10629" });
+    assert.equal(withThread.threadMessages.length, 20, "legacy callers retain the complete conversation contract");
+    assert.deepEqual(noThread.value.email, withThread.email);
+    const freshOpen = ask("mail:openEmail", { emailId: "a-10629", includeThread: false });
+    db.updateMessage("a-10629", { subject: "Fresh after await" });
+    assert.equal((await freshOpen).email.subject, "Fresh after await", "omitting thread metadata preserves the post-await message read");
+
+    raw.close(); raw = null;
+    db.transaction(() => {
+      db.applyGmailMessage("a", ["INBOX", "Archive"], gmailMessage(30));
+      db.gmailSyncState("a", "INBOX", { cursor: 21, complete: true });
+      db.gmailSyncState("a", "Archive", { cursor: 21, complete: true });
+    });
+    await db.close(); await engine.init();
+    raw = new Database(db.file() + ".live", { readonly: true });
+    assert.equal(db.gmailSyncState("a", "INBOX").cursor, 21);
+    for (const path of ["INBOX", "Archive"]) exactFolder(path);
+    db.transaction(() => {
+      db.pruneGmailCopies("a", "perf-delta-30", []);
+      for (const path of ["INBOX", "Archive"]) db.gmailSyncState("a", path, { cursor: 20, complete: true });
+    });
     raw.close(); raw = null;
     await db.checkpoint();
     const source = db.file();
@@ -327,6 +505,11 @@ async function run() {
     const reopened = new Database(db.file() + ".live", { readonly: true });
     try {
       assert.deepEqual(reopened.pragma("integrity_check"), [{ integrity_check: "ok" }]);
+      for (const folderPath of ["INBOX", "Archive", "Trash"]) {
+        const actual = reopened.prepare("SELECT total, unread FROM mail_folder_counts WHERE account_id = ? AND folder_path = ?").get("a", folderPath);
+        const expectedCounts = reopened.prepare("SELECT COUNT(*) AS total, COALESCE(SUM(unread = 1), 0) AS unread FROM messages WHERE account_id = ? AND folder_path = ?").get("a", folderPath);
+        assert.deepEqual(actual, expectedCounts, "folder count deltas survive authoritative journal recovery");
+      }
       const indexes = reopened.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map(row => row.name);
       assert.ok(indexes.includes("messages_unread_page") && indexes.includes("messages_starred_page"));
     } finally { reopened.close(); }
