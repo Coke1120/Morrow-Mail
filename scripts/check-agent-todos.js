@@ -259,6 +259,7 @@ async function rendererChecks() {
   ui.run(`paintAgentHome(${JSON.stringify(payload)})`);
   assert.equal(home.querySelectorAll('[data-testid="agent-category-read"]').length, 1);
   assert.equal(home.querySelector('[data-testid="agent-category-read"]').dataset.pile, "fyi");
+  assert.equal(home.querySelector('[data-testid="agent-category-read"]').disabled, false);
   assert.equal(sectionNamed(home, "Other").querySelector('[data-testid="agent-category-read"]'), null);
   assert.equal(sectionNamed(home, "Worth a look").querySelector(".agent-section-tools button"), null);
   const replyTools = sectionNamed(home, "Needs You").querySelector(".agent-section-tools");
@@ -351,6 +352,30 @@ async function rendererChecks() {
   assert.equal(restore.payload.isRead, false);
   assert.deepEqual([...restore.payload.items.map((item) => item.emailId)], ["m4", "m5"]);
   assert.ok(restore.payload.items.every((item) => item.accountId === "ada" && typeof item.generation === "number"));
+
+
+  calls.length = 0;
+  ui.run(`
+    const readOnly = {
+      sections: [
+        { id: "reply", name: "Needs You", items: [] },
+        { id: "fyi", name: "FYI", collapseView: true, items: [
+          { messageId: "m6", accountId: "ada", subject: "Read already", unread: false, from: "Shop <shop@example.test>" },
+        ] },
+        { id: "other", name: "Other", items: [] },
+      ],
+    };
+    agentMarkedRead.clear();
+    paintAgentHome(readOnly);
+  `);
+  const readOnlyBtn = sectionNamed(home, "FYI").querySelector('[data-testid="agent-category-read"]');
+  assert.ok(readOnlyBtn);
+  assert.equal(readOnlyBtn.disabled, true);
+  readOnlyBtn.disabled = false; // force click path for empty snapshot feedback
+  readOnlyBtn.click();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls.some((row) => row.channel === "mail:markReadBatch"), false);
+  assert.match(dom.window.document.getElementById("status").textContent, /Already read/);
 
   ui.run('showUndo("Moved.", ["op-1"])');
   ui.run('showStatus("Background note.")');

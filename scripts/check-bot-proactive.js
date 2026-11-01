@@ -122,12 +122,15 @@ async function stateChecks(clientId) {
       assert.throws(() => proactive.readState(), /STATE_UNAVAILABLE/, "cursor bot map must be a plain object");
     }
     for (const fault of ["seen-type", "seen-write", "cursor-write", "acknowledgement-write"]) {
-      let persisted = state({}), loaded;
+      let persisted = state({}), loaded, failAcknowledgement = true, readable = true;
       posts = 0;
       scheduler = proactive.createScheduler({ ...deps,
-        readState: () => (loaded = structuredClone(persisted)),
+        readState() {
+          if (!readable) throw Error("synthetic state read failure");
+          return (loaded = structuredClone(persisted));
+        },
         writeState(next) {
-          if (fault === "acknowledgement-write" && posts) throw Error("synthetic acknowledgement write failure");
+          if (fault === "acknowledgement-write" && posts && failAcknowledgement) throw Error("synthetic acknowledgement write failure");
           persisted = structuredClone(next);
         },
         post: async () => {
@@ -142,6 +145,16 @@ async function stateChecks(clientId) {
       assert.equal(posts, 1, `${fault}: POST succeeded before the cursor failure`);
       assert.deepEqual(codes.splice(0), ["OK", "STATE_UNAVAILABLE"], `${fault}: cursor failure is audited`);
       assert.deepEqual(persisted.bots[clientId].seen, {}, "delivery acknowledgement was not persisted");
+      const status = scheduler.statuses([grant])[clientId];
+      assert.equal(status.halted, true, `${fault}: Settings sees the in-memory halt`);
+      assert.equal(status.lastCode, "STATE_UNAVAILABLE");
+      assert.equal(status.nextRunAt, null, "halted delivery has no runnable next slot");
+      assert.equal(scheduler.statuses([{ ...grant, revision: grant.revision + 1 }])[clientId].halted, true, "a new revision cannot hide the halt");
+      readable = false;
+      assert.equal(scheduler.statuses([grant])[clientId].halted, true, "storage read failure cannot hide the halt");
+      readable = true; failAcknowledgement = false;
+      assert.deepEqual(scheduler.statuses([]), {}, "deleted grants are not exposed in Settings status");
+      scheduler.pause(); scheduler.resume();
       now = new Date(+now + 60000); await scheduler.tick();
       now = new Date(+now + 60000); await scheduler.tick();
       assert.equal(posts, 1, `${fault}: halted bot cannot re-POST the same cached mail`);
@@ -240,6 +253,43 @@ async function importIsolationChecks() {
     const [code] = await once(worker, "exit");
     assert.equal(code, 0, "cold scheduler import isolation failed or timed out");
   } finally { clearTimeout(timeout); await worker.terminate(); }
+}
+
+async function deletionChecks(settings) {
+  const manage = require("../host/bot/manage");
+  const file = path.join(temp, "bot-access.json");
+  const event = { sender: { getURL: () => "file:///synthetic/renderer/index.html" } };
+  for (const channel of ["bot:deleteGrant", "bot:revokeGrant"]) {
+    const minted = auth.mint({ label: "Delete failure", platform: "hermes_agent", accountIds: ["a"], capabilities: ["mail.headers.read"] });
+    const clientId = minted.grant.clientId;
+    config.configure({ ...settings, clientId });
+    auth.setEnabledFlag(true);
+    const key = auth.load().store.grants.find(row => row.clientId === clientId).proactive.secretKey;
+    const before = fs.readFileSync(file, "utf8");
+    const rename = fs.renameSync;
+    let writes = 0;
+    try {
+      fs.renameSync = (from, to) => {
+        if (to === file) { writes++; throw Error("synthetic access-store write failure"); }
+        return rename(from, to);
+      };
+      const failed = await manage.answer(channel, { clientId }, event);
+      assert.equal(writes, 1, "the access-store write is attempted");
+      assert.equal(failed.success, false, `${channel}: failed persistence is not reported as success`);
+      assert.equal(failed.error.message, "Morrow could not store the grant.");
+    } finally { fs.renameSync = rename; }
+    assert.equal(fs.readFileSync(file, "utf8"), before, "failed mutation leaves the grant unchanged");
+    assert.ok(auth.authenticate(`Bearer ${minted.secret}`), "the incoming grant remains live");
+    assert.equal(manage.snapshot().grants.find(row => row.clientId === clientId).proactive.hasSecret, true);
+    assert.equal(await secrets.getPasswordAsync(key), settings.secret, "the referenced webhook credential remains available");
+    const succeeded = await manage.answer(channel, { clientId }, event);
+    assert.equal(succeeded.success, true, `${channel}: retry succeeds after storage recovers`);
+    const remaining = auth.view().grants.find(row => row.clientId === clientId);
+    if (channel === "bot:deleteGrant") assert.equal(remaining, undefined);
+    else assert.ok(remaining.revokedAt);
+    assert.equal(auth.authenticate(`Bearer ${minted.secret}`), null);
+    assert.ok(!await secrets.getPasswordAsync(key), "committed removal/revocation retires the webhook credential");
+  }
 }
 
 async function run() {
@@ -390,6 +440,7 @@ async function run() {
     assert.ok(packed.payload.accounts.every(account => account.messages.length > 0 && account.messages.length <= contract.proactiveNotify.maxMessagesPerAccount));
     assert.ok(packed.payload.accounts.every(account => account.messages.every(row => row.messageId !== "0")), "oversized first row cannot starve smaller rows");
     scheduler.dispose(); scheduler = null;
+    await deletionChecks(settings);
     await stateChecks(cronBot.grant.clientId);
     await importIsolationChecks();
     await transportChecks();
