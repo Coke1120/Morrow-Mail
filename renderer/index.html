@@ -566,6 +566,7 @@
         <section class="cli-guide" aria-labelledby="cli-bot-title">
           <h3 id="cli-bot-title">Bot access today</h3>
           <p>The Node client calls the running app. Keep Morrow open, choose mailboxes and permissions in Settings → Bot access, then turn access on. Body text and attachment names need extra read permissions. Responses use JSON; mail text stays untrusted.</p>
+          <p id="cli-proactive">Grok Bot and Hermes Agent use the same Node client and HTTP operations below. Configure proactive notify in Settings → Bot access → Your bots: explicitly allow background delivery, choose granted mailboxes, interval (1–10080 minutes) or five-field cron in this computer’s time zone, folder and optional permitted cached text. Keep Morrow open and awake with bot access listening. The webhook receives <code>proactive.mail_digest</code> with <code>contentTrust: untrusted_mail_data</code> and a stable <code>deliveryId</code>; acknowledge with a small 2xx response and deduplicate that ID. Only private Tailscale HTTPS or loopback is allowed; no Funnel, redirects, attachment bytes or forced downloads. Up to 10 of the newest 50 cached rows per mailbox, 128 KiB per delivery, 2 attempts per slot; 2,000 successful IDs remembered per mailbox. Target/data-scope changes reset that cursor. Stop/revoke cannot recall delivered data. The platform bot decides what to do; push never runs local AI, triage, drafts or sending. No new pull command or send permission is added.</p>
           <p id="cli-account-safety">Account-scoped calls require a connected, granted mailbox. A removed account returns <code>NOT_FOUND</code>, including direct message IDs, attachment metadata and proposal lists. These access checks do not automatically delete retained legacy data.</p>
           <dl class="cli-capabilities" id="cli-operations">
             <div><dt>Connection &amp; accounts</dt><dd><code data-bot-operation>bridge.describe</code>, <code data-bot-operation>accounts.list</code>, <code data-bot-operation>health.get</code> — only granted accounts; health reports observed state.</dd></div>
@@ -1352,7 +1353,7 @@
         <section class="fold" id="settings-bot" data-fold="bot" role="tabpanel" aria-labelledby="settings-tab-bot" tabindex="0" hidden>
           <div class="fold-panel" id="settings-bot-panel" hidden>
           <h3 id="settings-bot-title">Bot access</h3>
-          <p class="hint">Give a bot access to only the mailboxes you choose. It cannot send mail unless you allow it. Follow the numbered steps in order.</p>
+          <p class="hint">Connect Grok Bot or Hermes Agent to only the mailboxes you choose. It cannot send mail unless you allow it. Follow the numbered steps in order.</p>
           <div class="section-nav" id="bot-sections" role="tablist" aria-label="Bot access steps">
             <button type="button" id="bot-tab-grants" role="tab" data-bot-section="grants" aria-controls="bot-panel-grants" aria-selected="true" tabindex="0"><span class="bot-step-num" aria-hidden="true">1</span>Create bot</button>
             <button type="button" id="bot-tab-local" role="tab" data-bot-section="local" aria-controls="bot-panel-local" aria-selected="false" tabindex="-1"><span class="bot-step-num" aria-hidden="true">2</span>Turn on access</button>
@@ -1451,11 +1452,13 @@
           </div>
           <div id="bot-panel-grants" role="tabpanel" aria-labelledby="bot-tab-grants" hidden>
           <h4>Your bots</h4>
-          <p class="hint">Each bot has its own secret and access. Revoke stops its access and keeps the row. Delete removes the row after you confirm. Turning access off on this computer stops new calls from every bot without revoking it. Disable and Revoke still work during a connection check; an already-submitted send cannot be recalled.</p>
+          <p class="hint">Each bot has its own secret and access. Revoke stops its access and keeps the row. Delete removes the row after you confirm. Turning access off on this computer stops new calls and proactive pushes from every bot without revoking it. Proactive notify sends cached mail data to your webhook; the platform bot decides what to do. Delivered data cannot be recalled. Disable and Revoke still work during a connection check; an already-submitted send cannot be recalled.</p>
           <ul id="bot-grants" aria-label="Your bots"></ul>
           <details class="settings-disclosure" id="bot-add-client" open>
           <summary>Add a bot</summary>
           <form id="bot-mint">
+            <label for="bot-platform">Platform</label>
+            <select id="bot-platform"><option value="grok_bot">Grok Bot</option><option value="hermes_agent">Hermes Agent</option></select>
             <label for="bot-label">Bot name</label>
             <input id="bot-label" type="text" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. My assistant" />
             <fieldset id="bot-accounts" aria-describedby="bot-account-help">
@@ -1507,12 +1510,14 @@
           </details>
           <h4>Send receipts</h4>
           <ul id="bot-sends" aria-label="Send receipts"></ul>
-          <h4>Recent bot calls</h4>
+          <h4>Recent bot calls and proactive deliveries</h4>
           <ul id="bot-audit" aria-label="Recent bot calls"></ul>
           </div>
           <div id="bot-panel-agent" role="tabpanel" aria-labelledby="bot-tab-agent" hidden>
           <h4>Connect your bot</h4>
           <p class="hint">Copy or download the setup prompt for this installation. Morrow fills the operations, marker, and budgets. The prompt tells the bot how to call Morrow; it does not grant access.</p>
+          <label for="bot-setup-client">Bot</label>
+          <select id="bot-setup-client" aria-label="Bot for setup prompt"></select>
           <fieldset id="bot-setup-target">
             <legend>Setup target</legend>
             <label class="check"><input type="radio" name="bot-setup-target" value="local" checked /> This computer</label>
