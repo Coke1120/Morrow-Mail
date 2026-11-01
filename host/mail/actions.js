@@ -542,7 +542,7 @@ function acceptAll(commands) {
 function idsFrom(params, channel) {
   const ids = [];
   if (params && params.threadId && (channel === "mail:threadArchive" || channel === "mail:threadTrash" || channel === "mail:threadMove")) {
-    const rows = db.messagesByThread(params.accountId, params.threadId);
+    const rows = db.threadMembership(params.accountId, params.threadId);
     const source = params.sourceFolderId || params.folderId;
     const list = channel === "mail:threadMove" ? rows.filter((row) => !source || row.folder_path === source) : rows;
     ids.push(...list.map((row) => row.id));

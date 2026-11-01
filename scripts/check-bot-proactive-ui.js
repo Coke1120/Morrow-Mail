@@ -9,11 +9,80 @@ const { renderer } = require("./check-ux-workflows");
 const root = path.join(__dirname, "..");
 const source = file => fs.readFileSync(path.join(root, file), "utf8");
 const tick = () => new Promise(resolve => setImmediate(resolve));
+async function haltedDeliveryChecks(ui, dom, clientId, temp) {
+  const db = require("../host/mail/db"), auth = require("../host/bot/auth");
+  const proactive = require("../host/bot/proactive"), config = require("../host/bot/proactive-config");
+  const transport = require("../host/bot/proactive-transport"), audit = require("../host/bot/audit");
+  const listener = require("../host/bot/listener-status");
+  const original = { rename: fs.renameSync, post: transport.post, record: audit.record, listening: listener.state.listening };
+  const grant = auth.load().store.grants.find(row => row.clientId === clientId);
+  const file = path.join(temp, "bot-proactive-state.json");
+  const list = dom.window.document.getElementById("bot-grants");
+  let posts = 0, timeout;
+  const assertHalted = () => {
+    const text = list.querySelector("[data-notify-status]").textContent;
+    assert.match(text, /halted.*STATE_UNAVAILABLE/i);
+    assert.match(text, /inspect.*storage.*restart/i);
+    assert.doesNotMatch(text, /Runs while|Next slot|SCHEDULED|after saving/);
+    assert.match(list.querySelector(".bot-proactive summary").textContent, /halted/i);
+  };
+  try {
+    db.replaceFolders("fixture-mail", [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }], "/");
+    db.insertMessage({ id: "halt-fixture", accountId: "fixture-mail", folderPath: "INBOX", uid: 1, uidValidity: 1,
+      subject: "Synthetic delivery", snippet: "Cached mail", date: new Date().toISOString(), listSortTs: Date.now() });
+    fs.writeFileSync(file, JSON.stringify({ version: 1, bots: { [clientId]: {
+      binding: config.binding(grant), revision: grant.revision, seen: {}, lastCode: "SCHEDULED",
+      nextRunAt: new Date(Date.now() - 60000).toISOString(),
+    } } }));
+    auth.setEnabledFlag(true); listener.state.listening = true;
+    transport.post = async () => { posts++; return { code: "OK" }; };
+    fs.renameSync = (from, to) => {
+      if (to === file && posts) throw Error("synthetic acknowledgement write failure");
+      return original.rename(from, to);
+    };
+    await ui.run("loadBotAccess()");
+    const form = list.querySelector(".bot-proactive form");
+    assert.match(list.querySelector("[data-notify-status]").textContent, /Runs while Morrow is open and awake/);
+    await new Promise((resolve, reject) => {
+      timeout = setTimeout(() => reject(Error("synthetic delivery did not halt")), 5000);
+      audit.record = entry => {
+        original.record(entry);
+        if (entry.clientId === clientId && entry.code === "STATE_UNAVAILABLE") resolve();
+      };
+      proactive.start();
+    });
+    proactive.stop();
+    fs.renameSync = original.rename;
+    assert.equal(posts, 1, "the intercepted webhook succeeds before acknowledgement storage fails");
+    assert.deepEqual(audit.recent(2).map(row => row.code).sort(), ["OK", "STATE_UNAVAILABLE"]);
+    await ui.run("loadBotAccess()");
+    assert.equal(list.querySelector(".bot-proactive form"), form, "a status refresh preserves the editor while updating the halt");
+    assertHalted();
+    for (const enabled of [false, true]) {
+      auth.setEnabledFlag(enabled);
+      await ui.run("loadBotAccess()");
+      assertHalted();
+    }
+    form.querySelector('[data-notify-field="allow"]').checked = true;
+    form.requestSubmit(); await tick(); await tick();
+    assert.ok(auth.view().grants[0].revision > grant.revision, "the real Settings save commits a newer revision after storage recovers");
+    assert.equal(proactive.statuses(auth.view().grants)[clientId].halted, true, "saving settings cannot clear the runtime halt");
+    assertHalted();
+    assert.match(dom.window.document.getElementById("bot-status").textContent, /Delivery remains halted; inspect local storage before restarting/);
+  } finally {
+    clearTimeout(timeout); proactive.stop();
+    fs.renameSync = original.rename; transport.post = original.post; audit.record = original.record;
+    listener.state.listening = original.listening;
+  }
+}
+
 async function run() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-proactive-ui-"));
   const previous = { data: process.env.MORROW_USER_DATA, secrets: process.env.MORROW_MAIL_SECRETS };
   process.env.MORROW_USER_DATA = temp; process.env.MORROW_MAIL_SECRETS = "memory";
   const db = require("../host/mail/db"), auth = require("../host/bot/auth"), manage = require("../host/bot/manage");
+  const transport = require("../host/bot/proactive-transport"), originalPost = transport.post;
+  transport.post = async () => { throw Error("unexpected delivery outside the synthetic webhook fixture"); };
   const dom = new JSDOM(source("renderer/index.html"));
   try {
     await db.open(path.join(temp, "mail.sqlite"));
@@ -112,13 +181,18 @@ async function run() {
     assert.match(copied, /platform bot owns every decision/); assert.doesNotMatch(copied, /synthetic-ui-bearer/);
     const denied = await exposed.morrow.invoke("bot:configureProactive", { ...calls.find(row => row.channel === "bot:configureProactive").payload, backgroundConfirmed: false });
     assert.equal(denied.success, false);
+    await haltedDeliveryChecks(ui, dom, grant.clientId, temp);
+    form = $("bot-grants").querySelector(".bot-proactive form");
     [...form.querySelectorAll("button")].find(node => node.textContent === "Stop proactive notify").click();
     await tick(); await tick();
     assert.equal(auth.view().grants[0].proactive.enabled, false);
     ui.run(source("renderer/features-catalog.js"));
     ui.run("paintFeatureCatalog(); paintCli();");
     assert.match($("features-catalog").textContent, /Grok Bot and Hermes Agent/);
+    assert.match($("features-catalog").textContent, /halt.*storage.*restart/i);
+    assert.match($("features-catalog").textContent, /Delete.*webhook credential.*cannot be removed/);
     assert.match($("cli-proactive").textContent, /platform bot decides/);
+    assert.match($("cli-proactive").textContent, /halt.*restart.*Inspect storage/);
     const contract = require("../shared/bot-contract-v1.json");
     assert.deepEqual([...dom.window.document.querySelectorAll("[data-bot-operation]")].map(node => node.textContent).sort(), Object.keys(contract.operations).sort());
     for (const file of ["host/bot/proactive.js", "host/bot/proactive-config.js", "host/bot/proactive-transport.js"]) {
@@ -126,6 +200,7 @@ async function run() {
     }
     console.log("bot-proactive-ui-ok (actual preload, Settings DOM, native submission, host validation, Features and CLI)");
   } finally {
+    transport.post = originalPost;
     dom.window.close(); await db.close(); fs.rmSync(temp, { recursive: true, force: true });
     for (const [key, value] of [["MORROW_USER_DATA", previous.data], ["MORROW_MAIL_SECRETS", previous.secrets]]) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;

@@ -241,12 +241,21 @@ function createScheduler(deps = {}) {
   function resume() { paused = false; }
   function stop() { pause(); clearTimeout(first); clearInterval(timer); first = timer = null; }
   function dispose() { stop(); unsubscribe(); }
-  return { start, stop, pause, resume, tick, cancel, dispose };
+  function statuses(grants) {
+    const result = storedStatuses(grants, loadState);
+    for (const grant of grants || []) {
+      if (halted.has(grant.clientId)) {
+        result[grant.clientId] = { ...result[grant.clientId], halted: true, lastCode: "STATE_UNAVAILABLE", nextRunAt: null };
+      }
+    }
+    return result;
+  }
+  return { start, stop, pause, resume, tick, cancel, dispose, statuses };
 }
 
-function statuses(grants) {
+function storedStatuses(grants, loadState = readState) {
   try {
-    return Object.fromEntries(Object.entries(readState().bots)
+    return Object.fromEntries(Object.entries(loadState().bots)
       .filter(([id, row]) => (grants || []).some(grant => grant.clientId === id && grant.revision === row.revision))
       .map(([id, row]) => [id,
       { nextRunAt: row.nextRunAt, lastRunAt: row.lastRunAt, lastCode: row.lastCode }]));
@@ -255,6 +264,7 @@ function statuses(grants) {
 
 let singleton;
 function scheduler() { return singleton || (singleton = createScheduler()); }
-module.exports = { createScheduler, buildPayload, readState, statuses,
+module.exports = { createScheduler, buildPayload, readState,
+  statuses: grants => singleton ? singleton.statuses(grants) : storedStatuses(grants),
   start: () => scheduler().start(), stop: () => singleton?.stop(),
   pause: () => singleton?.pause(), resume: () => singleton?.resume() };

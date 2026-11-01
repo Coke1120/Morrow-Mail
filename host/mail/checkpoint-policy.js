@@ -7,11 +7,14 @@ function checkpointDelay({ databaseBytes = 0, journalBytes = 0, transactions = 0
   if (!journalBytes && !transactions && !pending) return null;
   const byteLimit = Math.max(8 * MIB, Math.min(64 * MIB, Math.ceil(databaseBytes / 64))) * (startup ? 4 : 1);
   const transactionLimit = Math.max(256, Math.min(4096, Math.ceil(databaseBytes / (2 * MIB))));
-  const ageDelay = Math.max(0, (startup ? 120000 : 60000) - ageMs);
+  const hardDelay = Math.max(0, 3600000 - ageMs);
+  if (journalBytes >= Math.max(256 * MIB, byteLimit * 4)) return 0;
+  const baseAge = startup ? 120000 : 60000;
+  const softAge = Math.min(3600000, Math.max(baseAge,
+    Math.min(startup ? 1800000 : 900000, Math.ceil(databaseBytes / (64 * MIB)) * baseAge), checkpointMs * 8));
   const threshold = journalBytes >= byteLimit || (!startup && (transactions >= transactionLimit || pending));
-  if (!threshold) return ageDelay;
-  const cooldown = Math.max(1000, Math.min(60000, checkpointMs * 4));
-  return Math.min(ageDelay, Math.max(0, cooldown - sinceCheckpointMs));
+  const cooldown = Math.max(1000, Math.min(300000, checkpointMs * 4));
+  return Math.min(hardDelay, Math.max(threshold ? 0 : softAge - ageMs, cooldown - sinceCheckpointMs, 0));
 }
 
 function checkpointHeadroom(databaseBytes, availableBytes) {

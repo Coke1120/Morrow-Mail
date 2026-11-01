@@ -8880,7 +8880,7 @@ async function deleteFromList(email) {
 async function replyFromList(email, kind) {
   let opened = state.email && state.email.id === email.id ? state.email : null;
   if (!opened) {
-    const data = await call("mail:openEmail", { emailId: email.id, full: true });
+    const data = await call("mail:openEmail", { emailId: email.id, full: true, includeThread: false });
     opened = data && data.email;
   }
   if (!opened) throw new Error("That message is no longer in the mailbox.");
@@ -9362,7 +9362,6 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     let offset = requestedOffset == null ? state.listOffset : requestedOffset;
-    if (requestedOffset == null) state.listCursors = [];
     const pageCursor = state.listCursors.find(entry => entry.offset === offset)?.cursor;
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
@@ -11456,7 +11455,7 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId, includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -14318,7 +14317,7 @@ async function bootReaderWindow() {
   pendingOpenId = messageId; pendingOpenBody = true;
   let opened;
   try {
-    opened = await call("mail:openEmail", { emailId: messageId, accountId: accountId });
+    opened = await call("mail:openEmail", { emailId: messageId, accountId: accountId, includeThread: false });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     showReaderOpenError(message, messageId);
@@ -14530,7 +14529,7 @@ function resumeDraft(email, extra) {
 }
 
 async function prepareDraftCompose(email, extra) {
-  const data = await call("mail:openEmail", { emailId: email.id, full: true });
+  const data = await call("mail:openEmail", { emailId: email.id, full: true, includeThread: false });
   let draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
   if (!draft.fromAddress) throw new Error("This draft's sender address could not be resolved. The saved draft was retained.");
@@ -19655,7 +19654,7 @@ function proposalContext(proposal, kind) {
 async function describeDraftSource(node, draft) {
   if (!draft.messageId) { node.textContent += "\nSource missing — request a new draft from a message."; return; }
   try {
-    const data = await call("mail:openEmail", { emailId: draft.messageId, full: true });
+    const data = await call("mail:openEmail", { emailId: draft.messageId, full: true, includeThread: false });
     const source = data?.email;
     if (!source || (draft.accountId && source.accountId !== draft.accountId)) throw new Error("Source unavailable or mailbox mismatch");
     const account = state.accounts.find(row => row.id === source.accountId);
@@ -20595,7 +20594,7 @@ async function reviewDraft(draft) {
   if (!body) throw new Error("That draft is empty.");
   const messageId = draft && draft.messageId;
   if (!messageId) throw new Error("This proposal has no source message. Open the intended message and request a new draft.");
-  const data = await call("mail:openEmail", { emailId: messageId, full: true });
+  const data = await call("mail:openEmail", { emailId: messageId, full: true, includeThread: false });
   const email = data && data.email;
   if (!email || email.id !== messageId || !email.accountId || (draft.accountId && draft.accountId !== email.accountId)) {
     throw new Error("The proposal's source message or account is unavailable. Open the intended message and request a new draft.");
@@ -20653,7 +20652,7 @@ async function peekMessage(messageId, full) {
   const accountId = pendingPeekAccountId;
   let data;
   try {
-    data = await call("mail:openEmail", { emailId: messageId, ...(accountId ? { accountId } : {}), ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId: messageId, includeThread: false, ...(accountId ? { accountId } : {}), ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== peekGen) return;
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
@@ -20684,7 +20683,7 @@ async function openPeekInMail() {
 
 async function openReplyCompose(messageId) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
-  const data = await call("mail:openEmail", { emailId: messageId, full: true });
+  const data = await call("mail:openEmail", { emailId: messageId, full: true, includeThread: false });
   const email = data && data.email;
   if (!email || !email.accountId) throw new Error("That message is no longer in the mailbox.");
   const account = state.accounts.find((item) => item.id === email.accountId);
@@ -21157,7 +21156,7 @@ function paintAgentHome(payload) {
 async function replyToAgentItem(item, kind) {
   const context = agentMessageContext(item);
   if (!context) return;
-  const data = await call("mail:openEmail", { emailId: context.messageId, full: true });
+  const data = await call("mail:openEmail", { emailId: context.messageId, full: true, includeThread: false });
   const email = data && data.email;
   if (!email || !email.accountId) throw new Error("That message is no longer in the mailbox.");
   const account = state.accounts.find((row) => row.id === email.accountId);
@@ -21246,6 +21245,10 @@ function agentCategoryReadButton(role, items) {
   button.dataset.pile = role;
   button.textContent = "Mark category as read";
   const snapshot = items.slice();
+  if (!agentUnreadSnapshot(snapshot).length) {
+    button.disabled = true;
+    button.title = "Nothing unread in this category";
+  }
   button.addEventListener("click", () => guard(() => markAgentCategoryRead(snapshot)));
   return button;
 }
@@ -21386,7 +21389,10 @@ async function applyReplySelection(items, mode) {
 async function markAgentCategoryRead(items) {
   const begunAt = Date.now();
   const snapshot = agentUnreadSnapshot(items);
-  if (!snapshot.length) return;
+  if (!snapshot.length) {
+    showStatus("Already read.");
+    return;
+  }
   const entries = snapshot.map((row) => beginAgentRead(items.find((item) => item.messageId === row.messageId), begunAt, false));
   let data;
   try {
@@ -23181,19 +23187,21 @@ function botPlatformLabel(platform) {
 
 function botProactiveForm(grant) {
   const saved = grant.proactive || {};
+  const delivery = grant.proactiveStatus;
   const details = document.createElement("details");
   details.className = "settings-disclosure bot-proactive";
   details.dataset.botId = grant.clientId;
   const summary = document.createElement("summary");
-  summary.textContent = "Proactive notify · " + (saved.enabled ? "allowed" : "off");
+  summary.textContent = "Proactive notify · " + (delivery?.halted ? "halted" : saved.enabled ? "allowed" : "off");
   const status = document.createElement("p");
   status.className = "hint";
   status.dataset.notifyStatus = "true";
-  const delivery = grant.proactiveStatus;
-  status.textContent = saved.enabled
+  status.textContent = delivery?.halted
+    ? "Halted: delivery state could not be saved (STATE_UNAVAILABLE). Inspect local storage before restarting Morrow; a lost acknowledgement can cause a repeat. Saving settings or toggling access does not resume delivery."
+    : saved.enabled
     ? `Saved for ${saved.webhookUrl}. ${state.botAccess?.enabled && state.botAccess?.listen?.listening ? "Runs while Morrow is open and awake." : "Paused until bot access is listening."}`
     : "No background delivery is allowed for this bot.";
-  if (delivery) status.textContent += ` Last result: ${delivery.lastCode || "—"}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
+  if (delivery && !delivery.halted) status.textContent += ` Last result: ${delivery.lastCode || "—"}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
   const form = document.createElement("form");
   const fields = {};
   function field(name, title, type, value) {
@@ -23286,8 +23294,10 @@ function botProactiveForm(grant) {
     const controls = [...form.querySelectorAll("input, select")].map(input => ({ input, disabled: input.disabled }));
     controls.forEach(({ input }) => { input.disabled = true; });
     botGuard(async () => {
-      paintBotAccess(await call("bot:configureProactive", payload));
-      setBotStatus(payload.enabled ? "Proactive notify saved. Delivery requires bot access to be listening and this grant to remain valid." : "Proactive settings saved with background delivery off.");
+      const access = await call("bot:configureProactive", payload);
+      paintBotAccess(access);
+      const halted = access.grants?.find(row => row.clientId === grant.clientId)?.proactiveStatus?.halted;
+      setBotStatus(halted ? "Proactive settings saved. Delivery remains halted; inspect local storage before restarting Morrow." : payload.enabled ? "Proactive notify saved. Delivery requires bot access to be listening and this grant to remain valid." : "Proactive settings saved with background delivery off.");
     }, true).finally(() => { save.disabled = false; controls.forEach(({ input, disabled }) => { input.disabled = disabled; }); });
   });
   details.append(summary, status, form);
@@ -23400,6 +23410,7 @@ function paintBotGrants(grants) {
       const previous = editors.get(grant.clientId);
       editor.dataset.notifyRevision = key;
       if (previous && previous.dataset.notifyRevision === key) {
+        previous.querySelector("summary").textContent = editor.querySelector("summary").textContent;
         previous.querySelector("[data-notify-status]").textContent = editor.querySelector("[data-notify-status]").textContent;
         item.append(previous);
       } else item.append(editor);
