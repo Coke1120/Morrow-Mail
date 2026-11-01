@@ -8,6 +8,7 @@ const budget = require("./budget");
 const { parseStrict } = require("./json");
 const catalog = require("./catalog");
 const service = require("./service");
+const { state, status } = require("./listener-status");
 const {
   API_VERSION,
   CALL_PATH,
@@ -26,17 +27,6 @@ const {
 let httpServer = null;
 let boundPort = PORT;
 let beforeRelease = async () => {};
-const state = { listening: false, error: "", host: HOST, port: PORT };
-
-function status() {
-  return {
-    listening: state.listening,
-    error: state.error,
-    host: HOST,
-    port: state.listening ? boundPort : PORT,
-    address: state.listening ? HOST : "",
-  };
-}
 
 function setBeforeRelease(fn) {
   beforeRelease = typeof fn === "function" ? fn : async () => {};

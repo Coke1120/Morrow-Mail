@@ -38,6 +38,12 @@ These paths do not send attachment file bytes. Mail metadata can reveal that att
 
 Morrow stores its mail cache and AI profile/chat/notes on this computer. The ChatGPT adapter sets `store: false`; this describes a request parameter, not verified retention, training, human-access or deletion terms. API/custom endpoint provider practices and downstream forwarding are not verified by this code. No assertion that a provider never retains/trains on Google data is made. Provider contractual suitability and Google's review of the real data flow remain release/verification evidence gaps; user consent alone does not waive Google's Limited Use restrictions.
 
+## Bot bridge background delivery
+
+Grok Bot and Hermes Agent can separately receive proactive cached-mail digests at a user-configured private webhook. This path calls no AI model and does not use `host/openai-client.js` or the AI provider's version 1 permission. It requires a valid scoped Bot access grant, the running listener and an explicit **Allow proactive notify to this webhook in the background** choice in each bot's Settings. The review includes the destination, mailbox subset, schedule, headers/snippets and optional permitted cached text, downstream handling and revocation limits. Saving credentials or enabling the listener alone cannot authorize it.
+
+Stop this transfer with **Stop proactive notify**, bridge disable or grant revoke in Bot access. Settings → AI revoke still controls AI model requests independently. The platform bot decides what to do with the untrusted raw data and may use its own model/provider according to its operator's configuration; Morrow neither invokes that model nor verifies retention/forwarding. Already delivered data cannot be recalled. See [Bot bridge proactive notify](BOT_BRIDGE.md#proactive-notify-grok-bot-and-hermes-agent) for private routing, data limits, cursor semantics and Activity. This feature does not change public policy, OAuth scopes or provider verification status.
+
 ## Validation and policy coordination
 
 `scripts/check-ai-consent.js` uses synthetic messages/providers and temporary files to exercise the real entrypoints, migration default, separate background gate, target changes, stale approval, abort, queued-work revocation and fallback prevention. Shared Settings and AI Setup DOM/VM fixtures cover affirmative controls, stale reads, duplicate submissions, revoke/late-grant ordering and disposal. These are logic checks, not rendered/native validation.

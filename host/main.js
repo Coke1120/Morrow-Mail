@@ -699,6 +699,7 @@ const quitController = quitScheduled.createQuitController({
   quitApp: () => app.quit(),
   cleanup: async () => {
     if (!bootFinished && !bootFailed) bootCancelled = true;
+    try { require("./bot/proactive").stop(); } catch { /* no scheduler */ }
     try { await require("./bot/server").stop(); } catch { /* the bridge is already stopped */ }
     try { await require("./mail/engine").stopIdle(); } catch { /* mail is not open */ }
     if (!bootFinished) {
@@ -817,11 +818,13 @@ app.whenReady().then(async () => {
       }
       const resumeRenderer = await requestRendererQuiescence(shellWindow, ipcMain);
       const resume = () => {
+        require("./bot/proactive").resume();
         updateGate.resume(); resumeRenderer();
         try { startBackgroundSync(); } catch { /* normal sync can resume */ }
         require("./bot/server").startIfEnabled().catch(() => {});
       };
       try {
+        require("./bot/proactive").pause();
         await updateGate.prepare();
         await require("./bot/server").stop();
         await require("./mail/engine").stopIdle();
@@ -937,11 +940,14 @@ app.whenReady().then(async () => {
     }
     startBackgroundSync();
     try { await require("./bot/server").startIfEnabled(); } catch { /* a missing grant leaves the bridge off */ }
+    try { require("./bot/proactive").start(); } catch { /* saved opt-in is required */ }
     try {
       powerMonitor.on("suspend", () => {
+        try { require("./bot/proactive").pause(); } catch { /* no scheduler */ }
         try { require("./mail/engine").idleSleep(); } catch { /* mail is not open */ }
       });
       powerMonitor.on("resume", () => {
+        try { require("./bot/proactive").resume(); } catch { /* no scheduler */ }
         try { require("./mail/engine").idleWake(); } catch { /* mail is not open */ }
       });
     } catch { /* this platform does not emit power events */ }

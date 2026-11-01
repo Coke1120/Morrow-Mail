@@ -10399,18 +10399,18 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   const action = (extra && extra.action) || removalAction(label);
   rememberUndoSnapshots(snapshotEmails(ids, extra), action, extra && extra.destinationLabel);
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed" && !restoredUndoOpIds.has(row.opId)).map((row) => row.id));
-  if (state.email && completed.has(state.email.id)) {
-    state.email = null;
-    state.thread = [];
-    renderReader(false);
-  }
-  state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
   const text = receiptText(label, outcome);
   const waiting = (outcome.outcomes || []).some((row) => row.phase === "accepted");
   if (outcome.removalEpoch == null) startRemovalSession(text, [], !!outcome.error, []);
   const epoch = outcome.removalEpoch ?? undoEpoch;
   rememberRemovalReceipt(outcome, epoch);
   if (epoch === undoEpoch) {
+    if (state.email && completed.has(state.email.id)) {
+      state.email = null;
+      state.thread = [];
+      renderReader(false);
+    }
+    state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
     if (outcome.opIds.length && (undoBusy || undoPending.size)) undoSettleQueue.push(outcome);
     else if (outcome.opIds.length) {
       applyRemovalSettlement(outcome, text, !!outcome.error);
@@ -23167,8 +23167,140 @@ function botListenerStatus(access) {
   return `${where} Bot access is not listening.`;
 }
 
+function botPlatformLabel(platform) {
+  return platform === "hermes_agent" ? "Hermes Agent" : "Grok Bot";
+}
+
+function botProactiveForm(grant) {
+  const saved = grant.proactive || {};
+  const details = document.createElement("details");
+  details.className = "settings-disclosure bot-proactive";
+  details.dataset.botId = grant.clientId;
+  const summary = document.createElement("summary");
+  summary.textContent = "Proactive notify · " + (saved.enabled ? "allowed" : "off");
+  const status = document.createElement("p");
+  status.className = "hint";
+  status.dataset.notifyStatus = "true";
+  const delivery = grant.proactiveStatus;
+  status.textContent = saved.enabled
+    ? `Saved for ${saved.webhookUrl}. ${state.botAccess?.enabled && state.botAccess?.listen?.listening ? "Runs while Morrow is open and awake." : "Paused until bot access is listening."}`
+    : "No background delivery is allowed for this bot.";
+  if (delivery) status.textContent += ` Last result: ${delivery.lastCode || "—"}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
+  const form = document.createElement("form");
+  const fields = {};
+  function field(name, title, type, value) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.id = `bot-notify-${grant.clientId}-${name}`;
+    input.dataset.notifyField = name;
+    input.type = type;
+    if (type === "checkbox") { label.className = "check"; input.checked = value === true; }
+    else input.value = value || "";
+    label.htmlFor = input.id;
+    if (type === "checkbox") label.append(input, document.createTextNode(" " + title));
+    else label.append(document.createTextNode(title), input);
+    form.append(label);
+    fields[name] = input;
+    return input;
+  }
+  function select(name, title, options, value) {
+    const label = document.createElement("label");
+    const input = document.createElement("select");
+    input.dataset.notifyField = name;
+    input.id = `bot-notify-${grant.clientId}-${name}`;
+    label.htmlFor = input.id;
+    for (const [key, text] of options) {
+      const option = document.createElement("option"); option.value = key; option.textContent = text; input.append(option);
+    }
+    input.value = value;
+    label.append(document.createTextNode(title), input);
+    form.append(label); fields[name] = input; return input;
+  }
+  select("platform", "Platform", [["grok_bot", "Grok Bot"], ["hermes_agent", "Hermes Agent"]], grant.platform || "grok_bot");
+  const url = field("webhookUrl", "Webhook URL", "url", saved.webhookUrl);
+  url.placeholder = "https://bot.your-tailnet.ts.net:8443/notify";
+  url.autocomplete = "off";
+  url.required = true;
+  const kind = select("kind", "Schedule", [["interval", "Every N minutes"], ["cron", "Five-field cron (this computer’s time zone)"]], saved.schedule?.kind || "interval");
+  const minutes = field("everyMinutes", "Interval minutes (1–10080)", "number", saved.schedule?.everyMinutes || 30);
+  minutes.min = "1"; minutes.max = "10080";
+  const cron = field("cron", "Cron: minute hour day month weekday", "text", saved.schedule?.cron || "0 9 * * 1-5");
+  const showSchedule = () => {
+    minutes.disabled = minutes.parentElement.hidden = kind.value !== "interval";
+    cron.disabled = cron.parentElement.hidden = kind.value !== "cron";
+  };
+  kind.addEventListener("change", showSchedule); showSchedule();
+  select("folder", "Cached folder", ["inbox", "sent", "drafts", "archive", "trash", "spam"].map(name => [name, name]), saved.folder || "inbox");
+  const boxes = document.createElement("fieldset");
+  const legend = document.createElement("legend"); legend.textContent = "Mailboxes to push"; boxes.append(legend); form.append(boxes);
+  const accountInputs = [];
+  for (const id of grant.accountIds || []) {
+    const account = state.botAccess.accounts?.find(row => row.accountId === id);
+    const input = field("account-" + id, account?.email || "Disconnected mailbox", "checkbox", saved.accountIds?.includes(id));
+    input.value = id; input.disabled = !account; accountInputs.push(input); boxes.append(input.parentElement);
+  }
+  const body = field("includeBody", "Include cached body text (never download missing bodies)", "checkbox", saved.includeBody);
+  body.disabled = !(grant.capabilities || []).includes("mail.bodies.read");
+  const secret = field("secret", saved.hasSecret ? "Replace webhook bearer (blank keeps saved token)" : "Optional webhook bearer", "password", "");
+  secret.autocomplete = "new-password";
+  const clear = field("clearSecret", "Remove saved webhook bearer", "checkbox", false);
+  clear.disabled = !saved.hasSecret;
+  const disclosure = document.createElement("p");
+  disclosure.className = "hint";
+  disclosure.textContent = "Background permission: send raw cached headers and snippets, plus cached text only if selected, from these mailboxes to this webhook. The platform bot decides whether to ignore, ask you, read again, propose a draft or send if granted. Morrow does not run AI, triage, draft or send as a result. The bot’s storage and forwarding rules apply; delivered data cannot be recalled. Use private Tailscale HTTPS or loopback, never Funnel. Changing the destination removes its saved bearer. Push covers the newest 50 cached rows, up to 10 per mailbox per delivery; remembers 2,000 delivered IDs per mailbox. No attachment bytes. Missed schedules do not replay.";
+  form.append(disclosure);
+  const allow = field("allow", "Allow proactive notify to this webhook in the background", "checkbox", false);
+  const review = document.createElement("p"); review.className = "hint";
+  review.textContent = "Tick this permission after reviewing the fields above, then Save. Saving with it unticked turns proactive notify off. This permission is separate from Settings → AI data permission.";
+  form.append(review);
+  for (const input of [...Object.values(fields), ...accountInputs]) {
+    if (input !== allow) input.addEventListener("input", () => { allow.checked = false; });
+  }
+  const actions = document.createElement("div"); actions.className = "row";
+  const save = document.createElement("button"); save.type = "submit"; save.className = "primary icon-label";
+  save.append(botIcon("mail"), document.createTextNode("Save proactive settings"));
+  const stop = document.createElement("button"); stop.type = "button"; stop.className = "ghost"; stop.textContent = "Stop proactive notify"; stop.disabled = !saved.enabled;
+  stop.addEventListener("click", () => botGuard(async () => {
+    paintBotAccess(await call("bot:configureProactive", { clientId: grant.clientId, platform: grant.platform || "grok_bot", stop: true }));
+    setBotStatus("Proactive notify stopped. Data already delivered cannot be recalled.");
+  }, true));
+  actions.append(save, stop); form.append(actions);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    const payload = { clientId: grant.clientId, platform: fields.platform.value,
+      enabled: allow.checked, backgroundConfirmed: allow.checked,
+      schedule: kind.value === "interval" ? { kind: "interval", everyMinutes: Number(minutes.value) } : { kind: "cron", cron: cron.value },
+      accountIds: accountInputs.filter(input => input.checked && !input.disabled).map(input => input.value),
+      folder: fields.folder.value, includeBody: body.checked, webhookUrl: url.value,
+      secret: secret.value, clearSecret: clear.checked };
+    secret.value = "";
+    save.disabled = true;
+    const controls = [...form.querySelectorAll("input, select")].map(input => ({ input, disabled: input.disabled }));
+    controls.forEach(({ input }) => { input.disabled = true; });
+    botGuard(async () => {
+      paintBotAccess(await call("bot:configureProactive", payload));
+      setBotStatus(payload.enabled ? "Proactive notify saved. Delivery requires bot access to be listening and this grant to remain valid." : "Proactive settings saved with background delivery off.");
+    }, true).finally(() => { save.disabled = false; controls.forEach(({ input, disabled }) => { input.disabled = disabled; }); });
+  });
+  details.append(summary, status, form);
+  return details;
+}
+
 function paintBotGrants(grants) {
+  const chooser = $("bot-setup-client");
+  if (chooser) {
+    const selected = chooser.value;
+    chooser.replaceChildren();
+    for (const grant of grants) {
+      const option = document.createElement("option");
+      option.value = grant.clientId;
+      option.textContent = `${grant.label} · ${botPlatformLabel(grant.platform)}`;
+      chooser.append(option);
+    }
+    if (grants.some(grant => grant.clientId === selected)) chooser.value = selected;
+  }
   const list = $("bot-grants");
+  const editors = new Map([...list.querySelectorAll(".bot-proactive")].map(node => [node.dataset.botId, node]));
   list.replaceChildren();
   if (!grants.length) {
     const item = document.createElement("li");
@@ -23181,7 +23313,7 @@ function paintBotGrants(grants) {
     item.className = "bot-grant";
     const title = document.createElement("p");
     const when = grant.revokedAt ? "revoked" : (grant.expired ? "expired" : "access valid");
-    title.textContent = `${grant.label} · ${when}`;
+    title.textContent = `${grant.label} · ${botPlatformLabel(grant.platform)} · ${when}`;
     const meta = document.createElement("p");
     meta.className = "hint";
     const accounts = (state.botAccess && state.botAccess.accounts) || [];
@@ -23254,6 +23386,16 @@ function paintBotGrants(grants) {
     });
     row.append(rotate, revoke, remove);
     item.append(title, meta, used, row);
+    if (!grant.revokedAt && !grant.expired) {
+      const editor = botProactiveForm(grant);
+      const key = JSON.stringify([grant.revision, grant.platform, grant.proactive, grant.accountIds, grant.capabilities, accounts]);
+      const previous = editors.get(grant.clientId);
+      editor.dataset.notifyRevision = key;
+      if (previous && previous.dataset.notifyRevision === key) {
+        previous.querySelector("[data-notify-status]").textContent = editor.querySelector("[data-notify-status]").textContent;
+        item.append(previous);
+      } else item.append(editor);
+    }
     list.append(item);
   }
 }
@@ -23611,7 +23753,7 @@ function wireBot() {
     $("bot-draft-heading").focus({ preventScroll: true });
   });
   $("bot-copy-setup").addEventListener("click", () => botGuard(async () => {
-    const text = await call("bot:setupText", { target: botSetupChoice() });
+    const text = await call("bot:setupText", { target: botSetupChoice(), clientId: $("bot-setup-client").value || undefined });
     if (!navigator.clipboard) {
       setBotStatus("Could not copy the setup prompt.", true);
       return;
@@ -23620,7 +23762,7 @@ function wireBot() {
     setBotStatus("Setup prompt copied.");
   }));
   $("bot-download-skill").addEventListener("click", () => botGuard(async () => {
-    const text = await call("bot:setupText", { target: botSetupChoice() });
+    const text = await call("bot:setupText", { target: botSetupChoice(), clientId: $("bot-setup-client").value || undefined });
     const blob = new Blob([text.skillMarkdown], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -23730,6 +23872,7 @@ function wireBot() {
       }
       const minted = await call("bot:mintGrant", {
         label: $("bot-label").value,
+        platform: $("bot-platform").value,
         accountIds,
         capabilities,
         expiry,
