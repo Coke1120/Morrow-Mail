@@ -1457,7 +1457,7 @@ function selectBotHeaders(accountId, folderPaths, limit) {
   const n = Math.min(Math.max(Number(limit) || 1, 1), 51);
   const marks = folderPaths.map(() => "?").join(", ");
   return all(
-    `SELECT m.*, CASE WHEN EXISTS (
+    `SELECT ${metadataColumns("m")}, CASE WHEN EXISTS (
        SELECT 1 FROM snooze s
        WHERE s.account_id = m.account_id AND s.thread_id = m.thread_id AND s.until_iso > ?
      ) THEN 1 ELSE 0 END AS snoozed

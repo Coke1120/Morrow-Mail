@@ -2279,7 +2279,7 @@ async function fillOvernightBodies() {
   if (overnightRunning) return { ran: false, fetched: 0, busy: true, window: true };
   const now = overnightNow();
   if (!overnight.inOvernightWindow(now, overnightZone())) {
-    if (overnightSawWindow) { overnightTried.clear(); overnightCursor = null; }
+    if (overnightSawWindow) overnightTried.clear();
     overnightSawWindow = false;
     return { ran: false, fetched: 0, window: false };
   }

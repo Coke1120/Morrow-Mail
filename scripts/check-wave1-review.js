@@ -42,6 +42,7 @@ class Element {
   get className() { return [...this.classes].join(" "); }
   set className(value) { this.classes = new Set(String(value).split(/\s+/).filter(Boolean)); }
   get children() { return this.childNodes.filter((node) => node.nodeType === 1); }
+  get parentElement() { return this.parentNode?.nodeType === 1 ? this.parentNode : null; }
   get firstChild() { return this.childNodes[0] || null; }
   get lastChild() { return this.childNodes.at(-1) || null; }
   get isConnected() { return this.tagName === "body" || !!this.parentNode?.isConnected; }

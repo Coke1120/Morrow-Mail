@@ -72,7 +72,7 @@ function run() {
   assert.equal(checked, 4);
   const card = require("../renderer/features-catalog").items.find(row => row.id === "bot-bridge");
   assert.match(card.blurb, /separate send permission/i);
-  assert.match(card.blurb, /inert drafts/);
+  assert.match(card.blurb, /inert draft/);
   assert.match(card.blurb, /connected, granted mailboxes/);
   const accounts = require("../renderer/features-catalog").items.find(row => row.id === "multi-account");
   assert.match(accounts.blurb, /pending reconnects/);

@@ -993,6 +993,11 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
   display: grid;
   gap: 6px;
 }
+.bot-proactive form { display: grid; gap: 10px; margin-top: 12px; }
+.bot-proactive label:not(.check) { display: grid; gap: 4px; }
+.bot-proactive fieldset { display: grid; gap: 6px; }
+.bot-proactive .hint { overflow-wrap: anywhere; }
+.bot-proactive input:not([type="checkbox"]), .bot-proactive select { max-width: 100%; }
 .bot-draft pre, #bot-secret pre {
   white-space: pre-wrap;
   word-break: break-word;

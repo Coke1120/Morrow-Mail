@@ -242,7 +242,7 @@ app.whenReady().then(async () => {
   await run(`$('bot-expiry').value='7';$('bot-grant-options').open=false;
     $('bot-label').value='My assistant';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
   await waitFor(`$('bot-secret').open && !botBusy`);
-  assert.deepEqual(calls.find(row => row.channel === 'bot:mintGrant').payload, { label: 'My assistant', accountIds: ['box-0'],
+  assert.deepEqual(calls.find(row => row.channel === 'bot:mintGrant').payload, { label: 'My assistant', platform: 'grok_bot', accountIds: ['box-0'],
     capabilities: ['accounts.read','mail.headers.read','health.read','agent.proposals.read'], expiry: { kind: 'finite', days: 7 } });
   assert.equal(count('bot:setEnabled'), 0, 'creating a grant never enables access');
   await run(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.fixtureCopied=value;}}});$('bot-secret-copy').click()`);

@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.14": [
+      "Bot mail can use Hermes Agent, with optional cached-mail notifications when you opt in.",
+      "Proactive bot work stops cleanly when a cursor or status write fails; schedule controls that stay hidden no longer block native form validation.",
+      "Bulk Undo keeps the reader clear across epochs, and overnight scan keeps its cursor after a retain path.",
+      "The Electron/Node security bump is not in this version.",
+    ],
     "0.3.13": [
       "Features and Settings Support include GitHub Sponsors and Buy Me a Coffee links; sponsor destinations in Features are clickable.",
       "Undo, signature loading, Outbox, and overnight scan P2 fixes; Learned recoveries after a read failure no longer stick on a stale error.",

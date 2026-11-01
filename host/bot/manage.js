@@ -7,6 +7,8 @@ const drafts = require("./drafts");
 const probe = require("./probe");
 const prompt = require("./prompt");
 const send = require("./send");
+const proactive = require("./proactive");
+const proactiveConfig = require("./proactive-config");
 const { DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, PORT, SERVE_CAPABILITY } = require("./constants");
 const server = require("./server");
 
@@ -54,6 +56,7 @@ function accounts() {
 function snapshot() {
   const view = auth.view();
   const local = drafts.listLocal();
+  const proactiveStatuses = proactive.statuses(view.grants);
   return {
     available: view.available,
     enabled: view.enabled === true,
@@ -71,7 +74,8 @@ function snapshot() {
     serveCommands: catalog.serveCommands(view.serveHost),
     markerJson: catalog.markerJson(),
     accounts: accounts(),
-    grants: view.grants || [],
+    grants: (view.grants || []).map(grant => ({ ...grant, proactiveStatus: proactiveStatuses[grant.clientId] || null })),
+    platforms: auth.PLATFORMS,
     drafts: local.proposals,
     draftsAvailable: local.available,
     sends: send.recentForSettings(),
@@ -101,18 +105,27 @@ async function apply(channel, payload) {
     const rotated = auth.rotate(payload && payload.clientId);
     return { secret: rotated.secret, grant: rotated.grant, access: snapshot() };
   }
+  if (channel === "bot:configureProactive") {
+    proactiveConfig.configure(payload || {});
+    return snapshot();
+  }
   if (channel === "bot:revokeGrant") {
     auth.revoke(payload && payload.clientId);
+    proactiveConfig.forgetSecret(payload && payload.clientId);
     return snapshot();
   }
   if (channel === "bot:deleteGrant") {
+    proactiveConfig.forgetSecret(payload && payload.clientId);
     auth.removeGrant(payload && payload.clientId);
     return snapshot();
   }
   if (channel === "bot:probeServe") return probe.probeServeHost(auth.serveHost());
   if (channel === "bot:setupText") {
     const target = payload && payload.target === "serve" ? "serve" : "local";
-    return prompt.renderSetup(catalog.factsFrom(auth.view(), target));
+    const view = auth.view();
+    const grant = (view.grants || []).find(row => row.clientId === (payload && payload.clientId));
+    if (payload && payload.clientId && !grant) throw auth.publicError("Choose an existing bot for setup.");
+    return prompt.renderSetup({ ...catalog.factsFrom(view, target), platform: grant ? grant.platform : "grok_bot", botId: grant ? grant.clientId : null });
   }
   if (channel === "bot:draftComposeSeed") return drafts.composeSeed(payload && payload.proposalId);
   if (channel === "bot:dismissDraftProposal") {

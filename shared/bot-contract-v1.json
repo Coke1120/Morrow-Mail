@@ -26,5 +26,44 @@
     "draft.proposals.submit": ["accountId", "idempotencyKey", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"],
     "draft.proposals.list": ["accountId", "limit"],
     "mail.send": ["accountId", "fromAddress", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"]
+  },
+  "platforms": [
+    "grok_bot",
+    "hermes_agent"
+  ],
+  "proactiveNotify": {
+    "kind": "proactive.mail_digest",
+    "contentTrust": "untrusted_mail_data",
+    "method": "POST",
+    "fields": [
+      "apiVersion",
+      "kind",
+      "deliveryId",
+      "installationId",
+      "botId",
+      "platform",
+      "generatedAt",
+      "contentTrust",
+      "accounts"
+    ],
+    "accountFields": [
+      "accountId",
+      "folder",
+      "messages",
+      "moreAvailable",
+      "warnings"
+    ],
+    "configuration": "desktop Settings only; separate per-bot background opt-in and active listener",
+    "decisionOwner": "platform_bot",
+    "maxPayloadBytes": 131072,
+    "maxResponseBytes": 8192,
+    "timeoutMs": 10000,
+    "maxAttemptsPerSlot": 2,
+    "candidateWindowPerAccount": 50,
+    "maxMessagesPerAccount": 10,
+    "rememberedIdsPerAccount": 2000,
+    "attachmentBytes": false,
+    "forceDownload": false,
+    "funnel": false
   }
 }
