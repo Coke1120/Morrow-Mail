@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.15": [
+      "All Account Inbox shows the selected mailbox Out of Office status, including compact off state and Manage.",
+      "Large-mailbox startup uses phased preparation with a body-metadata budget and size-scaled checkpoint policy.",
+      "Local search projects metadata for large mailboxes, with scoped summary staging and keyset paging for unfiltered lists.",
+      "The Electron/Node security bump is not in this version.",
+    ],
     "0.3.14": [
       "Bot mail can use Hermes Agent, with optional cached-mail notifications when you opt in.",
       "Proactive bot work stops cleanly when a cursor or status write fails; schedule controls that stay hidden no longer block native form validation.",
