@@ -175,6 +175,7 @@ function unzipFiles(buffer) {
 
 module.exports = {
   zipFiles,
+  zipFilesAsync(files, options) { return require("./zip-worker").zipFilesAsync(files, options); },
   unzipFiles,
   zipDownloadName,
 };

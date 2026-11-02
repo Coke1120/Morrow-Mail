@@ -3036,6 +3036,10 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
   return result;
 }
 
+// Preserve the old non-overlapping writes, including saves to the same path.
+// Recheck each request when it reaches the front; a failed write must not poison it.
+let attachmentWriteTail = Promise.resolve();
+
 async function attachmentOperation(channel, params, owner) {
   let request;
   try {
@@ -3062,9 +3066,9 @@ async function attachmentOperation(channel, params, owner) {
     assertCurrent();
     const parts = await attachmentParts(row, files, { signal: request.signal, onProgress: value => request.report(value) });
     assertCurrent();
-    const data = zip ? zipBytes.zipFiles(parts) : parts[0].data;
+    if (zip) request.report({ phase: "packing" });
+    const data = zip ? await zipBytes.zipFilesAsync(parts, { signal: request.signal }) : parts[0].data;
     if (channel === "mail:fetchAttachmentBytes") return ok(data);
-    request.report({ phase: "writing" });
     assertCurrent();
     if (channel === "mail:openAttachmentExternally") {
       const dir = path.join(os.tmpdir(), "morrow-mail-attachments");
@@ -3072,7 +3076,17 @@ async function attachmentOperation(channel, params, owner) {
       const safe = filename.replace(/[^\w.\- ()[\]]+/g, "_").slice(0, 120) || "attachment";
       target = path.join(dir, `${crypto.randomUUID()}-${safe}`);
     }
-    fs.writeFileSync(target, data, { mode: 0o600 });
+    // A started write can finish after cancellation; never launch an external
+    // application or report a stale request as current after this await.
+    request.report({ phase: "waitingToSave" });
+    const write = attachmentWriteTail.then(async () => {
+      assertCurrent();
+      request.report({ phase: "writing" });
+      await fs.promises.writeFile(target, data, { mode: 0o600 });
+    });
+    attachmentWriteTail = write.catch(() => {});
+    await write;
+    assertCurrent();
     if (channel === "mail:openAttachmentExternally") {
       request.report({ phase: "opening" });
       const opened = await require("electron").shell.openPath(target);
