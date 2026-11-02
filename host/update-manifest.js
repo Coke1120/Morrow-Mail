@@ -23,6 +23,11 @@ function artifactURL(version, arch) {
   versionParts(version);
   return `${RELEASE_ROOT}download/v${version}/${macZipName(arch)}`;
 }
+function manifestURL(version, arch) {
+  versionParts(version);
+  macZipName(arch);
+  return `${RELEASE_ROOT}download/v${version}/update-manifest-macos-${arch}.json`;
+}
 function verifyManifest(bytes, signature, options = {}) {
   if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MANIFEST_LIMIT) throw new Error('Invalid update manifest size.');
   if (typeof signature !== 'string' || signature.length > 100 || !/^[A-Za-z0-9+/]{86}==$/.test(signature.trim())) throw new Error('Invalid update signature.');
@@ -52,4 +57,4 @@ async function validateArtifact(file, manifest) {
     return true;
   } finally { await handle.close(); }
 }
-module.exports = { MANIFEST_LIMIT, ARCHIVE_LIMIT, RELEASE_ROOT, compareVersions, macZipName, artifactURL, verifyManifest, validateArtifact };
+module.exports = { MANIFEST_LIMIT, ARCHIVE_LIMIT, RELEASE_ROOT, compareVersions, macZipName, artifactURL, manifestURL, verifyManifest, validateArtifact };
