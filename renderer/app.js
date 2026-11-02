@@ -9431,6 +9431,7 @@ async function offerChangelog() {
     // A failed settings read is not an acknowledgement.
   } finally {
     changelogPending = false;
+    if (googleOnboardingPending) setTimeout(resumeGoogleOnboarding, 0);
   }
 }
 
@@ -17707,12 +17708,16 @@ function paintOooDirty() {
 // A profile-local, non-secret preference, shared by shell windows.
 const googleOnboardingKey = "morrow.googleOnboarding.v1";
 let googleOnboardingHandled = false;
+let googleOnboardingPending = false;
+let googleOnboardingCheck = null;
+let googleOnboardingCloseSerial = 0;
 function googleOnboardingDone() {
   if (googleOnboardingHandled) return true;
   try { return window.localStorage.getItem(googleOnboardingKey) === "done"; }
   catch { return false; }
 }
 function rememberGoogleOnboarding() {
+  googleOnboardingPending = false;
   googleOnboardingHandled = true;
   try { window.localStorage.setItem(googleOnboardingKey, "done"); }
   catch { /* Keep this session usable when profile storage is unavailable. */ }
@@ -17721,21 +17726,44 @@ function dismissGoogleOnboarding() {
   rememberGoogleOnboarding();
   closeDialog("google-onboarding");
 }
-async function maybeShowGoogleOnboarding() {
-  if (googleOnboardingDone()) return;
-  let status;
-  try { status = await call("mail:googleOauthStatus"); }
-  catch { return; } // Unknown readiness is not a reason to request credentials.
-  if (googleOnboardingDone()) return;
-  if (state.accounts.length || status?.ready || status?.imported || status?.source !== "none") {
-    rememberGoogleOnboarding();
-    return;
-  }
-  state.googleOauthClient = status;
-  if (document.querySelector("dialog[open]")) return;
-  openDialog("google-onboarding");
+function maybeShowGoogleOnboarding() {
+  googleOnboardingPending = !googleOnboardingDone();
+  return resumeGoogleOnboarding();
+}
+function resumeGoogleOnboarding() {
+  if (!googleOnboardingPending || googleOnboardingDone()) return Promise.resolve();
+  if (googleOnboardingCheck) return googleOnboardingCheck;
+  if (changelogPending || document.querySelector("dialog[open]")) return Promise.resolve();
+  const serial = googleOnboardingCloseSerial;
+  googleOnboardingCheck = (async () => {
+    let status;
+    try { status = await call("mail:googleOauthStatus"); }
+    catch { return; } // Unknown readiness is not a reason to request credentials.
+    // A dialog may have changed configuration while this read was in flight.
+    if (serial !== googleOnboardingCloseSerial || !googleOnboardingPending || googleOnboardingDone()) return;
+    if (state.accounts.length || status?.ready || status?.imported || status?.source !== "none") {
+      rememberGoogleOnboarding();
+      return;
+    }
+    state.googleOauthClient = status;
+    if (document.querySelector("dialog[open]")) return;
+    googleOnboardingPending = false;
+    openDialog("google-onboarding");
+  })().finally(() => {
+    googleOnboardingCheck = null;
+    if (googleOnboardingPending && serial !== googleOnboardingCloseSerial) setTimeout(resumeGoogleOnboarding, 0);
+  });
+  return googleOnboardingCheck;
 }
 function wireGoogleOnboarding() {
+  // Capture also covers dialogs created after boot. Let their close handlers
+  // finish (and possibly open another dialog) before checking the pending offer.
+  // Native dispatch may run microtasks between listeners, so use the next task.
+  document.addEventListener("close", event => {
+    if (event.target?.tagName !== "DIALOG" || !googleOnboardingPending) return;
+    googleOnboardingCloseSerial += 1;
+    setTimeout(resumeGoogleOnboarding, 0);
+  }, true);
   const dialog = $("google-onboarding");
   $("google-onboarding-later").addEventListener("click", dismissGoogleOnboarding);
   $("google-onboarding-import").addEventListener("click", () => changeGoogleOauthClient("mail:importGoogleOauth"));

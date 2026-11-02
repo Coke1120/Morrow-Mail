@@ -21,3 +21,21 @@ Only the main shell runs onboarding; reader, composer and translation windows ke
 their own boot paths. Existing motion and native dialog focus/Escape behavior are
 reused. Tests use synthetic profiles and IPC; no real Google project or account is
 changed.
+
+## Startup sequencing correction
+
+Keep a pending offer while What’s New readiness is loading or another dialog
+occupies the shell. Completion of the changelog check also retries the offer, so
+a slow settings read preserves ordering without requiring another launch. A
+capturing close listener retries in the next event task after close handlers finish, including
+for dynamically created dialogs. Recheck Google readiness and current accounts
+before showing; serialize reads and discard a response if another dialog closed
+while it was pending. A microtask is insufficient: native event dispatch can run
+microtasks between listeners, before a later close handler opens another dialog.
+This avoids both stacking and stale setup offers after a
+configuration change. Dismissal or successful import still ends the offer.
+
+The original tests called onboarding directly and only asserted suppression behind
+an open dialog. Full-boot tests now include the real changelog module and unseen
+version state, then close it through OK, Close and Escape. Browser coverage runs
+unmodified boot with synthetic IPC, including real native dialog close events.
