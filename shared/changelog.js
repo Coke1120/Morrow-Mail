@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.19": [
+      "Undo asks you to confirm the reviewed changes; Cancel or Escape keeps your selection without changing mail.",
+      "Select all and Clear selection keep Undo Details open when using the mouse or keyboard.",
+      "First-use Google setup appears after What's New or another startup dialog closes, without needing to restart; Later is still remembered.",
+    ],
     "0.3.18": [
       "Mail lists show Date, Recipient, Sender and Subject columns; select a header to sort matching downloaded mail before paging.",
       "Your mail sort order is remembered on this device, and changing it returns to page one while keeping the reader open.",
