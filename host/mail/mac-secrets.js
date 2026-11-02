@@ -32,7 +32,11 @@ function write(service, account, password) {
 
 function find(service, account) {
   const result = run(["find-generic-password", "-s", service, "-a", account, "-w"]);
-  if (result.status !== 0) return null;
+  // security returns errSecItemNotFound (-25300) as POSIX exit status 44.
+  if (result.status === 44) return null;
+  if (result.status !== 0) throw Object.assign(new Error("Secure storage could not be read. Check access and retry."), {
+    code: "secure_storage_unavailable",
+  });
   return result.stdout.replace(/\n$/, "");
 }
 

@@ -58,9 +58,12 @@ function readRaw(key) {
 function storeRefresh(key, value) {
   const request = grantRequests.getStore();
   const previous = request?.records.get(key);
-  let stored = false;
-  try { secrets.setPassword(key, value); stored = true; } catch {}
-  if (previous) request.records.set(key, { raw: stored ? value : previous.raw, revision: secrets.revision(key) });
+  try { secrets.setPassword(key, value); } catch {
+    throw Object.assign(new Error("The renewed connection could not be saved. Check secure-storage access and retry."), {
+      code: "secure_storage_write", retryable: true,
+    });
+  }
+  if (previous) request.records.set(key, { raw: value, revision: secrets.revision(key) });
 }
 
 const CHANNELS = new Set([
@@ -108,6 +111,12 @@ function publicError(error) {
 
 function failFrom(error) {
   const code = error && error.code;
+  const storage = /^secure_storage_/.test(code || "");
+  if (storage || ["oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration", "rate_limit"].includes(code)) {
+    const result = fail(storage ? code : "provider", publicError(error));
+    result.error.retryable = storage || error.retryable === true;
+    return result;
+  }
   if (code === "provider_network") return fail("provider", publicError(error));
   if (code === "google_client_changed" || code === "oauth_not_ready" || code === "scope_missing" || code === "needs_auth" || code === "invalid" || code === "not-found" || code === "too_many" || code === "account_mismatch" || code === "oauth" || code === "imap_only" || code === "no_account" || code === "collision" || code === "partial" || code === "conflict" || code === "unsupported") {
     return fail(code, publicError(error));

@@ -606,7 +606,11 @@ async function secretFor(account) {
   if (typeof result === "string") return result;
   if (result && result.store) {
     if (account.mail_transport === "gmail_api" && !oauthConfig.hasPurposeScopes(JSON.parse(result.store).grantedScopes || "", "google", "imap")) throw Object.assign(new Error("The refreshed Google grant is missing Gmail API mail permission. Reauthorize the mailbox."), { code: "scope_missing" });
-    try { secrets.setPassword(account.id, result.store); } catch { /* best effort */ }
+    try { secrets.setPassword(account.id, result.store); } catch {
+      throw Object.assign(new Error("The renewed connection could not be saved. Check secure-storage access and retry."), {
+        code: "secure_storage_write", retryable: true,
+      });
+    }
     return result.token;
   }
   throw new Error("Could not refresh OAuth access token.");
