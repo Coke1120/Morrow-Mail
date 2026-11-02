@@ -52,6 +52,8 @@ const INVOKE = [
   "morrow:configSetDefaultScheduleDelayMinutes",
   "morrow:configGetLayoutPanes",
   "morrow:configSetLayoutPanes",
+  "morrow:configGetMailView",
+  "morrow:configSetMailView",
   "morrow:configGetMailColumnOrder",
   "morrow:configSetMailColumnOrder",
   "morrow:configGetOnboarding",

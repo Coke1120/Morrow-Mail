@@ -4,6 +4,7 @@ const fs=require('fs'),http=require('http'),path=require('path'),assert=require(
 const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.join(require('os').tmpdir(),'morrow-mail-layout');
 (async()=>{
  const server=http.createServer((req,res)=>{
+  if(req.url==='/favicon.ico'){res.writeHead(204).end();return}
   if(req.url==='/axe.js'){res.setHeader('Content-Type','text/javascript');return res.end(fs.readFileSync(require.resolve(process.env.MORROW_AXE_MODULE||'axe-core/axe.min.js')))}
   const target=path.join(root,decodeURI(req.url.split('?')[0]));if(!target.startsWith(root+path.sep)){res.writeHead(403).end();return}
   try{let data=fs.readFileSync(target);if(target.endsWith('/renderer/app.js'))data=data.toString().replace(/boot\(\)\.catch\([^\n]+\);\s*$/,'');res.setHeader('Content-Type',target.endsWith('.js')?'text/javascript':target.endsWith('.css')?'text/css':target.endsWith('.svg')?'image/svg+xml':target.endsWith('.png')?'image/png':'text/html');res.end(data)}catch{res.writeHead(404).end()}
@@ -12,9 +13,12 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
  const browser=await chromium.launch({executablePath:process.env.MORROW_CHROMIUM||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
  try{
   const page=await browser.newPage({viewport:{width:1440,height:960}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.addInitScript(()=>{window.morrow={on(){},invoke:async(channel,value)=>{
+  page.on('console',message=>{if(['error','warning'].includes(message.type()))errors.push(message.type()+': '+message.text())});
+  await page.addInitScript(()=>{window.popouts=[];window.morrow={on(){},openReaderWindow:async seed=>{window.popouts.push(seed)},invoke:async(channel,value)=>{
    if(channel==='morrow:configGetMailColumnOrder')return JSON.parse(localStorage.getItem('synthetic.columns')||'null');
-   if(channel==='morrow:configSetMailColumnOrder'){localStorage.setItem('synthetic.columns',JSON.stringify(value));return value}return null;
+   if(channel==='morrow:configSetMailColumnOrder'){localStorage.setItem('synthetic.columns',JSON.stringify(value));return value}
+   if(channel==='morrow:configGetMailView')return JSON.parse(localStorage.getItem('synthetic.view')||'null');
+   if(channel==='morrow:configSetMailView'){localStorage.setItem('synthetic.view',JSON.stringify(value));return value}return null;
   }}});
   const url=`http://127.0.0.1:${server.address().port}/renderer/index.html`;
   async function initialize(){await page.evaluate(async()=>{
@@ -29,6 +33,8 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
    };publishFixtureAccounts();globalThis.requests=[];
    call=async(channel,p={})=>{
     requests.push({channel,params:p});
+    if(channel==='mail:openEmail')return {email:{...fixtureRows.find(row=>row.id===p.emailId),unread:false,textBody:'Synthetic message body for preview layout verification. No real mailbox data.'},threadMessages:[]};
+    if(channel==='mail:searchLocal')return fixtureRows.filter(row=>(!p.accountId||row.accountId===p.accountId)&&row.subject.includes(p.query)).slice(0,p.limit||100);
     if(channel==='mail:listAccounts'){publishFixtureAccounts();return state.accounts}
     if(channel==='mail:toggleStar'||channel==='mail:markRead'){
      const row=fixtureRows.find(r=>r.id===p.emailId&&r.accountId===p.accountId);if(!row)throw new Error('Wrong mailbox');
@@ -42,7 +48,7 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
      return {emails:rows.slice(p.offset||0,(p.offset||0)+(p.limit||200)),total:rows.length,initialSyncDone:true};
     }return [];
    };
-   offerChangelog=async()=>{};refreshMailVacation=()=>{document.getElementById("mail-ooo").hidden=true};await loadMailColumnOrder();wireMailColumnEditor();renderAccounts();await loadList(false,0);document.getElementById('mail-ooo').hidden=true;
+   offerChangelog=async()=>{};refreshMailVacation=()=>{document.getElementById("mail-ooo").hidden=true};await loadMailColumnOrder();await loadMailView();wireMailColumnEditor();wireMailView();wireSplits();renderAccounts();await loadList(false,0);document.getElementById('mail-ooo').hidden=true;
   })}
   await page.goto(url);await initialize();
   await page.locator('[data-sort-key="date"] button').dragTo(page.locator('[data-sort-key="subject"]'),{targetPosition:{x:150,y:12}});
@@ -70,7 +76,79 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   fs.mkdirSync(output,{recursive:true});await page.mouse.move(1400,920);await page.screenshot({path:path.join(output,'wide.png')});
   await page.setViewportSize({width:900,height:700});await page.evaluate(()=>document.documentElement.style.setProperty('--list','360px'));await page.screenshot({path:path.join(output,'narrow.png')});
   assert.ok(await page.evaluate(()=>{const n=document.getElementById('message-list');return n.scrollWidth>n.clientWidth}));
+  await verifyReadingLayouts(page);
+  await page.reload();await initialize();assert.equal(await page.evaluate(()=>state.prefs.mailView.layout),'window');
   await page.evaluate(()=>showFeatures());assert.match(await page.locator('#features-catalog').textContent(),/Drag headers to reorder columns independently of sorting/);
-  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',checks:'drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, narrow layout, rendered Features, axe',output}));
+  assert.match(await page.locator('#features-catalog').textContent(),/View, beside Search downloaded mail/);
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',url,title:await page.title(),checks:'drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, rounded corners, right/bottom/window layouts, splitter keyboard and pointer, selection/search/scroll retention, double-click and keyboard popout, narrow/mobile/light/dark/reduced-motion, rendered Features, axe',output}));
  }finally{await browser.close();server.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});
+
+async function verifyReadingLayouts(page) {
+ const choose=async name=>{await page.locator('#mail-view-open').click();await page.getByRole('menuitemradio',{name,exact:true}).click()};
+ const dimensions=()=>page.evaluate(()=>{
+  const rect=id=>{const b=document.getElementById(id).getBoundingClientRect();return {x:b.x,y:b.y,right:b.right,bottom:b.bottom,width:b.width,height:b.height}};
+  return {messages:rect('messages'),reader:rect('reader'),shell:rect('shell')};
+ });
+ await page.setViewportSize({width:1440,height:960});
+ await page.evaluate(()=>{document.documentElement.style.setProperty('--list','740px');state.query='Project';state.searchAccountId='b';document.getElementById('search-query').value='Project';return loadList(false,0)});
+ await page.locator('button.message').first().click();await page.waitForFunction(()=>!!state.email);
+ await page.locator('.row-check').first().click();
+ const snapshot=()=>page.evaluate(()=>JSON.stringify([state.query,state.searchAccountId,state.selectedIds,state.selectionAnchor,state.listSort,mailColumnOrder()]));
+ const before=await snapshot();
+ await page.evaluate(()=>{document.getElementById('message-list').scrollLeft=60;document.getElementById('message-list').scrollTop=220});
+ const scrolling=await page.locator('#message-list').evaluate(node=>({left:node.scrollLeft,top:node.scrollTop}));
+ for(const theme of ['light','dark']){
+  await page.evaluate(theme=>applyShellTheme(document.documentElement,theme,'#193C34'),theme);
+  for(const [layout,label] of [['right','Right preview'],['bottom','Bottom preview'],['window','Separate window']]){
+   await choose(label);assert.equal(await page.locator('#shell').getAttribute('data-mail-layout'),layout);assert.equal(await snapshot(),before);
+   const d=await dimensions();
+   if(layout==='right')assert.ok(d.reader.x>=d.messages.right,JSON.stringify(d));
+   if(layout==='bottom')assert.ok(d.reader.y>=d.messages.bottom&&Math.abs(d.reader.width-d.messages.width)<2,JSON.stringify(d));
+   if(layout==='window')assert.equal(await page.locator('#reader').isVisible(),false);
+   assert.ok(await page.evaluate(()=>{const b=document.getElementById('messages').getBoundingClientRect();return !document.elementFromPoint(b.x+1,b.y+1)?.closest('#messages')}),'table chrome must follow the rounded card');
+   await page.mouse.move(1400,940);await page.screenshot({path:path.join(output,`${layout}-${theme}.png`)});
+   await page.locator('#mail-view-open').press('ArrowDown');
+   const violations=await page.evaluate(async()=> (await axe.run({include:[['#mail-view-control'],['.split']]},{runOnly:{type:'tag',values:['wcag2a','wcag2aa']}})).violations.map(v=>v.id));assert.deepEqual(violations,[]);
+   if(theme==='light'&&layout==='right')await page.screenshot({path:path.join(output,'view-menu.png')});
+   await page.keyboard.press('Escape');assert.equal(await page.locator('#mail-view-open').evaluate(node=>node===document.activeElement),true);
+  }
+ }
+ await choose('Right preview');
+ assert.deepEqual(await page.locator('#message-list').evaluate(node=>({left:node.scrollLeft,top:node.scrollTop})),scrolling);
+ await choose('Bottom preview');
+ const handle=page.locator('[data-split="messages"]'),height=(await dimensions()).messages.height;
+ await handle.press('ArrowDown');assert.ok((await dimensions()).messages.height>height);
+ const box=await handle.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.move(box.x+box.width/2,box.y+box.height/2+30);await page.mouse.up();
+ assert.ok((await dimensions()).messages.height>height+24);
+ await page.locator('#search-scope summary').click();
+ await handle.press('ArrowUp');
+ await page.evaluate(()=>setPane('messages',200));
+ assert.ok(await page.evaluate(()=>{
+  const list=document.getElementById('message-list').getBoundingClientRect(),messages=document.getElementById('messages').getBoundingClientRect();
+  return list.height>=96&&list.bottom<=messages.bottom+1;
+ }),'expanded controls must leave a usable list inside the card');
+ await page.screenshot({path:path.join(output,'bottom-expanded-search.png')});
+ await page.locator('#search-scope summary').click();
+ const rightWidth=await page.evaluate(()=>state.prefs.layout.list);assert.equal(rightWidth,360);
+ await choose('Separate window');
+ const row=page.locator('button.message').first();await row.scrollIntoViewIfNeeded();
+ const seed=await row.evaluate(node=>({accountId:node.closest('.message-row').dataset.accountId,messageId:node.closest('.message-row').dataset.emailId}));
+ const reads=await page.evaluate(()=>requests.filter(r=>r.channel==='mail:openEmail'||r.channel==='mail:markRead').length);
+ await row.click();assert.equal(await page.evaluate(()=>popouts.length),0);assert.equal(await page.evaluate(()=>requests.filter(r=>r.channel==='mail:openEmail'||r.channel==='mail:markRead').length),reads);
+ await row.dblclick();assert.deepEqual(await page.evaluate(()=>popouts),[seed]);
+ await row.press('Enter');assert.deepEqual(await page.evaluate(()=>popouts),[seed,seed]);
+ await row.dblclick({modifiers:['Control']});assert.equal(await page.evaluate(()=>popouts.length),2);
+ for(const viewport of [{width:900,height:700},{width:640,height:800},{width:390,height:844}]){
+  await page.setViewportSize(viewport);
+  for(const [layout,label] of [['right','Right preview'],['bottom','Bottom preview'],['window','Separate window']]){
+   await choose(label);const d=await dimensions();assert.ok(d.messages.x>=0&&d.messages.right<=viewport.width,JSON.stringify({viewport,d}));
+   if(viewport.width<=800&&layout!=='window')assert.ok(d.reader.y>=d.messages.bottom,JSON.stringify(d));
+   const button=await page.locator('#mail-view-open').boundingBox();assert.ok(button.x>=0&&button.x+button.width<=viewport.width);
+   assert.ok(await page.locator('#message-list').evaluate(node=>node.scrollHeight>node.clientHeight));
+   if(viewport.width<=900)assert.ok(await page.locator('#message-list').evaluate(node=>node.scrollWidth>node.clientWidth));
+   await page.screenshot({path:path.join(output,`${layout}-${viewport.width}.png`)});
+  }
+ }
+ await page.emulateMedia({reducedMotion:'reduce'});await choose('Bottom preview');await choose('Separate window');
+}

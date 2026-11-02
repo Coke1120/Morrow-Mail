@@ -5656,7 +5656,10 @@ textarea { min-height: 140px; resize: vertical; }
 /* Fixed list chrome leaves one scroll surface for message rows. */
 #messages { display: flex; flex-direction: column; overflow: visible; }
 #message-list { flex: 1 1 auto; min-height: 64px; overflow: auto; }
-.list-head { position: static; flex: 0 0 auto; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); }
+.list-head { position: static; flex: 0 0 auto; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); border-radius: 16px 16px 0 0; }
+/* Clip the scrolling surface at the card's bottom, keeping Sync's popover free. */
+#message-list { border-radius: 0 0 16px 16px; }
+#messages:has(#list-paging:not([hidden])) #message-list { border-radius: 0; }
 .list-tools { gap: 4px; flex-wrap: wrap; }
 .list-tools .chips { padding: 0; gap: 2px; flex: 1; }
 .list-tools button.chip { padding: 0 8px; }
@@ -5968,6 +5971,52 @@ pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
 #messages #message-list .row-actions { top: auto; bottom: 0; transform: none; }
 
 #messages #message-list .outbox-row { padding-left: 28px; }
+
+/* The menu belongs to Mail's toolbar and stays above both preview panes. */
+.mail-view-control { position: relative; flex: 0 0 auto; z-index: 10; }
+.workspace[data-view]:not([data-view="mail"]) #mail-view-control { display: none; }
+.mail-view-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; width: 208px;
+  padding: 6px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--paper); color: var(--ink); box-shadow: var(--shadow-card);
+}
+.mail-view-menu[hidden] { display: none; }
+.mail-view-menu button {
+  display: block; width: 100%; min-height: 36px; padding: 6px 10px 6px 30px;
+  position: relative; border: 0; border-radius: 6px; background: transparent;
+  color: var(--ink); text-align: left; font-size: 13px;
+}
+.mail-view-menu button:hover, .mail-view-menu button:focus-visible { background: var(--hover); }
+.mail-view-menu [aria-checked="true"]::before { content: ""; position: absolute; left: 11px; top: 15px; width: 8px; height: 4px; border-left: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); }
+
+#shell[data-mail-layout="bottom"], #shell[data-mail-layout="window"] {
+  grid-template-columns: minmax(140px, min(var(--folders, 260px), max(140px, calc(100% - 360px)))) 8px minmax(240px, 1fr);
+}
+#shell[data-mail-layout="bottom"] {
+  grid-template-rows: minmax(var(--mail-list-min-height, 200px), min(var(--mail-list-height, 320px), calc(100% - 208px))) 8px minmax(180px, 1fr);
+  overflow: auto;
+}
+#shell[data-mail-layout="bottom"] > .side { grid-column: 1; grid-row: 1 / -1; }
+#shell[data-mail-layout="bottom"] > [data-split="folders"] { grid-column: 2; grid-row: 1 / -1; }
+#shell[data-mail-layout="bottom"] > #messages { grid-column: 3; grid-row: 1; }
+#shell[data-mail-layout="bottom"] > [data-split="messages"] { grid-column: 3; grid-row: 2; cursor: row-resize; }
+#shell[data-mail-layout="bottom"] > #reader { grid-column: 3; grid-row: 3; }
+#shell[data-mail-layout="bottom"] > [data-split="messages"]::after {
+  top: 3px; bottom: auto; left: 24px; right: 24px; width: auto; height: 2px;
+}
+#shell[data-mail-layout="window"] { grid-template-rows: minmax(var(--mail-list-min-height, 200px), 1fr); overflow: auto; }
+#shell[data-mail-layout="window"] > #reader, #shell[data-mail-layout="window"] > [data-split="messages"] { display: none; }
+
+@media (max-width: 800px) {
+  #shell[data-mail-layout] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 120px minmax(var(--mail-list-min-height, 200px), 1fr) minmax(180px, 1fr);
+    overflow: auto;
+  }
+  #shell[data-mail-layout] > .side, #shell[data-mail-layout] > #messages, #shell[data-mail-layout] > #reader { grid-column: 1; grid-row: auto; }
+  #shell[data-mail-layout="window"] { grid-template-rows: 120px minmax(var(--mail-list-min-height, 200px), 1fr); }
+  #mail-view-control { margin-left: 4px; }
+}
 
 /* First-use guide shares the shell's native dialog, theme, and motion. */
 #setup-guide { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }

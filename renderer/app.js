@@ -72,6 +72,7 @@ const state = {
     collapsedFolders: {},
     scheduleDelay: 0,
     layout: { folders: 260, list: 360, reading: 0 },
+    mailView: { layout: "right", listHeight: 320 },
     timeFormat: "system",
     dateFormat: "system",
   },
@@ -2871,17 +2872,176 @@ function applyLayoutPanes(value) {
   root.style.setProperty("--list", panes.list + "px");
 }
 
+let mailViewRevision = 0;
+let mailViewSave = Promise.resolve();
+let mailViewScrollScope = "";
+const mailViewScroll = new Map();
+const mailViewLabels = { right: "Right preview", bottom: "Bottom preview", window: "Separate window" };
+
+function mailViewPref(value) {
+  return {
+    layout: value && Object.hasOwn(mailViewLabels, value.layout) ? value.layout : "right",
+    listHeight: value && Number.isInteger(value.listHeight) && value.listHeight >= 200 && value.listHeight <= 1600 ? value.listHeight : 320,
+  };
+}
+
+function effectiveMailViewLayout() {
+  const layout = mailViewPref(state.prefs.mailView).layout;
+  return layout === "window" && state.outbox ? "bottom" : layout;
+}
+
+function mailListMinimumHeight() {
+  const head = $("list-head"), paging = $("list-paging");
+  return Math.min(1600, Math.max(200, Math.ceil((head ? head.getBoundingClientRect().height : 0)
+    + (paging && !paging.hidden ? paging.getBoundingClientRect().height : 0) + 96)));
+}
+
+function syncMailListMinimum() {
+  const shell = $("shell");
+  if (shell) shell.style.setProperty("--mail-list-min-height", mailListMinimumHeight() + "px");
+}
+
+function syncMailSplitterValues() {
+  const shell = $("shell");
+  if (!shell) return;
+  for (const handle of shell.querySelectorAll(".split")) {
+    const folders = handle.dataset.split === "folders";
+    const vertical = !folders && effectiveMailViewLayout() === "bottom";
+    const pane = folders ? sideColumn() : $("messages");
+    const min = vertical ? mailListMinimumHeight() : folders ? 140 : 200;
+    const max = vertical ? Math.max(min, Math.min(1600, shell.getBoundingClientRect().height - 200)) : folders ? 1600 : 2000;
+    const value = clampLayoutMeasure(pane.getBoundingClientRect()[vertical ? "height" : "width"], min, max, min);
+    handle.setAttribute("aria-controls", folders ? "side-mail" : "messages");
+    handle.setAttribute("aria-valuemin", String(min));
+    handle.setAttribute("aria-valuemax", String(max));
+    handle.setAttribute("aria-valuenow", String(value));
+    handle.setAttribute("aria-valuetext", value + (vertical ? " pixels high" : " pixels wide"));
+  }
+}
+
+function applyMailView() {
+  const shell = $("shell");
+  if (!shell || typeof shell.getBoundingClientRect !== "function" || isReaderWindow()) return;
+  const pref = mailViewPref(state.prefs.mailView);
+  const layout = effectiveMailViewLayout();
+  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox]);
+  if (mailViewScrollScope !== scope) { mailViewScroll.clear(); mailViewScrollScope = scope; }
+  const previous = shell.dataset.mailLayout, list = $("message-list");
+  const moving = previous && previous !== layout && list;
+  const position = moving ? { left: list.scrollLeft, top: list.scrollTop } : null;
+  if (moving) mailViewScroll.set(previous, position);
+  shell.dataset.mailLayout = layout;
+  shell.style.setProperty("--mail-list-height", pref.listHeight + "px");
+  if (previous !== layout) syncMailListMinimum();
+  if (moving) {
+    const restore = mailViewScroll.get(layout) || position;
+    list.scrollLeft = restore.left;
+    list.scrollTop = restore.top;
+  }
+  const handle = shell.querySelector('[data-split="messages"]');
+  if (handle) {
+    handle.setAttribute("aria-orientation", layout === "bottom" ? "horizontal" : "vertical");
+    handle.setAttribute("aria-label", layout === "bottom" ? "Resize message list height" : "Resize message list");
+  }
+  if (previous !== layout) syncMailSplitterValues();
+  const opener = $("mail-view-open");
+  if (opener) opener.title = "Reading layout: " + mailViewLabels[pref.layout];
+  for (const button of shell.ownerDocument.querySelectorAll("[data-mail-view]")) {
+    button.setAttribute("aria-checked", String(button.dataset.mailView === pref.layout));
+  }
+}
+
+async function loadMailView() {
+  const revision = mailViewRevision;
+  try {
+    const saved = await api.invoke("morrow:configGetMailView");
+    if (revision !== mailViewRevision) return;
+    state.prefs.mailView = mailViewPref(saved);
+    applyMailView();
+  } catch { /* Keep the current view if settings are unavailable. */ }
+}
+
+function saveMailView(pref) {
+  const revision = ++mailViewRevision;
+  state.prefs.mailView = mailViewPref(pref);
+  const saved = { ...state.prefs.mailView };
+  applyMailView();
+  mailViewSave = mailViewSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailView", saved));
+  mailViewSave.catch(() => {
+    if (revision === mailViewRevision) showStatus("Could not save the reading layout. Choose it again to keep it after restart.", true);
+  });
+  return mailViewSave;
+}
+
+function closeMailViewMenu(restoreFocus = false) {
+  const menu = $("mail-view-menu"), opener = $("mail-view-open");
+  if (!menu || !opener || menu.hidden) return;
+  menu.hidden = true;
+  opener.setAttribute("aria-expanded", "false");
+  if (restoreFocus) opener.focus({ preventScroll: true });
+}
+
+function wireMailView() {
+  const control = $("mail-view-control"), menu = $("mail-view-menu"), opener = $("mail-view-open");
+  if (!control || control.dataset.wired) return;
+  control.dataset.wired = "1";
+  const items = [...menu.querySelectorAll("[data-mail-view]")];
+  const open = (last = false) => {
+    menu.hidden = false;
+    opener.setAttribute("aria-expanded", "true");
+    (last ? items[items.length - 1] : items.find(item => item.getAttribute("aria-checked") === "true") || items[0]).focus();
+  };
+  opener.addEventListener("click", () => { if (menu.hidden) open(); else closeMailViewMenu(); });
+  opener.addEventListener("keydown", event => {
+    if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+    event.preventDefault();
+    open(event.key === "ArrowUp");
+  });
+  menu.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      event.preventDefault(); event.stopPropagation(); closeMailViewMenu(true); return;
+    }
+    const index = items.indexOf(document.activeElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+      : event.key === "ArrowDown" ? (index + 1) % items.length
+      : event.key === "ArrowUp" ? (index + items.length - 1) % items.length : -1;
+    if (next < 0) return;
+    event.preventDefault(); event.stopPropagation(); items[next].focus();
+  });
+  for (const item of items) item.addEventListener("click", () => {
+    saveMailView({ ...mailViewPref(state.prefs.mailView), layout: item.dataset.mailView }).catch(() => {});
+    closeMailViewMenu(true);
+  });
+  document.addEventListener("pointerdown", event => { if (!control.contains(event.target)) closeMailViewMenu(); });
+  control.addEventListener("focusout", event => { if (!control.contains(event.relatedTarget)) closeMailViewMenu(); });
+  if (typeof window.ResizeObserver === "function") {
+    const observer = new window.ResizeObserver(() => { syncMailListMinimum(); syncMailSplitterValues(); });
+    observer.observe($("list-head"));
+    observer.observe($("list-paging"));
+    observer.observe($("messages"));
+    observer.observe(sideColumn());
+  }
+  applyMailView();
+}
+
 function rememberLayoutPanes() {
   const side = sideColumn();
   const list = $("messages");
   const reader = $("reader");
   if (!side || !list || !reader || !api || typeof side.getBoundingClientRect !== "function") return;
-  const panes = measuredLayoutPanes(
+  let panes = measuredLayoutPanes(
     side.getBoundingClientRect().width,
     list.getBoundingClientRect().width,
     reader.getBoundingClientRect().width
   );
+  if (effectiveMailViewLayout() !== "right") {
+    panes = { ...layoutPanesPref(state.prefs.layout), folders: panes.folders };
+    if (effectiveMailViewLayout() === "bottom") {
+      saveMailView({ ...mailViewPref(state.prefs.mailView), listHeight: clampLayoutMeasure(list.getBoundingClientRect().height, 200, 1600, 320) }).catch(() => {});
+    }
+  }
   state.prefs.layout = panes;
+  syncMailSplitterValues();
   clearTimeout(layoutSaveTimer);
   layoutSaveTimer = setTimeout(() => {
     layoutSaveTimer = null;
@@ -6493,12 +6653,23 @@ function messageRow(email) {
     }
     const mods = { shift: event.shiftKey, meta: event.metaKey, ctrl: event.ctrlKey };
     const visible = shownEmails().map((item) => item && item.id);
-    commitSelection(listClickSelection(state.selectedIds, state.selectionAnchor, visible, email.id, mods));
+    const selecting = effectiveMailViewLayout() === "window" && !mods.shift && !mods.meta && !mods.ctrl;
+    commitSelection(selecting ? { ids: [String(email.id)], anchor: String(email.id) }
+      : listClickSelection(state.selectedIds, state.selectionAnchor, visible, email.id, mods));
     if (mods.shift || mods.meta || mods.ctrl) {
       event.preventDefault();
       return;
     }
+    if (effectiveMailViewLayout() === "window") {
+      if (event.detail === 0) openSenderReader(row.mailMessage);
+      return;
+    }
     openMessage(email.id).catch((error) => showStatus(error.message, true));
+  });
+  button.addEventListener("dblclick", (event) => {
+    if (email.outbox || effectiveMailViewLayout() !== "window" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    event.preventDefault();
+    openSenderReader(row.mailMessage);
   });
   const actions = document.createElement("div");
   actions.className = "row-actions";
@@ -6735,6 +6906,7 @@ async function reviewedRemoval(messages, kind) {
 }
 
 function renderList() {
+  applyMailView();
   paintSyncControl();
   paintListPaging();
   rememberLoadedSelection();
@@ -16196,10 +16368,17 @@ function setPane(which, width, geometry) {
   const total = geometry?.total ?? shell.getBoundingClientRect().width;
   const folders = geometry?.folders ?? sideColumn().getBoundingClientRect().width;
   const list = geometry?.list ?? $("messages").getBoundingClientRect().width;
+  const layout = effectiveMailViewLayout();
+  if (which === "messages" && layout === "bottom") {
+    const height = geometry?.height ?? shell.getBoundingClientRect().height;
+    const min = mailListMinimumHeight();
+    shell.style.setProperty("--mail-list-height", Math.round(paneWidth(width, 0, min, Math.max(min, height - 200))) + "px");
+    return;
+  }
   const readerMin = 260;
   const handle = 12;
   if (which === "folders") {
-    const max = Math.max(140, total - list - readerMin - handle);
+    const max = Math.max(140, total - (layout === "right" ? list + readerMin : 280) - handle);
     document.documentElement.style.setProperty("--folders", `${Math.round(paneWidth(width, 0, 140, max))}px`);
     return;
   }
@@ -16210,26 +16389,29 @@ function setPane(which, width, geometry) {
 function wireSplits() {
   for (const handle of document.querySelectorAll(".split")) {
     handle.addEventListener("keydown", (event) => {
-      const step = event.key === "ArrowRight" ? 24 : event.key === "ArrowLeft" ? -24 : 0;
+      const vertical = handle.dataset.split === "messages" && effectiveMailViewLayout() === "bottom";
+      const step = event.key === (vertical ? "ArrowDown" : "ArrowRight") ? 24 : event.key === (vertical ? "ArrowUp" : "ArrowLeft") ? -24 : 0;
       if (!step) return;
       event.preventDefault();
       event.stopPropagation();
       const pane = handle.dataset.split === "folders" ? sideColumn() : $("messages");
-      setPane(handle.dataset.split, pane.getBoundingClientRect().width + step);
+      setPane(handle.dataset.split, pane.getBoundingClientRect()[vertical ? "height" : "width"] + step);
       rememberLayoutPanes();
     });
     handle.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
       const which = handle.dataset.split;
-      const startX = event.clientX;
-      const start = (which === "folders" ? sideColumn() : $("messages")).getBoundingClientRect().width;
+      const vertical = which === "messages" && effectiveMailViewLayout() === "bottom";
+      const startX = vertical ? event.clientY : event.clientX;
+      const start = (which === "folders" ? sideColumn() : $("messages")).getBoundingClientRect()[vertical ? "height" : "width"];
       const geometry = { total: document.querySelector(".shell").getBoundingClientRect().width,
-        folders: sideColumn().getBoundingClientRect().width, list: $("messages").getBoundingClientRect().width };
+        folders: sideColumn().getBoundingClientRect().width, list: $("messages").getBoundingClientRect().width,
+        height: document.querySelector(".shell").getBoundingClientRect().height };
       let frame = 0, nextWidth = start;
       const paint = () => { frame = 0; setPane(which, nextWidth, geometry); };
       function move(ev) {
-        nextWidth = start + ev.clientX - startX;
+        nextWidth = start + (vertical ? ev.clientY : ev.clientX) - startX;
         if (!frame) frame = requestAnimationFrame(paint);
       }
       function stop() {
@@ -16579,6 +16761,7 @@ async function loadShellPrefs() {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
   }
+  next.mailView = state.prefs.mailView;
   state.prefs = next;
   applyLook(next);
   applyLayoutPanes(next.layout);
@@ -25176,6 +25359,7 @@ function wire() {
   wireGoogleOnboarding();
   wireSetupGuide();
   wireMailColumnEditor();
+  wireMailView();
   wireSettingsFolds();
   wireAgentTabs();
   wireAgentTodoView();
@@ -26063,6 +26247,7 @@ async function boot() {
   await loadPresets();
   await loadOauthStatus();
   await loadShellPrefs();
+  await loadMailView();
   await loadMailColumnOrder();
   await loadAccounts();
   notificationShellReady = true;
