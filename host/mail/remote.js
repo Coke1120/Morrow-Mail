@@ -400,6 +400,8 @@ async function readFetched(msg, validity, cap) {
     bcc: formatList(envelope.bcc),
     recipientHeaders: require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo),
     date: when.toISOString(),
+    receivedAt: msg.internalDate instanceof Date && Number.isFinite(msg.internalDate.getTime()) ? msg.internalDate.getTime() : null,
+    sentAt: envelope.date instanceof Date && Number.isFinite(envelope.date.getTime()) ? envelope.date.getTime() : null,
     listSortTs: when.getTime(),
     unread: !seen,
     starred: !!(flags && flags.has("\\Flagged")),

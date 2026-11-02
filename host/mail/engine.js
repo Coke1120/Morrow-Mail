@@ -12,6 +12,7 @@ const virtuals = require("./virtual-folders");
 const presets = require("./presets");
 const discovery = require("./discovery");
 const remote = require("./remote");
+const notifications = require("./notifications");
 const zipBytes = require("./zip-bytes");
 const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
@@ -1035,6 +1036,13 @@ async function warmFolder(client, account, folder, started, days, limits) {
     const page = fresh.slice(0, REFRESH_PAGES[index]);
     const fetched = await remote.fetchMessages(client, folder.path, page);
     assertAccountCurrent(account);
+    const arrivals = folder.well_known === "inbox" && Number(fetched.validity || found.validity) === Number(folder.uid_validity)
+      ? fetched.messages.filter(message => {
+        if (db.messageByUid(account.id, folder.path, message.uid, folder.uid_validity, { headersOnly: true })) return false;
+        const known = message.rfcMessageId && db.messageByRfc(account.id, message.rfcMessageId, { headersOnly: true });
+        // Gmail IMAP's All Mail can sync before Inbox for the same delivery.
+        return !known || db.folderByPath(account.id, known.folder_path)?.well_known === "all";
+      }) : [];
     next = Math.max(next, ...page);
     await db.applyFolderSyncAsync(account.id, folder.path, {
       messages: fetched.messages,
@@ -1062,6 +1070,10 @@ async function warmFolder(client, account, folder, started, days, limits) {
         });
       }
     }
+    notifications.enqueue(account, arrivals.flatMap(message => {
+      const row = db.messageByUid(account.id, folder.path, message.uid, folder.uid_validity, { headersOnly: true });
+      return row ? [{ messageId: row.id, identity: `imap:${folder.path}:${folder.uid_validity}:${message.uid}`, receivedAt: message.receivedAt, sentAt: message.sentAt }] : [];
+    }));
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
     if (fresh.length > REFRESH_PAGES[index]) backlog = true;
     if (fresh.length <= REFRESH_PAGES[index]) break;
@@ -1128,6 +1140,7 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
       const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: gmailPace.SYNC_PAGE,
         deadline: bounds.deadline, shouldYield: () => priorityWaiting(account.id) });
       assertAccountCurrent(account);
+      notifications.enqueue(account, result.arrivals || []);
       clearStrikes(account.id);
       emitFolderSync(account.id, folderPath, result.bootstrapped);
       broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folderPath, folderIds: [folderPath] });
@@ -1905,6 +1918,7 @@ async function connectAccount(params) {
 }
 
 function invalidateAttachmentAccount(id) {
+  notifications.invalidate(id);
   accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
   overnightCursor = null;
   const error = removedAccountError();
@@ -4090,7 +4104,9 @@ function answer(channel, args, event) {
     case "mail:getUnifiedCategorySettings":
       return ok({ enabled: true });
     case "mail:getNotificationSettings":
-      return ok({ enhanced_notifications_enabled: false });
+      return ok({ ...notifications.status(), enhanced_notifications_enabled: false });
+    case "mail:takeNotificationTarget":
+      return ok(notifications.takeTarget());
     case "mail:getNotificationBadgeCount":
       return ok(accountViews().reduce((sum, item) => sum + item.unreadCount, 0));
     case "mail:listFailedDraftIds":

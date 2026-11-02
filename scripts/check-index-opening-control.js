@@ -18,6 +18,7 @@ async function bootControls(source = fs.readFileSync(path.join(__dirname, "../ho
     const context = {
       interactiveBoot: true, bootWindow: null, bootFinished: false, bootFailed: false, bootCancelled: false, startupContinued: false,
       process: { env: {}, platform: process.platform }, console, Date: { now: () => now }, startupProgressScript,
+      mailNotifications: { stop() {} },
       startupStatusHtml: () => "<html>synthetic opening window</html>", initMail: () => load.promise,
       presentBootFailure: async () => { calls.errors++; context.bootFailed = true; }, onBootRejection() {},
       listScheduledRows: () => pendingMail ? [{ status: "pending", subject: "Synthetic scheduled mail", sendAt: "2026-11-01T00:00:00Z" }] : [],

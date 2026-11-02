@@ -67,6 +67,8 @@ const state = {
     quoteWidth: 420,
     syncHorizon: 0,
     compactList: true,
+    mailNotifications: true,
+    mailNotificationPreview: "hidden",
     collapsedFolders: {},
     scheduleDelay: 0,
     layout: { folders: 260, list: 360, reading: 0 },
@@ -15842,6 +15844,44 @@ function onMenuAction(payload) {
   if (action === "new-mail" || action === "settings") runMailShortcut(action);
 }
 
+let notificationShellReady = false;
+let notificationNavigationGen = 0;
+async function onMailNotificationClick() {
+  if (!notificationShellReady) return;
+  const gen = ++notificationNavigationGen;
+  try {
+    const target = await call("mail:takeNotificationTarget");
+    const validId = value => typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value);
+    if (gen !== notificationNavigationGen || !target || !validId(target.accountId) || !validId(target.folderId)
+      || (target.messageId !== null && !validId(target.messageId))) return;
+    if (!state.accounts.some(account => account.id === target.accountId)) await loadAccounts();
+    if (gen !== notificationNavigationGen || !state.accounts.some(account => account.id === target.accountId)) return;
+    showMail();
+    await selectFolder(target.accountId, target.folderId);
+    if (gen !== notificationNavigationGen || state.accountId !== target.accountId || state.folderId !== target.folderId) return;
+    if (target.messageId) await openMessage(target.messageId);
+    else showStatus("That message is no longer available. Its Inbox is open.");
+  } catch {
+    if (gen === notificationNavigationGen) showStatus("That notification's message is no longer available. Refresh the mailbox to check.", true);
+  }
+}
+
+async function refreshMailNotificationStatus() {
+  const node = $("mail-notification-status");
+  if (!node) return;
+  try {
+    const result = await call("mail:getNotificationSettings");
+    const labels = {
+      disabled: "System notifications are off in Morrow Mail.",
+      unsupported: "Native notifications are unavailable in this environment. Use an installed Windows or macOS build.",
+      failed: "The last notification could not be shown. Check system notification permissions. It will not be retried.",
+      "storage-error": "Notifications paused because local delivery history could not be saved. Check storage, then restart Morrow Mail.",
+      ready: "System notifications are enabled. Your system controls permission, Focus / Do Not Disturb and delivery.",
+    };
+    node.textContent = labels[result?.state] || "Your system controls notification delivery.";
+  } catch { node.textContent = "Notification status is unavailable. Check system notification settings."; }
+}
+
 function cliCopyIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -16476,6 +16516,7 @@ function sendDelayMs(seconds) {
 }
 
 const SHELL_PREFS = {
+  "morrow:configGetMailNotificationsEnabled": "mailNotifications",
   "morrow:configGetCompactMessageList": "compactList",
   "morrow:configGetShowFolderChips": "chips",
   "morrow:configGetAiWriteAutoOpenOnReply": "aiReply",
@@ -16523,6 +16564,7 @@ async function loadShellPrefs() {
     next.undoSend = sendDelayMs(await api.invoke("morrow:configGetUndoSendDelaySeconds")) / 1000;
     next.quoteWidth = quoteWidthPref(await api.invoke("morrow:configGetComposeQuoteWidth"));
     next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
+    next.mailNotificationPreview = await api.invoke("morrow:configGetMailNotificationPreview") || "hidden";
     next.scheduleDelay = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
     next.layout = layoutPanesPref(await api.invoke("morrow:configGetLayoutPanes"));
     const formats = typeof morrowDisplayFormat === "object" && morrowDisplayFormat ? morrowDisplayFormat : null;
@@ -16559,6 +16601,10 @@ function refreshReader() {
 }
 
 function takePref(getChannel, kind, control) {
+  if (getChannel === "morrow:configGetMailNotificationPreview") {
+    state.prefs.mailNotificationPreview = readPref(kind, control);
+    return false;
+  }
   const key = SHELL_PREFS[getChannel] || READER_PREFS[getChannel];
   if (key) {
     state.prefs[key] = control.checked === true;
@@ -16719,6 +16765,8 @@ async function collapseAllFolders() {
 
 function prefRows() {
   return [
+    ["pref-mail-notifications", "morrow:configGetMailNotificationsEnabled", "morrow:configSetMailNotificationsEnabled", "bool"],
+    ["pref-mail-notification-preview", "morrow:configGetMailNotificationPreview", "morrow:configSetMailNotificationPreview", "select"],
     ["pref-theme", "config:getTheme", "config:setTheme", "select"],
     ["pref-accent", "morrow:configGetAccent", "morrow:configSetAccent", "text"],
     ["pref-time-format", "morrow:configGetTimeFormat", "morrow:configSetTimeFormat", "select"],
@@ -16773,6 +16821,7 @@ async function loadSettings() {
   // Boot and preference writes already maintain this snapshot. Opening a dialog
   // must not repeat preference IPC reads or load closed provider/AI/Bot tabs.
   const keys = { ...SHELL_PREFS, ...READER_PREFS, "config:getTheme": "theme",
+    "morrow:configGetMailNotificationPreview": "mailNotificationPreview",
     "morrow:configGetAccent": "accent", "morrow:configGetUndoSendDelaySeconds": "undoSend",
     "morrow:configGetSyncHorizonDays": "syncHorizon",
     "morrow:configGetTimeFormat": "timeFormat", "morrow:configGetDateFormat": "dateFormat",
@@ -16903,6 +16952,7 @@ function loadSettingsFold(name) {
   const key = settingsFoldKey(name);
   if (settingsFoldLoaded.has(key)) {
     if (name === "compose") return loadComposeSettings();
+    if (name === "mail") return refreshMailNotificationStatus();
     return Promise.resolve();
   }
   if (settingsFoldPending.has(key)) return settingsFoldPending.get(key);
@@ -16914,7 +16964,10 @@ function loadSettingsFold(name) {
     panel.inert = true;
     panel.setAttribute("aria-busy", "true");
     setSettingsFoldLoading(fold, settingsFoldLoadingLabels[name] || "Loading…");
-    if (name === "prefs" || name === "mail") await loadSettings();
+    if (name === "prefs" || name === "mail") {
+      await loadSettings();
+      if (name === "mail") await refreshMailNotificationStatus();
+    }
     else if (name === "ai") {
       await loadSettings();
       if (settingsFoldPending.get(key) !== pending || !$("settings").open) return;
@@ -17521,6 +17574,7 @@ async function savePref(row) {
     } else {
       setPrefSaveStatus(id, edited ? "Saved. Newer edits are not saved yet." : "Saved.", false);
     }
+    if (id === "pref-mail-notifications" || id === "pref-mail-notification-preview") await refreshMailNotificationStatus();
   } catch (error) {
     if (serial !== prefWriteSerial.get(id)) return;
     const message = error instanceof Error ? error.message : String(error);
@@ -25969,6 +26023,7 @@ async function boot() {
     if (state.view === "agent") paintAgent(payload, "");
   });
   api.on("mail:emailsUpdated", onEmailsUpdated);
+  api.on("mail:notificationClicked", onMailNotificationClick);
   api.on("mail:bodyUpdated", applyBodyUpdate);
   api.on("mail:bodySyncStatus", acceptBodySync);
   api.on("mail:actionsSettled", applyActionSettlement);
@@ -26009,6 +26064,8 @@ async function boot() {
   await loadShellPrefs();
   await loadMailColumnOrder();
   await loadAccounts();
+  notificationShellReady = true;
+  await onMailNotificationClick();
   applyFeaturesHash();
   await startSetupGuide();
   loadScheduled().catch(() => {});
