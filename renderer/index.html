@@ -204,10 +204,11 @@
             <label class="page-select" title="Select messages shown on this page"><input type="checkbox" id="select-visible" aria-label="Select messages shown on this page" /></label>
             <label class="sr" for="list-filter">Filter loaded messages</label>
             <input id="list-filter" data-testid="list-filter" type="search" aria-describedby="list-filter-help" placeholder="Filter this page" autocomplete="off" spellcheck="false" />
+            <button type="button" class="ghost" id="mail-columns-open" aria-haspopup="dialog">Columns</button>
             <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>
         </div>
-        <p id="mail-sort-help" class="sr">Click Date, Recipient, Sender or Subject to sort all downloaded mail before paging; click again to reverse. Recipient sorts by the first To recipient. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order.</p>
+        <p id="mail-sort-help" class="sr">Drag Date, Recipient, Sender or Subject to reorder columns, or use Columns / Alt + Left or Right. Click to sort all downloaded mail before paging; click again to reverse. Recipient sorts by the first To recipient. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order.</p>
         <div id="message-list" tabindex="0" aria-label="Downloaded messages" aria-describedby="mail-sort-help"></div>
           <div id="list-paging" class="list-paging" role="group" aria-label="Message pages" hidden>
             <p id="list-page-status" class="list-filter-note" role="status"></p>
@@ -662,6 +663,15 @@
         <p id="changelog-version" class="hint"></p>
         <ul id="changelog-notes"></ul>
         <div class="row"><button type="button" class="primary" id="changelog-ok">OK</button></div>
+      </div>
+    </dialog>
+    <dialog id="mail-columns" aria-labelledby="mail-columns-title" aria-describedby="mail-columns-help">
+      <div class="dialog-body">
+        <div class="sheet-head"><h2 id="mail-columns-title">Mail columns</h2><button type="button" class="ghost" id="mail-columns-close">Close</button></div>
+        <p id="mail-columns-help">Drag a column header to reorder it, or use these buttons. You can also focus a header and press Alt + Left or Right. Click a header to sort. The same layout is used across mailboxes and search.</p>
+        <ol id="mail-columns-order"></ol>
+        <button type="button" class="ghost" id="mail-columns-reset">Reset column order</button>
+        <p id="mail-columns-status" role="status" aria-live="polite"></p>
       </div>
     </dialog>
     <dialog id="setup-guide" aria-labelledby="setup-guide-title" aria-describedby="setup-guide-help">
@@ -1732,6 +1742,7 @@
     <script src="../shared/changelog.js"></script>
     <script src="./chatgpt-settings.js"></script>
     <script src="./ai-provider-indicator.js"></script>
+    <script src="../shared/mail-columns.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

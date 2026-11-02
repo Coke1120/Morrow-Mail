@@ -310,11 +310,12 @@ async function run() {
     ui.context.testAccounts = await ask("mail:listAccounts");
     ui.run(`state.accounts = testAccounts; state.allInbox = true; call = testCall;
       renderList = () => {}; noteMailListLoaded = () => {}; noteUnreadScope = () => {};`);
+    const testAggregateUnread = accounts => accounts.reduce((sum, account) => sum + account.folders.primary.find(row => row.id === "__morrow_unread__").totalCount, 0);
     const chrome = document.createElement("div");
-    chrome.innerHTML = '<button class="all-inbox"></button><button class="all-account-unread"></button>';
+    chrome.innerHTML = '<button class="all-inbox"></button><button class="all-unread"><span class="count"></span></button>';
     ui.context.testChrome = chrome;
     ui.run("applyAllAccountMailChrome(testChrome)");
-    assert.equal(chrome.querySelector(".all-account-unread").textContent, "Unread " + db.countMessages({ folderKey: "primary", filterUnread: true }));
+    assert.equal(Number(chrome.querySelector(".all-unread .count").textContent), testAggregateUnread(ui.context.testAccounts));
     await ui.run("loadList(false, 0)");
     await ui.run("changeListPage(1)");
     assert.equal(ui.run("state.listOffset"), 200);

@@ -152,7 +152,7 @@ assert.match(adr, /Status: Accepted and implemented/);
 for (const file of ["docs/INDEPENDENT_UI.md", "docs/PARITY_SHELL.md"]) {
   const text = fs.readFileSync(path.join(root, file), "utf8");
   assert.match(text, /Opening an unread message keeps that row/);
-  assert.match(text, /All Account Mail Unread chip follows the same rule/);
+  assert.match(text, /All Account Mail Unread row follows the same rule/);
 }
 
 console.log("unread filter hold checks passed");

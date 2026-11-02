@@ -5,6 +5,8 @@ const state = {
   accountId: null,
   allInbox: false,
   allInboxUnreadOnly: false,
+  allInboxStarredOnly: false,
+  mailColumnOrder: ["date", "recipient", "sender", "subject"],
   outbox: false,
   outboxRows: [],
   outboxError: "",
@@ -575,7 +577,8 @@ function allAccountMailLabel() {
   return "All Account Mail";
 }
 
-function allAccountMailTitle(unreadOnly) {
+function allAccountMailTitle(unreadOnly, starredOnly) {
+  if (starredOnly) return "All Account Mail · Starred";
   return unreadOnly ? "All Account Mail · Unread" : "All Account Mail";
 }
 
@@ -583,7 +586,8 @@ function allAccountMailSyncCopy() {
   return "All Account Mail shows mail already downloaded. Open Gmail All Mail, or Inbox for another account, to sync that account.";
 }
 
-function allAccountMailEmptyCopy(unreadOnly) {
+function allAccountMailEmptyCopy(unreadOnly, starredOnly) {
+  if (starredOnly) return "No starred messages in the mail already downloaded across your accounts.";
   if (unreadOnly) return "No unread messages in All Account Mail.";
   return "No downloaded messages in All Account Mail. Open Gmail All Mail, or Inbox for another account, and use Sync to download recent mail.";
 }
@@ -647,6 +651,109 @@ function allAccountMailChoice(current, control) {
   return { allInbox: true, unreadOnly: false };
 }
 
+let mailColumnDrag = null;
+let mailColumnClickUntil = 0;
+let mailColumnSave = Promise.resolve();
+let mailColumnRevision = 0;
+const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject" };
+function mailColumnOrder() {
+  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder : ["date", "recipient", "sender", "subject"];
+}
+function cancelMailColumnDrag() {
+  if (mailColumnDrag) mailColumnClickUntil = Date.now() + 300;
+  mailColumnDrag = null;
+  for (const cell of document.querySelectorAll(".mail-column-drop")) cell.classList.remove("mail-column-drop");
+}
+async function loadMailColumnOrder() {
+  const revision = mailColumnRevision;
+  try {
+    const saved = await api.invoke("morrow:configGetMailColumnOrder");
+    if (revision !== mailColumnRevision) return;
+    state.mailColumnOrder = window.morrowMailColumns.normalize(saved);
+  } catch { /* Keep the default layout if settings are unavailable. */ }
+}
+function changeMailColumnOrder(order) {
+  const next = window.morrowMailColumns.normalize(order);
+  state.mailColumnOrder = next;
+  const revision = ++mailColumnRevision;
+  cancelMailColumnDrag();
+  renderList();
+  paintMailColumnEditor();
+  const message = "Column order: " + next.map(key => mailColumnLabels[key]).join(", ") + ".";
+  $("mail-columns-status").textContent = message;
+  showStatus(message);
+  mailColumnSave = mailColumnSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailColumnOrder", next));
+  mailColumnSave.catch(() => { if (revision !== mailColumnRevision) return; $("mail-columns-status").textContent = "Could not save the column order. This window keeps your layout; try again to save it."; showStatus("Could not save the column order. Try again to keep it after restart.", true); });
+  return mailColumnSave;
+}
+function moveMailColumn(key, direction) {
+  const order = mailColumnOrder(), index = order.indexOf(key), target = order[index + direction];
+  if (!target) return;
+  changeMailColumnOrder(window.morrowMailColumns.move(order, key, target, direction > 0)).catch(() => {});
+}
+function wireMailColumnHeader(cell, button, key) {
+  button.draggable = true;
+  button.addEventListener("dragstart", event => {
+    cancelMailColumnDrag();
+    mailColumnDrag = key;
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-morrow-mail-column", key);
+  });
+  button.addEventListener("dragend", cancelMailColumnDrag);
+  cell.addEventListener("dragover", event => {
+    if (!mailColumnDrag) return;
+    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move";
+    cell.classList.add("mail-column-drop");
+  });
+  cell.addEventListener("dragleave", () => cell.classList.remove("mail-column-drop"));
+  cell.addEventListener("drop", event => {
+    const source = mailColumnDrag;
+    if (!source || event.dataTransfer.getData("application/x-morrow-mail-column") !== source) return;
+    event.preventDefault(); event.stopPropagation();
+    const rect = cell.getBoundingClientRect();
+    const next = window.morrowMailColumns.move(mailColumnOrder(), source, key, event.clientX > rect.left + rect.width / 2);
+    cancelMailColumnDrag();
+    changeMailColumnOrder(next).catch(() => {});
+  });
+  button.addEventListener("keydown", event => {
+    if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); return; }
+    if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    moveMailColumn(key, event.key === "ArrowLeft" ? -1 : 1);
+    document.querySelector(`[data-sort-key="${key}"] button`)?.focus();
+  });
+}
+function paintMailColumnEditor() {
+  const root = $("mail-columns-order");
+  if (!root || !$("mail-columns").open) return;
+  root.replaceChildren();
+  mailColumnOrder().forEach((key, index, order) => {
+    const row = document.createElement("li"), label = document.createElement("span");
+    label.textContent = mailColumnLabels[key]; row.append(label);
+    for (const direction of [-1, 1]) {
+      const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
+      button.textContent = direction < 0 ? "Move left" : "Move right";
+      button.setAttribute("aria-label", `${button.textContent}: ${mailColumnLabels[key]}`);
+      button.dataset.column = key; button.dataset.direction = direction;
+      button.disabled = index + direction < 0 || index + direction >= order.length;
+      button.addEventListener("click", () => {
+        moveMailColumn(key, direction);
+        const candidates = [...root.querySelectorAll("button")].filter(node => node.dataset.column === key && !node.disabled);
+        (candidates.find(node => node.dataset.direction === String(direction)) || candidates[0])?.focus();
+      });
+      row.append(button);
+    }
+    root.append(row);
+  });
+}
+function wireMailColumnEditor() {
+  $("mail-columns-open").addEventListener("click", () => { openDialog("mail-columns"); paintMailColumnEditor(); });
+  $("mail-columns-close").addEventListener("click", () => closeDialog("mail-columns"));
+  $("mail-columns-reset").addEventListener("click", () => changeMailColumnOrder(window.morrowMailColumns.defaults).catch(() => {}));
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); } });
+}
+
 function readMailListSort() {
   try {
     const saved = JSON.parse(localStorage.getItem("morrow.mailListSort"));
@@ -684,13 +791,21 @@ function paintMailListColumns(list) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.label = label;
-      button.addEventListener("click", () => guard(() => changeMailListSort(key)));
+      button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil) guard(() => changeMailListSort(key)); });
+      wireMailColumnHeader(cell, button, key);
       cell.appendChild(button);
       row.appendChild(cell);
     }
     header.appendChild(row);
     list.prepend(header);
   }
+  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)" };
+  list.style.setProperty("--mail-columns", mailColumnOrder().map(key => widths[key]).join(" "));
+  const headerRow = header.querySelector('[role="row"]');
+  mailColumnOrder().forEach((key, index) => {
+    const cell = header.querySelector(`[data-sort-key="${key}"]`);
+    if (headerRow.children[index] !== cell) headerRow.insertBefore(cell, headerRow.children[index] || null);
+  });
   for (const cell of header.querySelectorAll("[data-sort-key]")) {
     const active = !state.outbox && cell.dataset.sortKey === state.listSort.sortBy;
     const ascending = state.listSort.sortDirection === "asc";
@@ -698,7 +813,7 @@ function paintMailListColumns(list) {
     const button = cell.querySelector("button");
     button.disabled = state.outbox;
     button.textContent = button.dataset.label + (active ? (ascending ? " ↑" : " ↓") : "");
-    button.title = state.outbox ? "Outbox uses scheduled send order" : "Sort downloaded mail by " + button.dataset.label.toLowerCase();
+    button.title = state.outbox ? "Outbox uses scheduled send order. Use Columns to change the layout." : "Click to sort by " + button.dataset.label.toLowerCase() + ". Drag to reorder, or press Alt + Left / Right.";
     button.setAttribute("aria-label", button.dataset.label + (active ? (ascending ? ", ascending. Sort descending" : ", descending. Sort ascending") : ". Sort " + (cell.dataset.sortKey === "date" ? "descending" : "ascending")));
   }
   return header;
@@ -720,6 +835,11 @@ function mailListRequest(view) {
   }
   const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
+  if (source.allInbox && (source.aggregateView === "starred" || source.aggregateView === "unread")) {
+    const params = { aggregateView: source.aggregateView, limit, offset, ...(source.listSort || {}) };
+    if (retainId && source.aggregateView === "unread") params.retainIds = [retainId];
+    return { channel: "mail:listFromCache", params };
+  }
   if (source.allInbox) {
     const params = { folderKey: "primary", limit, offset, ...(source.listSort || {}) };
     if (source.pageCursor) params.pageCursor = source.pageCursor;
@@ -4356,21 +4476,39 @@ function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
   return nest;
 }
 
+function aggregateFlagCount(kind) {
+  return state.accounts.reduce((sum, account) => {
+    const folder = foldersOf(account).find(row => row.type === "virtual" && (kind === "starred" ? row.view?.flagged === true : row.view?.unread === true));
+    const count = Number(folder?.totalCount);
+    return sum + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0);
+  }, 0);
+}
 function applyAllAccountMailChrome(root) {
   if (!root || typeof root.querySelector !== "function") return;
-  const current = !!state.allInbox;
-  const inbox = root.querySelector("button.all-inbox");
-  if (inbox) {
-    if (current) inbox.setAttribute("aria-current", "true");
-    else inbox.removeAttribute("aria-current");
+  for (const kind of ["inbox", "starred", "unread"]) {
+    const button = root.querySelector("button.all-" + kind);
+    if (!button) continue;
+    const current = state.allInbox && (kind === "unread" ? state.allInboxUnreadOnly : kind === "starred" ? state.allInboxStarredOnly : !state.allInboxUnreadOnly && !state.allInboxStarredOnly);
+    if (current) button.setAttribute("aria-current", "true"); else button.removeAttribute("aria-current");
+    const count = button.querySelector(".count");
+    if (count) count.textContent = String(aggregateFlagCount(kind));
   }
-  const chip = root.querySelector("button.all-account-unread");
-  if (!chip) return;
-  const model = allAccountUnreadChip(allInboxUnread(state.accounts), current && !!state.allInboxUnreadOnly);
-  chip.textContent = model.text;
-  chip.title = model.label;
-  chip.setAttribute("aria-label", model.label);
-  chip.setAttribute("aria-pressed", model.pressed ? "true" : "false");
+}
+function allAccountFlagRow(kind) {
+  const line = document.createElement("div"); line.className = "folder-line";
+  const indent = document.createElement("span"); indent.className = "folder-indent"; indent.style.width = "14px"; indent.setAttribute("aria-hidden", "true");
+  const button = document.createElement("button"); button.type = "button"; button.className = "folder all-" + kind;
+  button.setAttribute("data-testid", "all-account-" + kind);
+  const label = document.createElement("span"); label.className = "folder-label";
+  const icon = document.createElement("span"); icon.className = "folder-icon"; icon.setAttribute("aria-hidden", "true"); icon.textContent = folderIcon(kind);
+  const name = document.createElement("span"); name.className = "name"; name.textContent = kind === "starred" ? "Starred" : "Unread";
+  label.append(icon, name);
+  const count = document.createElement("span"); count.className = "count";
+  button.append(label, count);
+  button.title = kind === "unread" ? "Unread downloaded mail across accounts, excluding Sent, Drafts, Trash, Spam and snoozed messages." : "Starred downloaded mail across accounts.";
+  markFolderNav(button, { key: "all-" + kind, kind: "aggregate", parent: "all" });
+  button.addEventListener("click", () => { folderNavKey = "all-" + kind; selectAllInbox(kind === "unread", kind === "starred").catch(error => showStatus(error.message, true)); });
+  line.append(indent, button); applyAllAccountMailChrome(line); return line;
 }
 
 function allAccountMailRow(open, hasChild, filtering) {
@@ -4436,18 +4574,7 @@ function allAccountInboxRow() {
     const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "mail");
     selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
-  const chip = document.createElement("button");
-  chip.type = "button";
-  chip.className = "count all-account-unread";
-  chip.setAttribute("data-testid", "all-account-unread");
-  chip.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    folderNavKey = "inbox";
-    const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "unread");
-    selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
-  });
-  line.append(indent, button, chip);
+  line.append(indent, button);
   applyAllAccountMailChrome(line);
   return line;
 }
@@ -4746,7 +4873,9 @@ function renderAccounts() {
   const filtering = !!folderQuery;
   const inboxMatch = inboxMatches(folderQuery);
   const outboxMatch = outboxMatches(folderQuery);
-  const sectionHasChild = filtering ? (inboxMatch || outboxMatch) : true;
+  const starredMatch = !folderQuery || "starred".includes(folderQuery);
+  const unreadMatch = !folderQuery || "unread".includes(folderQuery);
+  const sectionHasChild = filtering ? (inboxMatch || outboxMatch || starredMatch || unreadMatch) : true;
   const sectionOpen = filtering ? sectionHasChild : allAccountSectionOpen();
   const showSection = allAccountMailMatches(folderQuery) || (filtering && sectionHasChild);
   let shownFolder = false;
@@ -4755,6 +4884,8 @@ function renderAccounts() {
     nav.appendChild(allAccountMailRow(sectionOpen, sectionHasChild, filtering));
     if (sectionOpen && inboxMatch) nav.appendChild(allAccountInboxRow());
     if (sectionOpen && outboxMatch) nav.appendChild(outboxMailRow());
+    if (sectionOpen && starredMatch) nav.appendChild(allAccountFlagRow("starred"));
+    if (sectionOpen && unreadMatch) nav.appendChild(allAccountFlagRow("unread"));
   }
   for (const account of state.accounts) {
     const provider = folderProvider(account);
@@ -6349,7 +6480,9 @@ function messageRow(email) {
     ? accountLabel(mailbox) + " · "
     : (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "");
   snippet.textContent = prefix + (email.snippet || "");
-  main.append(when, recipient, from, subjectLine, snippet);
+  const cells = { date: when, recipient, sender: from, subject: subjectLine };
+  for (const key of mailColumnOrder()) { cells[key].dataset.mailColumn = key; main.append(cells[key]); }
+  main.append(snippet);
   button.append(gutter, avatar, main);
   button.addEventListener("click", (event) => {
     if (email.outbox) {
@@ -6417,7 +6550,7 @@ function shownEmails() {
   const emails = state.emails.filter((email) => !optimisticRemovals.has(email.id));
   if (state.outbox) return visibleList(emails, query, null);
   const folder = state.allInbox
-    ? (state.allInboxUnreadOnly ? { view: { unread: true } } : null)
+    ? (state.allInboxUnreadOnly ? { view: { unread: true } } : state.allInboxStarredOnly ? { view: { flagged: true } } : null)
     : selectedFolderNode();
   const holdId = unreadListActive(currentUnreadView()) && state.unreadHold ? state.unreadHold.id : "";
   return visibleList(emails, query, folder, holdId);
@@ -6610,7 +6743,7 @@ function renderList() {
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = $("list-title");
   if (title) {
-    title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly) : (chipLabel(folder) || "Messages")));
+    title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly, state.allInboxStarredOnly) : (chipLabel(folder) || "Messages")));
   }
   renderChips(state.allInbox || state.outbox ? null : account);
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account).some(item => item.id === state.folderId));
@@ -6646,8 +6779,8 @@ function renderList() {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
     } else if (state.outbox && !listQuery && !state.emails.length) {
       empty.textContent = state.outboxError ? "Waiting sends are unknown. Retry to load Outbox." : outboxEmptyCopy();
-    } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || !state.emails.length)) {
-      empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly);
+    } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || state.allInboxStarredOnly || !state.emails.length)) {
+      empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly, state.allInboxStarredOnly);
     } else if (!listQuery && folder && folder.emptyCopy) {
       empty.textContent = folder.emptyCopy;
     } else if (!state.emails.length) {
@@ -6667,7 +6800,7 @@ function renderList() {
       // Retained rows keep keyboard focus and read the latest message for actions.
       const mailbox = state.accounts.find((item) => item.id === email.accountId);
       const stamp = JSON.stringify([email.folderId, email.from, email.to, email.subject, email.snippet, email.date,
-        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox,
+        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox, mailColumnOrder().join(","),
         state.allInbox && mailbox ? accountLabel(mailbox) : "",
         state.query && mailbox ? mailbox.email : "",
         state.prefs.timeFormat, state.prefs.dateFormat]);
@@ -6703,7 +6836,7 @@ function renderList() {
       previous = row;
     }
   }
-  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.outbox ? "outbox" : "", state.allInboxUnreadOnly ? "unread" : ""].join("\0");
+  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.outbox ? "outbox" : "", state.allInboxUnreadOnly ? "unread" : "", state.allInboxStarredOnly ? "starred" : ""].join("\0");
   if (motionKey !== listMotionKey) {
     listMotionKey = motionKey;
     const motion = motionApi();
@@ -8771,7 +8904,7 @@ async function settleOpenView() {
   if (typeof selectedFolderNode !== "function" || typeof loadList !== "function") return;
   if (openViewReload) return;
   const folder = selectedFolderNode();
-  if (!folder || !folder.view) return;
+  if (!(state.allInbox && (state.allInboxUnreadOnly || state.allInboxStarredOnly)) && (!folder || !folder.view)) return;
   openViewReload = true;
   try {
     await loadList(false);
@@ -9311,6 +9444,7 @@ function rememberSelection(preferredId) {
   if (!state.accounts.length) {
     state.allInbox = false;
     state.allInboxUnreadOnly = false;
+    state.allInboxStarredOnly = false;
     state.outbox = false;
     state.outboxRows = [];
     state.outboxCount = 0;
@@ -9319,6 +9453,7 @@ function rememberSelection(preferredId) {
     if (state.accountId !== preferredId) {
       state.allInbox = false;
       state.allInboxUnreadOnly = false;
+      state.allInboxStarredOnly = false;
     }
     state.accountId = preferredId;
   }
@@ -9445,7 +9580,7 @@ function noteMailListLoaded(gen) {
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   noteUnreadScope();
-  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
+  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
   const scopeChanged = state.listScope !== scope;
   if (scopeChanged) {
     state.listScope = scope;
@@ -9492,6 +9627,7 @@ async function loadList(fromNetwork, requestedOffset) {
     const request = mailListRequest({
       listSort: state.listSort,
       allInbox: state.allInbox,
+      aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
       unreadOnly: state.allInbox && state.allInboxUnreadOnly,
       fromNetwork: !state.allInbox && fromNetwork && isLive(account),
       accountId: account && account.id,
@@ -9510,6 +9646,7 @@ async function loadList(fromNetwork, requestedOffset) {
       const again = mailListRequest({
         listSort: state.listSort,
         allInbox: state.allInbox,
+        aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
         unreadOnly: state.allInbox && state.allInboxUnreadOnly,
         accountId: account && account.id,
         folderId: state.folderId,
@@ -11239,6 +11376,7 @@ async function selectOutbox() {
   state.outbox = true;
   state.allInbox = false;
   state.allInboxUnreadOnly = false;
+  state.allInboxStarredOnly = false;
   noteUnreadScope();
   state.query = "";
   const search = $("search-query");
@@ -11261,11 +11399,11 @@ async function selectOutbox() {
   renderList();
 }
 
-async function selectAllInbox(unreadOnly) {
+async function selectAllInbox(unreadOnly, starredOnly = false) {
   if (!state.accounts.length) return;
   ++mailboxNavigationGen;
   const nextUnread = unreadOnly === true;
-  const staying = state.allInbox && !state.query;
+  const staying = state.allInbox && !state.query && state.allInboxStarredOnly === starredOnly;
   if (!staying) {
     invalidateReaderOpen();
     state.email = null;
@@ -11283,6 +11421,7 @@ async function selectAllInbox(unreadOnly) {
   state.outbox = false;
   state.allInbox = true;
   state.allInboxUnreadOnly = nextUnread;
+  state.allInboxStarredOnly = starredOnly;
   state.listScope = "";
   renderAccounts();
   if (state.view === "folders") paintProviderPage();
@@ -11299,6 +11438,7 @@ async function selectFolder(accountId, folderId) {
   state.outbox = false;
   state.allInbox = false;
   state.allInboxUnreadOnly = false;
+  state.allInboxStarredOnly = false;
   state.listScope = "";
   state.accountId = accountId;
   state.folderId = folderId;
@@ -11669,7 +11809,7 @@ let snoozeDirty = false;
 function onEmailsUpdated(payload) {
   if (state.outbox) return;
   const request = mailListRequest({
-      listSort: state.listSort, allInbox: state.allInbox, accountId: state.accountId, folderId: state.folderId,
+      listSort: state.listSort, allInbox: state.allInbox, aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "", accountId: state.accountId, folderId: state.folderId,
     accounts: state.accounts, query: state.query, searchAccountId: state.searchAccountId });
   const params = request.params || {};
   if (payload?.accountId) {
@@ -24909,6 +25049,7 @@ function wire() {
   if (motion) motion.bindChrome(document);
   wireGoogleOnboarding();
   wireSetupGuide();
+  wireMailColumnEditor();
   wireSettingsFolds();
   wireAgentTabs();
   wireAgentTodoView();
@@ -25793,6 +25934,7 @@ async function boot() {
   await loadPresets();
   await loadOauthStatus();
   await loadShellPrefs();
+  await loadMailColumnOrder();
   await loadAccounts();
   applyFeaturesHash();
   await startSetupGuide();

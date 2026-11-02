@@ -69,6 +69,10 @@ function apply(query) {
     next.excludeSnoozed = true;
     if (source.accountId) {
       next.excludeFolderPaths = attentionPaths(source.accountId);
+    } else if (source.aggregateView === "unread") {
+      next.excludeFolderPaths = ["__search__"];
+      next.excludeMailboxes = db.listAccountRows().flatMap(account => attentionPaths(account.id)
+        .filter(path => path !== "__search__").map(path => ({ accountId: account.id, path })));
     } else {
       next.category = "none";
     }

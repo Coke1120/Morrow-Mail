@@ -29,6 +29,7 @@ const DEFAULTS = {
   layoutPanes: { folders: 260, list: 360, reading: 0 },
   changelogSeen: "",
   onboarding: null,
+  mailColumnOrder: ["date", "recipient", "sender", "subject"],
 };
 
 const GET = {
@@ -53,6 +54,7 @@ const GET = {
   "morrow:configGetCompactMessageList": "compactMessageList",
   "morrow:configGetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
   "morrow:configGetLayoutPanes": "layoutPanes",
+  "morrow:configGetMailColumnOrder": "mailColumnOrder",
   "morrow:configGetOnboarding": "onboarding",
   "morrow:configGetChangelogSeen": "changelogSeen",
 };
@@ -79,6 +81,7 @@ const SET = {
   "morrow:configSetCompactMessageList": "compactMessageList",
   "morrow:configSetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
   "morrow:configSetLayoutPanes": "layoutPanes",
+  "morrow:configSetMailColumnOrder": "mailColumnOrder",
   "morrow:configSetOnboarding": "onboarding",
   "morrow:configSetChangelogSeen": "changelogSeen",
 };
@@ -139,6 +142,7 @@ function castChangelogSeen(value, loose) {
 }
 
 function cast(key, value, loose) {
+  if (key === "mailColumnOrder") return require("../shared/mail-columns").normalize(value);
   if (key === "onboarding") {
     if (value === null) return null;
     if (!value || typeof value !== "object" || !["active", "later", "done", "existing"].includes(value.status)
