@@ -305,7 +305,7 @@ function scheduleStatusCollapse() {
 
 function statusInteractionActive() {
   const notice = $("notice");
-  return undoPopoverOpen() || !!notice?.matches?.(":hover, :focus-within");
+  return undoConfirmationPending || undoPopoverOpen() || !!notice?.matches?.(":hover, :focus-within");
 }
 
 function collapseStatus() {
@@ -374,7 +374,7 @@ function statusControl(event) {
 }
 
 function statusDismissPointer(event) {
-  if (undoPopoverOpen() && !eventInsideUndoDetails(event)) closeUndoDetails(false);
+  if (!undoConfirmationPending && undoPopoverOpen() && !eventInsideUndoDetails(event)) closeUndoDetails(false);
   if (!statusExpanded) return false;
   if (event && event.button !== undefined && event.button !== 0) return false;
   const status = $("status");
@@ -413,10 +413,15 @@ function wireStatusNotice() {
     notice.addEventListener("pointerenter", clearStatusTimer);
     notice.addEventListener("pointerleave", scheduleStatusCollapse);
     notice.addEventListener("focusin", clearStatusTimer);
-    notice.addEventListener("focusout", () => Promise.resolve().then(() => {
-      if (undoPopoverOpen() && !eventInsideUndoDetails({ target: document.activeElement })) closeUndoDetails(false);
-      scheduleStatusCollapse();
-    }));
+    notice.addEventListener("focusout", (event) => {
+      // Native focusout runs before the next control receives focus. Its destination
+      // is authoritative; a microtask can still observe document.body here.
+      if (eventInsideUndoDetails({ target: event.relatedTarget }) || undoConfirmationPending) return;
+      Promise.resolve().then(() => {
+        if (!undoConfirmationPending && undoPopoverOpen() && !eventInsideUndoDetails({ target: document.activeElement })) closeUndoDetails(false);
+        scheduleStatusCollapse();
+      });
+    });
   }
   document.addEventListener("mousedown", statusDismissPointer);
   document.addEventListener("keydown", statusDismissKey);
@@ -9105,6 +9110,48 @@ function retainedUndoOpIds(requested, outcomes, items) {
   return requested.slice();
 }
 
+// UI review owns a frozen set of operations, separate from backend restore ownership.
+let undoConfirmationPending = false;
+async function requestUndoRemoval(requested) {
+  if (undoConfirmationPending || undoBusy || undoPending.size) return;
+  const epoch = undoEpoch;
+  const kind = undoKind;
+  const readItems = readUndoItems;
+  const ids = (Array.isArray(requested) ? requested : undoOpIds || []).filter(id => (undoOpIds || []).includes(id));
+  const count = kind === "read" ? (readItems || []).length : ids.length;
+  if (!count) return;
+  const opener = document.activeElement;
+  const actions = new Map();
+  for (const item of undoItems || []) {
+    if (ids.includes(item.opId)) actions.set(item.action || "move", (actions.get(item.action || "move") || 0) + 1);
+  }
+  undoConfirmationPending = true;
+  clearStatusTimer();
+  try {
+    const answer = await askConfirm({
+      title: "Undo " + count + (count === 1 ? " change?" : " changes?"),
+      body: kind === "read"
+        ? "Restore the previous read state of " + count + (count === 1 ? " message?" : " messages?")
+        : "Restore the previous folder for " + count + (count === 1 ? " completed change" : " completed changes") +
+          " (" + [...actions].map(([action, n]) => n + " " + action).join(", ") + "). Newly completed changes are not included.",
+      confirm: "Undo " + count + (count === 1 ? " change" : " changes"),
+    });
+    await confirmSettled();
+    if (!answer.ok) return;
+    if (epoch !== undoEpoch || kind !== undoKind || undoBusy || undoPending.size ||
+        (kind === "read" ? readItems !== readUndoItems : ids.some(id => !(undoOpIds || []).includes(id)))) {
+      showStatus("Undo changed while you were reviewing. Review the current changes and try again.", true);
+      return;
+    }
+    await undoRemoval(kind === "read" ? undefined : ids);
+  } finally {
+    undoConfirmationPending = false;
+    if (!document.querySelector("dialog[open]") && opener?.isConnected && !opener.hidden && !opener.disabled &&
+        (!opener.closest("#undo-details-popover") || undoPopoverOpen())) opener.focus();
+    scheduleStatusCollapse();
+  }
+}
+
 async function undoRemoval(requested) {
   if (undoBusy || undoPending.size) return;
   if (undoKind === "read") return undoReadBatch();
@@ -9384,6 +9431,7 @@ async function offerChangelog() {
     // A failed settings read is not an acknowledgement.
   } finally {
     changelogPending = false;
+    if (googleOnboardingPending) setTimeout(resumeGoogleOnboarding, 0);
   }
 }
 
@@ -17660,12 +17708,16 @@ function paintOooDirty() {
 // A profile-local, non-secret preference, shared by shell windows.
 const googleOnboardingKey = "morrow.googleOnboarding.v1";
 let googleOnboardingHandled = false;
+let googleOnboardingPending = false;
+let googleOnboardingCheck = null;
+let googleOnboardingCloseSerial = 0;
 function googleOnboardingDone() {
   if (googleOnboardingHandled) return true;
   try { return window.localStorage.getItem(googleOnboardingKey) === "done"; }
   catch { return false; }
 }
 function rememberGoogleOnboarding() {
+  googleOnboardingPending = false;
   googleOnboardingHandled = true;
   try { window.localStorage.setItem(googleOnboardingKey, "done"); }
   catch { /* Keep this session usable when profile storage is unavailable. */ }
@@ -17674,21 +17726,44 @@ function dismissGoogleOnboarding() {
   rememberGoogleOnboarding();
   closeDialog("google-onboarding");
 }
-async function maybeShowGoogleOnboarding() {
-  if (googleOnboardingDone()) return;
-  let status;
-  try { status = await call("mail:googleOauthStatus"); }
-  catch { return; } // Unknown readiness is not a reason to request credentials.
-  if (googleOnboardingDone()) return;
-  if (state.accounts.length || status?.ready || status?.imported || status?.source !== "none") {
-    rememberGoogleOnboarding();
-    return;
-  }
-  state.googleOauthClient = status;
-  if (document.querySelector("dialog[open]")) return;
-  openDialog("google-onboarding");
+function maybeShowGoogleOnboarding() {
+  googleOnboardingPending = !googleOnboardingDone();
+  return resumeGoogleOnboarding();
+}
+function resumeGoogleOnboarding() {
+  if (!googleOnboardingPending || googleOnboardingDone()) return Promise.resolve();
+  if (googleOnboardingCheck) return googleOnboardingCheck;
+  if (changelogPending || document.querySelector("dialog[open]")) return Promise.resolve();
+  const serial = googleOnboardingCloseSerial;
+  googleOnboardingCheck = (async () => {
+    let status;
+    try { status = await call("mail:googleOauthStatus"); }
+    catch { return; } // Unknown readiness is not a reason to request credentials.
+    // A dialog may have changed configuration while this read was in flight.
+    if (serial !== googleOnboardingCloseSerial || !googleOnboardingPending || googleOnboardingDone()) return;
+    if (state.accounts.length || status?.ready || status?.imported || status?.source !== "none") {
+      rememberGoogleOnboarding();
+      return;
+    }
+    state.googleOauthClient = status;
+    if (document.querySelector("dialog[open]")) return;
+    googleOnboardingPending = false;
+    openDialog("google-onboarding");
+  })().finally(() => {
+    googleOnboardingCheck = null;
+    if (googleOnboardingPending && serial !== googleOnboardingCloseSerial) setTimeout(resumeGoogleOnboarding, 0);
+  });
+  return googleOnboardingCheck;
 }
 function wireGoogleOnboarding() {
+  // Capture also covers dialogs created after boot. Let their close handlers
+  // finish (and possibly open another dialog) before checking the pending offer.
+  // Native dispatch may run microtasks between listeners, so use the next task.
+  document.addEventListener("close", event => {
+    if (event.target?.tagName !== "DIALOG" || !googleOnboardingPending) return;
+    googleOnboardingCloseSerial += 1;
+    setTimeout(resumeGoogleOnboarding, 0);
+  }, true);
   const dialog = $("google-onboarding");
   $("google-onboarding-later").addEventListener("click", dismissGoogleOnboarding);
   $("google-onboarding-import").addEventListener("click", () => changeGoogleOauthClient("mail:importGoogleOauth"));
@@ -24767,7 +24842,7 @@ function wire() {
   });
   wireSplits();
   wireQuoteSplit();
-  $("undo").addEventListener("click", () => guard(undoRemoval));
+  $("undo").addEventListener("click", () => guard(() => requestUndoRemoval()));
   const undoDetailsButton = $("undo-details");
   if (undoDetailsButton) undoDetailsButton.addEventListener("click", () => openUndoDetails());
   const undoDetailsAll = $("undo-details-all");
@@ -24775,7 +24850,7 @@ function wire() {
   const undoDetailsClear = $("undo-details-clear");
   if (undoDetailsClear) undoDetailsClear.addEventListener("click", () => setUndoDetailChecks(false));
   const undoDetailsSelected = $("undo-details-selected");
-  if (undoDetailsSelected) undoDetailsSelected.addEventListener("click", () => guard(() => undoSelected()));
+  if (undoDetailsSelected) undoDetailsSelected.addEventListener("click", () => guard(() => requestUndoRemoval(selectedUndoOpIds())));
   $("undo-send").addEventListener("click", cancelUndoSend);
   $("profile").addEventListener("change", () => {
     cancelDiscovery();
