@@ -22,6 +22,8 @@ node scripts/check-hermes-webhook-browser.js
 
 Set `MORROW_CHROMIUM` if Chromium is not `/usr/bin/chromium`; `MORROW_UI_OUTPUT` overrides the temporary screenshot directory. The check covers native required-field focus, HMAC/Bearer mode changes, cleared permission after edits, keyboard save, fake persistence/reload, legacy Bearer settings, HTTP admission labels, Features/CLI, 1280×960 and 820×740 layouts, standard/reduced motion and WCAG 2 A/AA axe checks.
 
+Validation on 2026-11-02: the full aggregate passed with Node 20.20.2, including the existing Bot mail-action suites. Chromium passed both motion preferences and both viewport sizes with zero axe violations, page errors or external requests.
+
 The screenshots below use the reduced-motion fixture with synthetic values. The checkbox is selected only in fake IPC; it is no evidence of real user authorization.
 
 ![Authentication selector and Hermes profile URL](authentication.png)
