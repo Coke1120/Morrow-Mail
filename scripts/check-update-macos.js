@@ -12,7 +12,7 @@ if (process.argv.includes('--windows-paths')) {
   // Exercise Windows path semantics even when the development machine is POSIX.
   const filename = require.resolve('../host/update-macos');
   const localRequire = require('node:module').createRequire(filename);
-  const context = { module: { exports: {} }, process, Buffer, setTimeout,
+  const context = { module: { exports: {} }, process, Buffer, TextDecoder, setTimeout,
     require: name => name === 'node:path' ? path : localRequire(name) };
   require('node:vm').runInNewContext(require('node:fs').readFileSync(filename, 'utf8'), context, { filename });
   createMacUpdater = context.module.exports.createMacUpdater;
@@ -29,6 +29,63 @@ const bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, version, platform: 
 const sig = crypto.sign(null, bytes, key.privateKey).toString("base64");
 const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => fixtureRoot };
 (async () => {
+  const release = value => {
+    const data = Buffer.from(JSON.stringify({ ...JSON.parse(bytes), version: value, url: artifactURL(value, 'arm64') }));
+    return { data, signature: crypto.sign(null, data, key.privateKey).toString('base64') };
+  };
+  const nextRelease = release('0.2.7');
+  // Latest moves between the manifest and signature GETs. The signature for
+  // these exact bytes remains available under their immutable versioned tag.
+  const requests = [];
+  const rotating = createMacUpdater({ app, state: {}, arch: 'arm64', publicKey,
+    fetchBytes: async url => {
+      requests.push(url);
+      if (!url.endsWith('.sig')) return bytes;
+      return Buffer.from(url.includes('/download/v0.2.6/') ? sig : nextRelease.signature);
+    }, downloadArtifact: async () => archive });
+  rotating.init();
+  assert.equal((await rotating.check()).downloaded, true, 'A moving latest alias must not mix manifest/signature versions');
+  assert.equal(requests[1], 'https://github.com/Coke1120/Morrow-Mail/releases/download/v0.2.6/update-manifest-macos-arm64.json.sig');
+  let currentRelease = { data: bytes, signature: sig }, metadataReads = 0, cachedDownloads = 0, cachedStarts = 0, offline = false, failDownload = false;
+  const cached = createMacUpdater({ app, state: {}, arch: 'arm64', publicKey, resourcesPath,
+    fetchBytes: async url => { metadataReads++; if (offline) throw Error('fixture offline'); return url.endsWith('.sig') ? Buffer.from(currentRelease.signature) : currentRelease.data; },
+    downloadArtifact: async () => { cachedDownloads++; if (failDownload) throw Error('newer download interrupted'); return archive; },
+    startInstaller: async () => { cachedStarts++; throw Error('temporary helper failure'); } });
+  cached.configure({ prepare: async () => () => {}, quit: () => assert.fail('Fixture helper failed; do not quit') });
+  cached.init();
+  await cached.check();
+  await cached.check();
+  assert.equal(cachedDownloads, 1, 'Unchanged authenticated metadata reuses validated cached bytes');
+  assert.equal(metadataReads, 4, 'Cached candidates must not disable subsequent release discovery');
+  currentRelease = nextRelease;
+  await cached.check();
+  assert.equal(cachedDownloads, 2);
+  assert.equal(cached.snapshot().version, '0.2.7', 'A newer signed release supersedes an older cached candidate');
+  await cached.install();
+  assert.equal(cachedStarts, 1);
+  assert.match(cached.snapshot().error, /temporary helper failure/);
+  await cached.check();
+  assert.equal(cached.snapshot().error, null, 'Check recovers the install action after a transient helper failure');
+  assert.equal(cached.snapshot().downloaded, true);
+  assert.equal(cachedDownloads, 2);
+  offline = true;
+  await cached.check();
+  assert.equal(cached.snapshot().downloaded, true, 'A temporary discovery failure retains the revalidated cached download');
+  assert.equal(cached.snapshot().version, '0.2.7');
+  assert.match(cached.snapshot().error, /offline/);
+  await cached.install();
+  assert.equal(cachedStarts, 2, 'An authenticated cached candidate remains installable without another metadata request');
+  offline = false; failDownload = true; currentRelease = release('0.2.8');
+  await cached.check();
+  assert.equal(cached.snapshot().downloaded, true);
+  assert.equal(cached.snapshot().version, '0.2.7', 'Failed replacement downloads cannot relabel the older retained archive');
+  assert.match(cached.snapshot().error, /newer download interrupted/);
+  const tampered = createMacUpdater({ app, state: {}, arch: 'arm64', publicKey,
+    fetchBytes: async url => url.endsWith('.sig') ? Buffer.from(nextRelease.signature) : bytes,
+    downloadArtifact: () => assert.fail('Mismatched pinned signature must still reject before download') });
+  await tampered.check();
+  assert.equal(tampered.snapshot().downloaded, false);
+  assert.match(tampered.snapshot().error, /signature verification failed/);
   let fetches = 0, downloads = 0, starts = 0, quits = 0, resumes = 0;
   const state = {};
   const updater = createMacUpdater({ app, state, arch: "arm64", publicKey, resourcesPath,
@@ -101,9 +158,13 @@ const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => fixtur
   const retryRoot = await disk.mkdtemp(nativePath.join(require('node:os').tmpdir(), 'morrow-retry-'));
   try {
     const file = nativePath.join(retryRoot, 'update.zip');
-    let requests = 0, copies = 0, preparations = 0;
+    let requests = 0, copies = 0, preparations = 0, tamperOnFetch = false;
     const retry = createMacUpdater({ app, state: {}, arch: 'arm64', publicKey, resourcesPath,
-      fetchBytes: async url => { requests++; return Buffer.from(url.endsWith('.sig') ? sig : bytes); },
+      fetchBytes: async url => {
+        requests++;
+        if (tamperOnFetch) { await disk.writeFile(file, 'evil'); throw Error('metadata unavailable'); }
+        return Buffer.from(url.endsWith('.sig') ? sig : bytes);
+      },
       downloadArtifact: async () => { copies++; await disk.writeFile(file, 'test'); return file; },
       validateArtifact: require('../host/update-manifest').validateArtifact,
       startInstaller: async () => assert.fail('Invalid file must not reach installer') });
@@ -114,6 +175,10 @@ const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => fixtur
     await disk.writeFile(file, 'evil'); await retry.check();
     assert.equal(copies, 3); assert.equal(requests, 6); assert.equal(await disk.readFile(file, 'utf8'), 'test');
     await retry.check(); assert.equal(copies, 3, 'Valid cached bytes are not downloaded again');
+    tamperOnFetch = true;
+    await retry.check();
+    assert.equal(retry.snapshot().downloaded, false, 'Discovery failure must not retain bytes changed during its await');
+    assert.equal(preparations, 0);
   } finally { await disk.rm(retryRoot, { recursive: true, force: true }); }
   // Exercise the actual macOS IPC branch; the Windows provider is not loaded.
   const vm = require("node:vm"), fs = require("node:fs");

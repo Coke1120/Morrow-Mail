@@ -16264,7 +16264,8 @@ function updateView(snapshot, version) {
   if (snap.manualRequired) {
     status = "Manual installation required. Your current app has not been replaced.";
   } else if (error) {
-    status = "Update failed.";
+    status = snap.downloaded ? "Downloaded update retained." : "Update failed.";
+    install = !!snap.downloaded;
   } else if (snap.installing) {
     status = "Installing…";
     busy = true;
@@ -16281,7 +16282,7 @@ function updateView(snapshot, version) {
   } else if (snap.available) {
     status = snap.version ? "Update " + snap.version + " available." : "Update available.";
   } else if (snap.enabled === false) {
-    status = "Updater is off until the app is packaged.";
+    status = snap.disabledReason || "Updater is off until the app is packaged.";
   }
   const pending = !!(snap.available || snap.downloaded || snap.downloading);
   const attention = !!snap.manualRequired || (!error && pending);

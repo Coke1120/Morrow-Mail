@@ -200,7 +200,7 @@ id: "mail-workflow-feedback",
         id: "in-app-updater",
         title: "In-app updates",
         category: "Updates",
-        blurb: "About & updates checks for a release on launch and every hour while Morrow is open. A red ! on that button means an update is ready. Restart and install applies a downloaded update once every compose window is closed and Outbox is empty.",
+        blurb: "About & updates checks supported installations on launch and every hour while Morrow is open. A red ! means an update is available, downloading, ready, or needs manual installation. macOS checks for newer signed releases even with a cached download, reuses unchanged verified bytes, and checks installation requirements before restart. Installed Windows copies download the NSIS update; portable Windows copies use Open official releases to download the portable executable manually. Restart and install requires other windows closed, Outbox empty, and pending edits resolved. Windows starts its installer only after scheduled-mail quit confirmation and shutdown cleanup finish. Quitting alone does not install an update. Mail, settings and account credentials stay in their existing profile.",
       },
       {
         id: "mail-body-updates",

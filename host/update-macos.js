@@ -64,13 +64,14 @@ function createMacUpdater(options) {
     if (!app.isPackaged || installing) return snapshot();
     if (state.installing) return snapshot();
     if (candidate) {
-      try { await validateCandidate(); return snapshot(); }
+      try { await validateCandidate(); }
       catch { /* A removed/changed temp file requires a fresh signed download. */ }
     }
     state.lastAttemptAt = new Date().toISOString();
     state.error = null;
     state.available = false;
     state.downloaded = false;
+    state.manualRequired = false;
     try {
       requireTrust();
       state.enabled = true;
@@ -78,12 +79,24 @@ function createMacUpdater(options) {
       state.checking = true;
       const base = `${manifestTools.RELEASE_ROOT}latest/download/update-manifest-macos-${arch}.json`;
       const bytes = await fetchBytes(base, { maxBytes: manifestTools.MANIFEST_LIMIT });
-      const signature = (await fetchBytes(`${base}.sig`, { maxBytes: 100 })).toString("utf8");
+      // Use untrusted metadata only to select an allowlisted versioned signature
+      // URL. Authentication below still precedes any artifact selection/use.
+      // A second latest alias could move to another release between these GETs.
+      const advertisedVersion = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))?.version;
+      const signatureURL = `${manifestTools.manifestURL(advertisedVersion, arch)}.sig`;
+      const signature = (await fetchBytes(signatureURL, { maxBytes: 100 })).toString("utf8");
       const manifest = verifyManifest(bytes, signature, { publicKey, currentVersion: app.getVersion(), platform: "darwin", arch });
       state.lastCheckedAt = new Date().toISOString();
       state.checking = false;
       state.available = true;
       state.version = manifest.version;
+      // Cache artifact bytes, not release discovery or a previous install error.
+      // The local archive and fresh signed metadata must both still match.
+      if (candidate && candidate.manifestBytes.equals(bytes) && candidate.signature === signature) {
+        state.downloaded = true;
+        state.progress = 100;
+        return snapshot();
+      }
       state.downloading = true;
       const archive = await downloadArtifact(manifest, {
         directory: app.getPath("temp"),
@@ -94,6 +107,20 @@ function createMacUpdater(options) {
       state.downloaded = true;
       state.progress = 100;
     } catch (err) {
+      // A discovery/transfer failure must not discard an older authenticated
+      // download. Recheck its bytes after the awaits before keeping it usable.
+      if (candidate) {
+        try { await validateCandidate(); } catch { /* invalidated by validation */ }
+        if (candidate) {
+          error(err);
+          state.downloaded = true;
+          state.available = true;
+          state.version = candidate.manifest.version;
+          state.progress = 100;
+          state.manualAvailable = true;
+          return snapshot();
+        }
+      }
       candidate = null;
       state.downloaded = false;
       state.available = false;
