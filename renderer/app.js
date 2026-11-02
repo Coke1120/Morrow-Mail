@@ -4641,9 +4641,14 @@ function renderAccounts() {
     folderQuery,
   ]);
   if (key === folderRenderKey) {
+    const foldersByAccount = new Map();
+    for (const account of state.accounts) {
+      const folders = new Map();
+      for (const folder of foldersOf(account)) if (!folders.has(folder.id)) folders.set(folder.id, folder);
+      if (!foldersByAccount.has(account.id)) foldersByAccount.set(account.id, folders);
+    }
     for (const button of nav.querySelectorAll("button.folder")) {
-      const account = state.accounts.find(row => row.id === button.dataset.accountId);
-      const folder = foldersOf(account).find(row => row.id === button.dataset.folderId);
+      const folder = foldersByAccount.get(button.dataset.accountId)?.get(button.dataset.folderId);
       if (folder) {
         let count = button.querySelector(".count");
         if (folder.unreadCount && !count) { count = document.createElement("span"); count.className = "count"; button.appendChild(count); }
@@ -7710,7 +7715,7 @@ function attachmentTaskCopy(task) {
   if (task.cancelRequested) return `${task.label}: cancelling…`;
   const phases = { choosing: "Choose a save location…", queued: "Waiting for mailbox…", connecting: "Connecting…",
     downloading: "Downloading…", ready: task.cached ? "Using cached file…" : "Download complete…",
-    writing: "Saving…", opening: "Opening application…" };
+    packing: "Creating ZIP…", waitingToSave: "Waiting to save…", writing: "Saving…", opening: "Opening application…" };
   const bytes = task.phase === "downloading" && task.loaded > 0 ? ` (${Math.ceil(task.loaded / 1024).toLocaleString()} KiB received)` : "";
   const file = task.count > 1 ? ` File ${(task.index || 0) + 1} of ${task.count}.` : "";
   return `${task.label}: ${phases[task.phase] || "Waiting…"}${bytes}${file}`;
