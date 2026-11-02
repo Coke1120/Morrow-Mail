@@ -101,3 +101,29 @@ be tested on installed Windows/macOS builds before claiming platform validation.
 
 Implementation reference: Electron's [main-process notification API](https://www.electronjs.org/docs/latest/api/notification)
 and [platform considerations](https://www.electronjs.org/docs/latest/tutorial/notifications).
+
+## Windows CI upgrade fixture budget
+
+The notification candidate exposed an existing startup-upgrade timeout before
+the notification suites ran. The healthy Windows candidate completed this
+fixture between 17:19:14.574 and 17:22:03.324 UTC on 2026-11-02: 168.75 seconds
+([run 653](https://github.com/Coke1120/Morrow-Mail/actions/runs/41489323740)).
+Another run exhausted the unchanged 180-second limit between 17:35:46.014 and
+17:38:46.037 ([run 655](https://github.com/Coke1120/Morrow-Mail/actions/runs/41491595092)).
+That limit gave the measured healthy workload only 6.7% headroom.
+
+A Linux profile of the same complete fixture took 1.855 seconds wall time,
+1.597 seconds user CPU and 0.365 seconds system CPU, including 1,800 metadata
+updates, 1,881 SQLite commits and 1,927 main-thread fsync calls. `beforeExit`
+reported only the two standard-output pipes. The failed Windows run had no final
+success marker; there is no evidence of a leaked handle after assertions finished.
+Windows CPU versus I/O cost was not recorded in that old run, so the platform
+latency attribution is an inference, not a direct CPU measurement.
+
+Keep the complete 300-row/oversized-body workload and every assertion, recovery
+case, journal/fsync setting and storage-worker deadline. Give only this fixture
+a 300-second Windows parent budget; other platforms retain 180 seconds. Add
+10-second unreferenced heartbeat records with fixed scenario/phase, progress,
+batch/yield and CPU counters, and report resources after successful assertions.
+Healthy progress and idle/CPU stalls are now distinguishable from the CI log.
+The added deadline headroom does not change production storage or mail behavior.
