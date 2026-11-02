@@ -305,7 +305,7 @@ function scheduleStatusCollapse() {
 
 function statusInteractionActive() {
   const notice = $("notice");
-  return undoPopoverOpen() || !!notice?.matches?.(":hover, :focus-within");
+  return undoConfirmationPending || undoPopoverOpen() || !!notice?.matches?.(":hover, :focus-within");
 }
 
 function collapseStatus() {
@@ -374,7 +374,7 @@ function statusControl(event) {
 }
 
 function statusDismissPointer(event) {
-  if (undoPopoverOpen() && !eventInsideUndoDetails(event)) closeUndoDetails(false);
+  if (!undoConfirmationPending && undoPopoverOpen() && !eventInsideUndoDetails(event)) closeUndoDetails(false);
   if (!statusExpanded) return false;
   if (event && event.button !== undefined && event.button !== 0) return false;
   const status = $("status");
@@ -413,10 +413,15 @@ function wireStatusNotice() {
     notice.addEventListener("pointerenter", clearStatusTimer);
     notice.addEventListener("pointerleave", scheduleStatusCollapse);
     notice.addEventListener("focusin", clearStatusTimer);
-    notice.addEventListener("focusout", () => Promise.resolve().then(() => {
-      if (undoPopoverOpen() && !eventInsideUndoDetails({ target: document.activeElement })) closeUndoDetails(false);
-      scheduleStatusCollapse();
-    }));
+    notice.addEventListener("focusout", (event) => {
+      // Native focusout runs before the next control receives focus. Its destination
+      // is authoritative; a microtask can still observe document.body here.
+      if (eventInsideUndoDetails({ target: event.relatedTarget }) || undoConfirmationPending) return;
+      Promise.resolve().then(() => {
+        if (!undoConfirmationPending && undoPopoverOpen() && !eventInsideUndoDetails({ target: document.activeElement })) closeUndoDetails(false);
+        scheduleStatusCollapse();
+      });
+    });
   }
   document.addEventListener("mousedown", statusDismissPointer);
   document.addEventListener("keydown", statusDismissKey);
@@ -9103,6 +9108,48 @@ function retainedUndoOpIds(requested, outcomes, items) {
   }
   if (completed.size) return requested.filter((opId) => !completed.has(opId));
   return requested.slice();
+}
+
+// UI review owns a frozen set of operations, separate from backend restore ownership.
+let undoConfirmationPending = false;
+async function requestUndoRemoval(requested) {
+  if (undoConfirmationPending || undoBusy || undoPending.size) return;
+  const epoch = undoEpoch;
+  const kind = undoKind;
+  const readItems = readUndoItems;
+  const ids = (Array.isArray(requested) ? requested : undoOpIds || []).filter(id => (undoOpIds || []).includes(id));
+  const count = kind === "read" ? (readItems || []).length : ids.length;
+  if (!count) return;
+  const opener = document.activeElement;
+  const actions = new Map();
+  for (const item of undoItems || []) {
+    if (ids.includes(item.opId)) actions.set(item.action || "move", (actions.get(item.action || "move") || 0) + 1);
+  }
+  undoConfirmationPending = true;
+  clearStatusTimer();
+  try {
+    const answer = await askConfirm({
+      title: "Undo " + count + (count === 1 ? " change?" : " changes?"),
+      body: kind === "read"
+        ? "Restore the previous read state of " + count + (count === 1 ? " message?" : " messages?")
+        : "Restore the previous folder for " + count + (count === 1 ? " completed change" : " completed changes") +
+          " (" + [...actions].map(([action, n]) => n + " " + action).join(", ") + "). Newly completed changes are not included.",
+      confirm: "Undo " + count + (count === 1 ? " change" : " changes"),
+    });
+    await confirmSettled();
+    if (!answer.ok) return;
+    if (epoch !== undoEpoch || kind !== undoKind || undoBusy || undoPending.size ||
+        (kind === "read" ? readItems !== readUndoItems : ids.some(id => !(undoOpIds || []).includes(id)))) {
+      showStatus("Undo changed while you were reviewing. Review the current changes and try again.", true);
+      return;
+    }
+    await undoRemoval(kind === "read" ? undefined : ids);
+  } finally {
+    undoConfirmationPending = false;
+    if (!document.querySelector("dialog[open]") && opener?.isConnected && !opener.hidden && !opener.disabled &&
+        (!opener.closest("#undo-details-popover") || undoPopoverOpen())) opener.focus();
+    scheduleStatusCollapse();
+  }
 }
 
 async function undoRemoval(requested) {
@@ -24767,7 +24814,7 @@ function wire() {
   });
   wireSplits();
   wireQuoteSplit();
-  $("undo").addEventListener("click", () => guard(undoRemoval));
+  $("undo").addEventListener("click", () => guard(() => requestUndoRemoval()));
   const undoDetailsButton = $("undo-details");
   if (undoDetailsButton) undoDetailsButton.addEventListener("click", () => openUndoDetails());
   const undoDetailsAll = $("undo-details-all");
@@ -24775,7 +24822,7 @@ function wire() {
   const undoDetailsClear = $("undo-details-clear");
   if (undoDetailsClear) undoDetailsClear.addEventListener("click", () => setUndoDetailChecks(false));
   const undoDetailsSelected = $("undo-details-selected");
-  if (undoDetailsSelected) undoDetailsSelected.addEventListener("click", () => guard(() => undoSelected()));
+  if (undoDetailsSelected) undoDetailsSelected.addEventListener("click", () => guard(() => requestUndoRemoval(selectedUndoOpIds())));
   $("undo-send").addEventListener("click", cancelUndoSend);
   $("profile").addEventListener("change", () => {
     cancelDiscovery();
