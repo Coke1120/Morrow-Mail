@@ -459,6 +459,12 @@ function queryFrom(params) {
     sortBy: query.sortBy,
     sortDirection: query.sortDirection,
   };
+  if (query.aggregateView === "starred" || query.aggregateView === "unread") {
+    // An explicit account constraint must survive, including scoped callers.
+    out.folderKey = null;
+    out.folderId = query.aggregateView === "starred" ? virtuals.STARRED_ID : virtuals.UNREAD_ID;
+    out.aggregateView = query.aggregateView;
+  }
   out = virtuals.apply(out);
   if (!out.folderKey && out.folderId && !out.accountId && KEY_TO_WELL[out.folderId]) {
     out.folderKey = out.folderId;

@@ -3463,29 +3463,6 @@ button.all-inbox .name {
   text-overflow: ellipsis;
 }
 
-button.all-account-unread {
-  flex: none;
-  margin: 0 6px 0 0;
-  border: 0;
-  cursor: pointer;
-  font-family: inherit;
-  line-height: 1;
-  white-space: nowrap;
-  color: var(--badge-ink);
-  background: var(--badge-bg);
-}
-
-button.all-account-unread:hover,
-button.all-account-unread:focus-visible {
-  filter: brightness(1.06);
-}
-
-button.all-account-unread[aria-pressed="true"] {
-  background: #fff;
-  color: #102822;
-  box-shadow: inset 0 0 0 1.5px #193c34, 0 0 0 1px #b9d5ad;
-}
-
 .chips {
   display: flex;
   flex-wrap: nowrap;
@@ -6006,3 +5983,10 @@ pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
 @media (max-width: 540px) { .setup-guide-card { padding: 16px; } #setup-guide-steps button { flex-basis: 45%; } }
 .setup-guide-sheet > * { flex-shrink: 0; }
 #setup-guide-steps button { height: auto; min-height: 42px; padding: 8px 10px; line-height: 1.35; }
+
+.mail-list-columns .mail-column-drop { box-shadow: inset 0 -3px var(--accent); background: var(--paper-soft); }
+.mail-list-columns button[draggable="true"] { cursor: grab; }
+#mail-columns-order { padding: 0; list-style: none; }
+#mail-columns-order li { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+#mail-columns-order li > span { flex: 1; }
+#mail-columns-open { flex: 0 0 auto; }
