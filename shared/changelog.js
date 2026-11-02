@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.18": [
+      "Mail lists show Date, Recipient, Sender and Subject columns; select a header to sort matching downloaded mail before paging.",
+      "Your mail sort order is remembered on this device, and changing it returns to page one while keeping the reader open.",
+      "New profiles without accounts or a Google client can import Desktop JSON or choose Later; Accounts keeps a visible import reminder.",
+    ],
     "0.3.17": [
       "Save as ZIP stays more responsive during archive preparation, with progress and cancellation before saving.",
       "Attachment saves keep writes in order and check cancellation before opening an external application.",
