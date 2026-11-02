@@ -1,0 +1,45 @@
+name: macos-release-check
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/workflows/macos-release-check.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-package:
+    # Exercise release-runner changes on the same standard hosted ARM64 image.
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # Match release.yml's native compile prerequisites, without release secrets.
+      - name: Install setuptools for the native module compile
+        run: python3 -m pip install --upgrade setuptools --break-system-packages
+      - name: Verify native ARM64 toolchain
+        run: node -e "const assert = require('node:assert/strict'); assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64');"
+      - run: npm ci
+      - run: npm run check
+      - name: Ad hoc sign and verify macOS ARM64 bundle without publishing
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          # electron-builder skips even the custom ad hoc hook in PR builds.
+          # This secret-free job uses identity '-' only, with no keychain profile.
+          CSC_FOR_PULL_REQUEST: "true"
+        run: npm run dist:mac -- --arm64 --publish never
+      - name: Verify final macOS integrity and report platform trust
+        run: node scripts/verify-release-macos.js
