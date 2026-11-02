@@ -1,5 +1,11 @@
 # Shell parity
 
+Mail & Sync includes native Windows/macOS new-Inbox-mail notifications, an on/off
+switch and hidden/sender/message preview choices. Default previews hide sender and
+content. Notifications use the existing running sync, preserve OS permissions and
+Focus/DND, and open validated account/message targets. Windows close quits; macOS
+hide continues, Quit stops. [Arrival/dedup and test limits](adr/2026-11-02-native-mail-notifications.md).
+
 Wave1 review follow-up: the Compose mailbox selector is in Basic, while alias and
 domain rules remain in Advanced. Notes, schedule editors, Out of Office replies
 and default schedule-delay fields retain edits made during asynchronous reads or

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell, screen } = require("electron");
+const { app, BrowserWindow, dialog, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell, screen, Notification } = require("electron");
 require("./performance-diagnostics").startMonitoring();
 const fs = require("fs");
 const os = require("os");
@@ -45,6 +45,14 @@ function resolveAppIcon() {
 }
 
 const APP_ICON = resolveAppIcon();
+const mailNotifications = require("./mail/notifications");
+mailNotifications.configure({ Notification, platform: process.platform, icon: APP_ICON, open: async () => {
+  if (updateGate.closed) return;
+  const win = await openShellWindow();
+  if (!win || win.isDestroyed()) return;
+  revealShell(win);
+  win.webContents.send("mail:notificationClicked");
+} });
 
 function applyDockIcon() {
   if (process.platform !== "darwin" || app.dock == null) return;
@@ -698,6 +706,7 @@ const quitController = quitScheduled.createQuitController({
   requestChoice: requestQuitChoice,
   quitApp: () => app.quit(),
   cleanup: async () => {
+    mailNotifications.stop();
     if (!bootFinished && !bootFailed) bootCancelled = true;
     try { require("./bot/proactive").stop(); } catch { /* no scheduler */ }
     try { await require("./bot/server").stop(); } catch { /* the bridge is already stopped */ }

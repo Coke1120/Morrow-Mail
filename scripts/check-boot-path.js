@@ -176,11 +176,13 @@ assert.strictEqual(mailColumns.status, 0, "mail columns failed");
 for (const name of ["check-bot-mail-actions.js", "check-bot-send-confirm-ui.js", "check-mail-list-layout.js", "check-google-onboarding-startup.js", "check-google-onboarding.js", "check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-responsive-attachments.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-startup-preparation.js", "check-startup-upgrade.js", "check-keychain-reads.js", "check-outbox.js", "check-agent-todos.js", "check-agent-card-view.js", "check-agent-learning.js"]) {
   // Reviewed-flow and Bot-action cases include durable SQLite commits and
   // restarts; allow full assertions to finish on the Windows filesystem.
-  // Startup-upgrade fixture seeds 300 legacy rows + oversized bodies; Windows
-  // runners often need >120s (promote #436 hit ETIMEDOUT at exactly 120000).
+  // Startup-upgrade retains all 300 rows, oversized bodies and recovery cases.
+  // A healthy Windows run measured 168.75s; the same workload later hit 180s.
+  // Allow measured filesystem headroom, with heartbeat/CPU counters in the
+  // fixture to distinguish progress from a hang. Storage worker limits stay.
   const timeout =
     ["check-reviewed-mail-flows.js", "check-bot-mail-actions.js"].includes(name) ? 90000 :
-    name === "check-startup-upgrade.js" ? 180000 :
+    name === "check-startup-upgrade.js" ? (process.platform === "win32" ? 300000 : 180000) :
     30000;
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout });
   assert.ifError(fixture.error);
@@ -1868,7 +1870,7 @@ assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
 const settingsSrc = fs.readFileSync(path.join(root, "host/settings.js"), "utf8");
 const prefs = prefRows();
-assert.strictEqual(prefs.length, 16);
+assert.strictEqual(prefs.length, 18);
 const prefKinds = new Set();
 for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(html.includes('id="' + id + '"'), `settings control missing ${id}`);
@@ -4249,6 +4251,7 @@ assert.ok(html.includes('id="features-title"') && html.includes('id="features-ca
 assert.ok(html.indexOf('src="./features-catalog.js"') < html.indexOf('src="./app.js"'));
 const featureCatalog = require("../renderer/features-catalog.js");
 const featureSeed = [
+  ["native-mail-notifications", "New email notifications", "Mail", "Windows and macOS system notifications for recent unread Inbox arrivals while Morrow Mail is running, awake and syncing. Enabled by default with sender and content hidden. Settings → Mail & Sync can turn them off or show sender only, or sender, subject and a short preview; previews may appear on the lock screen and in notification history. Initial sync, history downloads, flag changes and old restart mail stay quiet. Fresh server delivery can notify even when the sender's Date is old or missing. Historical provider arrival timestamps stay quiet. Bursts across mailboxes share a notification, always with hidden content. Clicking opens the newest available message in its account, or Inbox if it has gone; removed accounts are ignored. System permissions and Focus / Do Not Disturb control delivery. Failed or suppressed attempts do not replay. Windows closing the main window quits; macOS hiding it keeps sync running, but Quit stops it. Installed Windows builds need their Start menu shortcut; portable delivery is not guaranteed. Native Windows/macOS delivery remains unverified."],
   ["setup-guide","First-use setup guide","Accounts","New profiles without mailboxes get a five-step guide: connect a mailbox, connect its calendar, choose recipient-visible sender names, add signatures, and review optional AI. Settings → General → Open setup guide resumes it. Skip for now advances without marking a connection complete; Finish later, Escape and Finish guide preserve progress on this computer. Existing profiles with mailboxes are not interrupted. Saved account settings determine status; mailbox selection keeps names and signatures bound to the selected account and exact From addresses. Google and Microsoft calendars with separate provider consent are supported; other calendar providers are unavailable. Mail works without Calendar or AI. Connection setup reuses existing editors and consent flows. Saving AI configuration never grants data permission or enables background use. Google Console JSON import is offered within the mailbox step when needed. Native provider sign-in and delivery are not verified by synthetic tests."],
   ["mail-list-columns","Mail columns and sorting","Mail","Date, Recipient, Sender and Subject headers sort all matching downloaded mail before paging, in folders including Inbox, Drafts and Sent and All Account Mail. Click again to reverse direction; the choice is remembered on this device. Drag headers to reorder columns independently of sorting, or use Columns and its Move left / Move right buttons, or Alt + Left / Right on a header. Reset column order restores Date, Recipient, Sender, Subject. Layout is saved in settings.json and shared by all mailboxes, search and Outbox. Cancelling a drag leaves the order unchanged. Missing new columns are appended and unknown or duplicate saved columns are ignored. Recipient shows all To recipients and sorts by the first; missing text sorts first ascending and last descending. Sender sorts by the saved display name when available, otherwise the cached From text. Date uses the existing message timestamp (saved time for local drafts). Equal values use message ID for stable ordering. Changing sort returns to the first page and keeps the reader open; selection remains only for rows on that page. Search sorts all downloaded matches before its existing 100-result limit. Filter this page still filters only loaded rows. Narrow lists scroll horizontally. Outbox retains scheduled send order and its headers are disabled. Undownloaded provider mail is not included."],
   ["mail-workflow-feedback","Mail and Agent feedback","Mail","All Account Mail has Inbox, Outbox, Starred and Unread rows. Inbox keeps its existing primary-folder scope: Gmail All Mail (Inbox until All Mail is available), otherwise Inbox. Starred and Unread aggregate the existing per-account downloaded filters and their counts. Unread excludes Sent, Drafts, Trash, Spam, search-only copies and snoozed messages; Starred uses the saved star flag across folders. Counts exclude a read row held open. The Inbox unread chip is removed; per-account unread counts remain. Provider folder badges can include mail not downloaded here. Local read changes and definitive mailbox receipts refresh the counts. Confirmed bulk Archive and Trash hide the reviewed rows immediately and submit groups of at most four messages between paints; the rest of Mail stays usable. This is not a cancellation window. Accepted writes await mailbox confirmation before joining Undo. Failed, unknown and unattempted rows reconcile with downloaded mail; refresh before retrying an unknown change. Agent reopens with its last payload, refreshes quietly and shows a non-blocking triage notice when stale; first load and explicit Refresh may show Working. Failed refresh keeps saved suggestions visible."],
@@ -6026,12 +6029,20 @@ async function checkSignaturesAndSchedule(engine, db) {
   assert.deepStrictEqual(otherList.data.signatures, []);
   assert.strictEqual(otherList.data.defaultSignatureId, null);
   assert.strictEqual(otherList.data.defaultSignaturePerAccount["imap-test"], createdId);
-  const second = engine.answer("mail:upsertSignature", [{
-    accountId: "imap-ol",
-    name: "Short",
-    text: "— Ada",
-    isDefault: true,
-  }]);
+  // Signature order is created_at, then random id. Pin the later save's clock
+  // so two fast synchronous saves cannot turn this ordering assertion random.
+  const signatureNow = Date.now;
+  const secondCreatedAt = db.signatureById(createdId).created_at + 1;
+  let second;
+  try {
+    Date.now = () => Math.max(signatureNow(), secondCreatedAt);
+    second = engine.answer("mail:upsertSignature", [{
+      accountId: "imap-ol",
+      name: "Short",
+      text: "— Ada",
+      isDefault: true,
+    }]);
+  } finally { Date.now = signatureNow; }
   assert.strictEqual(second.success, true);
   const both = engine.answer("mail:listSignatures", []);
   assert.deepStrictEqual(both.data.signatures.map((row) => row.id), [createdId, second.data.id]);
@@ -10271,6 +10282,10 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
     assert.strictEqual(fixture.status, 0, name + " failed");
   }
 }).then(() => checkTranslateBatches()).then(() => {
+  for (const name of ["check-mail-notifications.js", "check-mail-notifications-sync.js", "check-mail-notifications-ui.js"]) {
+    const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
+    assert.strictEqual(fixture.status, 0, name + " failed");
+  }
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

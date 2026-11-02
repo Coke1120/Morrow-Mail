@@ -1142,6 +1142,25 @@
         <section class="fold" id="settings-mail" data-fold="mail" role="tabpanel" aria-labelledby="settings-tab-mail" tabindex="0" hidden>
           <div class="fold-panel" id="settings-mail-panel" hidden>
             <h3>Message list &amp; sync</h3>
+            <div class="settings-group" id="mail-notifications">
+              <h4>New email notifications</h4>
+              <label class="check" for="pref-mail-notifications"><input id="pref-mail-notifications" type="checkbox" checked aria-describedby="mail-notifications-help" /> Show system notifications for new Inbox mail</label>
+              <p class="hint" id="mail-notifications-help">Windows and macOS, while Morrow Mail is running, awake and syncing. On Windows, closing the main window quits the app. On macOS, hiding the window keeps it running; Quit stops notifications. Your system notification permissions and Focus / Do Not Disturb still apply.</p>
+              <div class="field">
+                <label for="pref-mail-notification-preview">Notification preview</label>
+                <select id="pref-mail-notification-preview" aria-describedby="mail-notification-preview-help">
+                  <option value="hidden" selected>Hide sender and content</option>
+                  <option value="sender">Sender only</option>
+                  <option value="message">Sender, subject and short preview</option>
+                </select>
+                <p class="hint" id="mail-notification-preview-help">Hidden by default. Previews may appear on your lock screen and in notification history. Grouped notifications always hide sender and content.</p>
+              </div>
+              <p id="mail-notification-status" class="hint" role="status"></p>
+              <details class="settings-disclosure"><summary>When notifications appear</summary>
+                <p class="hint">Recent unread Inbox arrivals after initial sync. History downloads, cache rebuilds, flag changes and old mail found after restarting stay quiet. Short bursts across mailboxes share one notification; clicking opens the newest available message, or its Inbox if it has gone. Newly delivered mail can notify even when the sender’s date is old or missing. No alerts while the app is quit.</p>
+                <p class="hint">Manage Morrow Mail in your system notification settings. Delivery can be blocked by permissions or Focus / Do Not Disturb; Morrow cannot detect every system restriction. Windows installed builds need their Start menu shortcut; portable delivery is not guaranteed.</p>
+              </details>
+            </div>
             <div class="field">
               <label for="pref-sync-horizon">Sync history</label>
               <select id="pref-sync-horizon" aria-describedby="sync-horizon-help">
