@@ -27,6 +27,12 @@ OAuth secrets, and no publishing, upload or app-launch step. Its path filter
 limits this additional package build to changes in these workflows. The normal
 Linux and Windows checks remain in place.
 
+electron-builder otherwise skips the custom signer in PR builds. Only the PR
+packaging step sets `CSC_FOR_PULL_REQUEST=true`, with identity auto-discovery
+disabled, so the existing keyless identity `-` signer actually runs. No signing
+credentials or keychain profile are supplied. The extracted archive must still
+pass the same strict integrity verification as a release.
+
 The in-flight v0.3.17 workflow remains unchanged at its tagged source commit.
 This workflow-only change does not bump the version, move its tag or republish
 that release. It supersedes [the Mac mini selection](2026-10-29-release-macos-self-hosted.md)

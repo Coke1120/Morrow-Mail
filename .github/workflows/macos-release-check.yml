@@ -37,6 +37,9 @@ jobs:
       - name: Ad hoc sign and verify macOS ARM64 bundle without publishing
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          # electron-builder skips even the custom ad hoc hook in PR builds.
+          # This secret-free job uses identity '-' only, with no keychain profile.
+          CSC_FOR_PULL_REQUEST: "true"
         run: npm run dist:mac -- --arm64 --publish never
       - name: Verify final macOS integrity and report platform trust
         run: node scripts/verify-release-macos.js
