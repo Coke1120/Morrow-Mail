@@ -169,12 +169,12 @@ assert.strictEqual(mailColumns.status, 0, "mail columns failed");
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
 for (const name of ["check-bot-mail-actions.js", "check-bot-send-confirm-ui.js", "check-mail-list-layout.js", "check-google-onboarding-startup.js", "check-google-onboarding.js", "check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-responsive-attachments.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-startup-preparation.js", "check-startup-upgrade.js", "check-keychain-reads.js", "check-outbox.js", "check-agent-todos.js", "check-agent-card-view.js", "check-agent-learning.js"]) {
-  // Forty reviewed-flow cases include durable SQLite commits and restarts;
-  // allow their full assertions to finish on the Windows runner's filesystem.
+  // Reviewed-flow and Bot-action cases include durable SQLite commits and
+  // restarts; allow full assertions to finish on the Windows filesystem.
   // Startup-upgrade fixture seeds 300 legacy rows + oversized bodies; Windows
   // runners often need >120s (promote #436 hit ETIMEDOUT at exactly 120000).
   const timeout =
-    name === "check-reviewed-mail-flows.js" ? 90000 :
+    ["check-reviewed-mail-flows.js", "check-bot-mail-actions.js"].includes(name) ? 90000 :
     name === "check-startup-upgrade.js" ? 180000 :
     30000;
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout });
