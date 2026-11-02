@@ -4,7 +4,8 @@ const dns = require("dns");
 const http = require("http");
 const https = require("https");
 const net = require("net");
-const { webhook } = require("./proactive-config");
+const crypto = require("crypto");
+const { webhook, webhookMode: normalizeMode, validSecret } = require("./proactive-config");
 
 const MAX_BYTES = 128 * 1024;
 const RESPONSE_BYTES = 8192;
@@ -35,11 +36,30 @@ function privateLookup(hostname, options, callback) {
   });
 }
 
-function post(urlValue, body, { signal, token = "", deliveryId, timeoutMs = TIMEOUT_MS } = {}) {
+function acknowledged(code) { return code === "OK" || /^HERMES_HTTP_2\d\d$/.test(code); }
+
+function post(urlValue, body, { signal, token = "", deliveryId, webhookMode = "bearer", now = Date.now, timeoutMs = TIMEOUT_MS } = {}) {
   // No redirect handler, proxy environment, cookies or response-body execution.
   let url;
   try { url = new URL(webhook(urlValue)); } catch { return Promise.resolve({ code: "WEBHOOK_DESTINATION_BLOCKED", retryable: false }); }
-  if (Buffer.byteLength(body) > MAX_BYTES) return Promise.resolve({ code: "PAYLOAD_TOO_LARGE", retryable: false });
+  let rawBody, headers;
+  try {
+    rawBody = Buffer.from(body);
+    if (rawBody.length > MAX_BYTES) return Promise.resolve({ code: "PAYLOAD_TOO_LARGE", retryable: false });
+    normalizeMode(webhookMode);
+    if (!validSecret(token, webhookMode) || typeof deliveryId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(deliveryId)) throw Error();
+    headers = { "content-type": "application/json; charset=utf-8", accept: "application/json",
+      "content-length": rawBody.length, "user-agent": "MorrowBotNotify/1.0", "idempotency-key": deliveryId };
+    if (webhookMode === "hermes_hmac_v2") {
+      const seconds = Math.floor(now() / 1000);
+      if (!Number.isSafeInteger(seconds) || seconds < 0) throw Error();
+      const timestamp = String(seconds);
+      headers["x-webhook-timestamp"] = timestamp;
+      headers["x-webhook-signature-v2"] = crypto.createHmac("sha256", Buffer.from(token, "utf8"))
+        .update(timestamp + ".", "utf8").update(rawBody).digest("hex");
+      headers["x-request-id"] = deliveryId;
+    } else if (token) headers.authorization = `Bearer ${token}`;
+  } catch { return Promise.resolve({ code: "WEBHOOK_CONFIG_INVALID", retryable: false }); }
   if (signal && signal.aborted) return Promise.resolve({ code: "CANCELLED", retryable: false });
   return new Promise(resolve => {
     let req;
@@ -56,9 +76,6 @@ function post(urlValue, body, { signal, token = "", deliveryId, timeoutMs = TIME
     const abort = () => finish("CANCELLED");
     timer = setTimeout(() => finish("WEBHOOK_TIMEOUT", true), timeoutMs);
     if (signal) signal.addEventListener("abort", abort, { once: true });
-    const headers = { "content-type": "application/json; charset=utf-8", accept: "application/json",
-      "content-length": Buffer.byteLength(body), "user-agent": "MorrowBotNotify/1.0", "idempotency-key": deliveryId };
-    if (token) headers.authorization = `Bearer ${token}`;
     try {
       req = (url.protocol === "https:" ? https : http).request(url, {
         method: "POST", headers, agent: false, lookup: privateLookup, rejectUnauthorized: true,
@@ -68,16 +85,18 @@ function post(urlValue, body, { signal, token = "", deliveryId, timeoutMs = TIME
         let bytes = 0;
         res.on("data", chunk => { bytes += chunk.length; if (bytes > RESPONSE_BYTES) finish("WEBHOOK_RESPONSE_TOO_LARGE"); });
         res.on("end", () => {
-          if (status >= 200 && status < 300) finish("OK");
+          // A 202 admits/buffers work; other 2xx may be duplicate, filtered or
+          // deliver-only. Never infer agent completion from HTTP or the body.
+          if (status >= 200 && status < 300) finish(webhookMode === "hermes_hmac_v2" ? `HERMES_HTTP_${status}` : "OK");
           else finish(`WEBHOOK_HTTP_${status}`, status === 429 || status >= 500);
         });
         res.on("error", () => finish("WEBHOOK_UNREACHABLE", true));
         res.on("aborted", () => finish("WEBHOOK_UNREACHABLE", true));
       });
       req.on("error", error => finish(error.code === "WEBHOOK_DESTINATION_BLOCKED" ? error.code : "WEBHOOK_UNREACHABLE", error.code !== "WEBHOOK_DESTINATION_BLOCKED"));
-      req.end(body);
+      req.end(rawBody);
     } catch { finish("WEBHOOK_UNREACHABLE", true); }
   });
 }
 
-module.exports = { post, tailnetAddress, privateLookup, MAX_BYTES, RESPONSE_BYTES, TIMEOUT_MS };
+module.exports = { post, acknowledged, tailnetAddress, privateLookup, MAX_BYTES, RESPONSE_BYTES, TIMEOUT_MS };

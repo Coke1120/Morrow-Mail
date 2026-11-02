@@ -69,6 +69,17 @@
       "warnings"
     ],
     "configuration": "desktop Settings only; separate per-bot background opt-in and active listener",
+    "webhookModes": ["bearer", "hermes_hmac_v2"],
+    "defaultStoredWebhookMode": "bearer",
+    "hermes": {
+      "signatureHeader": "X-Webhook-Signature-V2",
+      "timestampHeader": "X-Webhook-Timestamp",
+      "deliveryIdHeader": "X-Request-ID",
+      "signature": "lowercase hex HMAC-SHA256(UTF-8 secret, Unix-seconds + '.' + exact raw body)",
+      "replayWindowSeconds": 300,
+      "retry": "same body and deliveryId, fresh timestamp and signature",
+      "acknowledgement": "HTTP admission only; agent completion unverified"
+    },
     "decisionOwner": "platform_bot",
     "maxPayloadBytes": 131072,
     "maxResponseBytes": 8192,
