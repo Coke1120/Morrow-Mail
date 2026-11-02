@@ -207,7 +207,8 @@
             <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>
         </div>
-        <div id="message-list" tabindex="0" aria-label="Downloaded messages"></div>
+        <p id="mail-sort-help" class="sr">Click Date, Recipient, Sender or Subject to sort all downloaded mail before paging; click again to reverse. Recipient sorts by the first To recipient. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order.</p>
+        <div id="message-list" tabindex="0" aria-label="Downloaded messages" aria-describedby="mail-sort-help"></div>
           <div id="list-paging" class="list-paging" role="group" aria-label="Message pages" hidden>
             <p id="list-page-status" class="list-filter-note" role="status"></p>
             <div class="row">

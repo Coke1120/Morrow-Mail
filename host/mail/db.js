@@ -1216,7 +1216,7 @@ function searchMessages(options, { headersOnly = false } = {}) {
     `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m JOIN accounts connected ON connected.id = m.account_id
      ${joins.join("\n")}
      ${where}
-     ORDER BY (${rank}) DESC, m.list_sort_ts DESC, m.id DESC
+     ORDER BY ${query.sortBy ? messageOrder(query) : `(${rank}) DESC, m.list_sort_ts DESC, m.id DESC`}
      LIMIT ?`,
     params
   );
@@ -1783,6 +1783,20 @@ function metadataColumns(table) {
   return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
 }
 
+// SQL identifiers and directions come only from this allowlist, never IPC text.
+function messageOrder(query, table = "m") {
+  const prefix = table ? table + "." : "";
+  const dir = query.sortDirection === "asc" ? "ASC" : "DESC";
+  const fields = {
+    date: `${prefix}list_sort_ts`,
+    sender: `COALESCE(NULLIF(${prefix}from_display_name, ''), ${prefix}from_addr, '') COLLATE NOCASE`,
+    recipient: `COALESCE(json_extract(${prefix}to_json, '$[0]'), '') COLLATE NOCASE`,
+    subject: `COALESCE(${prefix}subject, '') COLLATE NOCASE`,
+  };
+  const field = Object.hasOwn(fields, query.sortBy) ? query.sortBy : "date";
+  return `${fields[field]} ${dir}, ${prefix}id ${dir}`;
+}
+
 function selectMessages(query, { headersOnly = false, now = Date.now() } = {}) {
   const scope = resolveScope(query);
   const { clauses, params } = whereFor(scope, now);
@@ -1806,13 +1820,13 @@ function selectMessages(query, { headersOnly = false, now = Date.now() } = {}) {
       if (retainId && branch.retainOnly) filtered.clauses.push("m.unread != 1");
       bindings.push(...filtered.params, limit + offset);
       return `SELECT * FROM (SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join}
-        WHERE ${filtered.clauses.join(" AND ")} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ?)`;
+        WHERE ${filtered.clauses.join(" AND ")} ORDER BY ${messageOrder(query)} LIMIT ?)`;
     });
     return perf.sync("db.list.merged", () => all(`SELECT * FROM (${parts.join(" UNION ALL ")})
-      ORDER BY list_sort_ts DESC, id DESC LIMIT ? OFFSET ?`, [...bindings, limit, offset]));
+      ORDER BY ${messageOrder(query, "")} LIMIT ? OFFSET ?`, [...bindings, limit, offset]));
   }
   return perf.sync(headersOnly ? "db.list.headers" : "db.list.full", () => all(
-    `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join} ${where} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?`,
+    `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join} ${where} ORDER BY ${messageOrder(query)} LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   ));
 }
