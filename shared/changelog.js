@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.21": [
+      "New Inbox mail can show system notifications on Windows and macOS. Alerts are on by default with sender and content hidden; Settings → Mail & Sync controls alerts and previews.",
+      "Saved connections retry temporary renewal and secure-storage failures instead of unnecessarily asking for sign-in. Renewed credentials must be saved before use.",
+      "Proactive notify supports explicit native Hermes HMAC V2 authentication while preserving existing Bearer settings. HTTP acknowledgement does not verify agent completion.",
+      "Updates keep checking after a cached Mac download. Installed Windows updates wait for final shutdown, and portable Windows copies use manual downloads.",
+    ],
     "0.3.20": [
       "New users get a five-step setup guide for mailbox, calendar, sender name, signature and optional AI. Settings can reopen it and resume progress.",
       "Drag mail column headers to reorder them, or use Columns and keyboard controls. The saved layout is independent of sorting and can be reset.",
