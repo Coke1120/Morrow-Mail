@@ -1072,7 +1072,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
     }
     notifications.enqueue(account, arrivals.flatMap(message => {
       const row = db.messageByUid(account.id, folder.path, message.uid, folder.uid_validity, { headersOnly: true });
-      return row ? [{ messageId: row.id, identity: `imap:${folder.path}:${folder.uid_validity}:${message.uid}`, receivedAt: message.receivedAt, sentAt: message.sentAt }] : [];
+      return row ? [{ messageId: row.id, identity: `imap:${folder.path}:${folder.uid_validity}:${message.uid}`, receivedAt: message.receivedAt }] : [];
     }));
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
     if (fresh.length > REFRESH_PAGES[index]) backlog = true;

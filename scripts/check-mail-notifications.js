@@ -40,7 +40,7 @@ function fixture() {
     const messageId = `${accountId}-${n}`;
     messages.set(messageId, { id: messageId, account_id: accountId, folder_path: "INBOX", date_iso: new Date(clock).toISOString(),
       from_addr: "Private sender <private@example.invalid>", subject: "Private subject", snippet: "Private preview", unread: 1, ...extra });
-    return { messageId, identity: `imap:INBOX:1:${n}`, receivedAt: clock, sentAt: Date.parse(messages.get(messageId).date_iso) };
+    return { messageId, identity: `imap:INBOX:1:${n}`, receivedAt: clock };
   }
   function advance(ms = 2000) {
     clock += ms;
@@ -65,14 +65,23 @@ test("recent arrivals are generic by default and click pulls a validated same-ac
   assert.equal(f.controller.takeTarget(), null);
 });
 
-test("old startup/history/import dates, read mail, drafts and malformed IDs are silent", () => {
+test("old server arrival timestamps from startup/history/import, read mail, drafts and malformed IDs are silent", () => {
   const f = fixture();
   const old = f.arrival(1); old.receivedAt--;
   const imported = f.arrival(2, "a", { date_iso: "2001-01-01T00:00:00Z" });
+  imported.receivedAt -= 86400000;
   const read = f.arrival(3, "a", { unread: 0 });
   const draft = f.arrival(4, "a", { is_draft: 1 });
   f.controller.enqueue(f.accounts.get("a"), [old, imported, read, draft, { ...f.arrival(5), messageId: "\0bad" }]);
   f.advance(); assert.equal(f.notices.length, 0); assert.equal(f.saved.size, 0);
+});
+
+test("a genuine new server arrival notifies despite an old, missing or future sender Date", () => {
+  for (const date_iso of ["2001-01-01T00:00:00Z", "", "2099-01-01T00:00:00Z"]) {
+    const f = fixture();
+    f.controller.enqueue(f.accounts.get("a"), [f.arrival(1, "a", { date_iso })]); f.advance();
+    assert.equal(f.notices.length, 1, "sender-controlled dates cannot suppress a new server delivery");
+  }
 });
 
 test("reconnect invalidates pending/native clicks and restart cannot replay successful reservations", async () => {

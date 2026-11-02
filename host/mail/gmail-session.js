@@ -135,8 +135,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     const labels = data.labelIds || [];
     const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
     const root = references[0] || parsed.inReplyTo || parsed.messageId;
-    return { providerId: data.id, providerThreadId: data.threadId, labelIds: labels, receivedAt: Number(data.internalDate) || null,
-      sentAt: parsed.date instanceof Date && Number.isFinite(parsed.date.getTime()) ? parsed.date.getTime() : null, rfcMessageId: parsed.messageId || null,
+    return { providerId: data.id, providerThreadId: data.threadId, labelIds: labels, receivedAt: Number(data.internalDate) || null, rfcMessageId: parsed.messageId || null,
       threadId: root ? `thr:${String(root).replace(/[<>\s]/g, "").slice(0, 180)}` : `gmail:${data.threadId || data.id}`,
       inReplyTo: parsed.inReplyTo || null, subject: presented.subject, from: stringAddresses(parsed.from).join(", "),
       fromAddress: parsed.from?.value?.[0]?.address || "",
@@ -211,7 +210,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
       if (arrival && !known && value.labelIds.includes("INBOX") && !value.labelIds.some(label => ["TRASH", "SPAM", "DRAFT", "SENT"].includes(label))) {
         const inbox = db.folderByWellKnown(account.id, "inbox");
         const row = inbox && db.messageByUid(account.id, inbox.path, value.uid, incarnation, { headersOnly: true });
-        if (row) arrivals.push({ messageId: row.id, identity: `gmail:${providerId}`, receivedAt: value.receivedAt, sentAt: value.sentAt });
+        if (row) arrivals.push({ messageId: row.id, identity: `gmail:${providerId}`, receivedAt: value.receivedAt });
       }
     }
     async function verifyCached() {

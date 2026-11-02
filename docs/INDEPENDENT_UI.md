@@ -13,8 +13,9 @@ Body download failures, including IMAP responses without the requested source, s
 
 Settings → Mail & Sync controls new-email system notifications on Windows/macOS.
 They default on with sender/content hidden, and run only while the app is running,
-awake and syncing. Initial/history/restart backlog stays quiet; conservative date
-checks can omit delayed/undated mail. Bursts are grouped and clicks revalidate the
+awake and syncing. Initial/history/restart backlog stays quiet; provider arrival
+time gates freshness, while old/missing sender dates do not suppress a new delivery.
+Long sync delays can still omit older arrivals. Bursts are grouped and clicks revalidate the
 account/message before normal Mail opening. OS permissions and Focus/DND govern
 delivery. See [native notification boundaries and validation](adr/2026-11-02-native-mail-notifications.md).
 

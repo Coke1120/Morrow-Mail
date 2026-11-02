@@ -30,15 +30,17 @@ records), verifies current Inbox membership, and ignores already adopted provide
 identities. Pending history pages persist their arrival IDs with their existing
 resume cursor. No new provider request or scope is needed.
 
-Provider receive time must be after process start or the last account/settings
-invalidation, and within five minutes of now. A separate valid message Date must
-also be within five minutes; a fallback display Date is not delivery evidence.
-This suppresses offline backlog, historical imports, fresh-UID copies of older
-mail, undated mail and flag-only changes. Conservative misses include delayed
-messages, long sync queues and slow first sync. Neither IMAP nor Gmail history can
-prove that a newly added message with recent delivery/header timestamps was not
-an import. A recent import that looks identical to a fresh delivery may notify;
-we do not promise perfect provenance detection from these protocols.
+Provider receive time (IMAP INTERNALDATE or Gmail internalDate) must be after
+process start or the last account/settings invalidation, and within five minutes
+of now. The sender's Date header never gates eligibility: a genuinely new server
+delivery can notify even with an old, missing or future sender Date. Display-date
+fallbacks are not used as arrival evidence. This suppresses offline backlog,
+historical imports preserving arrival time, and flag-only changes. Conservative
+misses include long sync queues and slow first sync. Neither IMAP nor Gmail
+history can prove that a newly added message with a fresh provider receive time
+was not an import resetting that timestamp. Such imports can notify; dropping a
+genuine delayed delivery based on its sender Date would be incorrect. We do not
+promise perfect import provenance detection from these protocols.
 
 `mail_notification_state` in the existing durable mail store holds at most 2,000
 SHA-256 identity/timestamp pairs per account (Gmail provider ID or IMAP
@@ -82,7 +84,8 @@ create a persistent background process.
 mock native notices/timers, production Gmail and IMAP sync with synthetic
 transports, production database close/reopen/removal, and actual preload through
 Settings validation/persistence. Coverage includes bootstrap/history suppression,
-arrival/restart/reconnect dedup, batching/rate limits, disabled/unsupported/failed
+arrival/restart/reconnect dedup, fresh deliveries with old/missing sender Date,
+batching/rate limits, disabled/unsupported/failed
 and suppressed delivery, storage failure, bounded retention, privacy and clicks.
 
 Optional Chromium smoke: `node scripts/check-mail-notifications-browser.js` with

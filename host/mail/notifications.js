@@ -117,11 +117,8 @@ function createNotifications({ store = db, preferences = () => settings.notifica
         if (known.has(key)) continue;
         const row = store.messageById(item.messageId, { headersOnly: true }), folder = row && store.folderByPath(account.id, row.folder_path);
         if (!row || row.account_id !== account.id || folder?.well_known !== "inbox" || row.is_draft || row.draft_pending || !row.unread) continue;
-        // A recent INTERNALDATE alone can be an import or copy of old mail.
-        // Require a recent message Date too, accepting conservative misses for
-        // delayed/undated mail rather than announcing historical imports.
-        const sentAt = item.sentAt;
-        if (!Number.isFinite(sentAt) || sentAt < now() - RECENT_MS || sentAt > now() + 60000) continue;
+        // The sender's Date is not delivery evidence. Delayed and undated mail
+        // can be genuinely new at the server; only receivedAt gates freshness.
         known.add(key); saved.seen.push([key, time]);
         accepted.push({ accountId: account.id, createdAt: account.created_at, version: versions.get(account.id) || 0,
           messageId: row.id, gmailId: row.gmail_id || null, receivedAt: time, key });
