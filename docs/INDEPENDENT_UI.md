@@ -1,3 +1,10 @@
+New profiles see a five-step setup guide after startup dialogs: mailbox, calendar,
+sender names, signatures and optional AI. Settings → General → Open setup guide
+resumes saved progress. Existing mailboxes are not interrupted. The guide reads
+saved settings and opens existing account-specific editors; Skip does not mark a
+connection complete. Google Desktop JSON import lives inside the mailbox step.
+See [first-use guide](adr/2026-11-02-first-use-guide.md).
+
 Conversation display counts Gmail label-folder copies once per account/provider message ID and keeps the selected copy. Stored folder rows are retained. Different provider messages, absent provider IDs and pending local draft edits remain separate; RFC Message-ID alone does not collapse deliveries. A single unique message has no Earlier section.
 
 Body download failures, including IMAP responses without the requested source, show Retry download in the reader and a separate reader window. Without an available body, opening fails visibly and does not mark the message read. Partial cached content stays visible with a warning and retry. Gmail sync limits each folder pass to 20 actual full-message reads across history, bootstrap and verification; pending page IDs and committed positions survive restart. A waiting foreground open runs after the current read. From mailbox changes preserve rich content and edited signatures; only untouched automatic signatures, including multiline HTML signatures, follow the new mailbox. See [functional review fixes](adr/2026-10-28-reviewed-mail-flows.md).

@@ -664,6 +664,24 @@
         <div class="row"><button type="button" class="primary" id="changelog-ok">OK</button></div>
       </div>
     </dialog>
+    <dialog id="setup-guide" aria-labelledby="setup-guide-title" aria-describedby="setup-guide-help">
+      <section class="dialog-body setup-guide-sheet">
+        <div class="sheet-head"><div><p class="hint">MAKE YOURSELF AT HOME</p><h2 id="setup-guide-title">Welcome to Morrow Mail</h2></div><button type="button" class="ghost" id="setup-guide-later">Finish later</button></div>
+        <p id="setup-guide-help">A few small steps to make your mailbox feel like yours. Calendar and AI are optional.</p>
+        <label for="setup-guide-account">Set up mailbox</label><select id="setup-guide-account"></select>
+        <nav id="setup-guide-steps" aria-label="Setup steps"></nav>
+        <section class="setup-guide-card" aria-labelledby="setup-guide-heading">
+          <p class="hint" id="setup-guide-position"></p><h3 id="setup-guide-heading" tabindex="-1"></h3>
+          <p id="setup-guide-copy"></p><p id="setup-guide-state" role="status" aria-live="polite"></p>
+          <button type="button" class="primary" id="setup-guide-action"></button>
+          <button type="button" class="ghost" id="setup-guide-import" hidden>Import Google Console JSON…</button>
+        </section>
+        <button type="button" class="ghost" id="setup-guide-cancel" hidden>Cancel calendar sign-in</button>
+        <p id="setup-guide-error" role="status" aria-live="polite"></p>
+        <div class="row setup-guide-footer"><button type="button" class="ghost" id="setup-guide-back">Back</button><button type="button" class="ghost" id="setup-guide-next">Skip for now</button></div>
+        <p class="hint">Your saved settings stay in place. Reopen this guide from Settings → General.</p>
+      </section>
+    </dialog>
     <dialog id="google-onboarding" aria-labelledby="google-onboarding-title" aria-describedby="google-onboarding-help">
       <div class="dialog-body">
         <h2 id="google-onboarding-title">Set up Google sign-in</h2>
@@ -1034,6 +1052,7 @@
       <div class="settings-folds">
         <section class="fold is-open" id="settings-prefs" data-fold="prefs" role="tabpanel" aria-labelledby="settings-tab-prefs" tabindex="0">
           <div class="fold-panel" id="settings-prefs-panel">
+          <div class="setup-guide-settings"><h3>Make Morrow yours</h3><p class="hint">Connect mail and calendar, choose your sender name and signature, and review optional AI settings.</p><button type="button" class="ghost" id="setup-guide-open">Open setup guide</button></div>
           <h3 id="settings-prefs-title">Appearance</h3>
           <div id="prefs">
             <div class="field">

@@ -28,6 +28,7 @@ const DEFAULTS = {
   defaultScheduleDelayMinutes: 0, // 0 sends immediately. Otherwise Send schedules this far ahead.
   layoutPanes: { folders: 260, list: 360, reading: 0 },
   changelogSeen: "",
+  onboarding: null,
 };
 
 const GET = {
@@ -52,6 +53,7 @@ const GET = {
   "morrow:configGetCompactMessageList": "compactMessageList",
   "morrow:configGetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
   "morrow:configGetLayoutPanes": "layoutPanes",
+  "morrow:configGetOnboarding": "onboarding",
   "morrow:configGetChangelogSeen": "changelogSeen",
 };
 
@@ -77,6 +79,7 @@ const SET = {
   "morrow:configSetCompactMessageList": "compactMessageList",
   "morrow:configSetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
   "morrow:configSetLayoutPanes": "layoutPanes",
+  "morrow:configSetOnboarding": "onboarding",
   "morrow:configSetChangelogSeen": "changelogSeen",
 };
 
@@ -136,6 +139,16 @@ function castChangelogSeen(value, loose) {
 }
 
 function cast(key, value, loose) {
+  if (key === "onboarding") {
+    if (value === null) return null;
+    if (!value || typeof value !== "object" || !["active", "later", "done", "existing"].includes(value.status)
+      || !Number.isInteger(value.step) || value.step < 0 || value.step > 4) {
+      if (loose) return null;
+      throw new Error("Invalid setup guide progress");
+    }
+    return { status: value.status, step: value.step,
+      accountId: typeof value.accountId === "string" ? value.accountId.slice(0, 256) : "" };
+  }
   if (key === "changelogSeen") return castChangelogSeen(value, loose);
   if (key === "sidebarCollapsedFolders") {
     if (loose) return folderCollapse.normalize(value);

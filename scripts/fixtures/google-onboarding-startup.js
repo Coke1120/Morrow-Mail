@@ -7,6 +7,7 @@
       accounts: options.accounts || [],
       calls: [],
       ready: false,
+      onboarding: options.onboarding || null,
       readStatus: null,
       readSeen: null,
     };
@@ -17,6 +18,8 @@
       reportUpdateReady() { state.ready = true; },
       async invoke(channel, ...args) {
         state.calls.push(channel);
+        if (channel === 'morrow:configGetOnboarding') return state.onboarding;
+        if (channel === 'morrow:configSetOnboarding') { state.onboarding = args[0]; return state.onboarding; }
         if (channel === 'app:getVersion') return state.version;
         if (channel === 'morrow:configGetChangelogSeen') return state.readSeen ? state.readSeen() : window.localStorage.getItem('synthetic.changelogSeen') || '';
         if (channel === 'morrow:configSetChangelogSeen') { window.localStorage.setItem('synthetic.changelogSeen', args[0]); return true; }
