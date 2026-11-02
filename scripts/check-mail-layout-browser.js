@@ -51,6 +51,8 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
    offerChangelog=async()=>{};refreshMailVacation=()=>{document.getElementById("mail-ooo").hidden=true};await loadMailColumnOrder();await loadMailView();wireMailColumnEditor();wireMailView();wireSplits();renderAccounts();await loadList(false,0);document.getElementById('mail-ooo').hidden=true;
   })}
   await page.goto(url);await initialize();
+  const outerCorners=await verifyOuterMailCardCorners(page);
+  await page.reload();await initialize();
   await page.locator('[data-sort-key="date"] button').dragTo(page.locator('[data-sort-key="subject"]'),{targetPosition:{x:150,y:12}});
   await page.waitForFunction(()=>mailColumnOrder()[0]!=='date');
   const dragged=await page.evaluate(()=>mailColumnOrder());assert.equal(dragged.length,4);
@@ -80,9 +82,50 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   await page.reload();await initialize();assert.equal(await page.evaluate(()=>state.prefs.mailView.layout),'window');
   await page.evaluate(()=>showFeatures());assert.match(await page.locator('#features-catalog').textContent(),/Drag headers to reorder columns independently of sorting/);
   assert.match(await page.locator('#features-catalog').textContent(),/View, beside Search downloaded mail/);
-  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',url,title:await page.title(),checks:'drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, rounded corners, right/bottom/window layouts, splitter keyboard and pointer, selection/search/scroll retention, double-click and keyboard popout, narrow/mobile/light/dark/reduced-motion, rendered Features, axe',output}));
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',url,title:await page.title(),checks:'drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, whole All Mail card top corners with negative control, right/bottom/window layouts, splitter keyboard and pointer, selection/search/scroll retention, double-click and keyboard popout, narrow/mobile/light/dark/reduced-motion, rendered Features, axe',outerCorners,output}));
  }finally{await browser.close();server.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});
+
+async function verifyOuterMailCardCorners(page) {
+ await page.setViewportSize({width:1440,height:960});
+ await page.evaluate(()=>{
+  applyShellTheme(document.documentElement,'light','#193C34');
+  state.allInbox=false;state.allInboxUnreadOnly=false;state.allInboxStarredOnly=false;
+  state.query='';state.searchAccountId='';state.accountId='a';state.folderId='All Mail';
+  state.email=null;state.thread=[];state.selectedIds=[];state.selectionAnchor='';state.prefs.chips=false;
+  state.accounts[0].folders.primary.unshift({id:'All Mail',name:'All Mail',wellKnownName:'all'});
+  state.emails=fixtureRows.filter(row=>row.accountId==='a').slice(0,200).map(row=>({...row,folderId:'All Mail'}));
+  state.listTotal=225;state.listOffset=0;document.getElementById('list-filter').value='';
+  renderAccounts();renderList();renderReader(false);
+ });
+ assert.equal(await page.locator('#list-title').textContent(),'All Mail');
+ const measure=()=>page.evaluate(()=>{
+  const card=document.getElementById('messages'),toolbar=document.getElementById('list-head'),reader=document.getElementById('reader');
+  const c=card.getBoundingClientRect(),t=toolbar.getBoundingClientRect(),r=reader.getBoundingClientRect(),columns=document.querySelector('.mail-list-columns').getBoundingClientRect();
+  const inside=(x,y)=>!!document.elementFromPoint(x,y)?.closest('#messages');
+  return {cardTop:c.y,toolbarTop:t.y,toolbarBottom:t.bottom,columnHeaderTop:columns.y,readerTop:r.y,
+   toolbarRadii:[getComputedStyle(toolbar).borderTopLeftRadius,getComputedStyle(toolbar).borderTopRightRadius],
+   readerRadii:[getComputedStyle(reader).borderTopLeftRadius,getComputedStyle(reader).borderTopRightRadius],
+   leftCornerInsideCard:inside(c.x+2,c.y+2),rightCornerInsideCard:inside(c.right-2,c.y+2),
+   topCenterInsideCard:inside(c.x+c.width/2,c.y+2)};
+ });
+ // The negative control removes only the title/filter toolbar's outer radii.
+ // It reproduces the parent's observed square card, without changing the table header.
+ await page.locator('#list-head').evaluate(node=>{node.style.borderTopLeftRadius='0';node.style.borderTopRightRadius='0'});
+ const before=await measure();
+ assert.equal(before.toolbarTop,before.cardTop);assert.ok(before.toolbarBottom<=before.columnHeaderTop+1);
+ assert.equal(before.cardTop,before.readerTop);assert.ok(before.columnHeaderTop>before.cardTop+50);
+ assert.equal(before.leftCornerInsideCard,true);assert.equal(before.rightCornerInsideCard,true);
+ fs.mkdirSync(output,{recursive:true});await page.mouse.move(1400,940);
+ await page.screenshot({path:path.join(output,'all-mail-outer-corners-before.png')});
+ await page.locator('#list-head').evaluate(node=>{node.style.removeProperty('border-top-left-radius');node.style.removeProperty('border-top-right-radius')});
+ const after=await measure();
+ assert.deepEqual(after.toolbarRadii,after.readerRadii);
+ assert.equal(after.leftCornerInsideCard,false);assert.equal(after.rightCornerInsideCard,false);assert.equal(after.topCenterInsideCard,true);
+ assert.equal(after.toolbarTop,after.cardTop);assert.equal(after.columnHeaderTop,before.columnHeaderTop);
+ await page.screenshot({path:path.join(output,'all-mail-outer-corners-after.png')});
+ return {before,after};
+}
 
 async function verifyReadingLayouts(page) {
  const choose=async name=>{await page.locator('#mail-view-open').click();await page.getByRole('menuitemradio',{name,exact:true}).click()};

@@ -26,8 +26,10 @@ shell can scroll. Dividers expose their axis, current size and bounds and suppor
 the matching arrow keys. The View menu uses radio menu items, focus return,
 Escape, outside dismissal and standard arrow/Home/End navigation.
 
-The list header needs its own top radii because its opaque background can cover
-the card's rounded corners. The scrolling surface gets bottom radii when paging
+The topmost title/filter toolbar (`.list-head`), above the column headings, needs
+its own top radii because its opaque background can cover both outer top corners
+of the All Mail card. These are the whole card's corners, independently of the
+table's column header. The scrolling surface gets bottom radii when paging
 is hidden. The card keeps visible overflow so the existing Sync tooltip can
 extend beyond the list rather than being cut off at its border.
 
@@ -35,5 +37,8 @@ extend beyond the list rather than being cut off at its border.
 state retention, read/write races, keyboard controls and splitter persistence.
 `check-mail-layout-browser.js` exercises all three layouts in Chromium, themes,
 desktop and narrow sizes, expanded controls, pointer and keyboard resizing,
-popout seeds, scoped axe checks and rendered Features. It uses synthetic mail;
+popout seeds, scoped axe checks and rendered Features. Its All Mail corner check
+targets both outer corners at the title/filter toolbar, beside a rounded reader;
+a negative control flattens only that toolbar and must reproduce the square
+corners before restoring the actual CSS. It uses synthetic mail;
 native Windows/macOS window behavior still needs platform verification.
