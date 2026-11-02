@@ -456,6 +456,8 @@ function queryFrom(params) {
     limit: query.limit,
     offset: query.offset,
     pageCursor: query.pageCursor,
+    sortBy: query.sortBy,
+    sortDirection: query.sortDirection,
   };
   out = virtuals.apply(out);
   if (!out.folderKey && out.folderId && !out.accountId && KEY_TO_WELL[out.folderId]) {
@@ -510,7 +512,7 @@ function listPayload(params) {
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const summary = db.messageSummary(query, { now });
   const cursor = query.pageCursor;
-  const cursorEligible = !query.filterUnread && !query.filterFlagged && typeof query.filterAttachments !== "boolean" && !query.beforeTs;
+  const cursorEligible = (!query.sortBy || query.sortBy === "date") && query.sortDirection !== "asc" && !query.filterUnread && !query.filterFlagged && typeof query.filterAttachments !== "boolean" && !query.beforeTs;
   const cursorValid = cursorEligible && cursor && cursor.version === summary.version && cursor.offset === offset
     && Number.isSafeInteger(cursor.ts) && typeof cursor.id === "string" && cursor.id.length > 0 && cursor.id.length <= 200;
   let stored = db.selectMessages(cursorValid ? { ...query, offset: 0, beforeMessage: { ts: cursor.ts, id: cursor.id } } : query, { headersOnly: true, now });
@@ -2580,6 +2582,8 @@ function searchLocal(params) {
   const query = params || {};
   return listRows(db.searchMessages({
     query: query.query,
+    sortBy: query.sortBy,
+    sortDirection: query.sortDirection,
     accountId: query.accountId || null,
     limit: query.limit,
   }, { headersOnly: true }));

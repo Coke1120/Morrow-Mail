@@ -267,7 +267,7 @@ test("Mail F7: selected Outbox renders Unknown and Retry with an empty or stale 
   assert.match(ui.nodes.get("message-list").textContent, /Unknown.*Retry.*Waiting sends are unknown/);
   assert.doesNotMatch(ui.nodes.get("message-list").textContent, /Nothing is waiting/);
   failed = false;
-  await ui.nodes.get("message-list").querySelector("button").click();
+  await ui.nodes.get("message-list").querySelector(".outbox-load-error").querySelector("button").click();
   assert.match(ui.nodes.get("message-list").textContent, /Nothing is waiting/);
   failed = true;
   ui.run("state.outboxRows=[{id:'stale',accountId:'a',outbox:true,status:'pending'}]; state.emails=[];");

@@ -207,7 +207,8 @@
             <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>
         </div>
-        <div id="message-list" tabindex="0" aria-label="Downloaded messages"></div>
+        <p id="mail-sort-help" class="sr">Click Date, Recipient, Sender or Subject to sort all downloaded mail before paging; click again to reverse. Recipient sorts by the first To recipient. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order.</p>
+        <div id="message-list" tabindex="0" aria-label="Downloaded messages" aria-describedby="mail-sort-help"></div>
           <div id="list-paging" class="list-paging" role="group" aria-label="Message pages" hidden>
             <p id="list-page-status" class="list-filter-note" role="status"></p>
             <div class="row">
@@ -661,6 +662,19 @@
         <p id="changelog-version" class="hint"></p>
         <ul id="changelog-notes"></ul>
         <div class="row"><button type="button" class="primary" id="changelog-ok">OK</button></div>
+      </div>
+    </dialog>
+    <dialog id="google-onboarding" aria-labelledby="google-onboarding-title" aria-describedby="google-onboarding-help">
+      <div class="dialog-body">
+        <h2 id="google-onboarding-title">Set up Google sign-in</h2>
+        <p id="google-onboarding-help">To use Google sign-in in this installation, import an OAuth Desktop app client JSON downloaded from Google Cloud Console. You can skip this and keep using Morrow.</p>
+        <p class="hint">Importing saves the client on this computer; it does not finish Google Cloud setup or sign you in. <a href="https://github.com/Coke1120/Morrow-Mail/blob/dev/docs/bring-your-own-google-oauth.md" target="_blank" rel="noreferrer">Desktop client setup guide</a></p>
+        <p class="hint">Later, import from Settings → Accounts → Advanced: personal Google OAuth client (optional).</p>
+        <p id="google-onboarding-status" class="hint" role="status" aria-live="polite"></p>
+        <div class="row">
+          <button type="button" class="primary icon-label" id="google-onboarding-import" autofocus><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg><span>Import Google Console JSON…</span></button>
+          <button type="button" class="ghost" id="google-onboarding-later">Later</button>
+        </div>
       </div>
     </dialog>
     <dialog id="support-dialog" aria-labelledby="support-title"><div class="dialog-body">
@@ -1220,6 +1234,7 @@
             <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
           </div>
           </div>
+          <p class="hint" id="google-onboarding-settings-help">Skipped Google setup? Import your Google Console Desktop app JSON in Advanced below, then use Connect account → Continue with Google.</p>
           <details class="settings-disclosure" id="google-oauth-client">
             <summary>Advanced: personal Google OAuth client (optional)</summary>
             <p id="google-oauth-client-status" class="hint" role="status">Checking Google OAuth…</p>
