@@ -17583,6 +17583,49 @@ function paintOooDirty() {
   note.textContent = dirty ? "Unsaved changes. Review and save to the provider." : "";
   if (dirty && $("ooo-status") && $("ooo-status").textContent === "Saved on the provider.") setOooStatus("", false);
 }
+// A profile-local, non-secret preference, shared by shell windows.
+const googleOnboardingKey = "morrow.googleOnboarding.v1";
+let googleOnboardingHandled = false;
+function googleOnboardingDone() {
+  if (googleOnboardingHandled) return true;
+  try { return window.localStorage.getItem(googleOnboardingKey) === "done"; }
+  catch { return false; }
+}
+function rememberGoogleOnboarding() {
+  googleOnboardingHandled = true;
+  try { window.localStorage.setItem(googleOnboardingKey, "done"); }
+  catch { /* Keep this session usable when profile storage is unavailable. */ }
+}
+function dismissGoogleOnboarding() {
+  rememberGoogleOnboarding();
+  closeDialog("google-onboarding");
+}
+async function maybeShowGoogleOnboarding() {
+  if (googleOnboardingDone()) return;
+  let status;
+  try { status = await call("mail:googleOauthStatus"); }
+  catch { return; } // Unknown readiness is not a reason to request credentials.
+  if (googleOnboardingDone()) return;
+  if (state.accounts.length || status?.ready || status?.imported || status?.source !== "none") {
+    rememberGoogleOnboarding();
+    return;
+  }
+  state.googleOauthClient = status;
+  if (document.querySelector("dialog[open]")) return;
+  openDialog("google-onboarding");
+}
+function wireGoogleOnboarding() {
+  const dialog = $("google-onboarding");
+  $("google-onboarding-later").addEventListener("click", dismissGoogleOnboarding);
+  $("google-onboarding-import").addEventListener("click", () => changeGoogleOauthClient("mail:importGoogleOauth"));
+  dialog.addEventListener("close", rememberGoogleOnboarding);
+  window.addEventListener("storage", event => {
+    if (event.key === googleOnboardingKey && event.newValue === "done") {
+      googleOnboardingHandled = true;
+      closeDialog("google-onboarding");
+    }
+  });
+}
 let googleOauthClientBusy = false;
 function paintGoogleOauthClient() {
   const node = $("google-oauth-client-status");
@@ -17597,6 +17640,7 @@ function paintGoogleOauthClientButtons() {
   if (clear) clear.disabled = busy || !(state.googleOauthClient && state.googleOauthClient.imported);
   const button = $("google-oauth-import");
   if (button) button.disabled = busy;
+  if ($("google-onboarding-import")) $("google-onboarding-import").disabled = busy;
   for (const id of ["settings-gmail-migrate", "settings-gmail-calendar"]) {
     const action = $(id);
     if (action) action.disabled = busy || gmailMigrationBusy;
@@ -17616,7 +17660,9 @@ async function loadGoogleOauthClient() {
 async function changeGoogleOauthClient(channel) {
   if (googleOauthClientBusy || state.oauthPending) return;
   const node = $("google-oauth-client-status");
+  const onboarding = $("google-onboarding").open ? $("google-onboarding-status") : null;
   googleOauthClientBusy = true;
+  if (onboarding) onboarding.textContent = "Choose a Google Cloud Console Desktop app client JSON…";
   paintGoogleOauthClient();
   paintConnectPending();
   if (node) {
@@ -17626,10 +17672,18 @@ async function changeGoogleOauthClient(channel) {
   try {
     const result = await call(channel);
     state.googleOauthClient = result || state.googleOauthClient;
+    if (channel === "mail:importGoogleOauth" && result?.imported && !result.cancelled) dismissGoogleOnboarding();
+    if (onboarding) {
+      if (result?.cancelled) onboarding.textContent = "No file imported. Try again or choose Later.";
+      else if (result?.imported) {
+        showStatus("Desktop client imported. Use Continue with Google to sign in; Google Cloud setup and access still need to be valid.");
+      }
+    }
     paintGoogleOauthClient();
     await loadOauthStatus();
     await loadSettingsCapabilities();
   } catch (error) {
+    if (onboarding) onboarding.textContent = "Could not import. Choose a valid Google Cloud Console OAuth Desktop app client JSON, then try again. You can also choose Later.";
     if (node) {
       node.textContent = error instanceof Error ? error.message : String(error);
       node.classList.add("error");
@@ -24496,11 +24550,17 @@ function wire() {
   wireSelection();
   const motion = motionApi();
   if (motion) motion.bindChrome(document);
+  wireGoogleOnboarding();
   wireSettingsFolds();
   wireAgentTabs();
   wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "google-onboarding") {
+        event.preventDefault();
+        dismissGoogleOnboarding();
+        return;
+      }
       if (dialog.id === "quit-scheduled") {
         event.preventDefault();
         if (quitScheduledPrompt) replyQuitScheduled("stay");
@@ -25376,6 +25436,7 @@ async function boot() {
   await loadShellPrefs();
   await loadAccounts();
   applyFeaturesHash();
+  await maybeShowGoogleOnboarding();
   loadScheduled().catch(() => {});
   if (typeof api.reportUpdateReady === "function") api.reportUpdateReady();
 }
