@@ -204,10 +204,11 @@
             <label class="page-select" title="Select messages shown on this page"><input type="checkbox" id="select-visible" aria-label="Select messages shown on this page" /></label>
             <label class="sr" for="list-filter">Filter loaded messages</label>
             <input id="list-filter" data-testid="list-filter" type="search" aria-describedby="list-filter-help" placeholder="Filter this page" autocomplete="off" spellcheck="false" />
+            <button type="button" class="ghost" id="mail-columns-open" aria-haspopup="dialog">Columns</button>
             <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>
         </div>
-        <p id="mail-sort-help" class="sr">Click Date, Recipient, Sender or Subject to sort all downloaded mail before paging; click again to reverse. Recipient sorts by the first To recipient. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order.</p>
+        <p id="mail-sort-help" class="sr">Drag Date, Recipient, Sender or Subject to reorder columns, or use Columns / Alt + Left or Right. Click to sort all downloaded mail before paging; click again to reverse. Recipient sorts by the first To recipient. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order.</p>
         <div id="message-list" tabindex="0" aria-label="Downloaded messages" aria-describedby="mail-sort-help"></div>
           <div id="list-paging" class="list-paging" role="group" aria-label="Message pages" hidden>
             <p id="list-page-status" class="list-filter-note" role="status"></p>
@@ -568,7 +569,7 @@
         <section class="cli-guide" aria-labelledby="cli-bot-title">
           <h3 id="cli-bot-title">Bot access today</h3>
           <p>The Node client calls the running app. Keep Morrow open, choose mailboxes and permissions in Settings → Bot access, then turn access on. Body text and attachment names need extra read permissions. Responses use JSON; mail text stays untrusted.</p>
-          <p id="cli-proactive">Grok Bot and Hermes Agent use the same Node client and HTTP operations below. Configure proactive notify in Settings → Bot access → Your bots: explicitly allow background delivery, choose granted mailboxes, interval (1–10080 minutes) or five-field cron in this computer’s time zone, folder and optional permitted cached text. Keep Morrow open and awake with bot access listening. The webhook receives <code>proactive.mail_digest</code> with <code>contentTrust: untrusted_mail_data</code> and a stable <code>deliveryId</code>; acknowledge with a small 2xx response and deduplicate that ID. Only private Tailscale HTTPS or loopback is allowed; no Funnel, redirects, attachment bytes or forced downloads. Up to 10 of the newest 50 cached rows per mailbox, 128 KiB per delivery, 2 attempts per slot; 2,000 successful IDs remembered per mailbox. Target/data-scope changes reset that cursor. Stop/revoke cannot recall delivered data. A failed acknowledgement/cursor save halts delivery until Morrow restarts; Settings shows Halted instead of a runnable next slot. Inspect storage before restarting because mail may repeat. Saving settings or toggling access does not resume delivery. The platform bot decides what to do; push never runs local AI, triage, drafts or sending. No new pull command or send permission is added.</p>
+          <p id="cli-proactive">Grok Bot and Hermes Agent use the same Node client and HTTP operations below. Configure proactive notify in Settings → Bot access → Your bots: explicitly allow background delivery, choose granted mailboxes, interval (1–10080 minutes) or five-field cron in this computer’s time zone, folder and optional permitted cached text. Keep Morrow open and awake with bot access listening. The webhook receives <code>proactive.mail_digest</code> with <code>contentTrust: untrusted_mail_data</code> and a stable <code>deliveryId</code>; acknowledge with a small 2xx response and deduplicate that ID. Only private Tailscale HTTPS or loopback is allowed; no Funnel, redirects, attachment bytes or forced downloads. Up to 10 of the newest 50 cached rows per mailbox, 128 KiB per delivery, 2 attempts per slot; 2,000 successful IDs remembered per mailbox. Target/data-scope changes reset that cursor. Stop/revoke cannot recall delivered data. A failed acknowledgement/cursor save halts delivery until Morrow restarts; Settings shows Halted instead of a runnable next slot. Inspect storage before restarting because mail may repeat. Saving settings or toggling access does not resume delivery. The platform bot decides what to do; push never runs local AI, triage, drafts or sending. Proactive delivery grants no mail-change or send permission.</p>
           <p id="cli-account-safety">Account-scoped calls require a connected, granted mailbox. A removed account returns <code>NOT_FOUND</code>, including direct message IDs, attachment metadata and proposal lists. These access checks do not automatically delete retained legacy data.</p>
           <dl class="cli-capabilities" id="cli-operations">
             <div><dt>Connection &amp; accounts</dt><dd><code data-bot-operation>bridge.describe</code>, <code data-bot-operation>accounts.list</code>, <code data-bot-operation>health.get</code> — only granted accounts; health reports observed state.</dd></div>
@@ -576,11 +577,12 @@
             <div><dt>Attachment metadata</dt><dd><code data-bot-operation>mail.attachment.get</code> — names and metadata with permission; no file bytes or download.</dd></div>
             <div><dt>Proposals</dt><dd><code data-bot-operation>agent.proposals.list</code>, <code data-bot-operation>draft.proposals.submit</code>, <code data-bot-operation>draft.proposals.list</code> — inert local proposals for review. Draft lists omit the body; proposals do not send or create mailbox drafts.</dd></div>
             <div><dt>Send plain text</dt><dd><code data-bot-operation>mail.send</code> — separate permission; sends immediately. Optional <code>inReplyToMessageId</code> links a same-account reply; you supply recipients and text.</dd></div>
+            <div><dt>Mail changes</dt><dd><code data-bot-operation>mail.archive</code>, <code data-bot-operation>mail.mark_read</code>, <code data-bot-operation>mail.trash</code> — separate default-off permissions for selected mailboxes. Each request targets one cached message ID; Trash never permanently deletes. Read/unread requires an explicit <code>isRead</code> boolean.</dd></div>
           </dl>
           <p id="cli-gmail-transport" class="hint">Google sign-in stays OAuth. New or explicitly migrated Gmail accounts use Gmail API; other providers retain their transports. Gmail desktop Delete moves to Trash, including repeated Delete. Migration and separate Calendar reauthorization are reviewed in desktop Settings → Accounts; they are not bot commands. Requested scopes do not revoke older grants. Importing a Google Desktop OAuth client is a Settings → Accounts action. It is not a bot command, and the client secret is not shown or sent to the bot bridge.</p>
-          <p id="cli-unavailable"><strong>Unavailable to bots:</strong> attachment upload/attach/download, mailbox draft create/edit/delete, full thread retrieval, dedicated reply-all/forward, read/unread changes, move/archive/delete, and calendar actions. The desktop app has additional actions; they are not bot commands.</p>
+          <p id="cli-unavailable"><strong>Unavailable to bots:</strong> attachment upload/attach/download, mailbox draft create/edit/delete, full thread retrieval, dedicated reply-all/forward, arbitrary folder moves, permanent mail deletion, mailbox administration, and calendar actions. The desktop app has additional actions; they are not bot commands.</p>
           <p id="cli-attachment-transfers">Desktop Preview, Open, Save and Cancel use the app's attachment transfers panel. These controls do not add bot commands or file-byte access to <code>mail.attachment.get</code>.</p>
-          <p id="cli-provider-semantics"><code>bridge.describe</code> reports whether granted operations may contact providers: <code>providerCalls</code> is true when <code>mail.send</code> is available. Cached reads stay local. This is not a per-request network count: send replay/join or pre-submit denial may still involve From lookup or OAuth refresh. Receipts describe mail-provider submission outcomes and replay status, not absence of provider traffic.</p>
+          <p id="cli-provider-semantics"><code>bridge.describe</code> reports whether granted operations may contact providers: <code>providerCalls</code> is true when sending or a mail-change operation is available. Cached reads stay local. This is not a per-request network count: send replay/join or pre-submit denial may still involve From lookup or OAuth refresh. Receipts describe mail-provider outcomes and replay status, not absence of provider traffic.</p>
           <p id="cli-sender-names"><code>mail.send</code> uses the selected identity's Morrow display name from Settings → Compose, including Gmail names when discovered. Optional <code>fromAddress</code> selects an authorized exact address on that granted account; the bridge has no display-name parameter and cannot switch mailboxes. A name override does not grant send-as permission. Changing Settings does not resubmit a matching request ID. Desktop compose can choose an authorized From on another connected mailbox, which changes the mailbox used for that draft and send. The desktop can reply to historical bot Sent copies from aliases while they are waiting to sync.</p>
         </section>
         <details class="cli-guide" id="cli-connection">
@@ -598,6 +600,7 @@
           <p>Send permission allows mail without waiting for you to press Send. Morrow rechecks the grant, expiry, installation, enabled flag, mailbox/send scopes and connected account after From resolution, before claiming the request, and again after mailbox/credential waits immediately before mail-provider submission.</p>
           <p>Revoking or disabling access stops a pending send before that boundary. Disable and Revoke remain actionable during connection checks; access changes keep user order and show acknowledged state. Once mail-provider submission begins, it cannot be recalled. An unauthorized or interrupted response does not prove nothing was sent: check Settings Activity and keep the same request ID.</p>
           <p><code>mail.send</code> requires a UUID in <code>--request-id</code>. Retry the same ID and content; the client never retries automatically. <code>SEND_OUTCOME_UNKNOWN</code> means do not send the same message under a new ID. For partial delivery, review rejected recipients separately; do not resend the original list.</p>
+          <p>Mail changes also require a UUID. Repeat the identical command and params to observe its original receipt. <code>pending</code> is not confirmation; <code>completed</code> with <code>providerConfirmed: true</code> is. Stop and review <code>unknown</code> outcomes in Morrow; a new ID could repeat a change. Separate message requests have independent outcomes. Revoke is checked after credential/connection waits and immediately before the provider write, but cannot recall a write already submitted. Queued bot changes do not automatically resume after restart. Confirmed moves reuse Mail’s Undo when available; no bot Undo command is exposed.</p>
         </details>
         <details class="cli-guide" id="cli-json-examples">
           <summary>JSON files for the examples</summary>
@@ -608,6 +611,10 @@
           <pre><code data-cli-json="list.json">{"accountId":"ACCOUNT_ID","folder":"inbox","limit":20}</code></pre>
           <p><code>send.json</code> for <code>mail.send</code> (no attachments):</p>
           <pre><code data-cli-json="send.json">{"accountId":"ACCOUNT_ID","to":["recipient@example.test"],"subject":"Example","bodyText":"Plain text"}</code></pre>
+          <p><code>message.json</code> for archive or Trash, using a message ID from a cached read:</p>
+          <pre><code data-cli-json="message.json">{"accountId":"ACCOUNT_ID","messageId":"MESSAGE_ID"}</code></pre>
+          <p><code>read.json</code> for read/unread changes:</p>
+          <pre><code data-cli-json="read.json">{"accountId":"ACCOUNT_ID","messageId":"MESSAGE_ID","isRead":true}</code></pre>
         </details>
         <h3>Commands to copy</h3>
         <p id="cli-copy-status" class="hint" role="status"></p>
@@ -663,6 +670,33 @@
         <ul id="changelog-notes"></ul>
         <div class="row"><button type="button" class="primary" id="changelog-ok">OK</button></div>
       </div>
+    </dialog>
+    <dialog id="mail-columns" aria-labelledby="mail-columns-title" aria-describedby="mail-columns-help">
+      <div class="dialog-body">
+        <div class="sheet-head"><h2 id="mail-columns-title">Mail columns</h2><button type="button" class="ghost" id="mail-columns-close">Close</button></div>
+        <p id="mail-columns-help">Drag a column header to reorder it, or use these buttons. You can also focus a header and press Alt + Left or Right. Click a header to sort. The same layout is used across mailboxes and search.</p>
+        <ol id="mail-columns-order"></ol>
+        <button type="button" class="ghost" id="mail-columns-reset">Reset column order</button>
+        <p id="mail-columns-status" role="status" aria-live="polite"></p>
+      </div>
+    </dialog>
+    <dialog id="setup-guide" aria-labelledby="setup-guide-title" aria-describedby="setup-guide-help">
+      <section class="dialog-body setup-guide-sheet">
+        <div class="sheet-head"><div><p class="hint">MAKE YOURSELF AT HOME</p><h2 id="setup-guide-title">Welcome to Morrow Mail</h2></div><button type="button" class="ghost" id="setup-guide-later">Finish later</button></div>
+        <p id="setup-guide-help">A few small steps to make your mailbox feel like yours. Calendar and AI are optional.</p>
+        <label for="setup-guide-account">Set up mailbox</label><select id="setup-guide-account"></select>
+        <nav id="setup-guide-steps" aria-label="Setup steps"></nav>
+        <section class="setup-guide-card" aria-labelledby="setup-guide-heading">
+          <p class="hint" id="setup-guide-position"></p><h3 id="setup-guide-heading" tabindex="-1"></h3>
+          <p id="setup-guide-copy"></p><p id="setup-guide-state" role="status" aria-live="polite"></p>
+          <button type="button" class="primary" id="setup-guide-action"></button>
+          <button type="button" class="ghost" id="setup-guide-import" hidden>Import Google Console JSON…</button>
+        </section>
+        <button type="button" class="ghost" id="setup-guide-cancel" hidden>Cancel calendar sign-in</button>
+        <p id="setup-guide-error" role="status" aria-live="polite"></p>
+        <div class="row setup-guide-footer"><button type="button" class="ghost" id="setup-guide-back">Back</button><button type="button" class="ghost" id="setup-guide-next">Skip for now</button></div>
+        <p class="hint">Your saved settings stay in place. Reopen this guide from Settings → General.</p>
+      </section>
     </dialog>
     <dialog id="google-onboarding" aria-labelledby="google-onboarding-title" aria-describedby="google-onboarding-help">
       <div class="dialog-body">
@@ -1034,6 +1068,7 @@
       <div class="settings-folds">
         <section class="fold is-open" id="settings-prefs" data-fold="prefs" role="tabpanel" aria-labelledby="settings-tab-prefs" tabindex="0">
           <div class="fold-panel" id="settings-prefs-panel">
+          <div class="setup-guide-settings"><h3>Make Morrow yours</h3><p class="hint">Connect mail and calendar, choose your sender name and signature, and review optional AI settings.</p><button type="button" class="ghost" id="setup-guide-open">Open setup guide</button></div>
           <h3 id="settings-prefs-title">Appearance</h3>
           <div id="prefs">
             <div class="field">
@@ -1492,6 +1527,10 @@
                 <label class="check"><input type="checkbox" data-cap="draft.proposals.create" /> Submit draft proposals</label>
                 <label class="check"><input type="checkbox" data-cap="mail.send" /> Send mail from these mailboxes</label>
                 <p class="hint">The bot sends immediately; it does not wait for you to press Send. Morrow confirms the mailbox list when you create the bot.</p>
+                <label class="check"><input type="checkbox" data-cap="mail.archive" /> Archive mail in these mailboxes</label>
+                <label class="check"><input type="checkbox" data-cap="mail.read_state.write" /> Mark mail read or unread in these mailboxes</label>
+                <label class="check"><input type="checkbox" data-cap="mail.trash" /> Move mail to Trash in these mailboxes</label>
+                <p class="hint">These permissions start off and require a separate review of the selected changes and mailboxes. Calls act immediately. Trash never permanently deletes mail; arbitrary folder moves and mailbox administration stay unavailable.</p>
               </fieldset>
               <label class="settings-short-field" for="bot-expiry">Expires after
                 <select id="bot-expiry">
@@ -1501,7 +1540,7 @@
                   <option value="never">Never</option>
                 </select>
               </label>
-              <p class="hint">Up to 30 days, or no expiry after you confirm.</p>
+              <p class="hint">Up to 30 days, or no expiry after you confirm. No expiry and sending require separate reviews; Cancel or Escape stops creation.</p>
             </details>
             <div class="row">
               <button type="submit" class="primary icon-label" id="bot-mint-btn">
@@ -1527,6 +1566,9 @@
           </details>
           <h4>Send receipts</h4>
           <ul id="bot-sends" aria-label="Send receipts"></ul>
+          <h4>Mail change receipts</h4>
+          <p class="hint">Pending is not provider confirmation. Retry the same request ID and content to observe its result; never repeat an unknown change with a new ID. Confirmed moves use Mail’s existing Undo when available. Refresh local status to update these receipts.</p>
+          <ul id="bot-mail-actions" aria-label="Mail change receipts"></ul>
           <h4>Recent bot calls and proactive deliveries</h4>
           <ul id="bot-audit" aria-label="Recent bot calls"></ul>
           </div>
@@ -1713,6 +1755,7 @@
     <script src="../shared/changelog.js"></script>
     <script src="./chatgpt-settings.js"></script>
     <script src="./ai-provider-indicator.js"></script>
+    <script src="../shared/mail-columns.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

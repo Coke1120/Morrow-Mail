@@ -6,6 +6,7 @@ const drafts = require("./drafts");
 const reads = require("./reads");
 const catalog = require("./catalog");
 const send = require("./send");
+const mailActions = require("./mail-actions");
 const {
   API_VERSION,
   CALLS_PER_MINUTE,
@@ -121,6 +122,7 @@ function describe(ctx) {
     const spec = catalog.operation(name);
     return spec.caps.every((cap) => ctx.grant.capabilities.includes(cap));
   });
+  const writes = allowed.some(name => ["mail.send", "mail.archive", "mail.mark_read", "mail.trash"].includes(name));
   return {
     data: {
       apiVersion: API_VERSION,
@@ -133,9 +135,13 @@ function describe(ctx) {
         cacheOnlyReads: true,
         sending: ctx.grant.capabilities.includes("mail.send"),
         attachmentBytes: false,
-        providerCalls: allowed.includes("mail.send"),
+        providerCalls: writes,
         draftProposals: ctx.grant.capabilities.includes("draft.proposals.create"),
         draftProposalsSend: false,
+        mailChanges: allowed.some(name => ["mail.archive", "mail.mark_read", "mail.trash"].includes(name)),
+        mailChangeMessagesPerRequest: 1,
+        mailChangeReceiptPolling: "Repeat the identical UUID, operation and params; pending is not provider confirmation.",
+        permanentDeletion: false,
       },
       bounds: {
         port: PORT,
@@ -152,7 +158,7 @@ function describe(ctx) {
         targetSyncWindowDays: SYNC_WINDOW_DAYS,
         maxResponseBytes: MAX_RESPONSE_BYTES,
       },
-      readOnlyMailbox: !ctx.grant.capabilities.includes("mail.send"),
+      readOnlyMailbox: !writes,
     },
     meta: hostMeta(),
   };
@@ -377,6 +383,9 @@ const HANDLERS = {
   "draft.proposals.submit": submitDraft,
   "draft.proposals.list": listDrafts,
   "mail.send": sendMail,
+  "mail.archive": mailActions.perform,
+  "mail.mark_read": mailActions.perform,
+  "mail.trash": mailActions.perform,
 };
 
 const catalogNames = catalog.operations();

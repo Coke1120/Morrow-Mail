@@ -5,6 +5,8 @@ const state = {
   accountId: null,
   allInbox: false,
   allInboxUnreadOnly: false,
+  allInboxStarredOnly: false,
+  mailColumnOrder: ["date", "recipient", "sender", "subject"],
   outbox: false,
   outboxRows: [],
   outboxError: "",
@@ -575,7 +577,8 @@ function allAccountMailLabel() {
   return "All Account Mail";
 }
 
-function allAccountMailTitle(unreadOnly) {
+function allAccountMailTitle(unreadOnly, starredOnly) {
+  if (starredOnly) return "All Account Mail · Starred";
   return unreadOnly ? "All Account Mail · Unread" : "All Account Mail";
 }
 
@@ -583,7 +586,8 @@ function allAccountMailSyncCopy() {
   return "All Account Mail shows mail already downloaded. Open Gmail All Mail, or Inbox for another account, to sync that account.";
 }
 
-function allAccountMailEmptyCopy(unreadOnly) {
+function allAccountMailEmptyCopy(unreadOnly, starredOnly) {
+  if (starredOnly) return "No starred messages in the mail already downloaded across your accounts.";
   if (unreadOnly) return "No unread messages in All Account Mail.";
   return "No downloaded messages in All Account Mail. Open Gmail All Mail, or Inbox for another account, and use Sync to download recent mail.";
 }
@@ -647,6 +651,109 @@ function allAccountMailChoice(current, control) {
   return { allInbox: true, unreadOnly: false };
 }
 
+let mailColumnDrag = null;
+let mailColumnClickUntil = 0;
+let mailColumnSave = Promise.resolve();
+let mailColumnRevision = 0;
+const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject" };
+function mailColumnOrder() {
+  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder : ["date", "recipient", "sender", "subject"];
+}
+function cancelMailColumnDrag() {
+  if (mailColumnDrag) mailColumnClickUntil = Date.now() + 300;
+  mailColumnDrag = null;
+  for (const cell of document.querySelectorAll(".mail-column-drop")) cell.classList.remove("mail-column-drop");
+}
+async function loadMailColumnOrder() {
+  const revision = mailColumnRevision;
+  try {
+    const saved = await api.invoke("morrow:configGetMailColumnOrder");
+    if (revision !== mailColumnRevision) return;
+    state.mailColumnOrder = window.morrowMailColumns.normalize(saved);
+  } catch { /* Keep the default layout if settings are unavailable. */ }
+}
+function changeMailColumnOrder(order) {
+  const next = window.morrowMailColumns.normalize(order);
+  state.mailColumnOrder = next;
+  const revision = ++mailColumnRevision;
+  cancelMailColumnDrag();
+  renderList();
+  paintMailColumnEditor();
+  const message = "Column order: " + next.map(key => mailColumnLabels[key]).join(", ") + ".";
+  $("mail-columns-status").textContent = message;
+  showStatus(message);
+  mailColumnSave = mailColumnSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailColumnOrder", next));
+  mailColumnSave.catch(() => { if (revision !== mailColumnRevision) return; $("mail-columns-status").textContent = "Could not save the column order. This window keeps your layout; try again to save it."; showStatus("Could not save the column order. Try again to keep it after restart.", true); });
+  return mailColumnSave;
+}
+function moveMailColumn(key, direction) {
+  const order = mailColumnOrder(), index = order.indexOf(key), target = order[index + direction];
+  if (!target) return;
+  changeMailColumnOrder(window.morrowMailColumns.move(order, key, target, direction > 0)).catch(() => {});
+}
+function wireMailColumnHeader(cell, button, key) {
+  button.draggable = true;
+  button.addEventListener("dragstart", event => {
+    cancelMailColumnDrag();
+    mailColumnDrag = key;
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-morrow-mail-column", key);
+  });
+  button.addEventListener("dragend", cancelMailColumnDrag);
+  cell.addEventListener("dragover", event => {
+    if (!mailColumnDrag) return;
+    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move";
+    cell.classList.add("mail-column-drop");
+  });
+  cell.addEventListener("dragleave", () => cell.classList.remove("mail-column-drop"));
+  cell.addEventListener("drop", event => {
+    const source = mailColumnDrag;
+    if (!source || event.dataTransfer.getData("application/x-morrow-mail-column") !== source) return;
+    event.preventDefault(); event.stopPropagation();
+    const rect = cell.getBoundingClientRect();
+    const next = window.morrowMailColumns.move(mailColumnOrder(), source, key, event.clientX > rect.left + rect.width / 2);
+    cancelMailColumnDrag();
+    changeMailColumnOrder(next).catch(() => {});
+  });
+  button.addEventListener("keydown", event => {
+    if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); return; }
+    if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    moveMailColumn(key, event.key === "ArrowLeft" ? -1 : 1);
+    document.querySelector(`[data-sort-key="${key}"] button`)?.focus();
+  });
+}
+function paintMailColumnEditor() {
+  const root = $("mail-columns-order");
+  if (!root || !$("mail-columns").open) return;
+  root.replaceChildren();
+  mailColumnOrder().forEach((key, index, order) => {
+    const row = document.createElement("li"), label = document.createElement("span");
+    label.textContent = mailColumnLabels[key]; row.append(label);
+    for (const direction of [-1, 1]) {
+      const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
+      button.textContent = direction < 0 ? "Move left" : "Move right";
+      button.setAttribute("aria-label", `${button.textContent}: ${mailColumnLabels[key]}`);
+      button.dataset.column = key; button.dataset.direction = direction;
+      button.disabled = index + direction < 0 || index + direction >= order.length;
+      button.addEventListener("click", () => {
+        moveMailColumn(key, direction);
+        const candidates = [...root.querySelectorAll("button")].filter(node => node.dataset.column === key && !node.disabled);
+        (candidates.find(node => node.dataset.direction === String(direction)) || candidates[0])?.focus();
+      });
+      row.append(button);
+    }
+    root.append(row);
+  });
+}
+function wireMailColumnEditor() {
+  $("mail-columns-open").addEventListener("click", () => { openDialog("mail-columns"); paintMailColumnEditor(); });
+  $("mail-columns-close").addEventListener("click", () => closeDialog("mail-columns"));
+  $("mail-columns-reset").addEventListener("click", () => changeMailColumnOrder(window.morrowMailColumns.defaults).catch(() => {}));
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); } });
+}
+
 function readMailListSort() {
   try {
     const saved = JSON.parse(localStorage.getItem("morrow.mailListSort"));
@@ -684,13 +791,21 @@ function paintMailListColumns(list) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.label = label;
-      button.addEventListener("click", () => guard(() => changeMailListSort(key)));
+      button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil) guard(() => changeMailListSort(key)); });
+      wireMailColumnHeader(cell, button, key);
       cell.appendChild(button);
       row.appendChild(cell);
     }
     header.appendChild(row);
     list.prepend(header);
   }
+  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)" };
+  list.style.setProperty("--mail-columns", mailColumnOrder().map(key => widths[key]).join(" "));
+  const headerRow = header.querySelector('[role="row"]');
+  mailColumnOrder().forEach((key, index) => {
+    const cell = header.querySelector(`[data-sort-key="${key}"]`);
+    if (headerRow.children[index] !== cell) headerRow.insertBefore(cell, headerRow.children[index] || null);
+  });
   for (const cell of header.querySelectorAll("[data-sort-key]")) {
     const active = !state.outbox && cell.dataset.sortKey === state.listSort.sortBy;
     const ascending = state.listSort.sortDirection === "asc";
@@ -698,7 +813,7 @@ function paintMailListColumns(list) {
     const button = cell.querySelector("button");
     button.disabled = state.outbox;
     button.textContent = button.dataset.label + (active ? (ascending ? " ↑" : " ↓") : "");
-    button.title = state.outbox ? "Outbox uses scheduled send order" : "Sort downloaded mail by " + button.dataset.label.toLowerCase();
+    button.title = state.outbox ? "Outbox uses scheduled send order. Use Columns to change the layout." : "Click to sort by " + button.dataset.label.toLowerCase() + ". Drag to reorder, or press Alt + Left / Right.";
     button.setAttribute("aria-label", button.dataset.label + (active ? (ascending ? ", ascending. Sort descending" : ", descending. Sort ascending") : ". Sort " + (cell.dataset.sortKey === "date" ? "descending" : "ascending")));
   }
   return header;
@@ -720,6 +835,11 @@ function mailListRequest(view) {
   }
   const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
+  if (source.allInbox && (source.aggregateView === "starred" || source.aggregateView === "unread")) {
+    const params = { aggregateView: source.aggregateView, limit, offset, ...(source.listSort || {}) };
+    if (retainId && source.aggregateView === "unread") params.retainIds = [retainId];
+    return { channel: "mail:listFromCache", params };
+  }
   if (source.allInbox) {
     const params = { folderKey: "primary", limit, offset, ...(source.listSort || {}) };
     if (source.pageCursor) params.pageCursor = source.pageCursor;
@@ -2439,8 +2559,8 @@ function askConfirm(copy) {
   const pending = new Promise((resolve) => {
     resolveConfirm = resolve;
   });
-  // Close motion still has the dialog open. Drop that generation before the
-  // close event so it cannot cancel this prompt, then show the new one now.
+  // Retire the old close motion before showing the next prompt. Its queued
+  // close event must not settle a prompt that has already reopened the dialog.
   if (dialog.open && dialog.dataset.closing === "1") {
     confirmResult = null;
     releaseClosingDialog(dialog);
@@ -4356,21 +4476,39 @@ function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
   return nest;
 }
 
+function aggregateFlagCount(kind) {
+  return state.accounts.reduce((sum, account) => {
+    const folder = foldersOf(account).find(row => row.type === "virtual" && (kind === "starred" ? row.view?.flagged === true : row.view?.unread === true));
+    const count = Number(folder?.totalCount);
+    return sum + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0);
+  }, 0);
+}
 function applyAllAccountMailChrome(root) {
   if (!root || typeof root.querySelector !== "function") return;
-  const current = !!state.allInbox;
-  const inbox = root.querySelector("button.all-inbox");
-  if (inbox) {
-    if (current) inbox.setAttribute("aria-current", "true");
-    else inbox.removeAttribute("aria-current");
+  for (const kind of ["inbox", "starred", "unread"]) {
+    const button = root.querySelector("button.all-" + kind);
+    if (!button) continue;
+    const current = state.allInbox && (kind === "unread" ? state.allInboxUnreadOnly : kind === "starred" ? state.allInboxStarredOnly : !state.allInboxUnreadOnly && !state.allInboxStarredOnly);
+    if (current) button.setAttribute("aria-current", "true"); else button.removeAttribute("aria-current");
+    const count = button.querySelector(".count");
+    if (count) count.textContent = String(aggregateFlagCount(kind));
   }
-  const chip = root.querySelector("button.all-account-unread");
-  if (!chip) return;
-  const model = allAccountUnreadChip(allInboxUnread(state.accounts), current && !!state.allInboxUnreadOnly);
-  chip.textContent = model.text;
-  chip.title = model.label;
-  chip.setAttribute("aria-label", model.label);
-  chip.setAttribute("aria-pressed", model.pressed ? "true" : "false");
+}
+function allAccountFlagRow(kind) {
+  const line = document.createElement("div"); line.className = "folder-line";
+  const indent = document.createElement("span"); indent.className = "folder-indent"; indent.style.width = "14px"; indent.setAttribute("aria-hidden", "true");
+  const button = document.createElement("button"); button.type = "button"; button.className = "folder all-" + kind;
+  button.setAttribute("data-testid", "all-account-" + kind);
+  const label = document.createElement("span"); label.className = "folder-label";
+  const icon = document.createElement("span"); icon.className = "folder-icon"; icon.setAttribute("aria-hidden", "true"); icon.textContent = folderIcon(kind);
+  const name = document.createElement("span"); name.className = "name"; name.textContent = kind === "starred" ? "Starred" : "Unread";
+  label.append(icon, name);
+  const count = document.createElement("span"); count.className = "count";
+  button.append(label, count);
+  button.title = kind === "unread" ? "Unread downloaded mail across accounts, excluding Sent, Drafts, Trash, Spam and snoozed messages." : "Starred downloaded mail across accounts.";
+  markFolderNav(button, { key: "all-" + kind, kind: "aggregate", parent: "all" });
+  button.addEventListener("click", () => { folderNavKey = "all-" + kind; selectAllInbox(kind === "unread", kind === "starred").catch(error => showStatus(error.message, true)); });
+  line.append(indent, button); applyAllAccountMailChrome(line); return line;
 }
 
 function allAccountMailRow(open, hasChild, filtering) {
@@ -4436,18 +4574,7 @@ function allAccountInboxRow() {
     const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "mail");
     selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
-  const chip = document.createElement("button");
-  chip.type = "button";
-  chip.className = "count all-account-unread";
-  chip.setAttribute("data-testid", "all-account-unread");
-  chip.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    folderNavKey = "inbox";
-    const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "unread");
-    selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
-  });
-  line.append(indent, button, chip);
+  line.append(indent, button);
   applyAllAccountMailChrome(line);
   return line;
 }
@@ -4746,7 +4873,9 @@ function renderAccounts() {
   const filtering = !!folderQuery;
   const inboxMatch = inboxMatches(folderQuery);
   const outboxMatch = outboxMatches(folderQuery);
-  const sectionHasChild = filtering ? (inboxMatch || outboxMatch) : true;
+  const starredMatch = !folderQuery || "starred".includes(folderQuery);
+  const unreadMatch = !folderQuery || "unread".includes(folderQuery);
+  const sectionHasChild = filtering ? (inboxMatch || outboxMatch || starredMatch || unreadMatch) : true;
   const sectionOpen = filtering ? sectionHasChild : allAccountSectionOpen();
   const showSection = allAccountMailMatches(folderQuery) || (filtering && sectionHasChild);
   let shownFolder = false;
@@ -4755,6 +4884,8 @@ function renderAccounts() {
     nav.appendChild(allAccountMailRow(sectionOpen, sectionHasChild, filtering));
     if (sectionOpen && inboxMatch) nav.appendChild(allAccountInboxRow());
     if (sectionOpen && outboxMatch) nav.appendChild(outboxMailRow());
+    if (sectionOpen && starredMatch) nav.appendChild(allAccountFlagRow("starred"));
+    if (sectionOpen && unreadMatch) nav.appendChild(allAccountFlagRow("unread"));
   }
   for (const account of state.accounts) {
     const provider = folderProvider(account);
@@ -6349,7 +6480,9 @@ function messageRow(email) {
     ? accountLabel(mailbox) + " · "
     : (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "");
   snippet.textContent = prefix + (email.snippet || "");
-  main.append(when, recipient, from, subjectLine, snippet);
+  const cells = { date: when, recipient, sender: from, subject: subjectLine };
+  for (const key of mailColumnOrder()) { cells[key].dataset.mailColumn = key; main.append(cells[key]); }
+  main.append(snippet);
   button.append(gutter, avatar, main);
   button.addEventListener("click", (event) => {
     if (email.outbox) {
@@ -6417,7 +6550,7 @@ function shownEmails() {
   const emails = state.emails.filter((email) => !optimisticRemovals.has(email.id));
   if (state.outbox) return visibleList(emails, query, null);
   const folder = state.allInbox
-    ? (state.allInboxUnreadOnly ? { view: { unread: true } } : null)
+    ? (state.allInboxUnreadOnly ? { view: { unread: true } } : state.allInboxStarredOnly ? { view: { flagged: true } } : null)
     : selectedFolderNode();
   const holdId = unreadListActive(currentUnreadView()) && state.unreadHold ? state.unreadHold.id : "";
   return visibleList(emails, query, folder, holdId);
@@ -6610,7 +6743,7 @@ function renderList() {
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = $("list-title");
   if (title) {
-    title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly) : (chipLabel(folder) || "Messages")));
+    title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly, state.allInboxStarredOnly) : (chipLabel(folder) || "Messages")));
   }
   renderChips(state.allInbox || state.outbox ? null : account);
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account).some(item => item.id === state.folderId));
@@ -6646,8 +6779,8 @@ function renderList() {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
     } else if (state.outbox && !listQuery && !state.emails.length) {
       empty.textContent = state.outboxError ? "Waiting sends are unknown. Retry to load Outbox." : outboxEmptyCopy();
-    } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || !state.emails.length)) {
-      empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly);
+    } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || state.allInboxStarredOnly || !state.emails.length)) {
+      empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly, state.allInboxStarredOnly);
     } else if (!listQuery && folder && folder.emptyCopy) {
       empty.textContent = folder.emptyCopy;
     } else if (!state.emails.length) {
@@ -6667,7 +6800,7 @@ function renderList() {
       // Retained rows keep keyboard focus and read the latest message for actions.
       const mailbox = state.accounts.find((item) => item.id === email.accountId);
       const stamp = JSON.stringify([email.folderId, email.from, email.to, email.subject, email.snippet, email.date,
-        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox,
+        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox, mailColumnOrder().join(","),
         state.allInbox && mailbox ? accountLabel(mailbox) : "",
         state.query && mailbox ? mailbox.email : "",
         state.prefs.timeFormat, state.prefs.dateFormat]);
@@ -6703,7 +6836,7 @@ function renderList() {
       previous = row;
     }
   }
-  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.outbox ? "outbox" : "", state.allInboxUnreadOnly ? "unread" : ""].join("\0");
+  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.outbox ? "outbox" : "", state.allInboxUnreadOnly ? "unread" : "", state.allInboxStarredOnly ? "starred" : ""].join("\0");
   if (motionKey !== listMotionKey) {
     listMotionKey = motionKey;
     const motion = motionApi();
@@ -8771,7 +8904,7 @@ async function settleOpenView() {
   if (typeof selectedFolderNode !== "function" || typeof loadList !== "function") return;
   if (openViewReload) return;
   const folder = selectedFolderNode();
-  if (!folder || !folder.view) return;
+  if (!(state.allInbox && (state.allInboxUnreadOnly || state.allInboxStarredOnly)) && (!folder || !folder.view)) return;
   openViewReload = true;
   try {
     await loadList(false);
@@ -9311,6 +9444,7 @@ function rememberSelection(preferredId) {
   if (!state.accounts.length) {
     state.allInbox = false;
     state.allInboxUnreadOnly = false;
+    state.allInboxStarredOnly = false;
     state.outbox = false;
     state.outboxRows = [];
     state.outboxCount = 0;
@@ -9319,6 +9453,7 @@ function rememberSelection(preferredId) {
     if (state.accountId !== preferredId) {
       state.allInbox = false;
       state.allInboxUnreadOnly = false;
+      state.allInboxStarredOnly = false;
     }
     state.accountId = preferredId;
   }
@@ -9432,6 +9567,7 @@ async function offerChangelog() {
   } finally {
     changelogPending = false;
     if (googleOnboardingPending) setTimeout(resumeGoogleOnboarding, 0);
+    setTimeout(resumeSetupGuide, 0);
   }
 }
 
@@ -9444,7 +9580,7 @@ function noteMailListLoaded(gen) {
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   noteUnreadScope();
-  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
+  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
   const scopeChanged = state.listScope !== scope;
   if (scopeChanged) {
     state.listScope = scope;
@@ -9491,6 +9627,7 @@ async function loadList(fromNetwork, requestedOffset) {
     const request = mailListRequest({
       listSort: state.listSort,
       allInbox: state.allInbox,
+      aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
       unreadOnly: state.allInbox && state.allInboxUnreadOnly,
       fromNetwork: !state.allInbox && fromNetwork && isLive(account),
       accountId: account && account.id,
@@ -9509,6 +9646,7 @@ async function loadList(fromNetwork, requestedOffset) {
       const again = mailListRequest({
         listSort: state.listSort,
         allInbox: state.allInbox,
+        aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
         unreadOnly: state.allInbox && state.allInboxUnreadOnly,
         accountId: account && account.id,
         folderId: state.folderId,
@@ -11238,6 +11376,7 @@ async function selectOutbox() {
   state.outbox = true;
   state.allInbox = false;
   state.allInboxUnreadOnly = false;
+  state.allInboxStarredOnly = false;
   noteUnreadScope();
   state.query = "";
   const search = $("search-query");
@@ -11260,11 +11399,11 @@ async function selectOutbox() {
   renderList();
 }
 
-async function selectAllInbox(unreadOnly) {
+async function selectAllInbox(unreadOnly, starredOnly = false) {
   if (!state.accounts.length) return;
   ++mailboxNavigationGen;
   const nextUnread = unreadOnly === true;
-  const staying = state.allInbox && !state.query;
+  const staying = state.allInbox && !state.query && state.allInboxStarredOnly === starredOnly;
   if (!staying) {
     invalidateReaderOpen();
     state.email = null;
@@ -11282,6 +11421,7 @@ async function selectAllInbox(unreadOnly) {
   state.outbox = false;
   state.allInbox = true;
   state.allInboxUnreadOnly = nextUnread;
+  state.allInboxStarredOnly = starredOnly;
   state.listScope = "";
   renderAccounts();
   if (state.view === "folders") paintProviderPage();
@@ -11298,6 +11438,7 @@ async function selectFolder(accountId, folderId) {
   state.outbox = false;
   state.allInbox = false;
   state.allInboxUnreadOnly = false;
+  state.allInboxStarredOnly = false;
   state.listScope = "";
   state.accountId = accountId;
   state.folderId = folderId;
@@ -11668,7 +11809,7 @@ let snoozeDirty = false;
 function onEmailsUpdated(payload) {
   if (state.outbox) return;
   const request = mailListRequest({
-      listSort: state.listSort, allInbox: state.allInbox, accountId: state.accountId, folderId: state.folderId,
+      listSort: state.listSort, allInbox: state.allInbox, aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "", accountId: state.accountId, folderId: state.folderId,
     accounts: state.accounts, query: state.query, searchAccountId: state.searchAccountId });
   const params = request.params || {};
   if (payload?.accountId) {
@@ -15534,6 +15675,9 @@ function cliCatalog() {
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "After the Tailscale steps, use the exact paired HTTPS endpoint. TLS is verified; redirects and non-loopback plain HTTP are rejected." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.list_cached --params-file ./list.json", action: "List the granted account's cached inbox with the list.json example above. This does not fetch new mail or mark it read." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Mail-provider submission cannot be recalled once it begins." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.archive --request-id '<uuid>' --params-file ./message.json", action: "Archive one explicit cached message with mail.archive permission. Repeat this exact UUID and payload to observe pending results without resubmitting." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.mark_read --request-id '<uuid>' --params-file ./read.json", action: "Set one message read with mail.read_state.write permission. Use isRead false for unread. Pending is not provider confirmation." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.trash --request-id '<uuid>' --params-file ./message.json", action: "Move one message to Trash with mail.trash permission. Never permanently deletes; an unknown outcome requires review rather than a new UUID." },
     { group: "Tailscale Serve", command: "tailscale serve --bg --https=8443 --accept-app-caps=com.coke1120.morrow-mail/bot-access http://127.0.0.1:47831", action: "Run this on the computer where Morrow is open. Morrow does not run it. Settings copies the same command. The port stays 8443 until you save another HTTPS port. Do not run tailscale funnel." },
     { group: "Tailscale Serve", command: "tailscale serve status --json", action: "Show Serve status as JSON. Morrow does not run this." },
     { group: "Tailscale Serve", command: "tailscale funnel status --json", action: "Confirm Funnel is not serving this port. Do not run tailscale funnel." },
@@ -17706,6 +17850,213 @@ function paintOooDirty() {
   if (dirty && $("ooo-status") && $("ooo-status").textContent === "Saved on the provider.") setOooStatus("", false);
 }
 // A profile-local, non-secret preference, shared by shell windows.
+// The guide stores navigation only. Completion is derived from saved account settings.
+let setupProgress = null;
+let setupPending = false;
+let setupReturning = false;
+let setupTransition = false;
+let setupRevision = 0;
+let setupCalendarPending = false;
+let setupSave = Promise.resolve();
+const setupSteps = [
+  ["Connect a mailbox", "Read and send mail from your own account. Use Google, Microsoft, or your provider’s IMAP and SMTP settings. Google sign-in may require a Desktop client JSON from Google Cloud Console; importing it does not sign you in.", "Connect mailbox"],
+  ["Connect its calendar", "Bring this mailbox’s calendar into Morrow. Google Calendar has separate consent; Microsoft uses its mailbox features grant. Other providers are not supported here. You can keep using mail without a calendar.", "Connect calendar"],
+  ["Choose your sender name", "Choose the name recipients see for this mailbox and each From address in Sender identities. Names are local preferences, not permission to send as another address. An empty override uses the address alone.", "Edit sender name"],
+  ["Add your signature", "Add an account default or a signature for a send-as domain. The editor opens for the mailbox selected above. You can also send without a signature.", "Edit signatures"],
+  ["Make AI work for you", "Optionally connect ChatGPT or an API provider, then choose a model. Review the saved destination and data permission separately. Saving a connection never grants permission to use your mail; background use requires its own choice.", "Review AI settings"],
+];
+function saveSetupProgress(status = setupProgress.status) {
+  setupProgress = { ...setupProgress, status };
+  const snapshot = { ...setupProgress };
+  setupSave = setupSave.catch(() => {}).then(() => api.invoke("morrow:configSetOnboarding", snapshot));
+  setupSave.catch(() => { $("setup-guide-error").textContent = "Could not save guide progress. Your mailbox settings are unchanged; the guide may appear again next time."; });
+  return setupSave;
+}
+async function startSetupGuide() {
+  try { setupProgress = await api.invoke("morrow:configGetOnboarding"); }
+  catch { return; } // Do not overwrite unknown profile state.
+  if (!setupProgress) {
+    setupProgress = { status: state.accounts.length ? "existing" : "active", step: 0, accountId: "" };
+    await saveSetupProgress().catch(() => {});
+  }
+  setupPending = setupProgress.status === "active";
+  return resumeSetupGuide();
+}
+function setupAccount() {
+  return state.accounts.find(account => account.id === setupProgress?.accountId) || null;
+}
+async function resumeSetupGuide() {
+  if ((!setupPending && !setupReturning) || setupTransition || changelogPending || document.querySelector("dialog[open]")) return;
+  setupPending = false;
+  setupReturning = false;
+  openDialog("setup-guide");
+  $("setup-guide-heading").focus();
+  await paintSetupGuide();
+}
+async function paintSetupGuide() {
+  if (!$("setup-guide").open || !setupProgress) return;
+  const revision = ++setupRevision;
+  const select = $("setup-guide-account");
+  if (!setupAccount()) setupProgress.accountId = state.accounts[0]?.id || "";
+  select.replaceChildren();
+  for (const account of state.accounts.length ? state.accounts : [{ email: "Connect your first mailbox", id: "" }]) {
+    const option = document.createElement("option"); option.value = account.id; option.textContent = account.email; select.append(option);
+  }
+  select.value = setupProgress.accountId;
+  select.disabled = !state.accounts.length;
+  const step = setupProgress.step, account = setupAccount(), spec = setupSteps[step];
+  $("setup-guide-steps").replaceChildren();
+  setupSteps.forEach((item, index) => {
+    const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
+    button.textContent = `${index + 1}. ${["Mailbox", "Calendar", "Sender name", "Signature", "AI setup"][index]}`;
+    button.title = item[0];
+    if (index === step) button.setAttribute("aria-current", "step");
+    button.addEventListener("click", () => moveSetupGuide(index));
+    $("setup-guide-steps").append(button);
+  });
+  $("setup-guide-position").textContent = `STEP ${step + 1} OF 5${step === 1 || step === 4 ? " · OPTIONAL" : ""}`;
+  $("setup-guide-heading").textContent = spec[0];
+  $("setup-guide-copy").textContent = spec[1];
+  $("setup-guide-action").textContent = spec[2];
+  $("setup-guide-action").disabled = step === 1 || (step > 0 && step < 4 && !account);
+  $("setup-guide-import").hidden = step !== 0;
+  $("setup-guide-cancel").hidden = !setupCalendarPending;
+  $("setup-guide-back").disabled = step === 0;
+  $("setup-guide-next").textContent = step === 4 ? "Finish guide" : "Skip for now";
+  $("setup-guide-state").textContent = "Checking saved settings…";
+  let summary = "", complete = false;
+  try {
+    if (step === 0) {
+      complete = !!account && !account.needsReauth;
+      summary = account ? account.needsReauth ? `Reconnect ${account.email} in Settings → Accounts.` : `Connected: ${account.email}` : "No mailbox connected yet.";
+      const status = await call("mail:googleOauthStatus");
+      if (revision !== setupRevision) return;
+      $("setup-guide-import").hidden = !!status?.ready;
+    } else if (!account && step < 4) summary = "Connect a mailbox first, or skip this step for now.";
+    else if (step === 1) {
+      const connection = calendarConnection(await call("calendar:status"), account);
+      complete = connection.connected;
+      summary = complete ? "Calendar access saved for this mailbox." : connection.canGrant ? "Calendar is not connected. You can connect it or continue with mail only." : connection.reason || "Calendar is unavailable for this mailbox type. Google and Microsoft mailboxes are supported.";
+      if (revision !== setupRevision) return;
+      $("setup-guide-action").disabled = !connection.canGrant || complete || setupCalendarPending;
+    } else if (step === 2) {
+      const prefs = await call("emailBrain:getComposeSettings");
+      const names = prefs?.accounts?.[account.id]?.senderNames || {};
+      complete = Object.keys(names).length > 0;
+      summary = complete ? "Sender name preferences saved for this mailbox. Review each From address in Sender identities." : "Using provider defaults. Review the name or choose an address-only sender.";
+    } else if (step === 3) {
+      const pack = await call("mail:listSignatures", { accountId: account.id });
+      complete = signatureRows(pack).some(row => (!row.accountId || row.accountId === account.id) && (signaturePlain(row) || signatureMarkup(row)));
+      summary = complete ? "Signature saved for this mailbox. Review its default or domain assignment in the editor." : "No signature saved for this mailbox yet.";
+    } else {
+      const cfg = await api.invoke("host:aiGetConfig");
+      if (cfg?.authMode === "chatgpt") {
+        const reply = await api.invoke("host:chatgptStatus"), status = reply?.data || reply;
+        complete = status?.connected === true && status?.planEnabled === true && !!cfg.chatgptModel;
+      } else complete = !!(cfg?.hasKey && cfg?.model);
+      summary = complete ? "AI connection configured. Review data permission separately in AI settings." : "AI is optional. Mail works without an AI connection.";
+    }
+  } catch { summary = "Could not check saved settings. Open this step to review or try again later."; }
+  if (revision !== setupRevision || !$("setup-guide").open) return;
+  $("setup-guide-state").textContent = summary;
+  if (step < 4 && complete) $("setup-guide-next").textContent = "Continue";
+}
+function moveSetupGuide(step) {
+  setupProgress.step = step;
+  $("setup-guide-error").textContent = "";
+  saveSetupProgress("active").catch(() => {});
+  paintSetupGuide();
+  $("setup-guide-heading").focus();
+}
+async function dismissSetupGuide(status = "later") {
+  setupPending = false; setupReturning = false; ++setupRevision;
+  await saveSetupProgress(status).catch(() => {});
+  await closeDialog("setup-guide");
+}
+async function setupGuideAction() {
+  const step = setupProgress.step, account = setupAccount();
+  if (setupTransition || (step > 0 && step < 4 && !account)) return;
+  if (step === 1) {
+    if (setupCalendarPending) return;
+    setupCalendarPending = true;
+    $("setup-guide-cancel").hidden = false;
+    $("setup-guide-action").disabled = true;
+    const revision = setupRevision;
+    $("setup-guide-error").textContent = "Complete calendar consent in your browser. You can finish this guide later while consent is pending.";
+    try { await call("calendar:connect", { accountId: account.id });
+      if (revision === setupRevision) $("setup-guide-error").textContent = ""; }
+    catch (error) { if (revision === setupRevision) $("setup-guide-error").textContent = error.message || "Calendar connection did not complete."; }
+    setupCalendarPending = false;
+    $("setup-guide-cancel").hidden = true;
+    if ($("setup-guide").open) await paintSetupGuide();
+    return;
+  }
+  setupTransition = true;
+  setupReturning = true;
+  await saveSetupProgress("active").catch(() => {});
+  await closeDialog("setup-guide");
+  try {
+    if (step === 0) openConnectFor(null);
+    else if (step === 3) openSignatures(account.id);
+    else {
+      if (account) state.settingsAccountId = account.id;
+      openSettings();
+      revealSettingsFold(step === 4 ? "ai" : "compose");
+      if (step === 2) {
+        await loadSettingsFold("compose");
+        const select = $("brain-compose-account");
+        if ($("settings").open && state.accounts.some(row => row.id === account.id) && !select.disabled) {
+          select.value = account.id; select.dispatchEvent(new Event("change"));
+        }
+      }
+    }
+  } finally { setupTransition = false; setTimeout(resumeSetupGuide, 0); }
+}
+function wireSetupGuide() {
+  $("setup-guide").addEventListener("keydown", event => {
+    if (event.key !== "Tab") return;
+    const controls = [...$("setup-guide").querySelectorAll("button:not(:disabled), select:not(:disabled), a[href]")].filter(node => node.getClientRects().length);
+    const first = controls[0], last = controls[controls.length - 1];
+    if (!first) return;
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === $("setup-guide-heading"))) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
+  $("setup-guide-open").addEventListener("click", async () => {
+    setupTransition = true;
+    setupProgress ||= { status: "active", step: 0, accountId: "" };
+    setupPending = true;
+    await closeDialog("settings");
+    setupTransition = false;
+    resumeSetupGuide();
+  });
+  $("setup-guide-cancel").addEventListener("click", () => {
+    if (setupCalendarPending) call("mail:cancelOAuth").catch(error => { $("setup-guide-error").textContent = error.message; });
+  });
+  $("setup-guide-later").addEventListener("click", () => dismissSetupGuide());
+  $("setup-guide").addEventListener("cancel", event => { event.preventDefault(); dismissSetupGuide(); });
+  $("setup-guide").addEventListener("close", () => {
+    ++setupRevision;
+    if (!setupReturning && !setupTransition && setupProgress?.status === "active") saveSetupProgress("later").catch(() => {});
+  });
+  document.addEventListener("close", event => {
+    if (event.target?.tagName === "DIALOG") setTimeout(resumeSetupGuide, 0);
+  }, true);
+  $("setup-guide-account").addEventListener("change", () => {
+    setupProgress.accountId = $("setup-guide-account").value;
+    saveSetupProgress("active").catch(() => {}); paintSetupGuide();
+  });
+  $("setup-guide-back").addEventListener("click", () => moveSetupGuide(Math.max(0, setupProgress.step - 1)));
+  $("setup-guide-next").addEventListener("click", () => setupProgress.step === 4 ? dismissSetupGuide("done") : moveSetupGuide(setupProgress.step + 1));
+  $("setup-guide-action").addEventListener("click", () => setupGuideAction().catch(error => { $("setup-guide-error").textContent = error.message; }));
+  $("setup-guide-import").addEventListener("click", async () => {
+    $("setup-guide-import").disabled = true;
+    try { await changeGoogleOauthClient("mail:importGoogleOauth"); await paintSetupGuide(); }
+    finally { $("setup-guide-import").disabled = false; }
+  });
+  window.addEventListener("focus", () => { if ($("setup-guide").open) paintSetupGuide(); });
+}
+
 const googleOnboardingKey = "morrow.googleOnboarding.v1";
 let googleOnboardingHandled = false;
 let googleOnboardingPending = false;
@@ -17809,7 +18160,7 @@ async function loadGoogleOauthClient() {
 async function changeGoogleOauthClient(channel) {
   if (googleOauthClientBusy || state.oauthPending) return;
   const node = $("google-oauth-client-status");
-  const onboarding = $("google-onboarding").open ? $("google-onboarding-status") : null;
+  const onboarding = $("setup-guide").open ? $("setup-guide-error") : $("google-onboarding").open ? $("google-onboarding-status") : null;
   googleOauthClientBusy = true;
   if (onboarding) onboarding.textContent = "Choose a Google Cloud Console Desktop app client JSON…";
   paintGoogleOauthClient();
@@ -23376,7 +23727,7 @@ function botPermissionNames(capabilities) {
   const names = { "accounts.read": "account details", "mail.headers.read": "cached mail headers",
     "health.read": "sync health", "agent.proposals.read": "pending proposals", "mail.bodies.read": "message text",
     "mail.attachments.read": "attachment names", "draft.proposals.create": "draft proposals",
-    "mail.send": "send mail as you" };
+    "mail.send": "send mail as you", "mail.archive": "archive mail", "mail.read_state.write": "mark read or unread", "mail.trash": "move mail to Trash" };
   return (capabilities || []).map((cap) => names[cap] || cap).join(", ");
 }
 
@@ -23717,6 +24068,21 @@ function paintBotSends(rows) {
   }
 }
 
+function paintBotMailActions(rows, available = true) {
+  const list = $("bot-mail-actions");
+  list.replaceChildren();
+  for (const row of rows || []) {
+    const item = document.createElement("li");
+    item.textContent = `${row.operation} · ${row.state} · ${row.accountId} · ${row.messageId} · ${row.requestId}`
+      + (row.undoOpId ? " · Undo available in Mail while this operation remains valid." : "");
+    list.append(item);
+  }
+  if (!list.children.length) { const item = document.createElement("li");
+    item.textContent = available ? "No bot mail changes." : "Mail change receipts are unavailable. New bot mail changes are blocked until storage is repaired.";
+    list.append(item);
+  }
+}
+
 function paintBotAccess(data) {
   ++botAccessVersion;
   const access = data || {};
@@ -23762,6 +24128,7 @@ function paintBotAccess(data) {
   paintBotDrafts(access.draftsAvailable === false ? null : (access.drafts || []));
   if (typeof paintBotAudit === "function") paintBotAudit(access.audit || []);
   if (typeof paintBotSends === "function") paintBotSends(access.sends || []);
+  if (typeof paintBotMailActions === "function") paintBotMailActions(access.mailActions || [], access.mailActionsAvailable !== false);
   paintBotProbe(access);
 }
 
@@ -23902,9 +24269,9 @@ function selectedBotCaps() {
   return caps;
 }
 
-function selectedBotAccountLabels() {
+function selectedBotAccountLabels(accountIds = selectedBotAccounts()) {
   const accounts = (state.botAccess && state.botAccess.accounts) || [];
-  return selectedBotAccounts().map((id) => {
+  return accountIds.map((id) => {
     const account = accounts.find((row) => row.accountId === id);
     return account ? (account.email || account.displayName || id) : id;
   });
@@ -23919,6 +24286,13 @@ function botSendConfirmCopy(labels) {
     confirm: "Allow sending",
     cancel: "Cancel",
   };
+}
+
+const BOT_MAIL_ACTION_NAMES = { "mail.archive": "archive mail", "mail.read_state.write": "mark mail read or unread", "mail.trash": "move mail to Trash" };
+function botMailActionConfirmCopy(labels, capabilities) {
+  const changes = capabilities.filter(cap => BOT_MAIL_ACTION_NAMES[cap]).map(cap => BOT_MAIL_ACTION_NAMES[cap]);
+  return { title: "Allow this bot to change mail?", confirm: "Allow mail changes", cancel: "Cancel",
+    body: `This bot can ${changes.join(", ")} in ${labels.join(", ")}. Calls act immediately without another confirmation. Trash never permanently deletes mail. Sending is a separate permission. Cancel leaves these permissions off.` };
 }
 
 function showBotSection(name) {
@@ -24078,6 +24452,9 @@ function wireBot() {
         setBotStatus("Choose at least one mailbox for this bot.", true);
         return;
       }
+      const accountLabels = selectedBotAccountLabels(accountIds);
+      const label = $("bot-label").value;
+      const platform = $("bot-platform").value;
       const capabilities = selectedBotCaps();
       const choice = $("bot-expiry").value;
       let expiry;
@@ -24094,15 +24471,23 @@ function wireBot() {
         expiry = { kind: "finite", days: Number(choice) };
       }
       if (capabilities.includes("mail.send")) {
-        const answer = await askConfirm(botSendConfirmCopy(selectedBotAccountLabels()));
+        const answer = await askConfirm(botSendConfirmCopy(accountLabels));
         if (!answer || !answer.ok) return;
       }
+      const mailActions = capabilities.filter(cap => BOT_MAIL_ACTION_NAMES[cap]);
+      let mailActionConsent;
+      if (mailActions.length) {
+        const answer = await askConfirm(botMailActionConfirmCopy(accountLabels, capabilities));
+        if (!answer || !answer.ok) return;
+        mailActionConsent = { accountIds, capabilities: mailActions };
+      }
       const minted = await call("bot:mintGrant", {
-        label: $("bot-label").value,
-        platform: $("bot-platform").value,
+        label,
+        platform,
         accountIds,
         capabilities,
         expiry,
+        ...(mailActionConsent ? { mailActionConsent } : {}),
       });
       showBotSecret(minted.secret);
       paintBotAccess(minted.access);
@@ -24700,6 +25085,8 @@ function wire() {
   const motion = motionApi();
   if (motion) motion.bindChrome(document);
   wireGoogleOnboarding();
+  wireSetupGuide();
+  wireMailColumnEditor();
   wireSettingsFolds();
   wireAgentTabs();
   wireAgentTodoView();
@@ -25062,7 +25449,9 @@ function wire() {
   });
   $("agent-peek").addEventListener("close", invalidatePeek);
   $("confirm").addEventListener("close", () => {
-    if (!confirmResult) return;
+    // close() queues an event. A chained confirmation may already have opened
+    // this same dialog again before that event is delivered.
+    if ($("confirm").open || !confirmResult) return;
     const pending = confirmResult;
     confirmResult = null;
     confirmCopy = null;
@@ -25539,6 +25928,7 @@ async function boot() {
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
+  api.on("mail:accountsUpdated", () => setTimeout(() => { if ($("setup-guide").open) paintSetupGuide(); }, 0));
   api.on("nativeAgent:homeUpdated", (payload) => {
     if (!payload || typeof payload !== "object") return;
     agentPaintPayload = payload;
@@ -25583,9 +25973,10 @@ async function boot() {
   await loadPresets();
   await loadOauthStatus();
   await loadShellPrefs();
+  await loadMailColumnOrder();
   await loadAccounts();
   applyFeaturesHash();
-  await maybeShowGoogleOnboarding();
+  await startSetupGuide();
   loadScheduled().catch(() => {});
   if (typeof api.reportUpdateReady === "function") api.reportUpdateReady();
 }

@@ -1,13 +1,13 @@
 # Bot bridge
 
-Morrow owns OAuth credentials, Keychain or DPAPI secrets, and `mail.sqlite`. New or explicitly migrated Gmail OAuth accounts submit through Gmail API; other accounts retain SMTP. The legacy submission/receipt field names remain compatible. Gmail migration and separate Calendar reauthorization require desktop review in Settings → Accounts and are not bridge commands. The bridge has no move/archive/delete capability; desktop Gmail Delete is Trash-only. A narrower request does not revoke older broad grants. The bridge is a loopback HTTP API in the running Electron host. A bot does not reopen the database and does not hold a provider token.
+Morrow owns OAuth credentials, Keychain or DPAPI secrets, and `mail.sqlite`. New or explicitly migrated Gmail OAuth accounts submit through Gmail API; other accounts retain SMTP. The legacy submission/receipt field names remain compatible. Gmail migration and separate Calendar reauthorization require desktop review in Settings → Accounts and are not bridge commands. The bridge offers separately granted archive, read/unread and Trash operations for explicit cached messages. Trash never permanently deletes mail. Arbitrary moves and mailbox administration are unavailable. A narrower request does not revoke older broad grants. The bridge is a loopback HTTP API in the running Electron host. A bot does not reopen the database and does not hold a provider token.
 
 The listener defaults to off. When a grant exists and Settings turns it on, it binds `127.0.0.1:47831` only. There is no public bind and no Tailscale Funnel.
 
 ## Enable on the MacBook Air
 
 1. Open Morrow → Settings → Bot access. The page follows four numbered steps, then Activity: **1 Create bot**, **2 Turn on access**, **3 Another device** (optional), and **4 Bot setup**. **Create bot** names the bot, selects its mailboxes, and creates its secret. **Turn on access** is the listener, including refresh. If port 47831 is taken, the page keeps that error and says to quit the other program or restart Morrow. **Another device** is the copyable Tailscale Serve command, the saved hostname, the HTTPS endpoint, and a check you start yourself. Saving a hostname does not configure Serve, and the check does not run `tailscale`. If the saved HTTPS address answers like another app, the page says another app is using the address, shows a short safe snippet, and gives two recoveries: free that HTTPS port and re-run the Serve command, or pick another HTTPS port, save, copy the updated command, and check again. If the check cannot run safely, the status stays Not checked. **Bot setup** copies or downloads the prompt for this installation. **Activity** keeps draft proposals, send receipts, and recent bot calls separate from setup. Revoke invalidates the secret and stops access. Delete removes the bot row after you confirm. A saved Tailscale hostname is not a connectivity check.
-2. Open **Add a bot** (expanded for a profile without a live bot). Choose **Grok Bot** (`grok_bot`) or **Hermes Agent** (`hermes_agent`), enter a name and explicitly select mailboxes. Existing grants without a platform remain Grok Bot grants; proactive notify stays off. **More options: permissions & expiry** retains extra capabilities and expiry (default 7 days, maximum 30, or no expiry). No expiry asks you to confirm. Cancel writes nothing. The host rejects no expiry unless that confirmation is present. Turning on **Send mail from these mailboxes** asks you to confirm the exact mailbox list before the bot is created. Choose **Create bot**.
+2. Open **Add a bot** (expanded for a profile without a live bot). Choose **Grok Bot** (`grok_bot`) or **Hermes Agent** (`hermes_agent`), enter a name and explicitly select mailboxes. Existing grants without a platform remain Grok Bot grants; proactive notify stays off. **More options: permissions & expiry** retains extra capabilities and expiry (default 7 days, maximum 30, or no expiry). No expiry asks you to confirm. Cancel writes nothing. The host rejects no expiry unless that confirmation is present. Turning on **Send mail from these mailboxes** asks you to confirm the exact mailbox list before the bot is created. Choose **Create bot**. No expiry and Allow sending are separate reviews of the same submitted bot/mailbox selection; completing the first never skips the second. Cancel or Escape stops creation. A creation failure keeps the form available for a fresh review.
 3. Copy the secret once into a private credential file on your other tailnet device, mode `0600`. Do not put it in chat, the repo, or a process argument.
 4. Turn on **Turn on bot access on this computer**. The listener still binds only to loopback; this does not configure Tailscale.
 5. Follow **Tailscale connection** and the Serve operator steps below. Save the exact allowed hostname and port, such as `your-mac.your-tailnet.ts.net:8443`. Use the displayed HTTPS endpoint and installation ID from your other device. A bot, mailbox scopes, and bearer authentication are still required.
@@ -162,12 +162,15 @@ The published params are in `shared/bot-contract-v1.json`. Operations:
 - `draft.proposals.submit`
 - `draft.proposals.list`
 - `mail.send`
+- `mail.archive`
+- `mail.mark_read`
+- `mail.trash`
 
 Cached reads do not mark mail read and do not download a missing body. `mail.attachment.get` returns cached attachment metadata, `bytes: null`, and `attachment_bytes_not_stored`. The bot does not download attachment bytes. Search is the local index only. Organize proposals are structural. Draft list responses omit the body; the body stays in Morrow for the Settings review.
 
 Every account-scoped call also requires that the granted account still exists locally. A scoped but disconnected account returns `NOT_FOUND`, including direct message/attachment IDs, health and proposal reads/submissions. An ungranted account remains `FORBIDDEN`; unavailable storage remains `HOST_NOT_READY`. `accounts.list` omits disconnected accounts. These access checks do not purge retained legacy cache or proposal data. An offline or reauthentication-needed account that still exists can continue reading its granted cache.
 
-`bridge.describe.semantics.providerCalls` describes potential behavior of granted operations: it is true when `mail.send` is advertised, false for cache-only reads and inert proposals. `cacheOnlyReads` stays true. This is not a per-request network count. From/alias resolution may contact Gmail before claim, join or replay, and OAuth may refresh before a final mail-submission authorization denial. Receipts describe mail-provider submission outcome and replay status; they do not certify zero provider traffic. No provider-call field is added to receipts.
+`bridge.describe.semantics.providerCalls` describes potential behavior of granted operations: it is true when sending or any mail-change operation is advertised, false for cache-only reads and inert proposals. `cacheOnlyReads` stays true. This is not a per-request network count. From/alias resolution may contact Gmail before claim, join or replay, and OAuth may refresh before a final mail-submission authorization denial. Receipts describe mail-provider submission outcome and replay status; they do not certify zero provider traffic. No provider-call field is added to receipts.
 
 The routine IPC trace records known channel names and argument counts once per invoke/send channel, plus renderer console levels/line numbers and load error codes. It omits request values, renderer text, URLs and error descriptions, including copies forwarded to stderr or support rows. Unknown channel names use a fixed label. Other Debug log sources can still contain account/folder context and need review before sharing. This change does not inspect or erase existing diagnostic files; normal startup trace initialization is unchanged.
 
@@ -182,6 +185,40 @@ Pending bot sends revalidate the current installation, grant revision/expiry, li
 The cancellation boundary is the mail-provider transport invocation. Once submission has begun, revoke/disable cannot recall it: Morrow still persists an acceptance or uncertain outcome, and an HTTP response may be withheld after access changes. Check the receipt in Settings Activity and retain the original request id; never infer that no mail was sent from a disconnected or unauthorized response. The ordinary compose/scheduled send path does not use the bot authorization gate.
 
 Separately proposed CLI work remains draft CRUD with revision checks and scoped attachment handles/downloads, followed by CLI packaging/help. Those operations and scopes are not added by this authorization fix.
+
+## Archive, read/unread and Trash
+
+Create a new bot in Settings with the exact mailboxes and any of these independent, default-off capabilities: `mail.archive`, `mail.read_state.write`, `mail.trash`. Existing grants are never upgraded. A separate **Allow mail changes** review names the selected actions and mailboxes; cancel or Escape creates nothing. Sending retains its own separate review. The host rejects a mail-change grant whose confirmation does not match its mailbox/capability lists. This does not request additional provider OAuth scopes or sign in automatically.
+
+- `mail.archive`: `{ "accountId": "ACCOUNT_ID", "messageId": "MESSAGE_ID" }`.
+- `mail.mark_read`: the same IDs plus `"isRead": true` for read or `false` for unread.
+- `mail.trash`: the same IDs, always a move to the account’s existing Trash folder. No permanent delete, arbitrary destination, thread expansion, server IDs or mailbox administration is accepted.
+
+Each command changes **one explicitly identified cached server message**. Get that ID from a granted cached read. Other accounts' IDs, disconnected accounts and missing messages are denied. Local unsynced drafts, unconfirmed identities, active conflicting writes, missing Archive/Trash folders and unsupported provider operations cannot be reported as a cache-only success. Archive from Trash or Drafts is unavailable; a message already cached in the destination is refused without issuing a move. Gmail archive removes Inbox membership using the existing Gmail API path; other accounts use their existing archive folder and IMAP transport. Trash uses the existing Trash-only single-message operation even on non-Gmail accounts.
+
+Use the existing Node client with `--operation mail.archive`, `mail.mark_read` or `mail.trash`, **`--request-id '<uuid>'`**, and a params file. For example:
+
+```bash
+node scripts/morrow-bot-call.js \
+  --token-file /path/to/morrow-bot-token \
+  --installation '<installation-id-from-settings>' \
+  --operation mail.mark_read --request-id '<uuid>' --params-file ./read.json
+```
+
+The equivalent archive and Trash examples use `message.json` containing `{"accountId":"ACCOUNT_ID","messageId":"MESSAGE_ID"}`. Each example needs its own reviewed intended change and UUID:
+
+```bash
+node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.archive --request-id '<uuid>' --params-file ./message.json
+node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.trash --request-id '<uuid>' --params-file ./message.json
+```
+
+`read.json` is `{"accountId":"ACCOUNT_ID","messageId":"MESSAGE_ID","isRead":true}`. Keep a different UUID for each new intended change. Repeating the exact UUID, operation and params only observes the original receipt; it never re-admits the change. Reusing that UUID with different content is rejected. The client does not retry automatically.
+
+A successful HTTP response can report `state: pending`: the request has been durably claimed and queued, **not confirmed by the provider**. Repeat the identical command to observe `completed`, `failed`, `not_attempted`, `superseded` or `unknown`. Only `completed` with `providerConfirmed: true` proves provider confirmation. Failed or unsupported calls never claim that the server changed mail. Separate message requests have independent outcomes; one failure does not roll back earlier calls. An unknown result may already have changed mail: refresh and inspect Morrow rather than repeating it under a new UUID. Activity → Mail change receipts shows the recent states, without message text.
+
+Requests use Morrow’s existing serialized mailbox journal, provider identity checks, flag/move handling and cache reconciliation. Confirmed moves return `undoOpId` when the normal Mail Undo is available; identity changes can invalidate Undo. There is no bot Undo command or new attachment access. Mark read/unread can be reversed with a separate explicit request, not an automatic rollback.
+
+The grant, revision, enabled flag, capability, mailbox and connection identity are rechecked before admission and after credential/connection/provider-identity waits immediately before the mutating transport call. Revoke or disable blocks an unsubmitted write; it cannot recall one that has begun. A write’s durable request receipt precedes journal admission. If receipt binding cannot be persisted, the queued action receives no authority. Receipt corruption fails closed. Queued bot actions retain no executable authorization across app restart: unsubmitted actions are retired without retry, while interrupted provider submissions remain uncertain. Existing desktop queue recovery is unchanged. Receipt IDs are retained rather than evicted into a replayable state; missing journal evidence yields unknown, never resubmission. No production mailbox or provider was used to validate this feature.
 
 ## Tailscale Serve
 

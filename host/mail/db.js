@@ -1667,6 +1667,10 @@ function whereFor(query, now = Date.now()) {
     clauses.push(`m.folder_path NOT IN (${query.excludeFolderPaths.map(() => "?").join(", ")})`);
     params.push(...query.excludeFolderPaths);
   }
+  if (Array.isArray(query.excludeMailboxes) && query.excludeMailboxes.length) {
+    clauses.push(`NOT (${query.excludeMailboxes.map(() => "(m.account_id = ? AND m.folder_path = ?)").join(" OR ")})`);
+    for (const box of query.excludeMailboxes) params.push(box.accountId, box.path);
+  }
   if (query.category && query.category !== "all" && query.category !== "primary") {
     clauses.push("0 = 1");
   }
@@ -1845,6 +1849,8 @@ function summaryScope(query) {
   for (const field of ["folderPaths", "excludeFolderPaths"]) {
     if (scope[field]?.length) scope[field] = [...new Set(scope[field])].sort();
   }
+  if (scope.excludeMailboxes?.length) scope.excludeMailboxes = mailboxPairs(scope.excludeMailboxes).sort((left, right) =>
+    left.accountId.localeCompare(right.accountId) || left.path.localeCompare(right.path));
   if (scope.mailboxes?.length) scope.mailboxes = mailboxPairs(scope.mailboxes).sort((left, right) =>
     left.accountId.localeCompare(right.accountId) || left.path.localeCompare(right.path));
   return scope;

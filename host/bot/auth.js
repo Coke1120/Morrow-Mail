@@ -7,7 +7,7 @@ const {
   MAX_ACCOUNTS,
   MAX_EXPIRY_DAYS,
 } = require("./constants");
-const { CAPABILITIES, DEFAULT_CAPABILITIES } = require("./catalog");
+const { CAPABILITIES, DEFAULT_CAPABILITIES, MAIL_ACTION_CAPABILITIES } = require("./catalog");
 const { accessPath, writePrivate } = require("./store");
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -298,6 +298,18 @@ function blankCounters() {
   };
 }
 
+function validateMailActionConsent(consent, accountIds, capabilities) {
+  const mailActions = capabilities.filter(cap => MAIL_ACTION_CAPABILITIES.includes(cap));
+  if (!mailActions.length) return;
+  const same = (left, right) => Array.isArray(left) && left.length === right.length
+    && new Set(left).size === right.length && right.every(value => left.includes(value));
+  if (!consent || typeof consent !== "object" || Array.isArray(consent)
+    || Object.keys(consent).some(key => !["accountIds", "capabilities"].includes(key))
+    || !same(consent.accountIds, accountIds) || !same(consent.capabilities, mailActions)) {
+    throw publicError("Review and confirm the exact mail changes and mailbox list before creating that bot.");
+  }
+}
+
 function mint(input) {
   const body = input || {};
   const label = typeof body.label === "string" ? body.label.trim() : "";
@@ -306,6 +318,7 @@ function mint(input) {
   if (!Object.hasOwn(PLATFORMS, platform)) throw publicError("Choose Grok Bot or Hermes Agent.");
   const accountIds = normalizeAccounts(body.accountIds);
   const capabilities = normalizeCapabilities(body.capabilities || DEFAULT_CAPABILITIES);
+  validateMailActionConsent(body.mailActionConsent, accountIds, capabilities);
   const expiry = parseExpiry(body.expiry);
   const db = require("../mail/db");
   if (!db.isReady()) throw publicError("Morrow mail storage is not open.");
@@ -518,6 +531,7 @@ function draftsToday(clientId) {
 }
 
 module.exports = {
+  validateMailActionConsent,
   PLATFORMS,
   onChange,
   mutate,

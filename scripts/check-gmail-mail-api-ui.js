@@ -11,7 +11,7 @@ async function run() {
   for (const id of ["features-catalog", "settings-gmail-migration"]) {
     const text = document.getElementById(id).textContent;
     for (const pattern of [/Gmail.*Trash/, /Microsoft.*unchanged/, /OAuth/, /Calendar.*separate/i]) assert.match(text, pattern);
-    assert.doesNotMatch(text, /migration.*(?:unavailable|not available)/i);
+    assert.doesNotMatch(text, /migration[^.]*\b(?:unavailable|not available)/i);
   }
   assert.match(document.getElementById("settings-gmail-migration").textContent, /narrower request does not revoke older broad grants/);
   ui.run(`

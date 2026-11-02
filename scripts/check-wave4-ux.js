@@ -630,7 +630,7 @@ test('Wave4 rendered Features catalog and CLI describe implemented scope and set
   const ui = fixture();
   ui.run('paintFeatureCatalog()');
   const text = ui.nodes.get('features-catalog').textContent;
-  for (const claim of [/downloaded unread messages in each account's primary folder/,/Snoozed messages and a read row held open are excluded/,
+  for (const claim of [/Starred and Unread aggregate the existing per-account downloaded filters and their counts/,/Counts exclude a read row held open/,
     /groups of at most four messages between paints/,/Accepted writes await mailbox confirmation before joining Undo/,
     /accumulate completed changes across batches/,/select one change per message/i,/not a merged on\/off status/,/selected mailbox's Out of Office status/,
     /Status reads and Refresh check only that mailbox, never every account/,/compact Out of Office: off with Manage and no Refresh/,/Agent reopens with its last payload/,

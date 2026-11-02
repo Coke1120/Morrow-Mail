@@ -3463,29 +3463,6 @@ button.all-inbox .name {
   text-overflow: ellipsis;
 }
 
-button.all-account-unread {
-  flex: none;
-  margin: 0 6px 0 0;
-  border: 0;
-  cursor: pointer;
-  font-family: inherit;
-  line-height: 1;
-  white-space: nowrap;
-  color: var(--badge-ink);
-  background: var(--badge-bg);
-}
-
-button.all-account-unread:hover,
-button.all-account-unread:focus-visible {
-  filter: brightness(1.06);
-}
-
-button.all-account-unread[aria-pressed="true"] {
-  background: #fff;
-  color: #102822;
-  box-shadow: inset 0 0 0 1.5px #193c34, 0 0 0 1px #b9d5ad;
-}
-
 .chips {
   display: flex;
   flex-wrap: nowrap;
@@ -5991,3 +5968,25 @@ pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
 #messages #message-list .row-actions { top: auto; bottom: 0; transform: none; }
 
 #messages #message-list .outbox-row { padding-left: 28px; }
+
+/* First-use guide shares the shell's native dialog, theme, and motion. */
+#setup-guide { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }
+.setup-guide-sheet { display: flex; flex-direction: column; gap: 14px; }
+#setup-guide-steps { display: flex; flex-wrap: wrap; gap: 6px; }
+#setup-guide-steps button { flex: 1 1 120px; text-align: left; font-size: 12px; }
+#setup-guide-steps [aria-current="step"] { outline: 2px solid var(--accent, #193c34); outline-offset: -2px; }
+.setup-guide-card { border: 1px solid var(--border, #d6ddd9); border-radius: 14px; padding: 24px; }
+.setup-guide-card h3 { font-size: 24px; margin: 4px 0 12px; }
+.setup-guide-card p { line-height: 1.6; }
+.setup-guide-footer { justify-content: space-between; }
+.setup-guide-settings { padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border, #d6ddd9); }
+@media (max-width: 540px) { .setup-guide-card { padding: 16px; } #setup-guide-steps button { flex-basis: 45%; } }
+.setup-guide-sheet > * { flex-shrink: 0; }
+#setup-guide-steps button { height: auto; min-height: 42px; padding: 8px 10px; line-height: 1.35; }
+
+.mail-list-columns .mail-column-drop { box-shadow: inset 0 -3px var(--accent); background: var(--paper-soft); }
+.mail-list-columns button[draggable="true"] { cursor: grab; }
+#mail-columns-order { padding: 0; list-style: none; }
+#mail-columns-order li { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+#mail-columns-order li > span { flex: 1; }
+#mail-columns-open { flex: 0 0 auto; }
