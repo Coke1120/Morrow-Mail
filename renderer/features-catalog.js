@@ -7,6 +7,12 @@
   return {
     items: [
       {
+        id: "mail-list-columns",
+        title: "Mail columns and sorting",
+        category: "Mail",
+        blurb: "Date, Recipient, Sender and Subject headers sort all matching downloaded mail before paging, in folders including Inbox, Drafts and Sent and All Account Mail. Click again to reverse direction; the choice is remembered on this device. Recipient shows all To recipients and sorts by the first; missing text sorts first ascending and last descending. Sender sorts by the saved display name when available, otherwise the cached From text. Date uses the existing message timestamp (saved time for local drafts). Equal values use message ID for stable ordering. Changing sort returns to the first page and keeps the reader open; selection remains only for rows on that page. Search sorts all downloaded matches before its existing 100-result limit. Filter this page still filters only loaded rows. Narrow lists scroll horizontally. Outbox retains scheduled send order and its headers are disabled. Undownloaded provider mail is not included.",
+      },
+      {
 id: "mail-workflow-feedback",
         title: "Mail and Agent feedback",
         category: "Mail",
@@ -166,7 +172,7 @@ id: "mail-workflow-feedback",
         id: "google-desktop-oauth",
         title: "Google sign-in and optional personal client",
         category: "Accounts",
-        blurb: "Continue with Google uses the bundled Desktop client by default when present. New connections and Gmail OAuth reconnects keep Other email provider collapsed; manual-provider reconnects retain their form. A legacy Gmail connection offers Review Gmail API migration, which opens Accounts without migrating until you review and confirm. Settings → Accounts → Advanced: personal Google OAuth client (optional) imports a Desktop JSON into this computer's app data. An explicit import replaces the bundled client; developer environment variables still win. Web client JSON is rejected and the secret is not shown. Clear imported client removes only that file. Changing clients requires Gmail and separate Calendar reauthorization. Older grants with an unknown client need one-time reauthorization; cached mail and saved credentials stay. Finish or cancel Google sign-in before import or clear; finish the picker before starting Google sign-in. Invalid developer environment overrides must be fixed or removed. Local readiness does not prove Google permits sign-in.",
+        blurb: "Continue with Google uses the bundled Desktop client by default when present. On first use without accounts or a configured Google client, a setup dialog offers Import Google Console JSON or Later. Later and closing the dialog are remembered on this profile; Settings → Accounts keeps the import instructions visible. Importing does not complete Cloud setup or sign-in. New connections and Gmail OAuth reconnects keep Other email provider collapsed; manual-provider reconnects retain their form. A legacy Gmail connection offers Review Gmail API migration, which opens Accounts without migrating until you review and confirm. Settings → Accounts → Advanced: personal Google OAuth client (optional) imports a Desktop JSON into this computer's app data. An explicit import replaces the bundled client; developer environment variables still win. Web client JSON is rejected and the secret is not shown. Clear imported client removes only that file. Changing clients requires Gmail and separate Calendar reauthorization. Older grants with an unknown client need one-time reauthorization; cached mail and saved credentials stay. Finish or cancel Google sign-in before import or clear; finish the picker before starting Google sign-in. Invalid developer environment overrides must be fixed or removed. Local readiness does not prove Google permits sign-in.",
       },
       {
         id: "multi-account",
