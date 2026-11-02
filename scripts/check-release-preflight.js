@@ -186,6 +186,8 @@ const { verifyManifest } = require('../host/update-manifest');
   assert.ok(!/pull_request_target|secrets\.|sign-release-manifest\.js|publish-release\.js|upload-artifact/.test(JSON.stringify(nativeCheck)), 'PR packaging never receives release authority or uploads assets');
   const commands = job => job.steps.filter(step => step.run).map(step => step.run);
   const nativeCommands = commands(nativeJob), releaseCommands = commands(releaseWorkflow.jobs.macos);
+  const nativeBuild = nativeJob.steps.find(step => step.run === 'npm run dist:mac -- --arm64 --publish never');
+  assert.deepEqual(nativeBuild.env, { CSC_IDENTITY_AUTO_DISCOVERY: 'false', CSC_FOR_PULL_REQUEST: 'true' }, 'PR packaging explicitly enables the existing keyless ad hoc signer');
   for (const command of nativeCommands) assert.ok(releaseCommands.includes(command), `PR build matches the release command: ${command}`);
   for (const command of ['npm ci', 'npm run check', 'npm run dist:mac -- --arm64 --publish never', 'node scripts/verify-release-macos.js']) assert.ok(nativeCommands.includes(command));
   assert.ok(nativeCommands.indexOf('npm run dist:mac -- --arm64 --publish never') < nativeCommands.indexOf('node scripts/verify-release-macos.js'));
