@@ -109,11 +109,37 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(os.tmpdir(), "morrow-bo
       await page.evaluate(() => { failMint = false; }); await start(); await next();
       await page.screenshot({ path: path.join(output, `narrow-${reducedMotion}.png`) });
       await page.locator("#confirm-cancel").click(); await page.locator("#confirm").waitFor({ state: "hidden" });
+      for (const cap of ["mail.archive", "mail.read_state.write", "mail.trash"]) {
+        const input = page.locator(`[data-cap="${cap}"]`);
+        assert.equal(await input.isChecked(), false); await input.check();
+      }
+      const reviewChanges = async () => {
+        await start(); await next(); await page.locator("#confirm-ok").click();
+        await page.waitForFunction(() => document.getElementById("confirm-ok").textContent === "Allow mail changes");
+        await page.waitForTimeout(260); assert.equal(await page.evaluate(() => !!confirmResult), true);
+        const text = await page.locator("#confirm-body").textContent();
+        for (const phrase of ["archive mail", "mark mail read or unread", "move mail to Trash", "alpha@example.test", "never permanently deletes"]) assert.ok(text.includes(phrase));
+        assert.ok(!text.includes("beta@example.test"));
+      };
+      await reviewChanges(); await page.keyboard.press("Escape"); await page.locator("#confirm").waitFor({ state: "hidden" });
+      const beforeChanges = await mintCount();
+      await reviewChanges(); await page.setViewportSize({ width: 1280, height: 960 });
+      await page.addScriptTag({ url: origin + "/axe.js" });
+      assert.deepEqual(await page.evaluate(async () => (await axe.run(document.getElementById("confirm"), {
+        runOnly: { type: "tag", values: ["wcag2a", "wcag2aa"] },
+      })).violations.map(row => row.id)), []);
+      await page.screenshot({ path: path.join(output, `mail-changes-${reducedMotion}.png`) });
+      await page.setViewportSize({ width: 820, height: 740 });
+      await page.screenshot({ path: path.join(output, `mail-changes-narrow-${reducedMotion}.png`) });
+      await page.locator("#confirm-ok").press("Enter"); await page.locator("#bot-secret[open]").waitFor();
+      assert.equal(await mintCount(), beforeChanges + 1);
+      const consent = await page.evaluate(() => fixtureAccess().grants[0].mailActionConsent);
+      assert.deepEqual(consent, { accountIds: ["alpha"], capabilities: ["mail.archive", "mail.read_state.write", "mail.trash"] });
       await page.evaluate(() => paintFeatureCatalog());
       assert.match(await page.locator("#features-catalog").textContent(), /No expiry and Allow sending are separate reviews/);
       assert.deepEqual(errors, []); assert.deepEqual(external, []);
       await context.close();
     }
-    console.log(JSON.stringify({ result: "passed", checks: "native queued-close sequence, motion/reduced motion, cancel/Escape, focus trap, keyboard allow, duplicate clicks, fake persistence/reload/failure, scope, narrow UI, Features, zero axe violations", output }));
+    console.log(JSON.stringify({ result: "passed", checks: "native queued-close sequence, motion/reduced motion, cancel/Escape, focus trap, keyboard allow, duplicate clicks, fake persistence/reload/failure, separate default-off mail-change scopes and third review, narrow UI, Features, zero axe violations", output }));
   } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

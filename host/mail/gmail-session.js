@@ -318,7 +318,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
         } else {
           providerUndo = { kind: "trash", messageId: mapped.provider_id, labelIds: [...(prior.labelIds || [])] };
           db.rememberGmail(account.id, { providerId: mapped.provider_id, priorTrashLabels: providerUndo.labelIds });
-          result = (await api.trash(mapped.provider_id)).message;
+          result = (await api.trash(mapped.provider_id, options)).message;
         }
       }
       else {
@@ -328,9 +328,9 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
         } else if (to === ALL) {
           const prior = result || await api.getMessage(mapped.provider_id, { format: "metadata" });
           providerUndo = { kind: "archive", messageId: mapped.provider_id, labelIds: [...(prior.labelIds || [])] };
-          result = await api.archive(mapped.provider_id);
+          result = await api.archive(mapped.provider_id, options);
         }
-        else result = await api.modifyLabels(mapped.provider_id, [to], [ALL, "TRASH", "SENT", "DRAFT"].includes(from) ? [] : [from]);
+        else result = await api.modifyLabels(mapped.provider_id, [to], [ALL, "TRASH", "SENT", "DRAFT"].includes(from) ? [] : [from], options);
       }
     }
     alive();
@@ -344,10 +344,10 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     }
     return { uid: mapped.local_uid, uidValidity: incarnation, providerUndo, undoable, ...cache };
   }
-  async function flags(path, uid, add, remove, validity, localMessageId) {
+  async function flags(path, uid, add, remove, validity, localMessageId, options = {}) {
     const mapped = await resolve(path, uid, validity, localMessageId);
-    if (add.includes("\\Seen") || remove.includes("\\Seen")) await api.markRead(mapped.provider_id, add.includes("\\Seen"));
-    if (add.includes("\\Flagged") || remove.includes("\\Flagged")) await api.star(mapped.provider_id, add.includes("\\Flagged"));
+    if (add.includes("\\Seen") || remove.includes("\\Seen")) await api.markRead(mapped.provider_id, add.includes("\\Seen"), options);
+    if (add.includes("\\Flagged") || remove.includes("\\Flagged")) await api.star(mapped.provider_id, add.includes("\\Flagged"), options);
     alive();
   }
   async function append(path, raw) {

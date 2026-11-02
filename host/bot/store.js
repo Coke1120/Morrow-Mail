@@ -50,6 +50,10 @@ function sendReceiptPath() {
   return path.join(bridgeDir(), "bot-send-receipts.json");
 }
 
+function mailActionReceiptPath() {
+  return path.join(bridgeDir(), "bot-mail-action-receipts.json");
+}
+
 function draftPath() {
   return path.join(bridgeDir(), "bot-draft-proposals.json");
 }
@@ -66,4 +70,5 @@ module.exports = {
   draftPath,
   auditPath,
   sendReceiptPath,
+  mailActionReceiptPath,
 };

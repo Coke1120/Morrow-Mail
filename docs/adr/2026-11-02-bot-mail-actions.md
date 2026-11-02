@@ -1,0 +1,11 @@
+# Scoped bot mail changes
+
+Bot archive, read/unread and Trash reuse the desktop mail journal and provider transports. Each capability is separate, default off, bound to explicit mailboxes, and requires a desktop review whose account/action lists are validated by the host. Existing tokens gain no authority. No OAuth scopes, arbitrary folder requests, permanent deletion or mailbox administration are introduced.
+
+Each request targets one cached server message and requires a stable UUID. A durable bridge receipt is written before journal admission; a second durable write binds that receipt to one journal generation before its private authorization closure becomes usable. Replays observe that action, never admit another. Pending, failed, superseded and unknown results cannot masquerade as provider confirmation. Missing/corrupt evidence fails closed. Independent requests retain independent results.
+
+The closure rechecks the original grant revision, installation, enabled flag, mailbox, capability and account connection identity at the final IMAP/Gmail write boundary after credential and identity waits. Only a marker enters the journal, so restart cannot recreate bot authority: accepted bot work is retired, and already-publishing work follows existing unknown-outcome recovery. Bot source records also keep the older `confirmed` recovery gate false; older app versions therefore retire them as uncertain rather than replaying them after a rollback. The current run still validates the actual server UID/UIDVALIDITY and requires the private closure. Desktop actions retain their own recovery behavior. A provider call already submitted cannot be recalled by revocation.
+
+The bridge exposes no generic move or permanent-delete primitive. Archive and Trash resolve host-owned well-known folders. Local drafts, unsettled identities, missing folders and unsupported paths fail explicitly. Confirmed moves reuse existing Undo receipts and the Mail UI, without a bot Undo capability. Tests use temporary synthetic stores, fake IPC and intercepted providers; they do not establish native/live provider behavior.
+
+This feature branch depends on the separate chained-permission-dialog fix in #459. The bugfix and feature remain separate commits/PRs; neither changes the released version.

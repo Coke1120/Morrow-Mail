@@ -25,12 +25,27 @@
     "agent.proposals.list": ["accountId", "limit"],
     "draft.proposals.submit": ["accountId", "idempotencyKey", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"],
     "draft.proposals.list": ["accountId", "limit"],
-    "mail.send": ["accountId", "fromAddress", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"]
+    "mail.send": ["accountId", "fromAddress", "to", "cc", "bcc", "subject", "bodyText", "inReplyToMessageId"],
+    "mail.archive": ["accountId", "messageId"],
+    "mail.mark_read": ["accountId", "messageId", "isRead"],
+    "mail.trash": ["accountId", "messageId"]
   },
   "platforms": [
     "grok_bot",
     "hermes_agent"
   ],
+  "mailChanges": {
+    "capabilities": ["mail.archive", "mail.read_state.write", "mail.trash"],
+    "defaultEnabled": false,
+    "maxMessagesPerRequest": 1,
+    "requestId": "required-uuid",
+    "replay": "observe the same operation and params; never resubmit",
+    "states": ["pending", "completed", "failed", "not_attempted", "superseded", "unknown"],
+    "providerConfirmation": "completed with providerConfirmed true",
+    "permanentDeletion": false,
+    "arbitraryFolderMoves": false,
+    "resumeQueuedAfterRestart": false
+  },
   "proactiveNotify": {
     "kind": "proactive.mail_digest",
     "contentTrust": "untrusted_mail_data",

@@ -628,6 +628,7 @@ async function moveUid(client, folderPath, uid, destination, expectedValidity, l
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);
+    options?.beforeSubmit?.();
     const moved = await client.messageMove(String(uid), destination, { uid: true });
     const next = Number(moved && moved.uidMap && moved.uidMap.get(Number(uid)));
     // COPYUID binds these two values to the same destination generation. A
@@ -642,13 +643,20 @@ async function moveUid(client, folderPath, uid, destination, expectedValidity, l
   }
 }
 
-async function changeFlags(client, folderPath, uid, add, remove, expectedValidity, localMessageId) {
-  if (client.gmail) return client.gmail.flags(folderPath, uid, add, remove, expectedValidity, localMessageId);
+async function changeFlags(client, folderPath, uid, add, remove, expectedValidity, localMessageId, options = {}) {
+  if (client.gmail) return client.gmail.flags(folderPath, uid, add, remove, expectedValidity, localMessageId, options);
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);
-    if (add.length) await client.messageFlagsAdd(String(uid), add, { uid: true });
-    if (remove.length) await client.messageFlagsRemove(String(uid), remove, { uid: true });
+    if (options.beforeSubmit) {
+      options.beforeSubmit();
+      const present = await client.fetchOne(String(uid), { uid: true }, { uid: true });
+      if (!present || Number(present.uid) !== Number(uid)) {
+        throw Object.assign(new Error("That message is no longer on the server. Refresh before changing its read state."), { operationIssued: false });
+      }
+    }
+    if (add.length) { options.beforeSubmit?.(); await client.messageFlagsAdd(String(uid), add, { uid: true }); }
+    if (remove.length) { options.beforeSubmit?.(); await client.messageFlagsRemove(String(uid), remove, { uid: true }); }
   } finally {
     lock.release();
   }

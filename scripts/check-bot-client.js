@@ -114,6 +114,14 @@ function run() {
     assert.strictEqual(failed.stdout, "", "transport failures must not print raw proxy content");
     assert.strictEqual(failed.requests.length, 1, "the client must not follow redirects or retry writes");
   }
+  for (const operation of ["mail.archive", "mail.mark_read", "mail.trash"]) {
+    const argv = ["--token-file", "/synthetic-token", "--installation", "synthetic-installation", "--operation", operation];
+    const rejected = invoke(undefined, { argv });
+    assert.strictEqual(rejected.status, 2); assert.strictEqual(rejected.tokenReads, 0);
+    const accepted = invoke(undefined, { argv: argv.concat(["--request-id", "11111111-1111-4111-8111-111111111111"]) });
+    assert.strictEqual(accepted.status, 0); assert.strictEqual(accepted.requests.length, 1);
+    assert.strictEqual(accepted.requests[0].body.requestId, "11111111-1111-4111-8111-111111111111");
+  }
   console.log("bot-client-ok");
 }
 
