@@ -41,3 +41,27 @@ Scheduled cancellation retains its separate eight-second Undo offer. Expiry ends
 ## Non-goals
 
 Multi-batch history, opening Details automatically, Outbox Undo send, and Agent todo undo are out of scope.
+
+### Undo review and native focus follow-up (2026-11-02)
+
+Undo all and Undo selected now review a frozen set of completed changes in the
+shared confirmation dialog, with the count and Archive/Trash/Move breakdown.
+Cancel and Escape keep the checklist and do not invoke a restore. New completions
+are excluded from an already-open review; a changed generation or missing reviewed
+operation requires a fresh review. A separate review lock prevents duplicate
+prompts and submissions without changing the existing backend settlement ownership.
+The notice's read-state Undo also asks for confirmation; expired offers are rejected.
+Outbox and scheduled cancellation retain their separate existing flows.
+
+The native browser can run a focusout microtask between blur and focus, when
+`activeElement` is the body. This closed Details before Clear received its click.
+Use focusout's `relatedTarget` to recognize moves within Details. Keep the existing
+outside-click and Tab-away dismissal behavior, and retain Details under its Undo
+confirmation so cancellation restores the checklist and initiating control.
+Clear still only unchecks rows; there is no history deletion action here.
+
+Run `node scripts/check-undo-panel-browser.cjs` with Playwright available and
+Chromium at `/usr/bin/chromium` (or `CHROMIUM_PATH`). The fixture intercepts all
+requests and uses synthetic mail. Set `MORROW_UNDO_EVIDENCE_DIR` for screenshots.
+Existing `check-undo-sync-races.js` continues to exercise restore settlement and
+reader ownership, independently of the UI review boundary.
