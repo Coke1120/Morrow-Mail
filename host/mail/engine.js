@@ -593,7 +593,11 @@ async function secretFor(account) {
     // A rejected renewal may belong to a grant replaced during the request.
     // Do not publish its sign-in failure against the new connection.
     assertCurrent(revision);
-    if (oauthConfig.providerKey(account.profile) === "google") oauthConfig.requireGoogleGrantClient(JSON.parse(stored));
+    if (oauthConfig.providerKey(account.profile) === "google") {
+      let grant;
+      try { grant = JSON.parse(stored); } catch { /* retain the original corrupt-secret diagnostic */ }
+      if (grant && typeof grant === "object" && !Array.isArray(grant)) oauthConfig.requireGoogleGrantClient(grant);
+    }
     throw error;
   }
   assertCurrent();

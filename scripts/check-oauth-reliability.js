@@ -172,6 +172,12 @@ async function credentials() {
       await expected;
       assert.equal(secrets.getPassword(key), newer);
     }
+
+    db.insertAccount({ id: "corrupt-legacy", email: "legacy@example.invalid", username: "legacy@example.invalid",
+      profile: "gmail", authKind: "oauth2", createdAt: Date.now(), imapHost: "imap.example.invalid", imapPort: 993, imapTls: true,
+      smtpHost: "smtp.example.invalid", smtpPort: 587, smtpTls: true });
+    secrets.setPassword("corrupt-legacy", "synthetic-corrupt-json");
+    await assert.rejects(secretFor(db.accountById("corrupt-legacy")), /Stored OAuth secret is corrupt/);
   } finally {
     memory.setPassword = originalSet;
     global.fetch = originalFetch;
