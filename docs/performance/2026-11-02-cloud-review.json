@@ -1,0 +1,2614 @@
+{
+  "baselineCommit": "6edf30f7ed51e69cc70c444bbc6f3b030c442244",
+  "date": "2026-11-02",
+  "environment": {
+    "os": "Linux x86_64 / KVM / overlayfs",
+    "cpu": "Intel Xeon Platinum 8573C",
+    "visibleVcpus": 5,
+    "ramMiB": 18007,
+    "node": "24.19.0",
+    "betterSqlite3": "12.11.1",
+    "sqlite": "3.53.2",
+    "jsdom": "26.1.0",
+    "nativeElectronMeasured": false,
+    "coldOsCacheMeasured": false
+  },
+  "fixBranch": "perf/cloud-review-responsive-attachments",
+  "checks": {
+    "fullBaseline": "pass",
+    "fullCandidate": "pass",
+    "candidateExitCode": 0,
+    "candidateTerminalMarker": "ui-path-ok",
+    "targetedCount": 24,
+    "newRegressions": "check-responsive-attachments and extended check-attachment-transfers",
+    "failedAttemptResolved": "Feature seed synchronized with changed catalog; full rerun passed"
+  },
+  "samples": {
+    "bench-db": [
+      {
+        "name": "10000 startup phases",
+        "events": [
+          {
+            "phase": "idle",
+            "at": 0.2943789999999993
+          },
+          {
+            "phase": "copy",
+            "at": 1.1452400000000011
+          },
+          {
+            "phase": "journal",
+            "at": 29.658676
+          },
+          {
+            "phase": "journal",
+            "at": 76.949477
+          },
+          {
+            "phase": "migrate",
+            "at": 79.26165800000001
+          },
+          {
+            "phase": "body-backfill",
+            "at": 83.255055
+          },
+          {
+            "phase": "body-backfill",
+            "at": 83.84170599999999
+          },
+          {
+            "phase": "summaries",
+            "at": 83.91491099999999
+          },
+          {
+            "phase": "search",
+            "at": 84.151817
+          },
+          {
+            "phase": "admit",
+            "at": 89.590542
+          },
+          {
+            "phase": "ready",
+            "at": 89.719313
+          }
+        ],
+        "maxHeartbeatGapMs": 11.804249000000013
+      },
+      {
+        "name": "10000 startup phases",
+        "events": [
+          {
+            "phase": "idle",
+            "at": 0.021006999999997333
+          },
+          {
+            "phase": "copy",
+            "at": 0.07794499999999971
+          },
+          {
+            "phase": "journal",
+            "at": 18.44341399999999
+          },
+          {
+            "phase": "journal",
+            "at": 58.892776
+          },
+          {
+            "phase": "migrate",
+            "at": 60.647921999999994
+          },
+          {
+            "phase": "body-backfill",
+            "at": 62.75210899999999
+          },
+          {
+            "phase": "body-backfill",
+            "at": 63.755908000000005
+          },
+          {
+            "phase": "summaries",
+            "at": 63.79970900000001
+          },
+          {
+            "phase": "search",
+            "at": 63.88619399999999
+          },
+          {
+            "phase": "admit",
+            "at": 68.83478099999999
+          },
+          {
+            "phase": "ready",
+            "at": 68.89328800000001
+          }
+        ],
+        "maxHeartbeatGapMs": 7.246819000000016
+      },
+      {
+        "name": "10000 startup phases",
+        "events": [
+          {
+            "phase": "idle",
+            "at": 0.019096000000018876
+          },
+          {
+            "phase": "copy",
+            "at": 0.08234300000000871
+          },
+          {
+            "phase": "journal",
+            "at": 16.363185000000016
+          },
+          {
+            "phase": "journal",
+            "at": 57.544449000000014
+          },
+          {
+            "phase": "migrate",
+            "at": 59.45620199999999
+          },
+          {
+            "phase": "body-backfill",
+            "at": 61.31023300000001
+          },
+          {
+            "phase": "body-backfill",
+            "at": 61.505345000000005
+          },
+          {
+            "phase": "summaries",
+            "at": 61.53784900000002
+          },
+          {
+            "phase": "search",
+            "at": 61.569897
+          },
+          {
+            "phase": "admit",
+            "at": 66.010185
+          },
+          {
+            "phase": "ready",
+            "at": 66.064607
+          }
+        ],
+        "maxHeartbeatGapMs": 8.548011000000031
+      },
+      {
+        "name": "10000 startup current",
+        "repeats": 3,
+        "firstMs": 91.809173,
+        "samples": [
+          {
+            "ms": 91.809173,
+            "firstImmediateMs": 2.7929560000000038
+          },
+          {
+            "ms": 70.37282400000001,
+            "firstImmediateMs": 0.20711500000001593
+          },
+          {
+            "ms": 67.537957,
+            "firstImmediateMs": 0.2319840000000113
+          }
+        ],
+        "medianAllMs": 70.37282400000001,
+        "warmMedianMs": 68.95539050000001
+      },
+      {
+        "name": "10000 first page",
+        "repeats": 5,
+        "firstMs": 2.3757999999999697,
+        "samples": [
+          {
+            "ms": 2.3757999999999697,
+            "firstImmediateMs": 2.3914459999999735
+          },
+          {
+            "ms": 1.8824989999999957,
+            "firstImmediateMs": 2.252375000000029
+          },
+          {
+            "ms": 1.1580810000000383,
+            "firstImmediateMs": 1.167423000000042
+          },
+          {
+            "ms": 4.607506999999998,
+            "firstImmediateMs": 4.627644000000032
+          },
+          {
+            "ms": 1.3461599999999976,
+            "firstImmediateMs": 1.356521999999984
+          }
+        ],
+        "rows": 200,
+        "medianAllMs": 1.8824989999999957,
+        "warmMedianMs": 1.6143294999999966
+      },
+      {
+        "name": "10000 deep offset",
+        "repeats": 5,
+        "firstMs": 2.26710300000002,
+        "samples": [
+          {
+            "ms": 2.26710300000002,
+            "firstImmediateMs": 3.363629000000003
+          },
+          {
+            "ms": 1.5873879999999758,
+            "firstImmediateMs": 1.6033009999999877
+          },
+          {
+            "ms": 1.4368130000000292,
+            "firstImmediateMs": 1.4458040000000096
+          },
+          {
+            "ms": 2.098197999999968,
+            "firstImmediateMs": 2.114275999999961
+          },
+          {
+            "ms": 1.40560099999999,
+            "firstImmediateMs": 1.4144620000000145
+          }
+        ],
+        "rows": 200,
+        "medianAllMs": 1.5873879999999758,
+        "warmMedianMs": 1.5121005000000025
+      },
+      {
+        "name": "10000 deep keyset",
+        "repeats": 5,
+        "firstMs": 1.629554999999982,
+        "samples": [
+          {
+            "ms": 1.629554999999982,
+            "firstImmediateMs": 2.3657779999999775
+          },
+          {
+            "ms": 1.0817270000000008,
+            "firstImmediateMs": 1.091955999999982
+          },
+          {
+            "ms": 1.3034619999999677,
+            "firstImmediateMs": 1.3160589999999956
+          },
+          {
+            "ms": 3.092727000000025,
+            "firstImmediateMs": 3.111105000000009
+          },
+          {
+            "ms": 1.107385000000022,
+            "firstImmediateMs": 1.1161620000000312
+          }
+        ],
+        "rows": 200,
+        "medianAllMs": 1.3034619999999677,
+        "warmMedianMs": 1.2054234999999949
+      },
+      {
+        "name": "10000 overnight no pending",
+        "repeats": 5,
+        "firstMs": 12.558480000000031,
+        "samples": [
+          {
+            "ms": 12.558480000000031,
+            "firstImmediateMs": 12.573692999999992
+          },
+          {
+            "ms": 6.698241999999993,
+            "firstImmediateMs": 6.713377999999977
+          },
+          {
+            "ms": 4.837056000000018,
+            "firstImmediateMs": 4.850211000000002
+          },
+          {
+            "ms": 4.703937999999994,
+            "firstImmediateMs": 4.717044999999985
+          },
+          {
+            "ms": 4.8441969999999515,
+            "firstImmediateMs": 4.880874999999946
+          }
+        ],
+        "rows": 0,
+        "medianAllMs": 4.8441969999999515,
+        "warmMedianMs": 4.840626499999985
+      },
+      {
+        "name": "10000 broad search common",
+        "repeats": 5,
+        "firstMs": 26.450072999999975,
+        "samples": [
+          {
+            "ms": 26.450072999999975,
+            "firstImmediateMs": 26.464499999999987
+          },
+          {
+            "ms": 23.69169599999998,
+            "firstImmediateMs": 23.71912900000001
+          },
+          {
+            "ms": 22.46138499999995,
+            "firstImmediateMs": 22.47533999999996
+          },
+          {
+            "ms": 23.489351,
+            "firstImmediateMs": 23.504263999999978
+          },
+          {
+            "ms": 25.686503000000016,
+            "firstImmediateMs": 25.70165499999996
+          }
+        ],
+        "rows": 100,
+        "medianAllMs": 23.69169599999998,
+        "warmMedianMs": 23.59052349999999
+      },
+      {
+        "name": "10000 broad search common alpha",
+        "repeats": 5,
+        "firstMs": 36.959960000000024,
+        "samples": [
+          {
+            "ms": 36.959960000000024,
+            "firstImmediateMs": 36.97488099999998
+          },
+          {
+            "ms": 38.471469999999954,
+            "firstImmediateMs": 38.485996
+          },
+          {
+            "ms": 38.42202599999996,
+            "firstImmediateMs": 39.18183499999998
+          },
+          {
+            "ms": 36.13727000000006,
+            "firstImmediateMs": 36.151122999999984
+          },
+          {
+            "ms": 35.768036999999936,
+            "firstImmediateMs": 35.783502999999996
+          }
+        ],
+        "rows": 100,
+        "medianAllMs": 36.959960000000024,
+        "warmMedianMs": 37.27964800000001
+      },
+      {
+        "name": "10000 account search common alpha",
+        "repeats": 5,
+        "firstMs": 83.06398200000001,
+        "samples": [
+          {
+            "ms": 83.06398200000001,
+            "firstImmediateMs": 83.07807000000003
+          },
+          {
+            "ms": 83.00675000000001,
+            "firstImmediateMs": 83.02102100000002
+          },
+          {
+            "ms": 80.73522300000002,
+            "firstImmediateMs": 80.75026600000001
+          },
+          {
+            "ms": 84.53826399999991,
+            "firstImmediateMs": 84.55427100000009
+          },
+          {
+            "ms": 81.61160000000018,
+            "firstImmediateMs": 81.62731900000017
+          }
+        ],
+        "rows": 100,
+        "medianAllMs": 83.00675000000001,
+        "warmMedianMs": 82.3091750000001
+      },
+      {
+        "name": "10000 selective search subject",
+        "repeats": 5,
+        "firstMs": 5.9207940000001145,
+        "samples": [
+          {
+            "ms": 5.9207940000001145,
+            "firstImmediateMs": 5.9388309999999365
+          },
+          {
+            "ms": 6.394035000000031,
+            "firstImmediateMs": 6.408812000000125
+          },
+          {
+            "ms": 5.045076000000108,
+            "firstImmediateMs": 5.059389999999894
+          },
+          {
+            "ms": 4.9047290000000885,
+            "firstImmediateMs": 4.918685000000096
+          },
+          {
+            "ms": 4.749919000000091,
+            "firstImmediateMs": 4.76219100000003
+          }
+        ],
+        "rows": 1,
+        "medianAllMs": 5.045076000000108,
+        "warmMedianMs": 4.974902500000098
+      },
+      {
+        "name": "10000 unchanged imap reconciliation",
+        "repeats": 3,
+        "firstMs": 46.94197699999995,
+        "samples": [
+          {
+            "ms": 46.94197699999995,
+            "firstImmediateMs": 3.1923300000000836
+          },
+          {
+            "ms": 38.19103499999983,
+            "firstImmediateMs": 1.6198899999999412
+          },
+          {
+            "ms": 45.56746599999997,
+            "firstImmediateMs": 1.414160000000038
+          }
+        ],
+        "medianAllMs": 45.56746599999997,
+        "warmMedianMs": 41.8792504999999
+      },
+      {
+        "name": "10000 overnight oldest pending",
+        "repeats": 5,
+        "firstMs": 5.390742000000046,
+        "samples": [
+          {
+            "ms": 5.390742000000046,
+            "firstImmediateMs": 5.400761999999986
+          },
+          {
+            "ms": 4.860152999999855,
+            "firstImmediateMs": 4.86978699999986
+          },
+          {
+            "ms": 5.706936999999925,
+            "firstImmediateMs": 5.7171099999998205
+          },
+          {
+            "ms": 4.81707399999982,
+            "firstImmediateMs": 4.827209000000039
+          },
+          {
+            "ms": 4.861111999999821,
+            "firstImmediateMs": 4.870464999999967
+          }
+        ],
+        "rows": 1,
+        "medianAllMs": 4.861111999999821,
+        "warmMedianMs": 4.860632499999838
+      },
+      {
+        "name": "10000 plans",
+        "overnight": [
+          {
+            "id": 5,
+            "parent": 0,
+            "notused": 61,
+            "detail": "SEARCH m USING INDEX recipient_headers_page (is_draft=?)"
+          },
+          {
+            "id": 19,
+            "parent": 0,
+            "notused": 0,
+            "detail": "CORRELATED SCALAR SUBQUERY 1"
+          },
+          {
+            "id": 24,
+            "parent": 19,
+            "notused": 39,
+            "detail": "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+          },
+          {
+            "id": 47,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ]
+      },
+      {
+        "name": "100000 startup phases",
+        "events": [
+          {
+            "phase": "idle",
+            "at": 0.045792000000119515
+          },
+          {
+            "phase": "copy",
+            "at": 0.3048909999999978
+          },
+          {
+            "phase": "journal",
+            "at": 223.36852399999998
+          },
+          {
+            "phase": "journal",
+            "at": 273.50064900000007
+          },
+          {
+            "phase": "migrate",
+            "at": 384.8288560000001
+          },
+          {
+            "phase": "body-backfill",
+            "at": 386.59270100000003
+          },
+          {
+            "phase": "body-backfill",
+            "at": 386.69989699999996
+          },
+          {
+            "phase": "summaries",
+            "at": 386.75394200000005
+          },
+          {
+            "phase": "search",
+            "at": 386.77780400000006
+          },
+          {
+            "phase": "admit",
+            "at": 438.7847160000001
+          },
+          {
+            "phase": "ready",
+            "at": 439.22332700000015
+          }
+        ],
+        "maxHeartbeatGapMs": 114.7417069999999
+      },
+      {
+        "name": "100000 startup phases",
+        "events": [
+          {
+            "phase": "idle",
+            "at": 0.026896000000078857
+          },
+          {
+            "phase": "copy",
+            "at": 0.08427100000017163
+          },
+          {
+            "phase": "journal",
+            "at": 194.47031700000002
+          },
+          {
+            "phase": "journal",
+            "at": 239.053093
+          },
+          {
+            "phase": "migrate",
+            "at": 353.3654859999999
+          },
+          {
+            "phase": "body-backfill",
+            "at": 355.0611690000003
+          },
+          {
+            "phase": "body-backfill",
+            "at": 355.15242999999987
+          },
+          {
+            "phase": "summaries",
+            "at": 355.1863300000002
+          },
+          {
+            "phase": "search",
+            "at": 355.2062189999999
+          },
+          {
+            "phase": "admit",
+            "at": 409.0914129999999
+          },
+          {
+            "phase": "ready",
+            "at": 409.15131399999996
+          }
+        ],
+        "maxHeartbeatGapMs": 118.85278399999993
+      },
+      {
+        "name": "100000 startup phases",
+        "events": [
+          {
+            "phase": "idle",
+            "at": 0.027675999999701162
+          },
+          {
+            "phase": "copy",
+            "at": 0.12678299999970477
+          },
+          {
+            "phase": "journal",
+            "at": 179.17863699999998
+          },
+          {
+            "phase": "journal",
+            "at": 223.19843600000013
+          },
+          {
+            "phase": "migrate",
+            "at": 343.71642699999984
+          },
+          {
+            "phase": "body-backfill",
+            "at": 345.3672670000001
+          },
+          {
+            "phase": "body-backfill",
+            "at": 345.4567179999999
+          },
+          {
+            "phase": "summaries",
+            "at": 345.48798899999974
+          },
+          {
+            "phase": "search",
+            "at": 345.5069209999997
+          },
+          {
+            "phase": "admit",
+            "at": 399.4615939999999
+          },
+          {
+            "phase": "ready",
+            "at": 399.515402
+          }
+        ],
+        "maxHeartbeatGapMs": 124.94272799999999
+      },
+      {
+        "name": "100000 startup current",
+        "repeats": 3,
+        "firstMs": 456.1576379999999,
+        "samples": [
+          {
+            "ms": 456.1576379999999,
+            "firstImmediateMs": 0.4200739999998859
+          },
+          {
+            "ms": 424.5903720000001,
+            "firstImmediateMs": 0.18994799999995848
+          },
+          {
+            "ms": 415.56007999999974,
+            "firstImmediateMs": 0.22693399999980102
+          }
+        ],
+        "medianAllMs": 424.5903720000001,
+        "warmMedianMs": 420.07522599999993
+      },
+      {
+        "name": "100000 first page",
+        "repeats": 5,
+        "firstMs": 1.8394469999998364,
+        "samples": [
+          {
+            "ms": 1.8394469999998364,
+            "firstImmediateMs": 2.5804109999999127
+          },
+          {
+            "ms": 1.8240449999998418,
+            "firstImmediateMs": 1.8347469999998793
+          },
+          {
+            "ms": 1.881467000000157,
+            "firstImmediateMs": 1.8916990000002443
+          },
+          {
+            "ms": 1.4028849999999693,
+            "firstImmediateMs": 1.4119720000003326
+          },
+          {
+            "ms": 1.2147630000004028,
+            "firstImmediateMs": 1.22079900000017
+          }
+        ],
+        "rows": 200,
+        "medianAllMs": 1.8240449999998418,
+        "warmMedianMs": 1.6134649999999056
+      },
+      {
+        "name": "100000 deep offset",
+        "repeats": 5,
+        "firstMs": 9.100664000000052,
+        "samples": [
+          {
+            "ms": 9.100664000000052,
+            "firstImmediateMs": 9.111233999999968
+          },
+          {
+            "ms": 6.569154999999682,
+            "firstImmediateMs": 7.114145000000008
+          },
+          {
+            "ms": 6.70022199999994,
+            "firstImmediateMs": 6.762787000000117
+          },
+          {
+            "ms": 5.331300999999712,
+            "firstImmediateMs": 5.340659999999843
+          },
+          {
+            "ms": 4.712675999999647,
+            "firstImmediateMs": 4.721283999999741
+          }
+        ],
+        "rows": 200,
+        "medianAllMs": 6.569154999999682,
+        "warmMedianMs": 5.950227999999697
+      },
+      {
+        "name": "100000 deep keyset",
+        "repeats": 5,
+        "firstMs": 1.3171189999998205,
+        "samples": [
+          {
+            "ms": 1.3171189999998205,
+            "firstImmediateMs": 1.3254170000000158
+          },
+          {
+            "ms": 1.2037430000000313,
+            "firstImmediateMs": 1.2098539999997229
+          },
+          {
+            "ms": 1.306231999999909,
+            "firstImmediateMs": 1.7561860000000706
+          },
+          {
+            "ms": 1.5131160000000818,
+            "firstImmediateMs": 1.523095000000012
+          },
+          {
+            "ms": 1.2335720000000947,
+            "firstImmediateMs": 1.2397930000001907
+          }
+        ],
+        "rows": 200,
+        "medianAllMs": 1.306231999999909,
+        "warmMedianMs": 1.2699020000000019
+      },
+      {
+        "name": "100000 overnight no pending",
+        "repeats": 5,
+        "firstMs": 64.52942600000006,
+        "samples": [
+          {
+            "ms": 64.52942600000006,
+            "firstImmediateMs": 64.54129300000022
+          },
+          {
+            "ms": 59.16199199999983,
+            "firstImmediateMs": 59.17433799999981
+          },
+          {
+            "ms": 56.12631099999999,
+            "firstImmediateMs": 56.13786600000003
+          },
+          {
+            "ms": 59.310545000000275,
+            "firstImmediateMs": 59.322809000000234
+          },
+          {
+            "ms": 57.835285999999996,
+            "firstImmediateMs": 57.847417999999834
+          }
+        ],
+        "rows": 0,
+        "medianAllMs": 59.16199199999983,
+        "warmMedianMs": 58.49863899999991
+      },
+      {
+        "name": "100000 broad search common",
+        "repeats": 5,
+        "firstMs": 269.62634000000025,
+        "samples": [
+          {
+            "ms": 269.62634000000025,
+            "firstImmediateMs": 269.6419350000001
+          },
+          {
+            "ms": 266.7459409999997,
+            "firstImmediateMs": 266.7682279999999
+          },
+          {
+            "ms": 266.4550180000001,
+            "firstImmediateMs": 266.47733000000017
+          },
+          {
+            "ms": 262.42782799999986,
+            "firstImmediateMs": 262.4525880000001
+          },
+          {
+            "ms": 264.6346710000007,
+            "firstImmediateMs": 264.6549530000002
+          }
+        ],
+        "rows": 100,
+        "medianAllMs": 266.4550180000001,
+        "warmMedianMs": 265.5448445000004
+      },
+      {
+        "name": "100000 broad search common alpha",
+        "repeats": 5,
+        "firstMs": 396.74205600000005,
+        "samples": [
+          {
+            "ms": 396.74205600000005,
+            "firstImmediateMs": 396.8210020000006
+          },
+          {
+            "ms": 396.1125430000002,
+            "firstImmediateMs": 396.7662770000006
+          },
+          {
+            "ms": 402.3123480000004,
+            "firstImmediateMs": 402.3351670000002
+          },
+          {
+            "ms": 397.7061370000001,
+            "firstImmediateMs": 397.7303890000003
+          },
+          {
+            "ms": 396.0157760000002,
+            "firstImmediateMs": 396.0406860000003
+          }
+        ],
+        "rows": 100,
+        "medianAllMs": 396.74205600000005,
+        "warmMedianMs": 396.90934000000016
+      },
+      {
+        "name": "100000 account search common alpha",
+        "repeats": 5,
+        "firstMs": 945.2163659999997,
+        "samples": [
+          {
+            "ms": 945.2163659999997,
+            "firstImmediateMs": 945.2421839999997
+          },
+          {
+            "ms": 945.2291790000008,
+            "firstImmediateMs": 945.2975300000007
+          },
+          {
+            "ms": 941.6733650000006,
+            "firstImmediateMs": 941.700198999999
+          },
+          {
+            "ms": 964.7702680000002,
+            "firstImmediateMs": 964.8078170000008
+          },
+          {
+            "ms": 952.5233229999994,
+            "firstImmediateMs": 952.9999629999984
+          }
+        ],
+        "rows": 100,
+        "medianAllMs": 945.2291790000008,
+        "warmMedianMs": 948.8762510000001
+      },
+      {
+        "name": "100000 selective search subject",
+        "repeats": 5,
+        "firstMs": 62.86333800000102,
+        "samples": [
+          {
+            "ms": 62.86333800000102,
+            "firstImmediateMs": 62.87913200000003
+          },
+          {
+            "ms": 59.320018999998865,
+            "firstImmediateMs": 59.335071999999855
+          },
+          {
+            "ms": 59.597741999999926,
+            "firstImmediateMs": 59.61165299999993
+          },
+          {
+            "ms": 57.54440599999907,
+            "firstImmediateMs": 57.55750399999852
+          },
+          {
+            "ms": 57.805819999999585,
+            "firstImmediateMs": 57.819454999998925
+          }
+        ],
+        "rows": 1,
+        "medianAllMs": 59.320018999998865,
+        "warmMedianMs": 58.562919499999225
+      },
+      {
+        "name": "100000 unchanged imap reconciliation",
+        "repeats": 3,
+        "firstMs": 311.86340700000073,
+        "samples": [
+          {
+            "ms": 311.86340700000073,
+            "firstImmediateMs": 9.159610000000612
+          },
+          {
+            "ms": 305.63545499999964,
+            "firstImmediateMs": 8.779012999999395
+          },
+          {
+            "ms": 284.5541659999999,
+            "firstImmediateMs": 6.44015600000057
+          }
+        ],
+        "medianAllMs": 305.63545499999964,
+        "warmMedianMs": 295.09481049999977
+      },
+      {
+        "name": "100000 overnight oldest pending",
+        "repeats": 5,
+        "firstMs": 57.39423100000022,
+        "samples": [
+          {
+            "ms": 57.39423100000022,
+            "firstImmediateMs": 57.40472000000045
+          },
+          {
+            "ms": 57.89788299999964,
+            "firstImmediateMs": 57.908385999999155
+          },
+          {
+            "ms": 59.710157999999865,
+            "firstImmediateMs": 59.72100499999942
+          },
+          {
+            "ms": 58.01827100000082,
+            "firstImmediateMs": 58.03518500000064
+          },
+          {
+            "ms": 59.123122999999396,
+            "firstImmediateMs": 59.13990199999898
+          }
+        ],
+        "rows": 1,
+        "medianAllMs": 58.01827100000082,
+        "warmMedianMs": 58.57069700000011
+      },
+      {
+        "name": "100000 plans",
+        "overnight": [
+          {
+            "id": 5,
+            "parent": 0,
+            "notused": 61,
+            "detail": "SEARCH m USING INDEX recipient_headers_page (is_draft=?)"
+          },
+          {
+            "id": 19,
+            "parent": 0,
+            "notused": 0,
+            "detail": "CORRELATED SCALAR SUBQUERY 1"
+          },
+          {
+            "id": 24,
+            "parent": 19,
+            "notused": 39,
+            "detail": "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+          },
+          {
+            "id": 47,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ]
+      }
+    ],
+    "bench-startup-plan": [
+      {
+        "label": "100k missing 4 list indexes 0",
+        "openMs": 720.764653,
+        "maxHeartbeatGapMs": 401.68567499999995,
+        "stages": [
+          {
+            "stage": "startup.copy",
+            "ms": 216.99156699999997
+          },
+          {
+            "stage": "startup.journal",
+            "ms": 51.04999800000007
+          },
+          {
+            "stage": "startup.migrate",
+            "ms": 289.3901340000001
+          },
+          {
+            "stage": "startup.body-backfill",
+            "ms": 0.35103399999979956
+          },
+          {
+            "stage": "startup.summaries",
+            "ms": 0.06843099999991864
+          },
+          {
+            "stage": "startup.index",
+            "ms": 51.10432100000003
+          },
+          {
+            "stage": "startup.admit",
+            "ms": 0.10646300000007614
+          },
+          {
+            "stage": "startup.db",
+            "ms": 720.5338299999999
+          }
+        ]
+      },
+      {
+        "label": "100k missing 4 list indexes 1",
+        "openMs": 734.1209779999999,
+        "maxHeartbeatGapMs": 401.2230390000002,
+        "stages": [
+          {
+            "stage": "startup.copy",
+            "ms": 226.47067300000003
+          },
+          {
+            "stage": "startup.journal",
+            "ms": 47.12638700000002
+          },
+          {
+            "stage": "startup.migrate",
+            "ms": 287.5686939999998
+          },
+          {
+            "stage": "startup.body-backfill",
+            "ms": 0.15254800000002433
+          },
+          {
+            "stage": "startup.summaries",
+            "ms": 0.023838999999952648
+          },
+          {
+            "stage": "startup.index",
+            "ms": 59.57321200000024
+          },
+          {
+            "stage": "startup.admit",
+            "ms": 0.05873700000029203
+          },
+          {
+            "stage": "startup.db",
+            "ms": 734.076243
+          }
+        ]
+      },
+      {
+        "label": "100k missing 4 list indexes 2",
+        "openMs": 734.3227110000003,
+        "maxHeartbeatGapMs": 424.8995130000003,
+        "stages": [
+          {
+            "stage": "startup.copy",
+            "ms": 219.98326899999984
+          },
+          {
+            "stage": "startup.journal",
+            "ms": 40.580547000000024
+          },
+          {
+            "stage": "startup.migrate",
+            "ms": 285.2224930000002
+          },
+          {
+            "stage": "startup.body-backfill",
+            "ms": 0.12477899999976216
+          },
+          {
+            "stage": "startup.summaries",
+            "ms": 0.01626699999997072
+          },
+          {
+            "stage": "startup.index",
+            "ms": 52.002707999999984
+          },
+          {
+            "stage": "startup.admit",
+            "ms": 0.06809999999995853
+          },
+          {
+            "stage": "startup.db",
+            "ms": 734.2748430000001
+          }
+        ]
+      },
+      {
+        "label": "search plan",
+        "query": {
+          "query": "common alpha",
+          "accountId": "performance-fixture"
+        },
+        "ms": 1020.2494229999998,
+        "rows": 100,
+        "plan": [
+          {
+            "id": 2,
+            "parent": 0,
+            "notused": 0,
+            "detail": "CO-ROUTINE t0"
+          },
+          {
+            "id": 10,
+            "parent": 2,
+            "notused": 54,
+            "detail": "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)"
+          },
+          {
+            "id": 16,
+            "parent": 2,
+            "notused": 62,
+            "detail": "SEARCH f USING INDEX message_fts_message (message_id=?)"
+          },
+          {
+            "id": 26,
+            "parent": 2,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 74,
+            "parent": 0,
+            "notused": 0,
+            "detail": "MATERIALIZE t1"
+          },
+          {
+            "id": 83,
+            "parent": 74,
+            "notused": 54,
+            "detail": "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)"
+          },
+          {
+            "id": 89,
+            "parent": 74,
+            "notused": 62,
+            "detail": "SEARCH f USING INDEX message_fts_message (message_id=?)"
+          },
+          {
+            "id": 99,
+            "parent": 74,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 155,
+            "parent": 0,
+            "notused": 44,
+            "detail": "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)"
+          },
+          {
+            "id": 160,
+            "parent": 0,
+            "notused": 82,
+            "detail": "SCAN t0"
+          },
+          {
+            "id": 163,
+            "parent": 0,
+            "notused": 46,
+            "detail": "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)"
+          },
+          {
+            "id": 182,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)"
+          },
+          {
+            "id": 230,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ],
+        "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\nJOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t1 ON t1.message_id = m.id\n      WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+        "bindings": [
+          [
+            "performance-fixture",
+            "common",
+            "commoo",
+            "performance-fixture",
+            "alpha",
+            "alphb",
+            "performance-fixture",
+            100
+          ]
+        ]
+      },
+      {
+        "label": "search plan",
+        "query": {
+          "query": "subject",
+          "accountId": "performance-fixture"
+        },
+        "ms": 60.438842999999906,
+        "rows": 1,
+        "plan": [
+          {
+            "id": 2,
+            "parent": 0,
+            "notused": 0,
+            "detail": "CO-ROUTINE t0"
+          },
+          {
+            "id": 10,
+            "parent": 2,
+            "notused": 156,
+            "detail": "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)"
+          },
+          {
+            "id": 19,
+            "parent": 2,
+            "notused": 46,
+            "detail": "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)"
+          },
+          {
+            "id": 26,
+            "parent": 2,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 78,
+            "parent": 0,
+            "notused": 44,
+            "detail": "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)"
+          },
+          {
+            "id": 83,
+            "parent": 0,
+            "notused": 61,
+            "detail": "SEARCH m USING INDEX messages_thread (account_id=?)"
+          },
+          {
+            "id": 101,
+            "parent": 0,
+            "notused": 47,
+            "detail": "SEARCH t0 USING AUTOMATIC COVERING INDEX (message_id=?)"
+          },
+          {
+            "id": 147,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ],
+        "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\n      WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+        "bindings": [
+          [
+            "performance-fixture",
+            "subject",
+            "subjecu",
+            "performance-fixture",
+            100
+          ]
+        ]
+      },
+      {
+        "label": "search plan",
+        "query": {
+          "query": "subject"
+        },
+        "ms": 1.1449069999998756,
+        "rows": 1,
+        "plan": [
+          {
+            "id": 2,
+            "parent": 0,
+            "notused": 0,
+            "detail": "CO-ROUTINE t0"
+          },
+          {
+            "id": 8,
+            "parent": 2,
+            "notused": 156,
+            "detail": "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)"
+          },
+          {
+            "id": 17,
+            "parent": 2,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR GROUP BY"
+          },
+          {
+            "id": 69,
+            "parent": 0,
+            "notused": 82,
+            "detail": "SCAN t0"
+          },
+          {
+            "id": 72,
+            "parent": 0,
+            "notused": 46,
+            "detail": "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)"
+          },
+          {
+            "id": 78,
+            "parent": 0,
+            "notused": 44,
+            "detail": "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)"
+          },
+          {
+            "id": 122,
+            "parent": 0,
+            "notused": 0,
+            "detail": "USE TEMP B-TREE FOR ORDER BY"
+          }
+        ],
+        "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f \n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\n     \n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+        "bindings": [
+          [
+            "subject",
+            "subjecu",
+            100
+          ]
+        ]
+      }
+    ],
+    "bench-zip": [
+      {
+        "name": "ZIP random 4 MiB",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 112.51387700000001,
+            "firstImmediateMs": 112.62562199999999,
+            "rssDelta": 17170432,
+            "externalDelta": 16781226
+          },
+          {
+            "ms": 107.352891,
+            "firstImmediateMs": 107.415686,
+            "rssDelta": 8646656,
+            "externalDelta": 4326769
+          },
+          {
+            "ms": 104.88834899999995,
+            "firstImmediateMs": 105.30702699999995,
+            "rssDelta": 4194304,
+            "externalDelta": 16781222
+          }
+        ],
+        "bytes": 4195697
+      },
+      {
+        "name": "ZIP random 16 MiB",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 436.20827899999995,
+            "firstImmediateMs": 436.41518199999996,
+            "rssDelta": 35348480,
+            "externalDelta": 58799925
+          },
+          {
+            "ms": 445.3701510000001,
+            "firstImmediateMs": 445.4914590000001,
+            "rssDelta": 62914560,
+            "externalDelta": 33559673
+          },
+          {
+            "ms": 404.84449300000006,
+            "firstImmediateMs": 404.96811,
+            "rssDelta": 8388608,
+            "externalDelta": 16842760
+          }
+        ],
+        "bytes": 16782449
+      },
+      {
+        "name": "ZIP random 64 MiB",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 1709.636206,
+            "firstImmediateMs": 1709.7621350000002,
+            "rssDelta": 173973504,
+            "externalDelta": 117476766
+          },
+          {
+            "ms": 1677.0258669999994,
+            "firstImmediateMs": 1677.4908779999996,
+            "rssDelta": 68034560,
+            "externalDelta": 67129457
+          },
+          {
+            "ms": 1684.160425,
+            "firstImmediateMs": 1684.6511719999999,
+            "rssDelta": 9547776,
+            "externalDelta": 67174408
+          }
+        ],
+        "bytes": 67129457
+      },
+      {
+        "name": "ZIP random 128 MiB",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 3553.385999,
+            "firstImmediateMs": 3553.654581999999,
+            "rssDelta": 210456576,
+            "externalDelta": 201474224
+          },
+          {
+            "ms": 3383.7700320000004,
+            "firstImmediateMs": 3384.01433,
+            "rssDelta": 134381568,
+            "externalDelta": 134258892
+          },
+          {
+            "ms": 3350.675242000001,
+            "firstImmediateMs": 3350.9204439999994,
+            "rssDelta": 11304960,
+            "externalDelta": 0
+          }
+        ],
+        "bytes": 134258892
+      }
+    ],
+    "bench-zip-fixed": [
+      {
+        "name": "worker ZIP random 4 MiB",
+        "mib": 4,
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 190.852097,
+            "submissionMs": 9.330990999999997,
+            "firstImmediateMs": 9.705394999999996,
+            "max5msTimerGapMs": 9.720608999999996,
+            "ticks": 36,
+            "bytes": 4195697
+          },
+          {
+            "ms": 148.74116800000002,
+            "submissionMs": 3.3336460000000443,
+            "firstImmediateMs": 3.531267000000014,
+            "max5msTimerGapMs": 5.546075999999971,
+            "ticks": 29,
+            "bytes": 4195697
+          },
+          {
+            "ms": 139.06160600000004,
+            "submissionMs": 1.1986740000000395,
+            "firstImmediateMs": 1.2964360000000283,
+            "max5msTimerGapMs": 5.608835999999997,
+            "ticks": 27,
+            "bytes": 4195697
+          }
+        ]
+      },
+      {
+        "name": "worker ZIP random 16 MiB",
+        "mib": 16,
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 491.88893399999995,
+            "submissionMs": 10.19446599999992,
+            "firstImmediateMs": 10.303030999999919,
+            "max5msTimerGapMs": 10.314211,
+            "ticks": 95,
+            "bytes": 16782449
+          },
+          {
+            "ms": 505.43454599999995,
+            "submissionMs": 14.657260999999835,
+            "firstImmediateMs": 14.779308999999785,
+            "max5msTimerGapMs": 14.807861000000003,
+            "ticks": 97,
+            "bytes": 16782449
+          },
+          {
+            "ms": 478.71980099999973,
+            "submissionMs": 12.700012999999899,
+            "firstImmediateMs": 12.811892999999827,
+            "max5msTimerGapMs": 12.823744000000033,
+            "ticks": 92,
+            "bytes": 16782449
+          }
+        ]
+      },
+      {
+        "name": "worker ZIP random 64 MiB",
+        "mib": 64,
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 2578.458575,
+            "submissionMs": 112.41873699999996,
+            "firstImmediateMs": 112.55011100000002,
+            "max5msTimerGapMs": 112.55905200000007,
+            "ticks": 484,
+            "bytes": 67129457
+          },
+          {
+            "ms": 2093.3380460000008,
+            "submissionMs": 50.6406220000008,
+            "firstImmediateMs": 50.73851800000011,
+            "max5msTimerGapMs": 50.75496899999962,
+            "ticks": 402,
+            "bytes": 67129457
+          },
+          {
+            "ms": 1842.137742,
+            "submissionMs": 33.39241399999992,
+            "firstImmediateMs": 33.51893199999995,
+            "max5msTimerGapMs": 33.52829800000018,
+            "ticks": 356,
+            "bytes": 67129457
+          }
+        ]
+      },
+      {
+        "name": "worker ZIP random 128 MiB",
+        "mib": 128,
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 4225.157544,
+            "submissionMs": 66.81843300000037,
+            "firstImmediateMs": 66.9174380000004,
+            "max5msTimerGapMs": 66.92815900000096,
+            "ticks": 815,
+            "bytes": 134258892
+          },
+          {
+            "ms": 3778.389643999999,
+            "submissionMs": 69.40860699999939,
+            "firstImmediateMs": 69.56296299999849,
+            "max5msTimerGapMs": 69.57583599999998,
+            "ticks": 728,
+            "bytes": 134258892
+          },
+          {
+            "ms": 3629.045654999998,
+            "submissionMs": 71.98225900000034,
+            "firstImmediateMs": 72.08051200000045,
+            "max5msTimerGapMs": 72.08986000000004,
+            "ticks": 697,
+            "bytes": 134258892
+          }
+        ]
+      }
+    ],
+    "bench-ui": [
+      {
+        "name": "retained sidebar",
+        "folders": 200,
+        "samples": [
+          49.22704399999998,
+          48.367159000000015,
+          43.97688500000004,
+          45.254347999999936,
+          32.707574999999906
+        ],
+        "retained": true,
+        "folderArrays": 203,
+        "copiedFolderElements": 40200
+      },
+      {
+        "name": "retained sidebar",
+        "folders": 1000,
+        "samples": [
+          691.082688,
+          641.882306,
+          642.5859869999999,
+          760.879872,
+          665.6871460000002
+        ],
+        "retained": true,
+        "folderArrays": 1003,
+        "copiedFolderElements": 1001000
+      },
+      {
+        "name": "retained sidebar",
+        "folders": 2000,
+        "samples": [
+          2363.6276499999994,
+          2367.6788529999994,
+          2350.675787,
+          2464.017099999999,
+          2369.2532450000017
+        ],
+        "retained": true,
+        "folderArrays": 2003,
+        "copiedFolderElements": 4002000
+      }
+    ],
+    "bench-ui-fixed": [
+      {
+        "name": "retained sidebar",
+        "folders": 200,
+        "samples": [
+          14.692066999999952,
+          10.484972999999968,
+          9.91895199999999,
+          11.669320999999968,
+          11.51193400000011
+        ],
+        "retained": true,
+        "folderArrays": 2,
+        "copiedFolderElements": 400
+      },
+      {
+        "name": "retained sidebar",
+        "folders": 1000,
+        "samples": [
+          42.98948899999982,
+          56.45409300000006,
+          58.89259799999991,
+          39.09336599999983,
+          48.22284100000002
+        ],
+        "retained": true,
+        "folderArrays": 2,
+        "copiedFolderElements": 2000
+      },
+      {
+        "name": "retained sidebar",
+        "folders": 2000,
+        "samples": [
+          85.08697799999982,
+          82.77050400000007,
+          71.93467700000019,
+          74.13453100000015,
+          71.01567999999997
+        ],
+        "retained": true,
+        "folderArrays": 2,
+        "copiedFolderElements": 4000
+      }
+    ],
+    "bench-bodies": [
+      {
+        "name": "body update 96 KiB per text/html",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 8.77358700000002,
+            "firstImmediateMs": 8.859090000000037,
+            "rssDelta": 4849664,
+            "externalDelta": 491688
+          },
+          {
+            "ms": 8.197690000000023,
+            "firstImmediateMs": 8.240836000000002,
+            "rssDelta": 917504,
+            "externalDelta": 0
+          },
+          {
+            "ms": 6.6074350000000095,
+            "firstImmediateMs": 6.652152000000001,
+            "rssDelta": 786432,
+            "externalDelta": 1
+          }
+        ]
+      },
+      {
+        "name": "body open 96 KiB per text/html",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 4.747364000000005,
+            "firstImmediateMs": 4.793166999999983,
+            "rssDelta": 0,
+            "externalDelta": 0
+          },
+          {
+            "ms": 1.1510789999999815,
+            "firstImmediateMs": 1.1950949999999807,
+            "rssDelta": 0,
+            "externalDelta": 0
+          },
+          {
+            "ms": 1.0943469999999706,
+            "firstImmediateMs": 1.1334249999999884,
+            "rssDelta": 131072,
+            "externalDelta": 0
+          }
+        ]
+      },
+      {
+        "name": "body update 1024 KiB per text/html",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 66.125517,
+            "firstImmediateMs": 66.591272,
+            "rssDelta": 38617088,
+            "externalDelta": 4395422
+          },
+          {
+            "ms": 36.442282000000034,
+            "firstImmediateMs": 36.487079999999935,
+            "rssDelta": 25952256,
+            "externalDelta": 4395422
+          },
+          {
+            "ms": 31.058916000000067,
+            "firstImmediateMs": 31.126157000000035,
+            "rssDelta": 10878976,
+            "externalDelta": 0
+          }
+        ]
+      },
+      {
+        "name": "body open 1024 KiB per text/html",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 9.422145999999998,
+            "firstImmediateMs": 9.46841900000004,
+            "rssDelta": 5242880,
+            "externalDelta": 0
+          },
+          {
+            "ms": 9.677091000000019,
+            "firstImmediateMs": 9.71872099999996,
+            "rssDelta": 5242880,
+            "externalDelta": 0
+          },
+          {
+            "ms": 10.382559000000015,
+            "firstImmediateMs": 10.426793999999973,
+            "rssDelta": 5242880,
+            "externalDelta": 0
+          }
+        ]
+      },
+      {
+        "name": "body update 3072 KiB per text/html",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 142.81142,
+            "firstImmediateMs": 143.55747100000008,
+            "rssDelta": 87183360,
+            "externalDelta": 12784022
+          },
+          {
+            "ms": 97.00793499999997,
+            "firstImmediateMs": 97.85610299999996,
+            "rssDelta": 83886080,
+            "externalDelta": 12784022
+          },
+          {
+            "ms": 82.024406,
+            "firstImmediateMs": 82.97159399999998,
+            "rssDelta": 29753344,
+            "externalDelta": 12784022
+          }
+        ]
+      },
+      {
+        "name": "body open 3072 KiB per text/html",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 27.29343700000004,
+            "firstImmediateMs": 27.341058999999973,
+            "rssDelta": 15728640,
+            "externalDelta": 0
+          },
+          {
+            "ms": 28.133695999999986,
+            "firstImmediateMs": 28.177279999999996,
+            "rssDelta": 15728640,
+            "externalDelta": 0
+          },
+          {
+            "ms": 27.561265999999932,
+            "firstImmediateMs": 27.601948999999877,
+            "rssDelta": 15728640,
+            "externalDelta": 0
+          }
+        ]
+      },
+      {
+        "name": "IMAP write batch 24 x 88 KiB text+html",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 94.22294699999998,
+            "firstImmediateMs": 93.84310699999992,
+            "rssDelta": 9101312,
+            "externalDelta": 6851738
+          },
+          {
+            "ms": 90.42946900000015,
+            "firstImmediateMs": 89.91516300000012,
+            "rssDelta": -28672,
+            "externalDelta": 6851738
+          },
+          {
+            "ms": 91.18052899999998,
+            "firstImmediateMs": 90.72779100000002,
+            "rssDelta": 12288,
+            "externalDelta": 6851738
+          }
+        ]
+      },
+      {
+        "name": "body batch per-transaction trace",
+        "calls": [
+          {
+            "stage": "db.transaction",
+            "ms": 0.19994900000006055
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.139780999999857
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.2812200000000757
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.8977540000000772
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.9278419999998277
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.655616000000009
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.8204250000001139
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7961800000000494
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7967409999998836
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.9556239999999434
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.2964240000001155
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6937949999999091
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.8663360000000466
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.5448619999999664
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6928270000000794
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7870179999999891
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7462779999998475
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6580320000000484
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6401029999999537
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6037859999999
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6364039999998568
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.8999059999998735
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.392665000000079
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.73108000000002
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.4561299999998027
+          },
+          {
+            "stage": "db.transaction",
+            "ms": 90.98417100000006
+          },
+          {
+            "stage": "db.transaction",
+            "ms": 0.14037299999995412
+          },
+          {
+            "stage": "db.transaction",
+            "ms": 0.13906700000006822
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.710463000000118
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7013860000001841
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.910897999999861
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.5873180000000957
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6899520000001758
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6088199999999233
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6408449999998993
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.5296960000000581
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.9150319999998828
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.917944000000034
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.9514120000001185
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.0075650000001133
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7070180000000619
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.2051590000000942
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.008532999999943
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.2085510000001705
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.609024999999974
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.059141999999838
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.78770099999997
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6638930000001437
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6931060000001708
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6508029999999962
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6535040000001118
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.025341000000026
+          },
+          {
+            "stage": "db.transaction",
+            "ms": 87.66644700000006
+          },
+          {
+            "stage": "db.transaction",
+            "ms": 0.16394699999978002
+          },
+          {
+            "stage": "db.transaction",
+            "ms": 0.13824799999997595
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6217639999999847
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7378530000000865
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7072220000000016
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.5897849999998925
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.0486520000001747
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.959382000000005
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.0157110000000102
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.416973000000098
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7813670000000457
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6318719999999303
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.671192000000019
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6077460000001338
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.9969340000000102
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.8731960000000072
+          },
+          {
+            "stage": "db.index",
+            "ms": 2.1645829999999933
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7092999999999847
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.5907140000001618
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.5781280000001061
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.786927999999989
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.7707419999999274
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.738990000000058
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.748489999999947
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6794099999999617
+          },
+          {
+            "stage": "db.index",
+            "ms": 1.6444840000001477
+          },
+          {
+            "stage": "db.transaction",
+            "ms": 88.39086099999986
+          },
+          {
+            "stage": "db.transaction",
+            "ms": 0.14505199999985052
+          }
+        ]
+      }
+    ],
+    "bench-imap": [
+      {
+        "name": "foreground open during custom bootstrap",
+        "repeat": 0,
+        "perMessageFakeDelayMs": 25,
+        "waitUntilForegroundFetchMs": 2669.693547,
+        "openMs": 2675.7160400000002,
+        "events": [
+          {
+            "foregroundFetchAtCount": 100
+          }
+        ],
+        "success": true
+      },
+      {
+        "name": "foreground open during custom bootstrap",
+        "repeat": 1,
+        "perMessageFakeDelayMs": 25,
+        "waitUntilForegroundFetchMs": 2643.580891,
+        "openMs": 2647.938012,
+        "events": [
+          {
+            "foregroundFetchAtCount": 100
+          }
+        ],
+        "success": true
+      },
+      {
+        "name": "foreground open during custom bootstrap",
+        "repeat": 2,
+        "perMessageFakeDelayMs": 25,
+        "waitUntilForegroundFetchMs": 2626.5345719999996,
+        "openMs": 2631.686720999999,
+        "events": [
+          {
+            "foregroundFetchAtCount": 100
+          }
+        ],
+        "success": true
+      },
+      {
+        "name": "foreground open during outlook bootstrap",
+        "repeat": 0,
+        "perMessageFakeDelayMs": 25,
+        "waitUntilForegroundFetchMs": 1318.142183,
+        "openMs": 1322.5995019999991,
+        "events": [
+          {
+            "foregroundFetchAtCount": 50
+          }
+        ],
+        "success": true
+      },
+      {
+        "name": "foreground open during outlook bootstrap",
+        "repeat": 1,
+        "perMessageFakeDelayMs": 25,
+        "waitUntilForegroundFetchMs": 1313.5388729999995,
+        "openMs": 1317.864493000001,
+        "events": [
+          {
+            "foregroundFetchAtCount": 50
+          }
+        ],
+        "success": true
+      },
+      {
+        "name": "foreground open during outlook bootstrap",
+        "repeat": 2,
+        "perMessageFakeDelayMs": 25,
+        "waitUntilForegroundFetchMs": 1324.1058439999997,
+        "openMs": 1328.0380779999996,
+        "events": [
+          {
+            "foregroundFetchAtCount": 50
+          }
+        ],
+        "success": true
+      }
+    ],
+    "bench-gmail": [
+      {
+        "name": "Gmail attachment decode 4 MiB",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 22.221361,
+            "firstImmediateMs": 22.339215999999965,
+            "rssDelta": 15990784,
+            "externalDelta": 9786750
+          },
+          {
+            "ms": 17.969583999999998,
+            "firstImmediateMs": 18.02961899999997,
+            "rssDelta": 9830400,
+            "externalDelta": 9786710
+          },
+          {
+            "ms": 17.35227199999997,
+            "firstImmediateMs": 17.433129000000008,
+            "rssDelta": 5505024,
+            "externalDelta": 5592406
+          }
+        ],
+        "bytes": 4194304
+      },
+      {
+        "name": "Gmail attachment decode 16 MiB",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 80.94853700000004,
+            "firstImmediateMs": 81.02903700000002,
+            "rssDelta": 61472768,
+            "externalDelta": 30758230
+          },
+          {
+            "ms": 77.19719000000003,
+            "firstImmediateMs": 77.26707800000003,
+            "rssDelta": 61341696,
+            "externalDelta": 39146838
+          },
+          {
+            "ms": 68.77006899999992,
+            "firstImmediateMs": 68.82983899999999,
+            "rssDelta": 22282240,
+            "externalDelta": 22369622
+          }
+        ],
+        "bytes": 16777216
+      },
+      {
+        "name": "Gmail attachment decode 32 MiB",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 155.77203699999995,
+            "firstImmediateMs": 158.131891,
+            "rssDelta": 64225280,
+            "externalDelta": 27962027
+          },
+          {
+            "ms": 155.81792400000006,
+            "firstImmediateMs": 159.08669500000008,
+            "rssDelta": 122945536,
+            "externalDelta": 78293675
+          },
+          {
+            "ms": 150.79437000000007,
+            "firstImmediateMs": 153.7332640000002,
+            "rssDelta": 89391104,
+            "externalDelta": 44739243
+          }
+        ],
+        "bytes": 33554432
+      }
+    ],
+    "bench-memory": [
+      {
+        "name": "recipient first query 100k",
+        "firstMs": 1094.505311,
+        "warmMs": 0.5912299999999959,
+        "rows": 1,
+        "before": {
+          "rss": 57274368,
+          "heapTotal": 10993664,
+          "heapUsed": 5829936,
+          "external": 2293361,
+          "arrayBuffers": 143615
+        },
+        "after": {
+          "rss": 286507008,
+          "heapTotal": 15450112,
+          "heapUsed": 5985712,
+          "external": 2293157,
+          "arrayBuffers": 143615
+        },
+        "rssDelta": 229232640
+      }
+    ],
+    "bench-scheduled": [
+      {
+        "name": "300 due scheduled 200KB payload enumeration",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 100.30720199999996,
+            "firstImmediateMs": 103.43476800000008,
+            "rssDelta": 61153280,
+            "externalDelta": -2809802
+          },
+          {
+            "ms": 110.47212300000001,
+            "firstImmediateMs": 110.76132499999994,
+            "rssDelta": 95682560,
+            "externalDelta": 0
+          },
+          {
+            "ms": 93.57039299999997,
+            "firstImmediateMs": 93.7812550000001,
+            "rssDelta": 68157440,
+            "externalDelta": 0
+          }
+        ],
+        "rows": 300
+      },
+      {
+        "name": "300 startup queue enumeration + JSON parse",
+        "repeats": 3,
+        "samples": [
+          {
+            "ms": 158.04244999999992,
+            "firstImmediateMs": 158.59407799999985,
+            "rssDelta": 118149120,
+            "externalDelta": 0
+          },
+          {
+            "ms": 157.3172279999999,
+            "firstImmediateMs": 158.80355899999995,
+            "rssDelta": 113717248,
+            "externalDelta": 0
+          },
+          {
+            "ms": 149.6230969999997,
+            "firstImmediateMs": 150.54329000000007,
+            "rssDelta": 115871744,
+            "externalDelta": 0
+          }
+        ],
+        "rows": 300
+      }
+    ],
+    "ipc-payloads": [
+      {
+        "name": "list 200",
+        "jsonBytes": 138058,
+        "listRows": 200
+      },
+      {
+        "name": "search 100",
+        "jsonBytes": 68722,
+        "searchRows": 100
+      },
+      {
+        "name": "open with 1000 thread headers",
+        "jsonBytes": 689422,
+        "threadRows": 1000
+      },
+      {
+        "name": "open omit thread",
+        "jsonBytes": 2472,
+        "threadRows": 0
+      }
+    ],
+    "overnight-actual-plan": {
+      "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+      "args": [
+        [
+          1793592232711,
+          200,
+          0
+        ]
+      ],
+      "plan": [
+        {
+          "id": 10,
+          "parent": 0,
+          "notused": 61,
+          "detail": "SEARCH m USING INDEX recipient_headers_page (is_draft=?)"
+        },
+        {
+          "id": 24,
+          "parent": 0,
+          "notused": 0,
+          "detail": "CORRELATED SCALAR SUBQUERY 1"
+        },
+        {
+          "id": 29,
+          "parent": 24,
+          "notused": 39,
+          "detail": "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+        },
+        {
+          "id": 81,
+          "parent": 0,
+          "notused": 0,
+          "detail": "USE TEMP B-TREE FOR ORDER BY"
+        }
+      ]
+    },
+    "checks": [
+      {
+        "name": "check-performance-followups",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.315
+      },
+      {
+        "name": "check-undo-sync-races",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 1.322
+      },
+      {
+        "name": "check-overnight-bodies",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.415
+      },
+      {
+        "name": "check-body-sync-status",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.215
+      },
+      {
+        "name": "check-runtime-10k",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 33.154
+      },
+      {
+        "name": "check-performance-storage",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 1.722
+      },
+      {
+        "name": "check-mail-performance",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.866
+      },
+      {
+        "name": "check-mail-phase-two",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 1.218
+      },
+      {
+        "name": "check-startup-preparation",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.115
+      },
+      {
+        "name": "check-startup-upgrade",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 3.326
+      },
+      {
+        "name": "check-search-index-rebuild",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 2.377
+      },
+      {
+        "name": "check-checkpoint-observer",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.074
+      },
+      {
+        "name": "check-mail-persistence",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 4.44
+      },
+      {
+        "name": "check-gmail-cache",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 1.268
+      },
+      {
+        "name": "check-gmail-engine",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.917
+      },
+      {
+        "name": "check-gmail-mail-api",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.164
+      },
+      {
+        "name": "check-gmail-pace",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.114
+      },
+      {
+        "name": "check-background-folders",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 2.319
+      },
+      {
+        "name": "check-attachment-transfers",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.215
+      },
+      {
+        "name": "check-mail-serialization",
+        "exit": 0,
+        "status": "pass",
+        "invocation": "node -e Promise.resolve(require(\"./scripts/check-mail-serialization\").run())",
+        "note": "Initial plain node invocation was a no-op; explicit exported run() was subsequently executed with exit 0."
+      },
+      {
+        "name": "check-recipient-suggest",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 1.567
+      },
+      {
+        "name": "check-search-scope",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.114
+      },
+      {
+        "name": "check-unread-hold",
+        "status": "pass",
+        "exit": 0,
+        "note": "Resolved actual script name and executed with exit 0."
+      },
+      {
+        "name": "check-scheduled-management",
+        "exit": 0,
+        "status": "pass",
+        "seconds": 0.467
+      }
+    ]
+  }
+}
