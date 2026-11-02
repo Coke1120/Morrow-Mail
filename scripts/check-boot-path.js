@@ -6023,12 +6023,20 @@ async function checkSignaturesAndSchedule(engine, db) {
   assert.deepStrictEqual(otherList.data.signatures, []);
   assert.strictEqual(otherList.data.defaultSignatureId, null);
   assert.strictEqual(otherList.data.defaultSignaturePerAccount["imap-test"], createdId);
-  const second = engine.answer("mail:upsertSignature", [{
-    accountId: "imap-ol",
-    name: "Short",
-    text: "— Ada",
-    isDefault: true,
-  }]);
+  // Signature order is created_at, then random id. Pin the later save's clock
+  // so two fast synchronous saves cannot turn this ordering assertion random.
+  const signatureNow = Date.now;
+  const secondCreatedAt = db.signatureById(createdId).created_at + 1;
+  let second;
+  try {
+    Date.now = () => Math.max(signatureNow(), secondCreatedAt);
+    second = engine.answer("mail:upsertSignature", [{
+      accountId: "imap-ol",
+      name: "Short",
+      text: "— Ada",
+      isDefault: true,
+    }]);
+  } finally { Date.now = signatureNow; }
   assert.strictEqual(second.success, true);
   const both = engine.answer("mail:listSignatures", []);
   assert.deepStrictEqual(both.data.signatures.map((row) => row.id), [createdId, second.data.id]);

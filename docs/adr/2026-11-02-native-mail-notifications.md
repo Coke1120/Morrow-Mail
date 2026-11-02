@@ -127,3 +127,9 @@ a 300-second Windows parent budget; other platforms retain 180 seconds. Add
 batch/yield and CPU counters, and report resources after successful assertions.
 Healthy progress and idle/CPU stalls are now distinguishable from the CI log.
 The added deadline headroom does not change production storage or mail behavior.
+
+The local aggregate also exposed an existing signature-order fixture tie:
+two synchronous saves could share a millisecond, making the documented secondary
+random-ID order disagree with the test's assumed creation order. Preserve the
+ordering assertion and give only the second synthetic save an explicitly later
+clock, restoring `Date.now` synchronously in `finally`. Product ordering is unchanged.
