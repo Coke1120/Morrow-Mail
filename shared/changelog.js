@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.17": [
+      "Save as ZIP stays more responsive during archive preparation, with progress and cancellation before saving.",
+      "Attachment saves keep writes in order and check cancellation before opening an external application.",
+      "Sidebars with many folders refresh more efficiently while retaining unread counts and selection.",
+    ],
     "0.3.16": [
       "Residual mail journal and mailbox work stays bounded, with a scoped refresh cursor.",
       "Deleting a bot removes its webhook credential before its grant, and Settings shows storage-related delivery halts truthfully.",
