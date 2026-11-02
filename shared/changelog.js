@@ -7,6 +7,14 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.20": [
+      "New users get a five-step setup guide for mailbox, calendar, sender name, signature and optional AI. Settings can reopen it and resume progress.",
+      "Drag mail column headers to reorder them, or use Columns and keyboard controls. The saved layout is independent of sorting and can be reset.",
+      "All Account Mail adds Starred and Unread views with downloaded-mail counts. The Inbox unread chip is removed; each mailbox keeps its unread counts.",
+      "Allow sending responds correctly after the No expiry bot review. Cancel, Escape and failed creation retain the form for another review.",
+      "Bots can separately request permission to archive, mark read or unread, and move one message to Trash. Permissions start off, stay limited to selected mailboxes, and never allow permanent deletion.",
+      "Bot mail changes report pending and confirmed outcomes. Repeating a request ID observes its original result; unknown outcomes require review instead of automatic retry.",
+    ],
     "0.3.19": [
       "Undo asks you to confirm the reviewed changes; Cancel or Escape keeps your selection without changing mail.",
       "Select all and Clear selection keep Undo Details open when using the mouse or keyboard.",
