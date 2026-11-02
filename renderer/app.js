@@ -9432,6 +9432,7 @@ async function offerChangelog() {
   } finally {
     changelogPending = false;
     if (googleOnboardingPending) setTimeout(resumeGoogleOnboarding, 0);
+    setTimeout(resumeSetupGuide, 0);
   }
 }
 
@@ -17706,6 +17707,213 @@ function paintOooDirty() {
   if (dirty && $("ooo-status") && $("ooo-status").textContent === "Saved on the provider.") setOooStatus("", false);
 }
 // A profile-local, non-secret preference, shared by shell windows.
+// The guide stores navigation only. Completion is derived from saved account settings.
+let setupProgress = null;
+let setupPending = false;
+let setupReturning = false;
+let setupTransition = false;
+let setupRevision = 0;
+let setupCalendarPending = false;
+let setupSave = Promise.resolve();
+const setupSteps = [
+  ["Connect a mailbox", "Read and send mail from your own account. Use Google, Microsoft, or your provider’s IMAP and SMTP settings. Google sign-in may require a Desktop client JSON from Google Cloud Console; importing it does not sign you in.", "Connect mailbox"],
+  ["Connect its calendar", "Bring this mailbox’s calendar into Morrow. Google Calendar has separate consent; Microsoft uses its mailbox features grant. Other providers are not supported here. You can keep using mail without a calendar.", "Connect calendar"],
+  ["Choose your sender name", "Choose the name recipients see for this mailbox and each From address in Sender identities. Names are local preferences, not permission to send as another address. An empty override uses the address alone.", "Edit sender name"],
+  ["Add your signature", "Add an account default or a signature for a send-as domain. The editor opens for the mailbox selected above. You can also send without a signature.", "Edit signatures"],
+  ["Make AI work for you", "Optionally connect ChatGPT or an API provider, then choose a model. Review the saved destination and data permission separately. Saving a connection never grants permission to use your mail; background use requires its own choice.", "Review AI settings"],
+];
+function saveSetupProgress(status = setupProgress.status) {
+  setupProgress = { ...setupProgress, status };
+  const snapshot = { ...setupProgress };
+  setupSave = setupSave.catch(() => {}).then(() => api.invoke("morrow:configSetOnboarding", snapshot));
+  setupSave.catch(() => { $("setup-guide-error").textContent = "Could not save guide progress. Your mailbox settings are unchanged; the guide may appear again next time."; });
+  return setupSave;
+}
+async function startSetupGuide() {
+  try { setupProgress = await api.invoke("morrow:configGetOnboarding"); }
+  catch { return; } // Do not overwrite unknown profile state.
+  if (!setupProgress) {
+    setupProgress = { status: state.accounts.length ? "existing" : "active", step: 0, accountId: "" };
+    await saveSetupProgress().catch(() => {});
+  }
+  setupPending = setupProgress.status === "active";
+  return resumeSetupGuide();
+}
+function setupAccount() {
+  return state.accounts.find(account => account.id === setupProgress?.accountId) || null;
+}
+async function resumeSetupGuide() {
+  if ((!setupPending && !setupReturning) || setupTransition || changelogPending || document.querySelector("dialog[open]")) return;
+  setupPending = false;
+  setupReturning = false;
+  openDialog("setup-guide");
+  $("setup-guide-heading").focus();
+  await paintSetupGuide();
+}
+async function paintSetupGuide() {
+  if (!$("setup-guide").open || !setupProgress) return;
+  const revision = ++setupRevision;
+  const select = $("setup-guide-account");
+  if (!setupAccount()) setupProgress.accountId = state.accounts[0]?.id || "";
+  select.replaceChildren();
+  for (const account of state.accounts.length ? state.accounts : [{ email: "Connect your first mailbox", id: "" }]) {
+    const option = document.createElement("option"); option.value = account.id; option.textContent = account.email; select.append(option);
+  }
+  select.value = setupProgress.accountId;
+  select.disabled = !state.accounts.length;
+  const step = setupProgress.step, account = setupAccount(), spec = setupSteps[step];
+  $("setup-guide-steps").replaceChildren();
+  setupSteps.forEach((item, index) => {
+    const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
+    button.textContent = `${index + 1}. ${["Mailbox", "Calendar", "Sender name", "Signature", "AI setup"][index]}`;
+    button.title = item[0];
+    if (index === step) button.setAttribute("aria-current", "step");
+    button.addEventListener("click", () => moveSetupGuide(index));
+    $("setup-guide-steps").append(button);
+  });
+  $("setup-guide-position").textContent = `STEP ${step + 1} OF 5${step === 1 || step === 4 ? " · OPTIONAL" : ""}`;
+  $("setup-guide-heading").textContent = spec[0];
+  $("setup-guide-copy").textContent = spec[1];
+  $("setup-guide-action").textContent = spec[2];
+  $("setup-guide-action").disabled = step === 1 || (step > 0 && step < 4 && !account);
+  $("setup-guide-import").hidden = step !== 0;
+  $("setup-guide-cancel").hidden = !setupCalendarPending;
+  $("setup-guide-back").disabled = step === 0;
+  $("setup-guide-next").textContent = step === 4 ? "Finish guide" : "Skip for now";
+  $("setup-guide-state").textContent = "Checking saved settings…";
+  let summary = "", complete = false;
+  try {
+    if (step === 0) {
+      complete = !!account && !account.needsReauth;
+      summary = account ? account.needsReauth ? `Reconnect ${account.email} in Settings → Accounts.` : `Connected: ${account.email}` : "No mailbox connected yet.";
+      const status = await call("mail:googleOauthStatus");
+      if (revision !== setupRevision) return;
+      $("setup-guide-import").hidden = !!status?.ready;
+    } else if (!account && step < 4) summary = "Connect a mailbox first, or skip this step for now.";
+    else if (step === 1) {
+      const connection = calendarConnection(await call("calendar:status"), account);
+      complete = connection.connected;
+      summary = complete ? "Calendar access saved for this mailbox." : connection.canGrant ? "Calendar is not connected. You can connect it or continue with mail only." : connection.reason || "Calendar is unavailable for this mailbox type. Google and Microsoft mailboxes are supported.";
+      if (revision !== setupRevision) return;
+      $("setup-guide-action").disabled = !connection.canGrant || complete || setupCalendarPending;
+    } else if (step === 2) {
+      const prefs = await call("emailBrain:getComposeSettings");
+      const names = prefs?.accounts?.[account.id]?.senderNames || {};
+      complete = Object.keys(names).length > 0;
+      summary = complete ? "Sender name preferences saved for this mailbox. Review each From address in Sender identities." : "Using provider defaults. Review the name or choose an address-only sender.";
+    } else if (step === 3) {
+      const pack = await call("mail:listSignatures", { accountId: account.id });
+      complete = signatureRows(pack).some(row => (!row.accountId || row.accountId === account.id) && (signaturePlain(row) || signatureMarkup(row)));
+      summary = complete ? "Signature saved for this mailbox. Review its default or domain assignment in the editor." : "No signature saved for this mailbox yet.";
+    } else {
+      const cfg = await api.invoke("host:aiGetConfig");
+      if (cfg?.authMode === "chatgpt") {
+        const reply = await api.invoke("host:chatgptStatus"), status = reply?.data || reply;
+        complete = status?.connected === true && status?.planEnabled === true && !!cfg.chatgptModel;
+      } else complete = !!(cfg?.hasKey && cfg?.model);
+      summary = complete ? "AI connection configured. Review data permission separately in AI settings." : "AI is optional. Mail works without an AI connection.";
+    }
+  } catch { summary = "Could not check saved settings. Open this step to review or try again later."; }
+  if (revision !== setupRevision || !$("setup-guide").open) return;
+  $("setup-guide-state").textContent = summary;
+  if (step < 4 && complete) $("setup-guide-next").textContent = "Continue";
+}
+function moveSetupGuide(step) {
+  setupProgress.step = step;
+  $("setup-guide-error").textContent = "";
+  saveSetupProgress("active").catch(() => {});
+  paintSetupGuide();
+  $("setup-guide-heading").focus();
+}
+async function dismissSetupGuide(status = "later") {
+  setupPending = false; setupReturning = false; ++setupRevision;
+  await saveSetupProgress(status).catch(() => {});
+  await closeDialog("setup-guide");
+}
+async function setupGuideAction() {
+  const step = setupProgress.step, account = setupAccount();
+  if (setupTransition || (step > 0 && step < 4 && !account)) return;
+  if (step === 1) {
+    if (setupCalendarPending) return;
+    setupCalendarPending = true;
+    $("setup-guide-cancel").hidden = false;
+    $("setup-guide-action").disabled = true;
+    const revision = setupRevision;
+    $("setup-guide-error").textContent = "Complete calendar consent in your browser. You can finish this guide later while consent is pending.";
+    try { await call("calendar:connect", { accountId: account.id });
+      if (revision === setupRevision) $("setup-guide-error").textContent = ""; }
+    catch (error) { if (revision === setupRevision) $("setup-guide-error").textContent = error.message || "Calendar connection did not complete."; }
+    setupCalendarPending = false;
+    $("setup-guide-cancel").hidden = true;
+    if ($("setup-guide").open) await paintSetupGuide();
+    return;
+  }
+  setupTransition = true;
+  setupReturning = true;
+  await saveSetupProgress("active").catch(() => {});
+  await closeDialog("setup-guide");
+  try {
+    if (step === 0) openConnectFor(null);
+    else if (step === 3) openSignatures(account.id);
+    else {
+      if (account) state.settingsAccountId = account.id;
+      openSettings();
+      revealSettingsFold(step === 4 ? "ai" : "compose");
+      if (step === 2) {
+        await loadSettingsFold("compose");
+        const select = $("brain-compose-account");
+        if ($("settings").open && state.accounts.some(row => row.id === account.id) && !select.disabled) {
+          select.value = account.id; select.dispatchEvent(new Event("change"));
+        }
+      }
+    }
+  } finally { setupTransition = false; setTimeout(resumeSetupGuide, 0); }
+}
+function wireSetupGuide() {
+  $("setup-guide").addEventListener("keydown", event => {
+    if (event.key !== "Tab") return;
+    const controls = [...$("setup-guide").querySelectorAll("button:not(:disabled), select:not(:disabled), a[href]")].filter(node => node.getClientRects().length);
+    const first = controls[0], last = controls[controls.length - 1];
+    if (!first) return;
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === $("setup-guide-heading"))) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
+  $("setup-guide-open").addEventListener("click", async () => {
+    setupTransition = true;
+    setupProgress ||= { status: "active", step: 0, accountId: "" };
+    setupPending = true;
+    await closeDialog("settings");
+    setupTransition = false;
+    resumeSetupGuide();
+  });
+  $("setup-guide-cancel").addEventListener("click", () => {
+    if (setupCalendarPending) call("mail:cancelOAuth").catch(error => { $("setup-guide-error").textContent = error.message; });
+  });
+  $("setup-guide-later").addEventListener("click", () => dismissSetupGuide());
+  $("setup-guide").addEventListener("cancel", event => { event.preventDefault(); dismissSetupGuide(); });
+  $("setup-guide").addEventListener("close", () => {
+    ++setupRevision;
+    if (!setupReturning && !setupTransition && setupProgress?.status === "active") saveSetupProgress("later").catch(() => {});
+  });
+  document.addEventListener("close", event => {
+    if (event.target?.tagName === "DIALOG") setTimeout(resumeSetupGuide, 0);
+  }, true);
+  $("setup-guide-account").addEventListener("change", () => {
+    setupProgress.accountId = $("setup-guide-account").value;
+    saveSetupProgress("active").catch(() => {}); paintSetupGuide();
+  });
+  $("setup-guide-back").addEventListener("click", () => moveSetupGuide(Math.max(0, setupProgress.step - 1)));
+  $("setup-guide-next").addEventListener("click", () => setupProgress.step === 4 ? dismissSetupGuide("done") : moveSetupGuide(setupProgress.step + 1));
+  $("setup-guide-action").addEventListener("click", () => setupGuideAction().catch(error => { $("setup-guide-error").textContent = error.message; }));
+  $("setup-guide-import").addEventListener("click", async () => {
+    $("setup-guide-import").disabled = true;
+    try { await changeGoogleOauthClient("mail:importGoogleOauth"); await paintSetupGuide(); }
+    finally { $("setup-guide-import").disabled = false; }
+  });
+  window.addEventListener("focus", () => { if ($("setup-guide").open) paintSetupGuide(); });
+}
+
 const googleOnboardingKey = "morrow.googleOnboarding.v1";
 let googleOnboardingHandled = false;
 let googleOnboardingPending = false;
@@ -17809,7 +18017,7 @@ async function loadGoogleOauthClient() {
 async function changeGoogleOauthClient(channel) {
   if (googleOauthClientBusy || state.oauthPending) return;
   const node = $("google-oauth-client-status");
-  const onboarding = $("google-onboarding").open ? $("google-onboarding-status") : null;
+  const onboarding = $("setup-guide").open ? $("setup-guide-error") : $("google-onboarding").open ? $("google-onboarding-status") : null;
   googleOauthClientBusy = true;
   if (onboarding) onboarding.textContent = "Choose a Google Cloud Console Desktop app client JSON…";
   paintGoogleOauthClient();
@@ -24700,6 +24908,7 @@ function wire() {
   const motion = motionApi();
   if (motion) motion.bindChrome(document);
   wireGoogleOnboarding();
+  wireSetupGuide();
   wireSettingsFolds();
   wireAgentTabs();
   wireAgentTodoView();
@@ -25539,6 +25748,7 @@ async function boot() {
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
+  api.on("mail:accountsUpdated", () => setTimeout(() => { if ($("setup-guide").open) paintSetupGuide(); }, 0));
   api.on("nativeAgent:homeUpdated", (payload) => {
     if (!payload || typeof payload !== "object") return;
     agentPaintPayload = payload;
@@ -25585,7 +25795,7 @@ async function boot() {
   await loadShellPrefs();
   await loadAccounts();
   applyFeaturesHash();
-  await maybeShowGoogleOnboarding();
+  await startSetupGuide();
   loadScheduled().catch(() => {});
   if (typeof api.reportUpdateReady === "function") api.reportUpdateReady();
 }
