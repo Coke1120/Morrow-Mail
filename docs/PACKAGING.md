@@ -10,7 +10,7 @@ The packaged app boots the first-party renderer shipped in `renderer/` (see [IND
 
 The signed-updater workflow distributes ad hoc macOS artifacts with Ed25519 source authentication, without requiring Apple Developer Program membership. The legacy public root is bundled; `MORROW_UPDATE_SIGNING_KEY` must match it. Archive and strict bundle integrity failures block publication. Build-host Gatekeeper rejection is reported as requiring manual review, not converted into an execution approval or a publication blocker. Destination-Mac trust checks and user prompts still apply. See [signed update gates](SIGNED_UPDATES.md#release-workflow-gate).
 
-Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an ad hoc signed macOS zip to the same GitHub release. Pull requests stay on the `ci` check job.
+Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an ad hoc signed macOS zip to the same GitHub release. Pull requests run the `ci` checks. Changes to the release workflow also run `macos-release-check`: a secret-free native ARM64 build and extracted-ZIP verification, with no publication or app launch.
 
 1. For an authorized release, use a new stable `major.minor.patch` package version and reviewed source on `main`. The GitHub tag is `v` plus that version.
 2. Actions → **release** → **Run workflow**, branch `main`.
@@ -53,13 +53,17 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win
 
 Artifacts land in `dist/` (`latest.yml`, `Morrow-Mail-Setup.exe`, `Morrow-Mail-Setup.exe.blockmap`, `Morrow-Mail.exe`).
 
-On Linux, the NSIS uninstaller step needs Wine, including `wine32:i386`. The release job runs on `windows-latest` and does not use Wine.
+On Linux, the NSIS uninstaller step needs Wine, including `wine32:i386`. The release job runs on `windows-2022` and does not use Wine.
 
 The publisher stages a draft, uploads both platform sets and verifies downloaded bytes before promotion. Failed drafts require review; automatic reruns do not overwrite them.
 
 ## macOS
 
-The same **release** workflow runs on `macos-latest` after Windows and publishes an ad hoc signed zip plus `latest-mac.yml`. `build.mac.sign` invokes `scripts/sign-macos.js` after bundle/resource edits and before ZIP creation. The existing `@electron/osx-sign` dependency signs nested code inside-out with identity `-`, then seals the outer app. A failing `codesign --verify --deep --strict` aborts packaging before upload. No Apple certificate or provisioning profile is used; notarization is explicitly disabled. The separate Ed25519 manifest requires the approved release signing secret and does not establish Gatekeeper trust.
+The same **release** workflow runs on the standard GitHub-hosted ARM64 `macos-15` runner after Windows and publishes an ad hoc signed zip plus `latest-mac.yml`. Both the release and its PR packaging check use Node 20, assert a native ARM64 toolchain, and install setuptools for the existing node-gyp dependency. The [standard hosted runner documentation](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) lists this label as ARM64 and makes standard public-repository compute free and unlimited. This does not cover paid larger runners or separately billed storage. See the [runner decision](adr/2026-11-02-release-macos-github-hosted.md).
+
+The PR packaging step alone sets `CSC_FOR_PULL_REQUEST=true` so electron-builder invokes the existing ad hoc signer instead of skipping it for a PR. Identity discovery stays disabled; the job receives no signing credentials. Its extracted ZIP must pass the same integrity checks as the release.
+
+`build.mac.sign` invokes `scripts/sign-macos.js` after bundle/resource edits and before ZIP creation. The existing `@electron/osx-sign` dependency signs nested code inside-out with identity `-`, then seals the outer app. A failing `codesign --verify --deep --strict` aborts packaging before upload. No Apple certificate or provisioning profile is used; notarization is explicitly disabled. The separate Ed25519 manifest requires the approved release signing secret and does not establish Gatekeeper trust.
 
 Previously `mac.identity: null` made electron-builder 25.1.8 return before signing, leaving the modified Electron bundle without a fresh resource seal. The official v0.2.3 ARM64 ZIP was reported to fail verification with `code has no resources but signature indicates they must be present` on macOS. A GitHub-matching ZIP hash does not establish signature validity.
 

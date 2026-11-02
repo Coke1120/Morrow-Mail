@@ -1,5 +1,7 @@
 # Release macOS job on the Mac mini
 
+Superseded for future releases by [the standard GitHub-hosted ARM64 decision](2026-11-02-release-macos-github-hosted.md). Existing tagged workflow revisions retain their runner selection.
+
 ## Decision
 
 The `release` workflow `macos` job runs on Leo’s Mac mini. Its runner labels are `self-hosted`, `macOS`, and `mac-mini`. The `windows` job stays on `windows-2022`. Pull-request and CI workflows stay on GitHub-hosted runners.
