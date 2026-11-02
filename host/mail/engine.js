@@ -588,7 +588,14 @@ async function secretFor(account) {
     let grant; try { grant = JSON.parse(stored); } catch { grant = {}; }
     if (!oauthConfig.hasPurposeScopes(grant.grantedScopes || "", "google", "imap")) throw Object.assign(new Error("Gmail API mail permission is missing. Reconnect Google; cached work was retained."), { code: "scope_missing" });
   }
-  const result = await oauth.accessTokenFor(account, stored, "imap");
+  let result;
+  try { result = await oauth.accessTokenFor(account, stored, "imap"); } catch (error) {
+    // A rejected renewal may belong to a grant replaced during the request.
+    // Do not publish its sign-in failure against the new connection.
+    assertCurrent(revision);
+    if (oauthConfig.providerKey(account.profile) === "google") oauthConfig.requireGoogleGrantClient(JSON.parse(stored));
+    throw error;
+  }
   assertCurrent();
   // A failed synchronous reconnect may have restored the exact prior state.
   // Preserve that contract; pin this read window and compare the actual value.

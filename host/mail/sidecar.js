@@ -309,7 +309,11 @@ async function tokenFor(account, purpose) {
     error.code = purpose === "calendar" || purpose === "rules" ? "needs_auth" : "scope_missing";
     throw error;
   }
-  const result = await oauth.accessTokenFor(account, raw, purpose);
+  let result;
+  try { result = await oauth.accessTokenFor(account, raw, purpose); } catch (error) {
+    grantRequests.getStore().assertCurrent();
+    throw error;
+  }
   grantRequests.getStore().assertCurrent();
   if (providerOf(account) === "google") config.requireGoogleGrantClient(parsed);
   if (typeof result === "string") return { accessToken: result, grantedScopes: parsed.grantedScopes || "" };

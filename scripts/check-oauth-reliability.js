@@ -151,6 +151,27 @@ async function credentials() {
       assert.equal(outcome.status, "rejected"); assert.equal(outcome.reason.code, "conflict");
     }
     assert.equal(secrets.getPassword(id), replacement);
+
+    // A late invalid_grant belongs to the old request, not to the newer login.
+    // Error completions need the same stale-connection guards as successes.
+    for (const feature of [false, true]) {
+      let rejectOld;
+      const failedResponse = new Promise(resolve => { rejectOld = resolve; });
+      entered = 0;
+      global.fetch = async () => { entered++; return failedResponse; };
+      const key = feature ? `${id}:bundle` : id;
+      secrets.setPassword(key, blob(feature ? "bundle" : "imap"));
+      const old = feature ? sidecar.answer("calendar:list", [{ accountId: id,
+        timeMin: "2026-11-01T00:00:00Z", timeMax: "2026-12-01T00:00:00Z" }]) : secretFor(account);
+      const expected = feature ? old.then(result => assert.equal(result.error.code, "conflict"))
+        : assert.rejects(old, { code: "conflict" });
+      await flush(); assert.equal(entered, 1);
+      const newer = blob(feature ? "bundle" : "imap", "synthetic-newer-login");
+      secrets.setPassword(key, newer);
+      rejectOld(json({ error: "invalid_grant" }, 400));
+      await expected;
+      assert.equal(secrets.getPassword(key), newer);
+    }
   } finally {
     memory.setPassword = originalSet;
     global.fetch = originalFetch;
