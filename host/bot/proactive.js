@@ -148,12 +148,13 @@ function createScheduler(deps = {}) {
       if (!allowed(grant) || controller.signal.aborted || (key && secretStore.revision(key) !== revision)
         || job.accountIdentities.some(([id, identity]) => !identity || accountIdentity(id) !== identity)) {
         result = { code: "CANCELLED" };
-      } else if (key && !token) {
+      } else if ((key && !token) || (grant.proactive.webhookMode === "hermes_hmac_v2" && !token)) {
         result = { code: "WEBHOOK_SECRET_UNAVAILABLE" };
       } else {
         posted = true;
         result = await post(grant.proactive.webhookUrl, job.body, {
           signal: controller.signal, token, deliveryId: job.payload.deliveryId,
+          webhookMode: grant.proactive.webhookMode || "bearer", now: () => clock().getTime(),
         });
       }
     } catch { result = { code: controller.signal.aborted ? "CANCELLED" : "WEBHOOK_UNAVAILABLE" }; }
@@ -166,7 +167,7 @@ function createScheduler(deps = {}) {
     try {
       row.lastRunAt = clock().toISOString();
       row.lastCode = result.code;
-      if (result.code === "OK") {
+      if (transport.acknowledged(result.code)) {
         for (const [accountId, ids] of Object.entries(job.delivered)) {
           row.seen[accountId] = [...new Set([...(row.seen[accountId] || []), ...ids])].slice(-SEEN_LIMIT);
         }

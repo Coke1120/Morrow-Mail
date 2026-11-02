@@ -147,8 +147,10 @@ async function run() {
       const mac = require("../host/mail/mac-secrets");
       assert.equal(mac.getPassword("synthetic-private-account"),"synthetic-private-credential");
       reply={status:1,stderr:"Synthetic private Keychain denial"};
-      assert.equal(mac.getPassword("synthetic-private-account"),null);
+      assert.throws(()=>mac.getPassword("synthetic-private-account"),error=>error.code==="secure_storage_unavailable"&&!error.message.includes("private"));
       assert.throws(()=>mac.setPassword("synthetic-private-account","synthetic-private-value"),/Synthetic private Keychain denial/);
+      reply={status:44,stderr:"Synthetic missing item"};
+      assert.equal(mac.getPassword("synthetic-private-account"),null);
       assert.ok(!JSON.stringify(perf.snapshot()).includes("synthetic-private"));
       assert.ok(perf.snapshot().stages.some(row=>row.stage==="keychain.wait"));
     } finally { child.spawnSync=originalSpawn; delete require.cache[require.resolve("../host/mail/mac-secrets")]; }

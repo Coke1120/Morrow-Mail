@@ -48,6 +48,7 @@ function deferred() {
       const context = {
         interactiveBoot: true, bootWindow: null, bootFinished: false, bootFailed: false, bootCancelled: false, startupContinued: false,
         process: { env: {}, platform: process.platform }, console, startupProgressScript,
+        mailNotifications: { stop() {} },
         startupStatusHtml: () => "<html>synthetic startup</html>", initMail: () => engine.init(),
         presentBootFailure: async () => { calls.errors++; }, scheduledQuitTime: () => "synthetic time",
         requestQuitChoice(prompt) { calls.prompt++; assert.equal(prompt.count, 1); return choice.promise; },

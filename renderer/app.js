@@ -67,6 +67,8 @@ const state = {
     quoteWidth: 420,
     syncHorizon: 0,
     compactList: true,
+    mailNotifications: true,
+    mailNotificationPreview: "hidden",
     collapsedFolders: {},
     scheduleDelay: 0,
     layout: { folders: 260, list: 360, reading: 0 },
@@ -15842,6 +15844,44 @@ function onMenuAction(payload) {
   if (action === "new-mail" || action === "settings") runMailShortcut(action);
 }
 
+let notificationShellReady = false;
+let notificationNavigationGen = 0;
+async function onMailNotificationClick() {
+  if (!notificationShellReady) return;
+  const gen = ++notificationNavigationGen;
+  try {
+    const target = await call("mail:takeNotificationTarget");
+    const validId = value => typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value);
+    if (gen !== notificationNavigationGen || !target || !validId(target.accountId) || !validId(target.folderId)
+      || (target.messageId !== null && !validId(target.messageId))) return;
+    if (!state.accounts.some(account => account.id === target.accountId)) await loadAccounts();
+    if (gen !== notificationNavigationGen || !state.accounts.some(account => account.id === target.accountId)) return;
+    showMail();
+    await selectFolder(target.accountId, target.folderId);
+    if (gen !== notificationNavigationGen || state.accountId !== target.accountId || state.folderId !== target.folderId) return;
+    if (target.messageId) await openMessage(target.messageId);
+    else showStatus("That message is no longer available. Its Inbox is open.");
+  } catch {
+    if (gen === notificationNavigationGen) showStatus("That notification's message is no longer available. Refresh the mailbox to check.", true);
+  }
+}
+
+async function refreshMailNotificationStatus() {
+  const node = $("mail-notification-status");
+  if (!node) return;
+  try {
+    const result = await call("mail:getNotificationSettings");
+    const labels = {
+      disabled: "System notifications are off in Morrow Mail.",
+      unsupported: "Native notifications are unavailable in this environment. Use an installed Windows or macOS build.",
+      failed: "The last notification could not be shown. Check system notification permissions. It will not be retried.",
+      "storage-error": "Notifications paused because local delivery history could not be saved. Check storage, then restart Morrow Mail.",
+      ready: "System notifications are enabled. Your system controls permission, Focus / Do Not Disturb and delivery.",
+    };
+    node.textContent = labels[result?.state] || "Your system controls notification delivery.";
+  } catch { node.textContent = "Notification status is unavailable. Check system notification settings."; }
+}
+
 function cliCopyIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -16264,7 +16304,8 @@ function updateView(snapshot, version) {
   if (snap.manualRequired) {
     status = "Manual installation required. Your current app has not been replaced.";
   } else if (error) {
-    status = "Update failed.";
+    status = snap.downloaded ? "Downloaded update retained." : "Update failed.";
+    install = !!snap.downloaded;
   } else if (snap.installing) {
     status = "Installing…";
     busy = true;
@@ -16281,7 +16322,7 @@ function updateView(snapshot, version) {
   } else if (snap.available) {
     status = snap.version ? "Update " + snap.version + " available." : "Update available.";
   } else if (snap.enabled === false) {
-    status = "Updater is off until the app is packaged.";
+    status = snap.disabledReason || "Updater is off until the app is packaged.";
   }
   const pending = !!(snap.available || snap.downloaded || snap.downloading);
   const attention = !!snap.manualRequired || (!error && pending);
@@ -16476,6 +16517,7 @@ function sendDelayMs(seconds) {
 }
 
 const SHELL_PREFS = {
+  "morrow:configGetMailNotificationsEnabled": "mailNotifications",
   "morrow:configGetCompactMessageList": "compactList",
   "morrow:configGetShowFolderChips": "chips",
   "morrow:configGetAiWriteAutoOpenOnReply": "aiReply",
@@ -16523,6 +16565,7 @@ async function loadShellPrefs() {
     next.undoSend = sendDelayMs(await api.invoke("morrow:configGetUndoSendDelaySeconds")) / 1000;
     next.quoteWidth = quoteWidthPref(await api.invoke("morrow:configGetComposeQuoteWidth"));
     next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
+    next.mailNotificationPreview = await api.invoke("morrow:configGetMailNotificationPreview") || "hidden";
     next.scheduleDelay = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
     next.layout = layoutPanesPref(await api.invoke("morrow:configGetLayoutPanes"));
     const formats = typeof morrowDisplayFormat === "object" && morrowDisplayFormat ? morrowDisplayFormat : null;
@@ -16559,6 +16602,10 @@ function refreshReader() {
 }
 
 function takePref(getChannel, kind, control) {
+  if (getChannel === "morrow:configGetMailNotificationPreview") {
+    state.prefs.mailNotificationPreview = readPref(kind, control);
+    return false;
+  }
   const key = SHELL_PREFS[getChannel] || READER_PREFS[getChannel];
   if (key) {
     state.prefs[key] = control.checked === true;
@@ -16719,6 +16766,8 @@ async function collapseAllFolders() {
 
 function prefRows() {
   return [
+    ["pref-mail-notifications", "morrow:configGetMailNotificationsEnabled", "morrow:configSetMailNotificationsEnabled", "bool"],
+    ["pref-mail-notification-preview", "morrow:configGetMailNotificationPreview", "morrow:configSetMailNotificationPreview", "select"],
     ["pref-theme", "config:getTheme", "config:setTheme", "select"],
     ["pref-accent", "morrow:configGetAccent", "morrow:configSetAccent", "text"],
     ["pref-time-format", "morrow:configGetTimeFormat", "morrow:configSetTimeFormat", "select"],
@@ -16773,6 +16822,7 @@ async function loadSettings() {
   // Boot and preference writes already maintain this snapshot. Opening a dialog
   // must not repeat preference IPC reads or load closed provider/AI/Bot tabs.
   const keys = { ...SHELL_PREFS, ...READER_PREFS, "config:getTheme": "theme",
+    "morrow:configGetMailNotificationPreview": "mailNotificationPreview",
     "morrow:configGetAccent": "accent", "morrow:configGetUndoSendDelaySeconds": "undoSend",
     "morrow:configGetSyncHorizonDays": "syncHorizon",
     "morrow:configGetTimeFormat": "timeFormat", "morrow:configGetDateFormat": "dateFormat",
@@ -16903,6 +16953,7 @@ function loadSettingsFold(name) {
   const key = settingsFoldKey(name);
   if (settingsFoldLoaded.has(key)) {
     if (name === "compose") return loadComposeSettings();
+    if (name === "mail") return refreshMailNotificationStatus();
     return Promise.resolve();
   }
   if (settingsFoldPending.has(key)) return settingsFoldPending.get(key);
@@ -16914,7 +16965,10 @@ function loadSettingsFold(name) {
     panel.inert = true;
     panel.setAttribute("aria-busy", "true");
     setSettingsFoldLoading(fold, settingsFoldLoadingLabels[name] || "Loading…");
-    if (name === "prefs" || name === "mail") await loadSettings();
+    if (name === "prefs" || name === "mail") {
+      await loadSettings();
+      if (name === "mail") await refreshMailNotificationStatus();
+    }
     else if (name === "ai") {
       await loadSettings();
       if (settingsFoldPending.get(key) !== pending || !$("settings").open) return;
@@ -17521,6 +17575,7 @@ async function savePref(row) {
     } else {
       setPrefSaveStatus(id, edited ? "Saved. Newer edits are not saved yet." : "Saved.", false);
     }
+    if (id === "pref-mail-notifications" || id === "pref-mail-notification-preview") await refreshMailNotificationStatus();
   } catch (error) {
     if (serial !== prefWriteSerial.get(id)) return;
     const message = error instanceof Error ? error.message : String(error);
@@ -23744,6 +23799,13 @@ function botPlatformLabel(platform) {
   return platform === "hermes_agent" ? "Hermes Agent" : "Grok Bot";
 }
 
+function botDeliveryResult(code) {
+  if (code === "OK") return "HTTP acknowledged; agent completion unverified";
+  if (code === "HERMES_HTTP_202") return "Hermes HTTP 202 accepted for handling (queued or buffered); agent completion unverified";
+  if (/^HERMES_HTTP_2\d\d$/.test(code)) return `Hermes HTTP ${code.slice(-3)} acknowledged (may be duplicate, ignored or direct delivery); agent completion unverified`;
+  return code || "—";
+}
+
 function botProactiveForm(grant) {
   const saved = grant.proactive || {};
   const delivery = grant.proactiveStatus;
@@ -23760,7 +23822,7 @@ function botProactiveForm(grant) {
     : saved.enabled
     ? `Saved for ${saved.webhookUrl}. ${state.botAccess?.enabled && state.botAccess?.listen?.listening ? "Runs while Morrow is open and awake." : "Paused until bot access is listening."}`
     : "No background delivery is allowed for this bot.";
-  if (delivery && !delivery.halted) status.textContent += ` Last result: ${delivery.lastCode || "—"}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
+  if (delivery && !delivery.halted) status.textContent += ` Last result: ${botDeliveryResult(delivery.lastCode)}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
   const form = document.createElement("form");
   const fields = {};
   function field(name, title, type, value) {
@@ -23792,6 +23854,8 @@ function botProactiveForm(grant) {
     form.append(label); fields[name] = input; return input;
   }
   select("platform", "Platform", [["grok_bot", "Grok Bot"], ["hermes_agent", "Hermes Agent"]], grant.platform || "grok_bot");
+  const mode = select("webhookMode", "Webhook authentication", [["bearer", "Bearer webhook (existing receivers)"],
+    ["hermes_hmac_v2", "Hermes native webhook · HMAC V2"]], saved.webhookMode || (grant.proactive ? "bearer" : grant.platform === "hermes_agent" ? "hermes_hmac_v2" : "bearer"));
   const url = field("webhookUrl", "Webhook URL", "url", saved.webhookUrl);
   url.placeholder = "https://bot.your-tailnet.ts.net:8443/notify";
   url.autocomplete = "off";
@@ -23816,20 +23880,44 @@ function botProactiveForm(grant) {
   }
   const body = field("includeBody", "Include cached body text (never download missing bodies)", "checkbox", saved.includeBody);
   body.disabled = !(grant.capabilities || []).includes("mail.bodies.read");
-  const secret = field("secret", saved.hasSecret ? "Replace webhook bearer (blank keeps saved token)" : "Optional webhook bearer", "password", "");
+  const secret = field("secret", "Webhook credential", "password", "");
   secret.autocomplete = "new-password";
-  const clear = field("clearSecret", "Remove saved webhook bearer", "checkbox", false);
-  clear.disabled = !saved.hasSecret;
+  const clear = field("clearSecret", "Remove saved webhook credential", "checkbox", false);
+  const modeHelp = document.createElement("p"); modeHelp.className = "hint";
+  modeHelp.id = `bot-notify-${grant.clientId}-auth-help`;
+  mode.setAttribute("aria-describedby", modeHelp.id);
+  secret.setAttribute("aria-describedby", modeHelp.id);
+  form.append(modeHelp);
   const disclosure = document.createElement("p");
   disclosure.className = "hint";
-  disclosure.textContent = "Background permission: send raw cached headers and snippets, plus cached text only if selected, from these mailboxes to this webhook. The platform bot decides whether to ignore, ask you, read again, propose a draft or send if granted. Morrow does not run AI, triage, draft or send as a result. The bot’s storage and forwarding rules apply; delivered data cannot be recalled. Use private Tailscale HTTPS or loopback, never Funnel. Changing the destination removes its saved bearer. Push covers the newest 50 cached rows, up to 10 per mailbox per delivery; remembers 2,000 delivered IDs per mailbox. No attachment bytes. Missed schedules do not replay.";
+  disclosure.textContent = "Background permission: send raw cached headers and snippets, plus cached text only if selected, from these mailboxes to this webhook. The platform bot decides whether to ignore, ask you, read again, propose a draft or send if granted. Morrow does not run AI, triage, draft or send as a result. The bot’s storage and forwarding rules apply; delivered data cannot be recalled. Use private Tailscale HTTPS or loopback, never Funnel. Changing the URL, platform or authentication removes its saved credential unless replaced. Push covers the newest 50 cached rows, up to 10 per mailbox per delivery; remembers 2,000 acknowledged IDs per mailbox. HTTP acknowledgement does not verify agent completion. No attachment bytes. Missed schedules do not replay.";
   form.append(disclosure);
   const allow = field("allow", "Allow proactive notify to this webhook in the background", "checkbox", false);
+  const showAuthentication = () => {
+    const hermes = mode.value === "hermes_hmac_v2";
+    let sameUrl = false;
+    try { sameUrl = new URL(url.value).toString() === saved.webhookUrl; } catch { /* invalid or empty URL */ }
+    const keepsSecret = saved.hasSecret && sameUrl && fields.platform.value === (grant.platform || "grok_bot")
+      && mode.value === (saved.webhookMode || "bearer");
+    clear.disabled = !keepsSecret;
+    if (clear.disabled) clear.checked = false;
+    secret.required = hermes && allow.checked && (!keepsSecret || clear.checked);
+    secret.parentElement.firstChild.textContent = keepsSecret
+      ? `Replace ${hermes ? "Hermes signing secret" : "webhook bearer"} (blank keeps saved credential)`
+      : hermes ? "Hermes route signing secret (required to allow delivery)" : "Optional webhook bearer";
+    url.placeholder = hermes ? "http://127.0.0.1:8644/p/email/webhooks/morrow-mail" : "https://bot.your-tailnet.ts.net:8443/notify";
+    modeHelp.textContent = hermes
+      ? "Use the exact Hermes route secret; Morrow signs each request with HMAC V2 and a fresh timestamp, and keeps the delivery ID for retries. Keep both computers’ clocks synchronized. /p/email/webhooks/morrow-mail selects the email profile only when Hermes multiplexing and route profile: email are configured; deliver: email selects an output destination. Loopback reaches this computer only; another host needs private Tailscale HTTPS. HTTP 202 means accepted for handling; HTTP 200 can mean duplicate, ignored or direct delivery. Verify the intended agent result before disabling fallback cron."
+      : "Optional Bearer authentication for existing receivers. Blank keeps a saved credential only for the same URL, platform and authentication mode. Receivers must deduplicate deliveryId. HTTP acknowledgement does not verify agent completion.";
+  };
+  mode.addEventListener("change", () => { secret.value = ""; allow.checked = false; showAuthentication(); });
+  for (const input of [url, fields.platform, clear, allow]) input.addEventListener("input", showAuthentication);
+  showAuthentication();
   const review = document.createElement("p"); review.className = "hint";
   review.textContent = "Tick this permission after reviewing the fields above, then Save. Saving with it unticked turns proactive notify off. This permission is separate from Settings → AI data permission.";
   form.append(review);
   for (const input of [...Object.values(fields), ...accountInputs]) {
-    if (input !== allow) input.addEventListener("input", () => { allow.checked = false; });
+    if (input !== allow) input.addEventListener("input", () => { allow.checked = false; showAuthentication(); });
   }
   const actions = document.createElement("div"); actions.className = "row";
   const save = document.createElement("button"); save.type = "submit"; save.className = "primary icon-label";
@@ -23846,7 +23934,7 @@ function botProactiveForm(grant) {
       enabled: allow.checked, backgroundConfirmed: allow.checked,
       schedule: kind.value === "interval" ? { kind: "interval", everyMinutes: Number(minutes.value) } : { kind: "cron", cron: cron.value },
       accountIds: accountInputs.filter(input => input.checked && !input.disabled).map(input => input.value),
-      folder: fields.folder.value, includeBody: body.checked, webhookUrl: url.value,
+      folder: fields.folder.value, includeBody: body.checked, webhookUrl: url.value, webhookMode: mode.value,
       secret: secret.value, clearSecret: clear.checked };
     secret.value = "";
     save.disabled = true;
@@ -24044,7 +24132,8 @@ function paintBotAudit(rows) {
   for (const row of items) {
     const item = document.createElement("li");
     const audit = row.auditId ? `${row.auditId} · ` : "";
-    item.textContent = `${audit}${row.at || ""} · ${row.operation || "call"} · ${row.code || "ok"} · ${row.accountId || "no account"}`;
+    const result = row.operation === "proactive.mail_digest" ? botDeliveryResult(row.code) : row.code || "ok";
+    item.textContent = `${audit}${row.at || ""} · ${row.operation || "call"} · ${result} · ${row.accountId || "no account"}`;
     list.append(item);
   }
 }
@@ -25935,6 +26024,7 @@ async function boot() {
     if (state.view === "agent") paintAgent(payload, "");
   });
   api.on("mail:emailsUpdated", onEmailsUpdated);
+  api.on("mail:notificationClicked", onMailNotificationClick);
   api.on("mail:bodyUpdated", applyBodyUpdate);
   api.on("mail:bodySyncStatus", acceptBodySync);
   api.on("mail:actionsSettled", applyActionSettlement);
@@ -25975,6 +26065,8 @@ async function boot() {
   await loadShellPrefs();
   await loadMailColumnOrder();
   await loadAccounts();
+  notificationShellReady = true;
+  await onMailNotificationClick();
   applyFeaturesHash();
   await startSetupGuide();
   loadScheduled().catch(() => {});

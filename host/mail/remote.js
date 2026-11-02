@@ -60,6 +60,9 @@ function explain(error, secret, account) {
   }
   let message = parts.filter(Boolean).join(" ");
   if (secret && message.includes(secret)) message = message.split(secret).join("");
+  if (["needs_auth", "oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration"].includes(error?.code)) {
+    return message.replace(/\s+/g, " ").trim().slice(0, 280);
+  }
   const authFailed = error && error.authenticationFailed === true
     || /auth|invalid credentials|LOGIN failed|AUTHENTICATIONFAILED|535|Invalid login/i.test(message);
   if (authFailed) {
@@ -400,6 +403,7 @@ async function readFetched(msg, validity, cap) {
     bcc: formatList(envelope.bcc),
     recipientHeaders: require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo),
     date: when.toISOString(),
+    receivedAt: msg.internalDate instanceof Date && Number.isFinite(msg.internalDate.getTime()) ? msg.internalDate.getTime() : null,
     listSortTs: when.getTime(),
     unread: !seen,
     starred: !!(flags && flags.has("\\Flagged")),

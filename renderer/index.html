@@ -570,6 +570,7 @@
           <h3 id="cli-bot-title">Bot access today</h3>
           <p>The Node client calls the running app. Keep Morrow open, choose mailboxes and permissions in Settings → Bot access, then turn access on. Body text and attachment names need extra read permissions. Responses use JSON; mail text stays untrusted.</p>
           <p id="cli-proactive">Grok Bot and Hermes Agent use the same Node client and HTTP operations below. Configure proactive notify in Settings → Bot access → Your bots: explicitly allow background delivery, choose granted mailboxes, interval (1–10080 minutes) or five-field cron in this computer’s time zone, folder and optional permitted cached text. Keep Morrow open and awake with bot access listening. The webhook receives <code>proactive.mail_digest</code> with <code>contentTrust: untrusted_mail_data</code> and a stable <code>deliveryId</code>; acknowledge with a small 2xx response and deduplicate that ID. Only private Tailscale HTTPS or loopback is allowed; no Funnel, redirects, attachment bytes or forced downloads. Up to 10 of the newest 50 cached rows per mailbox, 128 KiB per delivery, 2 attempts per slot; 2,000 successful IDs remembered per mailbox. Target/data-scope changes reset that cursor. Stop/revoke cannot recall delivered data. A failed acknowledgement/cursor save halts delivery until Morrow restarts; Settings shows Halted instead of a runnable next slot. Inspect storage before restarting because mail may repeat. Saving settings or toggling access does not resume delivery. The platform bot decides what to do; push never runs local AI, triage, drafts or sending. Proactive delivery grants no mail-change or send permission.</p>
+          <p id="cli-hermes">Native Hermes Push: choose <strong>Hermes native webhook · HMAC V2</strong> in Proactive notify and supply its route signing secret in the password field. Existing saved Bearer settings keep their mode. Morrow signs the exact raw JSON with a fresh Unix timestamp (<code>X-Webhook-Signature-V2</code>, <code>X-Webhook-Timestamp</code>) and sends the stable delivery ID as <code>X-Request-ID</code> and <code>Idempotency-Key</code>. Retries preserve body/ID; keep clocks within Hermes’ 300-second replay window. To execute the email profile, configure Hermes multiplexing, serve that profile and bind the route with <code>profile: email</code>, then use <code>/p/email/webhooks/morrow-mail</code>. <code>deliver: email</code> selects an output destination. Same-host loopback reaches only this computer; a different host needs private Tailscale HTTPS with Funnel off. HTTP 202 accepts work for handling or buffering; HTTP 200 may mean duplicate, ignored or direct delivery. Neither confirms agent completion. Verify the intended Bot Chat result before disabling fallback cron. See <code>docs/BOT_BRIDGE.md</code> for setup and acceptance steps; this feature does not configure Hermes, activate Push or change cron for you.</p>
           <p id="cli-account-safety">Account-scoped calls require a connected, granted mailbox. A removed account returns <code>NOT_FOUND</code>, including direct message IDs, attachment metadata and proposal lists. These access checks do not automatically delete retained legacy data.</p>
           <dl class="cli-capabilities" id="cli-operations">
             <div><dt>Connection &amp; accounts</dt><dd><code data-bot-operation>bridge.describe</code>, <code data-bot-operation>accounts.list</code>, <code data-bot-operation>health.get</code> — only granted accounts; health reports observed state.</dd></div>
@@ -660,7 +661,7 @@
         <a href="https://buymeacoffee.com/coke1120" target="_blank" rel="noreferrer">Buy Me a Coffee</a>
       </nav>
       <p id="about-version"></p><p id="about-update-status" role="status">Updates have not been checked yet.</p>
-      <p id="about-update-quit" class="hint" hidden>This update will also install automatically when you quit Morrow. Restart and install closes the app now.</p>
+      <p id="about-update-quit" class="hint" hidden>Restart and install closes Morrow after you finish active work. Quitting alone does not install this update.</p>
       <div class="row"><button type="button" class="ghost" id="about-update-check">Check for updates</button><button type="button" class="primary" id="about-update-install" hidden>Restart and install</button><button type="button" class="ghost" id="about-update-manual" hidden>Show downloaded update</button></div>
     </div></dialog>
     <dialog id="changelog" aria-labelledby="changelog-title">
@@ -1141,6 +1142,25 @@
         <section class="fold" id="settings-mail" data-fold="mail" role="tabpanel" aria-labelledby="settings-tab-mail" tabindex="0" hidden>
           <div class="fold-panel" id="settings-mail-panel" hidden>
             <h3>Message list &amp; sync</h3>
+            <div class="settings-group" id="mail-notifications">
+              <h4>New email notifications</h4>
+              <label class="check" for="pref-mail-notifications"><input id="pref-mail-notifications" type="checkbox" checked aria-describedby="mail-notifications-help" /> Show system notifications for new Inbox mail</label>
+              <p class="hint" id="mail-notifications-help">Windows and macOS, while Morrow Mail is running, awake and syncing. On Windows, closing the main window quits the app. On macOS, hiding the window keeps it running; Quit stops notifications. Your system notification permissions and Focus / Do Not Disturb still apply.</p>
+              <div class="field">
+                <label for="pref-mail-notification-preview">Notification preview</label>
+                <select id="pref-mail-notification-preview" aria-describedby="mail-notification-preview-help">
+                  <option value="hidden" selected>Hide sender and content</option>
+                  <option value="sender">Sender only</option>
+                  <option value="message">Sender, subject and short preview</option>
+                </select>
+                <p class="hint" id="mail-notification-preview-help">Hidden by default. Previews may appear on your lock screen and in notification history. Grouped notifications always hide sender and content.</p>
+              </div>
+              <p id="mail-notification-status" class="hint" role="status"></p>
+              <details class="settings-disclosure"><summary>When notifications appear</summary>
+                <p class="hint">Recent unread Inbox arrivals after initial sync. History downloads, cache rebuilds, flag changes and old mail found after restarting stay quiet. Short bursts across mailboxes share one notification; clicking opens the newest available message, or its Inbox if it has gone. Newly delivered mail can notify even when the sender’s date is old or missing. No alerts while the app is quit.</p>
+                <p class="hint">Manage Morrow Mail in your system notification settings. Delivery can be blocked by permissions or Focus / Do Not Disturb; Morrow cannot detect every system restriction. Windows installed builds need their Start menu shortcut; portable delivery is not guaranteed.</p>
+              </details>
+            </div>
             <div class="field">
               <label for="pref-sync-horizon">Sync history</label>
               <select id="pref-sync-horizon" aria-describedby="sync-horizon-help">
@@ -1257,6 +1277,7 @@
           <div class="settings-group">
           <h4>Connected accounts</h4>
           <p class="hint" id="mail-secure-storage-help">On Windows and macOS, routine mail credential reads and startup checks wait asynchronously and time out after 30 seconds. Feature/status checks share guarded grant reads within each request, without a global completed-credential cache. Read errors keep your saved credentials; check secure-storage access and retry. Account setup and credential writes retain synchronous compatibility commands with a 30-second limit per command; several commands can take longer. This does not change provider sign-in, permissions or your saved mailbox.</p>
+          <p class="hint" id="mail-oauth-renewal-help">Mail and calendar renew saved connections as needed while Morrow is open. Temporary network, sign-in-service or secure-storage errors keep the saved grant for retry. A renewed connection must be saved before mail or calendar uses it. An expired or revoked grant, or a provider requirement to sign in, needs Reconnect for that mailbox or feature. Google External projects in Testing issue seven-day refresh tokens for mail and calendar; the app owner must review publishing and verification. Microsoft organization policies can require earlier sign-in. Morrow does not check your Google project's publishing status or Microsoft tenant policy.</p>
           <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
           <div class="row">
             <button type="button" class="ghost icon-label" id="connect-open">

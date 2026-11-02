@@ -300,6 +300,9 @@ function migrate() {
     account_id TEXT NOT NULL, folder_path TEXT NOT NULL, state_json TEXT NOT NULL,
     PRIMARY KEY (account_id, folder_path)
   )`);
+  run(`CREATE TABLE IF NOT EXISTS mail_notification_state (
+    account_id TEXT PRIMARY KEY, state_json TEXT NOT NULL
+  )`);
   run("CREATE INDEX IF NOT EXISTS messages_gmail ON messages(account_id, gmail_id, folder_path)");
   run(`CREATE INDEX IF NOT EXISTS messages_thread ON messages(account_id, thread_id)`);
   run(`CREATE TABLE IF NOT EXISTS snooze (
@@ -669,7 +672,7 @@ function removeAccount(id) {
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
     run("DELETE FROM mail_actions WHERE account_id = ?", [id]);
-    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
+    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
@@ -1473,17 +1476,17 @@ function flagUidsFor(accountId, folderPath, validity, beforeUid = 0) {
   [accountId, folderPath, validity, ...(beforeUid > 0 ? [beforeUid] : [])]).map((row) => Number(row.uid));
 }
 
-function messageByUid(accountId, folderPath, uid, validity) {
+function messageByUid(accountId, folderPath, uid, validity, { headersOnly = false } = {}) {
   return get(
-    "SELECT * FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
+    `SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?`,
     [accountId, folderPath, uid, validity]
   );
 }
 
-function messageByRfc(accountId, rfcMessageId) {
+function messageByRfc(accountId, rfcMessageId, { headersOnly = false } = {}) {
   if (!rfcMessageId) return null;
   return get(
-    "SELECT * FROM messages WHERE account_id = ? AND rfc_message_id = ? ORDER BY uid DESC LIMIT 1",
+    `SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE account_id = ? AND rfc_message_id = ? ORDER BY uid DESC LIMIT 1`,
     [accountId, rfcMessageId]
   );
 }
@@ -1542,9 +1545,9 @@ function insertMessageRecord(row) {
     indexText(row.id);
 }
 
-function messageById(id) {
+function messageById(id, { headersOnly = false } = {}) {
   if (!id) return null;
-  return get("SELECT * FROM messages WHERE id = ?", [id]);
+  return get(`SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE id = ?`, [id]);
 }
 
 // Revision proof for compose/scheduled cleanup. UID/flags may change without
@@ -2634,8 +2637,8 @@ function applyGmailMessage(accountId, folderPaths, message) {
   });
 }
 
-function gmailCopies(accountId, providerId) {
-  return all("SELECT * FROM messages WHERE account_id = ? AND gmail_id = ?", [accountId, providerId]);
+function gmailCopies(accountId, providerId, { headersOnly = false } = {}) {
+  return all(`SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE account_id = ? AND gmail_id = ?`, [accountId, providerId]);
 }
 
 function pruneGmailCopies(accountId, providerId, livePaths) {
@@ -2671,6 +2674,17 @@ function gmailSyncState(accountId, folderPath, next) {
     "account_id = ? AND path = ?", [accountId, folderPath]);
   });
   observedSync.set(JSON.stringify([accountId, folderPath, accountById(accountId).gmail_generation]), Date.now());
+}
+
+function notificationState(accountId, next) {
+  if (next === undefined) {
+    return JSON.parse(get("SELECT state_json FROM mail_notification_state WHERE account_id = ?", [accountId])?.state_json || "{}");
+  }
+  transaction(() => {
+    assertAccountPresent(accountId);
+    run("INSERT INTO mail_notification_state (account_id, state_json) VALUES (?, ?) ON CONFLICT(account_id) DO UPDATE SET state_json = excluded.state_json",
+      [accountId, JSON.stringify(next)]);
+  });
 }
 
 function recipientHeaderRows(after = "", limit = 128) {
@@ -2724,6 +2738,7 @@ function gmailVerifyPage(accountId, folderPath, beforeUid = 0) {
 }
 
 module.exports = {
+  notificationState,
   enableGmail, setMailTransport, gmailMigrationBlockers, gmailMap, gmailLabelMemberships, rememberGmail, gmailAlias, bindGmailAlias,
   gmailLegacy, applyGmailMessage, gmailCopies, pruneGmailCopies, gmailSyncState, gmailVerifyPage,
   open,

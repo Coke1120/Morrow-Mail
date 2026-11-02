@@ -12,6 +12,7 @@ const virtuals = require("./virtual-folders");
 const presets = require("./presets");
 const discovery = require("./discovery");
 const remote = require("./remote");
+const notifications = require("./notifications");
 const zipBytes = require("./zip-bytes");
 const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
@@ -588,7 +589,18 @@ async function secretFor(account) {
     let grant; try { grant = JSON.parse(stored); } catch { grant = {}; }
     if (!oauthConfig.hasPurposeScopes(grant.grantedScopes || "", "google", "imap")) throw Object.assign(new Error("Gmail API mail permission is missing. Reconnect Google; cached work was retained."), { code: "scope_missing" });
   }
-  const result = await oauth.accessTokenFor(account, stored, "imap");
+  let result;
+  try { result = await oauth.accessTokenFor(account, stored, "imap"); } catch (error) {
+    // A rejected renewal may belong to a grant replaced during the request.
+    // Do not publish its sign-in failure against the new connection.
+    assertCurrent(revision);
+    if (oauthConfig.providerKey(account.profile) === "google") {
+      let grant;
+      try { grant = JSON.parse(stored); } catch { /* retain the original corrupt-secret diagnostic */ }
+      if (grant && typeof grant === "object" && !Array.isArray(grant)) oauthConfig.requireGoogleGrantClient(grant);
+    }
+    throw error;
+  }
   assertCurrent();
   // A failed synchronous reconnect may have restored the exact prior state.
   // Preserve that contract; pin this read window and compare the actual value.
@@ -606,7 +618,11 @@ async function secretFor(account) {
   if (typeof result === "string") return result;
   if (result && result.store) {
     if (account.mail_transport === "gmail_api" && !oauthConfig.hasPurposeScopes(JSON.parse(result.store).grantedScopes || "", "google", "imap")) throw Object.assign(new Error("The refreshed Google grant is missing Gmail API mail permission. Reauthorize the mailbox."), { code: "scope_missing" });
-    try { secrets.setPassword(account.id, result.store); } catch { /* best effort */ }
+    try { secrets.setPassword(account.id, result.store); } catch {
+      throw Object.assign(new Error("The renewed connection could not be saved. Check secure-storage access and retry."), {
+        code: "secure_storage_write", retryable: true,
+      });
+    }
     return result.token;
   }
   throw new Error("Could not refresh OAuth access token.");
@@ -1035,6 +1051,13 @@ async function warmFolder(client, account, folder, started, days, limits) {
     const page = fresh.slice(0, REFRESH_PAGES[index]);
     const fetched = await remote.fetchMessages(client, folder.path, page);
     assertAccountCurrent(account);
+    const arrivals = folder.well_known === "inbox" && Number(fetched.validity || found.validity) === Number(folder.uid_validity)
+      ? fetched.messages.filter(message => {
+        if (db.messageByUid(account.id, folder.path, message.uid, folder.uid_validity, { headersOnly: true })) return false;
+        const known = message.rfcMessageId && db.messageByRfc(account.id, message.rfcMessageId, { headersOnly: true });
+        // Gmail IMAP's All Mail can sync before Inbox for the same delivery.
+        return !known || db.folderByPath(account.id, known.folder_path)?.well_known === "all";
+      }) : [];
     next = Math.max(next, ...page);
     await db.applyFolderSyncAsync(account.id, folder.path, {
       messages: fetched.messages,
@@ -1062,6 +1085,10 @@ async function warmFolder(client, account, folder, started, days, limits) {
         });
       }
     }
+    notifications.enqueue(account, arrivals.flatMap(message => {
+      const row = db.messageByUid(account.id, folder.path, message.uid, folder.uid_validity, { headersOnly: true });
+      return row ? [{ messageId: row.id, identity: `imap:${folder.path}:${folder.uid_validity}:${message.uid}`, receivedAt: message.receivedAt }] : [];
+    }));
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
     if (fresh.length > REFRESH_PAGES[index]) backlog = true;
     if (fresh.length <= REFRESH_PAGES[index]) break;
@@ -1128,6 +1155,7 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
       const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: gmailPace.SYNC_PAGE,
         deadline: bounds.deadline, shouldYield: () => priorityWaiting(account.id) });
       assertAccountCurrent(account);
+      notifications.enqueue(account, result.arrivals || []);
       clearStrikes(account.id);
       emitFolderSync(account.id, folderPath, result.bootstrapped);
       broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folderPath, folderIds: [folderPath] });
@@ -1905,6 +1933,7 @@ async function connectAccount(params) {
 }
 
 function invalidateAttachmentAccount(id) {
+  notifications.invalidate(id);
   accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
   overnightCursor = null;
   const error = removedAccountError();
@@ -4090,7 +4119,9 @@ function answer(channel, args, event) {
     case "mail:getUnifiedCategorySettings":
       return ok({ enabled: true });
     case "mail:getNotificationSettings":
-      return ok({ enhanced_notifications_enabled: false });
+      return ok({ ...notifications.status(), enhanced_notifications_enabled: false });
+    case "mail:takeNotificationTarget":
+      return ok(notifications.takeTarget());
     case "mail:getNotificationBadgeCount":
       return ok(accountViews().reduce((sum, item) => sum + item.unreadCount, 0));
     case "mail:listFailedDraftIds":

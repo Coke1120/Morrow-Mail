@@ -41,6 +41,20 @@ function nextRun(value, now) {
   return value.kind === "interval" ? new Date(now.getTime() + value.everyMinutes * 60000) : nextCron(value.cron, now);
 }
 
+function webhookMode(value = "bearer") {
+  if (!["bearer", "hermes_hmac_v2"].includes(value)) throw invalid("Choose Bearer webhook or Hermes HMAC V2.");
+  return value;
+}
+
+function validSecret(value, mode) {
+  if (typeof value !== "string") return false;
+  if (mode === "hermes_hmac_v2") {
+    return !!value.trim() && value !== "INSECURE_NO_AUTH" && Buffer.byteLength(value, "utf8") <= 2048
+      && !/[\u0000-\u001f\u007f]/.test(value);
+  }
+  return value === "" || /^[A-Za-z0-9._~+\/-]{1,2048}={0,2}$/.test(value);
+}
+
 function normalize(input, grant) {
   const includeBody = input && input.includeBody === undefined ? false : input && input.includeBody;
   if (!input || typeof input.enabled !== "boolean" || typeof includeBody !== "boolean") {
@@ -58,31 +72,39 @@ function normalize(input, grant) {
   const folder = input.folder === undefined ? "inbox" : input.folder;
   if (!FOLDERS.includes(folder)) throw invalid("Choose a supported cached folder.");
   return { enabled: input.enabled, schedule: schedule(input.schedule), accountIds: input.accountIds.slice().sort(),
-    folder, includeBody, webhookUrl: webhook(input.webhookUrl) };
+    folder, includeBody, webhookUrl: webhook(input.webhookUrl), webhookMode: webhookMode(input.webhookMode) };
 }
 
 function validStored(value, grant) {
   try {
     const normal = normalize(value, grant);
-    return Object.keys(value).length === 8 && Object.keys(normal).every(key => JSON.stringify(normal[key]) === JSON.stringify(value[key]))
+    // Settings written before mode selection are Bearer settings. Keep their
+    // exact stored shape and cursor binding until the user explicitly saves.
+    const legacy = !Object.hasOwn(value, "webhookMode");
+    return Object.keys(value).length === (legacy ? 8 : 9)
+      && Object.keys(normal).every(key => (legacy && key === "webhookMode") || JSON.stringify(normal[key]) === JSON.stringify(value[key]))
       && typeof value.secretKey === "string" && (!value.secretKey || new RegExp(`^bot-proactive:${grant.clientId}:[a-f0-9-]{36}$`).test(value.secretKey))
       && (value.consentedAt === null || (typeof value.consentedAt === "string" && Number.isFinite(Date.parse(value.consentedAt))))
-      && (!value.enabled || !!value.consentedAt);
+      && (!value.enabled || (!!value.consentedAt && (normal.webhookMode !== "hermes_hmac_v2" || !!value.secretKey)));
   } catch { return false; }
 }
 
 function publicConfig(value) {
   if (!value) return null;
   const { secretKey, ...visible } = value;
-  return { ...visible, hasSecret: !!secretKey };
+  return { ...visible, webhookMode: value.webhookMode || "bearer", hasSecret: !!secretKey };
 }
 
 // The destination/data scope is the cursor identity. Changing only timing or a
 // credential keeps delivered IDs; changing the recipient or data resets them.
 function binding(grant) {
   const c = grant.proactive;
-  return crypto.createHash("sha256").update(JSON.stringify([grant.installationId, grant.clientId,
-    grant.platform, c.webhookUrl, c.accountIds, c.folder, c.includeBody])).digest("hex");
+  const identity = [grant.installationId, grant.clientId,
+    grant.platform, c.webhookUrl, c.accountIds, c.folder, c.includeBody];
+  // Preserve all legacy Bearer cursor/delivery IDs. A mode change resets the
+  // cursor just like a destination change; never reuse credentials across it.
+  if (webhookMode(c.webhookMode) !== "bearer") identity.push(c.webhookMode);
+  return crypto.createHash("sha256").update(JSON.stringify(identity)).digest("hex");
 }
 
 function configure(input) {
@@ -110,14 +132,20 @@ function configure(input) {
   const db = require("../mail/db");
   if (config.accountIds.some(id => !db.isReady() || !db.accountById(id))) throw invalid("Select connected mailboxes.");
   const oldKey = grant.proactive && grant.proactive.secretKey || "";
-  const changedDestination = grant.proactive && (config.webhookUrl !== grant.proactive.webhookUrl || platform !== grant.platform);
-  if (typeof input.secret !== "undefined" && (typeof input.secret !== "string" || (input.secret && !/^[A-Za-z0-9._~+\/-]{1,2048}={0,2}$/.test(input.secret)))) {
-    throw invalid("Use a bearer token without spaces or control characters.");
+  const changedDestination = grant.proactive && (config.webhookUrl !== grant.proactive.webhookUrl || platform !== grant.platform
+    || config.webhookMode !== webhookMode(grant.proactive.webhookMode));
+  if (input.secret !== undefined && input.secret !== "" && !validSecret(input.secret, config.webhookMode)) {
+    throw invalid(config.webhookMode === "hermes_hmac_v2"
+      ? "Use a nonblank Hermes signing secret up to 2048 UTF-8 bytes, without control characters or INSECURE_NO_AUTH."
+      : "Use a bearer token without spaces or control characters.");
   }
   let newKey = changedDestination || input.clearSecret === true ? "" : oldKey;
+  if (config.enabled && config.webhookMode === "hermes_hmac_v2" && !input.secret && !newKey) {
+    throw invalid("Enter the Hermes route signing secret before allowing background delivery. Changing URL, platform or webhook mode requires a new secret.");
+  }
   if (input.secret) {
     newKey = `bot-proactive:${grant.clientId}:${crypto.randomUUID()}`;
-    try { secrets.setPassword(newKey, input.secret); } catch { throw invalid("Could not save the webhook token in secure storage."); }
+    try { secrets.setPassword(newKey, input.secret); } catch { throw invalid("Could not save the webhook credential in secure storage."); }
   }
   try {
     const result = auth.mutate(grant.clientId, row => {
@@ -138,4 +166,4 @@ function forgetSecret(grant) {
   if (key) { try { require("../mail/secrets").deletePassword(key); } catch { /* revoked/deleted grants cannot use it */ } }
 }
 
-module.exports = { webhook, schedule, nextRun, normalize, validStored, publicConfig, binding, configure, forgetSecret };
+module.exports = { webhook, webhookMode, validSecret, schedule, nextRun, normalize, validStored, publicConfig, binding, configure, forgetSecret };

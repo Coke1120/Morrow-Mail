@@ -70,7 +70,9 @@ async function transportChecks() {
       const request = new EventEmitter();
       request.destroy = () => {};
       request.end = body => {
-        assert.equal(body, "{}");
+        assert.equal(body.toString("utf8"), "{}");
+        assert.equal(options.headers["x-webhook-signature-v2"], undefined, "Bearer mode keeps its original headers");
+        assert.equal(options.headers["x-request-id"], undefined);
         if (hold) return;
         queueMicrotask(() => {
           const response = new EventEmitter(); response.statusCode = status;

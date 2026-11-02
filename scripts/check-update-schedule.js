@@ -9,11 +9,11 @@ function flush() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function loadUpdater(platform, packaged = true) {
+function loadUpdater(platform, packaged = true, { environment = {}, nativeProvider } = {}) {
   const timers = [];
   const intervals = [];
   const sent = [];
-  const stats = { checks: 0, installs: 0 };
+  const stats = { checks: 0, installs: 0, providerLoads: 0, opened: [] };
   const events = {};
   const handlers = {};
   let hold = null;
@@ -70,10 +70,11 @@ function loadUpdater(platform, packaged = true) {
           app: { isPackaged: packaged },
           ipcMain: { handle(channel, fn) { handlers[channel] = fn; } },
           BrowserWindow: browser,
+          shell: { openExternal: async url => { stats.opened.push(url); } },
         };
       }
-      if (name === "node:process") return { platform };
-      if (name === "electron-updater") return { autoUpdater: provider };
+      if (name === "node:process") return { platform, env: environment };
+      if (name === "electron-updater") { stats.providerLoads++; return { autoUpdater: nativeProvider || provider }; }
       if (name === "./update-auth") {
         return {
           githubFeed: () => ({ provider: "github", owner: "Coke1120", repo: "Morrow-Mail", private: false }),
@@ -266,6 +267,76 @@ async function checkDarwin() {
   assert.equal(timers.some((entry) => entry.ms === 4000), false);
 }
 
+async function checkDownloadFlight() {
+  // Use the pinned dependency's actual check/download promises and events, with
+  // only metadata and the transport mocked. No Electron, disk cache or installer.
+  const { NsisUpdater } = require('electron-updater/out/NsisUpdater');
+  const provider = new NsisUpdater(null, { version: '0.3.20', isPackaged: true });
+  provider.logger = { info() {}, warn() {}, error() {}, debug() {} };
+  const info = { version: '9.9.9', files: [{ url: 'Morrow-Mail-Setup.exe', sha512: 'fixture' }] };
+  let checks = 0, finish, fail;
+  provider.getUpdateInfoAndProvider = async () => { checks++; return { info, provider: {} }; };
+  provider.doDownloadUpdate = () => new Promise((resolve, reject) => { finish = resolve; fail = reject; });
+  const { updater } = loadUpdater('win32', true, { nativeProvider: provider });
+  updater.init();
+  updater.state.downloaded = true;
+  updater.state.version = '9.9.8';
+  let settled = false;
+  const first = updater.requestCheck().then(value => { settled = true; return value; });
+  await flush();
+  assert.equal(updater.state.downloading, true, 'Download is active before any progress event');
+  assert.equal(updater.state.downloaded, false, 'A new release invalidates the previous install button');
+  assert.equal(settled, false, 'Discovery must observe its background download promise');
+  const duplicate = updater.requestCheck();
+  await flush();
+  assert.equal(checks, 1, 'No discovery overlaps a download without progress events');
+  const unhandled = [];
+  const onUnhandled = error => { unhandled.push(error); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    fail(Error('fixture checksum failure'));
+    const failed = await first;
+    await duplicate;
+    await flush();
+    assert.equal(unhandled.length, 0, 'A download rejection is handled even though the provider also emits error');
+    assert.match(failed.error, /checksum failure/);
+    assert.equal(failed.downloading, false);
+    assert.equal(failed.downloaded, false);
+    const retry = updater.requestCheck();
+    await flush();
+    assert.equal(checks, 2, 'A failed transfer can be retried');
+    provider.emit('update-downloaded', info);
+    finish(['/fixture/verified-installer.exe']);
+    const ready = await retry;
+    assert.equal(ready.downloaded, true);
+    assert.equal(ready.version, '9.9.9');
+    assert.equal(ready.error, null);
+  } finally { process.removeListener('unhandledRejection', onUnhandled); updater.stopPeriodicCheck(); }
+}
+
+async function checkPortable() {
+  for (const environment of [{ PORTABLE_EXECUTABLE_FILE: 'C:\\Morrow-Mail.exe' }, { PORTABLE_EXECUTABLE_DIR: 'C:\\portable' }]) {
+    const { updater, handlers, timers, intervals, stats } = loadUpdater('win32', true, { environment });
+    const contents = { mainFrame: {} }, win = { isDestroyed: () => false, webContents: contents };
+    updater.configureInstall({ getWindow: () => win, prepare: () => assert.fail('Portable copies must never prepare NSIS installation') });
+    const initial = updater.init();
+    updater.registerIpc();
+    assert.equal(initial.enabled, false);
+    assert.match(initial.disabledReason, /portable.*manual/i);
+    assert.equal(initial.manualAvailable, true);
+    await handlers['host:updateCheck']();
+    await handlers['host:updateInstall']({ sender: contents, senderFrame: contents.mainFrame });
+    assert.equal(stats.providerLoads, 0, 'Portable copies never load the NSIS provider');
+    assert.equal(stats.checks, 0);
+    assert.equal(stats.installs, 0);
+    assert.equal(timers.length, 0);
+    assert.equal(intervals.length, 0);
+    assert.throws(() => handlers['host:updateManual']({ sender: contents, senderFrame: {} }), /main application window/);
+    await handlers['host:updateManual']({ sender: contents, senderFrame: contents.mainFrame });
+    assert.deepEqual(stats.opened, ['https://github.com/Coke1120/Morrow-Mail/releases/latest']);
+  }
+}
+
 function checkBadgePaint() {
   const nodes = new Map();
   const get = (id) => {
@@ -285,6 +356,8 @@ function checkBadgePaint() {
   assert.equal(get("rail-about").attrs["aria-label"], "About & updates");
   paint(`{ error: "offline", downloaded: true }`);
   assert.equal(get("update-attention").hidden, true);
+  assert.equal(get('about-update-install').hidden, false, 'A retained verified download can be retried after a discovery error');
+  assert.match(get('about-update-status').textContent, /Downloaded update retained.*offline/);
   paint(`{ downloaded: true, version: "9.9.9" }`);
   assert.equal(get("update-attention").hidden, false);
   assert.equal(get("about-update-install").hidden, false);
@@ -292,6 +365,30 @@ function checkBadgePaint() {
   assert.equal(get("update-attention").hidden, false);
   paint(`{}`);
   assert.equal(get("update-attention").hidden, true);
+  paint(`{ enabled: false, manualAvailable: true, disabledReason: "Portable Windows copies use manual updates." }`);
+  assert.equal(get('about-update-status').textContent, 'Portable Windows copies use manual updates.');
+  assert.equal(get('about-update-install').hidden, true);
+  assert.equal(get('about-update-manual').hidden, false);
+  assert.equal(get('about-update-manual').textContent, 'Open official releases');
+  assert.equal(get('update-attention').hidden, true);
+}
+
+function checkUpdaterHelp() {
+  const { JSDOM } = require('jsdom');
+  const { renderer } = require('./check-ux-workflows');
+  const dom = new JSDOM(fs.readFileSync(path.join(__dirname, '../renderer/index.html'), 'utf8'), { url: 'http://localhost/' });
+  try {
+    const ui = renderer({ document: dom.window.document });
+    ui.context.window.morrowFeaturesCatalog = require('../renderer/features-catalog');
+    ui.run('paintFeatureCatalog()');
+    const card = [...dom.window.document.querySelectorAll('.feature-card')]
+      .find(node => node.querySelector('h4')?.textContent === 'In-app updates');
+    assert(card, 'Render the actual updater Features entry');
+    assert.match(card.textContent, /portable Windows copies use Open official releases/);
+    assert.match(card.textContent, /only after scheduled-mail quit confirmation and shutdown cleanup/);
+    assert.match(card.textContent, /newer signed releases even with a cached download/);
+    assert.match(card.textContent, /Quitting alone does not install/);
+  } finally { dom.window.close(); }
 }
 
 function checkSources() {
@@ -325,7 +422,10 @@ async function checkUnpackaged() {
   await checkWindows();
   await checkDarwin();
   await checkUnpackaged();
+  await checkDownloadFlight();
+  await checkPortable();
   checkBadgePaint();
+  checkUpdaterHelp();
   checkSources();
   console.log("update-schedule-ok");
 })().catch((error) => {
