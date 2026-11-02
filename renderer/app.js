@@ -23744,6 +23744,13 @@ function botPlatformLabel(platform) {
   return platform === "hermes_agent" ? "Hermes Agent" : "Grok Bot";
 }
 
+function botDeliveryResult(code) {
+  if (code === "OK") return "HTTP acknowledged; agent completion unverified";
+  if (code === "HERMES_HTTP_202") return "Hermes HTTP 202 accepted for handling (queued or buffered); agent completion unverified";
+  if (/^HERMES_HTTP_2\d\d$/.test(code)) return `Hermes HTTP ${code.slice(-3)} acknowledged (may be duplicate, ignored or direct delivery); agent completion unverified`;
+  return code || "—";
+}
+
 function botProactiveForm(grant) {
   const saved = grant.proactive || {};
   const delivery = grant.proactiveStatus;
@@ -23760,7 +23767,7 @@ function botProactiveForm(grant) {
     : saved.enabled
     ? `Saved for ${saved.webhookUrl}. ${state.botAccess?.enabled && state.botAccess?.listen?.listening ? "Runs while Morrow is open and awake." : "Paused until bot access is listening."}`
     : "No background delivery is allowed for this bot.";
-  if (delivery && !delivery.halted) status.textContent += ` Last result: ${delivery.lastCode || "—"}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
+  if (delivery && !delivery.halted) status.textContent += ` Last result: ${botDeliveryResult(delivery.lastCode)}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
   const form = document.createElement("form");
   const fields = {};
   function field(name, title, type, value) {
@@ -23792,6 +23799,8 @@ function botProactiveForm(grant) {
     form.append(label); fields[name] = input; return input;
   }
   select("platform", "Platform", [["grok_bot", "Grok Bot"], ["hermes_agent", "Hermes Agent"]], grant.platform || "grok_bot");
+  const mode = select("webhookMode", "Webhook authentication", [["bearer", "Bearer webhook (existing receivers)"],
+    ["hermes_hmac_v2", "Hermes native webhook · HMAC V2"]], saved.webhookMode || (grant.proactive ? "bearer" : grant.platform === "hermes_agent" ? "hermes_hmac_v2" : "bearer"));
   const url = field("webhookUrl", "Webhook URL", "url", saved.webhookUrl);
   url.placeholder = "https://bot.your-tailnet.ts.net:8443/notify";
   url.autocomplete = "off";
@@ -23816,20 +23825,44 @@ function botProactiveForm(grant) {
   }
   const body = field("includeBody", "Include cached body text (never download missing bodies)", "checkbox", saved.includeBody);
   body.disabled = !(grant.capabilities || []).includes("mail.bodies.read");
-  const secret = field("secret", saved.hasSecret ? "Replace webhook bearer (blank keeps saved token)" : "Optional webhook bearer", "password", "");
+  const secret = field("secret", "Webhook credential", "password", "");
   secret.autocomplete = "new-password";
-  const clear = field("clearSecret", "Remove saved webhook bearer", "checkbox", false);
-  clear.disabled = !saved.hasSecret;
+  const clear = field("clearSecret", "Remove saved webhook credential", "checkbox", false);
+  const modeHelp = document.createElement("p"); modeHelp.className = "hint";
+  modeHelp.id = `bot-notify-${grant.clientId}-auth-help`;
+  mode.setAttribute("aria-describedby", modeHelp.id);
+  secret.setAttribute("aria-describedby", modeHelp.id);
+  form.append(modeHelp);
   const disclosure = document.createElement("p");
   disclosure.className = "hint";
-  disclosure.textContent = "Background permission: send raw cached headers and snippets, plus cached text only if selected, from these mailboxes to this webhook. The platform bot decides whether to ignore, ask you, read again, propose a draft or send if granted. Morrow does not run AI, triage, draft or send as a result. The bot’s storage and forwarding rules apply; delivered data cannot be recalled. Use private Tailscale HTTPS or loopback, never Funnel. Changing the destination removes its saved bearer. Push covers the newest 50 cached rows, up to 10 per mailbox per delivery; remembers 2,000 delivered IDs per mailbox. No attachment bytes. Missed schedules do not replay.";
+  disclosure.textContent = "Background permission: send raw cached headers and snippets, plus cached text only if selected, from these mailboxes to this webhook. The platform bot decides whether to ignore, ask you, read again, propose a draft or send if granted. Morrow does not run AI, triage, draft or send as a result. The bot’s storage and forwarding rules apply; delivered data cannot be recalled. Use private Tailscale HTTPS or loopback, never Funnel. Changing the URL, platform or authentication removes its saved credential unless replaced. Push covers the newest 50 cached rows, up to 10 per mailbox per delivery; remembers 2,000 acknowledged IDs per mailbox. HTTP acknowledgement does not verify agent completion. No attachment bytes. Missed schedules do not replay.";
   form.append(disclosure);
   const allow = field("allow", "Allow proactive notify to this webhook in the background", "checkbox", false);
+  const showAuthentication = () => {
+    const hermes = mode.value === "hermes_hmac_v2";
+    let sameUrl = false;
+    try { sameUrl = new URL(url.value).toString() === saved.webhookUrl; } catch { /* invalid or empty URL */ }
+    const keepsSecret = saved.hasSecret && sameUrl && fields.platform.value === (grant.platform || "grok_bot")
+      && mode.value === (saved.webhookMode || "bearer");
+    clear.disabled = !keepsSecret;
+    if (clear.disabled) clear.checked = false;
+    secret.required = hermes && allow.checked && (!keepsSecret || clear.checked);
+    secret.parentElement.firstChild.textContent = keepsSecret
+      ? `Replace ${hermes ? "Hermes signing secret" : "webhook bearer"} (blank keeps saved credential)`
+      : hermes ? "Hermes route signing secret (required to allow delivery)" : "Optional webhook bearer";
+    url.placeholder = hermes ? "http://127.0.0.1:8644/p/email/webhooks/morrow-mail" : "https://bot.your-tailnet.ts.net:8443/notify";
+    modeHelp.textContent = hermes
+      ? "Use the exact Hermes route secret; Morrow signs each request with HMAC V2 and a fresh timestamp, and keeps the delivery ID for retries. Keep both computers’ clocks synchronized. /p/email/webhooks/morrow-mail selects the email profile only when Hermes multiplexing and route profile: email are configured; deliver: email selects an output destination. Loopback reaches this computer only; another host needs private Tailscale HTTPS. HTTP 202 means accepted for handling; HTTP 200 can mean duplicate, ignored or direct delivery. Verify the intended agent result before disabling fallback cron."
+      : "Optional Bearer authentication for existing receivers. Blank keeps a saved credential only for the same URL, platform and authentication mode. Receivers must deduplicate deliveryId. HTTP acknowledgement does not verify agent completion.";
+  };
+  mode.addEventListener("change", () => { secret.value = ""; allow.checked = false; showAuthentication(); });
+  for (const input of [url, fields.platform, clear, allow]) input.addEventListener("input", showAuthentication);
+  showAuthentication();
   const review = document.createElement("p"); review.className = "hint";
   review.textContent = "Tick this permission after reviewing the fields above, then Save. Saving with it unticked turns proactive notify off. This permission is separate from Settings → AI data permission.";
   form.append(review);
   for (const input of [...Object.values(fields), ...accountInputs]) {
-    if (input !== allow) input.addEventListener("input", () => { allow.checked = false; });
+    if (input !== allow) input.addEventListener("input", () => { allow.checked = false; showAuthentication(); });
   }
   const actions = document.createElement("div"); actions.className = "row";
   const save = document.createElement("button"); save.type = "submit"; save.className = "primary icon-label";
@@ -23846,7 +23879,7 @@ function botProactiveForm(grant) {
       enabled: allow.checked, backgroundConfirmed: allow.checked,
       schedule: kind.value === "interval" ? { kind: "interval", everyMinutes: Number(minutes.value) } : { kind: "cron", cron: cron.value },
       accountIds: accountInputs.filter(input => input.checked && !input.disabled).map(input => input.value),
-      folder: fields.folder.value, includeBody: body.checked, webhookUrl: url.value,
+      folder: fields.folder.value, includeBody: body.checked, webhookUrl: url.value, webhookMode: mode.value,
       secret: secret.value, clearSecret: clear.checked };
     secret.value = "";
     save.disabled = true;
@@ -24044,7 +24077,8 @@ function paintBotAudit(rows) {
   for (const row of items) {
     const item = document.createElement("li");
     const audit = row.auditId ? `${row.auditId} · ` : "";
-    item.textContent = `${audit}${row.at || ""} · ${row.operation || "call"} · ${row.code || "ok"} · ${row.accountId || "no account"}`;
+    const result = row.operation === "proactive.mail_digest" ? botDeliveryResult(row.code) : row.code || "ok";
+    item.textContent = `${audit}${row.at || ""} · ${row.operation || "call"} · ${result} · ${row.accountId || "no account"}`;
     list.append(item);
   }
 }
