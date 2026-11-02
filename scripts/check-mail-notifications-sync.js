@@ -70,6 +70,7 @@ test("Gmail: only messagesAdded with current Inbox membership emit arrivals; per
   db.enableGmail(a.id);
   const session = () => createSession(db.accountById(a.id), "synthetic-token", { api: service.api() });
   let s = session(); db.replaceFolders(a.id, (await s.folders()).folders, "/");
+  const sync = (options = {}) => s.sync("INBOX", { horizonDays: 180, ...options });
   function incoming(id, labels = ["INBOX", "UNREAD"], age = 0) {
     const row = message(id, labels); row.internalDate = String(Date.now() - age);
     row.payload.headers.find(h => h.name === "Date").value = new Date(Date.now() - age).toUTCString();
@@ -77,19 +78,19 @@ test("Gmail: only messagesAdded with current Inbox membership emit arrivals; per
   }
   incoming("bootstrap");
   const d = delivery(), deliver = result => { d.controller.enqueue(db.accountById(a.id), result.arrivals); d.flush(); };
-  deliver(await s.sync("INBOX")); assert.equal(d.shown.length, 0);
+  deliver(await sync()); assert.equal(d.shown.length, 0);
   incoming("fresh"); incoming("flag-only"); incoming("archive", ["UNREAD"]); incoming("old-import", ["INBOX", "UNREAD"], 86400000);
   incoming("delayed").payload.headers.find(h => h.name === "Date").value = "Mon, 01 Jan 2001 00:00:00 +0000";
   const undated = incoming("undated"); undated.payload.headers = undated.payload.headers.filter(h => h.name !== "Date");
   service.history([{ id: "101", messagesAdded: ["fresh", "archive", "old-import", "delayed", "undated"].map(id => ({ message: { id } })),
     labelsAdded: [{ message: { id: "flag-only" }, labelIds: ["INBOX"] }] }]);
-  const first = await s.sync("INBOX", { limit: 1 });
+  const first = await sync({ limit: 1 });
   assert.equal(first.arrivals.length, 1); deliver(first); assert.equal(d.shown.length, 1);
   assert.ok(db.gmailSyncState(a.id, "INBOX").pending);
   s = session();
-  while (db.gmailSyncState(a.id, "INBOX").pending) deliver(await s.sync("INBOX", { limit: 1 }));
+  while (db.gmailSyncState(a.id, "INBOX").pending) deliver(await sync({ limit: 1 }));
   assert.equal(d.shown.length, 3, "old/missing sender dates allow new deliveries; old server timestamps, archive-only and labels stay quiet");
-  deliver(await s.sync("INBOX")); assert.equal(d.shown.length, 3, "repeated history events are deduplicated");
+  deliver(await sync()); assert.equal(d.shown.length, 3, "repeated history events are deduplicated");
   const before = db.notificationState(a.id); assert.equal(before.seen.length, 3);
   const cached = db.gmailCopies(a.id, "fresh")[0];
   for (const headers of [db.messageById(cached.id, { headersOnly: true }),
@@ -97,7 +98,7 @@ test("Gmail: only messagesAdded with current Inbox membership emit arrivals; per
     db.messageByRfc(a.id, cached.rfc_message_id, { headersOnly: true }), ...db.gmailCopies(a.id, "fresh", { headersOnly: true })]) {
     assert.equal(Object.hasOwn(headers, "html_body"), false); assert.equal(Object.hasOwn(headers, "text_body"), false);
   }
-  service.expire(); deliver(await s.sync("INBOX")); assert.equal(d.shown.length, 3, "history-expiry rescan is quiet");
+  service.expire(); deliver(await sync()); assert.equal(d.shown.length, 3, "history-expiry rescan is quiet");
   d.controller.stop();
   await db.close(); await db.open(path.join(directory, "mail.sqlite"));
   assert.deepEqual(db.notificationState(a.id), before, "dedup state survives production journal/checkpoint reopen");

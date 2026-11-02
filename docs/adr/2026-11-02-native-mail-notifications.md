@@ -34,7 +34,9 @@ Provider receive time (IMAP INTERNALDATE or Gmail internalDate) must be after
 process start or the last account/settings invalidation, and within five minutes
 of now. The sender's Date header never gates eligibility: a genuinely new server
 delivery can notify even with an old, missing or future sender Date. Display-date
-fallbacks are not used as arrival evidence. This suppresses offline backlog,
+fallbacks are not used as arrival evidence. Gmail cache admission also uses its
+provider receipt timestamp for the download horizon, so a fresh delayed delivery
+is not discarded by a 180/365-day setting. This suppresses offline backlog,
 historical imports preserving arrival time, and flag-only changes. Conservative
 misses include long sync queues and slow first sync. Neither IMAP nor Gmail
 history can prove that a newly added message with a fresh provider receive time

@@ -157,7 +157,9 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     return db.transaction(() => {
       const mapping = db.rememberGmail(account.id, value);
       const paths = pathsFor(value.labelIds);
-      if (cache && (after == null || value.listSortTs >= after || db.gmailCopies(account.id, data.id).length)) {
+      // The download horizon follows provider receipt time, as IMAP SINCE does.
+      // A delayed delivery can have a years-old, sender-controlled Date header.
+      if (cache && (after == null || value.receivedAt >= after || db.gmailCopies(account.id, data.id).length)) {
         db.applyGmailMessage(account.id, paths, value);
         db.pruneGmailCopies(account.id, value.providerId, paths);
       }
