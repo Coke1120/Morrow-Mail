@@ -7,6 +7,12 @@
   return {
     items: [
       {
+        id: "mail-list-columns",
+        title: "Mail columns and sorting",
+        category: "Mail",
+        blurb: "Date, Recipient, Sender and Subject headers sort all matching downloaded mail before paging, in folders including Inbox, Drafts and Sent and All Account Mail. Click again to reverse direction; the choice is remembered on this device. Recipient shows all To recipients and sorts by the first; missing text sorts first ascending and last descending. Sender sorts by the saved display name when available, otherwise the cached From text. Date uses the existing message timestamp (saved time for local drafts). Equal values use message ID for stable ordering. Changing sort returns to the first page and keeps the reader open; selection remains only for rows on that page. Search sorts all downloaded matches before its existing 100-result limit. Filter this page still filters only loaded rows. Narrow lists scroll horizontally. Outbox retains scheduled send order and its headers are disabled. Undownloaded provider mail is not included.",
+      },
+      {
 id: "mail-workflow-feedback",
         title: "Mail and Agent feedback",
         category: "Mail",

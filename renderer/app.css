@@ -5970,3 +5970,24 @@ html[data-window="translate"] #reader .translate-column h2 {
 #chatgpt-manual { margin: 12px 0; }
 #chatgpt-welcome { margin: 12px 0; padding: 12px; border: 1px solid currentColor; border-radius: 8px; }
 pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
+
+/* Mail columns share one horizontal scroll surface, including narrow windows. */
+#message-list { --mail-columns: 78px minmax(130px, 1fr) minmax(130px, 1fr) minmax(180px, 1.6fr); }
+.mail-list-columns { position: sticky; top: 0; z-index: 3; min-width: 704px; background: var(--paper); border-bottom: 1px solid var(--line); padding: 0 12px 0 42px; }
+.mail-list-columns [role="row"] { display: grid; grid-template-columns: var(--mail-columns); gap: 10px; }
+.mail-list-columns [role="columnheader"] { min-width: 0; }
+.mail-list-columns button { width: 100%; min-height: 32px; padding: 4px 0; text-align: left; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.mail-list-columns [aria-sort="ascending"] button, .mail-list-columns [aria-sort="descending"] button { color: var(--ink); font-weight: 600; }
+#messages #message-list .message-row { min-width: 704px; }
+#messages #message-list button.message { padding: 6px 12px 6px 14px; position: relative; }
+#messages #message-list .avatar { display: none; }
+#messages #message-list .gutter { position: absolute; left: 0; width: 10px; }
+#messages #message-list .row-main { display: grid; grid-template-columns: var(--mail-columns); align-items: center; gap: 4px 10px; padding-right: 0; }
+#messages #message-list .row-main > * { min-width: 0; }
+#messages #message-list .when { display: block; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+#messages #message-list .recipient, #messages #message-list .from { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+#messages #message-list .snippet { grid-column: 1 / -1; }
+#messages.compact-list #message-list button.message { padding-top: 3px; padding-bottom: 3px; }
+#messages #message-list .row-actions { top: auto; bottom: 0; transform: none; }
+
+#messages #message-list .outbox-row { padding-left: 28px; }

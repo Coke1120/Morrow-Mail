@@ -12,6 +12,7 @@ const state = {
   reconnectAccountId: null,
   folderId: null,
   emails: [],
+  listSort: readMailListSort(),
   listOffset: 0,
   listCursors: [],
   listTotal: 0,
@@ -641,19 +642,81 @@ function allAccountMailChoice(current, control) {
   return { allInbox: true, unreadOnly: false };
 }
 
+function readMailListSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("morrow.mailListSort"));
+    if (["date", "recipient", "sender", "subject"].includes(saved?.sortBy)
+      && ["asc", "desc"].includes(saved.sortDirection)) return saved;
+  } catch { /* Use the existing newest-first default. */ }
+  return { sortBy: "date", sortDirection: "desc" };
+}
+
+async function changeMailListSort(sortBy) {
+  if (state.outbox || !["date", "recipient", "sender", "subject"].includes(sortBy)) return;
+  const sortDirection = state.listSort.sortBy === sortBy
+    ? (state.listSort.sortDirection === "asc" ? "desc" : "asc") : (sortBy === "date" ? "desc" : "asc");
+  state.listSort = { sortBy, sortDirection };
+  try { localStorage.setItem("morrow.mailListSort", JSON.stringify(state.listSort)); } catch { /* Keep window choice. */ }
+  state.listCursors = [];
+  await loadList(false, 0);
+  $("message-list").scrollTop = 0;
+}
+
+function paintMailListColumns(list) {
+  let header = list.querySelector(".mail-list-columns");
+  if (!header) {
+    header = document.createElement("div");
+    header.className = "mail-list-columns";
+    // A header table exposes aria-sort without replacing native message buttons.
+    header.setAttribute("role", "table");
+    header.setAttribute("aria-label", "Mail column sorting");
+    const row = document.createElement("div");
+    row.setAttribute("role", "row");
+    for (const [key, label] of [["date", "Date"], ["recipient", "Recipient"], ["sender", "Sender"], ["subject", "Subject"]]) {
+      const cell = document.createElement("div");
+      cell.setAttribute("role", "columnheader");
+      cell.dataset.sortKey = key;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.label = label;
+      button.addEventListener("click", () => guard(() => changeMailListSort(key)));
+      cell.appendChild(button);
+      row.appendChild(cell);
+    }
+    header.appendChild(row);
+    list.prepend(header);
+  }
+  for (const cell of header.querySelectorAll("[data-sort-key]")) {
+    const active = !state.outbox && cell.dataset.sortKey === state.listSort.sortBy;
+    const ascending = state.listSort.sortDirection === "asc";
+    cell.setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
+    const button = cell.querySelector("button");
+    button.disabled = state.outbox;
+    button.textContent = button.dataset.label + (active ? (ascending ? " ↑" : " ↓") : "");
+    button.title = state.outbox ? "Outbox uses scheduled send order" : "Sort downloaded mail by " + button.dataset.label.toLowerCase();
+    button.setAttribute("aria-label", button.dataset.label + (active ? (ascending ? ", ascending. Sort descending" : ", descending. Sort ascending") : ". Sort " + (cell.dataset.sortKey === "date" ? "descending" : "ascending")));
+  }
+  return header;
+}
+
+function mailRecipientText(email) {
+  return (Array.isArray(email.to) ? email.to : []).map(value => typeof value === "string" ? value
+    : (value?.name && value?.address ? `${value.name} <${value.address}>` : value?.address || "")).filter(Boolean).join(", ");
+}
+
 function mailListRequest(view) {
   const source = view || {};
   const limit = source.limit || 200;
   const offset = Number.isFinite(source.offset) ? source.offset : 0;
   if (source.query) {
-    const params = { query: source.query, limit: 100 };
+    const params = { query: source.query, limit: 100, ...(source.listSort || {}) };
     if (source.searchAccountId) params.accountId = source.searchAccountId;
     return { channel: "mail:searchLocal", params };
   }
   const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
   if (source.allInbox) {
-    const params = { folderKey: "primary", limit, offset };
+    const params = { folderKey: "primary", limit, offset, ...(source.listSort || {}) };
     if (source.pageCursor) params.pageCursor = source.pageCursor;
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
     if (helper && typeof helper.primaryMailboxes === "function") {
@@ -664,7 +727,7 @@ function mailListRequest(view) {
     if (retainId) params.retainIds = [retainId];
     return { channel: "mail:listFromCache", params };
   }
-  const params = { accountId: source.accountId, folderId: source.folderId, limit, offset };
+  const params = { accountId: source.accountId, folderId: source.folderId, limit, offset, ...(source.listSort || {}) };
   if (source.pageCursor) params.pageCursor = source.pageCursor;
   if (retainId) params.retainIds = [retainId];
   return {
@@ -6203,7 +6266,7 @@ function rowCheck(email, selected) {
 
 function messageRow(email) {
   const row = document.createElement("div");
-  row.className = "message-row";
+  row.className = "message-row" + (email.outbox ? " outbox-row" : "");
   row.mailMessage = email;
   row.dataset.emailId = email.id || "";
   row.dataset.accountId = email.accountId || "";
@@ -6256,7 +6319,8 @@ function messageRow(email) {
     from.appendChild(star);
   }
   if (email.isStarred) row.dataset.starred = "true";
-  from.append(name);
+  from.append(email.from || "(no sender)");
+  from.title = email.from || "(no sender)";
   const subjectLine = document.createElement("span");
   subjectLine.className = "subject-line";
   const subject = document.createElement("span");
@@ -6266,7 +6330,13 @@ function messageRow(email) {
   when.className = "when";
   if (email.date) when.dateTime = email.date;
   when.textContent = listWhen(email.date);
-  subjectLine.append(subject, when);
+  subject.title = subject.textContent;
+  when.title = email.date || "No date";
+  const recipient = document.createElement("span");
+  recipient.className = "recipient";
+  recipient.textContent = mailRecipientText(email) || "(no recipient)";
+  recipient.title = recipient.textContent;
+  subjectLine.append(subject);
   const snippet = document.createElement("span");
   snippet.className = "snippet";
   const mailbox = state.accounts.find((row) => row.id === email.accountId);
@@ -6274,7 +6344,7 @@ function messageRow(email) {
     ? accountLabel(mailbox) + " · "
     : (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "");
   snippet.textContent = prefix + (email.snippet || "");
-  main.append(from, subjectLine, snippet);
+  main.append(when, recipient, from, subjectLine, snippet);
   button.append(gutter, avatar, main);
   button.addEventListener("click", (event) => {
     if (email.outbox) {
@@ -6529,6 +6599,7 @@ function renderList() {
   paintListPaging();
   rememberLoadedSelection();
   const list = $("message-list");
+  const columnHeader = paintMailListColumns(list);
   $("messages").classList.toggle("compact-list", state.prefs.compactList === true);
   const account = selectedAccount();
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
@@ -6583,14 +6654,14 @@ function renderList() {
     }
     list.appendChild(empty);
   } else {
-    let previous = null;
+    let previous = columnHeader;
     const selected = new Set(state.selectedIds);
     for (const email of shown) {
       const key = email.accountId + "\0" + email.id;
       // Compare displayed fields only: bodies and attachments can be large.
       // Retained rows keep keyboard focus and read the latest message for actions.
       const mailbox = state.accounts.find((item) => item.id === email.accountId);
-      const stamp = JSON.stringify([email.folderId, email.from, email.subject, email.snippet, email.date,
+      const stamp = JSON.stringify([email.folderId, email.from, email.to, email.subject, email.snippet, email.date,
         email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox,
         state.allInbox && mailbox ? accountLabel(mailbox) : "",
         state.query && mailbox ? mailbox.email : "",
@@ -9352,7 +9423,7 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     if (state.query) {
-      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
+      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...state.listSort, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
       if (gen !== listGen) return null;
       state.emails = takeEmails(Array.isArray(data) ? data : []);
       renderList();
@@ -9370,6 +9441,7 @@ async function loadList(fromNetwork, requestedOffset) {
     const pageCursor = state.listCursors.find(entry => entry.offset === offset)?.cursor;
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
+      listSort: state.listSort,
       allInbox: state.allInbox,
       unreadOnly: state.allInbox && state.allInboxUnreadOnly,
       fromNetwork: !state.allInbox && fromNetwork && isLive(account),
@@ -9387,6 +9459,7 @@ async function loadList(fromNetwork, requestedOffset) {
     if (offset > 0 && Number.isFinite(data?.total) && offset >= data.total) {
       offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
       const again = mailListRequest({
+        listSort: state.listSort,
         allInbox: state.allInbox,
         unreadOnly: state.allInbox && state.allInboxUnreadOnly,
         accountId: account && account.id,
@@ -11546,7 +11619,8 @@ let snoozeDirty = false;
 
 function onEmailsUpdated(payload) {
   if (state.outbox) return;
-  const request = mailListRequest({ allInbox: state.allInbox, accountId: state.accountId, folderId: state.folderId,
+  const request = mailListRequest({
+      listSort: state.listSort, allInbox: state.allInbox, accountId: state.accountId, folderId: state.folderId,
     accounts: state.accounts, query: state.query, searchAccountId: state.searchAccountId });
   const params = request.params || {};
   if (payload?.accountId) {
