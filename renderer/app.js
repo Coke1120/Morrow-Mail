@@ -15675,6 +15675,9 @@ function cliCatalog() {
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "After the Tailscale steps, use the exact paired HTTPS endpoint. TLS is verified; redirects and non-loopback plain HTTP are rejected." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.list_cached --params-file ./list.json", action: "List the granted account's cached inbox with the list.json example above. This does not fetch new mail or mark it read." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Mail-provider submission cannot be recalled once it begins." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.archive --request-id '<uuid>' --params-file ./message.json", action: "Archive one explicit cached message with mail.archive permission. Repeat this exact UUID and payload to observe pending results without resubmitting." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.mark_read --request-id '<uuid>' --params-file ./read.json", action: "Set one message read with mail.read_state.write permission. Use isRead false for unread. Pending is not provider confirmation." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.trash --request-id '<uuid>' --params-file ./message.json", action: "Move one message to Trash with mail.trash permission. Never permanently deletes; an unknown outcome requires review rather than a new UUID." },
     { group: "Tailscale Serve", command: "tailscale serve --bg --https=8443 --accept-app-caps=com.coke1120.morrow-mail/bot-access http://127.0.0.1:47831", action: "Run this on the computer where Morrow is open. Morrow does not run it. Settings copies the same command. The port stays 8443 until you save another HTTPS port. Do not run tailscale funnel." },
     { group: "Tailscale Serve", command: "tailscale serve status --json", action: "Show Serve status as JSON. Morrow does not run this." },
     { group: "Tailscale Serve", command: "tailscale funnel status --json", action: "Confirm Funnel is not serving this port. Do not run tailscale funnel." },
@@ -23724,7 +23727,7 @@ function botPermissionNames(capabilities) {
   const names = { "accounts.read": "account details", "mail.headers.read": "cached mail headers",
     "health.read": "sync health", "agent.proposals.read": "pending proposals", "mail.bodies.read": "message text",
     "mail.attachments.read": "attachment names", "draft.proposals.create": "draft proposals",
-    "mail.send": "send mail as you" };
+    "mail.send": "send mail as you", "mail.archive": "archive mail", "mail.read_state.write": "mark read or unread", "mail.trash": "move mail to Trash" };
   return (capabilities || []).map((cap) => names[cap] || cap).join(", ");
 }
 
@@ -24065,6 +24068,21 @@ function paintBotSends(rows) {
   }
 }
 
+function paintBotMailActions(rows, available = true) {
+  const list = $("bot-mail-actions");
+  list.replaceChildren();
+  for (const row of rows || []) {
+    const item = document.createElement("li");
+    item.textContent = `${row.operation} · ${row.state} · ${row.accountId} · ${row.messageId} · ${row.requestId}`
+      + (row.undoOpId ? " · Undo available in Mail while this operation remains valid." : "");
+    list.append(item);
+  }
+  if (!list.children.length) { const item = document.createElement("li");
+    item.textContent = available ? "No bot mail changes." : "Mail change receipts are unavailable. New bot mail changes are blocked until storage is repaired.";
+    list.append(item);
+  }
+}
+
 function paintBotAccess(data) {
   ++botAccessVersion;
   const access = data || {};
@@ -24110,6 +24128,7 @@ function paintBotAccess(data) {
   paintBotDrafts(access.draftsAvailable === false ? null : (access.drafts || []));
   if (typeof paintBotAudit === "function") paintBotAudit(access.audit || []);
   if (typeof paintBotSends === "function") paintBotSends(access.sends || []);
+  if (typeof paintBotMailActions === "function") paintBotMailActions(access.mailActions || [], access.mailActionsAvailable !== false);
   paintBotProbe(access);
 }
 
@@ -24267,6 +24286,13 @@ function botSendConfirmCopy(labels) {
     confirm: "Allow sending",
     cancel: "Cancel",
   };
+}
+
+const BOT_MAIL_ACTION_NAMES = { "mail.archive": "archive mail", "mail.read_state.write": "mark mail read or unread", "mail.trash": "move mail to Trash" };
+function botMailActionConfirmCopy(labels, capabilities) {
+  const changes = capabilities.filter(cap => BOT_MAIL_ACTION_NAMES[cap]).map(cap => BOT_MAIL_ACTION_NAMES[cap]);
+  return { title: "Allow this bot to change mail?", confirm: "Allow mail changes", cancel: "Cancel",
+    body: `This bot can ${changes.join(", ")} in ${labels.join(", ")}. Calls act immediately without another confirmation. Trash never permanently deletes mail. Sending is a separate permission. Cancel leaves these permissions off.` };
 }
 
 function showBotSection(name) {
@@ -24448,12 +24474,20 @@ function wireBot() {
         const answer = await askConfirm(botSendConfirmCopy(accountLabels));
         if (!answer || !answer.ok) return;
       }
+      const mailActions = capabilities.filter(cap => BOT_MAIL_ACTION_NAMES[cap]);
+      let mailActionConsent;
+      if (mailActions.length) {
+        const answer = await askConfirm(botMailActionConfirmCopy(accountLabels, capabilities));
+        if (!answer || !answer.ok) return;
+        mailActionConsent = { accountIds, capabilities: mailActions };
+      }
       const minted = await call("bot:mintGrant", {
         label,
         platform,
         accountIds,
         capabilities,
         expiry,
+        ...(mailActionConsent ? { mailActionConsent } : {}),
       });
       showBotSecret(minted.secret);
       paintBotAccess(minted.access);

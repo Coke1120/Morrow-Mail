@@ -314,7 +314,8 @@ async function botChecks() {
   }
   db.setAuthError("connected", "Synthetic reauthentication needed");
   const grant = auth.mint({ label: "Synthetic liveness", accountIds: ["legacy", "connected"],
-    capabilities: catalog.CAPABILITIES.filter(cap => cap !== "mail.send") });
+    capabilities: catalog.CAPABILITIES.filter(cap => cap !== "mail.send"),
+    mailActionConsent: { accountIds: ["legacy", "connected"], capabilities: catalog.MAIL_ACTION_CAPABILITIES } });
   auth.setEnabledFlag(true);
   assert.equal((await api(grant.secret, "mail.get_cached", { accountId: "legacy", messageId: "known-legacy" })).status, 200);
   assert.equal((await api(grant.secret, "draft.proposals.submit", { accountId: "legacy", idempotencyKey: crypto.randomUUID(),

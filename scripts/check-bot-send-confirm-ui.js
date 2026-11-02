@@ -40,6 +40,7 @@ function fixture(t, motion = false) {
         calls.push({ channel, input: input === undefined ? undefined : clone(input) });
         if (channel === "bot:getAccess") return { success: true, data: clone(access) };
         if (channel === "bot:mintGrant") {
+          require("../host/bot/auth").validateMailActionConsent(input.mailActionConsent, input.accountIds, input.capabilities);
           if (held) await held;
           if (failure === "transport") throw Error("Synthetic IPC failure");
           if (failure) return { success: false, error: { message: "Synthetic persistence failure" } };
@@ -184,4 +185,48 @@ test("finite expiry, default read access, missing accounts and Features retain t
   assert.deepEqual(f.persisted[0].expiry, { kind: "finite", days: 7 });
   f.ui.run("paintFeatureCatalog()");
   assert.match(f.get("features-catalog").textContent, /No expiry and Allow sending are separate reviews/);
+});
+
+for (const [capability, copy] of [["mail.archive", "archive mail"], ["mail.read_state.write", "mark mail read or unread"], ["mail.trash", "move mail to Trash"]]) {
+  test(`${capability} starts off and needs a separate exact-mailbox review after expiry and sending`, async t => {
+    const f = fixture(t, true);
+    const input = f.get("bot-caps").querySelector(`[data-cap="${capability}"]`);
+    assert.equal(input.checked, false); input.checked = true;
+    f.click("bot-mint-btn"); await settle(); f.click("confirm-ok"); await settle();
+    assert.equal(f.get("confirm-ok").textContent, "Allow sending");
+    f.click("confirm-ok"); await settle();
+    assert.equal(f.get("confirm-ok").textContent, "Allow mail changes");
+    assert.equal(f.ui.run("!!confirmResult"), true);
+    assert.ok(f.get("confirm-body").textContent.includes(copy));
+    assert.match(f.get("confirm-body").textContent, /alpha@example.test/);
+    assert.doesNotMatch(f.get("confirm-body").textContent, /beta@example.test/);
+    assert.equal(f.mintCalls().length, 0);
+    f.click("confirm-ok"); f.click("confirm-ok"); await settle();
+    assert.deepEqual(f.persisted[0].mailActionConsent, { accountIds: ["alpha"], capabilities: [capability] });
+    assert.equal(f.persisted[0].capabilities.filter(cap => ["mail.archive", "mail.read_state.write", "mail.trash"].includes(cap)).length, 1);
+    assert.equal(f.get("bot-enabled").checked, false);
+  });
+}
+
+for (const action of ["cancel", "escape"]) {
+  test(`${action} at the mail-change review cannot create a write grant`, async t => {
+    const f = fixture(t, true);
+    f.get("bot-caps").querySelector('[data-cap="mail.send"]').checked = false;
+    f.get("bot-caps").querySelector('[data-cap="mail.trash"]').checked = true;
+    f.click("bot-mint-btn"); await settle(); f.click("confirm-ok"); await settle();
+    assert.equal(f.get("confirm-ok").textContent, "Allow mail changes");
+    if (action === "cancel") f.click("confirm-cancel"); else f.escape();
+    await settle(); assert.equal(f.persisted.length, 0); assert.equal(f.get("confirm").open, false);
+  });
+}
+
+test("mail-change receipt UI and CLI expose actual contract operations and honest pending state", async t => {
+  const f = fixture(t);
+  f.ui.context.receipts = [{ operation: "mail.trash", state: "pending", accountId: "alpha", messageId: "one", requestId: "fixture-id" }];
+  f.ui.run("paintBotMailActions(receipts); paintFeatureCatalog(); paintCli();");
+  assert.match(f.get("bot-mail-actions").textContent, /mail.trash.*pending/);
+  const contract = require("../shared/bot-contract-v1.json");
+  assert.deepEqual([...f.get("cli-operations").querySelectorAll("[data-bot-operation]")].map(node => node.textContent).sort(), Object.keys(contract.operations).sort());
+  assert.match(f.get("features-catalog").textContent, /Archive, read\/unread and Trash each have a separate default-off permission/);
+  for (const name of ["message.json", "read.json"]) assert.doesNotThrow(() => JSON.parse(f.get("cli-json-examples").querySelector(`[data-cli-json="${name}"]`).textContent));
 });

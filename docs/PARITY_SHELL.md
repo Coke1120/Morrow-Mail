@@ -108,3 +108,5 @@ Checks use synthetic providers, request counters/phase barriers, real renderer
 functions with a synthetic DOM, and existing CI application fixtures. They establish
 request reuse and cancellation behavior, not user-network throughput or native UI
 performance.
+
+Bot access additionally supports separately reviewed archive, read/unread and Trash capabilities for one explicit cached message per UUID request. Existing grants gain no new capabilities; read-only grants stay read-only. Pending receipts are not provider confirmation; unknown outcomes require review. Trash never permanently deletes, and arbitrary folder moves remain unavailable. Confirmed moves reuse existing Mail Undo where available. See [Bot bridge mail changes](BOT_BRIDGE.md#archive-readunread-and-trash).

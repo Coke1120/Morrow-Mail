@@ -48,7 +48,7 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     if (typeof value !== "string" || !value) throw invalid("Gmail authorization is unavailable.");
     return value;
   }
-  async function request(path, { operation, method = "GET", body, query, signal: readSignal } = {}) {
+  async function request(path, { operation, method = "GET", body, query, signal: readSignal, beforeSubmit } = {}) {
     alive();
     readSignal?.throwIfAborted();
     if (method === "GET") {
@@ -69,6 +69,7 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     let issued = false;
     try {
       alive();
+      if (method !== "GET") beforeSubmit?.();
       issued = true;
       response = await fetchImpl(url.href, { method, redirect: "error", signal: requestSignal,
         headers: { authorization: `Bearer ${credential}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
@@ -112,14 +113,14 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     const result = await request(`/messages/${id(messageId)}/attachments/${id(attachmentId)}`, { operation: "attachments.get", signal: readSignal });
     return decode(result.data);
   }
-  async function modifyLabels(messageId, add = [], remove = []) {
+  async function modifyLabels(messageId, add = [], remove = [], options = {}) {
     const addLabelIds = labelIds(add), removeLabelIds = labelIds(remove);
     if (addLabelIds.some(value => removeLabelIds.includes(value))) throw invalid("A label cannot be both added and removed.");
-    return writeResult(await request(`/messages/${id(messageId)}/modify`, { operation: "messages.modify", method: "POST", body: { addLabelIds, removeLabelIds } }));
+    return writeResult(await request(`/messages/${id(messageId)}/modify`, { operation: "messages.modify", method: "POST", body: { addLabelIds, removeLabelIds }, beforeSubmit: options.beforeSubmit }));
   }
-  async function trash(messageId) {
+  async function trash(messageId, options = {}) {
     const prior = await getMessage(messageId, { format: "metadata" });
-    const result = writeResult(await request(`/messages/${id(messageId)}/trash`, { operation: "messages.trash", method: "POST" }));
+    const result = writeResult(await request(`/messages/${id(messageId)}/trash`, { operation: "messages.trash", method: "POST", beforeSubmit: options.beforeSubmit }));
     return { message: result, undo: { messageId, priorLabelIds: Array.isArray(prior.labelIds) ? prior.labelIds : [] } };
   }
   async function restoreTrash(undo) {
@@ -185,9 +186,9 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
   return { profile: () => request("/profile", { operation: "profile.get" }), listMessages, getMessage, raw, attachment, history, listDrafts, getDraft, saveDraft, discardDraft, send,
     getLabel: labelId => request(`/labels/${id(labelId)}`, { operation: "labels.get" }),
     modifyLabels, trash, restoreTrash,
-    markRead: (messageId, read) => modifyLabels(messageId, read ? [] : ["UNREAD"], read ? ["UNREAD"] : []),
-    star: (messageId, starred) => modifyLabels(messageId, starred ? ["STARRED"] : [], starred ? [] : ["STARRED"]),
-    archive: messageId => modifyLabels(messageId, [], ["INBOX"]),
+    markRead: (messageId, read, options) => modifyLabels(messageId, read ? [] : ["UNREAD"], read ? ["UNREAD"] : [], options),
+    star: (messageId, starred, options) => modifyLabels(messageId, starred ? ["STARRED"] : [], starred ? [] : ["STARRED"], options),
+    archive: (messageId, options) => modifyLabels(messageId, [], ["INBOX"], options),
     labels: () => labelsCall((credential, fetcher) => provider.listLabels(credential, fetcher)),
     createLabel: name => labelsCall((credential, fetcher) => provider.createLabel(credential, name, fetcher)),
     renameLabel: (labelId, name) => labelsCall((credential, fetcher) => provider.renameLabel(credential, labelId, name, fetcher)),

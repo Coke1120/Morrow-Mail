@@ -21,11 +21,11 @@ function run() {
   assert.deepEqual(operations.slice().sort(), catalog.operations().slice().sort(), "update the CLI tab when host operations change");
   assert.deepEqual(operations.slice().sort(), Object.keys(contract.operations).sort());
   const unavailable = text(byId("cli-unavailable"));
-  for (const phrase of ["attachment upload/attach/download", "mailbox draft create/edit/delete", "full thread", "reply-all/forward", "read/unread", "move/archive/delete", "calendar"]) assert.ok(unavailable.includes(phrase), phrase);
+  for (const phrase of ["attachment upload/attach/download", "mailbox draft create/edit/delete", "full thread", "reply-all/forward", "arbitrary folder moves", "permanent mail deletion", "mailbox administration", "calendar"]) assert.ok(unavailable.includes(phrase), phrase);
   const accountSafety = text(byId("cli-account-safety"));
   for (const phrase of ["connected, granted mailbox", "NOT_FOUND", "direct message IDs", "proposal lists", "do not automatically delete retained legacy data"]) assert.ok(accountSafety.includes(phrase), phrase);
   const providerSemantics = text(byId("cli-provider-semantics"));
-  for (const phrase of ["may contact providers", "providerCalls", "true when mail.send", "Cached reads stay local", "not a per-request network count", "replay/join", "OAuth refresh", "not absence of provider traffic"]) assert.ok(providerSemantics.includes(phrase), phrase);
+  for (const phrase of ["may contact providers", "providerCalls", "true when sending or a mail-change operation", "Cached reads stay local", "not a per-request network count", "replay/join", "OAuth refresh", "not absence of provider traffic"]) assert.ok(providerSemantics.includes(phrase), phrase);
   const diagnostics = text(byId("ipc-diagnostics-note"));
   for (const phrase of ["known channel names/counts", "Request values, renderer text and URLs are omitted", "Other Debug entries"]) assert.ok(diagnostics.includes(phrase), phrase);
   const connection = text(byId("cli-connection"));
@@ -61,7 +61,7 @@ function run() {
     args[args.indexOf("--token-file") + 1] = "/synthetic-token";
     args[args.indexOf("--params-file") + 1] = "/synthetic-params";
     args[args.indexOf("--installation") + 1] = "11111111-1111-4111-8111-111111111111";
-    if (operation === "mail.send") args[args.indexOf("--request-id") + 1] = "22222222-2222-4222-8222-222222222222";
+    if (spec.requestId === "required-uuid") args[args.indexOf("--request-id") + 1] = "22222222-2222-4222-8222-222222222222";
     const result = invoke(undefined, { argv: args, params });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.requests.length, 1);
@@ -69,7 +69,10 @@ function run() {
     assert.equal(result.requests[0].body.operation, operation);
     checked++;
   }
-  assert.equal(checked, 4);
+  assert.equal(checked, 7);
+  for (const phrase of ["pending", "providerConfirmed", "unknown", "same request ID", "Queued bot changes", "Undo"]) {
+    assert.ok((safety + " " + text(byId("bot-panel-activity"))).includes(phrase), phrase);
+  }
   const card = require("../renderer/features-catalog").items.find(row => row.id === "bot-bridge");
   assert.match(card.blurb, /separate send permission/i);
   assert.match(card.blurb, /inert draft/);

@@ -4577,6 +4577,7 @@ module.exports = {
   init,
   answer,
   settleActions: actions.settleActions,
+  submitBotAction: actions.submitBotAction,
   settleAccount: actions.settleAccount,
   bytesFor,
   attachmentCacheForTest: attachmentCache,
