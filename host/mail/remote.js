@@ -60,6 +60,9 @@ function explain(error, secret, account) {
   }
   let message = parts.filter(Boolean).join(" ");
   if (secret && message.includes(secret)) message = message.split(secret).join("");
+  if (["needs_auth", "oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration"].includes(error?.code)) {
+    return message.replace(/\s+/g, " ").trim().slice(0, 280);
+  }
   const authFailed = error && error.authenticationFailed === true
     || /auth|invalid credentials|LOGIN failed|AUTHENTICATIONFAILED|535|Invalid login/i.test(message);
   if (authFailed) {

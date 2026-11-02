@@ -209,6 +209,11 @@ test("Features, help and optional import status agree without changing explicit 
   const f = fixture(t); f.ui.run("paintFeatureCatalog()");
   assert.match(f.get("features-catalog").textContent, /Google sign-in and optional personal client/);
   assert.match(f.get("features-catalog").textContent, /without migrating until you review and confirm/);
+  assert.match(f.get("features-catalog").textContent, /Saved connection renewal/);
+  assert.match(f.get("features-catalog").textContent, /seven-day refresh tokens/);
+  assert.match(f.get("mail-oauth-renewal-help").textContent, /Temporary network, sign-in-service or secure-storage errors/);
+  assert.match(f.get("mail-oauth-renewal-help").textContent, /must be saved before/);
+  assert.match(f.get("mail-oauth-renewal-help").textContent, /does not check your Google project's publishing status/);
   assert.equal(f.get("google-oauth-client").open, false);
   assert.equal(f.get("google-oauth-client").querySelector("summary").textContent, "Advanced: personal Google OAuth client (optional)");
   assert.match(f.get("connect-google-help").textContent, /no password is needed in Morrow/);

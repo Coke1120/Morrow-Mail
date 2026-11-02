@@ -1,6 +1,7 @@
 const http = require("http");
 const crypto = require("crypto");
 const { URL } = require("url");
+const { retryAfterMs } = require("./provider-http");
 const {
   SCOPES,
   ENDPOINTS,
@@ -241,14 +242,49 @@ async function refresh(provider, creds, refreshToken, scope, previousGranted, fe
   });
   if (creds.clientSecret) body.set("client_secret", creds.clientSecret);
   if (provider === "microsoft") body.set("scope", tokenScopeText(scope || SCOPES.microsoft));
-  const res = await (fetchImpl || fetch)(ENDPOINTS[provider].token, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || !json.access_token) {
-    throw new Error("Could not refresh the OAuth access token. Sign in again.");
+  let res, json;
+  try {
+    res = await (fetchImpl || fetch)(ENDPOINTS[provider].token, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+      signal: AbortSignal.timeout(30000),
+    });
+    json = await res.json().catch(() => ({}));
+  } catch {
+    // Network/timeout failures prove nothing about the saved grant. Never pass
+    // raw fetch errors (which can contain request credentials) into diagnostics.
+    throw Object.assign(new Error("Could not refresh the connection. Check the network and try again."), {
+      code: "oauth_refresh_unavailable", retryable: true,
+    });
+  }
+  if (!json || typeof json !== "object" || Array.isArray(json)) json = {};
+  if (!res.ok || typeof json.access_token !== "string" || !json.access_token) {
+    const status = Number(res.status) || 0;
+    if (status === 429) {
+      throw Object.assign(new Error("The sign-in service is rate limiting requests. Try again shortly."), {
+        code: "rate_limit", status, retryAfterMs: retryAfterMs(res), retryable: true,
+      });
+    }
+    if (status === 408 || status >= 500 || ["server_error", "temporarily_unavailable"].includes(json.error)) {
+      throw Object.assign(new Error("Could not refresh the connection. The sign-in service is temporarily unavailable. Try again shortly."), {
+        code: "oauth_refresh_unavailable", status, retryable: true,
+      });
+    }
+    if (!res.ok && ["invalid_grant", "interaction_required", "login_required", "consent_required"].includes(json.error)) {
+      const name = provider === "google" ? "Google" : "Microsoft";
+      throw Object.assign(new Error(`Could not refresh the connection. ${name} requires sign-in again; the grant expired, was revoked, or needs interaction. Reconnect the affected mailbox or feature. Local mail is retained.`), {
+        code: "needs_auth", status, retryable: false,
+      });
+    }
+    if (!res.ok && ["invalid_client", "unauthorized_client", "invalid_scope"].includes(json.error)) {
+      throw Object.assign(new Error("Could not refresh the connection. The app's sign-in configuration needs review; check for an app update or contact the app owner."), {
+        code: "oauth_configuration", status, retryable: false,
+      });
+    }
+    throw Object.assign(new Error("Could not refresh the connection. The sign-in service returned an unexpected response. Try again."), {
+      code: "oauth_refresh_response", status, retryable: true,
+    });
   }
   return {
     accessToken: json.access_token,

@@ -15,7 +15,7 @@ function cancelled() {
 // close after being killed retains its slot so it cannot accumulate successors.
 function createReader({ launch = spawn, setTimer = setTimeout, clearTimer = clearTimeout,
   timeoutMs = TIMEOUT_MS, maxConcurrent = 4, maxOutput = MAX_OUTPUT,
-  command = "security", decode = output => output.replace(/\n$/, "") } = {}) {
+  command = "security", decode = output => output.replace(/\n$/, ""), missingStatus = 44 } = {}) {
   const queue = [];
   let active = 0;
 
@@ -78,7 +78,14 @@ function createReader({ launch = spawn, setTimer = setTimeout, clearTimer = clea
               } else chunks.push(data);
             });
             child.on("close", status => {
-              if (!job.done) finish(null, status === 0 ? decode(Buffer.concat(chunks).toString("utf8")) : null);
+              if (!job.done) {
+                if (status === missingStatus) finish(null, null);
+                else if (status !== 0) finish(storageError("secure_storage_unavailable", "Secure storage could not be read. Check access and retry."));
+                else {
+                  try { finish(null, decode(Buffer.concat(chunks).toString("utf8"))); }
+                  catch { finish(storageError("secure_storage_unavailable", "Secure storage could not be read. Check access and retry.")); }
+                }
+              }
               release();
             });
           } catch {

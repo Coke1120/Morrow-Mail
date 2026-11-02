@@ -588,7 +588,18 @@ async function secretFor(account) {
     let grant; try { grant = JSON.parse(stored); } catch { grant = {}; }
     if (!oauthConfig.hasPurposeScopes(grant.grantedScopes || "", "google", "imap")) throw Object.assign(new Error("Gmail API mail permission is missing. Reconnect Google; cached work was retained."), { code: "scope_missing" });
   }
-  const result = await oauth.accessTokenFor(account, stored, "imap");
+  let result;
+  try { result = await oauth.accessTokenFor(account, stored, "imap"); } catch (error) {
+    // A rejected renewal may belong to a grant replaced during the request.
+    // Do not publish its sign-in failure against the new connection.
+    assertCurrent(revision);
+    if (oauthConfig.providerKey(account.profile) === "google") {
+      let grant;
+      try { grant = JSON.parse(stored); } catch { /* retain the original corrupt-secret diagnostic */ }
+      if (grant && typeof grant === "object" && !Array.isArray(grant)) oauthConfig.requireGoogleGrantClient(grant);
+    }
+    throw error;
+  }
   assertCurrent();
   // A failed synchronous reconnect may have restored the exact prior state.
   // Preserve that contract; pin this read window and compare the actual value.
@@ -606,7 +617,11 @@ async function secretFor(account) {
   if (typeof result === "string") return result;
   if (result && result.store) {
     if (account.mail_transport === "gmail_api" && !oauthConfig.hasPurposeScopes(JSON.parse(result.store).grantedScopes || "", "google", "imap")) throw Object.assign(new Error("The refreshed Google grant is missing Gmail API mail permission. Reauthorize the mailbox."), { code: "scope_missing" });
-    try { secrets.setPassword(account.id, result.store); } catch { /* best effort */ }
+    try { secrets.setPassword(account.id, result.store); } catch {
+      throw Object.assign(new Error("The renewed connection could not be saved. Check secure-storage access and retry."), {
+        code: "secure_storage_write", retryable: true,
+      });
+    }
     return result.token;
   }
   throw new Error("Could not refresh OAuth access token.");
