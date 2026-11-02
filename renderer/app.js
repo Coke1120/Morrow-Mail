@@ -2559,8 +2559,8 @@ function askConfirm(copy) {
   const pending = new Promise((resolve) => {
     resolveConfirm = resolve;
   });
-  // Close motion still has the dialog open. Drop that generation before the
-  // close event so it cannot cancel this prompt, then show the new one now.
+  // Retire the old close motion before showing the next prompt. Its queued
+  // close event must not settle a prompt that has already reopened the dialog.
   if (dialog.open && dialog.dataset.closing === "1") {
     confirmResult = null;
     releaseClosingDialog(dialog);
@@ -24250,9 +24250,9 @@ function selectedBotCaps() {
   return caps;
 }
 
-function selectedBotAccountLabels() {
+function selectedBotAccountLabels(accountIds = selectedBotAccounts()) {
   const accounts = (state.botAccess && state.botAccess.accounts) || [];
-  return selectedBotAccounts().map((id) => {
+  return accountIds.map((id) => {
     const account = accounts.find((row) => row.accountId === id);
     return account ? (account.email || account.displayName || id) : id;
   });
@@ -24426,6 +24426,9 @@ function wireBot() {
         setBotStatus("Choose at least one mailbox for this bot.", true);
         return;
       }
+      const accountLabels = selectedBotAccountLabels(accountIds);
+      const label = $("bot-label").value;
+      const platform = $("bot-platform").value;
       const capabilities = selectedBotCaps();
       const choice = $("bot-expiry").value;
       let expiry;
@@ -24442,12 +24445,12 @@ function wireBot() {
         expiry = { kind: "finite", days: Number(choice) };
       }
       if (capabilities.includes("mail.send")) {
-        const answer = await askConfirm(botSendConfirmCopy(selectedBotAccountLabels()));
+        const answer = await askConfirm(botSendConfirmCopy(accountLabels));
         if (!answer || !answer.ok) return;
       }
       const minted = await call("bot:mintGrant", {
-        label: $("bot-label").value,
-        platform: $("bot-platform").value,
+        label,
+        platform,
         accountIds,
         capabilities,
         expiry,
@@ -25412,7 +25415,9 @@ function wire() {
   });
   $("agent-peek").addEventListener("close", invalidatePeek);
   $("confirm").addEventListener("close", () => {
-    if (!confirmResult) return;
+    // close() queues an event. A chained confirmation may already have opened
+    // this same dialog again before that event is delivered.
+    if ($("confirm").open || !confirmResult) return;
     const pending = confirmResult;
     confirmResult = null;
     confirmCopy = null;
