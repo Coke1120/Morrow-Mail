@@ -20,6 +20,15 @@ navigation, HTML, URL, preload or window-security path is introduced. Reading an
 mark-as-read behavior belongs to the existing independent reader. Outbox retains
 its scheduled-message preview below the list, without changing the saved layout.
 
+The retained main-window preview is inactive in Separate window mode: R/A/F and
+Delete/Backspace cannot act on it, even through direct shortcut dispatch. These
+commands remain available in independent readers and visible Right/Bottom
+previews. Selection is not implicitly promoted to a destructive shortcut target;
+use explicit row actions or open a reader. If hiding the preview would hide the
+focused control, move focus to a selected/current list row, or the list itself,
+without opening or marking mail read. The View menu owns its keys while open;
+Tab closes it and follows the normal tab order.
+
 Small windows stack previews below the list. List minimum height reserves space
 for its controls plus scrolling rows, including expanded search coverage; a short
 shell can scroll. Dividers expose their axis, current size and bounds and support

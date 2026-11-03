@@ -8,7 +8,7 @@
     items: [
       {
         id: "mail-reading-layout", title: "Mail reading layout", category: "Mail",
-        blurb: "View, beside Search downloaded mail, switches between Right preview, Bottom preview and Separate window. The choice and bottom list height are saved on this computer across mailboxes and search. Drag the divider to resize a preview, or focus it and use Left / Right for a right preview and Up / Down for a bottom preview. Separate window gives the list the available width: single-click selects a message without opening or marking it read; double-click or press Enter to open the existing independent reader. Row actions and multiple selection remain available. Outbox keeps its scheduled-message preview below the list. Small windows stack previews below the list while keeping your saved choice. Changing view preserves column order, sorting, search, selection and scroll position.",
+        blurb: "View, beside Search downloaded mail, switches between Right preview, Bottom preview and Separate window. The choice and bottom list height are saved on this computer across mailboxes and search. Drag the divider to resize a preview, or focus it and use Left / Right for a right preview and Up / Down for a bottom preview. Separate window gives the list the available width: single-click selects a message without opening or marking it read; double-click or press Enter to open the existing independent reader. Row actions and multiple selection remain available. In the main Separate window list, R, A, F, Delete and Backspace are inactive; use row actions or open a reader. Independent readers retain these shortcuts. Outbox keeps its scheduled-message preview below the list. Small windows stack previews below the list while keeping your saved choice. Changing view preserves column order, sorting, search, selection and scroll position.",
       },
       {
         id: "native-mail-notifications", title: "New email notifications", category: "Mail",
@@ -112,7 +112,7 @@ id: "mail-workflow-feedback",
         id: "mail-keyboard",
         title: "Mail list keyboard navigation",
         category: "Mail",
-        blurb: "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus.",
+        blurb: "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus. In Separate window, use row actions or open a reader for Reply, Reply All, Forward and Trash. Arrows, Enter and mail search stay available in the main window. View uses arrows, Enter, Escape and Tab without acting on mail.",
       },
       {
         id: "unread-filter",

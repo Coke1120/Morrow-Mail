@@ -109,6 +109,8 @@ function uiFixture(invoke = async () => ok({})) {
   for (const match of html.matchAll(/\bid="([^"]+)"/g)) {
     const node = document.createElement("div"); node.id = match[1]; nodes.set(node.id, node); document.body.appendChild(node);
   }
+  // This lightweight fixture does not parse attributes; the real View menu starts hidden.
+  nodes.get("mail-view-menu").hidden = true;
   const window = { morrow: { invoke, on: (channel, listener) => subscriptions.set(channel, listener) }, location: { search: "" } };
   const ui = renderer({ document, window, URLSearchParams, queueMicrotask, setImmediate, setInterval: () => 0, clearInterval() {} });
   ui.run(`globalThis.productionRenderList=renderList; globalThis.productionLoadList=loadList;

@@ -2924,6 +2924,8 @@ function applyMailView() {
   if (!shell || typeof shell.getBoundingClientRect !== "function" || isReaderWindow()) return;
   const pref = mailViewPref(state.prefs.mailView);
   const layout = effectiveMailViewLayout();
+  const reader = $("reader");
+  const moveReaderFocus = layout === "window" && reader && reader.contains(document.activeElement);
   const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox]);
   if (mailViewScrollScope !== scope) { mailViewScroll.clear(); mailViewScrollScope = scope; }
   const previous = shell.dataset.mailLayout, list = $("message-list");
@@ -2948,6 +2950,14 @@ function applyMailView() {
   if (opener) opener.title = "Reading layout: " + mailViewLabels[pref.layout];
   for (const button of shell.ownerDocument.querySelectorAll("[data-mail-view]")) {
     button.setAttribute("aria-checked", String(button.dataset.mailView === pref.layout));
+  }
+  if (moveReaderFocus && list) {
+    const selected = new Set(state.selectedIds);
+    const row = [...list.querySelectorAll(".message-row")].find(node => selected.has(node.dataset.emailId));
+    const target = row?.querySelector("button.message")
+      || list.querySelector('button.message[aria-current="true"]') || list;
+    target.focus({ preventScroll: true });
+    if (target !== list && typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 }
 
@@ -2998,6 +3008,10 @@ function wireMailView() {
     open(event.key === "ArrowUp");
   });
   menu.addEventListener("keydown", event => {
+    if (event.key === "Tab") {
+      closeMailViewMenu(true);
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault(); event.stopPropagation(); closeMailViewMenu(true); return;
     }
@@ -11150,7 +11164,8 @@ function wireSelection() {
 function onSelectionKey(event) {
   if (state.view !== "mail") return;
   const menu = $("organize-menu");
-  const menuOpen = menu && !menu.hidden;
+  const viewMenu = $("mail-view-menu");
+  const menuOpen = (menu && !menu.hidden) || (viewMenu && !viewMenu.hidden);
   if (event.key === "Escape") {
     if (menuOpen || document.querySelector("dialog[open]")) return;
     // Details is a role=dialog popover, not a <dialog>. Close it without clearing the mailbox selection.
@@ -11169,7 +11184,7 @@ function onSelectionKey(event) {
     ctrl: event.ctrlKey,
     alt: event.altKey,
     shift: event.shiftKey,
-  }, shellBlocked(event.target) || state.view !== "mail");
+  }, menuOpen || shellBlocked(event.target) || state.view !== "mail");
   if (shortcut !== "all") return;
   event.preventDefault();
   commitSelection(selectAllVisible(shownEmails().map((email) => email && email.id)));
@@ -15796,7 +15811,7 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open in a visible preview or its own reader window and you are not typing in a field. In Separate window, use row actions or open a reader for Reply, Reply All, Forward and Trash; their shortcuts are inactive in the main list. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
@@ -15881,8 +15896,13 @@ function topOpenDialog() {
   return open.length ? open[open.length - 1] : null;
 }
 
+function mailPreviewShortcutsAvailable() {
+  return isReaderWindow() || effectiveMailViewLayout() !== "window";
+}
+
 function mailShortcutContext(event) {
   const menu = $("organize-menu");
+  const viewMenu = $("mail-view-menu");
   const top = topOpenDialog();
   let textSelected = false;
   if (typeof window.getSelection === "function") {
@@ -15892,9 +15912,9 @@ function mailShortcutContext(event) {
   return {
     typing: !!editableField(event && event.target),
     dialog: !!top || undoPopoverOpen() || !!event?.target?.closest?.("#body-sync"),
-    menu: !!(menu && menu.hidden === false),
+    menu: !!((menu && menu.hidden === false) || (viewMenu && viewMenu.hidden === false)),
     topDialog: top && top.id ? top.id : "",
-    mailOpen: !!(state.email && state.email.id && !state.email.outbox),
+    mailOpen: mailPreviewShortcutsAvailable() && !!(state.email && state.email.id && !state.email.outbox),
     view: state.view,
     textSelected: textSelected,
   };
@@ -15964,6 +15984,7 @@ let mailShortcutAction = "";
 let mailShortcutStamp = 0;
 
 function runMailShortcut(action) {
+  if (readerWindowShortcut(action) && !mailPreviewShortcutsAvailable()) return;
   const now = Date.now();
   if (action && action === mailShortcutAction && now - mailShortcutStamp < 50) return;
   mailShortcutAction = action || "";

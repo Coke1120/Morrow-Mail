@@ -17,6 +17,45 @@ function fixture(t) {
   return { ui, window, saves, opened, get: id => window.document.getElementById(id) };
 }
 
+function keyboardFixture(t, { layout = 'right', reader = false, conversation = false, crossAccount = true } = {}) {
+  const f = fixture(t), requests = [], writes = [], composes = [];
+  const accounts = ['a','b'].map(id => ({ id, email: id + '@fixture.invalid', name: 'Synthetic ' + id, folders: { primary: [{ id: 'INBOX', name: 'Inbox' }], more: [] } }));
+  const messages = ['A','B','C'].map((id, index) => ({ id, accountId: id === 'B' && crossAccount ? 'b' : 'a', folderId: id === 'C' ? 'Archive' : 'INBOX',
+    subject: 'Message ' + id, from: 'sender-' + id.toLowerCase() + '@fixture.invalid', to: [(id === 'B' && crossAccount ? 'b' : 'a') + '@fixture.invalid'],
+    textBody: 'Synthetic body ' + id, unread: false, threadId: id === 'B' ? 'thread-b' : 'thread-a', date: '2026-11-02T12:00:00Z' }));
+  for (const dialog of f.window.document.querySelectorAll('dialog')) {
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = () => { dialog.open = false; dialog.dispatchEvent(new f.window.Event('close')); };
+  }
+  f.window.HTMLElement.prototype.scrollIntoView = () => {};
+  f.window.morrow.openComposeWindow = async seed => { composes.push(JSON.parse(JSON.stringify(seed))); };
+  Object.assign(f.ui.context, { accounts, messages, requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout,
+    captureCall: async (channel, payload = {}) => {
+      const params = JSON.parse(JSON.stringify(payload)); requests.push({ channel, params });
+      if (channel === 'mail:openEmail') return { email: messages.find(row => row.id === params.emailId), threadMessages: [] };
+      if (channel === 'mail:listThreadMessages') return messages.filter(row => row.threadId === params.threadId);
+      if (channel === 'mail:listAccounts') return accounts;
+      if (channel === 'mail:listFromCache') return { emails: messages.filter(row => row.folderId === 'INBOX'), total: 2, initialSyncDone: true };
+      if (['mail:delete','mail:deleteBatch','mail:threadTrash'].includes(channel)) {
+        writes.push({ channel, params });
+        return { outcomes: (params.items || [params]).map(row => ({ id: row.emailId, accountId: row.accountId, status: 'completed', opId: 'synthetic-' + row.emailId })) };
+      }
+      return [];
+    } });
+  f.ui.run(`state.accounts=accounts;state.accountId='a';state.folderId='INBOX';state.allInbox=${crossAccount};state.emails=messages.slice(0,2);state.email=messages[0];state.thread=${conversation ? '[messages[0],messages[2]]' : '[]'};
+    state.prefs.conversation=${conversation};state.prefs.mailView={layout:'${layout}',listHeight:320};
+    ${reader ? "document.documentElement.dataset.window='reader';state.email=messages[1];state.thread=[];" : ''}
+    renderReader=()=>{};call=captureCall;
+    $('message-list').append(messageRow(messages[0]),messageRow(messages[1]));
+    globalThis.readerFocus=document.createElement('button');readerFocus.textContent='Reader action';$('reader').append(readerFocus);
+    document.addEventListener('keydown',onShellKey);document.addEventListener('keydown',onMailShortcut);document.addEventListener('keydown',onSelectionKey);
+    applyMailView();`);
+  const rowB = f.get('message-list').querySelector('[data-email-id="B"]'), buttonB = rowB.querySelector('button.message');
+  const clickB = () => { buttonB.focus(); buttonB.dispatchEvent(new f.window.MouseEvent('click', { detail: 1, bubbles: true })); };
+  const key = (value, extra = {}) => f.window.document.activeElement.dispatchEvent(new f.window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...extra }));
+  return { ...f, requests, writes, composes, rowB, buttonB, clickB, key };
+}
+
 test('actual preload saves a validated view independently of pane widths, columns and theme', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'morrow-view-')), old = process.env.MORROW_USER_DATA;
   process.env.MORROW_USER_DATA = dir;
@@ -133,4 +172,66 @@ test('failed preference writes keep the usable layout and a later choice can sav
   await settle(); assert.equal(f.get('shell').dataset.mailLayout, 'window'); assert.match(f.get('status').textContent, /Could not save the reading layout/);
   f.window.morrow.invoke = async (_channel, value) => value;
   await f.ui.run(`saveMailView({layout:'bottom',listHeight:420})`); assert.equal(f.get('shell').dataset.mailLayout, 'bottom');
+});
+
+for (const conversation of [false, true]) for (const crossAccount of [false, true]) {
+  test(`Separate window cannot act on a hidden preview (conversation=${conversation}, cross-account=${crossAccount})`, async t => {
+    const f = keyboardFixture(t, { layout: 'window', conversation, crossAccount }); f.clickB();
+    assert.equal(f.ui.run('state.email.id'), 'A'); assert.deepEqual(Array.from(f.ui.run('state.selectedIds')), ['B']);
+    assert.equal(f.ui.run('mailShortcutContext({target:document.activeElement}).mailOpen'), false);
+    for (const value of ['r','a','f','Delete','Backspace']) { f.key(value); await settle(); assert.equal(f.get('confirm').open, false); }
+    for (const action of ['reply','reply-all','forward','delete']) { f.ui.run(`runMailShortcut('${action}')`); await settle(); }
+    assert.deepEqual(f.requests, []); assert.deepEqual(f.writes, []); assert.deepEqual(f.composes, []);
+    assert.equal(f.ui.run('state.email.id'), 'A'); assert.deepEqual(Array.from(f.ui.run('state.selectedIds')), ['B']);
+  });
+}
+
+for (const mode of ['right','bottom','reader']) {
+  test(`visible ${mode} reader retains reply and confirmed Trash shortcuts for its own message`, async t => {
+    const f = keyboardFixture(t, { layout: mode === 'reader' ? 'window' : mode, reader: mode === 'reader' });
+    f.ui.run('state.email=messages[1];state.thread=[]');
+    f.get('reader').querySelector('button').focus();
+    assert.equal(f.ui.run('mailShortcutContext({target:document.activeElement}).mailOpen'), true);
+    for (const value of ['r','a','f']) { f.key(value); await settle(); }
+    assert.deepEqual(f.composes.map(seed => [seed.kind, seed.sourceMessageId, seed.accountId]), [['reply','B','b'],['all','B','b'],['forward','B','b']]);
+    f.key('Delete'); await settle(); assert.equal(f.get('confirm').open, true); assert.deepEqual(f.writes, []);
+    f.ui.run('submitConfirm()'); await settle();
+    assert.deepEqual(f.writes.map(write => write.params), [{ accountId: 'b', emailId: 'B' }]);
+  });
+}
+
+test('Separate window explicit row actions resolve the selected account and ignore the hidden conversation', async t => {
+  const f = keyboardFixture(t, { layout: 'window', conversation: true }); f.clickB();
+  f.rowB.querySelector('[aria-label="Reply"]').click(); await settle();
+  assert.deepEqual(f.composes.map(seed => [seed.sourceMessageId, seed.accountId]), [['B','b']]);
+  f.rowB.querySelector('[aria-label="Delete"]').click(); await settle(); assert.equal(f.get('confirm').open, true);
+  f.ui.run('submitConfirm()'); await settle();
+  assert.deepEqual(f.writes.map(write => write.params), [{ emailId: 'B', accountId: 'b' }]);
+  assert.ok(!f.requests.some(request => request.channel === 'mail:listThreadMessages'));
+});
+
+test('hiding a focused preview moves focus to the selected row without opening mail', async t => {
+  const f = keyboardFixture(t); f.rowB.querySelector('.row-check').click();
+  f.get('reader').querySelector('button').focus(); await f.ui.run(`saveMailView({layout:'window',listHeight:320})`);
+  assert.equal(f.window.document.activeElement, f.buttonB);
+  assert.deepEqual(f.requests, []); assert.deepEqual(f.opened, []); assert.deepEqual(f.composes, []);
+  assert.deepEqual(Array.from(f.ui.run('state.selectedIds')), ['B']); assert.equal(f.ui.run('state.email.id'), 'A');
+});
+
+test('hiding a focused preview can focus an empty list and keeps unrelated field focus', async t => {
+  const f = keyboardFixture(t); f.get('message-list').replaceChildren(); f.get('reader').querySelector('button').focus();
+  await f.ui.run(`saveMailView({layout:'window',listHeight:320})`); assert.equal(f.window.document.activeElement, f.get('message-list'));
+  await f.ui.run(`saveMailView({layout:'right',listHeight:320})`); f.get('search-query').focus();
+  await f.ui.run(`saveMailView({layout:'window',listHeight:320})`); assert.equal(f.window.document.activeElement, f.get('search-query'));
+  f.key('r'); f.key('Delete'); await settle(); assert.deepEqual(f.composes, []); assert.deepEqual(f.writes, []);
+});
+
+test('the View menu owns preview and selection keys; Tab closes it and search remains available', async t => {
+  const f = keyboardFixture(t); f.get('mail-view-open').click();
+  for (const value of ['r','a','f','Delete','Backspace']) f.key(value);
+  f.key('a', { ctrlKey: true }); await settle();
+  assert.equal(f.ui.run('state.selectedIds.length'), 0); assert.equal(f.get('confirm').open, false); assert.deepEqual(f.composes, []);
+  f.key('Tab', { shiftKey: true }); assert.equal(f.get('mail-view-menu').hidden, true); assert.equal(f.window.document.activeElement, f.get('mail-view-open'));
+  await f.ui.run(`saveMailView({layout:'window',listHeight:320})`); f.buttonB.focus(); f.key('f', { ctrlKey: true });
+  assert.equal(f.window.document.activeElement, f.get('search-query'));
 });
