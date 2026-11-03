@@ -717,6 +717,17 @@ function handle(channel, params) {
     if (!target) return fail("move", "Choose a folder.");
   }
   const ids = idsFrom(params, channel);
+  // Check explicit mailbox hints before accepting any removal in the request.
+  // Message IDs remain authoritative for legacy callers without an account hint.
+  const targets = [...(Array.isArray(params?.items) ? params.items : []),
+    ...(params?.emailId ? [params] : [])];
+  for (const target of targets) {
+    const accountId = target.accountId || params?.accountId;
+    const row = db.messageById(target.emailId || target.id);
+    if (accountId && row && row.account_id !== accountId) {
+      return fail("email-gone", "That message is no longer in this mailbox.");
+    }
+  }
   if (!ids.length) return ok({ pending: [], outcomes: [], opIds: [] });
   const permanent = channel === "mail:deleteBatch"
     && (params.folderWellKnownName === "deleteditems" || params.folderWellKnownName === "trash");

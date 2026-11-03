@@ -9266,13 +9266,18 @@ async function deleteFromList(email) {
 }
 
 async function replyFromList(email, kind) {
-  let opened = state.email && state.email.id === email.id ? state.email : null;
+  const target = { id: email.id, accountId: email.accountId };
+  let opened = state.email && state.email.id === target.id && state.email.accountId === target.accountId
+    && !state.email.bodyError && listedHasBody(state.email) ? state.email : null;
   if (!opened) {
-    const data = await call("mail:openEmail", { emailId: email.id, full: true, includeThread: false });
+    const data = await call("mail:openEmail", { emailId: target.id, accountId: target.accountId, full: true, includeThread: false });
     opened = data && data.email;
   }
-  if (!opened) throw new Error("That message is no longer in the mailbox.");
-  const account = state.accounts.find((item) => item.id === opened.accountId) || selectedAccount();
+  if (!opened || opened.id !== target.id || opened.accountId !== target.accountId) {
+    throw new Error("That message is no longer in this mailbox.");
+  }
+  const account = state.accounts.find((item) => item.id === target.accountId);
+  if (!account) throw new Error("That mailbox is no longer connected.");
   const self = (account && (account.preferredFromAddress || account.email)) || "";
   await presentCompose(composeSeed(opened, kind, self));
 }
@@ -11872,6 +11877,7 @@ function paintReaderPending(email) {
 
 async function openMessage(emailId, focus, full = false) {
   const known = listedMessage(emailId);
+  const expectedAccountId = known?.accountId || (state.email?.id === emailId ? state.email.accountId : "");
   const openedUnread = !!(known && known.unread);
   if (known && known.outbox) {
     invalidateReaderOpen();
@@ -11896,7 +11902,7 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -11904,7 +11910,7 @@ async function openMessage(emailId, focus, full = false) {
   }
   if (gen !== openGen) return;
   const email = data && data.email;
-  if (!email || String(email.id) !== String(emailId)) {
+  if (!email || String(email.id) !== String(emailId) || (expectedAccountId && email.accountId !== expectedAccountId)) {
     const message = email ? "That message could not be loaded." : "That message is no longer in the mailbox.";
     abandonOpen(emailId, message);
     throw new Error(message);
@@ -15796,7 +15802,7 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open and you are not typing in a field. In Separate window, select exactly one visible message for Delete, Backspace, R, A or F; these act on that message, never the hidden preview. Preview shortcuts wait until loading succeeds. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
@@ -15881,6 +15887,22 @@ function topOpenDialog() {
   return open.length ? open[open.length - 1] : null;
 }
 
+// The shell's hidden preview is not the selection in Separate window mode.
+function mailShortcutTarget() {
+  if (state.view !== "mail" || state.outbox) return null;
+  let email;
+  if (!isReaderWindow() && effectiveMailViewLayout() === "window") {
+    if (state.selectedIds.length !== 1) return null;
+    email = shownEmails().find(row => String(row.id) === state.selectedIds[0]);
+  } else {
+    if (pendingOpenId) return null;
+    email = state.email;
+  }
+  if (!email || !email.id || !email.accountId || email.outbox || email.bodyError) return null;
+  if (!state.accounts.some(account => account.id === email.accountId)) return null;
+  return email;
+}
+
 function mailShortcutContext(event) {
   const menu = $("organize-menu");
   const top = topOpenDialog();
@@ -15894,7 +15916,7 @@ function mailShortcutContext(event) {
     dialog: !!top || undoPopoverOpen() || !!event?.target?.closest?.("#body-sync"),
     menu: !!(menu && menu.hidden === false),
     topDialog: top && top.id ? top.id : "",
-    mailOpen: !!(state.email && state.email.id && !state.email.outbox),
+    mailOpen: !!mailShortcutTarget(),
     view: state.view,
     textSelected: textSelected,
   };
@@ -15944,11 +15966,11 @@ function mailShortcut(event, context) {
   return "";
 }
 
-function openReaderCompose(kind) {
-  const email = state.email;
+function openReaderCompose(kind, email = mailShortcutTarget()) {
   if (!email || email.outbox) return;
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
-  const self = (account && (account.preferredFromAddress || account.email)) || "";
+  const account = state.accounts.find((item) => item.id === email.accountId);
+  if (!account) return;
+  const self = (account.preferredFromAddress || account.email) || "";
   return presentCompose(composeSeed(email, kind, self));
 }
 
@@ -15964,9 +15986,12 @@ let mailShortcutAction = "";
 let mailShortcutStamp = 0;
 
 function runMailShortcut(action) {
+  const target = readerWindowShortcut(action) ? mailShortcutTarget() : null;
+  if (readerWindowShortcut(action) && !target) return;
+  const key = JSON.stringify([action, target?.accountId, target?.id]);
   const now = Date.now();
-  if (action && action === mailShortcutAction && now - mailShortcutStamp < 50) return;
-  mailShortcutAction = action || "";
+  if (action && key === mailShortcutAction && now - mailShortcutStamp < 50) return;
+  mailShortcutAction = key;
   mailShortcutStamp = now;
   if (action === "new-mail") {
     const button = $("compose-open");
@@ -15983,13 +16008,14 @@ function runMailShortcut(action) {
     return;
   }
   if (action === "delete") {
-    if (!state.email) return;
-    guard(() => trashOpen(state.email));
+    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
+      ? deleteFromList(target) : trashOpen(target));
     return;
   }
   if (action === "reply" || action === "reply-all" || action === "forward") {
     const kind = action === "reply" ? "reply" : action === "reply-all" ? "all" : "forward";
-    guard(() => openReaderCompose(kind));
+    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
+      ? replyFromList(target, kind) : openReaderCompose(kind, target));
     return;
   }
   const commandId = action === "send" ? "compose-send" : action === "save-draft" ? "compose-save" : action === "send-confirm" ? "compose-preview-confirm" : "";
