@@ -1499,25 +1499,25 @@ assert.strictEqual(chosenSignatureId(pack, "other"), "s2");
 assert.strictEqual(chosenSignatureId({ signatures: [] }, "a"), "");
 const domainPack = {
   ...pack,
-  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "s2", "gmail.com": "missing", "mail.hkbscl.com": "s1" } },
+  signatureByDomainPerAccount: { "gmail-ada": { "northstar.example": "s2", "gmail.com": "missing", "mail.northstar.example": "s1" } },
 };
-assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "hkbscl.com"), "s2");
+assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "northstar.example"), "s2");
 assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "gmail.com"), "s1");
-assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "mail.hkbscl.com"), "s1");
+assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada", "mail.northstar.example"), "s1");
 assert.strictEqual(chosenSignatureId(domainPack, "gmail-ada"), "s1");
-assert.strictEqual(chosenSignatureId(domainPack, "other", "hkbscl.com"), "s2");
+assert.strictEqual(chosenSignatureId(domainPack, "other", "northstar.example"), "s2");
 assert.strictEqual(chosenSignatureId({ signatures: [{ id: "only", accountId: "gmail-ada", text: "Hi" }] }, "gmail-ada"), "only");
 assert.strictEqual(chosenSignatureId({
   signatures: [{ id: "only", accountId: "gmail-ada", text: "Hi" }],
-  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "only" } },
+  signatureByDomainPerAccount: { "gmail-ada": { "northstar.example": "only" } },
 }, "gmail-ada"), "");
 assert.strictEqual(chosenSignatureId({
   signatures: [{ id: "only", accountId: "gmail-ada", text: "Hi" }],
-  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "only" } },
-}, "gmail-ada", "hkbscl.com"), "only");
+  signatureByDomainPerAccount: { "gmail-ada": { "northstar.example": "only" } },
+}, "gmail-ada", "northstar.example"), "only");
 const signatureDomainField = extractFunction(appJs, "signatureDomainField");
-assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s2"), "hkbscl.com");
-assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s1"), "mail.hkbscl.com");
+assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s2"), "northstar.example");
+assert.strictEqual(signatureDomainField(domainPack, "gmail-ada", "s1"), "mail.northstar.example");
 assert.strictEqual(signatureDomainField(domainPack, "other", "s2"), "");
 const signatureIdentity = loadFunctions(appJs, [
   "signatureRows", "chosenSignatureId", "signatureName", "signatureBareAddress", "signaturePolicyDomain",
@@ -1530,17 +1530,17 @@ const sendAsAccount = {
   email: "leo@gmail.com",
   sendAs: [
     { email: "leo@gmail.com", verified: true },
-    { email: "leo@hkbscl.com", verified: true },
-    { email: "pending@hkbscl.com", verificationStatus: "pending" },
-    { email: "nope@hkbscl.com", verified: false },
+    { email: "leo@northstar.example", verified: true },
+    { email: "pending@northstar.example", verificationStatus: "pending" },
+    { email: "nope@northstar.example", verified: false },
   ],
 };
 const emptySettings = { accounts: {} };
 const identityRows = signatureIdentity.signatureIdentityRows({ signatures: [], signatureByDomainPerAccount: {} }, sendAsAccount, emptySettings);
-assert.deepStrictEqual(identityRows.map((row) => row.key), ["default", "domain:hkbscl.com"]);
+assert.deepStrictEqual(identityRows.map((row) => row.key), ["default", "domain:northstar.example"]);
 assert.equal(identityRows[1].detail.includes("pending@"), false);
 assert.equal(identityRows[1].detail.includes("nope@"), false);
-assert.match(identityRows[1].detail, /leo@hkbscl.com/);
+assert.match(identityRows[1].detail, /leo@northstar.example/);
 const primaryOnly = signatureIdentity.signatureIdentityRows(
   { signatures: [{ id: "s1", accountId: "gmail-ada", name: "Work", text: "Hi" }], defaultSignaturePerAccount: { "gmail-ada": "s1" } },
   plainAccount,
@@ -1562,7 +1562,7 @@ const sharedHost = signatureIdentity.signatureIdentityRows(
 );
 assert.ok(sharedHost.some((row) => row.domain === "gmail.com"));
 const aliasAccount = plainAccount;
-const aliasSettings = { accounts: { "gmail-ada": { aliases: [{ address: "leo@gmail.com", domain: "hkbscl.com" }] } } };
+const aliasSettings = { accounts: { "gmail-ada": { aliases: [{ address: "leo@gmail.com", domain: "northstar.example" }] } } };
 const composePolicy = require("../shared/compose-policy");
 assert.strictEqual(
   signatureIdentity.signaturePolicyDomain("Leo <leo@gmail.com>", aliasAccount, aliasSettings),
@@ -1573,38 +1573,38 @@ const aliasRows = signatureIdentity.signatureIdentityRows(
   aliasAccount,
   aliasSettings,
 );
-assert.ok(aliasRows.some((row) => row.key === "domain:hkbscl.com"));
+assert.ok(aliasRows.some((row) => row.key === "domain:northstar.example"));
 const domainOnly = signatureIdentity.signatureIdentityRows(
   {
     signatures: [{ id: "only", accountId: "gmail-ada", name: "Only", text: "Hi" }],
-    signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "only" } },
+    signatureByDomainPerAccount: { "gmail-ada": { "northstar.example": "only" } },
   },
   sendAsAccount,
   emptySettings,
 );
 assert.equal(domainOnly[0].signatureId, "");
-assert.equal(domainOnly.find((row) => row.domain === "hkbscl.com").signatureId, "only");
-const domainAccount = { id: "gmail-ada", email: "leo@gmail.com", sendAs: [{ email: "leo@hkbscl.com", verified: true }] };
+assert.equal(domainOnly.find((row) => row.domain === "northstar.example").signatureId, "only");
+const domainAccount = { id: "gmail-ada", email: "leo@gmail.com", sendAs: [{ email: "leo@northstar.example", verified: true }] };
 const exclusivePack = {
   signatures: [
     { id: "s1", accountId: "gmail-ada", name: "Account", text: "Account" },
     { id: "s2", accountId: "gmail-ada", name: "Domain", text: "Old" },
   ],
   defaultSignaturePerAccount: { "gmail-ada": "s1" },
-  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "s2" } },
+  signatureByDomainPerAccount: { "gmail-ada": { "northstar.example": "s2" } },
 };
-const exclusive = signatureIdentity.signatureSavePlan(exclusivePack, domainAccount, emptySettings, { key: "domain:hkbscl.com" }, { name: "hkbscl.com", body: "Domain only", html: false });
+const exclusive = signatureIdentity.signatureSavePlan(exclusivePack, domainAccount, emptySettings, { key: "domain:northstar.example" }, { name: "northstar.example", body: "Domain only", html: false });
 assert.equal(exclusive.length, 1);
 assert.equal(exclusive[0].id, "s2");
 assert.equal(exclusive[0].isDefault, false);
-assert.deepStrictEqual(exclusive[0].domains, ["hkbscl.com"]);
+assert.deepStrictEqual(exclusive[0].domains, ["northstar.example"]);
 assert.equal(exclusive[0].text, "Domain only");
 const sharedPack = {
   signatures: [{ id: "s1", accountId: "gmail-ada", name: "Shared", text: "Shared" }],
   defaultSignaturePerAccount: { "gmail-ada": "s1" },
-  signatureByDomainPerAccount: { "gmail-ada": { "hkbscl.com": "s1" } },
+  signatureByDomainPerAccount: { "gmail-ada": { "northstar.example": "s1" } },
 };
-const split = signatureIdentity.signatureSavePlan(sharedPack, domainAccount, emptySettings, { key: "domain:hkbscl.com" }, { name: "hkbscl.com", body: "New", html: false });
+const split = signatureIdentity.signatureSavePlan(sharedPack, domainAccount, emptySettings, { key: "domain:northstar.example" }, { name: "northstar.example", body: "New", html: false });
 assert.equal(split.length, 2);
 assert.equal(split[0].id, "s1");
 assert.equal(split[0].text, "Shared");
@@ -1612,7 +1612,7 @@ assert.deepStrictEqual(split[0].domains, []);
 assert.equal(Object.hasOwn(split[0], "isDefault"), false);
 assert.equal(split[1].id, undefined);
 assert.equal(split[1].isDefault, false);
-assert.deepStrictEqual(split[1].domains, ["hkbscl.com"]);
+assert.deepStrictEqual(split[1].domains, ["northstar.example"]);
 assert.equal(split[1].text, "New");
 const defaultSplit = signatureIdentity.signatureSavePlan(sharedPack, domainAccount, emptySettings, { key: "default" }, { name: "Account default", body: "Only default", html: false });
 assert.equal(defaultSplit.length, 1);
@@ -1620,7 +1620,7 @@ assert.equal(defaultSplit[0].id, undefined);
 assert.equal(defaultSplit[0].isDefault, true);
 assert.equal(defaultSplit[0].text, "Only default");
 assert.equal(defaultSplit[0].domains, undefined);
-const unbound = signatureIdentity.signatureDeletePlan(sharedPack, domainAccount, emptySettings, { key: "domain:hkbscl.com" });
+const unbound = signatureIdentity.signatureDeletePlan(sharedPack, domainAccount, emptySettings, { key: "domain:northstar.example" });
 assert.deepStrictEqual(unbound[0].domains, []);
 assert.equal(unbound[0].text, "Shared");
 assert.equal(Object.hasOwn(unbound[0], "isDefault"), false);
@@ -1635,7 +1635,7 @@ const soleDelete = signatureIdentity.signatureDeletePlan(
   { key: "default" },
 );
 assert.deepStrictEqual(soleDelete, [{ delete: true, id: "s1" }]);
-assert.equal(signatureIdentity.signatureFocusRow(aliasRows, { email: "Leo <leo@gmail.com>" }, aliasAccount, aliasSettings).key, "domain:hkbscl.com");
+assert.equal(signatureIdentity.signatureFocusRow(aliasRows, { email: "Leo <leo@gmail.com>" }, aliasAccount, aliasSettings).key, "domain:northstar.example");
 assert.equal(signatureIdentity.signatureFocusRow(aliasRows, { key: "default" }, aliasAccount, aliasSettings).key, "default");
 assert.strictEqual(signaturePlain(pack.signatures[0]), "Thanks,\nAda");
 assert.strictEqual(signaturePlain(pack.signatures[1]), "— Ada");
@@ -1673,7 +1673,7 @@ assert.strictEqual(fromDomain.previous, "Thanks,\nAda");
 assert.strictEqual(fromDomain.html, "<p>Thanks,<br>Ada</p>");
 const textPick = applyFromSignature({
   follows: true, body: "", previous: "", pack: domainPack,
-  accountId: "gmail-ada", policyDomain: "hkbscl.com", rows: domainPack.signatures,
+  accountId: "gmail-ada", policyDomain: "northstar.example", rows: domainPack.signatures,
 });
 assert.strictEqual(textPick.applied, true);
 assert.strictEqual(textPick.pickerId, "s2");
@@ -1685,7 +1685,7 @@ assert.strictEqual(signatureSwap.signatureMarkup({ html: "  <p>Hi</p>  ", text: 
 assert.strictEqual(signatureSwap.signatureMarkup(null), "");
 const draftBody = applyFromSignature({
   follows: false, body: "Draft", previous: "", pack: domainPack,
-  accountId: "gmail-ada", policyDomain: "hkbscl.com", rows: domainPack.signatures,
+  accountId: "gmail-ada", policyDomain: "northstar.example", rows: domainPack.signatures,
 });
 assert.strictEqual(draftBody.applied, false);
 assert.strictEqual(draftBody.body, "Draft");
@@ -1705,11 +1705,11 @@ assert.deepStrictEqual(signatureDraft({ id: "s1", name: "Work", body: "<p>Hi</p>
   html: "<p>Hi</p>",
   isDefault: false,
 });
-assert.deepStrictEqual(signatureDraft({ name: "Work", body: "Hi", domains: ["@HKBSCL.com", " Gmail.com "] }), {
+assert.deepStrictEqual(signatureDraft({ name: "Work", body: "Hi", domains: ["@NORTHSTAR.example", " Gmail.com "] }), {
   name: "Work",
   text: "Hi",
   isDefault: false,
-  domains: ["@HKBSCL.com", " Gmail.com "],
+  domains: ["@NORTHSTAR.example", " Gmail.com "],
 });
 assert.deepStrictEqual(signatureFields(null, true), { id: "", name: "", body: "", html: false, isDefault: false });
 assert.deepStrictEqual(signatureFields({ id: "s1", name: "Work", html: "<p>Hi</p>", text: "nope" }, true), {
@@ -1887,11 +1887,11 @@ assert.ok(functionSource(appJs, "threadAbsoluteTime").includes("shownWhen"));
 assert.ok(functionSource(appJs, "clockLabel").includes("displayStamp"));
 assert.ok(functionSource(appJs, "takePref").includes("morrow:configGetTimeFormat"));
 assert.ok(functionSource(appJs, "paintPrefs").includes("repaintClockSurfaces"));
-assert.ok(!html.includes("hkbscl"));
+assert.ok(!html.includes("NORTHSTAR"));
 assert.ok(html.includes("@example.com = colleague@example.com, team@example.org"));
 assert.ok(html.includes("ada@example.org = example.com"));
 assert.ok(html.includes("A domain row applies only to that From domain"));
-assert.ok(!fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8").includes("hkbscl"));
+assert.ok(!fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8").includes("NORTHSTAR"));
 assert.ok(functionSource(appJs, "chooseFetchedModel").includes("paintAiDirty"));
 assert.ok(functionSource(appJs, "chooseFetchedModel").includes('new Event("input"'));
 assert.ok(functionSource(appJs, "fetchAiModels").includes("applyFetchedModels"));
@@ -3512,7 +3512,7 @@ const filterTree = [
   { id: "AriesCPA.com/AsiaBs", name: "AsiaBs", parentId: "AriesCPA.com", depth: 1 },
   { id: "AriesCPA.com/AsiaBs/Q1", name: "Q1", parentId: "AriesCPA.com/AsiaBs", depth: 2 },
   { id: "INBOX", name: "INBOX", parentId: "", depth: 0 },
-  { id: "HKBSCL.com", name: "HKBSCL.com", parentId: "", depth: 0 },
+  { id: "NORTHSTAR.example", name: "NORTHSTAR.example", parentId: "", depth: 0 },
 ];
 assert.deepStrictEqual(sidebarFilter.filterSidebarTree(filterTree, "  ").map((folder) => folder.id), filterTree.map((folder) => folder.id));
 assert.deepStrictEqual(sidebarFilter.filterSidebarTree(filterTree, "asia").map((folder) => folder.id), [
@@ -3538,7 +3538,7 @@ assert.deepStrictEqual(sidebarFilter.sidebarRowsFor(filterTree, "leo", { leo: ["
 assert.deepStrictEqual(sidebarFilter.sidebarRowsFor(filterTree, "leo", { leo: ["AriesCPA.com"] }, "", folderCollapse).map((folder) => folder.id), [
   "AriesCPA.com",
   "INBOX",
-  "HKBSCL.com",
+  "NORTHSTAR.example",
 ]);
 assert.deepStrictEqual(sidebarFilter.sidebarRowsFor(filterTree, "leo", {}, "Aries", null).map((folder) => folder.id), [
   "AriesCPA.com",
@@ -6056,10 +6056,10 @@ async function checkSignaturesAndSchedule(engine, db) {
     name: "Work",
     text: "Thanks,\nAda",
     isDefault: true,
-    domains: ["@HKBSCL.com", "gmail.com"],
+    domains: ["@NORTHSTAR.example", "gmail.com"],
   }]);
   assert.strictEqual(bound.success, true);
-  const boundMap = { "hkbscl.com": createdId, "gmail.com": createdId };
+  const boundMap = { "northstar.example": createdId, "gmail.com": createdId };
   assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatureByDomainPerAccount["imap-test"], boundMap);
   const rebound = engine.answer("mail:upsertSignature", [{
     accountId: "imap-test",
@@ -6067,7 +6067,7 @@ async function checkSignaturesAndSchedule(engine, db) {
     name: "Work",
     text: "Thanks,\nAda",
     isDefault: true,
-    domains: ["hkbscl.com", "@gmail.com"],
+    domains: ["northstar.example", "@gmail.com"],
   }]);
   assert.strictEqual(rebound.success, true);
   assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatureByDomainPerAccount["imap-test"], boundMap);
@@ -6075,10 +6075,10 @@ async function checkSignaturesAndSchedule(engine, db) {
     accountId: "imap-test",
     name: "Personal",
     text: "— Ada",
-    domains: ["hkbscl.com"],
+    domains: ["northstar.example"],
   }]);
   assert.strictEqual(clash.success, false);
-  assert.match(clash.error.message, /hkbscl.com is already bound to Work\./);
+  assert.match(clash.error.message, /northstar.example is already bound to Work\./);
   const afterClash = engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data;
   assert.deepStrictEqual(afterClash.signatures.map((row) => row.name), ["Work"]);
   assert.deepStrictEqual(afterClash.signatureByDomainPerAccount["imap-test"], boundMap);
@@ -6125,7 +6125,7 @@ async function checkSignaturesAndSchedule(engine, db) {
     name: "Work",
     text: "Thanks,\nAda",
     isDefault: true,
-    domains: ["hkbscl.com", "gmail.com"],
+    domains: ["northstar.example", "gmail.com"],
   }]);
   assert.strictEqual(restoredDomains.success, true);
   assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatureByDomainPerAccount["imap-test"], boundMap);
@@ -6203,7 +6203,7 @@ async function checkSignaturesAndSchedule(engine, db) {
   const againSig = engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]);
   assert.ok(againSig.data.signatures.some((row) => row.id === createdId && row.text === "Thanks,\nAda"));
   assert.strictEqual(againSig.data.defaultSignaturePerAccount["imap-test"], createdId);
-  assert.deepStrictEqual(againSig.data.signatureByDomainPerAccount["imap-test"], { "hkbscl.com": createdId, "gmail.com": createdId });
+  assert.deepStrictEqual(againSig.data.signatureByDomainPerAccount["imap-test"], { "northstar.example": createdId, "gmail.com": createdId });
   const againSched = engine.answer("mail:listScheduled", [{ accountId: "imap-test" }]);
   assert.ok(againSched.data.some((row) => row.id === queued.data.id && row.subject === "After restart"));
 
@@ -6417,7 +6417,7 @@ async function checkTidy() {
         createdAt: Date.now(),
       });
     }
-    insertMailbox("gmail-all", "leo@hkbscl.com", "gmail");
+    insertMailbox("gmail-all", "leo@northstar.example", "gmail");
     db.replaceFolders("gmail-all", [
       { path: "INBOX", name: "INBOX", wellKnown: "inbox" },
       { path: "[Gmail]/All Mail", name: "[Gmail]/All Mail", wellKnown: null },
@@ -10254,6 +10254,8 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
     assert.strictEqual(fixture.status, 0, name + " failed");
   }
 }).then(() => checkTranslateBatches()).then(() => {
+  const timeline = spawnSync(process.execPath, [path.join(root, "scripts/timeline.test.js")], { stdio: "inherit", timeout: 30000 });
+  assert.strictEqual(timeline.status, 0, "Timeline regression fixture failed");
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

@@ -1907,6 +1907,7 @@ function invalidateAttachmentAccount(id) {
 async function removeAccount(params) {
   const id = params && (params.accountId || params.id);
   if (!id || !db.accountById(id)) return undefined;
+  require("../timeline/service").invalidateAccount(id);
   composeIdentity.invalidate(id);
   invalidateAttachmentAccount(id);
   secrets.deletePassword(id);
@@ -2404,6 +2405,7 @@ async function ensureBody(row, options) {
       subject: fetched.subject || row.subject,
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
       from_address: fetched.fromAddress || row.from_address || null,
+      ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
     });
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
     return db.messageById(row.id);
@@ -4550,6 +4552,19 @@ function noteBotSent(receipt) {
 actions.install({ exclusive, secretFor, emitAccounts, broadcast });
 
 module.exports = {
+  timelineAccountStamp(id) {
+    const account = db.accountById(id);
+    if (!account) throw removedAccountError();
+    return JSON.stringify([account.created_at, accountEpochs.get(id) || 0, account.auth_kind, account.profile,
+      account.username, account.imap_host, account.imap_port, account.imap_tls, account.mail_transport, account.gmail_generation]);
+  },
+  async timelineDownload(id, accountId) {
+    const row = db.messageById(id);
+    if (!row || row.account_id !== accountId) throw removedAccountError();
+    const account = bindAccount(db.accountById(accountId));
+    await ensureBody(row, { retry: true });
+    assertAccountCurrent(account);
+  },
   init,
   answer,
   settleActions: actions.settleActions,

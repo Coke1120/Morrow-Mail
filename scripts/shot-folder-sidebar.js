@@ -13,7 +13,7 @@ const fixture = `
 const fixtureAccounts = [
   {
     id: "leo",
-    email: "leo@hkbscl.com",
+    email: "leo@northstar.example",
     unreadCount: 3,
     platform: "imap",
     profile: "custom",
@@ -424,7 +424,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.deepEqual(await names(), ["leo:AriesCPA.com", "leo:AsiaBs"]);
   assert.equal(await evaluate("document.querySelector('button.all-inbox')"), null);
   const headings = await evaluate("[...document.querySelectorAll('#folders :is(h2, button.account)')].map((node) => node.textContent.trim())");
-  assert.deepEqual(headings, ["leo@hkbscl.com"]);
+  assert.deepEqual(headings, ["leo@northstar.example"]);
   assert.equal(await evaluate("document.querySelector('button.folder.is-filter-match .name').textContent"), "AsiaBs");
   assert.equal(await evaluate("!!document.querySelector('button.folder.is-filter-match')"), true);
   assert.equal(await evaluate("document.getElementById('folder-filter-clear').hidden"), false);

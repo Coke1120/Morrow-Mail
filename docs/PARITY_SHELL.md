@@ -1,5 +1,10 @@
 # Shell parity
 
+Message / Timeline tabs preserve the existing reader element. Timeline preparation
+uses frozen downloaded sources, and only Generate starts the saved AI provider.
+Read-only body downloads do not use the normal renderer mail-open path. See
+[timeline scope, public JSON and export limits](TIMELINE_FORMAT.md).
+
 Wave1 review follow-up: the Compose mailbox selector is in Basic, while alias and
 domain rules remain in Advanced. Notes, schedule editors, Out of Office replies
 and default schedule-delay fields retain edits made during asynchronous reads or

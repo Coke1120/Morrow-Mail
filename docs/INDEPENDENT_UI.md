@@ -4,6 +4,12 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+The reader also has Message / Timeline tabs. Selected-mail timeline generation is
+an explicit reviewed action, separate from normal open-and-mark-read behavior.
+Saved artifacts and reviewed JSON, Markdown and isolated PDF exports stay local;
+no scheduled generation or URL delivery is available. See [the public format and
+privacy boundaries](TIMELINE_FORMAT.md).
+
 Wave1 review fixes retain uncertain Outbox deliveries in Scheduled delivery review,
 including their content and Message-ID, without opening an editable retry draft.
 Folder/search responses from before Outbox selection are retired. Queue errors

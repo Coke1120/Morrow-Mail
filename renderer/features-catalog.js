@@ -7,6 +7,12 @@
   return {
     items: [
       {
+        id: "thread-timeline",
+        title: "Selected-mail timeline",
+        category: "Mail",
+        blurb: "The reader has Message and Timeline tabs. Review selected threads, multiple selected messages, or downloaded keyword results; only Generate timeline starts AI extraction through the saved API/custom endpoint or ChatGPT account. Explicit-action AI data permission is required again for the expanded disclosure. Search preparation freezes up to 1,000 messages / 200 threads, separately from the ordinary 100-result list, and refuses larger selections. Thread expansion and missing-body downloads are explicit; timeline reads never mark mail read, change labels or send mail. Missing, incomplete, warned or unsupported records are omitted only with explicit partial-coverage acceptance. Chunking, one validation retry per step, deterministic source deduplication, bounded consolidation, cancellation and run limits apply. Mail timestamps retain provenance and unknown dates; summaries and requests need human review. Timelines stay in the local mail store, outside Brain and Agent history. Review personal information, coverage and uncertainty before each Markdown, isolated PDF or versioned public JSON export. Deleting an account deletes every related local timeline, including multi-account results; exported files, backups and historical journal bytes remain. No URL/webhook export, bot operation, CLI command, scheduled generation, attachment-content extraction or exact price estimate is available.",
+      },
+      {
 id: "mail-workflow-feedback",
         title: "Mail and Agent feedback",
         category: "Mail",
