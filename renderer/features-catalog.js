@@ -97,6 +97,12 @@ id: "mail-workflow-feedback",
         blurb: "The open message shows its date and time on the From row, right-aligned, in the main reading pane and in a separate reader window. That text uses the reader's existing date and time format. To and Cc stay on the lines below. Main and separate readers apply definitive flag and removal receipts; terminal refusals restore the authoritative flags instead of announcing success. Remote images are on for new profiles. When disabled, normal image, CSS URL and table backgrounds stay blocked until Load remote content is chosen for that message. Unsupported CSS image functions, including image-set, are discarded.",
       },
       {
+        id: "message-summary",
+        title: "Message summary",
+        category: "Mail",
+        blurb: "Summary on the email toolbar summarizes only the selected message in the reading pane or separate reader. It runs only when chosen and uses the saved AI provider and existing explicit AI data permission; a missing connection or permission offers Review AI settings. The panel names the subject, sender and mailbox, announces loading, errors and cancellation, and renders AI output as plain text. It includes downloaded body text and any quoted history, excludes attachment files and linked pages, and labels incomplete content and the 24,000-character input limit. Header/snippet-only messages must download a body first. Choose Summary again to retry or regenerate, Cancel summary to stop waiting, or Dismiss summary to close it. Switching messages, removing/reconnecting a mailbox, content changes and closing the reader retire requests; late replies cannot populate another message. Requests time out after two minutes. Cancellation cannot recall data already sent. Results stay only in this window's memory and clear on navigation. Summary creates no drafts or mail changes and adds no CLI command or bot permission.",
+      },
+      {
         id: "sender-identities",
         title: "Sender identities",
         category: "Mail",
