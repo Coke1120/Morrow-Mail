@@ -1,6 +1,6 @@
 # Repository-local UI/UX Pro Max
 
-Status: proposed in a draft PR; adoption requires review.
+Status: accepted for repository-local use. Executing third-party code remains gated.
 
 The requested source is `nextlevelbuilder/ui-ux-pro-max-skill`, pinned to
 `713eef51b04efc98d6fa565323b495f7c9c89fd4` (upstream version 2.15.0, MIT).
