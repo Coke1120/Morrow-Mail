@@ -1,0 +1,292 @@
+{
+  "upstream": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+  "revision": "713eef51b04efc98d6fa565323b495f7c9c89fd4",
+  "version": "2.15.0",
+  "license": "MIT",
+  "scope": "Repository-local Codex skill; static copy, installer not executed",
+  "unmodified_files": [
+    {
+      "path": "data/app-interface.csv",
+      "source": "src/ui-ux-pro-max/data/app-interface.csv",
+      "sha256": "331e7cf2c0b222d80c566c5f255c63cb339f65bfd02e471a720f28e4864a9f08",
+      "size_bytes": 11046
+    },
+    {
+      "path": "data/catalog-summary.json",
+      "source": "src/ui-ux-pro-max/data/catalog-summary.json",
+      "sha256": "4ca9ee8697984ed678a69a3bfbb788fb7f826d564f22cae5d094df8879517217",
+      "size_bytes": 2392
+    },
+    {
+      "path": "data/charts.csv",
+      "source": "src/ui-ux-pro-max/data/charts.csv",
+      "sha256": "4115cf1120680f2cedef0676cb648f30c7ef4699e2a947535d4113e71ed3b12a",
+      "size_bytes": 23365
+    },
+    {
+      "path": "data/colors.csv",
+      "source": "src/ui-ux-pro-max/data/colors.csv",
+      "sha256": "8162429222bce22df62b564085946a30d07cc9722c58d0a3a494bd0d1d00841c",
+      "size_bytes": 37940
+    },
+    {
+      "path": "data/data-provenance.json",
+      "source": "src/ui-ux-pro-max/data/data-provenance.json",
+      "sha256": "e82fb33ed49375a300e93d9c11ccd1c1493c999e84ee7ee295e527634786e2e0",
+      "size_bytes": 36686
+    },
+    {
+      "path": "data/google-font-licenses.json",
+      "source": "src/ui-ux-pro-max/data/google-font-licenses.json",
+      "sha256": "35688523f2955795caa1a47c53b83099e60c1708461476f9cc3a050cf3b0148a",
+      "size_bytes": 433127
+    },
+    {
+      "path": "data/google-fonts.csv",
+      "source": "src/ui-ux-pro-max/data/google-fonts.csv",
+      "sha256": "1c8c3b2ea1faf6a1012da463756def8b3889db33f2226f0343bb4daa80307d03",
+      "size_bytes": 747241
+    },
+    {
+      "path": "data/icons.csv",
+      "source": "src/ui-ux-pro-max/data/icons.csv",
+      "sha256": "50816c6012030178195a16ee481ebf58b47bd985d70e8ec58886cc83f6eddafc",
+      "size_bytes": 57945
+    },
+    {
+      "path": "data/landing.csv",
+      "source": "src/ui-ux-pro-max/data/landing.csv",
+      "sha256": "9a2edd3bb676c2a58f00ade7a062e285222d4297bfd847c8d5b056f0dbbf52d0",
+      "size_bytes": 25449
+    },
+    {
+      "path": "data/motion.csv",
+      "source": "src/ui-ux-pro-max/data/motion.csv",
+      "sha256": "381affe8df8ea1f66fbbda2598827f9f54299107bbe6a1b4e9b68f6b62091ceb",
+      "size_bytes": 14679
+    },
+    {
+      "path": "data/phosphor-icons-upstream.json",
+      "source": "src/ui-ux-pro-max/data/phosphor-icons-upstream.json",
+      "sha256": "2399325233b277b5c97a80e6a5e8941154f5d057beee4e7613db87c87d700236",
+      "size_bytes": 823933
+    },
+    {
+      "path": "data/products.csv",
+      "source": "src/ui-ux-pro-max/data/products.csv",
+      "sha256": "5756125e2b0e0d2360926f175d0975c8cd846c7589e5e2ce02631ff645e66361",
+      "size_bytes": 76959
+    },
+    {
+      "path": "data/react-performance.csv",
+      "source": "src/ui-ux-pro-max/data/react-performance.csv",
+      "sha256": "3d925802539abac5afeb63ae8aa1960b7229ad271b3a47caed40ab2d97ad0734",
+      "size_bytes": 15080
+    },
+    {
+      "path": "data/stacks/angular.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/angular.csv",
+      "sha256": "704be83f2bad30c7e6de01afb113ffa01e0c458762f48b7102f31ba2367b5553",
+      "size_bytes": 19863
+    },
+    {
+      "path": "data/stacks/astro.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/astro.csv",
+      "sha256": "2c2f55fadaafc05e04cc321c8194a1a28b656e6757fe2ba316f41b16428299c6",
+      "size_bytes": 14591
+    },
+    {
+      "path": "data/stacks/avalonia.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/avalonia.csv",
+      "sha256": "442fca14675a020683473e7e49f08abb27b9df0765c80efe54aef61f1a4ac258",
+      "size_bytes": 27327
+    },
+    {
+      "path": "data/stacks/flutter.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/flutter.csv",
+      "sha256": "64dba0ac17349f28bce517a0f5f48c54d9ed2e487ec0c0258303463b382f41a0",
+      "size_bytes": 14192
+    },
+    {
+      "path": "data/stacks/html-tailwind.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/html-tailwind.csv",
+      "sha256": "d05a581d20af57b8ca0104a6d31d90a07c437d500662a96c3029fc2f9a4678ee",
+      "size_bytes": 16551
+    },
+    {
+      "path": "data/stacks/javafx.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/javafx.csv",
+      "sha256": "2e819b8d5abdd23ad4dae0991650fdb57af497aabd68b37463aa9c442944c869",
+      "size_bytes": 33577
+    },
+    {
+      "path": "data/stacks/jetpack-compose.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/jetpack-compose.csv",
+      "sha256": "699de218b286948eaec7d15767b6e1350ee299167e49bf476d82e3ff58724e0a",
+      "size_bytes": 12295
+    },
+    {
+      "path": "data/stacks/laravel.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/laravel.csv",
+      "sha256": "854ea4daa5fc61292d22235ad33b49ba3fe22423c3de8d3cb03758ffed3b59f9",
+      "size_bytes": 20163
+    },
+    {
+      "path": "data/stacks/nextjs.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/nextjs.csv",
+      "sha256": "ecd2c27b2ea0127d203ae726060efcdd7335b5e83f96b99e4f3befbbfeebd5a4",
+      "size_bytes": 18687
+    },
+    {
+      "path": "data/stacks/nuxt-ui.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/nuxt-ui.csv",
+      "sha256": "9c0179d559abe39ad63b958b54cb29c82be1dd20706430476096ea8967bfa328",
+      "size_bytes": 32292
+    },
+    {
+      "path": "data/stacks/nuxtjs.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/nuxtjs.csv",
+      "sha256": "3d9b54ed2d151bd9c86e9e5609b8a6f88a00c4c52fa601a30af96c49b2c4d176",
+      "size_bytes": 23014
+    },
+    {
+      "path": "data/stacks/react-native.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/react-native.csv",
+      "sha256": "ba31dd9c0c04da6bc02a74448bf121f9c0728ae5ba3b4d47b487778b0a1135b5",
+      "size_bytes": 14049
+    },
+    {
+      "path": "data/stacks/react.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/react.csv",
+      "sha256": "4dd176a9787e5c6306b5df94158d75955adcdc6edab41ce5286641a5842303c1",
+      "size_bytes": 21166
+    },
+    {
+      "path": "data/stacks/shadcn.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/shadcn.csv",
+      "sha256": "e56cfde5b74907836ac3582a4779d5b7f3d206a702ab81b8669a1b668c3eeb51",
+      "size_bytes": 23184
+    },
+    {
+      "path": "data/stacks/svelte.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/svelte.csv",
+      "sha256": "f6e379ba802941ba26b01d4ffbe3cd39120f2587659a1d93851c707f66bc13db",
+      "size_bytes": 15078
+    },
+    {
+      "path": "data/stacks/swiftui.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/swiftui.csv",
+      "sha256": "bdd9231ff3ad658f4e7c063e1eb49df2fd09ac8d90631a86df899b39833b9623",
+      "size_bytes": 15323
+    },
+    {
+      "path": "data/stacks/threejs.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/threejs.csv",
+      "sha256": "155d583b9c64da0df4b6c6cb060c02eab222505e0734d6353da02c9e2b5d982b",
+      "size_bytes": 46769
+    },
+    {
+      "path": "data/stacks/uno.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/uno.csv",
+      "sha256": "a0474363e4225b5367214d5675fd3e075f137026f9500f0d04357882ef4f6d48",
+      "size_bytes": 30091
+    },
+    {
+      "path": "data/stacks/uwp.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/uwp.csv",
+      "sha256": "c409f08c1fbba1f1029f1acaa554e7b4471cc85517a5751c9f2e62465badcd5c",
+      "size_bytes": 24692
+    },
+    {
+      "path": "data/stacks/vue.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/vue.csv",
+      "sha256": "b655f1ebb9dff2652d15981f31b1784c8a6d4759efd2815a14f3088257569f95",
+      "size_bytes": 12813
+    },
+    {
+      "path": "data/stacks/winui.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/winui.csv",
+      "sha256": "e676dc1c13ee6c205c40b0746f1335150a346c7a49a0616d2545bc3d2c930c85",
+      "size_bytes": 27890
+    },
+    {
+      "path": "data/stacks/wpf.csv",
+      "source": "src/ui-ux-pro-max/data/stacks/wpf.csv",
+      "sha256": "9781a9950b20333637b30a02e498b7efca21b618a3eeb8665836f3ac6e974da7",
+      "size_bytes": 24158
+    },
+    {
+      "path": "data/styles.csv",
+      "source": "src/ui-ux-pro-max/data/styles.csv",
+      "sha256": "a6b37e5925d20b4c4b885a8a24aead64e1fcc779c3f0be91cfbe350de5628953",
+      "size_bytes": 150036
+    },
+    {
+      "path": "data/typography.csv",
+      "source": "src/ui-ux-pro-max/data/typography.csv",
+      "sha256": "321fc446e89024488ebae96dda93efc4d2307bd8bddb240857ad51364f6782c8",
+      "size_bytes": 49997
+    },
+    {
+      "path": "data/ui-reasoning.csv",
+      "source": "src/ui-ux-pro-max/data/ui-reasoning.csv",
+      "sha256": "f0774dd741cecdad5eec842034bd6d5e9ea50e9f220a1910069748daa0bb8e9a",
+      "size_bytes": 77360
+    },
+    {
+      "path": "data/ux-guidelines.csv",
+      "source": "src/ui-ux-pro-max/data/ux-guidelines.csv",
+      "sha256": "ff81ec613f70ba9fc3fcce52dbe4ae35d44b2079dbe6dc066d2d6e38c28facd5",
+      "size_bytes": 27516
+    },
+    {
+      "path": "scripts/core.py",
+      "source": "src/ui-ux-pro-max/scripts/core.py",
+      "sha256": "caf92bdcf2579c9a7d6af4f53c54ee9d3c8f05472cfab77aaec38bef120ec63e",
+      "size_bytes": 43933
+    },
+    {
+      "path": "scripts/design_system.py",
+      "source": "src/ui-ux-pro-max/scripts/design_system.py",
+      "sha256": "e7d1c94c4b2eada17c5551157668362659ccf9626d34dbd58e68142410f90103",
+      "size_bytes": 71537
+    },
+    {
+      "path": "scripts/reasoning_contract.py",
+      "source": "src/ui-ux-pro-max/scripts/reasoning_contract.py",
+      "sha256": "b8bac1af82aa280d3e06f00aabaeac4337e632996b07fed874e2b6ee6e9c5913",
+      "size_bytes": 5824
+    },
+    {
+      "path": "scripts/search.py",
+      "source": "src/ui-ux-pro-max/scripts/search.py",
+      "sha256": "9fd5acc991142fd43c3afe7be0f6720911b668f3988b34e74b5cbc41d58e7947",
+      "size_bytes": 10642
+    },
+    {
+      "path": "LICENSE",
+      "source": "LICENSE",
+      "sha256": "738f69dfa83db5c347c678fb9d90e560877059f0de93a327c39001bff92dc014",
+      "size_bytes": 1075
+    },
+    {
+      "path": "references/quick-reference.md",
+      "source": "src/ui-ux-pro-max/templates/base/quick-reference.md",
+      "sha256": "0a6da6ef08190792fa2d55eaa44ddaac0c071ff2cf9a087d372924c2a99e942f",
+      "size_bytes": 27418
+    }
+  ],
+  "adapted_reference": {
+    "path": "references/upstream-guide.md",
+    "source": "src/ui-ux-pro-max/templates/base/skill-content.md",
+    "source_sha256": "17962bd4e02809ee8bf093d4b28fcdbd44057b7bd2abb6cba4e7fc37187ec589",
+    "changes": "Resolve template variants and repository-root script paths; link separate quick reference."
+  },
+  "excluded": [
+    "CLI installer and npm dependencies",
+    "Bundled sibling skills",
+    "Upstream tests, validators and refresh scripts",
+    "Global/personal agent settings",
+    "Fonts, icon packages and remote assets"
+  ]
+}
