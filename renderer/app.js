@@ -6,7 +6,8 @@ const state = {
   allInbox: false,
   allInboxUnreadOnly: false,
   allInboxStarredOnly: false,
-  mailColumnOrder: ["date", "recipient", "sender", "subject"],
+  mailColumnOrder: ["date", "recipient", "sender", "subject", "status"],
+  mailHiddenColumns: [],
   outbox: false,
   outboxRows: [],
   outboxError: "",
@@ -658,9 +659,13 @@ let mailColumnDrag = null;
 let mailColumnClickUntil = 0;
 let mailColumnSave = Promise.resolve();
 let mailColumnRevision = 0;
-const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject" };
+const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject", status: "Reply / forward" };
 function mailColumnOrder() {
-  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder : ["date", "recipient", "sender", "subject"];
+  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder : ["date", "recipient", "sender", "subject", "status"];
+}
+function visibleMailColumns() {
+  return window.morrowMailColumns ? window.morrowMailColumns.visible(mailColumnOrder(), state.mailHiddenColumns)
+    : mailColumnOrder().filter(key => key === "subject" || !state.mailHiddenColumns.includes(key));
 }
 function cancelMailColumnDrag() {
   if (mailColumnDrag) mailColumnClickUntil = Date.now() + 300;
@@ -670,9 +675,10 @@ function cancelMailColumnDrag() {
 async function loadMailColumnOrder() {
   const revision = mailColumnRevision;
   try {
-    const saved = await api.invoke("morrow:configGetMailColumnOrder");
+    const [saved, hidden] = await Promise.all([api.invoke("morrow:configGetMailColumnOrder"), api.invoke("morrow:configGetMailHiddenColumns")]);
     if (revision !== mailColumnRevision) return;
     state.mailColumnOrder = window.morrowMailColumns.normalize(saved);
+    state.mailHiddenColumns = window.morrowMailColumns.normalizeHidden(hidden);
   } catch { /* Keep the default layout if settings are unavailable. */ }
 }
 function changeMailColumnOrder(order) {
@@ -682,6 +688,7 @@ function changeMailColumnOrder(order) {
   cancelMailColumnDrag();
   renderList();
   paintMailColumnEditor();
+  paintMailColumnMenu();
   const message = "Column order: " + next.map(key => mailColumnLabels[key]).join(", ") + ".";
   $("mail-columns-status").textContent = message;
   showStatus(message);
@@ -689,8 +696,78 @@ function changeMailColumnOrder(order) {
   mailColumnSave.catch(() => { if (revision !== mailColumnRevision) return; $("mail-columns-status").textContent = "Could not save the column order. This window keeps your layout; try again to save it."; showStatus("Could not save the column order. Try again to keep it after restart.", true); });
   return mailColumnSave;
 }
-function moveMailColumn(key, direction) {
-  const order = mailColumnOrder(), index = order.indexOf(key), target = order[index + direction];
+function changeMailColumnVisibility(key, show) {
+  const hidden = new Set(state.mailHiddenColumns);
+  if (show) hidden.delete(key); else hidden.add(key);
+  state.mailHiddenColumns = window.morrowMailColumns.normalizeHidden([...hidden]);
+  const revision = ++mailColumnRevision;
+  cancelMailColumnDrag();
+  renderList(); paintMailColumnEditor(); paintMailColumnMenu();
+  const message = "Visible columns: " + visibleMailColumns().map(key => mailColumnLabels[key]).join(", ") + ".";
+  $("mail-columns-status").textContent = message;
+  showStatus(message);
+  const value = state.mailHiddenColumns.slice();
+  mailColumnSave = mailColumnSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailHiddenColumns", value));
+  mailColumnSave.catch(() => {
+    if (revision !== mailColumnRevision) return;
+    $("mail-columns-status").textContent = "Could not save column visibility. This window keeps your choice; try again to save it.";
+    showStatus("Could not save column visibility. Try again to keep it after restart.", true);
+  });
+  return mailColumnSave;
+}
+let mailColumnMenuAnchor = null;
+function closeMailColumnMenu(restoreFocus = false) {
+  const menu = $("mail-column-menu");
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  if (restoreFocus) {
+    const anchor = mailColumnMenuAnchor?.isConnected && !mailColumnMenuAnchor.closest("[hidden]") ? mailColumnMenuAnchor : $("mail-columns-open");
+    anchor?.focus();
+  }
+}
+function paintMailColumnMenu() {
+  const menu = $("mail-column-menu");
+  if (!menu) return;
+  for (const button of menu.querySelectorAll("[data-column]")) button.setAttribute("aria-checked", String(visibleMailColumns().includes(button.dataset.column)));
+}
+function openMailColumnMenu(event, anchor) {
+  event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag();
+  closeOrganizeMenu(); closeMailViewMenu();
+  anchor = anchor || $("mail-columns-open");
+  mailColumnMenuAnchor = anchor;
+  let menu = $("mail-column-menu");
+  if (!menu) {
+    menu = document.createElement("div"); menu.id = "mail-column-menu"; menu.className = "mail-column-menu";
+    menu.setAttribute("role", "menu"); menu.setAttribute("aria-label", "Show mail columns");
+    for (const key of window.morrowMailColumns.defaults) {
+      const button = document.createElement("button"); button.type = "button";
+      button.setAttribute("role", "menuitemcheckbox"); button.dataset.column = key;
+      button.textContent = mailColumnLabels[key] + (key === "subject" ? " (always shown)" : "");
+      button.disabled = key === "subject";
+      button.addEventListener("click", () => changeMailColumnVisibility(key, !visibleMailColumns().includes(key)).catch(() => {}));
+      menu.append(button);
+    }
+    menu.addEventListener("keydown", event => {
+      event.stopPropagation();
+      if (["Escape", "Tab"].includes(event.key)) { event.preventDefault(); closeMailColumnMenu(true); return; }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const buttons = [...menu.querySelectorAll("button:not(:disabled)")], index = buttons.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+    });
+    document.body.append(menu);
+  }
+  paintMailColumnMenu(); menu.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const keyboard = event.type === "keydown" || (!event.clientX && !event.clientY);
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(keyboard ? rect.left : event.clientX, window.innerWidth - bounds.width - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(keyboard ? rect.bottom : event.clientY, window.innerHeight - bounds.height - 8)) + "px";
+  menu.querySelector("button:not(:disabled)")?.focus();
+}
+function moveMailColumn(key, direction, includeHidden = false) {
+  const order = includeHidden ? mailColumnOrder() : visibleMailColumns(), index = order.indexOf(key), target = order[index + direction];
   if (!target) return;
   changeMailColumnOrder(window.morrowMailColumns.move(order, key, target, direction > 0)).catch(() => {});
 }
@@ -720,6 +797,7 @@ function wireMailColumnHeader(cell, button, key) {
     changeMailColumnOrder(next).catch(() => {});
   });
   button.addEventListener("keydown", event => {
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { openMailColumnMenu(event, button); return; }
     if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); return; }
     if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
     event.preventDefault(); event.stopPropagation();
@@ -732,8 +810,14 @@ function paintMailColumnEditor() {
   if (!root || !$("mail-columns").open) return;
   root.replaceChildren();
   mailColumnOrder().forEach((key, index, order) => {
-    const row = document.createElement("li"), label = document.createElement("span");
-    label.textContent = mailColumnLabels[key]; row.append(label);
+    const row = document.createElement("li"), label = document.createElement("label"), check = document.createElement("input");
+    check.type = "checkbox"; check.dataset.visibility = key;
+    check.checked = visibleMailColumns().includes(key); check.disabled = key === "subject";
+    check.addEventListener("change", () => {
+      changeMailColumnVisibility(key, check.checked).catch(() => {});
+      root.querySelector(`[data-visibility="${key}"]`)?.focus();
+    });
+    label.append(check, mailColumnLabels[key] + (key === "subject" ? " (always shown)" : "")); row.append(label);
     for (const direction of [-1, 1]) {
       const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
       button.textContent = direction < 0 ? "Move left" : "Move right";
@@ -741,7 +825,7 @@ function paintMailColumnEditor() {
       button.dataset.column = key; button.dataset.direction = direction;
       button.disabled = index + direction < 0 || index + direction >= order.length;
       button.addEventListener("click", () => {
-        moveMailColumn(key, direction);
+        moveMailColumn(key, direction, true);
         const candidates = [...root.querySelectorAll("button")].filter(node => node.dataset.column === key && !node.disabled);
         (candidates.find(node => node.dataset.direction === String(direction)) || candidates[0])?.focus();
       });
@@ -754,6 +838,13 @@ function wireMailColumnEditor() {
   $("mail-columns-open").addEventListener("click", () => { openDialog("mail-columns"); paintMailColumnEditor(); });
   $("mail-columns-close").addEventListener("click", () => closeDialog("mail-columns"));
   $("mail-columns-reset").addEventListener("click", () => changeMailColumnOrder(window.morrowMailColumns.defaults).catch(() => {}));
+  $("mail-columns-show-all").addEventListener("click", () => {
+    state.mailHiddenColumns = [];
+    changeMailColumnVisibility("subject", true).catch(() => {});
+  });
+  document.addEventListener("pointerdown", event => { if (!event.target.closest?.("#mail-column-menu")) closeMailColumnMenu(); });
+  window.addEventListener("resize", () => closeMailColumnMenu(true));
+  $("message-list").addEventListener("scroll", () => closeMailColumnMenu(true));
   document.addEventListener("keydown", event => { if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); } });
 }
 
@@ -787,29 +878,42 @@ function paintMailListColumns(list) {
     header.setAttribute("aria-label", "Mail column sorting");
     const row = document.createElement("div");
     row.setAttribute("role", "row");
-    for (const [key, label] of [["date", "Date"], ["recipient", "Recipient"], ["sender", "Sender"], ["subject", "Subject"]]) {
+    for (const [key, label] of Object.entries(mailColumnLabels)) {
       const cell = document.createElement("div");
       cell.setAttribute("role", "columnheader");
       cell.dataset.sortKey = key;
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.label = label;
-      button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil) guard(() => changeMailListSort(key)); });
+      button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil && key !== "status") guard(() => changeMailListSort(key)); });
       wireMailColumnHeader(cell, button, key);
       cell.appendChild(button);
       row.appendChild(cell);
     }
     header.appendChild(row);
+    header.addEventListener("contextmenu", event => openMailColumnMenu(event, event.target.closest("button") || header.querySelector("button:not(:disabled)")));
     list.prepend(header);
   }
-  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)" };
-  list.style.setProperty("--mail-columns", mailColumnOrder().map(key => widths[key]).join(" "));
+  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)", status: "90px" };
+  const visible = visibleMailColumns();
+  list.style.setProperty("--mail-columns", visible.map(key => widths[key]).join(" "));
+  const minimum = { date: 78, recipient: 130, sender: 130, subject: 180, status: 90 };
+  list.style.setProperty("--mail-columns-min", (visible.reduce((sum, key) => sum + minimum[key], 54) + (visible.length - 1) * 10) + "px");
   const headerRow = header.querySelector('[role="row"]');
   mailColumnOrder().forEach((key, index) => {
     const cell = header.querySelector(`[data-sort-key="${key}"]`);
+    cell.hidden = !visible.includes(key);
     if (headerRow.children[index] !== cell) headerRow.insertBefore(cell, headerRow.children[index] || null);
   });
   for (const cell of header.querySelectorAll("[data-sort-key]")) {
+    if (cell.dataset.sortKey === "status") {
+      cell.removeAttribute("aria-sort");
+      const button = cell.querySelector("button");
+      button.textContent = button.dataset.label;
+      button.title = "Provider-reported reply / forward flags; unavailable for Gmail API. Drag to reorder. Right-click or press Shift + F10 to choose columns.";
+      button.setAttribute("aria-label", "Reply / forward status. Drag to reorder, or press Alt + Left / Right. Shift + F10 chooses columns.");
+      continue;
+    }
     const active = !state.outbox && cell.dataset.sortKey === state.listSort.sortBy;
     const ascending = state.listSort.sortDirection === "asc";
     cell.setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
@@ -823,6 +927,9 @@ function paintMailListColumns(list) {
 }
 
 function mailRecipientText(email) {
+  // Scheduled/Outbox summaries already contain a formatted address string;
+  // downloaded mail carries an array. Preserve both transport-independent forms.
+  if (typeof email.to === "string") return email.to.trim();
   return (Array.isArray(email.to) ? email.to : []).map(value => typeof value === "string" ? value
     : (value?.name && value?.address ? `${value.name} <${value.address}>` : value?.address || "")).filter(Boolean).join(", ");
 }
@@ -6562,6 +6669,23 @@ function rowCheck(email, selected) {
   return box;
 }
 
+function mailReplyForwardCell(email) {
+  const cell = document.createElement("span"); cell.className = "mail-reply-forward";
+  const labels = [];
+  for (const [key, label, icon] of [["replied", "Replied", "Reply"], ["forwarded", "Forwarded", "Forward"]]) {
+    if (email[key] === true) {
+      labels.push(label + " (provider flag)");
+      const svg = rowIcon(icon); svg.dataset.state = key; cell.append(svg);
+    } else labels.push(email[key] === false ? "No " + (key === "replied" ? "reply" : "forward") + " flag reported" : label + " status unavailable");
+  }
+  if (email.replied == null || email.forwarded == null) {
+    const unknown = document.createElement("span"); unknown.textContent = "—"; unknown.setAttribute("aria-hidden", "true"); cell.append(unknown);
+  }
+  const text = document.createElement("span"); text.className = "sr"; text.textContent = labels.join(". ") + "."; cell.append(text);
+  cell.title = text.textContent;
+  return cell;
+}
+
 function messageRow(email) {
   const row = document.createElement("div");
   row.className = "message-row" + (email.outbox ? " outbox-row" : "");
@@ -6642,8 +6766,8 @@ function messageRow(email) {
     ? accountLabel(mailbox) + " · "
     : (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "");
   snippet.textContent = prefix + (email.snippet || "");
-  const cells = { date: when, recipient, sender: from, subject: subjectLine };
-  for (const key of mailColumnOrder()) { cells[key].dataset.mailColumn = key; main.append(cells[key]); }
+  const cells = { date: when, recipient, sender: from, subject: subjectLine, status: mailReplyForwardCell(email) };
+  for (const key of visibleMailColumns()) { cells[key].dataset.mailColumn = key; main.append(cells[key]); }
   main.append(snippet);
   button.append(gutter, avatar, main);
   button.addEventListener("click", (event) => {
@@ -6974,7 +7098,7 @@ function renderList() {
       // Retained rows keep keyboard focus and read the latest message for actions.
       const mailbox = state.accounts.find((item) => item.id === email.accountId);
       const stamp = JSON.stringify([email.folderId, email.from, email.to, email.subject, email.snippet, email.date,
-        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox, mailColumnOrder().join(","),
+        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox, visibleMailColumns().join(","),
         state.allInbox && mailbox ? accountLabel(mailbox) : "",
         state.query && mailbox ? mailbox.email : "",
         state.prefs.timeFormat, state.prefs.dateFormat]);
@@ -6982,10 +7106,16 @@ function renderList() {
       if (!cached || cached.stamp !== stamp) {
         const row = messageRow(email);
         if (cached) cached.row.replaceWith(row);
-        cached = { row, stamp, selected: selected.has(email.id), current: readerCurrentId() === email.id };
+        cached = { row, stamp, replied: email.replied, forwarded: email.forwarded, selected: selected.has(email.id), current: readerCurrentId() === email.id };
         messageRows.set(key, cached);
       }
       const row = cached.row;
+      // Provider flag refreshes must not replace a focused message or its actions.
+      if (cached.replied !== email.replied || cached.forwarded !== email.forwarded) {
+        const previous = row.querySelector('[data-mail-column="status"]');
+        if (previous) { const cell = mailReplyForwardCell(email); cell.dataset.mailColumn = "status"; previous.replaceWith(cell); }
+        cached.replied = email.replied; cached.forwarded = email.forwarded;
+      }
       row.mailMessage = email;
       const isSelected = selected.has(email.id);
       if (cached.selected !== isSelected) {

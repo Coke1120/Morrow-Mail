@@ -5657,7 +5657,7 @@ textarea { min-height: 140px; resize: vertical; }
 /* Fixed list chrome leaves one scroll surface for message rows. */
 #messages { display: flex; flex-direction: column; overflow: visible; }
 #message-list { flex: 1 1 auto; min-height: 64px; overflow: auto; }
-.list-head { position: static; flex: 0 0 auto; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); border-radius: 16px 16px 0 0; }
+.list-head { position: relative; z-index: 4; flex: 0 0 auto; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); border-radius: 16px 16px 0 0; }
 /* Clip the scrolling surface at the card's bottom, keeping Sync's popover free. */
 #message-list { border-radius: 0 0 16px 16px; }
 #messages:has(#list-paging:not([hidden])) #message-list { border-radius: 0; }
@@ -5954,12 +5954,12 @@ pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
 
 /* Mail columns share one horizontal scroll surface, including narrow windows. */
 #message-list { --mail-columns: 78px minmax(130px, 1fr) minmax(130px, 1fr) minmax(180px, 1.6fr); }
-.mail-list-columns { position: sticky; top: 0; z-index: 3; min-width: 704px; background: var(--paper); border-bottom: 1px solid var(--line); padding: 0 12px 0 42px; }
+.mail-list-columns { position: sticky; top: 0; z-index: 3; min-width: var(--mail-columns-min, 804px); background: var(--paper); border-bottom: 1px solid var(--line); padding: 0 12px 0 42px; }
 .mail-list-columns [role="row"] { display: grid; grid-template-columns: var(--mail-columns); gap: 10px; }
 .mail-list-columns [role="columnheader"] { min-width: 0; }
 .mail-list-columns button { width: 100%; min-height: 32px; padding: 4px 0; text-align: left; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
 .mail-list-columns [aria-sort="ascending"] button, .mail-list-columns [aria-sort="descending"] button { color: var(--ink); font-weight: 600; }
-#messages #message-list .message-row { min-width: 704px; }
+#messages #message-list .message-row { min-width: var(--mail-columns-min, 804px); }
 #messages #message-list button.message { padding: 6px 12px 6px 14px; position: relative; }
 #messages #message-list .avatar { display: none; }
 #messages #message-list .gutter { position: absolute; left: 0; width: 10px; }
@@ -6038,5 +6038,13 @@ pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
 .mail-list-columns button[draggable="true"] { cursor: grab; }
 #mail-columns-order { padding: 0; list-style: none; }
 #mail-columns-order li { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
-#mail-columns-order li > span { flex: 1; }
+#mail-columns-order li > label { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; }
+#mail-columns-order input { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--accent-ink); }
 #mail-columns-open { flex: 0 0 auto; }
+.mail-reply-forward { display: flex; align-items: center; gap: 6px; color: var(--ink-mid); font-size: 12px; }
+.mail-reply-forward svg { flex: 0 0 auto; }
+.mail-column-menu { position: fixed; z-index: 60; min-width: 224px; max-height: calc(100dvh - 16px); overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); box-shadow: var(--shadow-card); }
+.mail-column-menu[hidden] { display: none; }
+.mail-column-menu button { display: block; width: 100%; min-height: 36px; padding: 6px 10px 6px 30px; position: relative; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; font-size: 13px; }
+.mail-column-menu button:hover, .mail-column-menu button:focus-visible { background: var(--hover); }
+.mail-column-menu [aria-checked="true"]::before { content: ""; position: absolute; left: 11px; top: 15px; width: 8px; height: 4px; border-left: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); }

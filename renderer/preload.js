@@ -56,6 +56,8 @@ const INVOKE = [
   "morrow:configSetMailView",
   "morrow:configGetMailColumnOrder",
   "morrow:configSetMailColumnOrder",
+  "morrow:configGetMailHiddenColumns",
+  "morrow:configSetMailHiddenColumns",
   "morrow:configGetOnboarding",
   "morrow:configSetOnboarding",
   "morrow:configGetChangelogSeen",
