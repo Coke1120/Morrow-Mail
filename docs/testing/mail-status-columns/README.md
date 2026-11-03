@@ -23,8 +23,8 @@ SMTP send, OS Keychain or actual user profile was accessed.
 - `MORROW_PLAYWRIGHT_MODULE=/path/to/playwright MORROW_AXE_MODULE=/path/to/axe-core/axe.min.js MORROW_UI_OUTPUT=/tmp/morrow-status-columns-evidence node scripts/check-mail-layout-browser.js`:
   real HTML/CSS/renderer in Chromium; mouse/Enter/Space sorting, drag and keyboard
   reordering, reload persistence, context-menu/Shift+F10 navigation, Escape focus
-  return, hiding the sorted column, touch checkbox controls, status refresh focus,
-  and a Subject-only narrow grid. Dialog and header-menu axe checks have no
+  return, hiding the sorted column, touch checkbox controls, status refresh focus, checkbox/label geometry,
+  Outbox header menus with sorting disabled, and a Subject-only narrow grid. Dialog and header-menu axe checks have no
   WCAG 2 A/AA violations in their tested rules. Existing right/bottom/window,
   splitter resize, selection, search and scroll checks remain included, with
   narrow/mobile, compact/comfortable, light/dark and reduced-motion coverage.

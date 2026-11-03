@@ -1,5 +1,5 @@
 {
-  "verifiedAt": "2026-11-03T05:58:18.025583+00:00",
+  "verifiedAt": "2026-11-03T05:59:49.603913+00:00",
   "baseCommit": "52ce7a83b65f2e4be1629eb9d48f65c366bd6faa",
   "environment": {
     "platform": "Linux",
@@ -71,6 +71,38 @@
         }
       ],
       "menuAxeViolations": [],
+      "editorGeometry": [
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        },
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        },
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        },
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        },
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        }
+      ],
       "subjectOnlyOverflow": false,
       "outboxRecipients": "formatted multi-account To and empty To passed"
     }

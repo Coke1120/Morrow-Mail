@@ -234,6 +234,8 @@ async function verifyColumnControls(page, initialize) {
  assert.equal(await page.locator('[data-sort-key="sender"]').isVisible(),false);assert.equal(await page.locator('[data-sort-key="status"]').isVisible(),false);
  await page.locator('#mail-columns-open').click();
  assert.equal(await page.locator('[data-visibility="sender"]').isChecked(),false);
+ const editorGeometry=await page.locator('#mail-columns-order li').evaluateAll(rows=>rows.map(row=>{const label=row.querySelector('label').getBoundingClientRect(),check=row.querySelector('input').getBoundingClientRect(),move=row.querySelector('button').getBoundingClientRect();return {labelRight:label.right,checkRight:check.right,checkWidth:check.width,moveLeft:move.left}}));
+ assert.ok(editorGeometry.every(row=>row.checkWidth<=20&&row.checkRight<=row.labelRight&&row.labelRight+4<=row.moveLeft),JSON.stringify(editorGeometry));
  await page.screenshot({path:path.join(output,'columns-dialog.png')});
  await page.getByRole('button',{name:'Show all columns',exact:true}).click();
  assert.equal(await page.locator('[data-visibility="sender"]').isChecked(),true);
@@ -287,5 +289,5 @@ async function verifyColumnControls(page, initialize) {
  const disabledHeader=await page.locator('[data-sort-key="recipient"] button').boundingBox();
  await page.mouse.click(disabledHeader.x+12,disabledHeader.y+12,{button:'right'});
  assert.equal(await page.locator('#mail-column-menu').isVisible(),true,'Outbox disabled sorting header still offers column choices');await page.keyboard.press('Escape');
- return {stacking,menuAxeViolations:a11y,subjectOnlyOverflow:overflow,outboxRecipients:'formatted multi-account To and empty To passed'};
+ return {stacking,menuAxeViolations:a11y,editorGeometry,subjectOnlyOverflow:overflow,outboxRecipients:'formatted multi-account To and empty To passed'};
 }
