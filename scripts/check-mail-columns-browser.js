@@ -44,7 +44,7 @@ const root = path.join(__dirname, '..');
   await page.screenshot({path:root+'/docs/testing/mail-columns/wide.png'});
   const align=await page.evaluate(()=>{
    const head=[...document.querySelectorAll('.mail-list-columns [role="columnheader"]')].map(e=>e.getBoundingClientRect().x);
-   const row=[...document.querySelector('.message-row .row-main').children].slice(0,4).map(e=>e.getBoundingClientRect().x);
+   const row=[...document.querySelector('.message-row .row-main').children].slice(0,5).map(e=>e.getBoundingClientRect().x);
    return {head,row};
   });
   assert.ok(align.head.every((x,n)=>Math.abs(x-align.row[n])<2),JSON.stringify(align));

@@ -227,7 +227,7 @@ app.whenReady().then(async()=>{
  await run(`revealSettingsFold('mailbox')`);await waitFor(`settingsFoldLoaded.has('mailbox:b')`);
  await run(`$('settings-reconnect').click()`);assert.match(await run(`$('connect-title').textContent`),/b@example.test/);assert.match(await run(`$('connect-recovery-note').textContent`),/Cached mail/);assert.match(await run(`$('oauth-unavailable').textContent`),/unavailable/);
  await shot('reconnect-account');await run(`$('connect').close();$('settings').close();state.accountId='a';refreshMailVacation(true)`);
- assert.match(await run(`$('mail-ooo-status').textContent`),/a@example.test.*on until disabled/);
+ assert.match(await run(`$('mail-ooo-status').textContent`),/^On until disabled$/);
  await run(`clearUndo();showStatus('')`);await shot('mail-ooo-status');
  await run(`manageMailVacation()`);await waitFor(`settingsAccount().id==='a'`);assert.equal(await run(`$('settings').open`),true);
  await run(`$('settings').close();showAgent()`);await waitFor(`!$('agent-setup').hidden`);

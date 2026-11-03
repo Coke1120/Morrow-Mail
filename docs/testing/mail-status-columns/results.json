@@ -1,0 +1,117 @@
+{
+  "verifiedAt": "2026-11-03T05:59:49.603913+00:00",
+  "baseCommit": "52ce7a83b65f2e4be1629eb9d48f65c366bd6faa",
+  "environment": {
+    "platform": "Linux",
+    "node": "24.19.0",
+    "chromium": "151.0.7922.173",
+    "nativeSQLite": true
+  },
+  "offlineSuite": {
+    "command": "npm run check",
+    "exitCode": 0,
+    "finalMarker": "ui-path-ok"
+  },
+  "providerAndQueue": {
+    "command": "node scripts/check-mail-status-columns.js",
+    "exitCode": 0
+  },
+  "rendererAndSettings": {
+    "command": "node scripts/check-mail-list-layout.js",
+    "tests": 12,
+    "exitCode": 0
+  },
+  "rotatingFlags": {
+    "command": "node scripts/check-mail-review-regressions.js",
+    "exitCode": 0,
+    "pages": [
+      200,
+      200,
+      50
+    ],
+    "unchangedJournalBytes": 0
+  },
+  "syntaxAndWhitespace": "passed",
+  "browser": {
+    "result": "passed",
+    "checks": "drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, whole All Mail card top corners with negative control, right/bottom/window layouts, splitter keyboard and pointer, selection/search/scroll retention, double-click and keyboard popout, narrow/mobile/light/dark/reduced-motion, rendered Features, status flags, visibility menu/restart, Sync stacking with negative control, axe",
+    "columns": {
+      "stacking": [
+        {
+          "layout": "right",
+          "width": 1440,
+          "theme": "light",
+          "compact": true,
+          "overlap": true,
+          "tipOnTop": true
+        },
+        {
+          "layout": "bottom",
+          "width": 1440,
+          "theme": "dark",
+          "compact": false,
+          "overlap": true,
+          "tipOnTop": true
+        },
+        {
+          "layout": "window",
+          "width": 900,
+          "theme": "light",
+          "compact": true,
+          "overlap": true,
+          "tipOnTop": true
+        },
+        {
+          "layout": "right",
+          "width": 760,
+          "theme": "dark",
+          "compact": false,
+          "overlap": true,
+          "tipOnTop": true
+        }
+      ],
+      "menuAxeViolations": [],
+      "editorGeometry": [
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        },
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        },
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        },
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        },
+        {
+          "labelRight": 767.25,
+          "checkRight": 498,
+          "checkWidth": 16,
+          "moveLeft": 775.25
+        }
+      ],
+      "subjectOnlyOverflow": false,
+      "outboxRecipients": "formatted multi-account To and empty To passed"
+    }
+  },
+  "limitations": [
+    "No live provider or delivery validation",
+    "No packaged macOS/Windows or native assistive-technology validation",
+    "Gmail API status unavailable",
+    "Morrow sends do not set provider reply/forward flags",
+    "Older IMAP flags may need multiple rotating sync passes"
+  ]
+}

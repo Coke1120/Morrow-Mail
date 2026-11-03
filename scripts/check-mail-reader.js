@@ -379,7 +379,7 @@ function loadReader(role) {
     getElementById(id) {
       if (!nodes.has(id)) {
         const node = domNode('div');
-        if (id === 'organize-menu' || id === 'undo-details-popover') node.hidden = true;
+        if (id === 'organize-menu' || id === 'mail-view-menu' || id === 'undo-details-popover') node.hidden = true;
         nodes.set(id, node);
       }
       return nodes.get(id);
@@ -771,7 +771,7 @@ function assertReaderWindowMatchesShellActions() {
   assertReaderDateOnFromRow(ui.reader, /Sender r3/);
   const shown = readerText(ui.reader);
   assert.deepEqual(actionNames(ui.reader), [
-    'reply', 'reply-all', 'suggest', 'forward',
+    'reply', 'reply-all', 'suggest', 'forward', 'summary',
     'star', 'translate', 'translate-cancel',
     'archive', 'trash', 'move', 'organize', 'snooze', 'close-reader',
   ]);

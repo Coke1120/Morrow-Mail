@@ -24,6 +24,7 @@ All production AI prompt sends in this repository call `host/openai-client.js` (
 
 | Feature and source | Context actually sent | Trigger |
 | --- | --- | --- |
+| Message summary (`host/message-summary.js`) | Selected cached sender, subject and date; up to the first 24,000 characters of downloaded body text, including quoted history. Partial/shortened input is labelled. No attachment files or linked pages are fetched. | Explicit Summary in either reader; Cancel stops waiting and aborts the request, with a two-minute timeout. |
 | Translation (`host/translate.js`) | Text nodes from the visible message, including quoted history; node ids; target language. Long text is split into batches. | Explicit Translate; Cancel aborts pending batches. |
 | AI Write (`host/draft-write.js`) | Instructions, selected text, draft content (which may include a signature), cursor context, subject, recent supplied writing history; source sender/subject/snippet or reply source text; Brain writing rules. | Explicit writing action. |
 | Reply suggestions (`host/draft-write.js`) | Sender, subject and snippet/text body supplied by the reader/composition. | Explicit Suggest, or separately classified background suggestions when reply composition opens. |

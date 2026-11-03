@@ -108,6 +108,7 @@ function providerFixture(provider = "google", overrides = {}) {
 function mailFixture() {
   const ui = uiFixture();
   ui.nodes.get("undo-details-popover").hidden = true;
+  ui.nodes.get("mail-view-menu").hidden = true;
   ui.run(`globalThis.fixture={calls:[],reloads:0,confirmations:0};
     state.accounts=[{id:'a',email:'a@fixture.invalid',platform:'fixture',profile:'gmail',folders:{primary:[{id:'Inbox',name:'Inbox',wellKnownName:'inbox'}],more:[
       {id:'Projects',name:'Projects',providerId:'Label_9'},{id:'Other',name:'Other'},{id:'Work',name:'Work'},{id:'Projects/Work',name:'Work'}]}},
@@ -605,5 +606,5 @@ test("Features: wave3 catalog, rendered Features/Shortcuts/CLI tabs and identity
   const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
   assert.match(html, /id="agent-learned-help"[^<]*After a temporary loading error, a successful read restores the list and Delete/);
   assert.match(html, /id="cli-folder-labels"[^]*ambiguous legacy Message-ID matches are refused/);
-  assert.equal(require("../package.json").version, "0.3.21");
+  assert.equal(require("../package.json").version, "0.3.22");
 });

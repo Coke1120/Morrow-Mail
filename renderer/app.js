@@ -6,7 +6,8 @@ const state = {
   allInbox: false,
   allInboxUnreadOnly: false,
   allInboxStarredOnly: false,
-  mailColumnOrder: ["date", "recipient", "sender", "subject"],
+  mailColumnOrder: ["date", "recipient", "sender", "subject", "status"],
+  mailHiddenColumns: [],
   outbox: false,
   outboxRows: [],
   outboxError: "",
@@ -72,6 +73,7 @@ const state = {
     collapsedFolders: {},
     scheduleDelay: 0,
     layout: { folders: 260, list: 360, reading: 0 },
+    mailView: { layout: "right", listHeight: 320 },
     timeFormat: "system",
     dateFormat: "system",
   },
@@ -148,6 +150,8 @@ const agentReplySelection = new Set();
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
+let messageSummary = null;
+let summarySeq = 0;
 let composeSuggestGen = 0;
 let signatureGen = 0;
 let signatureEditId = "";
@@ -657,9 +661,13 @@ let mailColumnDrag = null;
 let mailColumnClickUntil = 0;
 let mailColumnSave = Promise.resolve();
 let mailColumnRevision = 0;
-const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject" };
+const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject", status: "Reply / forward" };
 function mailColumnOrder() {
-  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder : ["date", "recipient", "sender", "subject"];
+  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder : ["date", "recipient", "sender", "subject", "status"];
+}
+function visibleMailColumns() {
+  return window.morrowMailColumns ? window.morrowMailColumns.visible(mailColumnOrder(), state.mailHiddenColumns)
+    : mailColumnOrder().filter(key => key === "subject" || !state.mailHiddenColumns.includes(key));
 }
 function cancelMailColumnDrag() {
   if (mailColumnDrag) mailColumnClickUntil = Date.now() + 300;
@@ -669,9 +677,10 @@ function cancelMailColumnDrag() {
 async function loadMailColumnOrder() {
   const revision = mailColumnRevision;
   try {
-    const saved = await api.invoke("morrow:configGetMailColumnOrder");
+    const [saved, hidden] = await Promise.all([api.invoke("morrow:configGetMailColumnOrder"), api.invoke("morrow:configGetMailHiddenColumns")]);
     if (revision !== mailColumnRevision) return;
     state.mailColumnOrder = window.morrowMailColumns.normalize(saved);
+    state.mailHiddenColumns = window.morrowMailColumns.normalizeHidden(hidden);
   } catch { /* Keep the default layout if settings are unavailable. */ }
 }
 function changeMailColumnOrder(order) {
@@ -681,6 +690,7 @@ function changeMailColumnOrder(order) {
   cancelMailColumnDrag();
   renderList();
   paintMailColumnEditor();
+  paintMailColumnMenu();
   const message = "Column order: " + next.map(key => mailColumnLabels[key]).join(", ") + ".";
   $("mail-columns-status").textContent = message;
   showStatus(message);
@@ -688,10 +698,80 @@ function changeMailColumnOrder(order) {
   mailColumnSave.catch(() => { if (revision !== mailColumnRevision) return; $("mail-columns-status").textContent = "Could not save the column order. This window keeps your layout; try again to save it."; showStatus("Could not save the column order. Try again to keep it after restart.", true); });
   return mailColumnSave;
 }
-function moveMailColumn(key, direction) {
-  const order = mailColumnOrder(), index = order.indexOf(key), target = order[index + direction];
+function changeMailColumnVisibility(key, show) {
+  const hidden = new Set(state.mailHiddenColumns);
+  if (show) hidden.delete(key); else hidden.add(key);
+  state.mailHiddenColumns = window.morrowMailColumns.normalizeHidden([...hidden]);
+  const revision = ++mailColumnRevision;
+  cancelMailColumnDrag();
+  renderList(); paintMailColumnEditor(); paintMailColumnMenu();
+  const message = "Visible columns: " + visibleMailColumns().map(key => mailColumnLabels[key]).join(", ") + ".";
+  $("mail-columns-status").textContent = message;
+  showStatus(message);
+  const value = state.mailHiddenColumns.slice();
+  mailColumnSave = mailColumnSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailHiddenColumns", value));
+  mailColumnSave.catch(() => {
+    if (revision !== mailColumnRevision) return;
+    $("mail-columns-status").textContent = "Could not save column visibility. This window keeps your choice; try again to save it.";
+    showStatus("Could not save column visibility. Try again to keep it after restart.", true);
+  });
+  return mailColumnSave;
+}
+let mailColumnMenuAnchor = null;
+function closeMailColumnMenu(restoreFocus = false) {
+  const menu = $("mail-column-menu");
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  if (restoreFocus) {
+    const anchor = mailColumnMenuAnchor?.isConnected && !mailColumnMenuAnchor.closest("[hidden]") ? mailColumnMenuAnchor : $("mail-columns-open");
+    anchor?.focus();
+  }
+}
+function paintMailColumnMenu() {
+  const menu = $("mail-column-menu");
+  if (!menu) return;
+  for (const button of menu.querySelectorAll("[data-column]")) button.setAttribute("aria-checked", String(visibleMailColumns().includes(button.dataset.column)));
+}
+function openMailColumnMenu(event, anchor) {
+  event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag();
+  closeOrganizeMenu(); closeMailViewMenu();
+  anchor = anchor || $("mail-columns-open");
+  mailColumnMenuAnchor = anchor;
+  let menu = $("mail-column-menu");
+  if (!menu) {
+    menu = document.createElement("div"); menu.id = "mail-column-menu"; menu.className = "mail-column-menu";
+    menu.setAttribute("role", "menu"); menu.setAttribute("aria-label", "Show mail columns");
+    for (const key of window.morrowMailColumns.defaults) {
+      const button = document.createElement("button"); button.type = "button";
+      button.setAttribute("role", "menuitemcheckbox"); button.dataset.column = key;
+      button.textContent = mailColumnLabels[key] + (key === "subject" ? " (always shown)" : "");
+      button.disabled = key === "subject";
+      button.addEventListener("click", () => changeMailColumnVisibility(key, !visibleMailColumns().includes(key)).catch(() => {}));
+      menu.append(button);
+    }
+    menu.addEventListener("keydown", event => {
+      event.stopPropagation();
+      if (["Escape", "Tab"].includes(event.key)) { event.preventDefault(); closeMailColumnMenu(true); return; }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const buttons = [...menu.querySelectorAll("button:not(:disabled)")], index = buttons.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+    });
+    document.body.append(menu);
+  }
+  paintMailColumnMenu(); menu.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const keyboard = event.type === "keydown" || (!event.clientX && !event.clientY);
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(keyboard ? rect.left : event.clientX, window.innerWidth - bounds.width - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(keyboard ? rect.bottom : event.clientY, window.innerHeight - bounds.height - 8)) + "px";
+  menu.querySelector("button:not(:disabled)")?.focus();
+}
+function moveMailColumn(key, direction, includeHidden = false) {
+  const order = includeHidden ? mailColumnOrder() : visibleMailColumns(), index = order.indexOf(key), target = order[index + direction];
   if (!target) return;
-  changeMailColumnOrder(window.morrowMailColumns.move(order, key, target, direction > 0)).catch(() => {});
+  changeMailColumnOrder(window.morrowMailColumns.move(mailColumnOrder(), key, target, direction > 0)).catch(() => {});
 }
 function wireMailColumnHeader(cell, button, key) {
   button.draggable = true;
@@ -719,6 +799,7 @@ function wireMailColumnHeader(cell, button, key) {
     changeMailColumnOrder(next).catch(() => {});
   });
   button.addEventListener("keydown", event => {
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { openMailColumnMenu(event, button); return; }
     if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); return; }
     if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
     event.preventDefault(); event.stopPropagation();
@@ -731,8 +812,14 @@ function paintMailColumnEditor() {
   if (!root || !$("mail-columns").open) return;
   root.replaceChildren();
   mailColumnOrder().forEach((key, index, order) => {
-    const row = document.createElement("li"), label = document.createElement("span");
-    label.textContent = mailColumnLabels[key]; row.append(label);
+    const row = document.createElement("li"), label = document.createElement("label"), check = document.createElement("input");
+    check.type = "checkbox"; check.dataset.visibility = key;
+    check.checked = visibleMailColumns().includes(key); check.disabled = key === "subject";
+    check.addEventListener("change", () => {
+      changeMailColumnVisibility(key, check.checked).catch(() => {});
+      root.querySelector(`[data-visibility="${key}"]`)?.focus();
+    });
+    label.append(check, mailColumnLabels[key] + (key === "subject" ? " (always shown)" : "")); row.append(label);
     for (const direction of [-1, 1]) {
       const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
       button.textContent = direction < 0 ? "Move left" : "Move right";
@@ -740,7 +827,7 @@ function paintMailColumnEditor() {
       button.dataset.column = key; button.dataset.direction = direction;
       button.disabled = index + direction < 0 || index + direction >= order.length;
       button.addEventListener("click", () => {
-        moveMailColumn(key, direction);
+        moveMailColumn(key, direction, true);
         const candidates = [...root.querySelectorAll("button")].filter(node => node.dataset.column === key && !node.disabled);
         (candidates.find(node => node.dataset.direction === String(direction)) || candidates[0])?.focus();
       });
@@ -753,6 +840,13 @@ function wireMailColumnEditor() {
   $("mail-columns-open").addEventListener("click", () => { openDialog("mail-columns"); paintMailColumnEditor(); });
   $("mail-columns-close").addEventListener("click", () => closeDialog("mail-columns"));
   $("mail-columns-reset").addEventListener("click", () => changeMailColumnOrder(window.morrowMailColumns.defaults).catch(() => {}));
+  $("mail-columns-show-all").addEventListener("click", () => {
+    state.mailHiddenColumns = [];
+    changeMailColumnVisibility("subject", true).catch(() => {});
+  });
+  document.addEventListener("pointerdown", event => { if (!event.target.closest?.("#mail-column-menu")) closeMailColumnMenu(); });
+  window.addEventListener("resize", () => closeMailColumnMenu(true));
+  $("message-list").addEventListener("scroll", () => closeMailColumnMenu(true));
   document.addEventListener("keydown", event => { if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); } });
 }
 
@@ -786,29 +880,42 @@ function paintMailListColumns(list) {
     header.setAttribute("aria-label", "Mail column sorting");
     const row = document.createElement("div");
     row.setAttribute("role", "row");
-    for (const [key, label] of [["date", "Date"], ["recipient", "Recipient"], ["sender", "Sender"], ["subject", "Subject"]]) {
+    for (const [key, label] of Object.entries(mailColumnLabels)) {
       const cell = document.createElement("div");
       cell.setAttribute("role", "columnheader");
       cell.dataset.sortKey = key;
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.label = label;
-      button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil) guard(() => changeMailListSort(key)); });
+      button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil && key !== "status") guard(() => changeMailListSort(key)); });
       wireMailColumnHeader(cell, button, key);
       cell.appendChild(button);
       row.appendChild(cell);
     }
     header.appendChild(row);
+    header.addEventListener("contextmenu", event => openMailColumnMenu(event, event.target.closest("button") || header.querySelector("button:not(:disabled)")));
     list.prepend(header);
   }
-  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)" };
-  list.style.setProperty("--mail-columns", mailColumnOrder().map(key => widths[key]).join(" "));
+  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)", status: "90px" };
+  const visible = visibleMailColumns();
+  list.style.setProperty("--mail-columns", visible.map(key => widths[key]).join(" "));
+  const minimum = { date: 78, recipient: 130, sender: 130, subject: 180, status: 90 };
+  list.style.setProperty("--mail-columns-min", (visible.reduce((sum, key) => sum + minimum[key], 54) + (visible.length - 1) * 10) + "px");
   const headerRow = header.querySelector('[role="row"]');
   mailColumnOrder().forEach((key, index) => {
     const cell = header.querySelector(`[data-sort-key="${key}"]`);
+    cell.hidden = !visible.includes(key);
     if (headerRow.children[index] !== cell) headerRow.insertBefore(cell, headerRow.children[index] || null);
   });
   for (const cell of header.querySelectorAll("[data-sort-key]")) {
+    if (cell.dataset.sortKey === "status") {
+      cell.removeAttribute("aria-sort");
+      const button = cell.querySelector("button");
+      button.textContent = button.dataset.label;
+      button.title = "Provider-reported reply / forward flags; unavailable for Gmail API. Drag to reorder. Right-click or press Shift + F10 to choose columns.";
+      button.setAttribute("aria-label", "Reply / forward status. Drag to reorder, or press Alt + Left / Right. Shift + F10 chooses columns.");
+      continue;
+    }
     const active = !state.outbox && cell.dataset.sortKey === state.listSort.sortBy;
     const ascending = state.listSort.sortDirection === "asc";
     cell.setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
@@ -822,6 +929,9 @@ function paintMailListColumns(list) {
 }
 
 function mailRecipientText(email) {
+  // Scheduled/Outbox summaries already contain a formatted address string;
+  // downloaded mail carries an array. Preserve both transport-independent forms.
+  if (typeof email.to === "string") return email.to.trim();
   return (Array.isArray(email.to) ? email.to : []).map(value => typeof value === "string" ? value
     : (value?.name && value?.address ? `${value.name} <${value.address}>` : value?.address || "")).filter(Boolean).join(", ");
 }
@@ -2871,17 +2981,176 @@ function applyLayoutPanes(value) {
   root.style.setProperty("--list", panes.list + "px");
 }
 
+let mailViewRevision = 0;
+let mailViewSave = Promise.resolve();
+let mailViewScrollScope = "";
+const mailViewScroll = new Map();
+const mailViewLabels = { right: "Right preview", bottom: "Bottom preview", window: "Separate window" };
+
+function mailViewPref(value) {
+  return {
+    layout: value && Object.hasOwn(mailViewLabels, value.layout) ? value.layout : "right",
+    listHeight: value && Number.isInteger(value.listHeight) && value.listHeight >= 200 && value.listHeight <= 1600 ? value.listHeight : 320,
+  };
+}
+
+function effectiveMailViewLayout() {
+  const layout = mailViewPref(state.prefs.mailView).layout;
+  return layout === "window" && state.outbox ? "bottom" : layout;
+}
+
+function mailListMinimumHeight() {
+  const head = $("list-head"), paging = $("list-paging");
+  return Math.min(1600, Math.max(200, Math.ceil((head ? head.getBoundingClientRect().height : 0)
+    + (paging && !paging.hidden ? paging.getBoundingClientRect().height : 0) + 96)));
+}
+
+function syncMailListMinimum() {
+  const shell = $("shell");
+  if (shell) shell.style.setProperty("--mail-list-min-height", mailListMinimumHeight() + "px");
+}
+
+function syncMailSplitterValues() {
+  const shell = $("shell");
+  if (!shell) return;
+  for (const handle of shell.querySelectorAll(".split")) {
+    const folders = handle.dataset.split === "folders";
+    const vertical = !folders && effectiveMailViewLayout() === "bottom";
+    const pane = folders ? sideColumn() : $("messages");
+    const min = vertical ? mailListMinimumHeight() : folders ? 140 : 200;
+    const max = vertical ? Math.max(min, Math.min(1600, shell.getBoundingClientRect().height - 200)) : folders ? 1600 : 2000;
+    const value = clampLayoutMeasure(pane.getBoundingClientRect()[vertical ? "height" : "width"], min, max, min);
+    handle.setAttribute("aria-controls", folders ? "side-mail" : "messages");
+    handle.setAttribute("aria-valuemin", String(min));
+    handle.setAttribute("aria-valuemax", String(max));
+    handle.setAttribute("aria-valuenow", String(value));
+    handle.setAttribute("aria-valuetext", value + (vertical ? " pixels high" : " pixels wide"));
+  }
+}
+
+function applyMailView() {
+  const shell = $("shell");
+  if (!shell || typeof shell.getBoundingClientRect !== "function" || isReaderWindow()) return;
+  const pref = mailViewPref(state.prefs.mailView);
+  const layout = effectiveMailViewLayout();
+  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox]);
+  if (mailViewScrollScope !== scope) { mailViewScroll.clear(); mailViewScrollScope = scope; }
+  const previous = shell.dataset.mailLayout, list = $("message-list");
+  const moving = previous && previous !== layout && list;
+  const position = moving ? { left: list.scrollLeft, top: list.scrollTop } : null;
+  if (moving) mailViewScroll.set(previous, position);
+  shell.dataset.mailLayout = layout;
+  shell.style.setProperty("--mail-list-height", pref.listHeight + "px");
+  if (previous !== layout) syncMailListMinimum();
+  if (moving) {
+    const restore = mailViewScroll.get(layout) || position;
+    list.scrollLeft = restore.left;
+    list.scrollTop = restore.top;
+  }
+  const handle = shell.querySelector('[data-split="messages"]');
+  if (handle) {
+    handle.setAttribute("aria-orientation", layout === "bottom" ? "horizontal" : "vertical");
+    handle.setAttribute("aria-label", layout === "bottom" ? "Resize message list height" : "Resize message list");
+  }
+  if (previous !== layout) syncMailSplitterValues();
+  const opener = $("mail-view-open");
+  if (opener) opener.title = "Reading layout: " + mailViewLabels[pref.layout];
+  for (const button of shell.ownerDocument.querySelectorAll("[data-mail-view]")) {
+    button.setAttribute("aria-checked", String(button.dataset.mailView === pref.layout));
+  }
+}
+
+async function loadMailView() {
+  const revision = mailViewRevision;
+  try {
+    const saved = await api.invoke("morrow:configGetMailView");
+    if (revision !== mailViewRevision) return;
+    state.prefs.mailView = mailViewPref(saved);
+    applyMailView();
+  } catch { /* Keep the current view if settings are unavailable. */ }
+}
+
+function saveMailView(pref) {
+  const revision = ++mailViewRevision;
+  state.prefs.mailView = mailViewPref(pref);
+  const saved = { ...state.prefs.mailView };
+  applyMailView();
+  mailViewSave = mailViewSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailView", saved));
+  mailViewSave.catch(() => {
+    if (revision === mailViewRevision) showStatus("Could not save the reading layout. Choose it again to keep it after restart.", true);
+  });
+  return mailViewSave;
+}
+
+function closeMailViewMenu(restoreFocus = false) {
+  const menu = $("mail-view-menu"), opener = $("mail-view-open");
+  if (!menu || !opener || menu.hidden) return;
+  menu.hidden = true;
+  opener.setAttribute("aria-expanded", "false");
+  if (restoreFocus) opener.focus({ preventScroll: true });
+}
+
+function wireMailView() {
+  const control = $("mail-view-control"), menu = $("mail-view-menu"), opener = $("mail-view-open");
+  if (!control || control.dataset.wired) return;
+  control.dataset.wired = "1";
+  const items = [...menu.querySelectorAll("[data-mail-view]")];
+  const open = (last = false) => {
+    menu.hidden = false;
+    opener.setAttribute("aria-expanded", "true");
+    (last ? items[items.length - 1] : items.find(item => item.getAttribute("aria-checked") === "true") || items[0]).focus();
+  };
+  opener.addEventListener("click", () => { if (menu.hidden) open(); else closeMailViewMenu(); });
+  opener.addEventListener("keydown", event => {
+    if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+    event.preventDefault();
+    open(event.key === "ArrowUp");
+  });
+  menu.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      event.preventDefault(); event.stopPropagation(); closeMailViewMenu(true); return;
+    }
+    const index = items.indexOf(document.activeElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+      : event.key === "ArrowDown" ? (index + 1) % items.length
+      : event.key === "ArrowUp" ? (index + items.length - 1) % items.length : -1;
+    if (next < 0) return;
+    event.preventDefault(); event.stopPropagation(); items[next].focus();
+  });
+  for (const item of items) item.addEventListener("click", () => {
+    saveMailView({ ...mailViewPref(state.prefs.mailView), layout: item.dataset.mailView }).catch(() => {});
+    closeMailViewMenu(true);
+  });
+  document.addEventListener("pointerdown", event => { if (!control.contains(event.target)) closeMailViewMenu(); });
+  control.addEventListener("focusout", event => { if (!control.contains(event.relatedTarget)) closeMailViewMenu(); });
+  if (typeof window.ResizeObserver === "function") {
+    const observer = new window.ResizeObserver(() => { syncMailListMinimum(); syncMailSplitterValues(); });
+    observer.observe($("list-head"));
+    observer.observe($("list-paging"));
+    observer.observe($("messages"));
+    observer.observe(sideColumn());
+  }
+  applyMailView();
+}
+
 function rememberLayoutPanes() {
   const side = sideColumn();
   const list = $("messages");
   const reader = $("reader");
   if (!side || !list || !reader || !api || typeof side.getBoundingClientRect !== "function") return;
-  const panes = measuredLayoutPanes(
+  let panes = measuredLayoutPanes(
     side.getBoundingClientRect().width,
     list.getBoundingClientRect().width,
     reader.getBoundingClientRect().width
   );
+  if (effectiveMailViewLayout() !== "right") {
+    panes = { ...layoutPanesPref(state.prefs.layout), folders: panes.folders };
+    if (effectiveMailViewLayout() === "bottom") {
+      saveMailView({ ...mailViewPref(state.prefs.mailView), listHeight: clampLayoutMeasure(list.getBoundingClientRect().height, 200, 1600, 320) }).catch(() => {});
+    }
+  }
   state.prefs.layout = panes;
+  syncMailSplitterValues();
   clearTimeout(layoutSaveTimer);
   layoutSaveTimer = setTimeout(() => {
     layoutSaveTimer = null;
@@ -6402,6 +6671,23 @@ function rowCheck(email, selected) {
   return box;
 }
 
+function mailReplyForwardCell(email) {
+  const cell = document.createElement("span"); cell.className = "mail-reply-forward";
+  const labels = [];
+  for (const [key, label, icon] of [["replied", "Replied", "Reply"], ["forwarded", "Forwarded", "Forward"]]) {
+    if (email[key] === true) {
+      labels.push(label + " (provider flag)");
+      const svg = rowIcon(icon); svg.dataset.state = key; cell.append(svg);
+    } else labels.push(email[key] === false ? "No " + (key === "replied" ? "reply" : "forward") + " flag reported" : label + " status unavailable");
+  }
+  if (email.replied == null || email.forwarded == null) {
+    const unknown = document.createElement("span"); unknown.textContent = "—"; unknown.setAttribute("aria-hidden", "true"); cell.append(unknown);
+  }
+  const text = document.createElement("span"); text.className = "sr"; text.textContent = labels.join(". ") + "."; cell.append(text);
+  cell.title = text.textContent;
+  return cell;
+}
+
 function messageRow(email) {
   const row = document.createElement("div");
   row.className = "message-row" + (email.outbox ? " outbox-row" : "");
@@ -6482,8 +6768,8 @@ function messageRow(email) {
     ? accountLabel(mailbox) + " · "
     : (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "");
   snippet.textContent = prefix + (email.snippet || "");
-  const cells = { date: when, recipient, sender: from, subject: subjectLine };
-  for (const key of mailColumnOrder()) { cells[key].dataset.mailColumn = key; main.append(cells[key]); }
+  const cells = { date: when, recipient, sender: from, subject: subjectLine, status: mailReplyForwardCell(email) };
+  for (const key of visibleMailColumns()) { cells[key].dataset.mailColumn = key; main.append(cells[key]); }
   main.append(snippet);
   button.append(gutter, avatar, main);
   button.addEventListener("click", (event) => {
@@ -6493,12 +6779,23 @@ function messageRow(email) {
     }
     const mods = { shift: event.shiftKey, meta: event.metaKey, ctrl: event.ctrlKey };
     const visible = shownEmails().map((item) => item && item.id);
-    commitSelection(listClickSelection(state.selectedIds, state.selectionAnchor, visible, email.id, mods));
+    const selecting = effectiveMailViewLayout() === "window" && !mods.shift && !mods.meta && !mods.ctrl;
+    commitSelection(selecting ? { ids: [String(email.id)], anchor: String(email.id) }
+      : listClickSelection(state.selectedIds, state.selectionAnchor, visible, email.id, mods));
     if (mods.shift || mods.meta || mods.ctrl) {
       event.preventDefault();
       return;
     }
+    if (effectiveMailViewLayout() === "window") {
+      if (event.detail === 0) openSenderReader(row.mailMessage);
+      return;
+    }
     openMessage(email.id).catch((error) => showStatus(error.message, true));
+  });
+  button.addEventListener("dblclick", (event) => {
+    if (email.outbox || effectiveMailViewLayout() !== "window" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    event.preventDefault();
+    openSenderReader(row.mailMessage);
   });
   const actions = document.createElement("div");
   actions.className = "row-actions";
@@ -6735,6 +7032,7 @@ async function reviewedRemoval(messages, kind) {
 }
 
 function renderList() {
+  applyMailView();
   paintSyncControl();
   paintListPaging();
   rememberLoadedSelection();
@@ -6802,7 +7100,7 @@ function renderList() {
       // Retained rows keep keyboard focus and read the latest message for actions.
       const mailbox = state.accounts.find((item) => item.id === email.accountId);
       const stamp = JSON.stringify([email.folderId, email.from, email.to, email.subject, email.snippet, email.date,
-        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox, mailColumnOrder().join(","),
+        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox, visibleMailColumns().join(","),
         state.allInbox && mailbox ? accountLabel(mailbox) : "",
         state.query && mailbox ? mailbox.email : "",
         state.prefs.timeFormat, state.prefs.dateFormat]);
@@ -6810,10 +7108,16 @@ function renderList() {
       if (!cached || cached.stamp !== stamp) {
         const row = messageRow(email);
         if (cached) cached.row.replaceWith(row);
-        cached = { row, stamp, selected: selected.has(email.id), current: readerCurrentId() === email.id };
+        cached = { row, stamp, replied: email.replied, forwarded: email.forwarded, selected: selected.has(email.id), current: readerCurrentId() === email.id };
         messageRows.set(key, cached);
       }
       const row = cached.row;
+      // Provider flag refreshes must not replace a focused message or its actions.
+      if (cached.replied !== email.replied || cached.forwarded !== email.forwarded) {
+        const previous = row.querySelector('[data-mail-column="status"]');
+        if (previous) { const cell = mailReplyForwardCell(email); cell.dataset.mailColumn = "status"; previous.replaceWith(cell); }
+        cached.replied = email.replied; cached.forwarded = email.forwarded;
+      }
       row.mailMessage = email;
       const isSelected = selected.has(email.id);
       if (cached.selected !== isSelected) {
@@ -6993,6 +7297,9 @@ function renderActions(pane, email) {
   suggest.setAttribute("aria-label", "Suggest a reply");
   suggest.setAttribute("aria-busy", suggestPending ? "true" : "false");
   suggest.disabled = suggestPending;
+  const summary = readerButton("summary", "Summary", () => { requestMessageSummary(email); },
+    strokeIcon(["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h5"]));
+  summary.setAttribute("aria-controls", "message-summary");
   const forward = readerButton("forward", "Forward", () => openReaderCompose("forward"));
   forward.setAttribute("aria-keyshortcuts", "F");
   const menus = document.createElement("div");
@@ -7011,9 +7318,144 @@ function renderActions(pane, email) {
   besideStar.className = "reader-star-group";
   besideStar.append(star);
   renderTranslate(besideStar, email);
-  bar.append(reply, replyAll, suggest, forward, besideStar, archive, trash, menus);
+  bar.append(reply, replyAll, suggest, forward, summary, besideStar, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
+}
+
+function summarySource(email) {
+  return [email.subject, email.from, email.date, email.textBody, email.htmlBody, email.bodyComplete, email.bodyWarning];
+}
+
+function summaryMatches(email, view = messageSummary) {
+  const identity = bodyIdentity(email);
+  if (!view || !identity || view.key !== identity.key) return false;
+  const source = summarySource(email);
+  return view.source.every((value, index) => value === source[index]);
+}
+
+function clearMessageSummary() {
+  const view = messageSummary;
+  messageSummary = null; // Retire ownership before the asynchronous cancellation reply.
+  if (view?.pending) call("mail:cancelSummary", { reqId: view.reqId }).catch(() => {});
+}
+
+function stopMessageSummary() {
+  const view = messageSummary;
+  if (!view) return;
+  clearMessageSummary();
+  if (summaryMatches(state.email, view)) {
+    messageSummary = { ...view, pending: false, text: "", error: "", notice: "Summary cancelled. Choose Summary to try again." };
+    paintMessageSummary(state.email);
+    $("reader").querySelector('[data-action="summary"]')?.focus();
+  }
+}
+
+async function requestMessageSummary(email) {
+  if (!email || state.email !== email || (pendingOpenId && pendingOpenId !== email.id) || messageSummary?.pending) return;
+  const identity = bodyIdentity(email);
+  if (!identity) { showStatus("The mailbox connection changed. Reopen the message.", true); return; }
+  const view = { key: identity.key, source: summarySource(email), reqId: "summary-" + Date.now() + "-" + (++summarySeq),
+    pending: true, text: "", error: "", warnings: [], notice: "" };
+  messageSummary = view;
+  paintMessageSummary(email);
+  try {
+    const data = await call("mail:summarizeEmail", { reqId: view.reqId, accountId: identity.accountId,
+      emailId: identity.id, bodyEpoch: identity.bodyEpoch });
+    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+    if (!data || data.reqId !== view.reqId || data.accountId !== identity.accountId || data.emailId !== identity.id
+        || data.bodyEpoch !== identity.bodyEpoch || typeof data.text !== "string" || !data.text.trim()) throw new Error("The summary response did not match this message. Choose Summary to try again.");
+    view.text = data.text;
+    view.warnings = Array.isArray(data.warnings) ? data.warnings.map(String) : [];
+  } catch (error) {
+    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+    view.error = error instanceof Error ? error.message : String(error);
+    view.settings = ["ai-unconfigured", "ai-consent-required"].includes(error.code)
+      || /AI Setup|AI data permission|API key|ChatGPT/i.test(view.error);
+  } finally {
+    if (messageSummary === view) {
+      view.pending = false;
+      if (summaryMatches(state.email, view)) paintMessageSummary(state.email);
+      else clearMessageSummary();
+    }
+  }
+}
+
+function renderMessageSummary(pane, email) {
+  const box = document.createElement("section");
+  box.id = "message-summary";
+  box.className = "message-summary";
+  box.setAttribute("aria-labelledby", "message-summary-title");
+  const top = document.createElement("div");
+  top.className = "message-summary-heading";
+  const title = document.createElement("h3");
+  title.id = "message-summary-title";
+  title.textContent = "Summary";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "ghost";
+  close.textContent = "Dismiss summary";
+  close.onclick = () => { clearMessageSummary(); paintMessageSummary(state.email); pane.querySelector('[data-action="summary"]')?.focus(); };
+  top.append(title, close);
+  const context = document.createElement("p");
+  context.className = "hint message-summary-context";
+  const mailbox = state.accounts.find(account => account.id === email.accountId);
+  context.textContent = [email.subject || "(no subject)", email.from, mailbox?.email].filter(Boolean).join(" · ");
+  const scope = document.createElement("p");
+  scope.className = "hint";
+  scope.textContent = "Uses your configured AI and AI data permission. Up to 24,000 characters of downloaded text, including quoted history; attachment files are excluded.";
+  const status = document.createElement("p");
+  status.dataset.role = "summary-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const warnings = document.createElement("p");
+  warnings.className = "hint";
+  warnings.dataset.role = "summary-warnings";
+  const body = document.createElement("div");
+  body.className = "message-summary-text";
+  body.dataset.role = "summary-text";
+  const actions = document.createElement("div");
+  actions.className = "message-summary-controls";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "ghost";
+  cancel.dataset.role = "summary-cancel";
+  cancel.textContent = "Cancel summary";
+  cancel.onclick = stopMessageSummary;
+  const settings = document.createElement("button");
+  settings.type = "button";
+  settings.className = "ghost";
+  settings.dataset.role = "summary-settings";
+  settings.textContent = "Review AI settings";
+  settings.onclick = () => { openSettings(); revealSettingsFold("ai"); };
+  actions.append(cancel, settings);
+  box.append(top, context, scope, status, warnings, body, actions);
+  pane.appendChild(box);
+  paintMessageSummary(email);
+}
+
+function paintMessageSummary(email) {
+  const pane = $("reader");
+  if (!pane || typeof pane.querySelector !== "function") return;
+  const view = summaryMatches(email) ? messageSummary : null;
+  const button = pane.querySelector('[data-action="summary"]');
+  if (button) {
+    button.disabled = !!view?.pending;
+    button.setAttribute("aria-busy", String(!!view?.pending));
+    button.setAttribute("aria-expanded", String(!!view));
+  }
+  const box = pane.querySelector(".message-summary");
+  if (!box) return;
+  box.hidden = !view;
+  if (!view) return;
+  const status = box.querySelector('[data-role="summary-status"]');
+  status.className = view.error ? "hint error" : "hint";
+  status.textContent = view.pending ? "Summarizing this message…" : view.error || view.notice || "AI-generated summary. Check details against the message.";
+  box.querySelector('[data-role="summary-text"]').textContent = view.text;
+  box.querySelector('[data-role="summary-warnings"]').textContent = view.pending && (email.bodyComplete !== true || email.bodyWarning)
+    ? "The downloaded message may be incomplete. Missing content is not included." : view.warnings.join(" ");
+  box.querySelector('[data-role="summary-cancel"]').hidden = !view.pending;
+  box.querySelector('[data-role="summary-settings"]').hidden = !view.settings;
 }
 
 function indentedName(folder) {
@@ -7266,6 +7708,10 @@ function readerFromLine(email) {
 }
 
 function renderReader(focus, onlyChanged = false) {
+  if (messageSummary && !summaryMatches(state.email)) {
+    clearMessageSummary();
+    paintMessageSummary(state.email);
+  }
   if (pendingOpenBody && pendingOpenId) {
     paintReaderPending(listedMessage(pendingOpenId));
     return;
@@ -7340,6 +7786,7 @@ function renderReader(focus, onlyChanged = false) {
   }
   renderActions(pane, email);
   renderSuggestions(pane, email);
+  renderMessageSummary(pane, email);
   appendReaderClose(pane);
   appendTranslateStatus(pane);
   paintTranslation();
@@ -9094,13 +9541,18 @@ async function deleteFromList(email) {
 }
 
 async function replyFromList(email, kind) {
-  let opened = state.email && state.email.id === email.id ? state.email : null;
+  const target = { id: email.id, accountId: email.accountId };
+  let opened = state.email && state.email.id === target.id && state.email.accountId === target.accountId
+    && !state.email.bodyError && listedHasBody(state.email) ? state.email : null;
   if (!opened) {
-    const data = await call("mail:openEmail", { emailId: email.id, full: true, includeThread: false });
+    const data = await call("mail:openEmail", { emailId: target.id, accountId: target.accountId, full: true, includeThread: false });
     opened = data && data.email;
   }
-  if (!opened) throw new Error("That message is no longer in the mailbox.");
-  const account = state.accounts.find((item) => item.id === opened.accountId) || selectedAccount();
+  if (!opened || opened.id !== target.id || opened.accountId !== target.accountId) {
+    throw new Error("That message is no longer in this mailbox.");
+  }
+  const account = state.accounts.find((item) => item.id === target.accountId);
+  if (!account) throw new Error("That mailbox is no longer connected.");
   const self = (account && (account.preferredFromAddress || account.email)) || "";
   await presentCompose(composeSeed(opened, kind, self));
 }
@@ -10976,7 +11428,7 @@ function wireSelection() {
 }
 
 function onSelectionKey(event) {
-  if (state.view !== "mail") return;
+  if (state.view !== "mail" || $("mail-view-menu")?.hidden === false) return;
   const menu = $("organize-menu");
   const menuOpen = menu && !menu.hidden;
   if (event.key === "Escape") {
@@ -11478,6 +11930,7 @@ function readerCurrentId() {
 }
 
 function invalidateReaderOpen() {
+  clearMessageSummary();
   openGen += 1;
   pendingOpenId = "";
   pendingOpenBody = false;
@@ -11638,6 +12091,10 @@ function pumpBodyRefreshes() {
 function acceptBodyAccounts(accounts) {
   const previous = new Map(state.accounts.map(account => [account.id, account.bodyEpoch || 0]));
   state.accounts = Array.isArray(accounts) ? accounts : [];
+  if (messageSummary && !summaryMatches(state.email)) {
+    clearMessageSummary();
+    paintMessageSummary(state.email);
+  }
   for (const [key, entry] of latestBodies) if (!bodyIdentity(entry.body)) dropBody(key);
   for (const key of bodyReadFences.keys()) {
     const [accountId, epoch] = JSON.parse(key);
@@ -11699,7 +12156,10 @@ function paintReaderPending(email) {
 }
 
 async function openMessage(emailId, focus, full = false) {
+  clearMessageSummary();
+  paintMessageSummary(state.email);
   const known = listedMessage(emailId);
+  const expectedAccountId = known?.accountId || (state.email?.id === emailId ? state.email.accountId : "");
   const openedUnread = !!(known && known.unread);
   if (known && known.outbox) {
     invalidateReaderOpen();
@@ -11724,7 +12184,7 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -11732,7 +12192,7 @@ async function openMessage(emailId, focus, full = false) {
   }
   if (gen !== openGen) return;
   const email = data && data.email;
-  if (!email || String(email.id) !== String(emailId)) {
+  if (!email || String(email.id) !== String(emailId) || (expectedAccountId && email.accountId !== expectedAccountId)) {
     const message = email ? "That message could not be loaded." : "That message is no longer in the mailbox.";
     abandonOpen(emailId, message);
     throw new Error(message);
@@ -15624,7 +16084,7 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open and you are not typing in a field. In Separate window, select exactly one visible message for Delete, Backspace, R, A or F; these act on that message, never the hidden preview. Preview shortcuts wait until loading succeeds. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
@@ -15709,6 +16169,22 @@ function topOpenDialog() {
   return open.length ? open[open.length - 1] : null;
 }
 
+// The shell's hidden preview is not the selection in Separate window mode.
+function mailShortcutTarget() {
+  if (state.view !== "mail" || state.outbox) return null;
+  let email;
+  if (!isReaderWindow() && effectiveMailViewLayout() === "window") {
+    if (state.selectedIds.length !== 1) return null;
+    email = shownEmails().find(row => String(row.id) === state.selectedIds[0]);
+  } else {
+    if (pendingOpenId) return null;
+    email = state.email;
+  }
+  if (!email || !email.id || !email.accountId || email.outbox || email.bodyError) return null;
+  if (!state.accounts.some(account => account.id === email.accountId)) return null;
+  return email;
+}
+
 function mailShortcutContext(event) {
   const menu = $("organize-menu");
   const top = topOpenDialog();
@@ -15720,9 +16196,9 @@ function mailShortcutContext(event) {
   return {
     typing: !!editableField(event && event.target),
     dialog: !!top || undoPopoverOpen() || !!event?.target?.closest?.("#body-sync"),
-    menu: !!(menu && menu.hidden === false),
+    menu: !!(menu && menu.hidden === false) || $("mail-view-menu")?.hidden === false,
     topDialog: top && top.id ? top.id : "",
-    mailOpen: !!(state.email && state.email.id && !state.email.outbox),
+    mailOpen: !!mailShortcutTarget(),
     view: state.view,
     textSelected: textSelected,
   };
@@ -15772,11 +16248,11 @@ function mailShortcut(event, context) {
   return "";
 }
 
-function openReaderCompose(kind) {
-  const email = state.email;
+function openReaderCompose(kind, email = mailShortcutTarget()) {
   if (!email || email.outbox) return;
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
-  const self = (account && (account.preferredFromAddress || account.email)) || "";
+  const account = state.accounts.find((item) => item.id === email.accountId);
+  if (!account) return;
+  const self = (account.preferredFromAddress || account.email) || "";
   return presentCompose(composeSeed(email, kind, self));
 }
 
@@ -15792,9 +16268,12 @@ let mailShortcutAction = "";
 let mailShortcutStamp = 0;
 
 function runMailShortcut(action) {
+  const target = readerWindowShortcut(action) ? mailShortcutTarget() : null;
+  if (readerWindowShortcut(action) && !target) return;
+  const key = JSON.stringify([action, target?.accountId, target?.id]);
   const now = Date.now();
-  if (action && action === mailShortcutAction && now - mailShortcutStamp < 50) return;
-  mailShortcutAction = action || "";
+  if (action && key === mailShortcutAction && now - mailShortcutStamp < 50) return;
+  mailShortcutAction = key;
   mailShortcutStamp = now;
   if (action === "new-mail") {
     const button = $("compose-open");
@@ -15811,13 +16290,14 @@ function runMailShortcut(action) {
     return;
   }
   if (action === "delete") {
-    if (!state.email) return;
-    guard(() => trashOpen(state.email));
+    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
+      ? deleteFromList(target) : trashOpen(target));
     return;
   }
   if (action === "reply" || action === "reply-all" || action === "forward") {
     const kind = action === "reply" ? "reply" : action === "reply-all" ? "all" : "forward";
-    guard(() => openReaderCompose(kind));
+    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
+      ? replyFromList(target, kind) : openReaderCompose(kind, target));
     return;
   }
   const commandId = action === "send" ? "compose-send" : action === "save-draft" ? "compose-save" : action === "send-confirm" ? "compose-preview-confirm" : "";
@@ -15859,8 +16339,10 @@ async function onMailNotificationClick() {
     showMail();
     await selectFolder(target.accountId, target.folderId);
     if (gen !== notificationNavigationGen || state.accountId !== target.accountId || state.folderId !== target.folderId) return;
-    if (target.messageId) await openMessage(target.messageId);
-    else showStatus("That message is no longer available. Its Inbox is open.");
+    if (target.messageId) {
+      if (effectiveMailViewLayout() === "window") await openSenderReader({ id: target.messageId, accountId: target.accountId });
+      else await openMessage(target.messageId);
+    } else showStatus("That message is no longer available. Its Inbox is open.");
   } catch {
     if (gen === notificationNavigationGen) showStatus("That notification's message is no longer available. Refresh the mailbox to check.", true);
   }
@@ -16196,10 +16678,17 @@ function setPane(which, width, geometry) {
   const total = geometry?.total ?? shell.getBoundingClientRect().width;
   const folders = geometry?.folders ?? sideColumn().getBoundingClientRect().width;
   const list = geometry?.list ?? $("messages").getBoundingClientRect().width;
+  const layout = effectiveMailViewLayout();
+  if (which === "messages" && layout === "bottom") {
+    const height = geometry?.height ?? shell.getBoundingClientRect().height;
+    const min = mailListMinimumHeight();
+    shell.style.setProperty("--mail-list-height", Math.round(paneWidth(width, 0, min, Math.max(min, height - 200))) + "px");
+    return;
+  }
   const readerMin = 260;
   const handle = 12;
   if (which === "folders") {
-    const max = Math.max(140, total - list - readerMin - handle);
+    const max = Math.max(140, total - (layout === "right" ? list + readerMin : 280) - handle);
     document.documentElement.style.setProperty("--folders", `${Math.round(paneWidth(width, 0, 140, max))}px`);
     return;
   }
@@ -16210,26 +16699,29 @@ function setPane(which, width, geometry) {
 function wireSplits() {
   for (const handle of document.querySelectorAll(".split")) {
     handle.addEventListener("keydown", (event) => {
-      const step = event.key === "ArrowRight" ? 24 : event.key === "ArrowLeft" ? -24 : 0;
+      const vertical = handle.dataset.split === "messages" && effectiveMailViewLayout() === "bottom";
+      const step = event.key === (vertical ? "ArrowDown" : "ArrowRight") ? 24 : event.key === (vertical ? "ArrowUp" : "ArrowLeft") ? -24 : 0;
       if (!step) return;
       event.preventDefault();
       event.stopPropagation();
       const pane = handle.dataset.split === "folders" ? sideColumn() : $("messages");
-      setPane(handle.dataset.split, pane.getBoundingClientRect().width + step);
+      setPane(handle.dataset.split, pane.getBoundingClientRect()[vertical ? "height" : "width"] + step);
       rememberLayoutPanes();
     });
     handle.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
       const which = handle.dataset.split;
-      const startX = event.clientX;
-      const start = (which === "folders" ? sideColumn() : $("messages")).getBoundingClientRect().width;
+      const vertical = which === "messages" && effectiveMailViewLayout() === "bottom";
+      const startX = vertical ? event.clientY : event.clientX;
+      const start = (which === "folders" ? sideColumn() : $("messages")).getBoundingClientRect()[vertical ? "height" : "width"];
       const geometry = { total: document.querySelector(".shell").getBoundingClientRect().width,
-        folders: sideColumn().getBoundingClientRect().width, list: $("messages").getBoundingClientRect().width };
+        folders: sideColumn().getBoundingClientRect().width, list: $("messages").getBoundingClientRect().width,
+        height: document.querySelector(".shell").getBoundingClientRect().height };
       let frame = 0, nextWidth = start;
       const paint = () => { frame = 0; setPane(which, nextWidth, geometry); };
       function move(ev) {
-        nextWidth = start + ev.clientX - startX;
+        nextWidth = start + (vertical ? ev.clientY : ev.clientX) - startX;
         if (!frame) frame = requestAnimationFrame(paint);
       }
       function stop() {
@@ -16579,6 +17071,7 @@ async function loadShellPrefs() {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
   }
+  next.mailView = state.prefs.mailView;
   state.prefs = next;
   applyLook(next);
   applyLayoutPanes(next.layout);
@@ -17813,6 +18306,7 @@ function paintMailVacation() {
   if (!box) return;
   const picker = $("mail-ooo-account");
   if (picker) picker.hidden = !state.allInbox;
+  if ($("mail-ooo-chooser")) $("mail-ooo-chooser").hidden = !state.allInbox;
   if (state.allInbox) {
     const key = JSON.stringify(state.accounts.map((account) => [account.id, accountLabel(account)]));
     if (picker && picker.dataset.accounts !== key) {
@@ -17826,15 +18320,21 @@ function paintMailVacation() {
   box.hidden = !account;
   if (!account) return;
   const entry = mailVacation.get(account.id);
-  const compact = !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
-  const summary = vacationChipSummary(entry) || vacationSummary(entry?.data);
+  const pending = mailVacationPending.has(account.id);
+  const compact = !pending && !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
+  const summary = pending && !entry?.retrying ? "Out of Office: checking…" : vacationChipSummary(entry) || vacationSummary(entry?.data);
   const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + shownWhen(new Date(entry.at)) : "");
   box.classList.toggle("is-off", !!compact);
+  box.classList.toggle("is-multi", !!state.allInbox);
   box.title = detail;
-  $("mail-ooo-status").textContent = compact ? "Out of Office: off" : detail;
+  if ($("mail-ooo-identity")) $("mail-ooo-identity").textContent = account.email;
+  const status = summary.replace(/^Out of Office: /, "");
+  $("mail-ooo-status").textContent = status.charAt(0).toUpperCase() + status.slice(1);
   $("mail-ooo-status").setAttribute("aria-label", detail);
-  $("mail-ooo-status").setAttribute("aria-busy", entry?.retrying ? "true" : "false");
-  $("mail-ooo-manage").textContent = compact ? "Manage" : "Manage / disable";
+  $("mail-ooo-status").setAttribute("aria-busy", pending || entry?.retrying ? "true" : "false");
+  $("mail-ooo-manage").setAttribute("aria-label", "Manage Out of Office for " + account.email);
+  $("mail-ooo-refresh").setAttribute("aria-label", "Refresh Out of Office status for " + account.email);
+  $("mail-ooo-refresh").disabled = pending;
   $("mail-ooo-refresh").hidden = !!compact;
 }
 function releaseVacationRetry(accountId) {
@@ -17861,6 +18361,7 @@ async function refreshMailVacation(force = false) {
   });
   if (decision !== "fetch") return;
   mailVacationPending.add(id);
+  paintMailVacation();
   try {
     const data = await call("mail:vacationGet", { accountId: id });
     if (mailVacationAccount()?.id !== id) return;
@@ -17873,7 +18374,10 @@ async function refreshMailVacation(force = false) {
     if (plan.retry) mailVacation.set(id, { error: true, retrying: true, at: previous && previous.at });
     else mailVacation.set(id, { error: true, at: Date.now() });
     paintMailVacation();
-  } finally { mailVacationPending.delete(id); }
+  } finally {
+    mailVacationPending.delete(id);
+    paintMailVacation();
+  }
 }
 async function manageMailVacation() {
   const id = state.allInbox ? $("mail-ooo-account")?.value : state.accountId;
@@ -25176,6 +25680,7 @@ function wire() {
   wireGoogleOnboarding();
   wireSetupGuide();
   wireMailColumnEditor();
+  wireMailView();
   wireSettingsFolds();
   wireAgentTabs();
   wireAgentTodoView();
@@ -25530,7 +26035,7 @@ function wire() {
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
   $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
-  window.addEventListener("beforeunload", () => { for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
+  window.addEventListener("beforeunload", () => { clearMessageSummary(); for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
   $("attachment-preview").addEventListener("close", clearAttachmentPreview);
   $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
   $("agent-peek-mail").addEventListener("click", () => {
@@ -26063,6 +26568,7 @@ async function boot() {
   await loadPresets();
   await loadOauthStatus();
   await loadShellPrefs();
+  await loadMailView();
   await loadMailColumnOrder();
   await loadAccounts();
   notificationShellReady = true;
