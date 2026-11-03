@@ -108,6 +108,7 @@ function providerFixture(provider = "google", overrides = {}) {
 function mailFixture() {
   const ui = uiFixture();
   ui.nodes.get("undo-details-popover").hidden = true;
+  ui.nodes.get("mail-view-menu").hidden = true;
   ui.run(`globalThis.fixture={calls:[],reloads:0,confirmations:0};
     state.accounts=[{id:'a',email:'a@fixture.invalid',platform:'fixture',profile:'gmail',folders:{primary:[{id:'Inbox',name:'Inbox',wellKnownName:'inbox'}],more:[
       {id:'Projects',name:'Projects',providerId:'Label_9'},{id:'Other',name:'Other'},{id:'Work',name:'Work'},{id:'Projects/Work',name:'Work'}]}},
