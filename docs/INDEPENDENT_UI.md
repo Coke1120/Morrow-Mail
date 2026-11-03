@@ -1,3 +1,5 @@
+Notification clicks use an independent reader in Separate window mode, without opening or marking read through the hidden shell preview. Keyboard header moves use visible neighbors while retaining hidden columns in the complete saved order.
+
 The open View menu blocks message and selection shortcuts until it closes.
 
 Mail shortcuts follow the active reading surface. In Separate window mode, Delete/Backspace and R/A/F use exactly one visible selected message, including its account; zero or multiple selected messages disable those keys. Independent readers retain their own message. Right and Bottom preview shortcuts pause during loading and after a failed open. A reply already requested keeps the message/account captured at the keypress even if selection changes during download.

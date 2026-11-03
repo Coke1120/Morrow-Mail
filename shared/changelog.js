@@ -9,9 +9,9 @@
   const NOTES = {
     "0.3.22": [
       "Choose Right, Bottom or Separate window reading layouts from View. Mail list corners and Sync menu layering stay consistent across layouts.",
-      "Mail lists show available reply and forward status, let you choose visible columns, and display Outbox recipients correctly.",
+      "Mail lists show available reply and forward status, let you choose visible columns, and display Outbox recipients correctly. Keyboard reordering preserves hidden-column positions.",
       "Summary on the reader toolbar summarizes the downloaded message on demand using your configured AI and existing data permission. You can cancel or retry; incomplete content is identified.",
-      "Separate window keyboard shortcuts follow the single selected message and its mailbox. Loading, failed or ambiguous selections cannot act on an old preview.",
+      "Separate window keyboard shortcuts follow the single selected message and its mailbox. Loading, failed or ambiguous selections cannot act on an old preview. Notification clicks open a visible reader.",
       "Out of Office makes the selected mailbox, status and reviewed controls clearer. Features and README describe the current mail, Agent, bot and CLI capabilities.",
     ],
     "0.3.21": [

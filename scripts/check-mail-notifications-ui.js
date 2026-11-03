@@ -20,6 +20,7 @@ function fixture() {
         calls.push([channel, ...args]);
         if (channel === "mail:getNotificationSettings") return { success: true, data: notifications.status() };
         if (channel === "mail:takeNotificationTarget") { const value = notificationTarget; notificationTarget = null; return { success: true, data: value }; }
+        if (channel === "reader:open") return {};
         const result = settings.answer(channel, args); assert.notEqual(result, undefined, channel); return result;
       }, on(channel, callback) { events.set(channel, callback); }, removeListener() {} } };
   } });
@@ -90,4 +91,24 @@ test("main-process notification wiring keeps Windows identity aligned and expose
   assert.notEqual(pkg.build.nsis.createStartMenuShortcut, false);
   assert.ok(main.includes("mailNotifications.configure({ Notification, platform: process.platform"));
   assert.ok(main.includes('win.webContents.send("mail:notificationClicked")'));
+});
+
+
+for (const layout of ['right','bottom','window']) test(`notification uses a visible ${layout} destination without opening a hidden preview`, async () => {
+  const f=fixture();
+  try {
+    f.ui.run(`state.accounts=[{id:'a'},{id:'b'}]; state.prefs.mailView={layout:${JSON.stringify(layout)}};
+      notificationShellReady=true; globalThis.previewOpens=[];
+      showMail=()=>{}; showStatus=()=>{};
+      selectFolder=async(accountId,folderId)=>{state.accountId=accountId;state.folderId=folderId;state.outbox=false};
+      openMessage=async id=>{previewOpens.push(id)};
+    `);
+    f.target({accountId:'b',folderId:'INBOX',messageId:'new-b'});
+    await f.ui.run('onMailNotificationClick()');
+    const readers=f.calls.filter(([channel])=>channel==='reader:open');
+    assert.equal(readers.length,layout==='window'?1:0);
+    assert.deepEqual(JSON.parse(JSON.stringify(f.ui.run('previewOpens'))),layout==='window'?[]:['new-b']);
+    if(layout==='window') assert.deepEqual(JSON.parse(JSON.stringify(readers[0][1])),{accountId:'b',messageId:'new-b'});
+    assert.equal(f.calls.some(([channel])=>channel==='mail:markRead'),false);
+  } finally {f.dom.window.close()}
 });
