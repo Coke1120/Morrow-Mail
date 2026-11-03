@@ -150,6 +150,8 @@ const agentReplySelection = new Set();
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
+let messageSummary = null;
+let summarySeq = 0;
 let composeSuggestGen = 0;
 let signatureGen = 0;
 let signatureEditId = "";
@@ -7295,6 +7297,9 @@ function renderActions(pane, email) {
   suggest.setAttribute("aria-label", "Suggest a reply");
   suggest.setAttribute("aria-busy", suggestPending ? "true" : "false");
   suggest.disabled = suggestPending;
+  const summary = readerButton("summary", "Summary", () => { requestMessageSummary(email); },
+    strokeIcon(["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h5"]));
+  summary.setAttribute("aria-controls", "message-summary");
   const forward = readerButton("forward", "Forward", () => openReaderCompose("forward"));
   forward.setAttribute("aria-keyshortcuts", "F");
   const menus = document.createElement("div");
@@ -7313,9 +7318,144 @@ function renderActions(pane, email) {
   besideStar.className = "reader-star-group";
   besideStar.append(star);
   renderTranslate(besideStar, email);
-  bar.append(reply, replyAll, suggest, forward, besideStar, archive, trash, menus);
+  bar.append(reply, replyAll, suggest, forward, summary, besideStar, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
+}
+
+function summarySource(email) {
+  return [email.subject, email.from, email.date, email.textBody, email.htmlBody, email.bodyComplete, email.bodyWarning];
+}
+
+function summaryMatches(email, view = messageSummary) {
+  const identity = bodyIdentity(email);
+  if (!view || !identity || view.key !== identity.key) return false;
+  const source = summarySource(email);
+  return view.source.every((value, index) => value === source[index]);
+}
+
+function clearMessageSummary() {
+  const view = messageSummary;
+  messageSummary = null; // Retire ownership before the asynchronous cancellation reply.
+  if (view?.pending) call("mail:cancelSummary", { reqId: view.reqId }).catch(() => {});
+}
+
+function stopMessageSummary() {
+  const view = messageSummary;
+  if (!view) return;
+  clearMessageSummary();
+  if (summaryMatches(state.email, view)) {
+    messageSummary = { ...view, pending: false, text: "", error: "", notice: "Summary cancelled. Choose Summary to try again." };
+    paintMessageSummary(state.email);
+    $("reader").querySelector('[data-action="summary"]')?.focus();
+  }
+}
+
+async function requestMessageSummary(email) {
+  if (!email || state.email !== email || (pendingOpenId && pendingOpenId !== email.id) || messageSummary?.pending) return;
+  const identity = bodyIdentity(email);
+  if (!identity) { showStatus("The mailbox connection changed. Reopen the message.", true); return; }
+  const view = { key: identity.key, source: summarySource(email), reqId: "summary-" + Date.now() + "-" + (++summarySeq),
+    pending: true, text: "", error: "", warnings: [], notice: "" };
+  messageSummary = view;
+  paintMessageSummary(email);
+  try {
+    const data = await call("mail:summarizeEmail", { reqId: view.reqId, accountId: identity.accountId,
+      emailId: identity.id, bodyEpoch: identity.bodyEpoch });
+    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+    if (!data || data.reqId !== view.reqId || data.accountId !== identity.accountId || data.emailId !== identity.id
+        || data.bodyEpoch !== identity.bodyEpoch || typeof data.text !== "string" || !data.text.trim()) throw new Error("The summary response did not match this message. Choose Summary to try again.");
+    view.text = data.text;
+    view.warnings = Array.isArray(data.warnings) ? data.warnings.map(String) : [];
+  } catch (error) {
+    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+    view.error = error instanceof Error ? error.message : String(error);
+    view.settings = ["ai-unconfigured", "ai-consent-required"].includes(error.code)
+      || /AI Setup|AI data permission|API key|ChatGPT/i.test(view.error);
+  } finally {
+    if (messageSummary === view) {
+      view.pending = false;
+      if (summaryMatches(state.email, view)) paintMessageSummary(state.email);
+      else clearMessageSummary();
+    }
+  }
+}
+
+function renderMessageSummary(pane, email) {
+  const box = document.createElement("section");
+  box.id = "message-summary";
+  box.className = "message-summary";
+  box.setAttribute("aria-labelledby", "message-summary-title");
+  const top = document.createElement("div");
+  top.className = "message-summary-heading";
+  const title = document.createElement("h3");
+  title.id = "message-summary-title";
+  title.textContent = "Summary";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "ghost";
+  close.textContent = "Dismiss summary";
+  close.onclick = () => { clearMessageSummary(); paintMessageSummary(state.email); pane.querySelector('[data-action="summary"]')?.focus(); };
+  top.append(title, close);
+  const context = document.createElement("p");
+  context.className = "hint message-summary-context";
+  const mailbox = state.accounts.find(account => account.id === email.accountId);
+  context.textContent = [email.subject || "(no subject)", email.from, mailbox?.email].filter(Boolean).join(" · ");
+  const scope = document.createElement("p");
+  scope.className = "hint";
+  scope.textContent = "Uses your configured AI and AI data permission. Up to 24,000 characters of downloaded text, including quoted history; attachment files are excluded.";
+  const status = document.createElement("p");
+  status.dataset.role = "summary-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const warnings = document.createElement("p");
+  warnings.className = "hint";
+  warnings.dataset.role = "summary-warnings";
+  const body = document.createElement("div");
+  body.className = "message-summary-text";
+  body.dataset.role = "summary-text";
+  const actions = document.createElement("div");
+  actions.className = "message-summary-controls";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "ghost";
+  cancel.dataset.role = "summary-cancel";
+  cancel.textContent = "Cancel summary";
+  cancel.onclick = stopMessageSummary;
+  const settings = document.createElement("button");
+  settings.type = "button";
+  settings.className = "ghost";
+  settings.dataset.role = "summary-settings";
+  settings.textContent = "Review AI settings";
+  settings.onclick = () => { openSettings(); revealSettingsFold("ai"); };
+  actions.append(cancel, settings);
+  box.append(top, context, scope, status, warnings, body, actions);
+  pane.appendChild(box);
+  paintMessageSummary(email);
+}
+
+function paintMessageSummary(email) {
+  const pane = $("reader");
+  if (!pane || typeof pane.querySelector !== "function") return;
+  const view = summaryMatches(email) ? messageSummary : null;
+  const button = pane.querySelector('[data-action="summary"]');
+  if (button) {
+    button.disabled = !!view?.pending;
+    button.setAttribute("aria-busy", String(!!view?.pending));
+    button.setAttribute("aria-expanded", String(!!view));
+  }
+  const box = pane.querySelector(".message-summary");
+  if (!box) return;
+  box.hidden = !view;
+  if (!view) return;
+  const status = box.querySelector('[data-role="summary-status"]');
+  status.className = view.error ? "hint error" : "hint";
+  status.textContent = view.pending ? "Summarizing this message…" : view.error || view.notice || "AI-generated summary. Check details against the message.";
+  box.querySelector('[data-role="summary-text"]').textContent = view.text;
+  box.querySelector('[data-role="summary-warnings"]').textContent = view.pending && (email.bodyComplete !== true || email.bodyWarning)
+    ? "The downloaded message may be incomplete. Missing content is not included." : view.warnings.join(" ");
+  box.querySelector('[data-role="summary-cancel"]').hidden = !view.pending;
+  box.querySelector('[data-role="summary-settings"]').hidden = !view.settings;
 }
 
 function indentedName(folder) {
@@ -7568,6 +7708,10 @@ function readerFromLine(email) {
 }
 
 function renderReader(focus, onlyChanged = false) {
+  if (messageSummary && !summaryMatches(state.email)) {
+    clearMessageSummary();
+    paintMessageSummary(state.email);
+  }
   if (pendingOpenBody && pendingOpenId) {
     paintReaderPending(listedMessage(pendingOpenId));
     return;
@@ -7642,6 +7786,7 @@ function renderReader(focus, onlyChanged = false) {
   }
   renderActions(pane, email);
   renderSuggestions(pane, email);
+  renderMessageSummary(pane, email);
   appendReaderClose(pane);
   appendTranslateStatus(pane);
   paintTranslation();
@@ -11780,6 +11925,7 @@ function readerCurrentId() {
 }
 
 function invalidateReaderOpen() {
+  clearMessageSummary();
   openGen += 1;
   pendingOpenId = "";
   pendingOpenBody = false;
@@ -11940,6 +12086,10 @@ function pumpBodyRefreshes() {
 function acceptBodyAccounts(accounts) {
   const previous = new Map(state.accounts.map(account => [account.id, account.bodyEpoch || 0]));
   state.accounts = Array.isArray(accounts) ? accounts : [];
+  if (messageSummary && !summaryMatches(state.email)) {
+    clearMessageSummary();
+    paintMessageSummary(state.email);
+  }
   for (const [key, entry] of latestBodies) if (!bodyIdentity(entry.body)) dropBody(key);
   for (const key of bodyReadFences.keys()) {
     const [accountId, epoch] = JSON.parse(key);
@@ -12001,6 +12151,8 @@ function paintReaderPending(email) {
 }
 
 async function openMessage(emailId, focus, full = false) {
+  clearMessageSummary();
+  paintMessageSummary(state.email);
   const known = listedMessage(emailId);
   const openedUnread = !!(known && known.unread);
   if (known && known.outbox) {
@@ -25855,7 +26007,7 @@ function wire() {
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
   $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
-  window.addEventListener("beforeunload", () => { for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
+  window.addEventListener("beforeunload", () => { clearMessageSummary(); for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
   $("attachment-preview").addEventListener("close", clearAttachmentPreview);
   $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
   $("agent-peek-mail").addEventListener("click", () => {

@@ -17,6 +17,7 @@ const zipBytes = require("./zip-bytes");
 const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
+const messageSummaries = require("../message-summary").createSummaryService({ readMessage: summaryMessage });
 
 const secrets = require("./secrets");
 const oauth = require("./oauth");
@@ -423,6 +424,17 @@ function cachedBody(row) {
   // Only visible consumers request this snapshot. Include current draft/inline
   // attachment and sender metadata; notifications themselves remain body-free.
   return detailOf(row);
+}
+
+function summaryMessage(params) {
+  const row = db.messageById(params.emailId);
+  if (!row || row.account_id !== params.accountId || !db.accountById(row.account_id)) {
+    throw Object.assign(new Error("That message is no longer in this mailbox."), { code: "email-gone" });
+  }
+  if (params.bodyEpoch !== (accountEpochs.get(row.account_id) || 0)) {
+    throw Object.assign(new Error("The mailbox connection changed. Reopen the message."), { code: "message_changed" });
+  }
+  return cachedBody(row);
 }
 
 function threadMeta(rows) {
@@ -1936,6 +1948,7 @@ async function connectAccount(params) {
 
 function invalidateAttachmentAccount(id) {
   notifications.invalidate(id);
+  messageSummaries.invalidateAccount(id);
   accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
   overnightCursor = null;
   const error = removedAccountError();
@@ -4181,6 +4194,10 @@ function answer(channel, args, event) {
           threadMessages: members,
         });
       })();
+    case "mail:summarizeEmail":
+      return messageSummaries.summarize(params, event?.sender);
+    case "mail:cancelSummary":
+      return messageSummaries.cancel(params, event?.sender);
     case "mail:readCachedBody": {
       const row = db.messageById(params?.emailId);
       if (!row || row.account_id !== params?.accountId || !db.accountById(row.account_id)) return fail("email-gone", "That message is no longer in this mailbox.");

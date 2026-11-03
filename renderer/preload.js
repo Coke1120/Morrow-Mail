@@ -162,6 +162,8 @@ const INVOKE = [
   "mail:deleteSignature",
   "mail:translateStart",
   "mail:translateCancel",
+  "mail:summarizeEmail",
+  "mail:cancelSummary",
   "aiDraftWrite:start",
   "aiDraftWrite:cancel",
   "aiDraftWrite:replySuggestions",

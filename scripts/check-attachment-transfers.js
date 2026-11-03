@@ -101,7 +101,7 @@ function fixture(apiTransport = false) {
   const source = fs.readFileSync(path.join(__dirname, "../host/mail/engine.js"), "utf8");
   const cache = createAttachmentCache(), requests = createAttachmentRequests();
   const context = { Buffer, crypto: require("node:crypto"), path, os: { tmpdir: () => "/synthetic-temp" }, db, remote,
-    notifications: { invalidate() {} },
+    notifications: { invalidate() {} }, messageSummaries: { invalidateAccount() {} },
     attachmentCache: cache, attachmentRequests: requests, attachmentTransfers: require("../host/mail/attachment-cache"),
     updateGate: { run: fn => fn() }, actions: { assertIdentityReady() { if (controls.pendingAction) throw Error("message moving"); } },
     pumpBodyFills() {}, secretFor: async () => "synthetic-token", zipBytes: { ...require("../host/mail/zip-bytes"),
