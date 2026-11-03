@@ -140,7 +140,7 @@ async function flagSync(engine, db, remote, secrets) {
     pages.push(picked);
     for (const uid of picked) {
       const flags = server.get(uid);
-      yield {uid, flags: new Set([...(flags.unread ? [] : ["\\Seen"]), ...(flags.starred ? ["\\Flagged"] : [])])};
+      yield {uid, flags: new Set([...(flags.unread ? [] : ["\\Seen"]), ...(flags.starred ? ["\\Flagged"] : []), ...([450,1].includes(uid) ? ["\\Answered"] : []), ...([300,1].includes(uid) ? ["$Forwarded"] : [])])};
     }
     yield {uid: 999, flags: new Set(["\\Flagged"])}; // unsolicited FETCH is not this page
   };
@@ -153,6 +153,8 @@ async function flagSync(engine, db, remote, secrets) {
   for (const uid of [450, 300, 1]) {
     assert.equal(db.messageById("flag-" + uid).unread, server.get(uid).unread ? 1 : 0);
     assert.equal(db.messageById("flag-" + uid).starred, 1);
+    assert.equal(db.messageById("flag-" + uid).replied, [450,1].includes(uid) ? 1 : 0);
+    assert.equal(db.messageById("flag-" + uid).forwarded, [300,1].includes(uid) ? 1 : 0);
   }
   assert.equal(db.folderByPath(id, "INBOX").unread, 224);
   assert.equal(engine.answer("mail:listFromCache", [{accountId: id, folderId: engine.STARRED_FOLDER_ID}]).data.total, 3);

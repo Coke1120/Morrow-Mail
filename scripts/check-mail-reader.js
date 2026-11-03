@@ -771,7 +771,7 @@ function assertReaderWindowMatchesShellActions() {
   assertReaderDateOnFromRow(ui.reader, /Sender r3/);
   const shown = readerText(ui.reader);
   assert.deepEqual(actionNames(ui.reader), [
-    'reply', 'reply-all', 'suggest', 'forward',
+    'reply', 'reply-all', 'suggest', 'forward', 'summary',
     'star', 'translate', 'translate-cancel',
     'archive', 'trash', 'move', 'organize', 'snooze', 'close-reader',
   ]);
