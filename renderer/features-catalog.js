@@ -7,6 +7,10 @@
   return {
     items: [
       {
+        id: "mail-reading-layout", title: "Mail reading layout", category: "Mail",
+        blurb: "View, beside Search downloaded mail, switches between Right preview, Bottom preview and Separate window. The choice and bottom list height are saved on this computer across mailboxes and search. Drag the divider to resize a preview, or focus it and use Left / Right for a right preview and Up / Down for a bottom preview. Separate window gives the list the available width: single-click selects a message without opening or marking it read; double-click or press Enter to open the existing independent reader. Row actions and multiple selection remain available. Outbox keeps its scheduled-message preview below the list. Small windows stack previews below the list while keeping your saved choice. Changing view preserves column order, sorting, search, selection and scroll position.",
+      },
+      {
         id: "native-mail-notifications", title: "New email notifications", category: "Mail",
         blurb: "Windows and macOS system notifications for recent unread Inbox arrivals while Morrow Mail is running, awake and syncing. Enabled by default with sender and content hidden. Settings → Mail & Sync can turn them off or show sender only, or sender, subject and a short preview; previews may appear on the lock screen and in notification history. Initial sync, history downloads, flag changes and old restart mail stay quiet. Fresh server delivery can notify even when the sender's Date is old or missing. Historical provider arrival timestamps stay quiet. Bursts across mailboxes share a notification, always with hidden content. Clicking opens the newest available message in its account, or Inbox if it has gone; removed accounts are ignored. System permissions and Focus / Do Not Disturb control delivery. Failed or suppressed attempts do not replay. Windows closing the main window quits; macOS hiding it keeps sync running, but Quit stops it. Installed Windows builds need their Start menu shortcut; portable delivery is not guaranteed. Native Windows/macOS delivery remains unverified.",
       },
