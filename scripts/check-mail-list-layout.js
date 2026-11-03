@@ -171,3 +171,19 @@ test('failed star/read writes restore aggregate membership without clearing anot
   await assert.rejects(f.ui.run('setRead(state.emails[0],true)'),/synthetic refusal/);
   assert.equal(f.ui.run('shownEmails().length'),1);
 });
+
+
+test('keyboard moves choose visible neighbors while retaining hidden-column order', async t => {
+  const f=uiFixture(t);
+  f.ui.run("state.mailColumnOrder=['date','recipient','sender','subject','status'];state.mailHiddenColumns=['recipient'];renderList()");
+  f.document.querySelector('[data-sort-key="sender"] button').dispatchEvent(new f.window.KeyboardEvent('keydown',{key:'ArrowRight',altKey:true,bubbles:true,cancelable:true}));
+  await settle();
+  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['date','recipient','subject','sender','status']);
+  assert.deepEqual(Array.from(f.ui.run('state.mailHiddenColumns')),['recipient']);
+  f.document.querySelector('[data-sort-key="sender"] button').dispatchEvent(new f.window.KeyboardEvent('keydown',{key:'ArrowLeft',altKey:true,bubbles:true,cancelable:true}));
+  await settle();
+  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),columns.defaults);
+  await f.ui.run("changeMailColumnVisibility('recipient',true)");
+  assert.deepEqual(Array.from(f.ui.run('visibleMailColumns()')),columns.defaults);
+  assert.equal(f.ui.run('sortCalls.length'),0);
+});

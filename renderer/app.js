@@ -771,7 +771,7 @@ function openMailColumnMenu(event, anchor) {
 function moveMailColumn(key, direction, includeHidden = false) {
   const order = includeHidden ? mailColumnOrder() : visibleMailColumns(), index = order.indexOf(key), target = order[index + direction];
   if (!target) return;
-  changeMailColumnOrder(window.morrowMailColumns.move(order, key, target, direction > 0)).catch(() => {});
+  changeMailColumnOrder(window.morrowMailColumns.move(mailColumnOrder(), key, target, direction > 0)).catch(() => {});
 }
 function wireMailColumnHeader(cell, button, key) {
   button.draggable = true;
@@ -16339,8 +16339,10 @@ async function onMailNotificationClick() {
     showMail();
     await selectFolder(target.accountId, target.folderId);
     if (gen !== notificationNavigationGen || state.accountId !== target.accountId || state.folderId !== target.folderId) return;
-    if (target.messageId) await openMessage(target.messageId);
-    else showStatus("That message is no longer available. Its Inbox is open.");
+    if (target.messageId) {
+      if (effectiveMailViewLayout() === "window") await openSenderReader({ id: target.messageId, accountId: target.accountId });
+      else await openMessage(target.messageId);
+    } else showStatus("That message is no longer available. Its Inbox is open.");
   } catch {
     if (gen === notificationNavigationGen) showStatus("That notification's message is no longer available. Refresh the mailbox to check.", true);
   }
