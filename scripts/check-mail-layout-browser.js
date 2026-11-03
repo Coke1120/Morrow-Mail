@@ -53,6 +53,12 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
    offerChangelog=async()=>{};refreshMailVacation=()=>{document.getElementById("mail-ooo").hidden=true};await loadMailColumnOrder();await loadMailView();wireMailColumnEditor();wireMailView();wireSplits();renderAccounts();await loadList(false,0);document.getElementById('mail-ooo').hidden=true;
   })}
   await page.goto(url);await initialize();
+  await page.evaluate(()=>changeMailColumnVisibility('recipient',false));
+  await page.locator('[data-sort-key="sender"] button').focus();await page.keyboard.press('Alt+ArrowRight');
+  assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','recipient','subject','sender','status']);
+  await page.keyboard.press('Alt+ArrowLeft');
+  await page.evaluate(()=>changeMailColumnVisibility('recipient',true));
+  assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','recipient','sender','subject','status']);
   const outerCorners=await verifyOuterMailCardCorners(page);
   await page.reload();await initialize();
   await page.locator('[data-sort-key="date"] button').dragTo(page.locator('[data-sort-key="subject"]'),{targetPosition:{x:150,y:12}});
@@ -83,9 +89,18 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   await verifyReadingLayouts(page);
   await page.reload();await initialize();assert.equal(await page.evaluate(()=>state.prefs.mailView.layout),'window');
   const columns=await verifyColumnControls(page,initialize);
+  const notificationRoute=await page.evaluate(async()=>{
+    await saveMailView({layout:'window',listHeight:320});notificationShellReady=true;
+    const original=call,beforeReaders=popouts.length,beforeOpens=requests.filter(row=>row.channel==='mail:openEmail'||row.channel==='mail:markRead').length;
+    call=async(channel,payload)=>channel==='mail:takeNotificationTarget'?{accountId:'b',folderId:'INBOX',messageId:'row-1'}:original(channel,payload);
+    try {await onMailNotificationClick()} finally {call=original}
+    return {newReaders:popouts.length-beforeReaders,target:popouts.at(-1),previewReads:requests.filter(row=>row.channel==='mail:openEmail'||row.channel==='mail:markRead').length-beforeOpens};
+  });
+  assert.deepEqual(notificationRoute,{newReaders:1,target:{accountId:'b',messageId:'row-1'},previewReads:0});
+  assert.equal(await page.locator('#reader').isVisible(),false);
   await page.evaluate(()=>showFeatures());assert.match(await page.locator('#features-catalog').textContent(),/Drag headers to reorder columns independently of sorting/);
   assert.match(await page.locator('#features-catalog').textContent(),/View, beside Search downloaded mail/);
-  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',url,title:await page.title(),checks:'drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, whole All Mail card top corners with negative control, right/bottom/window layouts, splitter keyboard and pointer, selection/search/scroll retention, double-click and keyboard popout, narrow/mobile/light/dark/reduced-motion, rendered Features, status flags, visibility menu/restart, Sync stacking with negative control, axe',outerCorners,columns,output}));
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',url,title:await page.title(),checks:'drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, whole All Mail card top corners with negative control, right/bottom/window layouts, splitter keyboard and pointer, selection/search/scroll retention, double-click and keyboard popout, narrow/mobile/light/dark/reduced-motion, rendered Features, status flags, visibility menu/restart, Sync stacking with negative control, hidden-column keyboard order, visible notification popout, axe',outerCorners,columns,output}));
  }finally{await browser.close();server.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});
 
