@@ -5525,10 +5525,16 @@ textarea { min-height: 140px; resize: vertical; }
 
 /* Account context and queue management */
 .preserve-lines { white-space: pre-line; }
-.mail-ooo { margin: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; }
+.mail-ooo { margin: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.mail-ooo h3 { margin: 0; font-size: 13px; line-height: 1.5; font-weight: 650; }
 .mail-ooo p { overflow-wrap: anywhere; }
-.mail-ooo .row { flex-wrap: wrap; }
-.mail-ooo select { min-width: 0; max-width: 100%; }
+.mail-ooo-chooser { margin-top: 10px; }
+.mail-ooo-chooser label { display: block; margin: 0 0 4px; color: inherit; font-size: 12px; }
+.mail-ooo select { display: block; width: 100%; min-width: 0; max-width: 100%; height: 34px; padding: 4px 8px; font: inherit; font-size: 13px; }
+.mail-ooo .mail-ooo-identity { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
+.mail-ooo #mail-ooo-status { margin: 10px 0 0; font-size: 13px; line-height: 1.5; }
+.mail-ooo .mail-ooo-actions { margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.mail-ooo .mail-ooo-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 4px 8px; font-size: 12px; }
 #scheduled-dialog { width: min(760px, calc(100vw - 32px)); }
 #scheduled li { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 #scheduled li > span { flex-basis: 100%; overflow-wrap: anywhere; }
@@ -5627,22 +5633,17 @@ textarea { min-height: 140px; resize: vertical; }
 .settings-account-context { margin-top: 14px; padding: 12px; background: var(--hover); border-radius: 10px; }
 #side-mail > #scheduled-open, .mail-ooo button.ghost { background: transparent; }
 
-/* Verified disabled replies remain a status line; active/unknown/error keep details. */
-.mail-ooo.is-off { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
-.mail-ooo.is-off .hint {
-  margin: 0;
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 12px;
-  white-space: nowrap;
+/* The address and native chooser stay readable at any folder-column width. */
+.mail-ooo .mail-ooo-identity, .mail-ooo-chooser label { color: rgba(255,255,255,.82); }
+.mail-ooo :is(button, select):focus-visible { outline-color: #b9d5ad; }
+.mail-ooo.is-off:not(.is-multi) { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 4px 8px; }
+.mail-ooo.is-off:not(.is-multi) .mail-ooo-identity { display: none; }
+.mail-ooo.is-off:not(.is-multi) #mail-ooo-status { flex: 1; margin: 0; }
+.mail-ooo.is-off:not(.is-multi) .mail-ooo-actions { margin: 0; }
+@media (forced-colors: active) {
+  .mail-ooo, .mail-ooo .hint, .mail-ooo .mail-ooo-identity, .mail-ooo-chooser label, .mail-ooo button.ghost { color: CanvasText; border-color: CanvasText; }
+  .mail-ooo :is(button, select):focus-visible { outline-color: Highlight; }
 }
-.mail-ooo.is-off .row { margin: 0; flex: 0 0 auto; }
-.mail-ooo.is-off button { padding: 3px 6px; font-size: 12px; }
-.mail-ooo.is-off:has(select:not([hidden])) { flex-wrap: wrap; }
-.mail-ooo.is-off:has(select:not([hidden])) .row { flex: 1 1 100%; min-width: 0; }
-.mail-ooo.is-off select { flex: 1 1 0; }
 @media (max-height: 600px) {
   #log-panel { padding: 12px 16px; }
   #log-panel .space-head { margin-bottom: 4px; }

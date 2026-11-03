@@ -278,7 +278,7 @@ function testWiring() {
   assert.ok(engine.includes("const POLL_MS = 45000"));
   assert.ok(engine.includes("setInterval(tick, POLL_MS)"));
   assert.ok(html.includes('src="../shared/sync-retry.js"'));
-  assert.ok(html.includes('id="mail-ooo-refresh">Refresh status</button>'));
+  assert.ok(html.includes('id="mail-ooo-refresh" aria-label="Refresh Out of Office status"'));
   assert.ok(app.includes("decideOooRefresh"));
   assert.ok(app.includes("stickyAuth: false"));
   assert.ok(functionSource(app, "refreshMailVacation").includes("mail:vacationGet"));

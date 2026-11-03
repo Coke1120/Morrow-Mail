@@ -1,3 +1,5 @@
+Mail’s Out of Office panel labels its mailbox chooser, shows the full selected address separately, and keeps status and actions on their own rows. Checking and retry states stay scoped to that mailbox; Manage opens its reviewed Settings editor without changing replies. Disabled replies show Off with Manage and no Refresh.
+
 New profiles see a five-step setup guide after startup dialogs: mailbox, calendar,
 sender names, signatures and optional AI. Settings → General → Open setup guide
 resumes saved progress. Existing mailboxes are not interrupted. The guide reads
