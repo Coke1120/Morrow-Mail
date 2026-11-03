@@ -709,7 +709,7 @@ app.whenReady().then(async () => {
   await waitFor(`mailVacation.get('box-0')?.data?.settings?.mode==='disabled'`);
   assert.equal(count('mail:vacationGet'), vacationReadsBeforeAll + 1, 'mail paint reads only the selected All Account mailbox');
   assert.equal(await run(`$('mail-ooo').checkVisibility() && $('mail-ooo-account').checkVisibility()`), true);
-  assert.equal(await run(`$('mail-ooo-status').textContent`), 'Out of Office: off');
+  assert.equal(await run(`$('mail-ooo-status').textContent`), 'Off');
   assert.equal(await run(`$('mail-ooo').classList.contains('is-off')`), true);
   assert.equal(await run(`$('mail-ooo-manage').textContent`), 'Manage');
   assert.equal(await run(`$('mail-ooo-refresh').hidden`), true);
@@ -719,7 +719,7 @@ app.whenReady().then(async () => {
   await run(`renderAccounts();renderAccounts();$('mail-ooo-account').value='box-1';$('mail-ooo-account').dispatchEvent(new Event('change'))`);
   await waitFor(`mailVacation.get('box-1')?.data?.settings?.mode==='always'`);
   assert.equal(count('mail:vacationGet'), vacationReadsBeforeAll + 2, 'picker changes read only the selected mailbox; repaint uses cache');
-  assert.match(await run(`$('mail-ooo-status').textContent`), /^outlook@example.test · Out of Office: on until disabled · Checked /);
+  assert.match(await run(`$('mail-ooo-status').textContent`), /^On until disabled$/);
   assert.equal(await run(`$('mail-ooo').classList.contains('is-off') || $('mail-ooo-refresh').hidden`), false);
   await run(`$('mail-ooo-refresh').click()`);
   await waitCalls('mail:vacationGet', vacationReadsBeforeAll + 3);
@@ -736,7 +736,7 @@ app.whenReady().then(async () => {
   assert.match(await run(`$('features-catalog').textContent`), /accumulate completed changes across batches/);
   assert.match(await run(`$('features-catalog').textContent`), /Accepted writes await mailbox confirmation before joining Undo/);
   assert.match(await run(`$('features-catalog').textContent`), /selected mailbox's Out of Office status/);
-  assert.match(await run(`$('features-catalog').textContent`), /compact Out of Office: off with Manage and no Refresh/);
+  assert.match(await run(`$('features-catalog').textContent`), /Off with Manage and no Refresh/);
   await run(`showFeaturesTab('cli')`);
   assert.equal(await run(`$('cli-mail-feedback').checkVisibility()`), true);
   await run(`showPrimary('mail','shell')`);

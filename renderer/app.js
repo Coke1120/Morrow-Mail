@@ -17996,6 +17996,7 @@ function paintMailVacation() {
   if (!box) return;
   const picker = $("mail-ooo-account");
   if (picker) picker.hidden = !state.allInbox;
+  if ($("mail-ooo-chooser")) $("mail-ooo-chooser").hidden = !state.allInbox;
   if (state.allInbox) {
     const key = JSON.stringify(state.accounts.map((account) => [account.id, accountLabel(account)]));
     if (picker && picker.dataset.accounts !== key) {
@@ -18009,15 +18010,21 @@ function paintMailVacation() {
   box.hidden = !account;
   if (!account) return;
   const entry = mailVacation.get(account.id);
-  const compact = !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
-  const summary = vacationChipSummary(entry) || vacationSummary(entry?.data);
+  const pending = mailVacationPending.has(account.id);
+  const compact = !pending && !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
+  const summary = pending && !entry?.retrying ? "Out of Office: checking…" : vacationChipSummary(entry) || vacationSummary(entry?.data);
   const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + shownWhen(new Date(entry.at)) : "");
   box.classList.toggle("is-off", !!compact);
+  box.classList.toggle("is-multi", !!state.allInbox);
   box.title = detail;
-  $("mail-ooo-status").textContent = compact ? "Out of Office: off" : detail;
+  if ($("mail-ooo-identity")) $("mail-ooo-identity").textContent = account.email;
+  const status = summary.replace(/^Out of Office: /, "");
+  $("mail-ooo-status").textContent = status.charAt(0).toUpperCase() + status.slice(1);
   $("mail-ooo-status").setAttribute("aria-label", detail);
-  $("mail-ooo-status").setAttribute("aria-busy", entry?.retrying ? "true" : "false");
-  $("mail-ooo-manage").textContent = compact ? "Manage" : "Manage / disable";
+  $("mail-ooo-status").setAttribute("aria-busy", pending || entry?.retrying ? "true" : "false");
+  $("mail-ooo-manage").setAttribute("aria-label", "Manage Out of Office for " + account.email);
+  $("mail-ooo-refresh").setAttribute("aria-label", "Refresh Out of Office status for " + account.email);
+  $("mail-ooo-refresh").disabled = pending;
   $("mail-ooo-refresh").hidden = !!compact;
 }
 function releaseVacationRetry(accountId) {
@@ -18044,6 +18051,7 @@ async function refreshMailVacation(force = false) {
   });
   if (decision !== "fetch") return;
   mailVacationPending.add(id);
+  paintMailVacation();
   try {
     const data = await call("mail:vacationGet", { accountId: id });
     if (mailVacationAccount()?.id !== id) return;
@@ -18056,7 +18064,10 @@ async function refreshMailVacation(force = false) {
     if (plan.retry) mailVacation.set(id, { error: true, retrying: true, at: previous && previous.at });
     else mailVacation.set(id, { error: true, at: Date.now() });
     paintMailVacation();
-  } finally { mailVacationPending.delete(id); }
+  } finally {
+    mailVacationPending.delete(id);
+    paintMailVacation();
+  }
 }
 async function manageMailVacation() {
   const id = state.allInbox ? $("mail-ooo-account")?.value : state.accountId;
