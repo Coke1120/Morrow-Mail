@@ -407,6 +407,7 @@ async function readFetched(msg, validity, cap) {
     listSortTs: when.getTime(),
     unread: !seen,
     starred: !!(flags && flags.has("\\Flagged")),
+    ...require("./reply-forward-state").fromFlags(flags),
     isDraft: !!(flags && flags.has("\\Draft")),
     hasAttachments: hasFileAttachment(attachments),
     htmlBody: presented.htmlBody,
@@ -462,7 +463,8 @@ async function searchUids(client, folderPath, query, flagPage) {
         for await (const message of client.fetch([...wanted].join(","), { uid: true, flags: true }, { uid: true })) {
           const uid = Number(message.uid);
           if (!wanted.has(uid) || !(message.flags instanceof Set)) continue;
-          flags.push({ uid, unread: !message.flags.has("\\Seen"), starred: message.flags.has("\\Flagged") });
+          flags.push({ uid, unread: !message.flags.has("\\Seen"), starred: message.flags.has("\\Flagged"),
+            ...require("./reply-forward-state").fromFlags(message.flags) });
         }
       }
     }

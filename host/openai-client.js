@@ -80,7 +80,11 @@ async function completeAdmitted(messages, options) {
     throw new Error(await readError(response));
   }
   const payload = await response.json();
-  const message = payload && payload.choices && payload.choices[0] && payload.choices[0].message;
+  const choice = payload && payload.choices && payload.choices[0];
+  if (options.requireComplete && choice?.finish_reason && choice.finish_reason !== "stop") {
+    throw Object.assign(new Error("The model returned an incomplete response. Try again or review the selected model in AI settings."), { code: "ai-incomplete" });
+  }
+  const message = choice && choice.message;
   return messageText(message);
 }
 

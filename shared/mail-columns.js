@@ -3,7 +3,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.morrowMailColumns = api;
 })(typeof window === "object" ? window : globalThis, function () {
-  const defaults = ["date", "recipient", "sender", "subject"];
+  const defaults = ["date", "recipient", "sender", "subject", "status"];
   function normalize(value) {
     const order = [];
     for (const key of Array.isArray(value) ? value : []) if (defaults.includes(key) && !order.includes(key)) order.push(key);
@@ -16,5 +16,13 @@
     next.splice(next.indexOf(target) + (after ? 1 : 0), 0, source);
     return next;
   }
-  return { defaults, normalize, move };
+  // Subject remains visible so corrupt settings cannot produce an empty list.
+  function normalizeHidden(value) {
+    return defaults.filter(key => key !== "subject" && Array.isArray(value) && value.includes(key));
+  }
+  function visible(order, hidden) {
+    const excluded = normalizeHidden(hidden);
+    return normalize(order).filter(key => !excluded.includes(key));
+  }
+  return { defaults, normalize, move, normalizeHidden, visible };
 });

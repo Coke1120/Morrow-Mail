@@ -96,7 +96,7 @@ async function run() {
     loadList = async (network, offset) => { loads.push({network,offset,sort:{...state.listSort}}); };
     paintMailListColumns($('message-list'));
   `);
-  assert.equal(dom.window.document.querySelectorAll('[role="columnheader"]').length, 4);
+  assert.equal(dom.window.document.querySelectorAll('[role="columnheader"]').length, 5);
   await ui.run(`changeMailListSort('subject')`);
   ui.run(`paintMailListColumns($('message-list'))`);
   assert.equal(dom.window.document.querySelector('[data-sort-key="subject"]').getAttribute("aria-sort"), "ascending");
@@ -110,7 +110,7 @@ async function run() {
   assert.equal(ui.run(`mailListRequest({allInbox:true,listSort:state.listSort}).params.sortBy`), "subject");
   assert.equal(ui.run(`mailRecipientText({to:['first@fixture.invalid','second@fixture.invalid']})`), "first@fixture.invalid, second@fixture.invalid");
   ui.run(`state.outbox=true;paintMailListColumns($('message-list'))`);
-  assert.ok([...dom.window.document.querySelectorAll('[role="columnheader"] button')].every(button => button.disabled));
+  assert.ok([...dom.window.document.querySelectorAll('[role="columnheader"][aria-sort] button')].every(button => button.disabled));
   assert.equal(ui.run(`messageRow({id:"missing",to:[],date:""}).querySelector("time").textContent`), "");
   assert.equal(ui.run(`messageRow({id:"bad-date",to:[],date:"invalid"}).querySelector("time").textContent`), "");
   ui.run(`paintFeatureCatalog()`);
