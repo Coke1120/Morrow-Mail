@@ -11428,7 +11428,7 @@ function wireSelection() {
 }
 
 function onSelectionKey(event) {
-  if (state.view !== "mail") return;
+  if (state.view !== "mail" || $("mail-view-menu")?.hidden === false) return;
   const menu = $("organize-menu");
   const menuOpen = menu && !menu.hidden;
   if (event.key === "Escape") {
@@ -16196,7 +16196,7 @@ function mailShortcutContext(event) {
   return {
     typing: !!editableField(event && event.target),
     dialog: !!top || undoPopoverOpen() || !!event?.target?.closest?.("#body-sync"),
-    menu: !!(menu && menu.hidden === false),
+    menu: !!(menu && menu.hidden === false) || $("mail-view-menu")?.hidden === false,
     topDialog: top && top.id ? top.id : "",
     mailOpen: !!mailShortcutTarget(),
     view: state.view,

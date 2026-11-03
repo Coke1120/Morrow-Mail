@@ -54,6 +54,17 @@ const root = path.resolve(__dirname, '..');
         assert.equal(await page.evaluate(()=>compositions.at(-1).accountId),'alpha');
       }
     }
+    await page.evaluate(()=>{
+      pendingOpenId=''; state.selectedIds=['message-1']; state.prefs.mailView={layout:'right'};
+      renderList(); renderReader(false); wireMailView(); document.addEventListener('keydown',onSelectionKey);
+    });
+    await page.locator('#mail-view-open').click();
+    const beforeMenu=await page.evaluate(()=>[commands.filter(row=>['mail:delete','mail:archive'].includes(row.channel)).length,compositions.length]);
+    for(const key of ['r','a','f','Delete','Backspace','Meta+a']) await page.keyboard.press(key);
+    await page.waitForFunction(()=>!state.busy);
+    assert.deepEqual(await page.evaluate(()=>[commands.filter(row=>['mail:delete','mail:archive'].includes(row.channel)).length,compositions.length]),beforeMenu);
+    assert.deepEqual(await page.evaluate(()=>state.selectedIds),['message-1']);
+    await page.keyboard.press('Tab'); assert.equal(await page.locator('#mail-view-menu').isVisible(),false);
     await page.evaluate(()=>{showFeatures();paintShortcuts()});
     assert.match(await page.locator('#features-catalog').textContent(),/no selection or multiple selections disable/);
     assert.match(await page.locator('#shortcuts-note').textContent(),/exactly one visible message/);

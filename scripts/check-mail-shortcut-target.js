@@ -122,3 +122,17 @@ test('help describes selection scope and blocked previews in the rendered Featur
   assert.match(f.window.document.getElementById('features-catalog').textContent, /no selection or multiple selections disable these shortcuts/);
   assert.match(f.window.document.getElementById('shortcuts-note').textContent, /Preview shortcuts wait until loading succeeds/);
 });
+
+
+test('open View menu blocks mail actions and selection shortcuts', async t => {
+  const f = fixture(t); f.select(1);
+  f.window.document.getElementById('mail-view-menu').hidden = false;
+  f.ui.run("document.addEventListener('keydown', onSelectionKey)");
+  for (const key of ['r', 'a', 'f', 'Delete', 'Backspace']) {
+    f.reset(); f.press(key); await f.finish();
+  }
+  f.press('a', {ctrlKey:true}); f.press('Escape');
+  assert.equal(f.ui.run('calls.length'), 0);
+  assert.equal(f.ui.run('composes.length'), 0);
+  assert.equal(f.ui.run('state.selectedIds.join()'), 'two');
+});
