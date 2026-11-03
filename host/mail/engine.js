@@ -350,6 +350,8 @@ function listRow(row, generations, memberships) {
     unread: row.unread === 1,
     isRead: row.unread !== 1,
     isStarred: row.starred === 1,
+    replied: row.replied == null ? null : row.replied === 1,
+    forwarded: row.forwarded == null ? null : row.forwarded === 1,
     actionGeneration: generations instanceof Map ? generations.get(row.id) || 0 : actions.generationOf(row.id),
     isDraft: row.is_draft === 1,
     hasAttachments: row.has_attachments === 1,
@@ -2441,6 +2443,7 @@ async function ensureBody(row, options) {
       subject: fetched.subject || row.subject,
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
       from_address: fetched.fromAddress || row.from_address || null,
+      ...require("./reply-forward-state").patch(fetched),
     });
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
     return db.messageById(row.id);

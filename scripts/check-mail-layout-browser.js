@@ -12,11 +12,13 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
  const browser=await chromium.launch({executablePath:process.env.MORROW_CHROMIUM||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
  try{
-  const page=await browser.newPage({viewport:{width:1440,height:960}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const page=await browser.newPage({viewport:{width:1440,height:960},hasTouch:true}),errors=[];page.on('pageerror',e=>errors.push(e.message));
   page.on('console',message=>{if(['error','warning'].includes(message.type()))errors.push(message.type()+': '+message.text())});
   await page.addInitScript(()=>{window.popouts=[];window.morrow={on(){},openReaderWindow:async seed=>{window.popouts.push(seed)},invoke:async(channel,value)=>{
    if(channel==='morrow:configGetMailColumnOrder')return JSON.parse(localStorage.getItem('synthetic.columns')||'null');
    if(channel==='morrow:configSetMailColumnOrder'){localStorage.setItem('synthetic.columns',JSON.stringify(value));return value}
+   if(channel==='morrow:configGetMailHiddenColumns')return JSON.parse(localStorage.getItem('synthetic.hidden')||'null');
+   if(channel==='morrow:configSetMailHiddenColumns'){localStorage.setItem('synthetic.hidden',JSON.stringify(value));return value}
    if(channel==='morrow:configGetMailView')return JSON.parse(localStorage.getItem('synthetic.view')||'null');
    if(channel==='morrow:configSetMailView'){localStorage.setItem('synthetic.view',JSON.stringify(value));return value}return null;
   }}});
@@ -55,7 +57,7 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   await page.reload();await initialize();
   await page.locator('[data-sort-key="date"] button').dragTo(page.locator('[data-sort-key="subject"]'),{targetPosition:{x:150,y:12}});
   await page.waitForFunction(()=>mailColumnOrder()[0]!=='date');
-  const dragged=await page.evaluate(()=>mailColumnOrder());assert.equal(dragged.length,4);
+  const dragged=await page.evaluate(()=>mailColumnOrder());assert.equal(dragged.length,5);
   assert.equal(await page.evaluate(()=>state.listSort.sortBy),'date');
   await page.waitForTimeout(350);await page.locator('[data-sort-key="subject"] button').click();
   await page.waitForFunction(()=>state.listSort.sortBy==='subject');assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),dragged);
@@ -64,10 +66,10 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   await page.locator('#mail-columns-open').click();await page.locator('#mail-columns[open]').waitFor();
   await page.addScriptTag({url:'/axe.js'});
   const violations=await page.evaluate(async()=> (await axe.run(document.getElementById('mail-columns'),{runOnly:{type:'tag',values:['wcag2a','wcag2aa']}})).violations.map(v=>v.id));assert.deepEqual(violations,[]);
-  await page.getByRole('button',{name:'Reset column order',exact:true}).click();assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','recipient','sender','subject']);
+  await page.getByRole('button',{name:'Reset column order',exact:true}).click();assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','recipient','sender','subject','status']);
   await page.getByRole('button',{name:'Move right: Date',exact:true}).click();assert.equal(await page.evaluate(()=>mailColumnOrder()[1]),'date');
   await page.locator('#mail-columns-close').click();await page.locator('#mail-columns').waitFor({state:'hidden'});
-  const align=await page.evaluate(()=>({head:[...document.querySelectorAll('.mail-list-columns [role="columnheader"]')].map(n=>n.getBoundingClientRect().x),row:[...document.querySelector('.row-main').children].slice(0,4).map(n=>n.getBoundingClientRect().x)}));assert.ok(align.head.every((x,i)=>Math.abs(x-align.row[i])<2),JSON.stringify(align));
+  const align=await page.evaluate(()=>({head:[...document.querySelectorAll('.mail-list-columns [role="columnheader"]')].map(n=>n.getBoundingClientRect().x),row:[...document.querySelector('.row-main').children].slice(0,5).map(n=>n.getBoundingClientRect().x)}));assert.ok(align.head.every((x,i)=>Math.abs(x-align.row[i])<2),JSON.stringify(align));
   assert.equal(await page.locator('.all-account-inbox .count').count(),0);assert.ok(await page.locator('button.folder[data-account-id="a"] .count').count()>0);
   await page.locator('.all-starred').click();await page.waitForFunction(()=>state.allInboxStarredOnly&&state.emails.every(r=>r.isStarred));
   const stars=await page.evaluate(()=>state.listTotal);await page.evaluate(()=>toggleStar(state.emails[0]));await page.waitForFunction(n=>state.listTotal===n-1,stars);
@@ -80,9 +82,10 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   assert.ok(await page.evaluate(()=>{const n=document.getElementById('message-list');return n.scrollWidth>n.clientWidth}));
   await verifyReadingLayouts(page);
   await page.reload();await initialize();assert.equal(await page.evaluate(()=>state.prefs.mailView.layout),'window');
+  const columns=await verifyColumnControls(page,initialize);
   await page.evaluate(()=>showFeatures());assert.match(await page.locator('#features-catalog').textContent(),/Drag headers to reorder columns independently of sorting/);
   assert.match(await page.locator('#features-catalog').textContent(),/View, beside Search downloaded mail/);
-  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',url,title:await page.title(),checks:'drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, whole All Mail card top corners with negative control, right/bottom/window layouts, splitter keyboard and pointer, selection/search/scroll retention, double-click and keyboard popout, narrow/mobile/light/dark/reduced-motion, rendered Features, axe',outerCorners,output}));
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',url,title:await page.title(),checks:'drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, whole All Mail card top corners with negative control, right/bottom/window layouts, splitter keyboard and pointer, selection/search/scroll retention, double-click and keyboard popout, narrow/mobile/light/dark/reduced-motion, rendered Features, status flags, visibility menu/restart, Sync stacking with negative control, axe',outerCorners,columns,output}));
  }finally{await browser.close();server.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});
 
@@ -194,4 +197,95 @@ async function verifyReadingLayouts(page) {
   }
  }
  await page.emulateMedia({reducedMotion:'reduce'});await choose('Bottom preview');await choose('Separate window');
+}
+
+
+async function verifyColumnControls(page, initialize) {
+ await page.setViewportSize({width:1440,height:960});
+ await page.evaluate(()=>{
+  state.allInbox=false;state.allInboxUnreadOnly=false;state.allInboxStarredOnly=false;state.query='';state.outbox=false;
+  state.prefs.mailView={layout:'right',listHeight:320};applyMailView();
+  state.emails=fixtureRows.slice(0,20).map((row,index)=>({...row,replied:index%4===0||index%4===2,forwarded:index%4===1||index%4===2}));
+  state.emails[3].replied=null;state.emails[3].forwarded=null;state.listSort={sortBy:'sender',sortDirection:'asc'};state.listTotal=20;renderList();paintSyncControl();paintBodySyncStatus();
+ });
+ assert.equal(await page.locator('[data-mail-column="status"]').first().locator('[data-state="replied"]').count(),1);
+ assert.match(await page.locator('[data-mail-column="status"]').nth(3).getAttribute('title'),/status unavailable/);
+ await page.screenshot({path:path.join(output,'provider-status-icons.png')});
+ await page.locator('.message-row button.message').first().focus();
+ await page.evaluate(()=>{window.statusFocused=document.activeElement;state.emails[0].replied=false;state.emails[0].forwarded=true;renderList()});
+ assert.equal(await page.evaluate(()=>document.activeElement===statusFocused),true,'flag refresh preserves the focused row');
+ assert.equal(await page.locator('[data-mail-column="status"]').first().locator('[data-state="forwarded"]').count(),1);
+ const originalSort=await page.evaluate(()=>({...state.listSort}));
+ await page.locator('[data-sort-key="status"] button').click();assert.deepEqual(await page.evaluate(()=>({...state.listSort})),originalSort);
+ await page.locator('[data-sort-key="subject"] button').click({button:'right'});
+ assert.equal(await page.locator('#mail-column-menu').isVisible(),true);
+ await page.screenshot({path:path.join(output,'header-menu.png')});
+ await page.addScriptTag({url:'/axe.js'});
+ const a11y=await page.evaluate(async()=> (await axe.run(document.getElementById('mail-column-menu'),{runOnly:{type:'tag',values:['wcag2a','wcag2aa']}})).violations.map(row=>row.id));assert.deepEqual(a11y,[]);
+ await page.getByRole('menuitemcheckbox',{name:'Sender',exact:true}).click();
+ assert.equal(await page.locator('[data-sort-key="sender"]').isVisible(),false);assert.equal(await page.locator('[data-mail-column="sender"]').count(),0);
+ assert.deepEqual(await page.evaluate(()=>({...state.listSort})),originalSort,'hiding the sorted column keeps sorting');
+ await page.keyboard.press('Escape');assert.equal(await page.locator('[data-sort-key="subject"] button').evaluate(node=>node===document.activeElement),true);
+ await page.keyboard.press('Shift+F10');await page.keyboard.press('End');
+ assert.equal(await page.locator('#mail-column-menu [data-column="status"]').evaluate(node=>node===document.activeElement),true);
+ await page.keyboard.press('Space');assert.equal(await page.locator('[data-sort-key="status"]').isVisible(),false);
+ await page.keyboard.press('Escape');
+ await page.reload();await initialize();
+ assert.equal(await page.locator('[data-sort-key="sender"]').isVisible(),false);assert.equal(await page.locator('[data-sort-key="status"]').isVisible(),false);
+ await page.locator('#mail-columns-open').click();
+ assert.equal(await page.locator('[data-visibility="sender"]').isChecked(),false);
+ await page.screenshot({path:path.join(output,'columns-dialog.png')});
+ await page.getByRole('button',{name:'Show all columns',exact:true}).click();
+ assert.equal(await page.locator('[data-visibility="sender"]').isChecked(),true);
+ await page.locator('#mail-columns-close').click();
+ const stacking=[];
+ for(const [layout,width,theme,compact] of [['right',1440,'light',true],['bottom',1440,'dark',false],['window',900,'light',true],['right',760,'dark',false]]) {
+  await page.setViewportSize({width,height:800});
+  await page.evaluate(({layout,theme,compact})=>{
+   state.prefs.mailView={layout,listHeight:320};state.prefs.compactList=compact;applyMailView();applyShellTheme(document.documentElement,theme,'#193C34');
+   renderList();paintSyncControl();paintBodySyncStatus();
+  },{layout,theme,compact});
+  await page.locator('#message-list').evaluate(node=>node.scrollTop=180);
+  await page.locator('#refresh').hover();
+  const topmost=()=>page.evaluate(()=>{
+   const tip=document.querySelector('.body-sync-scroll'),r=tip.getBoundingClientRect(),head=document.querySelector('.mail-list-columns').getBoundingClientRect();
+   const y=Math.max(r.top,head.top)+Math.min(8,Math.min(r.bottom,head.bottom)-Math.max(r.top,head.top))/2;
+   const x=Math.max(r.left,head.left)+12;return {overlap:Math.min(r.bottom,head.bottom)>Math.max(r.top,head.top),tipOnTop:!!document.elementFromPoint(x,y)?.closest('#body-sync')};
+  });
+  const result=await topmost();assert.equal(result.overlap,true,JSON.stringify({layout,width,result}));assert.equal(result.tipOnTop,true,JSON.stringify({layout,width,result}));
+  if(layout==='right'&&width===1440){
+   await page.locator('#list-head').evaluate(node=>{node.style.zIndex='3';node.style.position='static'});
+   assert.equal((await topmost()).tipOnTop,false,'negative control reproduces sticky headers covering Sync');
+   await page.locator('#list-head').evaluate(node=>{node.style.removeProperty('z-index');node.style.removeProperty('position')});
+   assert.equal((await topmost()).tipOnTop,true);
+  }
+  await page.screenshot({path:path.join(output,`sync-${layout}-${width}-${theme}.png`)});
+  await page.locator('.body-sync-scroll').focus();assert.equal((await topmost()).tipOnTop,true,'keyboard focus retains the popup');
+  await page.evaluate(()=>document.activeElement.blur());await page.mouse.move(1,1);
+  await page.locator('[data-sort-key="subject"] button').click({button:'right'});
+  const bounds=await page.locator('#mail-column-menu').boundingBox();assert.ok(bounds.x>=0&&bounds.y>=0&&bounds.x+bounds.width<=width);
+  await page.keyboard.press('Escape');stacking.push({layout,width,theme,compact,...result});
+ }
+ await page.setViewportSize({width:900,height:700});
+ await page.locator('#mail-columns-open').tap();
+ for(const key of ['date','recipient','sender','status'])await page.locator(`[data-visibility="${key}"]`).tap();
+ await page.locator('#mail-columns-close').click();
+ assert.equal(await page.locator('.mail-list-columns [role="columnheader"]:visible').count(),1);
+ const overflow=await page.locator('#message-list').evaluate(node=>node.scrollWidth>node.clientWidth);assert.equal(overflow,false,'hiding columns reduces the grid minimum width');
+ await page.screenshot({path:path.join(output,'subject-only-narrow.png')});
+ await page.locator('#mail-columns-open').click();await page.getByRole('button',{name:'Show all columns',exact:true}).click();await page.locator('#mail-columns-close').click();
+ await page.setViewportSize({width:1440,height:900});
+ await page.evaluate(()=>{
+  state.allInbox=true;state.outbox=true;state.prefs.mailView={layout:'window',listHeight:320};state.prefs.compactList=true;
+  state.outboxRows=[{id:'outbox-a',accountId:'a',outbox:true,status:'pending',to:'"Team, West" <west@fixture.invalid>, second@fixture.invalid',fromAddress:'a@fixture.invalid',subject:'Multiple recipients',sendAt:'2099-01-01T00:00:00Z'},
+   {id:'outbox-b',accountId:'b',outbox:true,status:'pending',to:'b-recipient@fixture.invalid',fromAddress:'b@fixture.invalid',subject:'Second account',sendAt:'2099-01-01T00:00:01Z'},
+   {id:'outbox-empty',accountId:'b',outbox:true,status:'pending',to:'',bcc:'hidden@fixture.invalid',fromAddress:'b@fixture.invalid',subject:'BCC only',sendAt:'2099-01-01T00:00:02Z'}];
+  state.outboxCount=3;state.emails=outboxEmails(state.outboxRows);state.listTotal=3;renderList();
+ });
+ assert.deepEqual(await page.locator('[data-mail-column="recipient"]').allTextContents(),['"Team, West" <west@fixture.invalid>, second@fixture.invalid','b-recipient@fixture.invalid','(no recipient)']);
+ await page.mouse.move(1,1);await page.screenshot({path:path.join(output,'outbox-recipients.png')});
+ const disabledHeader=await page.locator('[data-sort-key="recipient"] button').boundingBox();
+ await page.mouse.click(disabledHeader.x+12,disabledHeader.y+12,{button:'right'});
+ assert.equal(await page.locator('#mail-column-menu').isVisible(),true,'Outbox disabled sorting header still offers column choices');await page.keyboard.press('Escape');
+ return {stacking,menuAxeViolations:a11y,subjectOnlyOverflow:overflow,outboxRecipients:'formatted multi-account To and empty To passed'};
 }

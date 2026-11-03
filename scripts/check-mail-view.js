@@ -26,13 +26,13 @@ test('actual preload saves a validated view independently of pane widths, column
   vm.runInNewContext(fs.readFileSync(require.resolve('../renderer/preload'), 'utf8'), { require: () => ({ contextBridge: { exposeInMainWorld: (name, api) => { if (name === 'morrow') bridge = api; } }, ipcRenderer: { invoke: async (channel, value) => { channels.push({ channel, value }); return settings.answer(channel, [value]); } } }) });
   assert.deepEqual(await bridge.invoke('morrow:configGetMailView'), { layout: 'right', listHeight: 320 });
   await bridge.invoke('morrow:configSetLayoutPanes', { folders: 260, list: 720, reading: 480 });
-  await bridge.invoke('morrow:configSetMailColumnOrder', ['subject', 'date', 'sender', 'recipient']);
+  await bridge.invoke('morrow:configSetMailColumnOrder', ['subject', 'date', 'sender', 'recipient', 'status']);
   await bridge.invoke('config:setTheme', 'dark');
   await bridge.invoke('morrow:configSetMailView', { layout: 'bottom', listHeight: 440, untrusted: '<html>' });
   assert.deepEqual(await bridge.invoke('morrow:configGetMailView'), { layout: 'bottom', listHeight: 440 });
   for (const invalid of [null, { layout: 'url', listHeight: 320 }, { layout: 'right', listHeight: 199 }, { layout: 'window', listHeight: 2001 }]) await assert.rejects(bridge.invoke('morrow:configSetMailView', invalid), /Mail view must/);
   assert.deepEqual(await bridge.invoke('morrow:configGetLayoutPanes'), { folders: 260, list: 720, reading: 480 });
-  assert.deepEqual(await bridge.invoke('morrow:configGetMailColumnOrder'), ['subject', 'date', 'sender', 'recipient']);
+  assert.deepEqual(await bridge.invoke('morrow:configGetMailColumnOrder'), ['subject', 'date', 'sender', 'recipient', 'status']);
   assert.equal(await bridge.invoke('config:getTheme'), 'dark');
   await bridge.openReaderWindow({ accountId: 'b', messageId: 'message-b' });
   assert.equal(channels.at(-1).channel, 'reader:open');

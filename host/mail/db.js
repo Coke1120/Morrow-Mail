@@ -263,6 +263,10 @@ function migrate() {
   for (const column of ["body_retry_blocked", "body_retry_after"]) {
     if (!all("PRAGMA table_info(messages)").some(row => row.name === column)) run(`ALTER TABLE messages ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
   }
+  // NULL distinguishes old caches and unsupported providers from observed flags.
+  for (const column of ["replied", "forwarded"]) {
+    if (!all("PRAGMA table_info(messages)").some(row => row.name === column)) run(`ALTER TABLE messages ADD COLUMN ${column} INTEGER`);
+  }
   run(`CREATE TRIGGER IF NOT EXISTS body_retry_identity AFTER UPDATE OF account_id, folder_path, uid, uid_validity, gmail_id ON messages
     WHEN OLD.account_id IS NOT NEW.account_id OR OLD.folder_path IS NOT NEW.folder_path OR OLD.uid IS NOT NEW.uid
       OR OLD.uid_validity IS NOT NEW.uid_validity OR OLD.gmail_id IS NOT NEW.gmail_id
@@ -425,7 +429,7 @@ function migrate() {
   run("INSERT OR IGNORE INTO mail_list_revision VALUES (1, 0)");
   run("CREATE TABLE IF NOT EXISTS mail_changes (account_id TEXT NOT NULL, folder_path TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(account_id, folder_path))");
   run("CREATE INDEX IF NOT EXISTS mail_changes_revision ON mail_changes(revision)");
-  const summaryFields = ["account_id", "folder_path", "thread_id", "uid", "list_sort_ts", "unread", "starred", "is_draft", "has_attachments", "body_complete", "body_retry_blocked", "body_retry_after", "subject", "from_addr", "to_json", "cc_json", "snippet"];
+  const summaryFields = ["account_id", "folder_path", "thread_id", "uid", "list_sort_ts", "unread", "starred", "is_draft", "has_attachments", "body_complete", "body_retry_blocked", "body_retry_after", "subject", "from_addr", "to_json", "cc_json", "snippet", "replied", "forwarded"];
   for (const table of ["messages", "folders", "snooze", "accounts"]) {
     for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
       const condition = table === "messages" && operation === "UPDATE"
@@ -1339,13 +1343,14 @@ function applyFolderSync(accountId, folderPath, report) {
         );
       }
       if (reindex) indexText(id);
+      updateChanged("messages", require("./reply-forward-state").patch(message), "id = ?", [id]);
       updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
     }
     for (const flags of Array.isArray(report.flags) ? report.flags : []) {
       const row = get("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
         [accountId, folderPath, Number(flags.uid), report.validity]);
       if (!row || messageHeld(row.id)) continue;
-      const patch = {};
+      const patch = require("./reply-forward-state").patch(flags);
       if (typeof flags.unread === "boolean" && !flagHeld(row.id, "read")) patch.unread = flags.unread ? 1 : 0;
       if (typeof flags.starred === "boolean" && !flagHeld(row.id, "star")) patch.starred = flags.starred ? 1 : 0;
       if (updateChanged("messages", patch, "id = ?", [row.id])) flagsChanged = true;
@@ -1542,6 +1547,7 @@ function insertMessageRecord(row) {
       ]
     );
     if (row.bodyWarning) run("UPDATE messages SET body_warning = ? WHERE id = ?", [row.bodyWarning, row.id]);
+    updateChanged("messages", require("./reply-forward-state").patch(row), "id = ?", [row.id]);
     indexText(row.id);
 }
 
@@ -1785,7 +1791,7 @@ function resolveScope(query) {
 const BODY_SPACE = "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)";
 const METADATA_COLUMNS = ["id", "account_id", "folder_path", "uid", "uid_validity", "thread_id", "rfc_message_id", "in_reply_to", "subject", "snippet",
   "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "list_sort_ts", "unread", "starred", "is_draft",
-  "has_attachments", "attachments_json", "body_complete", "body_warning", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id"];
+  "has_attachments", "attachments_json", "body_complete", "body_warning", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id", "replied", "forwarded"];
 function metadataColumns(table) {
   return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
 }
@@ -2502,6 +2508,7 @@ function enableGmail(accountId) {
     do { generation = crypto.randomInt(1, 2147483647); }
     while (get("SELECT 1 FROM messages WHERE account_id = ? AND uid_validity = ? LIMIT 1", [accountId, generation]));
     run("UPDATE accounts SET mail_transport = 'gmail_api', gmail_generation = ? WHERE id = ?", [generation, accountId]);
+    run("UPDATE messages SET replied = NULL, forwarded = NULL WHERE account_id = ?", [accountId]);
     // Unuploaded edits have a newer RFC id than their old server copy. Keep their
     // content/revision, but never guess which old server draft may be replaced.
     const pending = get("SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND draft_pending = 1 AND uid > 0", [accountId]).n;
@@ -2626,7 +2633,8 @@ function applyGmailMessage(accountId, folderPaths, message) {
           date_iso: input.date, list_sort_ts: input.listSortTs, unread: input.unread ? 1 : 0, starred: input.starred ? 1 : 0,
           is_draft: input.isDraft ? 1 : 0, html_body: input.htmlBody || null, text_body: input.textBody || null,
           has_attachments: input.hasAttachments ? 1 : 0, attachments_json: JSON.stringify(input.attachments || []),
-          body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}) };
+          body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}),
+          ...require("./reply-forward-state").patch(input) };
         if (flagHeld(found.id, "read")) delete patch.unread;
         if (flagHeld(found.id, "star")) delete patch.starred;
         const indexed = Object.entries(patch).some(([key, value]) => INDEXED_PATCH.has(key) && found[key] !== value);
