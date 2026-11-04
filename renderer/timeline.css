@@ -1,7 +1,7 @@
 #reader-area { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.reader-tabs { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; padding: 8px; }
+.reader-tabs { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; padding: 8px; margin-bottom: 8px; background: var(--paper); border-radius: 12px; }
 .reader-tabs [role="tab"] { display: inline-flex; gap: 6px; align-items: center; background: transparent; color: var(--ink); }
-.reader-tabs [aria-selected="true"] { background: var(--paper); box-shadow: var(--shadow-card); }
+.reader-tabs [aria-selected="true"] { background: var(--selected); box-shadow: var(--shadow-card); }
 #reader-area > #reader { flex: 1 1 auto; }
 #timeline-panel { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px; background: var(--paper); border-radius: 16px; box-shadow: var(--shadow-card); }
 #timeline-panel label { display: grid; gap: 6px; margin: 12px 0; }
