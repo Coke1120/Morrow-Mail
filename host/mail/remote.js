@@ -109,22 +109,33 @@ function makeClient(account, secret, options) {
   return client;
 }
 
-async function withClient(account, password, fn, { signal } = {}) {
+async function withClient(account, password, fn, { signal, refreshAuthentication } = {}) {
   signal?.throwIfAborted();
   if (gmail.migrated(account)) return fn({ gmail: gmail.createSession(account, password, { signal }) });
-  const client = makeClient(account, password);
-  const abort = () => { try { client.close(); } catch { /* already closed */ } };
-  signal?.addEventListener("abort", abort, { once: true });
-  try {
+  for (let attempt = 0; ; attempt++) {
+    const client = makeClient(account, password);
+    let connected = false;
+    const abort = () => { try { client.close(); } catch { /* already closed */ } };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      signal?.throwIfAborted();
+      await client.connect();
+      connected = true;
+      signal?.throwIfAborted();
+      return await fn(client);
+    } catch (error) {
+      const cause = connectionError(client, error);
+      // Retry only a rejected OAuth login, before the callback can issue a write.
+      // A failure after connect (including AUTH-like operation errors) is final.
+      const retryAuthentication = !connected && attempt === 0 && account.auth_kind === "oauth2"
+        && cause?.authenticationFailed === true && typeof refreshAuthentication === "function";
+      if (!retryAuthentication) throw cause;
+    } finally {
+      try { await client.logout(); } catch { client.close(); }
+      signal?.removeEventListener("abort", abort);
+    }
     signal?.throwIfAborted();
-    await client.connect();
-    signal?.throwIfAborted();
-    return await fn(client);
-  } catch (error) {
-    throw connectionError(client, error);
-  } finally {
-    try { await client.logout(); } catch { client.close(); }
-    signal?.removeEventListener("abort", abort);
+    password = await refreshAuthentication();
   }
 }
 

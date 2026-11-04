@@ -574,7 +574,7 @@ function requirePurposeScopes(tokens, provider, purpose) {
   }
 }
 
-async function accessTokenFor(account, secretBlob, expectedPurpose) {
+async function accessTokenFor(account, secretBlob, expectedPurpose, { forceRefresh = false } = {}) {
   let parsed;
   try {
     parsed = JSON.parse(secretBlob);
@@ -612,7 +612,7 @@ async function accessTokenFor(account, secretBlob, expectedPurpose) {
     repair = !hasScopes(scope, saved) || !hasScopes(requested, parsed.requestedScopes || saved);
     try { assertTokenResource(provider, parsed.accessToken, scope); } catch { repair = true; }
   }
-  if (!repair && parsed.expiresAt && parsed.accessToken && Date.now() < parsed.expiresAt - 60000) {
+  if (!forceRefresh && !repair && parsed.expiresAt && parsed.accessToken && Date.now() < parsed.expiresAt - 60000) {
     return parsed.accessToken;
   }
   const creds = credentials(provider);
