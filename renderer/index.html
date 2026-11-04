@@ -176,21 +176,10 @@
     <div class="shell" id="shell">
       <div class="side">
         <div id="side-mail" class="side-pane">
-          <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled<span id="scheduled-review-count" hidden></span></button>
-          <section id="mail-ooo" class="mail-ooo" aria-labelledby="mail-ooo-heading" hidden>
-            <h3 id="mail-ooo-heading">Out of Office</h3>
-            <div id="mail-ooo-chooser" class="mail-ooo-chooser" hidden>
-              <label for="mail-ooo-account">Mailbox</label>
-              <select id="mail-ooo-account" aria-label="Mailbox for Out of Office" aria-describedby="mail-ooo-scope" hidden></select>
-              <span id="mail-ooo-scope" class="sr">Status and actions apply only to the selected mailbox.</span>
-            </div>
-            <p id="mail-ooo-identity" class="mail-ooo-identity"></p>
-            <p id="mail-ooo-status" class="hint" role="status" aria-atomic="true"></p>
-            <div class="row mail-ooo-actions">
-              <button type="button" class="ghost" id="mail-ooo-manage">Manage<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"></path></svg></button>
-              <button type="button" class="ghost" id="mail-ooo-refresh" aria-label="Refresh Out of Office status"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>Refresh</button>
-            </div>
-          </section>
+          <div class="sidebar-mail-actions">
+            <button type="button" class="ghost icon-label" id="scheduled-open" aria-haspopup="dialog" aria-controls="scheduled-dialog"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled<span id="scheduled-review-count" hidden></span></button>
+            <button type="button" class="ghost icon-label" id="mail-ooo-open" aria-haspopup="dialog" aria-controls="mail-ooo-dialog"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="18" height="14" rx="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>Out of Office</button>
+          </div>
           <div class="folder-tools">
           <div class="folder-filter">
             <label class="sr" for="folder-filter">Filter folders and labels</label>
@@ -199,7 +188,7 @@
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
             </button>
           </div>
-          <button type="button" class="folder-collapse-all" id="folder-collapse-all" data-testid="folder-collapse-all" title="Collapse All" aria-label="Collapse All">
+          <button type="button" class="folder-collapse-all" id="folder-collapse-all" data-testid="folder-collapse-all" title="Collapse all folders" aria-label="Collapse all folders">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 11 12 6 7 11"></polyline><polyline points="17 18 12 13 7 18"></polyline></svg>
           </button>
           </div>
@@ -774,6 +763,26 @@
       <label for="support-preview">Redacted recent-session preview</label><textarea id="support-preview" rows="16" readonly></textarea>
       <p id="support-copy-status" role="status"></p><div class="row"><button type="button" class="primary" id="support-copy">Copy preview</button><button type="button" class="ghost" id="support-close">Close</button></div>
     </div></dialog>
+    <dialog id="mail-ooo-dialog" aria-labelledby="mail-ooo-heading">
+      <div class="dialog-body">
+        <div class="sheet-head"><h2 id="mail-ooo-heading">Out of Office</h2><button type="button" class="ghost" id="mail-ooo-close" autofocus>Close</button></div>
+        <p class="hint">Check automatic replies for the selected mailbox. Manage opens its settings for review before saving to the provider.</p>
+        <section id="mail-ooo" class="mail-ooo" aria-labelledby="mail-ooo-heading" hidden>
+          <div id="mail-ooo-chooser" class="mail-ooo-chooser" hidden>
+            <label for="mail-ooo-account">Mailbox</label>
+            <select id="mail-ooo-account" aria-label="Mailbox for Out of Office" aria-describedby="mail-ooo-scope" hidden></select>
+            <span id="mail-ooo-scope" class="sr">Status and actions apply only to the selected mailbox.</span>
+          </div>
+          <p id="mail-ooo-identity" class="mail-ooo-identity"></p>
+          <p id="mail-ooo-status" class="hint" role="status" aria-atomic="true"></p>
+          <div class="row mail-ooo-actions">
+            <button type="button" class="ghost" id="mail-ooo-manage">Manage<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"></path></svg></button>
+            <button type="button" class="ghost" id="mail-ooo-refresh" aria-label="Refresh Out of Office status"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>Refresh</button>
+          </div>
+        </section>
+      </div>
+    </dialog>
+
     <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>

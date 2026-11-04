@@ -17310,23 +17310,12 @@ async function collapseAllFolders() {
     }
     next = collapse.collapseIds(next, account.id, parents);
   }
-  const closeGmail = state.prefs.gmailOpen !== false;
-  const closeOutlook = state.prefs.outlookOpen === true;
   const changed = JSON.stringify(next) !== JSON.stringify(collapse.normalize(state.prefs.collapsedFolders));
-  if (!changed && !closeGmail && !closeOutlook) return;
+  if (!changed) return;
   state.prefs.collapsedFolders = next;
-  if (closeGmail) state.prefs.gmailOpen = false;
-  if (closeOutlook) state.prefs.outlookOpen = false;
   renderAccounts();
   try {
-    if (closeGmail && gen === folderCollapseGen) {
-      state.prefs.gmailOpen = (await api.invoke("morrow:configSetSidebarGmailFoldersExpanded", false)) === true;
-    }
-    if (closeOutlook && gen === folderCollapseGen) {
-      state.prefs.outlookOpen = (await api.invoke("morrow:configSetSidebarOutlookFoldersExpanded", false)) === true;
-    }
-    if (gen !== folderCollapseGen) return;
-    if (changed) state.prefs.collapsedFolders = collapse.normalize(await api.invoke("morrow:configSetSidebarCollapsedFolders", next));
+    state.prefs.collapsedFolders = collapse.normalize(await api.invoke("morrow:configSetSidebarCollapsedFolders", next));
   } catch (error) {
     if (gen !== folderCollapseGen) return;
     showStatus(error instanceof Error ? error.message : String(error), true);
@@ -18398,6 +18387,7 @@ function paintMailVacation() {
   }
   const account = mailVacationAccount();
   box.hidden = !account;
+  if ($("mail-ooo-open")) $("mail-ooo-open").disabled = !account;
   if (!account) return;
   const entry = mailVacation.get(account.id);
   const pending = mailVacationPending.has(account.id);
@@ -18459,11 +18449,19 @@ async function refreshMailVacation(force = false) {
     paintMailVacation();
   }
 }
+async function showMailVacation() {
+  if ($("compose").open && !(await requestComposeClose())) return;
+  paintMailVacation();
+  if (!mailVacationAccount()) return;
+  openDialog("mail-ooo-dialog");
+  await refreshMailVacation();
+}
 async function manageMailVacation() {
   const id = state.allInbox ? $("mail-ooo-account")?.value : state.accountId;
   if (!state.accounts.some((account) => account.id === id)) return;
-  openSettings();
   if (settingsAccount()?.id !== id && !(await changeSettingsMailbox(id))) return;
+  await closeDialog("mail-ooo-dialog");
+  openSettings();
   revealSettingsFold("ooo");
   $("ooo-refresh").focus();
 }
@@ -26046,6 +26044,8 @@ function wire() {
   $("compose-view-scheduled").addEventListener("click", () => showScheduled());
   $("scheduled-refresh").addEventListener("click", () => loadScheduled());
   $("scheduled-close").addEventListener("click", () => closeDialog("scheduled-dialog"));
+  $("mail-ooo-open").addEventListener("click", () => guard(showMailVacation));
+  $("mail-ooo-close").addEventListener("click", () => closeDialog("mail-ooo-dialog"));
   $("mail-ooo-manage").addEventListener("click", () => manageMailVacation());
   $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
   $("mail-ooo-account").addEventListener("change", () => refreshMailVacation());

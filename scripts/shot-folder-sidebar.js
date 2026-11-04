@@ -88,6 +88,7 @@ window.morrow = {
       const emails = fixtureMessages[key] || [];
       return { data: { emails, total: emails.length, initialSyncDone: true, hasMore: false } };
     }
+    if (channel === "mail:vacationGet") return { data: { accountId: payload.accountId, supported: true, canWrite: true, settings: { mode: payload.accountId === "gmail" ? "always" : "disabled", message: "Synthetic automatic reply" } } };
     if (channel === "mail:listSnoozed") return { data: { records: [] } };
     if (channel === "mail:getSyncStatus") return { data: { state: "idle" } };
     return { data: {} };
@@ -250,6 +251,82 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     await delay(100);
   }
   assert.equal(await evaluate("window.fixtureReady===true"), true, JSON.stringify(errors));
+  if (process.argv.includes("--sidebar-only")) {
+    await clickSelector("#folder-collapse-all");
+    await waitFor("window.folderShot().rows.some(row=>row.name==='1 Internal')===false", "folder descendants collapse");
+    assert.equal(await evaluate("state.prefs.gmailOpen"), true, "account stays expanded");
+    assert.equal(await evaluate("window.fixtureCalls.some(call => /configSetSidebar(Gmail|Outlook)FoldersExpanded/.test(call.channel))"), false, "Collapse All never changes account expansion preferences");
+    await evaluate("state.prefs.gmailOpen=false;state.prefs.outlookOpen=true;renderAccounts();collapseAllFolders()");
+    assert.deepEqual(await evaluate("[state.prefs.gmailOpen,state.prefs.outlookOpen]"), [false,true], "repeated collapse preserves both closed and open account sections");
+    await evaluate("state.allInbox=true;renderAccounts()");
+    assert.equal(await evaluate("document.getElementById('mail-ooo').checkVisibility()"), false, "Out of Office panel stays out of the sidebar");
+    assert.equal(await evaluate(`(() => {
+      const a=document.getElementById('scheduled-open').getBoundingClientRect();
+      const b=document.getElementById('mail-ooo-open').getBoundingClientRect();
+      return a.y===b.y && a.height===b.height;
+    })()`), true, "Scheduled and Out of Office share one row");
+    for (let cycle=0;cycle<3;cycle++) {
+      await clickSelector("#mail-ooo-open");
+      await waitFor("document.getElementById('mail-ooo-dialog').open", "Out of Office dialog");
+      assert.equal(await evaluate("document.activeElement.id"), "mail-ooo-close");
+      if (cycle === 0) {
+        await waitFor("document.getElementById('mail-ooo-status').textContent==='Off'", "selected mailbox status");
+        await evaluate("document.getElementById('mail-ooo-account').value='gmail';document.getElementById('mail-ooo-account').dispatchEvent(new Event('change'))");
+        await waitFor("document.getElementById('mail-ooo-status').textContent==='On until disabled'", "second mailbox status");
+        await shot("sidebar-out-of-office-dialog");
+      }
+      if (cycle === 1) await clickSelector("#mail-ooo-close");
+      else await pressKey("Escape","Escape",27);
+      await waitFor("!document.getElementById('mail-ooo-dialog').open", "Out of Office dismissal");
+      assert.equal(await evaluate("document.activeElement.id"), "mail-ooo-open", "dismissal returns focus to the trigger");
+    }
+    assert.deepEqual(await evaluate("window.fixtureCalls.filter(call=>call.channel==='mail:vacationGet').map(call=>call.payload.accountId)"), ["leo","gmail"], "reopening uses cached selected-mailbox status");
+    assert.equal(await evaluate("window.fixtureCalls.some(call=>call.channel==='mail:vacationPut')"), false, "opening and dismissing never writes provider settings");
+    await clickSelector("#mail-ooo-open");
+    await evaluate(`window.originalOpenSettings=openSettings;window.originalAskConfirm=askConfirm;
+      openSettings=()=>{};askConfirm=async()=>({ok:false});state.settingsAccountId='leo';
+      oooBaseline=oooSnapshot();document.getElementById('ooo-subject').value='Unsaved reply subject';`);
+    await evaluate("manageMailVacation()");
+    assert.equal(await evaluate("oooDirty() && state.settingsAccountId==='leo' && document.getElementById('mail-ooo-dialog').open"), true, "declining the unsaved edit guard preserves edits and the selected Settings mailbox");
+    await evaluate("openSettings=originalOpenSettings;askConfirm=originalAskConfirm;oooBaseline='';document.getElementById('ooo-subject').value=''");
+    await evaluate("manageMailVacation()");
+    await waitFor("!document.getElementById('mail-ooo-dialog').open && document.getElementById('settings').open && state.settingsAccountId==='gmail'", "Manage opens the chosen mailbox editor");
+    assert.equal(await evaluate("document.getElementById('settings-tab-ooo').getAttribute('aria-selected')"), "true");
+    assert.equal(await evaluate("document.activeElement.id"), "ooo-refresh");
+    assert.equal(await evaluate("window.fixtureCalls.some(call=>call.channel==='mail:vacationPut')"), false);
+    await shot("sidebar-out-of-office-manage");
+    await evaluate("document.getElementById('settings').close()");
+    assert.equal(await evaluate("document.activeElement.id"), "mail-ooo-open", "closing the Settings editor returns focus to the sidebar trigger");
+    await evaluate("state.allInbox=false;renderAccounts()");
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: 1, mobile: false });
+    await cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await evaluate("document.documentElement.dataset.theme='dark'");
+    await clickSelector("#mail-ooo-open");
+    await waitFor("document.getElementById('mail-ooo-dialog').open", "single mailbox dialog");
+    assert.equal(await evaluate("document.getElementById('mail-ooo-account').hidden"), true);
+    assert.equal(await evaluate(`(() => {
+      const dialog=document.getElementById('mail-ooo-dialog');
+      return dialog.scrollWidth<=dialog.clientWidth+1 && dialog.getBoundingClientRect().bottom<=innerHeight;
+    })()`), true, "short dark window fits the dialog");
+    await pressKey("Tab","Tab",9);
+    assert.equal(await evaluate("document.activeElement.closest('dialog').id"), "mail-ooo-dialog", "keyboard focus stays in the modal");
+    await shot("sidebar-out-of-office-dark-short");
+    await pressKey("Escape","Escape",27);
+    await waitFor("!document.getElementById('mail-ooo-dialog').open", "reduced motion dismissal");
+    await evaluate("paintFeatureCatalog();showPrimary('features','features-panel');showFeaturesTab('catalog')");
+    assert.equal(await evaluate("document.getElementById('features-catalog').textContent.includes('Scheduled and Out of Office open dialogs from the same sidebar row')"), true, "rendered Features describes the dialogs");
+    await evaluate("showPrimary('mail','shell');document.documentElement.dataset.theme='light'");
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await shot("sidebar-dialogs-closed");
+    fs.writeFileSync(path.join(output, "sidebar-dialog-results.json"), JSON.stringify({
+      passed: true,
+      shots: ["sidebar-dialogs-closed.png", "sidebar-out-of-office-dialog.png", "sidebar-out-of-office-manage.png", "sidebar-out-of-office-dark-short.png"],
+      errors,
+    }, null, 2));
+    assert.deepEqual(errors, []);
+    console.log("Sidebar dialogs and folder-only collapse passed: " + output);
+    return;
+  }
   const names = async () => evaluate("window.folderShot().rows.map((row) => row.account + ':' + row.name)");
   assert.deepEqual(await names(), [
     "leo:Inbox",
@@ -264,7 +341,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(await evaluate("window.folderShot().rows.find((row) => row.id==='AriesCPA.com').count"), "84");
   assert.equal(await evaluate("window.folderShot().twists[0].label"), "Collapse AriesCPA.com");
   assert.equal(await evaluate("window.folderShot().twists[0].expanded"), "true");
-  assert.equal(await evaluate("document.getElementById('folder-collapse-all').getAttribute('aria-label')"), "Collapse All");
+  assert.equal(await evaluate("document.getElementById('folder-collapse-all').getAttribute('aria-label')"), "Collapse all folders");
   assert.equal(await evaluate("document.querySelectorAll('#folders [data-nav-key][tabindex=\"0\"]').length"), 1);
   await evaluate("document.getElementById('folder-filter').focus()");
   await pressKey("ArrowDown", "ArrowDown", 40);
@@ -336,8 +413,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(await evaluate("document.querySelector('button.all-account-mail').hasAttribute('aria-current')"), false);
   await shot("folder-parent-expanded");
   await clickSelector("#folder-collapse-all");
-  await waitFor("state.prefs.gmailOpen===false && window.folderShot().rows.some((row) => row.account==='gmail')===false && window.folderShot().rows.some((row) => row.name==='1 Internal')===false && window.folderShot().rows.some((row) => row.id==='AriesCPA.com')", "collapse all");
+  await waitFor("state.prefs.gmailOpen===true && window.folderShot().rows.some((row) => row.account==='gmail')===true && window.folderShot().rows.some((row) => row.name==='1 Internal')===false && window.folderShot().rows.some((row) => row.id==='AriesCPA.com')", "collapse all");
   await shot("folder-collapse-all", await sideClip());
+
   await evaluate(`(() => {
     state.prefs.gmailOpen = true;
     state.prefs.collapsedFolders = {};

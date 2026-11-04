@@ -4,7 +4,7 @@ The open View menu blocks message and selection shortcuts until it closes.
 
 Mail shortcuts follow the active reading surface. In Separate window mode, Delete/Backspace and R/A/F use exactly one visible selected message, including its account; zero or multiple selected messages disable those keys. Independent readers retain their own message. Right and Bottom preview shortcuts pause during loading and after a failed open. A reply already requested keeps the message/account captured at the keypress even if selection changes during download.
 
-Mail’s Out of Office panel labels its mailbox chooser, shows the full selected address separately, and keeps status and actions on their own rows. Checking and retry states stay scoped to that mailbox; Manage opens its reviewed Settings editor without changing replies. Disabled replies show Off with Manage and no Refresh.
+Scheduled and Out of Office share a sidebar row and open native dialogs. Close or Escape dismisses the Out of Office dialog and returns focus to its trigger. Its panel labels its mailbox chooser, shows the full selected address separately, and keeps status and actions on their own rows. Checking and retry states stay scoped to that mailbox; Manage opens its reviewed Settings editor without changing replies. Disabled replies show Off with Manage and no Refresh.
 
 New profiles see a five-step setup guide after startup dialogs: mailbox, calendar,
 sender names, signatures and optional AI. Settings → General → Open setup guide
