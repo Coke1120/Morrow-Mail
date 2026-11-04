@@ -7,6 +7,14 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.1": [
+      "Compose settings add question-mark help for mailbox defaults and Preferred From. Refresh From addresses now sits beside Sender identities; AI privacy details open in a separate dialog.",
+      "Timeline stays usable during routine account refreshes, shows correspondence in date order with source evidence, and exports a readable HTML file after review.",
+      "Existing AI data permission needs a fresh manual choice for Timeline’s sender/date evidence and optional focus. Background use remains a separate opt-in.",
+      "Scheduled and Out of Office open from the same sidebar row. Every mailbox has its own saved expansion choice, including Yahoo and custom IMAP; Collapse All only collapses folders.",
+      "The setup guide adds Mail preferences for Undo send, default schedule delay and remote images. Each choice has its own Save button; skipping keeps saved settings.",
+      "Gmail keeps confirmed reply and forward indicators through sync. Reply evidence may also come from already-downloaded Sent mail; ambiguous history stays unknown.",
+    ],
     "0.4.0": [
       "Maintenance rebuild after synchronizing main and dev history. The application behavior and features remain the same as v0.3.25.",
     ],
