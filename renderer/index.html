@@ -1315,8 +1315,24 @@
         </section>
         <section class="fold" id="settings-mailbox" data-fold="mailbox" role="tabpanel" aria-labelledby="settings-tab-mailbox" tabindex="0" hidden>
           <div class="fold-panel" id="settings-mailbox-panel" hidden>
-          <h3 id="settings-mailbox-title">Mailbox tools</h3>
-          <div class="row mailbox-actions" role="group" aria-labelledby="settings-mailbox-title">
+          <div class="accounts-heading">
+            <div><h3 id="settings-mailbox-title">Your accounts</h3><p class="hint">Manage connections and settings for each mailbox.</p></div>
+            <button type="button" class="primary icon-label" id="connect-open">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+              </svg>
+              <span>Add account</span>
+            </button>
+          </div>
+          <ul id="settings-accounts" class="settings-accounts account-choices" aria-label="Connected accounts"></ul>
+          <section id="settings-account-detail" class="account-detail" aria-labelledby="settings-account-title" hidden>
+            <div class="account-detail-heading">
+              <div><p class="hint">Settings for</p><h4 id="settings-account-title"></h4><p id="settings-account-provider" class="hint"></p></div>
+              <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
+            </div>
+
+          <div class="row mailbox-actions" role="group" aria-labelledby="settings-account-title">
             <button type="button" class="ghost icon-label" id="inbox-rules-open">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
@@ -1330,41 +1346,8 @@
               </svg>
               <span>Signatures</span>
             </button>
+            <button type="button" class="ghost" id="settings-account-ooo">Out of Office</button>
           </div>
-          <div class="settings-group">
-          <h4>Connected accounts</h4>
-          <p class="hint" id="mail-secure-storage-help">On Windows and macOS, routine mail credential reads and startup checks wait asynchronously and time out after 30 seconds. Feature/status checks share guarded grant reads within each request, without a global completed-credential cache. Read errors keep your saved credentials; check secure-storage access and retry. Account setup and credential writes retain synchronous compatibility commands with a 30-second limit per command; several commands can take longer. This does not change provider sign-in, permissions or your saved mailbox.</p>
-          <p class="hint" id="mail-oauth-renewal-help">Mail and calendar renew saved connections as needed while Morrow is open. Gmail API mail sessions reread the saved connection for each request and can renew a rejected read once. Sends, draft saves and other writes are never replayed automatically. Temporary network, sign-in-service or secure-storage errors keep the saved grant for retry. A renewed connection must be saved before mail or calendar uses it. An expired or revoked grant, or a provider requirement to sign in, needs Reconnect for that mailbox or feature. Google External projects in Testing issue seven-day refresh tokens for mail and calendar; the app owner must review publishing and verification. Microsoft organization policies can require earlier sign-in. Morrow does not check your Google project's publishing status or Microsoft tenant policy.</p>
-          <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
-          <div class="row">
-            <button type="button" class="ghost icon-label" id="connect-open">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
-                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
-              </svg>
-              <span>Connect account</span>
-            </button>
-            <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
-          </div>
-          </div>
-          <p class="hint" id="google-onboarding-settings-help">Skipped Google setup? Import your Google Console Desktop app JSON in Advanced below, then use Connect account → Continue with Google.</p>
-          <details class="settings-disclosure" id="google-oauth-client">
-            <summary>Advanced: personal Google OAuth client (optional)</summary>
-            <p id="google-oauth-client-status" class="hint" role="status">Checking Google OAuth…</p>
-            <p id="google-oauth-default-help" class="hint">Continue with Google uses the bundled Desktop client by default when present. Importing a personal client is optional and replaces the bundled client on this computer; developer environment variables still win. Google controls which users can approve each client. This status checks local configuration, not the Google project's publication or verification status.</p>
-            <p class="hint">If you choose a personal client, follow the linked guide to create a Google Cloud project, enable the APIs you use, configure its test users and download a Desktop client JSON. The secret stays on this computer and is not shown. After changing clients, reauthorize Gmail and Google Calendar separately. Older grants with an unknown client need one-time reauthorization. Cached mail and saved credentials stay. Finish or cancel Google sign-in before importing or clearing; finish the picker before starting Google sign-in. Fix or remove an invalid developer environment override. Clear imported client returns to the bundled client when present. Do not paste the JSON into git, issues, or chat. <a href="https://github.com/Coke1120/Morrow-Mail/blob/dev/docs/bring-your-own-google-oauth.md" target="_blank" rel="noreferrer">Optional personal Desktop client guide</a></p>
-            <div class="row">
-              <button type="button" class="ghost icon-label" id="google-oauth-import">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                  <polyline points="17 8 12 3 7 8"></polyline>
-                  <line x1="12" y1="3" x2="12" y2="15"></line>
-                </svg>
-                <span>Import Desktop JSON…</span>
-              </button>
-              <button type="button" class="ghost" id="google-oauth-clear" disabled>Clear imported client</button>
-            </div>
-          </details>
           <details class="settings-disclosure" id="account-permissions"><summary>Permissions &amp; calendar access</summary>
             <p id="settings-gmail-migration" class="hint">Google login still uses OAuth. New Google connections use Gmail API mail access; Calendar is requested separately. Existing Google OAuth mailboxes migrate only after review. Account ids, cached mail and drafts stay. A narrower request does not revoke older broad grants. Gmail Delete moves to Trash; deleting again keeps mail there. Microsoft and other IMAP deletion behavior is unchanged.</p>
             <p id="settings-gmail-error-help" class="hint">If Gmail sync is rejected after login, review sync activity and Debug log for its HTTP status, operation and recognized Google reason/status codes. A 403 alone does not prove missing permission. Quota/rate limits may require waiting; a disabled API needs the app owner's Google project review; domain policy needs the domain administrator. Review mail access when missing permission is reported. Unknown means the safe evidence did not establish a cause. Gmail sync Debug records omit the mailbox address, folder name and folder id; sync activity still shows them. Only a quota classification pauses for quota or rate limits. Sync fetches up to 20 Gmail messages per folder pass. This counts actual message reads across history, bootstrap and cached verification. Pending pages resume from saved positions; a waiting message open goes ahead after the current read. Gmail sync and body downloads space reads to stay under the per-user quota. A quota pause honors Retry-After, capped at 15 minutes. The first two pauses are 30 seconds when Google does not say how long; later pauses grow from 2 minutes up to 15 minutes. Reads are spaced; writes are not. This does not change scopes or automatically repeat a write.</p>
@@ -1387,6 +1370,29 @@
               </svg>
               <span>Remove account</span>
             </button>
+          </details>
+          </section>
+          <details class="settings-disclosure" id="account-connection-help"><summary>Connection &amp; credential help</summary>
+          <p class="hint" id="mail-secure-storage-help">On Windows and macOS, routine mail credential reads and startup checks wait asynchronously and time out after 30 seconds. Feature/status checks share guarded grant reads within each request, without a global completed-credential cache. Read errors keep your saved credentials; check secure-storage access and retry. Account setup and credential writes retain synchronous compatibility commands with a 30-second limit per command; several commands can take longer. This does not change provider sign-in, permissions or your saved mailbox.</p>
+          <p class="hint" id="mail-oauth-renewal-help">Mail and calendar renew saved connections as needed while Morrow is open. Gmail API mail sessions reread the saved connection for each request and can renew a rejected read once. Sends, draft saves and other writes are never replayed automatically. Temporary network, sign-in-service or secure-storage errors keep the saved grant for retry. A renewed connection must be saved before mail or calendar uses it. An expired or revoked grant, or a provider requirement to sign in, needs Reconnect for that mailbox or feature. Google External projects in Testing issue seven-day refresh tokens for mail and calendar; the app owner must review publishing and verification. Microsoft organization policies can require earlier sign-in. Morrow does not check your Google project's publishing status or Microsoft tenant policy.</p>
+          </details>
+          <p class="hint" id="google-onboarding-settings-help">Skipped Google setup? Import your Google Console Desktop app JSON in Advanced below, then use Add account → Continue with Google.</p>
+          <details class="settings-disclosure" id="google-oauth-client">
+            <summary>Advanced: personal Google OAuth client (optional)</summary>
+            <p id="google-oauth-client-status" class="hint" role="status">Checking Google OAuth…</p>
+            <p id="google-oauth-default-help" class="hint">Continue with Google uses the bundled Desktop client by default when present. Importing a personal client is optional and replaces the bundled client on this computer; developer environment variables still win. Google controls which users can approve each client. This status checks local configuration, not the Google project's publication or verification status.</p>
+            <p class="hint">If you choose a personal client, follow the linked guide to create a Google Cloud project, enable the APIs you use, configure its test users and download a Desktop client JSON. The secret stays on this computer and is not shown. After changing clients, reauthorize Gmail and Google Calendar separately. Older grants with an unknown client need one-time reauthorization. Cached mail and saved credentials stay. Finish or cancel Google sign-in before importing or clearing; finish the picker before starting Google sign-in. Fix or remove an invalid developer environment override. Clear imported client returns to the bundled client when present. Do not paste the JSON into git, issues, or chat. <a href="https://github.com/Coke1120/Morrow-Mail/blob/dev/docs/bring-your-own-google-oauth.md" target="_blank" rel="noreferrer">Optional personal Desktop client guide</a></p>
+            <div class="row">
+              <button type="button" class="ghost icon-label" id="google-oauth-import">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span>Import Desktop JSON…</span>
+              </button>
+              <button type="button" class="ghost" id="google-oauth-clear" disabled>Clear imported client</button>
+            </div>
           </details>
           </div>
         </section>

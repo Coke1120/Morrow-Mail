@@ -155,7 +155,7 @@ test("unpinned migration error asks for mailbox selection and closing/reopening 
   f.get("connect-open").click(); f.get("oauth-google").click(); await settle();
   f.get("connect-gmail-migration").click(); await settle();
   assert.match(f.get("status").textContent, /Select the Gmail mailbox/);
-  assert.equal(f.document.activeElement, f.get("settings-account"));
+  assert.equal(f.document.activeElement, f.get("settings-accounts").querySelector('[aria-pressed="true"]'));
   f.get("connect-open").click(); assert.equal(f.get("connect-gmail-migration").hidden, true);
   assert.equal(f.calls.some(row => row.channel === "mail:migrateGmail"), false);
 });
@@ -191,7 +191,7 @@ test("removing the pinned Gmail during discard confirmation or permission loadin
     await settle();
     assert.equal(f.ui.run("settingsAccount().id"), "gmail-b");
     assert.equal(f.get("account-permissions").open, false);
-    assert.equal(f.document.activeElement, f.get("settings-account"));
+    assert.equal(f.document.activeElement, f.get("settings-accounts").querySelector('[aria-pressed="true"]'));
     assert.match(f.get("status").textContent, /Migration review was cancelled/);
     assert.equal(f.calls.some(row => row.channel === "mail:migrateGmail"), false);
   }

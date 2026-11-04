@@ -7,6 +7,13 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.25": [
+      "Settings → Accounts opens on actionable account cards with each mailbox’s full identity, provider and connection status. Its settings appear immediately, with clear Add account and no-account guidance.",
+      "Settings keeps its selected mailbox independent of Mail. Switching accounts preserves the Out of Office discard review, rejects stale permission results, and restores keyboard focus when an account is removed.",
+      "Mailbox folder chips show one canonical name per enabled role, so Sent Items, Sent Mail and casing variants no longer appear as duplicate Sent chips.",
+      "Expanded IMAP, Gmail and Outlook accounts share the same colorful sidebar icons for known folder roles, with a folder icon for custom folders.",
+      "Chips stay in a fixed order for the selected mailbox. All Account Mail keeps Inbox, Outbox, Starred and Unread; cross-account Sent, Drafts, Trash, Junk and Archived chips stay unavailable.",
+    ],
     "0.3.24": [
       "Timeline is one button beside Summary in the opened-message action bar. A sheet offers optional keywords and editable From/To/Cc/Reply-To contacts; only Generate starts AI on that message's downloaded thread.",
       "Message/Timeline tabs and duplicate Generate timeline entries are removed. Right, Bottom and Separate window layouts keep the reader intact.",

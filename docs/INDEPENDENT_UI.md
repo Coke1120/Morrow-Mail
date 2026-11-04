@@ -162,3 +162,13 @@ An unchanged timed → all-day → timed round trip restores the exact original 
 Bot access additionally supports separately reviewed archive, read/unread and Trash capabilities for one explicit cached message per UUID request. Existing grants gain no new capabilities; read-only grants stay read-only. Pending receipts are not provider confirmation; unknown outcomes require review. Trash never permanently deletes, and arbitrary folder moves remain unavailable. Confirmed moves reuse existing Mail Undo where available. See [Bot bridge mail changes](BOT_BRIDGE.md#archive-readunread-and-trash).
 
 Summary explicitly answers about the selected downloaded email in both readers. It uses the saved AI provider and existing AI data permission. The panel identifies subject, sender and mailbox and offers Cancel summary and Dismiss summary. Choose Summary again to retry or regenerate. Incomplete content and the first-24,000-character text limit are labelled; attachment files and linked pages are excluded. A snippet alone needs a body download first. Switching messages, content/connection changes and reader close retire pending results. Requests time out after two minutes; cancellation cannot recall data already delivered. Results remain in window memory only. No CLI command or bot permission is added. See [message summary ownership](adr/2026-11-03-message-summary.md).
+
+Settings → Accounts starts with Your accounts and Add account. Each account card
+shows its full identity, provider/transport and push or sign-in status. Settings
+for the current mailbox appear immediately; the first account opens when there
+is no current mailbox. Click a card to change the Settings target without changing
+Mail. Signatures, Inbox Automation, Out of Office, reconnect, permissions and
+reviewed removal use the displayed account. Unsaved Out of Office edits still
+require discard confirmation. No-account profiles show Add account and guidance.
+Connection & credential help and the optional computer-wide Google client stay
+below; sender names and aliases stay in Compose.
