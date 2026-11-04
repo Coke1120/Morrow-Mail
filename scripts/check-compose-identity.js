@@ -355,6 +355,8 @@ async function rendererFlows() {
   `);
   for (const kind of ["reply", "all", "forward"]) {
     await ui.run(`openCompose(composeSeed(original, '${kind}', fixtureAccount.email))`);
+    assert.equal(ui.run("composePayload(composeAccount()).sourceMessageId"), "source");
+    assert.equal(ui.run("composePayload(composeAccount()).kind"), kind);
     assert.equal(get("compose-from").value, "leo@northstar.example");
     assert.match(get("compose-cc").value, /manager@northstar.example/);
     assert.match(get("compose-bcc").value, /audit@northstar.example/);
@@ -376,6 +378,8 @@ async function rendererFlows() {
   }
   const writes = ui.run("calls.filter(row => ['mail:upsertDraft','mail:scheduleSend','mail:send'].includes(row.channel))");
   assert.equal(writes.length, 9);
+  assert.ok(writes.every(row => row.payload.sourceMessageId === "source"));
+  assert.deepEqual(Array.from(writes, row => row.payload.kind), ["reply", "reply", "reply", "all", "all", "all", "forward", "forward", "forward"]);
   assert.ok(writes.every((row) => row.payload.fromAddress === "leo@northstar.example" && !row.payload.cc && row.payload.bcc === "audit@northstar.example"));
   await ui.run("openCompose({draftId:'saved',accountId:'aliases',fromAddress:'leo@northstar.example',cc:'',bcc:'secret@example.com',body:'Saved'})");
   assert.equal(get("compose-from").value, "leo@northstar.example");

@@ -20,3 +20,10 @@ html[data-window="reader"] #reader-area { flex: 1 1 auto; width: 100%; }
 html[data-window="compose"] #reader-area { display: none !important; }
 html[data-window="translate"] #reader-area { flex: 1 1 auto; }
 @media (prefers-reduced-motion: reduce) { #reader-area *, #timeline-dialog * { animation: none !important; transition: none !important; } }
+
+.timeline-sequence { list-style: none; padding: 0 0 0 10px; }
+.timeline-event { position: relative; }
+.timeline-event::before { content: ""; position: absolute; width: 10px; height: 10px; border-radius: 50%; background: var(--accent-ink); left: -6px; top: 6px; }
+.timeline-event .timeline-day { font-size: 16px; margin: 0 0 12px; }
+.timeline-summary { font-weight: 600; font-size: 15px; }
+.timeline-evidence { font-size: 12px; }

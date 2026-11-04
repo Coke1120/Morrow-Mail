@@ -21,6 +21,7 @@ const DEFAULTS = {
   sidebarGmailFoldersExpanded: true,
   sidebarOutlookFoldersExpanded: false,
   sidebarCollapsedFolders: {},
+  sidebarAccountFoldersExpanded: {},
   composeQuoteWidth: 420,
   brainCompose: { ccByDomain: {}, bccByDomain: {}, accounts: {} },
   syncHorizonDays: 0, // 0 means all available history. Fresh installs use All.
@@ -52,6 +53,7 @@ const GET = {
   "morrow:configGetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
   "morrow:configGetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
   "morrow:configGetSidebarCollapsedFolders": "sidebarCollapsedFolders",
+  "morrow:configGetSidebarAccountFoldersExpanded": "sidebarAccountFoldersExpanded",
   "morrow:configGetComposeQuoteWidth": "composeQuoteWidth",
   "emailBrain:getComposeSettings": "brainCompose",
   "morrow:configGetSyncHorizonDays": "syncHorizonDays",
@@ -83,6 +85,7 @@ const SET = {
   "morrow:configSetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
   "morrow:configSetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
   "morrow:configSetSidebarCollapsedFolders": "sidebarCollapsedFolders",
+  "morrow:configSetSidebarAccountFoldersExpanded": "sidebarAccountFoldersExpanded",
   "morrow:configSetComposeQuoteWidth": "composeQuoteWidth",
   "emailBrain:saveComposeSettings": "brainCompose",
   "morrow:configSetSyncHorizonDays": "syncHorizonDays",
@@ -182,6 +185,7 @@ function cast(key, value, loose) {
       accountId: typeof value.accountId === "string" ? value.accountId.slice(0, 256) : "" };
   }
   if (key === "changelogSeen") return castChangelogSeen(value, loose);
+  if (key === "sidebarAccountFoldersExpanded") return folderCollapse.normalizeAccountExpanded(value);
   if (key === "sidebarCollapsedFolders") {
     if (loose) return folderCollapse.normalize(value);
     return folderCollapse.cast(value);
@@ -248,7 +252,10 @@ function answer(channel, args) {
   const setKey = SET[channel];
   if (!setKey) return undefined;
   const store = readStore();
-  store[setKey] = cast(setKey, args && args[0], false);
+  // Patch just this mailbox so another window/account's saved choice survives.
+  store[setKey] = setKey === "sidebarAccountFoldersExpanded"
+    ? folderCollapse.setAccountExpanded(store[setKey], args && args[0])
+    : cast(setKey, args && args[0], false);
   writeStore(store);
   if (setKey === "mailNotificationsEnabled" || setKey === "mailNotificationPreview") {
     require("./mail/notifications").settingsChanged();

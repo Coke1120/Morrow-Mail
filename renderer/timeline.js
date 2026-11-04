@@ -5,6 +5,7 @@
     const node = id => document.getElementById(id);
     const dialog = node("timeline-dialog");
     if (!dialog || !api) return null;
+    let sourceToken = null;
     let source = null, defaults = null, prepared = null, jobId = null, stored = null, serial = 0, listSerial = 0;
     let working = false, starting = false, earlyProgress = null, cancelRequested = false, cancelling = false;
     const errorText = {
@@ -12,7 +13,7 @@
       "timeline-budget": "This downloaded thread exceeds a run limit. Nothing was sent automatically.",
       "timeline-empty": "Open a downloaded message before creating a timeline.",
       "timeline-source-changed": "Source mail or its account changed. Reopen Timeline from the message.",
-      "timeline-manifest": "The source snapshot expired or changed. Choose Generate to try again.",
+      "timeline-manifest": "The source snapshot expired or changed. Reopen Timeline from the message.",
       "timeline-partial": "No usable complete bodies, or partial coverage was not accepted. Download missing mail in Mail, or accept the shown omissions.",
       "timeline-busy": "Another timeline operation is active. Wait or cancel it first.",
       "timeline-validation": "AI output failed validation after one retry. Earlier saved timelines remain unchanged.",
@@ -76,7 +77,16 @@
       else if (!coverage.included_message_count) report({ code: "timeline-partial" });
     }
     async function prepare(current) {
-      const value = await invoke("timeline:prepare", { selection: source, options: options() });
+      let value;
+      try { value = await invoke("timeline:prepare", { selection: source, options: options(), ...(sourceToken ? { manifestToken: sourceToken } : {}) }); }
+      catch (error) {
+        if (serial === current && ["timeline-source-changed", "timeline-manifest"].includes(error.code)) source = null;
+        throw error;
+      }
+      if (serial !== current) return null;
+      sourceToken = value.manifestToken;
+      try { await invoke("timeline:check", { manifestToken: sourceToken }); }
+      catch (error) { if (serial === current) source = null; throw error; }
       if (serial !== current) return null;
       preview(value);
       return value;
@@ -99,6 +109,7 @@
       openDialog("timeline-dialog");
       if (working || starting || jobId) return;
       const current = ++serial;
+      sourceToken = null;
       source = { messages: [{ accountId: email.accountId, messageId: email.id }], expandThreads: true };
       defaults = { title: String(email.subject || "").replace(/[\x00-\x1f\x7f\u2028\u2029]/g, " ").trim().slice(0, 500) || "Email timeline",
         language: language(), displayTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" };
@@ -130,18 +141,30 @@
       const output = node("timeline-result");
       output.append(element("h2", documentValue.title), element("p", `${coverage.included_message_count} included / ${coverage.selected_message_count} selected / ${coverage.omitted_message_count} omitted · ${documentValue.display_timezone}`),
         element("p", "AI-generated; verify against source mail. Displayed dates are mail timestamps, not dates of events mentioned in the text. Unknown and older cached timestamps are not reliable date evidence."));
-      for (const event of documentValue.events) {
-        const section = element("section", "", "timeline-event");
+      const sequence = element("ol", "", "timeline-sequence");
+      sequence.setAttribute("aria-label", "Correspondence, oldest first; undated mail last");
+      output.append(sequence);
+      const events = [...documentValue.events].sort((a, b) => (a.occurred_at === null) - (b.occurred_at === null)
+        || (Date.parse(a.occurred_at) - Date.parse(b.occurred_at)) || a.source_message_id.localeCompare(b.source_message_id));
+      let previousDay = null;
+      for (const [index, event] of events.entries()) {
+        const section = element("li", "", "timeline-event");
+        const day = event.occurred_at ? new Intl.DateTimeFormat(undefined, { timeZone: documentValue.display_timezone, dateStyle: "long" }).format(new Date(event.occurred_at)) : "Undated correspondence";
+        if (day !== previousDay) { section.append(element("h3", day, "timeline-day")); previousDay = day; }
         const date = event.occurred_at ? new Intl.DateTimeFormat(undefined, { timeZone: documentValue.display_timezone, dateStyle: "medium", timeStyle: "short" }).format(new Date(event.occurred_at)) : "Unknown date";
-        section.append(element("h3", `${date} · ${event.date_source}`), element("p", `From: ${address(event.from)}`),
+        const time = element("time", `${index + 1}. ${date} · ${event.date_source}`, "hint");
+        if (event.occurred_at) time.dateTime = event.occurred_at;
+        section.append(time, element("p", event.summary, "timeline-summary"), element("p", `From: ${address(event.from)}`));
+        const evidence = element("details", "", "timeline-evidence");
+        evidence.append(element("summary", "Source evidence and recipients"),
           element("p", `To: ${event.to.map(address).join(", ") || "None recorded"}`), element("p", `Cc: ${event.cc.map(address).join(", ") || "None recorded"}`));
-        if (event.via_alias) section.append(element("p", `Via alias: ${event.via_alias}`));
-        section.append(element("p", event.summary));
-        if (event.attachments.length) section.append(element("p", `Attachment names: ${event.attachments.join(", ")}`));
+        if (event.via_alias) evidence.append(element("p", `Via alias: ${event.via_alias}`));
+        if (event.attachments.length) evidence.append(element("p", `Attachment names: ${event.attachments.join(", ")}`));
         for (const action of event.open_actions) section.append(element("p", `For review: ${action}`));
         for (const unclear of event.unclear) section.append(element("p", `Unclear: ${unclear}`));
-        section.append(element("p", `Source: ${event.source_thread_id} / ${event.source_message_id}`, "hint"));
-        output.append(section);
+        evidence.append(element("p", `Source: ${event.source_thread_id} / ${event.source_message_id}`, "hint"));
+        section.append(evidence);
+        sequence.append(section);
       }
       buttons();
     }
@@ -164,7 +187,7 @@
       catch (error) { cancelling = false; buttons(); throw error; }
     }
     function dismissed() {
-      serial++; prepared = null; source = null; listSerial++;
+      serial++; prepared = null; source = null; sourceToken = null; listSerial++;
       if (!starting && !jobId) working = false;
       if (starting || jobId) cancel().catch(report);
       buttons();
@@ -231,18 +254,24 @@
     });
     api.on("timeline:progress", value => progress(value).catch(report));
     api.on("mail:accountsUpdated", () => {
-      serial++; prepared = null; source = null;
-      if (!starting && !jobId) working = false;
-      if (starting || jobId) cancel().catch(report);
+      // This notification also carries sync progress and cosmetic account updates.
+      // Only the host can compare incarnation, credentials and frozen source data.
+      const current = serial, snapshot = sourceToken;
+      if (!stored && snapshot && !working && !starting && !jobId) {
+        invoke("timeline:check", { manifestToken: snapshot }).catch(error => {
+          if (serial !== current || sourceToken !== snapshot) return;
+          serial++; prepared = null; source = null; working = false;
+          report(error); buttons();
+        });
+      }
       if (stored) {
-        const id = stored.document.timeline_id;
-        invoke("timeline:get", { id }).catch(() => {
-          if (stored?.document.timeline_id !== id) return;
+        const saved = stored;
+        invoke("timeline:get", { id: saved.document.timeline_id }).catch(error => {
+          if (serial !== current || stored !== saved || error.code !== "timeline-not-found") return;
           renderResult(null); status("A saved timeline was removed with its source account.");
         });
-      } else status("Mail accounts changed. Reopen Timeline from the message.");
-      if (dialog.open) savedList().catch(report);
-      buttons();
+      }
+      if (dialog.open) savedList().catch(error => { if (serial === current) report(error); });
     });
     buttons();
     return { open, renderResult };

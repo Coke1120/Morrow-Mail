@@ -176,21 +176,10 @@
     <div class="shell" id="shell">
       <div class="side">
         <div id="side-mail" class="side-pane">
-          <button type="button" class="ghost icon-label" id="scheduled-open"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled<span id="scheduled-review-count" hidden></span></button>
-          <section id="mail-ooo" class="mail-ooo" aria-labelledby="mail-ooo-heading" hidden>
-            <h3 id="mail-ooo-heading">Out of Office</h3>
-            <div id="mail-ooo-chooser" class="mail-ooo-chooser" hidden>
-              <label for="mail-ooo-account">Mailbox</label>
-              <select id="mail-ooo-account" aria-label="Mailbox for Out of Office" aria-describedby="mail-ooo-scope" hidden></select>
-              <span id="mail-ooo-scope" class="sr">Status and actions apply only to the selected mailbox.</span>
-            </div>
-            <p id="mail-ooo-identity" class="mail-ooo-identity"></p>
-            <p id="mail-ooo-status" class="hint" role="status" aria-atomic="true"></p>
-            <div class="row mail-ooo-actions">
-              <button type="button" class="ghost" id="mail-ooo-manage">Manage<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"></path></svg></button>
-              <button type="button" class="ghost" id="mail-ooo-refresh" aria-label="Refresh Out of Office status"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>Refresh</button>
-            </div>
-          </section>
+          <div class="sidebar-mail-actions">
+            <button type="button" class="ghost icon-label" id="scheduled-open" aria-haspopup="dialog" aria-controls="scheduled-dialog"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>Scheduled<span id="scheduled-review-count" hidden></span></button>
+            <button type="button" class="ghost icon-label" id="mail-ooo-open" aria-haspopup="dialog" aria-controls="mail-ooo-dialog"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="18" height="14" rx="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>Out of Office</button>
+          </div>
           <div class="folder-tools">
           <div class="folder-filter">
             <label class="sr" for="folder-filter">Filter folders and labels</label>
@@ -199,7 +188,7 @@
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
             </button>
           </div>
-          <button type="button" class="folder-collapse-all" id="folder-collapse-all" data-testid="folder-collapse-all" title="Collapse All" aria-label="Collapse All">
+          <button type="button" class="folder-collapse-all" id="folder-collapse-all" data-testid="folder-collapse-all" title="Collapse all folders" aria-label="Collapse all folders">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 11 12 6 7 11"></polyline><polyline points="17 18 12 13 7 18"></polyline></svg>
           </button>
           </div>
@@ -234,7 +223,7 @@
             <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>
         </div>
-        <p id="mail-sort-help" class="sr">Drag headers to reorder columns, or use Columns / Alt + Left or Right. Right-click a header or press Shift + F10 to choose visible columns; Columns has the same checkboxes. Subject stays visible. Click Date, Recipient, Sender or Subject to sort all downloaded mail before paging; click again to reverse. Recipient sorts by the first To recipient. Hiding a column keeps sorting. Reply / forward icons appear before the subject for reported provider flags; unavailable flags, including Gmail API, show nothing. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order and displays saved To recipients across accounts.</p>
+        <p id="mail-sort-help" class="sr">Drag headers to reorder columns, or use Columns / Alt + Left or Right. Right-click a header or press Shift + F10 to choose visible columns; Columns has the same checkboxes. Subject stays visible. Click Date, Recipient, Sender or Subject to sort all downloaded mail before paging; click again to reverse. Recipient sorts by the first To recipient. Hiding a column keeps sorting. Reply / forward icons appear before the subject for reported IMAP flags or confirmed Gmail evidence on this device. Unknown states show nothing. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order and displays saved To recipients across accounts.</p>
         <div id="message-list" tabindex="0" aria-label="Downloaded messages" aria-describedby="mail-sort-help mail-view-help"></div>
           <div id="list-paging" class="list-paging" role="group" aria-label="Message pages" hidden>
             <p id="list-page-status" class="list-filter-note" role="status"></p>
@@ -269,7 +258,7 @@
         <div id="timeline-result"></div>
         <div id="timeline-exports" hidden>
           <label class="timeline-choice"><input type="checkbox" id="timeline-export-confirm" />I reviewed the personal information, coverage and uncertainty for this export.</label>
-          <div class="row"><select id="timeline-format" aria-label="Export format"><option value="json">Public JSON 1.0.0</option><option value="markdown">Markdown</option><option value="pdf">PDF</option></select><button type="button" class="ghost" id="timeline-export" disabled>Export file…</button><button type="button" class="ghost" id="timeline-delete">Delete local timeline…</button></div>
+          <div class="row"><select id="timeline-format" aria-label="Export format"><option value="html">Readable HTML</option><option value="json">Public JSON 1.0.0</option><option value="markdown">Markdown</option><option value="pdf">PDF</option></select><button type="button" class="ghost" id="timeline-export" disabled>Export file…</button><button type="button" class="ghost" id="timeline-delete">Delete local timeline…</button></div>
           <p class="hint">Account removal deletes related local timelines. Exports, backups and historical journal bytes remain. No URL or webhook export.</p>
         </div>
         <details id="timeline-history" hidden><summary>Saved timelines</summary><div id="timeline-saved"></div></details>
@@ -613,7 +602,7 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
-        <p class="hint" id="cli-timeline">Timelines are explicit desktop actions from Timeline beside Summary in an opened message's action bar, not bot operations, CLI commands or scheduled skills. The sheet has optional keywords and editable From/To/Cc/Reply-To contact emails to guide summaries; all included local thread messages still go to AI. Title, supported language and timezone default from the subject/system. Generate uses only the opened message and its downloaded thread after explicit-action AI permission, with no automatic older-mail download. Omitted messages need conditional partial-coverage acceptance. Opening the sheet, saved history and reviewed exports use no AI. Public JSON 1.0.0, Markdown and isolated PDF file exports require a fresh personal-information review. URL/webhook export is unavailable. Run <code>npm run test:timeline</code> for synthetic schema, source, extraction, export, persistence, consent and rendered-sheet checks; no real mail, credentials, AI requests or Electron GUI are used.</p>
+        <p class="hint" id="cli-timeline">Timelines are explicit desktop actions from Timeline beside Summary in an opened message's action bar, not bot operations, CLI commands or scheduled skills. The sheet has optional keywords and editable From/To/Cc/Reply-To contact emails to guide summaries; all included local thread messages still go to AI, with sender names/addresses, mail timestamps/date provenance, subjects and attachment names. Disclosure version 3 requires renewed manual consent for older grants; background use remains separate. Title, supported language and timezone default from the subject/system. Generate uses only the opened message and its downloaded thread after explicit-action AI permission, with no automatic older-mail download. Omitted messages need conditional partial-coverage acceptance. Opening the sheet, saved history and reviewed exports use no AI. Readable HTML, public JSON 1.0.0, Markdown and isolated PDF file exports require a fresh personal-information review. URL/webhook export is unavailable. Run <code>npm run test:timeline</code> for synthetic schema, source, extraction, export, persistence, consent and rendered-sheet checks; no real mail, credentials, AI requests or Electron GUI are used.</p>
         <p class="hint" id="cli-page-recovery">Compose attachment preparation, inert Undo recovery and Calendar retry identities are desktop operations; bot capabilities and permissions are unchanged. Calendar reauthorization uses the existing provider grant, separately from Google mail. These fixes do not expose calendar writes through the Node bot client.</p>
         <p class="hint" id="cli-folder-labels">Folders &amp; labels and Open in Mail are desktop actions. Label edits and Outlook moves use the selected message identity; ambiguous legacy Message-ID matches are refused. These fixes add no bot operations, command-line options or provider scopes.</p>
         <p class="hint" id="cli-mail-feedback">Downloaded-primary unread counts, background bulk Archive/Trash, accumulated removal Undo, the per-mailbox Out of Office chooser and cache-first Agent navigation are desktop behaviors. They add no bot commands, permissions, bulk cancellation or automatic retries. Out of Office changes still require review in Settings for one mailbox.</p>
@@ -731,7 +720,7 @@
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="mail-columns-title">Mail columns</h2><button type="button" class="ghost" id="mail-columns-close">Close</button></div>
         <p id="mail-columns-help">Choose which columns to show. Subject stays visible. Right-click any header, or focus it and press Shift + F10, for the same visibility choices. Drag a column header to reorder it, or use these buttons. You can also focus a header and press Alt + Left or Right. Click Date, Recipient, Sender or Subject to sort, even if the sorted column is later hidden. The same layout is used across mailboxes, search and Outbox.</p>
-        <p class="hint" id="mail-columns-provider-help">Reply / forward icons sit before the Subject text, not in a separate column: a reply arrow for Replied and a forward arrow for Forwarded, using cached IMAP provider flags. Both can appear. No icons means no positive flags are available, not proof that no reply or forward happened. Gmail API, old caches, local drafts and Outbox show nothing unless a provider reports a flag. Flags depend on the server and other mail clients and refresh during sync. Morrow sends do not currently set these flags.</p>
+        <p class="hint" id="mail-columns-provider-help">Reply / forward icons sit before Subject. IMAP uses cached provider flags. Gmail uses confirmed successful Morrow sends or a unique matching In-Reply-To in downloaded Sent mail; emoji reactions are excluded. Failed, canceled, partial and uncertain sends add no local indicator. Local evidence stays on this device and survives ordinary sync and restart; cross-device forwards cannot be inferred. No icon means no positive evidence. Drafts and Outbox show no indicators. Both icons can appear; explicit provider evidence takes priority.</p>
         <ol id="mail-columns-order"></ol>
         <button type="button" class="ghost" id="mail-columns-reset">Reset column order</button>
         <button type="button" class="ghost" id="mail-columns-show-all">Show all columns</button>
@@ -800,6 +789,26 @@
       <label for="support-preview">Redacted recent-session preview</label><textarea id="support-preview" rows="16" readonly></textarea>
       <p id="support-copy-status" role="status"></p><div class="row"><button type="button" class="primary" id="support-copy">Copy preview</button><button type="button" class="ghost" id="support-close">Close</button></div>
     </div></dialog>
+    <dialog id="mail-ooo-dialog" aria-labelledby="mail-ooo-heading">
+      <div class="dialog-body">
+        <div class="sheet-head"><h2 id="mail-ooo-heading">Out of Office</h2><button type="button" class="ghost" id="mail-ooo-close" autofocus>Close</button></div>
+        <p class="hint">Check automatic replies for the selected mailbox. Manage opens its settings for review before saving to the provider.</p>
+        <section id="mail-ooo" class="mail-ooo" aria-labelledby="mail-ooo-heading" hidden>
+          <div id="mail-ooo-chooser" class="mail-ooo-chooser" hidden>
+            <label for="mail-ooo-account">Mailbox</label>
+            <select id="mail-ooo-account" aria-label="Mailbox for Out of Office" aria-describedby="mail-ooo-scope" hidden></select>
+            <span id="mail-ooo-scope" class="sr">Status and actions apply only to the selected mailbox.</span>
+          </div>
+          <p id="mail-ooo-identity" class="mail-ooo-identity"></p>
+          <p id="mail-ooo-status" class="hint" role="status" aria-atomic="true"></p>
+          <div class="row mail-ooo-actions">
+            <button type="button" class="ghost" id="mail-ooo-manage">Manage<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"></path></svg></button>
+            <button type="button" class="ghost" id="mail-ooo-refresh" aria-label="Refresh Out of Office status"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>Refresh</button>
+          </div>
+        </section>
+      </div>
+    </dialog>
+
     <dialog id="scheduled-dialog" aria-labelledby="scheduled-heading">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="scheduled-heading">Scheduled mail · all accounts</h2><button type="button" class="ghost" id="scheduled-close">Close</button></div>
@@ -1207,8 +1216,9 @@
             <div class="checks">
               <h4>Sidebar &amp; navigation</h4>
               <label class="check" for="pref-folder-chips"><input id="pref-folder-chips" type="checkbox" /> Show folder chips</label>
-              <label class="check" for="pref-gmail-folders"><input id="pref-gmail-folders" type="checkbox" /> Expand Gmail folders</label>
-              <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Expand Outlook folders</label>
+              <label class="check" for="pref-gmail-folders"><input id="pref-gmail-folders" type="checkbox" /> Expand Gmail accounts by default</label>
+              <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Expand Outlook accounts by default</label>
+              <p class="hint">Each account’s sidebar button saves its own expansion choice. These defaults apply until that account has an individual choice.</p>
             </div>
             <div class="checks">
               <h4>Agent</h4>
@@ -1325,7 +1335,7 @@
             <p id="ai-dirty" class="hint settings-dirty settings-full-width" role="status" hidden></p>
             <p id="ai-status" class="settings-full-width" role="status"></p>
             <p class="hint settings-full-width">Fetch models reads the catalog using your credentials, without mail context. Test sends a short AI request after permission and uses provider usage.</p>
-            <p class="hint settings-full-width" id="ai-consent-help">Review the saved connection in AI data permission. Allow selected AI data use requires a ready saved connection and the explicit-action checkbox. If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step. Background use is optional and requires its separate checkbox. Cancel / revoke stops pending and future AI use.</p>
+            <p class="hint settings-full-width" id="ai-consent-help">Review the saved connection and choose AI data permission below. Background use is optional. If Allow is unavailable, follow the status message.</p>
           </div>
           <div id="ai-data-settings"></div>
           <details id="ai-connection-details" class="settings-disclosure"><summary>Connection details</summary>
@@ -1427,12 +1437,19 @@
             <h3 id="settings-compose-title">How you look when sending</h3>
             <p class="hint" id="brain-compose-basic">Most people only need a display name.</p>
             <form id="brain-compose-form">
-              <label for="brain-compose-account">Compose mailbox</label>
+              <div class="settings-field-heading"><label for="brain-compose-account">Compose mailbox</label><button type="button" class="ghost settings-help" popovertarget="brain-compose-account-help" aria-label="Help: Compose mailbox" aria-controls="brain-compose-account-help">?</button></div>
+              <div id="brain-compose-account-help" class="settings-help-popover" popover role="note"><strong>Compose mailbox</strong><p>These compose defaults apply to the mailbox selected here. Choose a mailbox before editing its sender names, preferred From address or signatures.</p><button type="button" class="ghost" popovertarget="brain-compose-account-help" popovertargetaction="hide">Close help</button></div>
               <select id="brain-compose-account" disabled></select>
-              <h4>Sender identities</h4>
+              <div class="settings-section-heading"><h4>Sender identities</h4>
+                <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                  Refresh From addresses
+                </button>
+              </div>
               <p id="brain-compose-identities" class="hint"></p>
               <div id="brain-compose-senders" aria-label="Sender identities"></div>
-              <label for="brain-compose-from">Preferred From for new mail (optional)</label>
+              <div class="settings-field-heading"><label for="brain-compose-from">Preferred From for new mail (optional)</label><button type="button" class="ghost settings-help" popovertarget="brain-compose-from-help" aria-label="Help: Preferred From for new mail (optional)" aria-controls="brain-compose-from-help">?</button></div>
+              <div id="brain-compose-from-help" class="settings-help-popover" popover role="note"><strong>Preferred From for new mail (optional)</strong><p>The default sending address for new messages from this mailbox. Leave it blank to use the provider’s preferred address, or the mailbox address. You can change From while composing. Replies and forwards use the address that received the message when available. Use an address this mailbox is authorized to send from; adding it here does not grant send-as permission.</p><button type="button" class="ghost" popovertarget="brain-compose-from-help" popovertargetaction="hide">Close help</button></div>
               <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
               <div class="row">
                 <button type="button" class="ghost" id="brain-compose-signatures">Signatures</button>
@@ -1446,7 +1463,8 @@
                 <textarea id="brain-compose-bcc" rows="4" placeholder="@example.org = records@example.org, audit@example.com" spellcheck="false" disabled></textarea>
                 <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
                 <textarea id="brain-compose-aliases" rows="3" placeholder="ada@example.com&#10;ada@example.org = example.com" spellcheck="false" disabled></textarea>
-                <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
+                <div class="settings-field-heading"><label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label><button type="button" class="ghost settings-help" popovertarget="brain-compose-default-domain-help" aria-label="Help: Fallback CC domain for new mail (optional)" aria-controls="brain-compose-default-domain-help">?</button></div>
+              <div id="brain-compose-default-domain-help" class="settings-help-popover" popover role="note"><strong>Fallback CC domain for new mail (optional)</strong><p>If the From domain has no CC rule, use the CC rule for this domain instead. This does not change the From address, BCC rules or signature.</p><button type="button" class="ghost" popovertarget="brain-compose-default-domain-help" popovertargetaction="hide">Close help</button></div>
                 <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
               </details>
               <details class="settings-disclosure" id="brain-compose-how">
@@ -1457,10 +1475,7 @@
               </details>
               <div class="row">
                 <button type="submit" class="primary" disabled>Save compose defaults</button>
-                <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                  Refresh From addresses
-                </button>
+
               </div>
               <p id="brain-compose-status" class="hint" role="status" aria-live="polite"></p>
             </form>

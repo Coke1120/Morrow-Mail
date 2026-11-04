@@ -1,10 +1,12 @@
+Gmail reply / forward subject icons use confirmed local sends and conservative cached Sent header evidence. See [Gmail disposition evidence](adr/2026-11-04-gmail-disposition-evidence.md) for identity rules and limits.
+
 Notification clicks use an independent reader in Separate window mode, without opening or marking read through the hidden shell preview. Keyboard header moves use visible neighbors while retaining hidden columns in the complete saved order.
 
 The open View menu blocks message and selection shortcuts until it closes.
 
 Mail shortcuts follow the active reading surface. In Separate window mode, Delete/Backspace and R/A/F use exactly one visible selected message, including its account; zero or multiple selected messages disable those keys. Independent readers retain their own message. Right and Bottom preview shortcuts pause during loading and after a failed open. A reply already requested keeps the message/account captured at the keypress even if selection changes during download.
 
-Mail’s Out of Office panel labels its mailbox chooser, shows the full selected address separately, and keeps status and actions on their own rows. Checking and retry states stay scoped to that mailbox; Manage opens its reviewed Settings editor without changing replies. Disabled replies show Off with Manage and no Refresh.
+Scheduled and Out of Office share a sidebar row and open native dialogs. Close or Escape dismisses the Out of Office dialog and returns focus to its trigger. Its panel labels its mailbox chooser, shows the full selected address separately, and keeps status and actions on their own rows. Checking and retry states stay scoped to that mailbox; Manage opens its reviewed Settings editor without changing replies. Disabled replies show Off with Manage and no Refresh.
 
 New profiles see a six-step setup guide after startup dialogs: mailbox, calendar,
 sender names, signatures, optional AI and mail preferences. Settings → General → Open setup guide
@@ -180,3 +182,5 @@ setting, shows the saved on/off value and explains tracking before an explicit
 Allow or Block choice. Defaults remain unchanged. Skip, Back, Finish later and
 Finish guide do not write preferences. Unsaved choices survive navigation within
 this window; only saved choices survive restart. Existing step numbers stay stable.
+
+Each sidebar account has a collapse button, including Yahoo and custom IMAP. Choices are stored separately by mailbox id. Before a mailbox has an individual choice, it inherits its previous Gmail/Outlook expansion default; other providers start expanded. The General tab’s Gmail/Outlook checkboxes set those defaults. Folder filtering reveals matching folders temporarily. Collapse All leaves account expansion unchanged.

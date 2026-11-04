@@ -102,7 +102,7 @@ function fixture({ config: initial = {}, account: accountInput = {}, useDom = fa
   ui.run(source("renderer/chatgpt-settings.js"));
   ui.run("mountChatgptSettings()");
   const component = ui.run("chatgptSettings");
-  return { bridge, preload, consent, config, ui, component, get, calls, intercept, interceptReply,
+  return { seedConsent: record => files.set(path.join(directory, "ai-consent.json"), JSON.stringify(record)), bridge, preload, consent, config, ui, component, get, calls, intercept, interceptReply,
     load: async () => { await ui.run("loadAiSettings()"); await tick(); },
     checkManual: async value => {
       get("ai-consent-manual").checked = value;
@@ -496,11 +496,11 @@ test("Features and Settings help render the same explicit consent prerequisites"
   assert.match(f.get("features-catalog").textContent, /Save & review connection saves without approving/);
   assert.match(f.get("features-catalog").textContent, /Reopening Settings preserves unsaved connection edits and requires a fresh permission choice/);
   assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>Review the saved connection[\s\S]*?Background use is optional/);
-  assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>[\s\S]*If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step/);
+  assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>[\s\S]*If Allow is unavailable, follow the status message/);
   f.assertNoModelCalls();
 });
 
-test("Settings and Setup keep material disclosure outside accordions, after connection controls, with accessible checkbox descriptions", async () => {
+test("Settings and Setup keep material disclosure outside the details dialog, after connection controls, with accessible checkbox descriptions", async () => {
   const { JSDOM } = require("jsdom");
   for (const filename of ["renderer/index.html", "host/ai-setup.html"]) {
     const dom = new JSDOM(source(filename), { runScripts: "outside-only" });
@@ -512,18 +512,19 @@ test("Settings and Setup keep material disclosure outside accordions, after conn
     const get = id => document.getElementById(id), permission = f.consent.status();
     assert.ok(get(filename.startsWith("host") ? "save" : "ai-save").compareDocumentPosition(get("ai-consent-title")) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
     for (const id of ["ai-consent-destination", "ai-consent-locality", "ai-consent-data", "ai-consent-purposes", "ai-consent-background-data", "ai-consent-terms", "ai-consent-revocation"]) {
-      assert.equal(get(id).closest("details"), null, id + " must stay visible before consent");
+      assert.notEqual(get(id).closest("dialog")?.id, "ai-consent-details", id + " must stay visible before consent");
       assert.ok(get(id).textContent.length, id + " must contain material disclosure");
     }
     assert.equal(get("ai-consent-data").textContent, permission.dataSummary);
     assert.equal(get("ai-consent-full-data").textContent, permission.disclosure);
+    assert.equal(get("ai-consent-full-purposes").textContent, permission.purposes);
     assert.equal(get("ai-consent-full-background").textContent, permission.backgroundDisclosure);
     for (const category of ["sender addresses", "subjects", "dates", "snippets", "metadata", "selected message text", "quoted history", "drafts", "signatures", "selections", "instructions", "Brain profile", "identity", "categories", "writing rules", "Agent notes", "recent conversation", "event titles", "times", "locations", "Attachment files are excluded"]) {
       assert.ok(get("ai-consent-data").textContent.includes(category), category + " must stay in the visible data summary");
     }
     for (const purpose of ["translation", "reply suggestions", "writing", "profile learning", "triage", "skills", "answers"]) assert.ok(get("ai-consent-purposes").textContent.includes(purpose));
     for (const task of ["profile refresh", "opening Brain", "triage", "reply suggestions", "scheduled skills", "without another AI button press"]) assert.ok(get("ai-consent-background-data").textContent.includes(task));
-    assert.equal(get("ai-consent-full-data").closest("details").open, false);
+    assert.equal(get("ai-consent-full-data").closest("dialog").open, false);
     for (const id of ["ai-consent-manual", "ai-consent-background", "ai-consent-allow"]) {
       const control = get(id);
       for (const description of control.getAttribute("aria-describedby").split(" ")) assert.ok(get(description));
@@ -533,4 +534,32 @@ test("Settings and Setup keep material disclosure outside accordions, after conn
     assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
     f.assertNoModelCalls(); component.dispose(); dom.window.close();
   }
+});
+
+test("saved v2 consent renders the expanded Timeline disclosure with no implicit manual or background opt-in", async t => {
+  const f = fixture({ useDom: true }); t.after(f.dispose);
+  const cfg = f.config.loadConfig();
+  const legacy = { id: "legacy-v2-grant", version: 2, manual: true, background: true,
+    fingerprint: require("node:crypto").createHash("sha256").update(JSON.stringify([2, cfg.authMode, `${cfg.baseUrl}/chat/completions`, cfg.model, "", cfg.apiKey])).digest("hex") };
+  f.seedConsent(legacy);
+  await f.load();
+  const review = f.consent.status();
+  assert.equal(review.version, 3); assert.equal(review.manual, false); assert.equal(review.background, false);
+  for (const id of ["ai-consent-data", "ai-consent-full-data"]) {
+    assert.match(f.get(id).textContent, /sender names and addresses, mail timestamps and date provenance/);
+    assert.match(f.get(id).textContent, /optional keywords and contact emails/);
+  }
+  assert.equal(f.get("ai-consent-manual").checked, false);
+  assert.equal(f.get("ai-consent-background").checked, false);
+  assert.equal(f.get("ai-consent-allow").disabled, true);
+  assert.equal(f.writes, 0);
+  assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
+  await assert.rejects(f.bridge.invoke("host:aiConsentGrant", { token: review.token, manual: false, background: false }), /Affirmatively/);
+  await f.checkManual(true);
+  f.get("ai-consent-allow").click(); await tick();
+  assert.equal(f.consent.status().manual, true);
+  assert.equal(f.consent.status().background, false);
+  const grant = f.calls.find(row => row.channel === "host:aiConsentGrant" && row.input.manual === true);
+  assert.equal(grant.input.background, false);
+  f.assertNoModelCalls();
 });
