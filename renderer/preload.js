@@ -45,6 +45,8 @@ const INVOKE = [
   "morrow:configSetMarkReadCompletesAgentTodos",
   "morrow:configGetSidebarCollapsedFolders",
   "morrow:configSetSidebarCollapsedFolders",
+  "morrow:configGetSidebarAccountFoldersExpanded",
+  "morrow:configSetSidebarAccountFoldersExpanded",
   "morrow:configGetComposeQuoteWidth",
   "morrow:configSetComposeQuoteWidth",
   "morrow:configGetSyncHorizonDays",

@@ -59,6 +59,7 @@ const state = {
     markReadCompletesTodos: false,
     gmailOpen: true,
     outlookOpen: false,
+    accountExpanded: {},
     theme: "light",
     accent: "#193C34",
     translateLang: "zh-Hant",
@@ -238,6 +239,9 @@ let listMotionKey = "";
 let listOpenKey = "";
 let folderRenderKey = "";
 let folderCollapseGen = 0;
+let accountExpansionRevision = 0;
+const accountExpansionGenerations = new Map();
+const accountExpansionPending = new Set();
 let folderNavKey = "";
 let folderNavRestore = false;
 let chipRenderKey = "";
@@ -1034,6 +1038,11 @@ function providerExpanded(provider, prefs) {
   if (provider === "gmail") return flags.gmailOpen !== false;
   if (provider === "outlook") return flags.outlookOpen === true;
   return true;
+}
+
+function accountFoldersExpanded(account, prefs = state.prefs) {
+  const value = prefs.accountExpanded?.[account.id];
+  return typeof value === "boolean" ? value : providerExpanded(folderProvider(account), prefs);
 }
 
 function opensAiWrite(seed, prefs) {
@@ -5113,10 +5122,7 @@ function onFolderNavKey(event) {
     return;
   }
   if (node.dataset.navKind === "account") {
-    const provider = node.dataset.navId || "";
-    if (provider === "gmail" || provider === "outlook") {
-      toggleProviderFolders(provider).catch((error) => showStatus(error.message, true));
-    } else folderNavRestore = false;
+    toggleAccountFolders(node.dataset.navAccount).catch((error) => showStatus(error.message, true));
     return;
   }
   if (node.dataset.navKind === "folder") {
@@ -5139,6 +5145,7 @@ function renderAccounts() {
     state.accountId,
     state.prefs.gmailOpen,
     state.prefs.outlookOpen,
+    state.prefs.accountExpanded,
     state.prefs.collapsedFolders || {},
     folderQuery,
   ]);
@@ -5197,40 +5204,34 @@ function renderAccounts() {
   for (const account of state.accounts) {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
-    const expanded = filtering || providerExpanded(provider, state.prefs);
+    const expanded = filtering || accountFoldersExpanded(account);
     const tree = folderTree(foldersOf(account), accountDelimiter(account));
     const rows = expanded ? sidebarFolderRows(tree, account.id) : [];
     if (filtering && !rows.length) continue;
     shownFolder = true;
-    let heading;
-    if (provider) {
-      heading = document.createElement("button");
-      heading.type = "button";
-      heading.className = "account";
-      heading.setAttribute("aria-expanded", expanded ? "true" : "false");
-      const mark = document.createElement("span");
-      mark.setAttribute("aria-hidden", "true");
-      mark.textContent = expanded ? "▾ " : "▸ ";
-      heading.append(mark, accountLabel(account));
-      heading.title = accountLabel(account);
-      heading.addEventListener("click", () => {
-        folderNavKey = "account:" + account.id;
-        folderNavRestore = true;
-        toggleProviderFolders(provider).catch((error) => showStatus(error.message, true));
-      });
-    } else {
-      heading = document.createElement("h2");
-      heading.textContent = accountLabel(account);
-      heading.title = accountLabel(account);
-    }
+    const heading = document.createElement("button");
+    heading.type = "button";
+    heading.className = "account";
+    heading.setAttribute("aria-expanded", expanded ? "true" : "false");
+    heading.setAttribute("aria-label", filtering ? accountLabel(account) + ", expanded to show matching folders"
+      : (expanded ? "Collapse " : "Expand ") + accountLabel(account));
+    if (filtering) heading.setAttribute("aria-disabled", "true");
+    heading.append(folderTwistMark(expanded), accountLabel(account));
+    heading.title = accountLabel(account);
+    heading.addEventListener("click", () => {
+      folderNavKey = "account:" + account.id;
+      folderNavRestore = true;
+      if (filtering) { folderNavRestore = false; return; }
+      toggleAccountFolders(account.id).catch((error) => showStatus(error.message, true));
+    });
     markFolderNav(heading, {
       key: "account:" + account.id,
       kind: "account",
       accountId: account.id,
       id: provider || "",
-      hasChild: tree.length > 0,
-      expanded: !!(expanded && tree.length),
-      lock: !provider || filtering,
+      hasChild: true,
+      expanded: !!expanded,
+      lock: filtering,
     });
     heading.addEventListener("contextmenu", (event) => {
       event.preventDefault();
@@ -17113,6 +17114,7 @@ async function loadLook() {
 }
 
 async function loadShellPrefs() {
+  const expansionRevision = accountExpansionRevision;
   const next = { ...state.prefs };
   try {
     for (const [channel, key] of Object.entries(SHELL_PREFS)) {
@@ -17132,6 +17134,9 @@ async function loadShellPrefs() {
     next.collapsedFolders = collapse
       ? collapse.normalize(await api.invoke("morrow:configGetSidebarCollapsedFolders"))
       : (state.prefs.collapsedFolders || {});
+    next.accountExpanded = collapse
+      ? collapse.normalizeAccountExpanded(await api.invoke("morrow:configGetSidebarAccountFoldersExpanded"))
+      : (state.prefs.accountExpanded || {});
     next.undoSend = sendDelayMs(await api.invoke("morrow:configGetUndoSendDelaySeconds")) / 1000;
     next.quoteWidth = quoteWidthPref(await api.invoke("morrow:configGetComposeQuoteWidth"));
     next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
@@ -17148,6 +17153,9 @@ async function loadShellPrefs() {
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
+  }
+  if (expansionRevision !== accountExpansionRevision || accountExpansionPending.size) {
+    next.accountExpanded = state.prefs.accountExpanded;
   }
   next.mailView = state.prefs.mailView;
   state.prefs = next;
@@ -17246,27 +17254,50 @@ function repaintClockSurfaces() {
   if (state.view === "agent" && agentPaintPayload && $("agent-status")) paintAgent(agentPaintPayload, "");
 }
 
-async function toggleProviderFolders(provider) {
-  const spec = provider === "gmail"
-    ? ["gmailOpen", "morrow:configSetSidebarGmailFoldersExpanded"]
-    : ["outlookOpen", "morrow:configSetSidebarOutlookFoldersExpanded"];
-  const key = spec[0];
-  const gen = ++folderCollapseGen;
-  const next = !state.prefs[key];
-  state.prefs[key] = next;
+async function toggleAccountFolders(accountId) {
+  const account = state.accounts.find(row => row.id === accountId);
+  const collapse = folderCollapse();
+  if (!account || !collapse) return;
+  const generation = (accountExpansionGenerations.get(accountId) || 0) + 1;
+  accountExpansionGenerations.set(accountId, generation);
+  accountExpansionPending.add(accountId);
+  ++accountExpansionRevision;
+  const previous = collapse.normalizeAccountExpanded(state.prefs.accountExpanded);
+  const expanded = !accountFoldersExpanded(account);
+  state.prefs.accountExpanded = { ...previous, [accountId]: expanded };
   renderAccounts();
+  const current = () => accountExpansionGenerations.get(accountId) === generation;
+  const applySaved = (saved) => {
+    const map = collapse.normalizeAccountExpanded(saved);
+    const next = { ...state.prefs.accountExpanded };
+    if (typeof map[accountId] === "boolean") next[accountId] = map[accountId];
+    else delete next[accountId];
+    state.prefs.accountExpanded = next;
+  };
   try {
-    const saved = (await api.invoke(spec[1], next)) === true;
-    if (gen !== folderCollapseGen) return;
-    state.prefs[key] = saved;
+    const saved = await api.invoke("morrow:configSetSidebarAccountFoldersExpanded", { accountId, expanded });
+    if (!current()) return;
+    if (typeof saved?.[accountId] !== "boolean") throw new Error("Could not save account expansion.");
+    applySaved(saved);
   } catch (error) {
-    if (gen !== folderCollapseGen) return;
+    if (!current()) return;
     showStatus(error instanceof Error ? error.message : String(error), true);
-    await loadShellPrefs();
+    try {
+      const saved = await api.invoke("morrow:configGetSidebarAccountFoldersExpanded");
+      if (!current()) return;
+      applySaved(saved);
+    } catch {
+      if (!current()) return;
+      applySaved(previous);
+    }
+  } finally {
+    if (current()) {
+      accountExpansionPending.delete(accountId);
+      ++accountExpansionRevision;
+      renderAccounts();
+      folderNavRestore = false;
+    }
   }
-  if (gen !== folderCollapseGen) return;
-  renderAccounts();
-  folderNavRestore = false;
 }
 
 async function toggleSidebarFolder(accountId, folderId) {
@@ -17310,23 +17341,12 @@ async function collapseAllFolders() {
     }
     next = collapse.collapseIds(next, account.id, parents);
   }
-  const closeGmail = state.prefs.gmailOpen !== false;
-  const closeOutlook = state.prefs.outlookOpen === true;
   const changed = JSON.stringify(next) !== JSON.stringify(collapse.normalize(state.prefs.collapsedFolders));
-  if (!changed && !closeGmail && !closeOutlook) return;
+  if (!changed) return;
   state.prefs.collapsedFolders = next;
-  if (closeGmail) state.prefs.gmailOpen = false;
-  if (closeOutlook) state.prefs.outlookOpen = false;
   renderAccounts();
   try {
-    if (closeGmail && gen === folderCollapseGen) {
-      state.prefs.gmailOpen = (await api.invoke("morrow:configSetSidebarGmailFoldersExpanded", false)) === true;
-    }
-    if (closeOutlook && gen === folderCollapseGen) {
-      state.prefs.outlookOpen = (await api.invoke("morrow:configSetSidebarOutlookFoldersExpanded", false)) === true;
-    }
-    if (gen !== folderCollapseGen) return;
-    if (changed) state.prefs.collapsedFolders = collapse.normalize(await api.invoke("morrow:configSetSidebarCollapsedFolders", next));
+    state.prefs.collapsedFolders = collapse.normalize(await api.invoke("morrow:configSetSidebarCollapsedFolders", next));
   } catch (error) {
     if (gen !== folderCollapseGen) return;
     showStatus(error instanceof Error ? error.message : String(error), true);
@@ -18398,6 +18418,7 @@ function paintMailVacation() {
   }
   const account = mailVacationAccount();
   box.hidden = !account;
+  if ($("mail-ooo-open")) $("mail-ooo-open").disabled = !account;
   if (!account) return;
   const entry = mailVacation.get(account.id);
   const pending = mailVacationPending.has(account.id);
@@ -18459,11 +18480,19 @@ async function refreshMailVacation(force = false) {
     paintMailVacation();
   }
 }
+async function showMailVacation() {
+  if ($("compose").open && !(await requestComposeClose())) return;
+  paintMailVacation();
+  if (!mailVacationAccount()) return;
+  openDialog("mail-ooo-dialog");
+  await refreshMailVacation();
+}
 async function manageMailVacation() {
   const id = state.allInbox ? $("mail-ooo-account")?.value : state.accountId;
   if (!state.accounts.some((account) => account.id === id)) return;
-  openSettings();
   if (settingsAccount()?.id !== id && !(await changeSettingsMailbox(id))) return;
+  await closeDialog("mail-ooo-dialog");
+  openSettings();
   revealSettingsFold("ooo");
   $("ooo-refresh").focus();
 }
@@ -26046,6 +26075,8 @@ function wire() {
   $("compose-view-scheduled").addEventListener("click", () => showScheduled());
   $("scheduled-refresh").addEventListener("click", () => loadScheduled());
   $("scheduled-close").addEventListener("click", () => closeDialog("scheduled-dialog"));
+  $("mail-ooo-open").addEventListener("click", () => guard(showMailVacation));
+  $("mail-ooo-close").addEventListener("click", () => closeDialog("mail-ooo-dialog"));
   $("mail-ooo-manage").addEventListener("click", () => manageMailVacation());
   $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
   $("mail-ooo-account").addEventListener("change", () => refreshMailVacation());

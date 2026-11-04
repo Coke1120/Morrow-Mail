@@ -34,6 +34,7 @@ function fixture(testContext, accounts = [account("custom"), account("gmail", "g
     on() {},
     invoke: async (channel, payload) => {
       calls.push({ channel, payload });
+      if (channel === "morrow:configSetSidebarAccountFoldersExpanded") return { [payload.accountId]: payload.expanded };
       return payload;
     },
   };
@@ -155,7 +156,7 @@ test("saved provider collapse is respected and expanding restores the shared ico
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(heading().getAttribute("aria-expanded"), "true");
   assert.equal(view.get("folders").querySelector('[data-account-id="outlook"][data-folder-id="INBOX"] .folder-icon').textContent, "📥");
-  assert.deepEqual(view.calls.filter(row => row.channel === "morrow:configSetSidebarOutlookFoldersExpanded"), [{ channel: "morrow:configSetSidebarOutlookFoldersExpanded", payload: true }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(view.calls.filter(row => row.channel === "morrow:configSetSidebarAccountFoldersExpanded"))), [{ channel: "morrow:configSetSidebarAccountFoldersExpanded", payload: { accountId: "outlook", expanded: true } }]);
 });
 
 test("a known-role metadata refresh updates the cached sidebar icon without renaming a custom folder", testContext => {
