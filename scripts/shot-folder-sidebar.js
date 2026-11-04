@@ -538,6 +538,77 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(await evaluate("document.getElementById('compose-title').textContent"), "Forward");
   assert.equal(await evaluate("document.getElementById('compose-subject').value"), "Fwd: Archived client note");
   await shot("folder-filter-and-hover");
+  await evaluate(`(() => {
+    document.getElementById("compose").close();
+    state.accounts = ["custom", "gmail", "outlook"].map(profile => ({
+      id: profile, email: profile + "@example.invalid", platform: "imap", imapSmtpProfile: profile,
+      folders: {
+        primary: [
+          { id: "INBOX", name: "INBOX", wellKnownName: "inbox", chip: true },
+          { id: "Sent Items", name: "Sent Items", wellKnownName: "sentitems", chip: true },
+          { id: "Sent", name: "Sent", wellKnownName: "sent", chip: true },
+          { id: "sent", name: "sent", wellKnownName: "SENT", chip: true },
+          { id: "Drafts", name: "Drafts", wellKnownName: "drafts", chip: true },
+          { id: "unread", name: "Unread", wellKnownName: "unread", type: "virtual", chip: true },
+        ],
+        more: [{ id: "Archived", name: "Archived", wellKnown: "ARCHIVED" }],
+      },
+    }));
+    state.accountId = "custom";
+    state.folderId = "INBOX";
+    state.allInbox = false;
+    state.outbox = false;
+    state.query = "";
+    state.emails = [];
+    state.email = null;
+    state.selectedIds = [];
+    state.prefs.gmailOpen = true;
+    state.prefs.outlookOpen = true;
+    state.prefs.collapsedFolders = {};
+    renderAccounts(); renderList(); renderReader();
+  })()`);
+  const chipNames = () => evaluate("[...document.querySelectorAll('#list-chips button')].map(button => button.textContent)");
+  assert.deepEqual(await chipNames(), ["Inbox", "Sent", "Drafts", "Unread"]);
+  for (const profile of ["custom", "gmail", "outlook"]) {
+    assert.deepEqual(await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('button.folder[data-account-id="${profile}"]')];
+      return rows.map(row => row.querySelector('.folder-icon').textContent);
+    })()`), ["📥", "📤", "📤", "📤", "📝", "✉️", "📦"]);
+  }
+  await clickSelector('button.folder[data-account-id="outlook"][data-folder-id="Sent Items"]');
+  assert.deepEqual(await chipNames(), ["Inbox", "Sent", "Drafts", "Unread"]);
+  assert.equal(await evaluate("document.querySelector('#list-chips [aria-current=true]').textContent"), "Sent");
+  assert.equal(await evaluate("document.getElementById('list-title').classList.contains('sr')"), true);
+  await clickSelector("#list-chips [aria-current=true]");
+  assert.equal(await evaluate("state.accountId + ':' + state.folderId"), "outlook:Sent Items");
+  await evaluate("document.querySelector('#list-chips [aria-current=true]').focus()");
+  await pressKey("Enter", "Enter", 13);
+  assert.equal(await evaluate("state.accountId + ':' + state.folderId"), "outlook:Sent Items");
+  await cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 1100, deviceScaleFactor: 1, mobile: false });
+  for (const theme of ["light", "dark"]) {
+    await evaluate(`document.documentElement.dataset.theme = "${theme}"`);
+    await shot("folder-chips-" + theme);
+  }
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 900, height: 760, deviceScaleFactor: 1, mobile: false });
+  assert.deepEqual(await chipNames(), ["Inbox", "Sent", "Drafts", "Unread"]);
+  const chipFit = await evaluate(`(() => {
+    const row = document.getElementById("list-chips");
+    return { scrollWidth: row.scrollWidth, clientWidth: row.clientWidth };
+  })()`);
+  assert.ok(chipFit.scrollWidth <= chipFit.clientWidth + 1, JSON.stringify(chipFit));
+  await shot("folder-chips-narrow-dark");
+  await clickSelector("button.all-inbox");
+  assert.equal(await evaluate("document.getElementById('list-chips').hidden"), true);
+  await evaluate("showFeatures()");
+  const folderFeature = await evaluate(`(() => {
+    const cards = [...document.querySelectorAll("#features-catalog .feature-card")];
+    return cards.find(card => card.querySelector("h4").textContent === "Folder chips and sidebar icons").textContent;
+  })()`);
+  assert.match(folderFeature, /one canonical name per enabled role/);
+  assert.match(folderFeature, /cross-account Sent, Drafts, Trash, Junk and Archived chips are unavailable/);
+  assert.equal(await evaluate("document.getElementById('features-pane-catalog').hidden"), false);
+  await shot("folder-chips-features");
   assert.deepEqual(errors, []);
   fs.writeFileSync(path.join(output, "folder-sidebar-results.json"), JSON.stringify({
     output,
@@ -551,6 +622,10 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       "mail-row-hover-actions.png",
       "folder-filter-and-hover.png",
       "folder-collapse-all.png",
+      "folder-chips-light.png",
+      "folder-chips-dark.png",
+      "folder-chips-narrow-dark.png",
+      "folder-chips-features.png",
     ],
     errors,
   }, null, 2));

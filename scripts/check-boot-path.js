@@ -68,6 +68,7 @@ const syntax = [
   "scripts/check-oauth-graph-regressions.js",
   "scripts/check-mail-reader.js",
   "scripts/check-mail-review-regressions.js",
+  "scripts/check-folder-chips.js",
   "scripts/check-confirmed-identity.js",
   "scripts/check-move-calendar-patches.js",
   "scripts/check-draft-scheduled-recovery.js",
@@ -186,6 +187,10 @@ assert.strictEqual(mailColumns.status, 0, "mail columns failed");
 const mailView = spawnSync(process.execPath, [path.join(__dirname, "check-mail-view.js")], { stdio: "inherit", timeout: 30000 });
 assert.ifError(mailView.error);
 assert.strictEqual(mailView.status, 0, "mail reading layouts failed");
+
+const folderChips = spawnSync(process.execPath, [path.join(__dirname, "check-folder-chips.js")], { stdio: "inherit", timeout: 30000 });
+assert.ifError(folderChips.error);
+assert.strictEqual(folderChips.status, 0, "folder chips and sidebar icons failed");
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
 for (const name of ["check-mail-shortcut-target.js", "check-mail-status-columns.js", "check-bot-mail-actions.js", "check-bot-send-confirm-ui.js", "check-mail-list-layout.js", "check-google-onboarding-startup.js", "check-google-onboarding.js", "check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-responsive-attachments.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-startup-preparation.js", "check-startup-upgrade.js", "check-keychain-reads.js", "check-outbox.js", "check-agent-todos.js", "check-agent-card-view.js", "check-agent-learning.js"]) {
@@ -1192,16 +1197,19 @@ assert.strictEqual(paneWidth(200, -80, 140, 400), 140);
 assert.strictEqual(paneWidth(200, 300, 140, 400), 400);
 assert.strictEqual(paneWidth(200, 20, 140, 400), 220);
 
-const folderIcon = extractFunction(appJs, "folderIcon");
+const folderIcon = loadFunctions(appJs, ["canonicalFolderRole", "folderIcon"]).folderIcon;
 assert.strictEqual(folderIcon("all"), "📨");
 assert.strictEqual(folderIcon("inbox"), "📥");
 assert.strictEqual(folderIcon("starred"), "⭐");
 assert.strictEqual(folderIcon("unread"), "✉️");
 assert.strictEqual(folderIcon("archive"), "📦");
 assert.strictEqual(folderIcon("deleteditems"), "🗑️");
+assert.strictEqual(folderIcon(" Sent Items "), "📤");
+assert.strictEqual(folderIcon("ARCHIVED"), "📦");
+assert.strictEqual(folderIcon("junk_email"), "🚫");
 assert.strictEqual(folderIcon(null), "📁");
 
-const chipFolders = extractFunction(appJs, "chipFolders");
+const chipFolders = loadFunctions(appJs, ["canonicalFolderRole", "chipFolders"]).chipFolders;
 const folderProvider = extractFunction(appJs, "folderProvider");
 const providerExpanded = extractFunction(appJs, "providerExpanded");
 const opensAiWrite = extractFunction(appJs, "opensAiWrite");
@@ -1229,7 +1237,7 @@ const outlookAccount = {
   },
 };
 assert.deepStrictEqual(chipFolders(gmailAccount).map((folder) => folder.wellKnownName), ["inbox", "sentitems", "drafts"]);
-assert.deepStrictEqual(chipFolders(outlookAccount).map((folder) => folder.wellKnownName), ["inbox", "drafts", "sentitems"]);
+assert.deepStrictEqual(chipFolders(outlookAccount).map((folder) => folder.wellKnownName), ["inbox", "sentitems", "drafts"]);
 assert.deepStrictEqual(chipFolders(null), []);
 assert.deepStrictEqual(chipFolders({ folders: { primary: [], more: [{ id: "in", wellKnownName: "inbox", chip: true }] } }).map((folder) => folder.id), ["in"]);
 assert.deepStrictEqual(chipFolders({ folders: { primary: [{ id: "x", wellKnownName: "archive" }] } }), []);
