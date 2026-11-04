@@ -580,7 +580,7 @@ function cachedList(params) {
   return { ...payload, sync: publicSync(params) };
 }
 
-async function secretFor(account) {
+async function secretFor(account, { forceRefresh = false } = {}) {
   account = bindAccount(account);
   const revision = secrets.revision(account.id);
   function assertCurrent(expectedRevision) {
@@ -604,7 +604,7 @@ async function secretFor(account) {
     if (!oauthConfig.hasPurposeScopes(grant.grantedScopes || "", "google", "imap")) throw Object.assign(new Error("Gmail API mail permission is missing. Reconnect Google; cached work was retained."), { code: "scope_missing" });
   }
   let result;
-  try { result = await oauth.accessTokenFor(account, stored, "imap"); } catch (error) {
+  try { result = await oauth.accessTokenFor(account, stored, "imap", { forceRefresh }); } catch (error) {
     // A rejected renewal may belong to a grant replaced during the request.
     // Do not publish its sign-in failure against the new connection.
     assertCurrent(revision);
@@ -891,6 +891,28 @@ function withSyncSecret(account, secret, work) {
       throw error;
     }
   });
+}
+
+// Call inside the mailbox lane, immediately before each new connection. Do not
+// retain a token across queue waits or folder-walk yields (including sleep).
+async function withSyncClient(account, work) {
+  let password = await secretFor(account);
+  const revision = secrets.revision(account.id);
+  try {
+    return await remote.withClient(account, password, client => withSyncSecret(account, password, () => work(client)), {
+      refreshAuthentication: account.auth_kind === "oauth2" && account.profile === "outlook" ? async () => {
+        assertAccountCurrent(account);
+        if (secrets.revision(account.id) !== revision) {
+          throw Object.assign(new Error("This mailbox connection changed. Retry with the current connection."), { code: "conflict" });
+        }
+        password = await secretFor(account, { forceRefresh: true });
+        return password;
+      } : undefined,
+    });
+  } catch (error) {
+    if (error && typeof error === "object") syncErrorText.set(error, remote.explain(error, password, account));
+    throw error;
+  }
 }
 
 function explainSyncError(account, error, secret) {
@@ -1209,8 +1231,7 @@ async function syncFolderPath(account, folderPath) {
 async function syncFolderPathAdmitted(account, folderPath) {
   return exclusive(account.id, async () => {
     assertAccountCurrent(account);
-    const password = await secretFor(account);
-    const result = await withSyncSecret(account, password, () => remote.withClient(account, password, (client) => syncFolderPolicy(client, account, folderPath)));
+    const result = await withSyncClient(account, (client) => syncFolderPolicy(client, account, folderPath));
     assertAccountCurrent(account);
     finishSync([folderPath], result && result.paused, result && result.bootstrapped, account.id);
     return result;
@@ -1263,7 +1284,6 @@ async function syncAccountAdmitted(account, options) {
     emitSync("paused", { accountId: account.id, message: syncGates.get(account.id)?.message || "Paused for rate limit" });
     return;
   }
-  const password = await secretFor(account);
   const background = !!(options && options.background);
   const deadline = Date.now() + tickMs();
   // One pass keeps its folder list and visited set across yields. The cursor
@@ -1291,7 +1311,7 @@ async function syncAccountAdmitted(account, options) {
         yielded = true;
         return;
       }
-      await withSyncSecret(account, password, () => remote.withClient(account, password, async (client) => {
+      await withSyncClient(account, async (client) => {
         if (!jobs) {
           emitSync("syncing", { accountId: account.id, phase: "listing" });
           const listed = await remote.listFolderRecords(client);
@@ -1329,7 +1349,7 @@ async function syncAccountAdmitted(account, options) {
         if (background && plan) {
           backgroundCursor.set(account.id, pausedPath ? plan.cursorFor(pausedPath) : plan.nextCursor(visited));
         }
-      }));
+      });
       const passDone = !!(jobs && jobs.length && visited.size === jobs.length && !incomplete);
       assertAccountCurrent(account);
       finishSync(jobs || [], paused, passDone, account.id);
