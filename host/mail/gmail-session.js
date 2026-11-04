@@ -27,7 +27,7 @@ function parts(root, malformed = () => {}) {
 }
 function stringAddresses(value) { return (value?.value || []).map(row => row.name ? `${row.name} <${row.address}>` : row.address).filter(Boolean); }
 
-function createSession(account, token, { api, check = () => {}, signal } = {}) {
+function createSession(account, token, { api, check = () => {}, signal, accessToken } = {}) {
   const incarnation = account.gmail_generation;
   function alive() {
     signal?.throwIfAborted();
@@ -35,7 +35,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     const current = db.accountById(account.id);
     if (!migrated(current) || current.gmail_generation !== incarnation) throw Object.assign(new Error("This Gmail connection changed. Start the action again."), { code: "account_removed", operationIssued: false });
   }
-  api ||= createGmailMailApi({ accessToken: async () => token, check: alive, signal, accountKey: account.id });
+  api ||= createGmailMailApi({ accessToken: accessToken || (async () => token), refreshAccessToken: accessToken ? rejectedToken => accessToken({ forceRefresh: true, rejectedToken }) : undefined, check: alive, signal, accountKey: account.id });
   const rfcChecks = new Map();
   async function folders() {
     alive();
@@ -130,7 +130,9 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     }
     alive();
     const presented = textEncoding.presentMessage({ subject: parsed.subject || "", htmlBody: html, textBody: body.text.join("\n") || null });
-    let date = parsed.date instanceof Date && Number.isFinite(parsed.date.getTime()) ? parsed.date : new Date(Number(data.internalDate) || 0);
+    const headerDate = parsed.date instanceof Date && Number.isFinite(parsed.date.getTime());
+    const receivedDate = Number(data.internalDate) > 0 && Number.isFinite(new Date(Number(data.internalDate)).getTime());
+    let date = headerDate ? parsed.date : new Date(receivedDate ? Number(data.internalDate) : 0);
     if (!Number.isFinite(date.getTime())) { date = new Date(0); warn(); }
     const labels = data.labelIds || [];
     const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
@@ -141,7 +143,8 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
       fromAddress: parsed.from?.value?.[0]?.address || "",
       fromDisplayName: parsed.from?.value?.[0]?.name || "",
       to: stringAddresses(parsed.to), cc: stringAddresses(parsed.cc), bcc: stringAddresses(parsed.bcc), recipientHeaders: recipientHeaders(headerBytes, parsed.replyTo),
-      date: date.toISOString(), listSortTs: date.getTime(), snippet: data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ").slice(0, 180),
+      date: date.toISOString(), dateSource: headerDate ? "header" : receivedDate ? "received" : "unknown",
+      listSortTs: date.getTime(), snippet: data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ").slice(0, 180),
       unread: labels.includes("UNREAD"), starred: labels.includes("STARRED"), isDraft: labels.includes("DRAFT"),
       replied: null, forwarded: null, // Gmail labels expose neither state.
       hasAttachments: attachments.some(row => !row.isInlineFromApi || !row.mimeType.startsWith("image/")), attachments,

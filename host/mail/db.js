@@ -260,6 +260,9 @@ function migrate() {
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "body_warning")) {
     run("ALTER TABLE messages ADD COLUMN body_warning TEXT");
   }
+  if (!all("PRAGMA table_info(messages)").some(row => row.name === "date_source")) {
+    run("ALTER TABLE messages ADD COLUMN date_source TEXT");
+  }
   for (const column of ["body_retry_blocked", "body_retry_after"]) {
     if (!all("PRAGMA table_info(messages)").some(row => row.name === column)) run(`ALTER TABLE messages ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
   }
@@ -460,6 +463,7 @@ function migrate() {
   }
   ensureSummarySchema();
   ensureSearchSchema();
+  require("../timeline/storage").migrate({ run, all });
 }
 
 function ensureSummarySchema() {
@@ -666,6 +670,7 @@ function clearAuthError(id) {
 
 function removeAccount(id) {
   transaction(() => {
+    module.exports.timeline.removeAccount(id);
     forgetIds(all("SELECT id FROM messages WHERE account_id = ?", [id]));
     run("DELETE FROM messages WHERE account_id = ?", [id]);
     run("DELETE FROM mail_folder_counts WHERE account_id = ?", [id]);
@@ -1178,7 +1183,7 @@ function inspectSearchTokens(value) {
   return { tokens, overlong };
 }
 
-function searchMessages(options, { headersOnly = false } = {}) {
+function searchMessages(options, { headersOnly = false, timelineLimit = false } = {}) {
   if (!db) return [];
   const query = options || {};
   if (query.accountRequired && !query.accountId) return [];
@@ -1218,7 +1223,7 @@ function searchMessages(options, { headersOnly = false } = {}) {
     where = " WHERE m.account_id = ?";
     params.push(query.accountId);
   }
-  params.push(searchResultLimit(query.limit));
+  params.push(timelineLimit ? 1001 : searchResultLimit(query.limit));
   return all(
     `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m JOIN accounts connected ON connected.id = m.account_id
      ${joins.join("\n")}
@@ -1345,6 +1350,7 @@ function applyFolderSync(accountId, folderPath, report) {
       if (reindex) indexText(id);
       updateChanged("messages", require("./reply-forward-state").patch(message), "id = ?", [id]);
       updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
+      updateChanged("messages", { date_source: message.dateSource || null }, "id = ?", [id]);
     }
     for (const flags of Array.isArray(report.flags) ? report.flags : []) {
       const row = get("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
@@ -1547,6 +1553,7 @@ function insertMessageRecord(row) {
       ]
     );
     if (row.bodyWarning) run("UPDATE messages SET body_warning = ? WHERE id = ?", [row.bodyWarning, row.id]);
+    if (row.dateSource) run("UPDATE messages SET date_source = ? WHERE id = ?", [row.dateSource, row.id]);
     updateChanged("messages", require("./reply-forward-state").patch(row), "id = ?", [row.id]);
     indexText(row.id);
 }
@@ -1790,7 +1797,7 @@ function resolveScope(query) {
 // explicit projection keeps future body/blob columns out of metadata queries.
 const BODY_SPACE = "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)";
 const METADATA_COLUMNS = ["id", "account_id", "folder_path", "uid", "uid_validity", "thread_id", "rfc_message_id", "in_reply_to", "subject", "snippet",
-  "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "list_sort_ts", "unread", "starred", "is_draft",
+  "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "date_source", "list_sort_ts", "unread", "starred", "is_draft",
   "has_attachments", "attachments_json", "body_complete", "body_warning", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id", "replied", "forwarded"];
 function metadataColumns(table) {
   return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
@@ -2630,7 +2637,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
           from_address: senderHeader.bareAddress(input.fromAddress) || senderHeader.bareAddress(input.from) || null,
           to_json: JSON.stringify(input.to || []), cc_json: JSON.stringify(input.cc || []), bcc_json: JSON.stringify(input.bcc || []),
           rfc_message_id: input.rfcMessageId || null, in_reply_to: input.inReplyTo || null,
-          date_iso: input.date, list_sort_ts: input.listSortTs, unread: input.unread ? 1 : 0, starred: input.starred ? 1 : 0,
+          date_iso: input.date, date_source: input.dateSource || null, list_sort_ts: input.listSortTs, unread: input.unread ? 1 : 0, starred: input.starred ? 1 : 0,
           is_draft: input.isDraft ? 1 : 0, html_body: input.htmlBody || null, text_body: input.textBody || null,
           has_attachments: input.hasAttachments ? 1 : 0, attachments_json: JSON.stringify(input.attachments || []),
           body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}),
@@ -2746,6 +2753,10 @@ function gmailVerifyPage(accountId, folderPath, beforeUid = 0) {
 }
 
 module.exports = {
+  timeline: require("../timeline/storage").createStore({ run, get, all, transaction }),
+  timelineSearch: query => searchMessages(query, { headersOnly: true, timelineLimit: true }),
+  timelineMessage: id => get(`SELECT ${metadataColumns("messages")} FROM messages WHERE id = ?`, [id]),
+  timelineThread: (accountId, threadId) => all(`SELECT ${metadataColumns("messages")} FROM messages WHERE account_id = ? AND thread_id = ? ORDER BY list_sort_ts ASC, id ASC LIMIT 1001`, [accountId, threadId]),
   notificationState,
   enableGmail, setMailTransport, gmailMigrationBlockers, gmailMap, gmailLabelMemberships, rememberGmail, gmailAlias, bindGmailAlias,
   gmailLegacy, applyGmailMessage, gmailCopies, pruneGmailCopies, gmailSyncState, gmailVerifyPage,

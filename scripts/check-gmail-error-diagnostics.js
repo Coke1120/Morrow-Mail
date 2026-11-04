@@ -264,15 +264,33 @@ test("engine sync activity, IPC, Debug log and actual DOM keep safe details with
         const credential = JSON.stringify({ provider: "google", purpose: "imap", googleClientId: config.credentials("google").clientId,
           accessToken: "PRIVATE_TOKEN", refreshToken: "PRIVATE_REFRESH", expiresAt: Date.now() + 3600000, grantedScopes: config.SCOPES.google });
         secrets.setPassword(accountId, credential);
-        global.fetch = async () => reply(legacy("rateLimitExceeded"), item.status);
+        let renewals = 0;
+        global.fetch = async url => {
+          if (url === config.ENDPOINTS.google.token) {
+            renewals++;
+            return reply({ access_token: "PRIVATE_TOKEN", expires_in: 3600 }, 200);
+          }
+          return reply(legacy("rateLimitExceeded"), item.status);
+        };
+        const assertCredential = () => {
+          if (item.status !== 401) assert.equal(secrets.getPassword(accountId), credential);
+          else {
+            const saved = JSON.parse(secrets.getPassword(accountId));
+            assert.equal(saved.accessToken, "PRIVATE_TOKEN");
+            assert.equal(saved.refreshToken, "PRIVATE_REFRESH");
+            assert.equal(saved.googleClientId, config.credentials("google").clientId);
+            assert.equal(saved.grantedScopes, config.SCOPES.google);
+          }
+        };
         const sender = await answer("mail:searchSender", { address: "sender@example.com", retryAccountId: accountId });
         assert.equal(sender.success, true, JSON.stringify(sender));
         const row = sender.data.accounts.find(account => account.accountId === accountId);
         assert.equal(row.status, item.sender, JSON.stringify(row));
         assert.match(row.message, /rateLimitExceeded/);
         assert.equal(row.message.includes(mailbox), false);
-        assert.equal(secrets.getPassword(accountId), credential);
+        assertCredential();
         if (item.gate) engine.syncGates.delete(accountId);
+        assert.equal(renewals, item.status === 401 ? 1 : 0);
         const before = timers.length;
         await answer("mail:listFromNetwork", { accountId, folderId });
         const activity = answer("mail:getSyncStatus", { accountId, folderId }).data;
@@ -284,7 +302,8 @@ test("engine sync activity, IPC, Debug log and actual DOM keep safe details with
         assert.equal(!!db.accountById(accountId).auth_error, item.auth);
         assert.equal(engine.syncGates.has(accountId), item.gate);
         assert.equal(timers.length, before + (item.retry ? 1 : 0));
-        assert.equal(secrets.getPassword(accountId), credential);
+        assertCredential();
+        assert.equal(renewals, item.status === 401 ? 2 : 0, "each rejected read can refresh only once");
         assertDebugOmitsMailbox();
         assert.ok(debugText().includes(activity.message));
       }

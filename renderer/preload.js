@@ -1,6 +1,14 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const INVOKE = [
+  "timeline:prepare",
+  "timeline:download",
+  "timeline:generate",
+  "timeline:cancel",
+  "timeline:list",
+  "timeline:get",
+  "timeline:delete",
+  "timeline:export",
   "app:getVersion",
   "host:updateGetState",
   "host:updateCheck",
@@ -232,6 +240,7 @@ const INVOKE = [
 ];
 
 const EVENTS = [
+  "timeline:progress",
   "host:updatePrepareForInstall",
   "host:updateResume",
   "host:updateState",

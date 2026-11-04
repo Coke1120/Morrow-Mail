@@ -19,6 +19,14 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+The reader also has Message / Timeline tabs. Selected-mail timeline generation is
+an explicit reviewed action, separate from normal open-and-mark-read behavior.
+In Separate window layout, Timeline appears below the list while open; Message
+restores the full list without changing the saved layout or mail-selection behavior.
+Saved artifacts and reviewed JSON, Markdown and isolated PDF exports stay local;
+no scheduled generation or URL delivery is available. See [the public format and
+privacy boundaries](TIMELINE_FORMAT.md).
+
 Settings → Mail & Sync controls new-email system notifications on Windows/macOS.
 They default on with sender/content hidden, and run only while the app is running,
 awake and syncing. Initial/history/restart backlog stays quiet; provider arrival
