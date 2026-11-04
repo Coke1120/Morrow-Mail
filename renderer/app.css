@@ -6104,3 +6104,19 @@ pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
 .mail-column-menu button { display: block; width: 100%; min-height: 36px; padding: 6px 10px 6px 30px; position: relative; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; font-size: 13px; }
 .mail-column-menu button:hover, .mail-column-menu button:focus-visible { background: var(--hover); }
 .mail-column-menu [aria-checked="true"]::before { content: ""; position: absolute; left: 11px; top: 15px; width: 8px; height: 4px; border-left: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); }
+
+/* Tap/click help remains available to keyboard and touch users. */
+#brain-compose-form .settings-section-heading,
+#brain-compose-form .settings-field-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+#brain-compose-form .settings-section-heading { justify-content: space-between; }
+#brain-compose-form .settings-section-heading h4,
+#brain-compose-form .settings-field-heading label { margin: 0; }
+#brain-compose-form .settings-help { min-width: 44px; min-height: 44px; padding: 8px; border-radius: 50%; font-weight: 700; }
+.settings-help-popover {
+  box-sizing: border-box; width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+  margin: auto; padding: 20px; overflow: auto; border: 1px solid var(--line); border-radius: 12px;
+  color: var(--ink); background: var(--paper); line-height: 1.6;
+}
+.settings-help-popover button { min-height: 44px; }
+.settings-help-popover :focus-visible,
+#brain-compose-form .settings-help:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 3px; }

@@ -496,11 +496,11 @@ test("Features and Settings help render the same explicit consent prerequisites"
   assert.match(f.get("features-catalog").textContent, /Save & review connection saves without approving/);
   assert.match(f.get("features-catalog").textContent, /Reopening Settings preserves unsaved connection edits and requires a fresh permission choice/);
   assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>Review the saved connection[\s\S]*?Background use is optional/);
-  assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>[\s\S]*If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step/);
+  assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>[\s\S]*If Allow is unavailable, follow the status message/);
   f.assertNoModelCalls();
 });
 
-test("Settings and Setup keep material disclosure outside accordions, after connection controls, with accessible checkbox descriptions", async () => {
+test("Settings and Setup keep material disclosure outside the details dialog, after connection controls, with accessible checkbox descriptions", async () => {
   const { JSDOM } = require("jsdom");
   for (const filename of ["renderer/index.html", "host/ai-setup.html"]) {
     const dom = new JSDOM(source(filename), { runScripts: "outside-only" });
@@ -512,18 +512,19 @@ test("Settings and Setup keep material disclosure outside accordions, after conn
     const get = id => document.getElementById(id), permission = f.consent.status();
     assert.ok(get(filename.startsWith("host") ? "save" : "ai-save").compareDocumentPosition(get("ai-consent-title")) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
     for (const id of ["ai-consent-destination", "ai-consent-locality", "ai-consent-data", "ai-consent-purposes", "ai-consent-background-data", "ai-consent-terms", "ai-consent-revocation"]) {
-      assert.equal(get(id).closest("details"), null, id + " must stay visible before consent");
+      assert.notEqual(get(id).closest("dialog")?.id, "ai-consent-details", id + " must stay visible before consent");
       assert.ok(get(id).textContent.length, id + " must contain material disclosure");
     }
     assert.equal(get("ai-consent-data").textContent, permission.dataSummary);
     assert.equal(get("ai-consent-full-data").textContent, permission.disclosure);
+    assert.equal(get("ai-consent-full-purposes").textContent, permission.purposes);
     assert.equal(get("ai-consent-full-background").textContent, permission.backgroundDisclosure);
     for (const category of ["sender addresses", "subjects", "dates", "snippets", "metadata", "selected message text", "quoted history", "drafts", "signatures", "selections", "instructions", "Brain profile", "identity", "categories", "writing rules", "Agent notes", "recent conversation", "event titles", "times", "locations", "Attachment files are excluded"]) {
       assert.ok(get("ai-consent-data").textContent.includes(category), category + " must stay in the visible data summary");
     }
     for (const purpose of ["translation", "reply suggestions", "writing", "profile learning", "triage", "skills", "answers"]) assert.ok(get("ai-consent-purposes").textContent.includes(purpose));
     for (const task of ["profile refresh", "opening Brain", "triage", "reply suggestions", "scheduled skills", "without another AI button press"]) assert.ok(get("ai-consent-background-data").textContent.includes(task));
-    assert.equal(get("ai-consent-full-data").closest("details").open, false);
+    assert.equal(get("ai-consent-full-data").closest("dialog").open, false);
     for (const id of ["ai-consent-manual", "ai-consent-background", "ai-consent-allow"]) {
       const control = get(id);
       for (const description of control.getAttribute("aria-describedby").split(" ")) assert.ok(get(description));
