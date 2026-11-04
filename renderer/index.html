@@ -1299,7 +1299,7 @@
             <p id="ai-dirty" class="hint settings-dirty settings-full-width" role="status" hidden></p>
             <p id="ai-status" class="settings-full-width" role="status"></p>
             <p class="hint settings-full-width">Fetch models reads the catalog using your credentials, without mail context. Test sends a short AI request after permission and uses provider usage.</p>
-            <p class="hint settings-full-width" id="ai-consent-help">Review the saved connection in AI data permission. Allow selected AI data use requires a ready saved connection and the explicit-action checkbox. If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step. Background use is optional and requires its separate checkbox. Cancel / revoke stops pending and future AI use.</p>
+            <p class="hint settings-full-width" id="ai-consent-help">Review the saved connection and choose AI data permission below. Background use is optional. If Allow is unavailable, follow the status message.</p>
           </div>
           <div id="ai-data-settings"></div>
           <details id="ai-connection-details" class="settings-disclosure"><summary>Connection details</summary>
@@ -1401,12 +1401,19 @@
             <h3 id="settings-compose-title">How you look when sending</h3>
             <p class="hint" id="brain-compose-basic">Most people only need a display name.</p>
             <form id="brain-compose-form">
-              <label for="brain-compose-account">Compose mailbox</label>
+              <div class="settings-field-heading"><label for="brain-compose-account">Compose mailbox</label><button type="button" class="ghost settings-help" popovertarget="brain-compose-account-help" aria-label="Help: Compose mailbox" aria-controls="brain-compose-account-help">?</button></div>
+              <div id="brain-compose-account-help" class="settings-help-popover" popover role="note"><strong>Compose mailbox</strong><p>These compose defaults apply to the mailbox selected here. Choose a mailbox before editing its sender names, preferred From address or signatures.</p><button type="button" class="ghost" popovertarget="brain-compose-account-help" popovertargetaction="hide">Close help</button></div>
               <select id="brain-compose-account" disabled></select>
-              <h4>Sender identities</h4>
+              <div class="settings-section-heading"><h4>Sender identities</h4>
+                <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                  Refresh From addresses
+                </button>
+              </div>
               <p id="brain-compose-identities" class="hint"></p>
               <div id="brain-compose-senders" aria-label="Sender identities"></div>
-              <label for="brain-compose-from">Preferred From for new mail (optional)</label>
+              <div class="settings-field-heading"><label for="brain-compose-from">Preferred From for new mail (optional)</label><button type="button" class="ghost settings-help" popovertarget="brain-compose-from-help" aria-label="Help: Preferred From for new mail (optional)" aria-controls="brain-compose-from-help">?</button></div>
+              <div id="brain-compose-from-help" class="settings-help-popover" popover role="note"><strong>Preferred From for new mail (optional)</strong><p>The default sending address for new messages from this mailbox. Leave it blank to use the provider’s preferred address, or the mailbox address. You can change From while composing. Replies and forwards use the address that received the message when available. Use an address this mailbox is authorized to send from; adding it here does not grant send-as permission.</p><button type="button" class="ghost" popovertarget="brain-compose-from-help" popovertargetaction="hide">Close help</button></div>
               <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
               <div class="row">
                 <button type="button" class="ghost" id="brain-compose-signatures">Signatures</button>
@@ -1420,7 +1427,8 @@
                 <textarea id="brain-compose-bcc" rows="4" placeholder="@example.org = records@example.org, audit@example.com" spellcheck="false" disabled></textarea>
                 <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
                 <textarea id="brain-compose-aliases" rows="3" placeholder="ada@example.com&#10;ada@example.org = example.com" spellcheck="false" disabled></textarea>
-                <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
+                <div class="settings-field-heading"><label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label><button type="button" class="ghost settings-help" popovertarget="brain-compose-default-domain-help" aria-label="Help: Fallback CC domain for new mail (optional)" aria-controls="brain-compose-default-domain-help">?</button></div>
+              <div id="brain-compose-default-domain-help" class="settings-help-popover" popover role="note"><strong>Fallback CC domain for new mail (optional)</strong><p>If the From domain has no CC rule, use the CC rule for this domain instead. This does not change the From address, BCC rules or signature.</p><button type="button" class="ghost" popovertarget="brain-compose-default-domain-help" popovertargetaction="hide">Close help</button></div>
                 <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
               </details>
               <details class="settings-disclosure" id="brain-compose-how">
@@ -1431,10 +1439,7 @@
               </details>
               <div class="row">
                 <button type="submit" class="primary" disabled>Save compose defaults</button>
-                <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                  Refresh From addresses
-                </button>
+
               </div>
               <p id="brain-compose-status" class="hint" role="status" aria-live="polite"></p>
             </form>

@@ -42,8 +42,8 @@
     </section>`;
   const consentMarkup = `
     <section class="ai-consent" aria-labelledby="ai-consent-title">
-      <h3 id="ai-consent-title">AI data permission</h3>
-      <p class="hint">Save connection → Review destination → Choose permission. Saving or signing in does not allow AI data use.</p>
+      <div class="ai-consent-heading"><h3 id="ai-consent-title">AI data permission</h3><button id="ai-consent-details-open" type="button" class="ghost" aria-haspopup="dialog" aria-controls="ai-consent-details">Privacy details…</button></div>
+      <p class="hint">Saving or signing in does not allow AI data use. Review what is shared, then choose below.</p>
       <p id="ai-consent-destination" class="ai-consent-target"></p>
       <p id="ai-consent-locality" class="hint"></p>
       <p id="ai-consent-data"></p>
@@ -64,17 +64,40 @@
         <button id="ai-consent-revoke" type="button" class="ghost">Cancel / revoke</button>
       </div>
       <p id="ai-consent-status" role="status" aria-live="polite"></p>
-      <details class="ai-consent-details">
-        <summary>Full disclosure and privacy details</summary>
+      <dialog id="ai-consent-details" class="ai-consent-modal" aria-labelledby="ai-consent-details-title">
+        <div class="ai-consent-heading"><h3 id="ai-consent-details-title">AI data use and privacy</h3><button id="ai-consent-details-close" type="button" class="ghost" autofocus>Close details</button></div>
+        <p>Reading these details does not enable AI. Choose permission in the settings behind this dialog.</p>
         <p id="ai-consent-full-data" class="hint"></p>
+        <p id="ai-consent-full-purposes" class="hint"></p>
         <p id="ai-consent-full-background" class="hint"></p>
         <button id="ai-consent-refresh" type="button" class="ghost">Review saved connection again</button>
         <p><a href="https://hwl-hk.com/en/morrow-mail/privacy" target="_blank" rel="noreferrer">Morrow Mail privacy policy</a></p>
-      </details>
+      </dialog>
     </section>`;
   if (consentContainer === container) container.innerHTML += consentMarkup;
   else consentContainer.innerHTML = consentMarkup;
   const $ = id => container.querySelector(`#${id}`) || consentContainer.querySelector(`#${id}`);
+  const details = $("ai-consent-details");
+  const closeDetails = () => { if (details.open) details.close(); };
+  $("ai-consent-details-open").addEventListener("click", () => {
+    if (!disposed && !details.open) details.showModal();
+  });
+  $("ai-consent-details-close").addEventListener("click", closeDetails);
+  details.addEventListener("close", () => {
+    if (!disposed) $("ai-consent-details-open").focus();
+  });
+  details.addEventListener("keydown", event => {
+    if (event.key !== "Tab") return;
+    const controls = [...details.querySelectorAll('button:not(:disabled), a[href]')];
+    const first = controls[0], last = controls[controls.length - 1];
+    const active = details.ownerDocument.activeElement;
+    if ((event.shiftKey && active === first) || (!event.shiftKey && active === last)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    }
+  });
+  // The nested native dialog owns Escape; leave the parent Settings open.
+  details.addEventListener("cancel", event => { event.preventDefault(); event.stopPropagation(); closeDetails(); });
   let timer;
   let snapshot = {};
   let selectedModel = "";
@@ -130,7 +153,10 @@
     $("ai-consent-destination").textContent = value?.destination ? `Saved destination: ${value.label} · ${value.destination} · model ${value.model || "not selected"}` : "Save and review an AI connection first.";
     $("ai-consent-locality").textContent = value?.locality || "";
     $("ai-consent-data").textContent = value?.dataSummary || value?.disclosure || "";
-    $("ai-consent-purposes").textContent = value?.purposes || "";
+    // The first sentence lists purposes; the repeated Timeline scope is already
+    // visible in dataSummary. Keep the complete host disclosure in the dialog.
+    $("ai-consent-purposes").textContent = (value?.purposes || "").replace(/\. Timelines send[\s\S]*$/, ".");
+    $("ai-consent-full-purposes").textContent = value?.purposes || "";
     $("ai-consent-terms").textContent = value?.providerTerms || "";
     $("ai-consent-background-data").textContent = value?.backgroundSummary || value?.backgroundDisclosure || "";
     $("ai-consent-full-data").textContent = value?.disclosure || "";
@@ -385,6 +411,7 @@
     },
     dispose: () => {
       disposed = true;
+      closeDetails();
       actionRevision++; statusRevision++; modelRevision++;
       consentRevision++; consentBusy = false; consentLoading = false; consentRefreshPending = false; permission = null;
       $("ai-consent-manual").checked = false;
