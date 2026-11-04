@@ -53,6 +53,25 @@
     return normalize(value);
   }
 
+  // Explicit per-mailbox choices override the legacy provider defaults.
+  function normalizeAccountExpanded(value) {
+    const out = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+    for (const key of Object.keys(value).slice(-MAX_ACCOUNTS)) {
+      const id = cleanId(key, MAX_ACCOUNT);
+      if (id && typeof value[key] === "boolean") out[id] = value[key];
+    }
+    return out;
+  }
+
+  function setAccountExpanded(store, change) {
+    const id = change && cleanId(change.accountId, MAX_ACCOUNT);
+    if (!id || typeof change.expanded !== "boolean") {
+      throw new Error("Account expansion requires a mailbox id and an expanded boolean.");
+    }
+    return normalizeAccountExpanded(Object.assign(normalizeAccountExpanded(store), { [id]: change.expanded }));
+  }
+
   function idsFor(store, accountId) {
     const map = normalize(store);
     const id = cleanId(String(accountId || ""), MAX_ACCOUNT);
@@ -163,6 +182,8 @@
     ALL_ACCOUNT_MAIL_ACCOUNT: ALL_ACCOUNT_MAIL_ACCOUNT,
     ALL_ACCOUNT_MAIL_ID: ALL_ACCOUNT_MAIL_ID,
     normalize: normalize,
+    normalizeAccountExpanded: normalizeAccountExpanded,
+    setAccountExpanded: setAccountExpanded,
     cast: cast,
     idsFor: idsFor,
     allAccountMailCollapsed: allAccountMailCollapsed,

@@ -3458,6 +3458,7 @@ button.account {
 }
 
 button.account { display: block; width: 100%; border-radius: 6px; }
+button.account .folder-twist-mark { margin-right: 4px; vertical-align: middle; }
 
 button.account:hover { background: rgba(255, 255, 255, 0.1); }
 

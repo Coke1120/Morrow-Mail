@@ -57,10 +57,16 @@ const fixtureMessages = {
 };
 window.fixtureCalls = [];
 window.collapsedStore = {};
+window.accountExpandedStore = {};
 window.morrow = {
   on() {},
   invoke: async (channel, payload) => {
     window.fixtureCalls.push({ channel, payload });
+    if (channel === "morrow:configGetSidebarAccountFoldersExpanded") return { ...window.accountExpandedStore };
+    if (channel === "morrow:configSetSidebarAccountFoldersExpanded") {
+      window.accountExpandedStore[payload.accountId] = payload.expanded;
+      return { ...window.accountExpandedStore };
+    }
     if (channel === "morrow:configSetSidebarCollapsedFolders") {
       window.collapsedStore = payload;
       return payload;
@@ -220,6 +226,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   };
   const pressKey = async (key, code, vk) => {
     await cdp("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+    if (key === "Enter") await cdp("Input.dispatchKeyEvent", { type: "char", text: "\r", unmodifiedText: "\r", key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
     await cdp("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
   };
   const clickSelector = async (selector) => {
@@ -251,6 +258,61 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     await delay(100);
   }
   assert.equal(await evaluate("window.fixtureReady===true"), true, JSON.stringify(errors));
+  if (process.argv.includes("--account-expansion-only")) {
+    await evaluate(`(() => {
+      for (const [id, profile] of [['yahoo','yahoo'],['custom2','custom'],['gmail2','gmail'],['outlook','outlook'],['outlook2','outlook']]) {
+        state.accounts.push({id,email:id+'@example.invalid',platform:'imap',imapSmtpProfile:profile,delimiter:'/',
+          folders:{primary:[{id:'INBOX',name:'Inbox',wellKnownName:'inbox'}],more:[{id:'Projects',name:'Projects'},{id:'Projects/Annual',name:'Annual'}]}});
+      }
+      state.prefs.outlookOpen=false;renderAccounts();
+    })()`);
+    const heading = id => '[data-nav-key="account:' + id + '"]';
+    const expanded = id => evaluate(`document.querySelector(${JSON.stringify(heading(id))}).getAttribute('aria-expanded')`);
+    assert.equal(await evaluate("document.querySelectorAll('#folders button[data-nav-kind=account]').length"), 7);
+    assert.equal(await evaluate("document.querySelectorAll('#folders h2').length"), 0);
+    await clickSelector(heading('yahoo'));
+    await waitFor("state.prefs.accountExpanded.yahoo===false", "Yahoo collapse saves");
+    assert.equal(await expanded('leo'), "true");
+    await evaluate(`document.querySelector(${JSON.stringify(heading('yahoo'))}).focus()`);
+    await pressKey("ArrowRight", "ArrowRight", 39);
+    await waitFor("state.prefs.accountExpanded.yahoo===true", "Yahoo right arrow expands");
+    await pressKey("ArrowRight", "ArrowRight", 39);
+    assert.equal(await evaluate("document.activeElement.dataset.accountId"), "yahoo");
+    await evaluate(`document.querySelector(${JSON.stringify(heading('custom2'))}).focus()`);
+    await pressKey(" ", "Space", 32);
+    await waitFor("state.prefs.accountExpanded.custom2===false", "custom Space collapses");
+    await pressKey("Enter", "Enter", 13);
+    await waitFor("state.prefs.accountExpanded.custom2===true", "custom Enter expands");
+    await clickSelector(heading('gmail'));
+    await waitFor("state.prefs.accountExpanded.gmail===false", "first Gmail collapse saves");
+    assert.equal(await expanded('gmail2'), "true");
+    assert.equal(await expanded('outlook'), "false");
+    await clickSelector(heading('outlook'));
+    await waitFor("state.prefs.accountExpanded.outlook===true", "first Outlook expands");
+    assert.equal(await expanded('outlook2'), "false");
+    await clickSelector(heading('yahoo'));
+    await waitFor("state.prefs.accountExpanded.yahoo===false", "Yahoo collapses again");
+    const saved = await evaluate("JSON.stringify(window.accountExpandedStore)");
+    await evaluate("(async()=>{state.prefs.accountExpanded={};state.prefs.accountExpanded=await api.invoke('morrow:configGetSidebarAccountFoldersExpanded');renderAccounts()})()");
+    assert.equal(await expanded('yahoo'), "false");
+    await evaluate("document.getElementById('folder-filter').value='Annual';renderAccounts()");
+    assert.equal(await expanded('yahoo'), "true");
+    await clickSelector(heading('yahoo'));
+    assert.equal(await evaluate("JSON.stringify(window.accountExpandedStore)"), saved, "filter reveals matches without saving expansion");
+    await evaluate("document.getElementById('folder-filter').value='';renderAccounts()");
+    await clickSelector("#folder-collapse-all");
+    assert.equal(await evaluate("JSON.stringify(window.accountExpandedStore)"), saved, "Collapse All leaves account choices intact");
+    assert.equal(await expanded('yahoo'), "false");
+    assert.equal(await expanded('gmail2'), "true");
+    await shot("sidebar-independent-accounts");
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: 1, mobile: false });
+    await evaluate("document.documentElement.dataset.theme='dark'");
+    await evaluate("document.querySelector('[data-nav-key=\"account:yahoo\"]').scrollIntoView({block:'center'})");
+    await shot("sidebar-independent-accounts-dark-short");
+    assert.deepEqual(errors, []);
+    console.log("Per-account expansion browser checks passed: " + output);
+    return;
+  }
   if (process.argv.includes("--sidebar-only")) {
     await clickSelector("#folder-collapse-all");
     await waitFor("window.folderShot().rows.some(row=>row.name==='1 Internal')===false", "folder descendants collapse");

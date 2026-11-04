@@ -172,3 +172,5 @@ reviewed removal use the displayed account. Unsaved Out of Office edits still
 require discard confirmation. No-account profiles show Add account and guidance.
 Connection & credential help and the optional computer-wide Google client stay
 below; sender names and aliases stay in Compose.
+
+Each sidebar account has a collapse button, including Yahoo and custom IMAP. Choices are stored separately by mailbox id. Before a mailbox has an individual choice, it inherits its previous Gmail/Outlook expansion default; other providers start expanded. The General tab’s Gmail/Outlook checkboxes set those defaults. Folder filtering reveals matching folders temporarily. Collapse All leaves account expansion unchanged.
