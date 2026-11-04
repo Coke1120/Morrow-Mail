@@ -89,10 +89,17 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
         throw cause;
       }
       if ((options.method || "GET") !== "GET" || response.status !== 401 || attempt !== 0 || typeof refreshAccessToken !== "function") throw error;
-      credential = await refreshAccessToken(credential);
-      alive();
-      readSignal?.throwIfAborted();
-      if (typeof credential !== "string" || !credential) throw invalid("Gmail authorization is unavailable.");
+      try {
+        credential = await refreshAccessToken(credential);
+        alive();
+        readSignal?.throwIfAborted();
+        if (typeof credential !== "string" || !credential) throw invalid("Gmail authorization is unavailable.");
+      } catch (cause) {
+        // This recovery belongs only to a rejected GET. Preserve the typed
+        // renewal error while recording that no write was submitted here.
+        cause.operationIssued = false;
+        throw cause;
+      }
     }
   }
   async function request(path, { operation, method = "GET", body, query, signal: readSignal, beforeSubmit } = {}) {

@@ -92,7 +92,7 @@ async function run() {
     for (const [status, payload, code, sticky] of [[503, {}, "oauth_refresh_unavailable", false],
       [400, { error: "invalid_grant" }, "needs_auth", true], [200, {}, "oauth_refresh_response", false]]) {
       account = reset(); tokenReply = () => reply(payload, status);
-      await assert.rejects(session(account, api => api.profile()), e => e.code === code && retry.isStickyAuthSyncError(remote.explain(e), e) === sticky);
+      await assert.rejects(session(account, api => api.profile()), e => e.code === code && e.operationIssued === false && retry.isStickyAuthSyncError(remote.explain(e), e) === sticky);
       assert.equal(calls.length, 1); assert.equal(JSON.parse(secrets.getPassword(account.id)).accessToken, "old");
     }
     account = reset();
@@ -191,6 +191,35 @@ async function run() {
     };
     await assert.rejects(session(account, api => api.markRead("message", true)), e => e.code === "conflict" && e.operationIssued === true);
     assert.equal(calls.filter(c => c.method === "POST").length, 1, "post-submit conflict retains uncertain write evidence");
+
+    for (const acknowledged of [false, true]) {
+      account = reset();
+      db.replaceFolders(account.id, [
+        { path: "INBOX", name: "Inbox", wellKnown: "inbox", providerId: "INBOX" },
+        { path: "Trash", name: "Trash", wellKnown: "deleteditems", providerId: "TRASH" },
+      ]);
+      const mapping = db.rememberGmail(account.id, { providerId: "move-message", labelIds: ["INBOX"] });
+      const messageId = `${account.id}-move`;
+      db.insertMessage({ id: messageId, accountId: account.id, folderPath: "INBOX", uid: mapping.local_uid,
+        uidValidity: account.gmail_generation, date: new Date().toISOString(), listSortTs: Date.now(), unread: true });
+      db.bindGmailAlias(db.messageById(messageId), "move-message");
+      tokenReply = () => reply({}, 503);
+      let reads = 0;
+      route = (_url, init) => {
+        if (init.method === "POST") return reply({ id: "move-message", labelIds: ["TRASH"] });
+        reads++;
+        return acknowledged && reads <= 2 ? reply({ id: "move-message", labelIds: ["INBOX"] }) : reply({}, 401);
+      };
+      const accepted = await engine.answer("mail:delete", [{ emailId: messageId, accountId: account.id }]);
+      assert.equal(accepted.success, true);
+      const settled = await engine.settleActions();
+      assert.equal(settled.outcomes[0]?.status, acknowledged ? "completed" : "failed",
+        `renewal failure before a write rolls back; failure caching an acknowledged write preserves completion: ${JSON.stringify({ accepted, settled })}`);
+      assert.equal(db.messageById(messageId).folder_path, acknowledged ? "Trash" : "INBOX");
+      await engine.settleActions();
+      assert.equal(calls.filter(call => call.method === "POST").length, acknowledged ? 1 : 0, "renewal never replays the move");
+      assert.equal(posts.length, 1, "one failed read renewal");
+    }
 
     for (const status of [503, 408, 400, 401]) {
       account = reset();

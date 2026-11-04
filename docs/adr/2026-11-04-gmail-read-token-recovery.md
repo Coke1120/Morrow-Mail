@@ -24,6 +24,9 @@ If a connection changes while an error response body is being read, preserve
 that HTTP result's write-submission evidence: 408/5xx writes remain unknown,
 while known rejections remain unissued. Retiring a stale session must not turn
 an uncertain provider write into a local rollback.
+Failed renewal of a rejected GET is explicitly unissued, preserving its typed
+error so a failed pre-write metadata read rolls back the optimistic move. A
+cache-read failure after an acknowledged move retains completion without replay.
 
 The existing-account wrapper covers sync, body/attachment reads, search, actions
 and draft/label sessions. The post-sign-in profile check uses the same supplier so
