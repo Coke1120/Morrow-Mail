@@ -1,23 +1,26 @@
 (function (root) {
-  function mount({ api, getSelection, document = root.document }) {
+  function mount({ api, document = root.document,
+    openDialog = id => document.getElementById(id).showModal(),
+    closeDialog = id => document.getElementById(id).close() }) {
     const node = id => document.getElementById(id);
-    if (!node("timeline-panel")) return null;
-    let selection = null, prepared = null, jobId = null, stored = null, serial = 0, working = false, starting = false, earlyProgress = null;
+    const dialog = node("timeline-dialog");
+    if (!dialog || !api) return null;
+    let source = null, defaults = null, prepared = null, jobId = null, stored = null, serial = 0, listSerial = 0;
+    let working = false, starting = false, earlyProgress = null, cancelRequested = false, cancelling = false;
     const errorText = {
-      "timeline-selection-limit": "Selection exceeds 1,000 messages or 200 threads. Narrow the selection; nothing was silently truncated.",
-      "timeline-budget": "This selection exceeds a run limit. Select fewer or shorter messages and review again.",
-      "timeline-empty": "Select downloaded messages, open a message, or run a keyword search first.",
-      "timeline-source-changed": "Source mail or its account changed. Review the selection again.",
-      "timeline-manifest": "The reviewed selection expired or changed. Review it again.",
-      "timeline-partial": "No usable complete bodies, or partial coverage was not accepted. Download missing messages or review omissions.",
-      "timeline-query": "Use 1–16 downloaded-mail word prefixes, each at most 80 characters. Provider query syntax is not supported.",
+      "timeline-selection-limit": "This downloaded thread exceeds 1,000 messages or 200 threads. Nothing was silently truncated.",
+      "timeline-budget": "This downloaded thread exceeds a run limit. Nothing was sent automatically.",
+      "timeline-empty": "Open a downloaded message before creating a timeline.",
+      "timeline-source-changed": "Source mail or its account changed. Reopen Timeline from the message.",
+      "timeline-manifest": "The source snapshot expired or changed. Choose Generate to try again.",
+      "timeline-partial": "No usable complete bodies, or partial coverage was not accepted. Download missing mail in Mail, or accept the shown omissions.",
       "timeline-busy": "Another timeline operation is active. Wait or cancel it first.",
       "timeline-validation": "AI output failed validation after one retry. Earlier saved timelines remain unchanged.",
       "timeline-cancelled": "Generation cancelled. Data already delivered to the provider cannot be recalled.",
       "timeline-not-found": "This saved timeline is no longer available. Account removal also deletes related timelines.",
-      "ai-consent-required": "Review the saved destination in Settings → AI → AI data permission, then review this selection again.",
-      "timeline-input": "Check the title, output language and display timezone, then review again.",
-      "timeline-timezone": "Enter a supported IANA timezone, such as UTC or Europe/Paris.",
+      "ai-consent-required": "Allow explicit AI actions for the saved destination in Settings → AI → AI data permission, then reopen Timeline.",
+      "timeline-input": "Check the keywords and contact emails, then try again.",
+      "timeline-contacts": "Use up to 100 email addresses, separated by commas or new lines.",
       "timeline-revision": "The saved timeline changed. Open it again before exporting.",
     };
     const status = text => { node("timeline-status").textContent = text; };
@@ -26,7 +29,7 @@
       if (!result?.success) throw Object.assign(new Error("Timeline operation failed"), { code: result?.error?.code });
       return result.data;
     }
-    function report(error) { status(errorText[error?.code] || "Timeline operation failed. Check the AI connection and retry explicitly. No automatic retry or alternate provider is used."); }
+    function report(error) { status(errorText[error?.code] || "Timeline operation failed. Check the AI connection and retry explicitly. No alternate provider is used."); }
     function element(tag, text, className) {
       const value = document.createElement(tag);
       value.textContent = text;
@@ -35,88 +38,89 @@
     }
     function buttons() {
       const busy = working || starting || !!jobId;
-      for (const id of ["timeline-review", "timeline-from-reader", "timeline-from-selection", "timeline-from-search", "timeline-refresh", "timeline-download", "timeline-title", "timeline-language", "timeline-timezone", "timeline-expand"]) node(id).disabled = busy;
-      node("timeline-generate").disabled = busy || !prepared?.allowed || !prepared.coverage.included_message_count
-        || (prepared.coverage.omitted_message_count > 0 && !node("timeline-partial").checked);
+      for (const id of ["timeline-keywords", "timeline-contacts", "timeline-partial", "timeline-format", "timeline-export-confirm"]) node(id).disabled = busy;
+      node("timeline-generate").disabled = busy || !source || !dialog.open || !!(prepared && (!prepared.allowed || !prepared.coverage.included_message_count
+        || (prepared.coverage.omitted_message_count > 0 && !node("timeline-partial").checked)));
       node("timeline-cancel").hidden = !jobId;
+      node("timeline-cancel").disabled = cancelling;
       node("timeline-export").disabled = busy || !stored || !node("timeline-export-confirm").checked;
       node("timeline-delete").disabled = busy || !stored;
-      node("timeline-load").disabled = busy;
+      for (const button of node("timeline-saved").querySelectorAll("button")) button.disabled = busy;
+      node("timeline-close").textContent = stored ? "Close" : "Cancel";
+      node("timeline-form").setAttribute("aria-busy", String(busy));
     }
-    async function savedList() {
-      const rows = await invoke("timeline:list");
-      const selected = node("timeline-saved").value;
-      const placeholder = element("option", "Choose a saved timeline");
-      placeholder.value = "";
-      node("timeline-saved").replaceChildren(placeholder);
-      for (const row of rows) {
-        const option = element("option", `${new Date(row.generated_at).toLocaleString()} · ${row.id.slice(0, 8)}`);
-        option.value = row.id;
-        node("timeline-saved").append(option);
-      }
-      if (rows.some(row => row.id === selected)) node("timeline-saved").value = selected;
+    function contacts(email) {
+      const list = value => Array.isArray(value) ? value : [value];
+      const values = [email.fromAddress || email.from, ...list(email.to), ...list(email.cc), ...list(email.replyTo || email.recipientHeaders?.replyTo)];
+      return [...new Set(values.flatMap(value => String(value?.address || value || "").match(/[^\s<>,;:"()[\]\\]+@[^\s<>,;:"()[\]\\]+/g) || []).map(value => value.toLowerCase()))];
     }
-    function showTab(name, focus = false) {
-      const timeline = name === "timeline";
-      for (const [id, active] of [["message-tab", !timeline], ["timeline-tab", timeline]]) {
-        node(id).setAttribute("aria-selected", String(active));
-        node(id).tabIndex = active ? 0 : -1;
-        if (active && focus) node(id).focus();
-      }
-      node("reader").hidden = timeline;
-      node("timeline-panel").hidden = !timeline;
-      if (timeline) {
-        root.morrowMotion?.enter?.(node("timeline-panel"));
-        savedList().catch(report);
-      }
+    function language() {
+      const locale = root.navigator?.language || document.documentElement.lang || "en";
+      if (/^zh/i.test(locale)) return /hant|tw|hk|mo/i.test(locale) ? "zh-Hant" : "zh-Hans";
+      const base = locale.split("-")[0].toLowerCase();
+      return ["en", "ja", "ko", "fr", "de", "es"].includes(base) ? base : "en";
     }
     function options() {
-      return { title: node("timeline-title").value, language: node("timeline-language").value, displayTimezone: node("timeline-timezone").value };
+      const contactEmails = [...new Set(node("timeline-contacts").value.split(/[\s,;]+/).filter(Boolean).map(value => value.toLowerCase()))];
+      if (contactEmails.length > 100 || contactEmails.some(value => value.length > 254 || !/^[^\s@<>,;]+@[^\s@<>,;]+$/.test(value))) throw { code: "timeline-contacts" };
+      return { ...defaults, keywords: node("timeline-keywords").value.trim(), contactEmails };
     }
-    function invalidate() { serial++; prepared = null; node("timeline-download").hidden = true; buttons(); }
     function preview(value) {
+      const previous = prepared?.coverage;
+      prepared = value;
       const coverage = value.coverage;
-      const lines = [
-        `Accounts (${value.accounts.length}): ${value.accounts.join(", ")}`,
-        `${value.threads} threads · ${coverage.selected_message_count} selected messages · ${coverage.included_message_count} included · ${coverage.omitted_message_count} omitted`,
-        `${value.missingBodies} missing, incomplete or warned bodies; ${value.invalidMetadata} unsupported metadata records omitted.`,
-        value.search ? `Downloaded keyword matches: ${value.search.matched}. ${value.search.expanded ? "Expanded into downloaded threads." : "Only matching messages; no thread expansion."} The ordinary list displays at most 100 matches; this review collects up to 1,000 and refuses larger selections.` : "Selected threads use only the downloaded messages listed by this review.",
-        `Provider: ${value.provider} · Destination: ${value.destination} · Model: ${value.model}`,
-        `${value.chunks} extraction chunks · about ${value.estimatedInputTokens} conservative input units, before retries or consolidation. Not an exact token or price estimate.`,
-        `Limits: ${value.limits.calls} calls, ${value.limits.inputTokens} input / ${value.limits.outputTokens} output units, one validation retry per step, 120 seconds per request / 10 minutes per run. Large selections can hit these limits.`,
-        value.locality, value.providerTerms,
-        value.allowed ? "Saved destination has explicit-action AI permission. Only Generate timeline starts extraction." : "AI data permission is off. Approve it in Settings → AI, then review again.",
-        "Snapshot expires in five minutes. Later arriving mail is not added. Unknown or older cached date provenance remains visible.",
-      ];
-      node("timeline-preview").replaceChildren(...lines.map(line => element("p", line)));
-      node("timeline-download").hidden = !value.missingBodies;
+      if (!previous || previous.selected_message_count !== coverage.selected_message_count || previous.omitted_message_count !== coverage.omitted_message_count) node("timeline-partial").checked = false;
+      node("timeline-preview").textContent = `${coverage.included_message_count} downloaded messages · ${coverage.omitted_message_count} omitted (missing, incomplete or unsupported). AI: ${value.provider} · ${value.destination} · ${value.model}.`;
+      node("timeline-partial-choice").hidden = !coverage.omitted_message_count;
+      if (!value.allowed) report({ code: "ai-consent-required" });
+      else if (!coverage.included_message_count) report({ code: "timeline-partial" });
+    }
+    async function prepare(current) {
+      const value = await invoke("timeline:prepare", { selection: source, options: options() });
+      if (serial !== current) return null;
+      preview(value);
+      return value;
+    }
+    async function savedList() {
+      const current = ++listSerial;
+      const rows = await invoke("timeline:list");
+      if (current !== listSerial) return;
+      node("timeline-saved").replaceChildren(...rows.map(row => {
+        const button = element("button", `${new Date(row.generated_at).toLocaleString()} · ${row.id.slice(0, 8)}`, "ghost");
+        button.type = "button";
+        button.addEventListener("click", () => load(row.id).catch(report));
+        return button;
+      }));
+      node("timeline-history").hidden = !rows.length;
       buttons();
     }
-    async function review() {
-      if (!selection || working || jobId) return;
-      const current = ++serial;
-      prepared = null; working = true; buttons(); status("Reviewing downloaded sources. No AI request is made.");
-      try {
-        const value = await invoke("timeline:prepare", { selection: { ...selection, expandThreads: node("timeline-expand").checked }, options: options() });
-        if (serial !== current) return;
-        prepared = value;
-        preview(value);
-        status("Review the data, coverage and destination, then choose Generate timeline.");
-      } catch (error) { if (serial === current) report(error); }
-      finally { working = false; buttons(); }
-    }
-    async function startReview(mode) {
+    async function open(email) {
+      if (!email?.id || !email.accountId) return;
+      openDialog("timeline-dialog");
       if (working || starting || jobId) return;
-      selection = getSelection(mode);
-      showTab("timeline");
-      node("timeline-preflight").hidden = false;
-      node("timeline-expand").checked = selection.expandThreads;
+      const current = ++serial;
+      source = { messages: [{ accountId: email.accountId, messageId: email.id }], expandThreads: true };
+      defaults = { title: String(email.subject || "").replace(/[\x00-\x1f\x7f\u2028\u2029]/g, " ").trim().slice(0, 500) || "Email timeline",
+        language: language(), displayTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" };
+      prepared = null;
+      node("timeline-keywords").value = "";
+      node("timeline-contacts").value = contacts(email).join("\n");
       node("timeline-partial").checked = false;
-      await review();
+      node("timeline-partial-choice").hidden = true;
+      node("timeline-history").open = false;
+      renderResult(null);
+      working = true; buttons(); status("Checking downloaded mail and AI permission. No AI request is made.");
+      try {
+        const value = await prepare(current);
+        if (value?.allowed && value.coverage.included_message_count) status("Choose Generate to send these downloaded messages and your focus to the saved AI destination.");
+      } catch (error) { if (serial === current) report(error); }
+      finally { if (serial === current) { working = false; buttons(); if (dialog.open) node("timeline-keywords").focus(); } }
+      if (serial === current) await savedList().catch(report);
     }
     function address(value) { return value ? `${value.name ? `${value.name} ` : ""}<${value.address}>` : "Unknown sender"; }
     function renderResult(value) {
       stored = value;
+      node("timeline-form").hidden = !!stored;
       node("timeline-export-confirm").checked = false;
       node("timeline-exports").hidden = !stored;
       node("timeline-result").replaceChildren();
@@ -142,110 +146,106 @@
       buttons();
     }
     async function load(id) {
-      if (!id) return;
+      if (!id || working || starting || jobId) return;
       const current = ++serial;
-      const value = await invoke("timeline:get", { id });
-      if (serial !== current) return;
-      renderResult(value);
-      status("Saved local timeline. Opening it makes no AI request.");
+      working = true; buttons();
+      try {
+        const value = await invoke("timeline:get", { id });
+        if (serial !== current) return;
+        renderResult(value);
+        status("Saved local timeline. Opening it makes no AI request.");
+      } finally { if (serial === current) { working = false; buttons(); } }
     }
+    async function cancel() {
+      cancelRequested = true;
+      if (!jobId || cancelling) return;
+      cancelling = true; buttons();
+      try { await invoke("timeline:cancel", { jobId }); status("Cancellation requested. Data already delivered cannot be recalled."); }
+      catch (error) { cancelling = false; buttons(); throw error; }
+    }
+    function dismissed() {
+      serial++; prepared = null; source = null; listSerial++;
+      if (!starting && !jobId) working = false;
+      if (starting || jobId) cancel().catch(report);
+      buttons();
+    }
+    function dismiss() { dismissed(); closeDialog("timeline-dialog"); }
     async function progress(value) {
       if (starting && !jobId) { earlyProgress = value; return; }
       if (!jobId || value.jobId !== jobId) return;
       if (["completed", "failed", "cancelled"].includes(value.phase)) {
-        jobId = null;
-        prepared = null;
-        buttons();
+        jobId = null; prepared = null; cancelRequested = false; cancelling = false; buttons();
         if (value.phase === "completed") {
-          await load(value.timelineId);
-          await savedList();
-        } else report({ code: value.code });
-      } else status(`${value.phase === "merging" ? "Consolidating validated summaries" : "Extracting reviewed messages"}: ${value.completed} / ${value.total} · ${value.calls} calls. Cancel stops later calls, not data already delivered.`);
+          if (dialog.open) { await load(value.timelineId); await savedList(); }
+        } else report({ code: value.code || "timeline-cancelled" });
+      } else status(`${value.phase === "merging" ? "Consolidating validated summaries" : "Extracting downloaded messages"}: ${value.completed} / ${value.total} · ${value.calls} calls. Cancel stops later calls, not data already delivered.`);
     }
-    for (const id of ["message-tab", "timeline-tab"]) {
-      node(id).addEventListener("click", () => showTab(id === "timeline-tab" ? "timeline" : "message"));
-      node(id).addEventListener("keydown", event => {
-        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-        event.preventDefault();
-        const next = event.key === "Home" ? "message" : event.key === "End" ? "timeline" : id === "message-tab" ? "timeline" : "message";
-        showTab(next, true);
-      });
-    }
-    node("timeline-panel").addEventListener("keydown", event => event.stopPropagation());
-    node("reader-tabs").addEventListener("keydown", event => {
-      if (node("timeline-tab").getAttribute("aria-selected") === "true") event.stopPropagation();
-    });
-    node("timeline-timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    for (const id of ["timeline-title", "timeline-language", "timeline-timezone", "timeline-expand"]) node(id).addEventListener("input", () => { invalidate(); status("Options changed. Review this selection again before generating."); });
+    dialog.addEventListener("keydown", event => event.stopPropagation());
+    dialog.addEventListener("cancel", event => { event.preventDefault(); dismiss(); });
+    dialog.addEventListener("close", dismissed);
+    node("timeline-close").addEventListener("click", dismiss);
+    for (const id of ["timeline-keywords", "timeline-contacts"]) node(id).addEventListener("input", () => { prepared = null; node("timeline-partial").checked = false; buttons(); });
     node("timeline-partial").addEventListener("change", buttons);
     node("timeline-export-confirm").addEventListener("change", buttons);
-    node("timeline-from-reader").addEventListener("click", () => startReview("current").catch(report));
-    node("timeline-from-selection").addEventListener("click", () => startReview("selected").catch(report));
-    node("timeline-from-search").addEventListener("click", () => startReview("search").catch(report));
-    node("timeline-review").addEventListener("click", () => startReview("current").catch(report));
-    node("timeline-refresh").addEventListener("click", () => review().catch(report));
-    node("timeline-download").addEventListener("click", async () => {
-      if (!prepared || working || jobId) return;
-      const current = ++serial;
-      working = true; buttons(); status("Downloading only the frozen missing messages, without marking them read. No AI request is made.");
-      try {
-        const value = await invoke("timeline:download", { manifestToken: prepared.manifestToken });
-        if (serial !== current) return;
-        prepared = value;
-        selection = value.frozenSelection;
-        node("timeline-expand").checked = false;
-        preview(value);
-        status("Only the frozen messages were downloaded and reviewed again; thread expansion is off for this updated review. Check coverage before generating.");
-      } catch (error) { prepared = null; report(error); }
-      finally { working = false; buttons(); }
-    });
-    node("timeline-preflight").addEventListener("submit", async event => {
+    node("timeline-form").addEventListener("submit", async event => {
       event.preventDefault();
-      if (node("timeline-generate").disabled || !prepared) return;
-      starting = true; earlyProgress = null; buttons();
+      if (node("timeline-generate").disabled) return;
+      const current = ++serial;
+      let submitted = false;
+      working = true; buttons(); status("Preparing downloaded messages…");
       try {
-        const value = await invoke("timeline:generate", { manifestToken: prepared.manifestToken, optionsDigest: prepared.optionsDigest, acceptPartial: node("timeline-partial").checked });
-        jobId = value.jobId;
-        status("Starting reviewed timeline extraction…");
-      } catch (error) { report(error); }
-      finally { starting = false; buttons(); }
-      if (earlyProgress) progress(earlyProgress).catch(report);
+        const value = await prepare(current);
+        if (!value || !value.allowed || !value.coverage.included_message_count) return;
+        if (value.coverage.omitted_message_count && !node("timeline-partial").checked) { status("Some messages cannot be included. Accept the shown omissions before generating."); return; }
+        submitted = true; starting = true; earlyProgress = null; cancelRequested = false; buttons();
+        const result = await invoke("timeline:generate", { manifestToken: value.manifestToken, optionsDigest: value.optionsDigest, acceptPartial: node("timeline-partial").checked });
+        jobId = result.jobId;
+        status("Starting timeline extraction…");
+      } catch (error) { if (serial === current) report(error); }
+      finally { if (serial === current || submitted) { working = false; starting = false; buttons(); } }
+      if (earlyProgress) await progress(earlyProgress).catch(report);
+      if (cancelRequested && jobId) await cancel().catch(report);
     });
-    node("timeline-cancel").addEventListener("click", async () => {
-      if (!jobId) return;
-      try { await invoke("timeline:cancel", { jobId }); status("Cancellation requested. Data already delivered cannot be recalled."); } catch (error) { report(error); }
-    });
-    node("timeline-load").addEventListener("click", () => load(node("timeline-saved").value).catch(report));
+    node("timeline-cancel").addEventListener("click", () => cancel().catch(report));
     node("timeline-export").addEventListener("click", async () => {
-      if (!stored || !node("timeline-export-confirm").checked || working || jobId) return;
+      if (!stored || !node("timeline-export-confirm").checked || working || starting || jobId) return;
+      const current = ++serial;
       working = true; buttons();
       try {
         const value = await invoke("timeline:export", { id: stored.document.timeline_id, revision: stored.revision, format: node("timeline-format").value, confirmed: true });
-        status(value.saved ? "Timeline exported to the file you selected. No AI request or automatic send was made." : "Export cancelled.");
-      } catch (error) { report(error); }
-      finally { node("timeline-export-confirm").checked = false; working = false; buttons(); }
+        if (serial === current) status(value.saved ? "Timeline exported to the file you selected. No AI request or automatic send was made." : "Export cancelled.");
+      } catch (error) { if (serial === current) report(error); }
+      finally { if (serial === current) { node("timeline-export-confirm").checked = false; working = false; buttons(); } }
     });
     node("timeline-delete").addEventListener("click", async () => {
-      if (!stored || working || jobId || !root.confirm("Delete this local timeline? Exported files, backups and historical journal bytes remain.")) return;
+      if (!stored || working || starting || jobId || !root.confirm("Delete this local timeline? Exported files, backups and historical journal bytes remain.")) return;
       const id = stored.document.timeline_id;
+      const current = ++serial;
       working = true; buttons();
-      try { await invoke("timeline:delete", { id }); serial++; renderResult(null); await savedList(); status("Local timeline deleted."); }
-      catch (error) { report(error); }
-      finally { working = false; buttons(); }
+      try {
+        await invoke("timeline:delete", { id });
+        if (serial !== current) return;
+        renderResult(null); await savedList(); status("Local timeline deleted.");
+      } catch (error) { if (serial === current) report(error); }
+      finally { if (serial === current) { working = false; buttons(); } }
     });
     api.on("timeline:progress", value => progress(value).catch(report));
     api.on("mail:accountsUpdated", () => {
-      invalidate();
+      serial++; prepared = null; source = null;
+      if (!starting && !jobId) working = false;
+      if (starting || jobId) cancel().catch(report);
       if (stored) {
         const id = stored.document.timeline_id;
         invoke("timeline:get", { id }).catch(() => {
           if (stored?.document.timeline_id !== id) return;
           renderResult(null); status("A saved timeline was removed with its source account.");
         });
-      }
+      } else status("Mail accounts changed. Reopen Timeline from the message.");
+      if (dialog.open) savedList().catch(report);
+      buttons();
     });
     buttons();
-    return { showTab, startReview, renderResult };
+    return { open, renderResult };
   }
   root.morrowTimeline = { mount };
 })(typeof window === "object" ? window : globalThis);

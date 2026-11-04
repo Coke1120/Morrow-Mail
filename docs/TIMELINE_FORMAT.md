@@ -2,32 +2,40 @@
 
 ## Desktop workflow
 
-Select one or more messages, open a message, or run a keyword search. Use **Generate
-timeline…** to review the selected downloaded threads, or **Generate from search
-results…** for keyword matches. The reader's **Message / Timeline** tabs share the
-reader area; opening Timeline only reads saved local artifacts. Only the final
-**Generate timeline** button starts AI requests. There is no bot operation, CLI
-command, scheduled generation, automatic rerun or URL/webhook export.
+Open a message and choose **Timeline** beside Summary in the reader action bar.
+One sheet offers optional free-text **Keywords** and editable **Contact emails**,
+prefilled from that message's From, To, Cc and Reply-To (not Bcc). Both fields guide
+the summaries; neither excludes thread messages from the AI request. Empty fields
+add no extra focus. The title comes from the subject, output language from the
+supported system locale (otherwise English), and display timezone from the system.
+There is no Timeline tab, selection/search entry point or mandatory settings wall.
 
-Preparation shows account addresses, counts, omissions, explicit thread expansion,
-the saved AI destination/model, conservative input estimates and run limits. Search
-uses the same local word-prefix index as Mail, not provider query syntax. It gathers
-up to 1,000 matching messages independently of the ordinary 100-result display;
-over-limit selections are refused, not silently truncated. At most 200 downloaded
-threads are included. Search is frozen once in a five-minute, window-owned manifest;
-later arrivals do not join a run. Expansion means all **downloaded** thread members,
-not a guarantee of complete mailbox history.
+The source is always that opened message's account and ID, plus its already-local
+thread, never current list selection or unrelated search results. Opening the sheet
+checks downloaded coverage and saved AI permission without making an AI request.
+Only **Generate** prepares a fresh, five-minute, window-owned manifest with the
+edited focus and starts extraction through the saved AI destination after explicit
+action permission. Sources remain frozen for that run. Limits of 1,000 messages /
+200 threads are enforced without silent truncation. Expansion means **downloaded**
+thread members, not complete mailbox history; no older-mail fetch runs automatically.
 
-Missing, incomplete or warned bodies and unsupported metadata are excluded. Use
-**Download missing messages** explicitly, or affirm partial coverage. Downloads
-only revisit the frozen messages and never mark them read. Empty selections or
-selections without usable complete bodies cannot run. Timeline operations do not
-change mail flags, labels or folders and never send mail.
+Missing, incomplete or warned bodies and unsupported metadata are excluded, with
+counts and a conditional explicit partial-coverage checkbox. A run without usable
+complete bodies cannot start. Download mail separately in Mail if needed; the sheet
+does not download it. Timeline operations never change mail flags, labels or folders
+and never send mail. Closing the sheet requests cancellation, including a job still
+starting; data already delivered cannot be recalled.
 
-Eight output languages are available: English, Traditional/Simplified Chinese,
-Japanese, Korean, French, German and Spanish. Controls follow the shell's English
-UI convention; dates use `Intl.DateTimeFormat` with the chosen IANA timezone and
-system locale. Output language does not change the envelope field names.
+Completed artifacts show a compact result with secondary reviewed export/delete
+actions. **Saved timelines** is collapsed history in the sheet, not a permanent
+picker or reader panel. JSON 1.0.0, Markdown and isolated PDF exports require fresh
+personal-information, coverage and uncertainty review each time. There is no bot
+operation, CLI command, scheduled generation, automatic rerun or URL/webhook export.
+
+Supported output languages remain English, Traditional/Simplified Chinese, Japanese,
+Korean, French, German and Spanish. Dates use `Intl.DateTimeFormat` with the system
+IANA timezone and locale. Output language and extraction focus do not change public
+field names or metadata; focus remains outside the public export schema.
 
 ## Public contract
 
@@ -128,12 +136,13 @@ AI automatically. No raw prompt/body copies are saved with jobs.
 ## Privacy, retention and exports
 
 Disclosure version 2 requires fresh explicit-action AI permission. Preparation and
-exports need no model request. Generation uses only reviewed text, subjects and
-attachment names through the existing saved provider plumbing, without Brain,
+exports need no model request. Generation uses only reviewed text, subjects,
+attachment names and optional keyword/contact focus through the existing saved provider plumbing, without Brain,
 Agent notes, chat history, tools or automatic provider/billing fallback.
-Prompt version `mail-chronology-vivi-1` asks for a chronology of the user's
+Prompt version `mail-chronology-2` asks for a chronology of the user's
 currently selected mail in the current mailbox account (no named person or fixed
-inbox); the host still owns dates, addresses and opaque IDs. Generated
+inbox), treating focus as topics rather than instructions or additional evidence;
+the host still owns dates, addresses and opaque IDs. Generated
 text remains untrusted: the UI uses text nodes, Markdown escapes syntax/HTML, and
 PDF uses a separate scriptless, network-blocked sandbox with escaped text.
 

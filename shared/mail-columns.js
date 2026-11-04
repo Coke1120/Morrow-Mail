@@ -3,7 +3,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.morrowMailColumns = api;
 })(typeof window === "object" ? window : globalThis, function () {
-  const defaults = ["date", "recipient", "sender", "subject", "status"];
+  const defaults = ["date", "recipient", "sender", "subject"];
   function normalize(value) {
     const order = [];
     for (const key of Array.isArray(value) ? value : []) if (defaults.includes(key) && !order.includes(key)) order.push(key);

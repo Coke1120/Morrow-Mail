@@ -18,10 +18,12 @@ function uiFixture(t) {
   return {ui,window,document,saved,get:id=>document.getElementById(id)};
 }
 test('column normalization upgrades missing/new columns and rejects unknown/duplicate entries',()=>{
-  assert.deepEqual(columns.normalize(['subject','subject','obsolete','date']),['subject','date','recipient','sender','status']);
+  assert.deepEqual(columns.normalize(['subject','subject','obsolete','date']),['subject','date','recipient','sender']);
   assert.deepEqual(columns.normalize(null),columns.defaults);
-  assert.deepEqual(columns.move(columns.defaults,'date','subject',true),['recipient','sender','subject','date','status']);
+  assert.deepEqual(columns.move(columns.defaults,'date','subject',true),['recipient','sender','subject','date']);
   assert.deepEqual(columns.move(columns.defaults,'unknown','subject'),columns.defaults);
+  assert.deepEqual(columns.normalize(['status','subject','date','status']),['subject','date','recipient','sender']);
+  assert.deepEqual(columns.normalizeHidden(['status','sender']),['sender']);
 });
 test('actual preload/settings persist order independently of sorting and other preferences',async t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'morrow-layout-')),old=process.env.MORROW_USER_DATA;process.env.MORROW_USER_DATA=dir;
@@ -30,22 +32,22 @@ test('actual preload/settings persist order independently of sorting and other p
   vm.runInNewContext(fs.readFileSync(require.resolve('../renderer/preload'),'utf8'),{require:()=>({contextBridge:{exposeInMainWorld:(name,value)=>{if(name==='morrow')bridge=value}},ipcRenderer:{invoke:async(channel,payload)=>settings.answer(channel,[payload])}})});
   await bridge.invoke('config:setTheme','dark');
   await bridge.invoke('morrow:configSetMailColumnOrder',['subject','date','recipient']);
-  assert.deepEqual(await bridge.invoke('morrow:configGetMailColumnOrder'),['subject','date','recipient','sender','status']);
+  assert.deepEqual(await bridge.invoke('morrow:configGetMailColumnOrder'),['subject','date','recipient','sender']);
   assert.equal(settings.answer('config:getTheme'),'dark');
   await bridge.invoke('morrow:configSetMailHiddenColumns',['date','date','subject','unknown','status']);
-  assert.deepEqual(await bridge.invoke('morrow:configGetMailHiddenColumns'),['date','status']);
+  assert.deepEqual(await bridge.invoke('morrow:configGetMailHiddenColumns'),['date']);
   assert.deepEqual(columns.visible(['subject','date'],columns.defaults),['subject']);
   await assert.rejects(bridge.invoke('unknown:layout'),/Unsupported/);
 });
 test('keyboard and dialog movement reorder headers and cells without sorting; reset restores defaults',async t=>{
   const f=uiFixture(t);const subject=f.document.querySelector('[data-sort-key="subject"] button');
   subject.dispatchEvent(new f.window.KeyboardEvent('keydown',{key:'ArrowLeft',altKey:true,bubbles:true,cancelable:true}));await settle();
-  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['date','recipient','subject','sender','status']);
+  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['date','recipient','subject','sender']);
   assert.equal(f.ui.run('sortCalls.length'),0);
   const row=f.ui.run("messageRow({id:'one',subject:'Hello',from:'a@fixture.invalid',to:['b@fixture.invalid']})");
-  assert.deepEqual([...row.querySelector('.row-main').children].slice(0,5).map(n=>n.dataset.mailColumn),['date','recipient','subject','sender','status']);
+  assert.deepEqual([...row.querySelector('.row-main').children].slice(0,4).map(n=>n.dataset.mailColumn),['date','recipient','subject','sender']);
   f.get('mail-columns-open').click();f.document.querySelector('[data-column="date"][data-direction="1"]').click();await settle();
-  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['recipient','date','subject','sender','status']);
+  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['recipient','date','subject','sender']);
   f.get('mail-columns-reset').click();await settle();assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),columns.defaults);
   assert.equal(f.saved.filter(r=>r.channel==='morrow:configSetMailColumnOrder').length,3);
 });
@@ -58,7 +60,7 @@ test('drag cancellation, foreign drops and Escape do not save or sort; successfu
   target.dispatchEvent(event('drop'));assert.equal(f.saved.length,0);
   source.dispatchEvent(event('dragstart'));f.document.dispatchEvent(new f.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));target.dispatchEvent(event('drop'));assert.equal(f.saved.length,0);
   source.dispatchEvent(event('dragstart'));target.dispatchEvent(event('drop'));source.click();await settle();
-  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['recipient','sender','subject','date','status']);
+  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['recipient','sender','subject','date']);
   assert.equal(f.saved.filter(r=>r.channel==='morrow:configSetMailColumnOrder').length,1);assert.equal(f.ui.run('sortCalls.length'),0);
 });
 test('sidebar flag rows replace Inbox chip; counts, selection and invalidation use aggregate scope',async t=>{
@@ -105,8 +107,8 @@ test('host aggregate lists match per-account flags and counts, with bounded page
 test('repainting an unchanged header preserves keyboard focus and pending load cannot overwrite an edit',async t=>{
   const f=uiFixture(t),button=f.document.querySelector('[data-sort-key="subject"] button');button.focus();f.ui.run("paintMailListColumns($('message-list'))");assert.equal(f.document.activeElement,button);
   let finish;f.window.morrow.invoke=async channel=>channel==='morrow:configGetMailColumnOrder'?new Promise(resolve=>{finish=resolve}):null;
-  const read=f.ui.run('loadMailColumnOrder()');await f.ui.run("changeMailColumnOrder(['subject','sender','date','recipient','status'])");finish(['date','recipient','sender','subject']);await read;
-  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['subject','sender','date','recipient','status']);
+  const read=f.ui.run('loadMailColumnOrder()');await f.ui.run("changeMailColumnOrder(['subject','sender','date','recipient'])");finish(['date','recipient','sender','subject']);await read;
+  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['subject','sender','date','recipient']);
 });
 test('header menu and dialog share visibility without changing sorting or full order; keyboard closes and restores focus',async t=>{
   const f=uiFixture(t),subject=f.document.querySelector('[data-sort-key="subject"] button');
@@ -131,22 +133,28 @@ test('header menu and dialog share visibility without changing sorting or full o
   f.get('mail-columns-show-all').click();await settle();assert.deepEqual(Array.from(f.ui.run('visibleMailColumns()')),columns.defaults);
   assert.equal(f.ui.run('sortCalls.length'),0);
 });
-test('status icons only describe explicit positive flags; unknown and negative snapshots stay distinct and are not sortable',async t=>{
+test('subject prefix icons only describe explicit positive flags, with no status column or visibility control',async t=>{
   const f=uiFixture(t);
   for(const [replied,forwarded,count] of [[true,false,1],[false,true,1],[true,true,2],[false,false,0],[null,null,0]]){
     f.ui.context.email={id:'status',subject:'Re: Fwd: subject',inReplyTo:'parent',replied,forwarded};
     const cell=f.ui.run('mailReplyForwardCell(email)');assert.equal(cell.querySelectorAll('svg').length,count);
-    if(replied===null)assert.match(cell.textContent,/Replied status unavailable/);else if(!replied&&!forwarded)assert.match(cell.textContent,/No reply flag reported/);
+    assert.equal(cell.hidden,count===0);
+    if(count)assert.match(cell.textContent,/provider flag/);
+    const row=f.ui.run('messageRow(email)');
+    assert.equal(row.querySelector('[data-mail-column="subject"]').firstElementChild.className,'mail-reply-forward');
+    assert.equal(row.querySelector('[data-mail-column="status"]'),null);
     for(const icon of cell.querySelectorAll('svg'))assert.equal(icon.getAttribute('aria-hidden'),'true');
   }
-  f.document.querySelector('[data-sort-key="status"] button').click();await settle();assert.equal(f.ui.run('sortCalls.length'),0);
-  assert.equal(f.document.querySelector('[data-sort-key="status"]').hasAttribute('aria-sort'),false);
+  assert.equal(f.document.querySelector('[data-sort-key="status"]'),null);
+  f.get('mail-columns-open').click();
+  assert.equal(f.document.querySelector('[data-visibility="status"]'),null);
+  assert.equal(f.ui.run('sortCalls.length'),0);
 });
 test('a failed visibility save is visible and queued later writes can recover; a late settings read cannot undo visibility edits',async t=>{
   const f=uiFixture(t);let finish;
   f.window.morrow.invoke=async channel=>channel==='morrow:configGetMailHiddenColumns'?new Promise(resolve=>{finish=resolve}):null;
-  const read=f.ui.run('loadMailColumnOrder()');await f.ui.run("changeMailColumnVisibility('status',false)");finish([]);await read;
-  assert.equal(f.ui.run("visibleMailColumns().includes('status')"),false);
+  const read=f.ui.run('loadMailColumnOrder()');await f.ui.run("changeMailColumnVisibility('sender',false)");finish([]);await read;
+  assert.equal(f.ui.run("visibleMailColumns().includes('sender')"),false);
   f.window.morrow.invoke=async()=>{throw new Error('synthetic settings failure')};
   await assert.rejects(f.ui.run("changeMailColumnVisibility('date',false)"));await settle();assert.match(f.get('mail-columns-status').textContent,/Could not save/);
   f.window.morrow.invoke=async()=>null;await f.ui.run("changeMailColumnVisibility('date',true)");assert.equal(f.ui.run("visibleMailColumns().includes('date')"),true);
@@ -175,10 +183,10 @@ test('failed star/read writes restore aggregate membership without clearing anot
 
 test('keyboard moves choose visible neighbors while retaining hidden-column order', async t => {
   const f=uiFixture(t);
-  f.ui.run("state.mailColumnOrder=['date','recipient','sender','subject','status'];state.mailHiddenColumns=['recipient'];renderList()");
+  f.ui.run("state.mailColumnOrder=['date','recipient','sender','subject'];state.mailHiddenColumns=['recipient'];renderList()");
   f.document.querySelector('[data-sort-key="sender"] button').dispatchEvent(new f.window.KeyboardEvent('keydown',{key:'ArrowRight',altKey:true,bubbles:true,cancelable:true}));
   await settle();
-  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['date','recipient','subject','sender','status']);
+  assert.deepEqual(Array.from(f.ui.run('mailColumnOrder()')),['date','recipient','subject','sender']);
   assert.deepEqual(Array.from(f.ui.run('state.mailHiddenColumns')),['recipient']);
   f.document.querySelector('[data-sort-key="sender"] button').dispatchEvent(new f.window.KeyboardEvent('keydown',{key:'ArrowLeft',altKey:true,bubbles:true,cancelable:true}));
   await settle();

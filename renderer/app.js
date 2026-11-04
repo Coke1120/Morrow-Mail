@@ -1,4 +1,5 @@
 const api = window.morrow;
+let timelineView = null;
 
 const state = {
   accounts: [],
@@ -6,7 +7,7 @@ const state = {
   allInbox: false,
   allInboxUnreadOnly: false,
   allInboxStarredOnly: false,
-  mailColumnOrder: ["date", "recipient", "sender", "subject", "status"],
+  mailColumnOrder: ["date", "recipient", "sender", "subject"],
   mailHiddenColumns: [],
   outbox: false,
   outboxRows: [],
@@ -661,9 +662,9 @@ let mailColumnDrag = null;
 let mailColumnClickUntil = 0;
 let mailColumnSave = Promise.resolve();
 let mailColumnRevision = 0;
-const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject", status: "Reply / forward" };
+const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject" };
 function mailColumnOrder() {
-  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder : ["date", "recipient", "sender", "subject", "status"];
+  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder.filter(key => Object.hasOwn(mailColumnLabels, key)) : ["date", "recipient", "sender", "subject"];
 }
 function visibleMailColumns() {
   return window.morrowMailColumns ? window.morrowMailColumns.visible(mailColumnOrder(), state.mailHiddenColumns)
@@ -887,7 +888,7 @@ function paintMailListColumns(list) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.label = label;
-      button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil && key !== "status") guard(() => changeMailListSort(key)); });
+      button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil) guard(() => changeMailListSort(key)); });
       wireMailColumnHeader(cell, button, key);
       cell.appendChild(button);
       row.appendChild(cell);
@@ -896,10 +897,10 @@ function paintMailListColumns(list) {
     header.addEventListener("contextmenu", event => openMailColumnMenu(event, event.target.closest("button") || header.querySelector("button:not(:disabled)")));
     list.prepend(header);
   }
-  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)", status: "90px" };
+  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)" };
   const visible = visibleMailColumns();
   list.style.setProperty("--mail-columns", visible.map(key => widths[key]).join(" "));
-  const minimum = { date: 78, recipient: 130, sender: 130, subject: 180, status: 90 };
+  const minimum = { date: 78, recipient: 130, sender: 130, subject: 180 };
   list.style.setProperty("--mail-columns-min", (visible.reduce((sum, key) => sum + minimum[key], 54) + (visible.length - 1) * 10) + "px");
   const headerRow = header.querySelector('[role="row"]');
   mailColumnOrder().forEach((key, index) => {
@@ -908,14 +909,6 @@ function paintMailListColumns(list) {
     if (headerRow.children[index] !== cell) headerRow.insertBefore(cell, headerRow.children[index] || null);
   });
   for (const cell of header.querySelectorAll("[data-sort-key]")) {
-    if (cell.dataset.sortKey === "status") {
-      cell.removeAttribute("aria-sort");
-      const button = cell.querySelector("button");
-      button.textContent = button.dataset.label;
-      button.title = "Provider-reported reply / forward flags; unavailable for Gmail API. Drag to reorder. Right-click or press Shift + F10 to choose columns.";
-      button.setAttribute("aria-label", "Reply / forward status. Drag to reorder, or press Alt + Left / Right. Shift + F10 chooses columns.");
-      continue;
-    }
     const active = !state.outbox && cell.dataset.sortKey === state.listSort.sortBy;
     const ascending = state.listSort.sortDirection === "asc";
     cell.setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
@@ -6678,11 +6671,9 @@ function mailReplyForwardCell(email) {
     if (email[key] === true) {
       labels.push(label + " (provider flag)");
       const svg = rowIcon(icon); svg.dataset.state = key; cell.append(svg);
-    } else labels.push(email[key] === false ? "No " + (key === "replied" ? "reply" : "forward") + " flag reported" : label + " status unavailable");
+    }
   }
-  if (email.replied == null || email.forwarded == null) {
-    const unknown = document.createElement("span"); unknown.textContent = "—"; unknown.setAttribute("aria-hidden", "true"); cell.append(unknown);
-  }
+  cell.hidden = !labels.length;
   const text = document.createElement("span"); text.className = "sr"; text.textContent = labels.join(". ") + "."; cell.append(text);
   cell.title = text.textContent;
   return cell;
@@ -6760,7 +6751,7 @@ function messageRow(email) {
   recipient.className = "recipient";
   recipient.textContent = mailRecipientText(email) || "(no recipient)";
   recipient.title = recipient.textContent;
-  subjectLine.append(subject);
+  subjectLine.append(mailReplyForwardCell(email), subject);
   const snippet = document.createElement("span");
   snippet.className = "snippet";
   const mailbox = state.accounts.find((row) => row.id === email.accountId);
@@ -6768,7 +6759,7 @@ function messageRow(email) {
     ? accountLabel(mailbox) + " · "
     : (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "");
   snippet.textContent = prefix + (email.snippet || "");
-  const cells = { date: when, recipient, sender: from, subject: subjectLine, status: mailReplyForwardCell(email) };
+  const cells = { date: when, recipient, sender: from, subject: subjectLine };
   for (const key of visibleMailColumns()) { cells[key].dataset.mailColumn = key; main.append(cells[key]); }
   main.append(snippet);
   button.append(gutter, avatar, main);
@@ -7114,8 +7105,8 @@ function renderList() {
       const row = cached.row;
       // Provider flag refreshes must not replace a focused message or its actions.
       if (cached.replied !== email.replied || cached.forwarded !== email.forwarded) {
-        const previous = row.querySelector('[data-mail-column="status"]');
-        if (previous) { const cell = mailReplyForwardCell(email); cell.dataset.mailColumn = "status"; previous.replaceWith(cell); }
+        const previous = row.querySelector('[data-mail-column="subject"] .mail-reply-forward');
+        if (previous) previous.replaceWith(mailReplyForwardCell(email));
         cached.replied = email.replied; cached.forwarded = email.forwarded;
       }
       row.mailMessage = email;
@@ -7300,6 +7291,10 @@ function renderActions(pane, email) {
   const summary = readerButton("summary", "Summary", () => { requestMessageSummary(email); },
     strokeIcon(["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h5"]));
   summary.setAttribute("aria-controls", "message-summary");
+  const timeline = readerButton("timeline", "Timeline", () => timelineView?.open(email),
+    strokeIcon(["M4 3v18", "M8 5h12", "M8 12h9", "M8 19h12"]));
+  timeline.setAttribute("aria-haspopup", "dialog");
+  timeline.setAttribute("aria-controls", "timeline-dialog");
   const forward = readerButton("forward", "Forward", () => openReaderCompose("forward"));
   forward.setAttribute("aria-keyshortcuts", "F");
   const menus = document.createElement("div");
@@ -7318,7 +7313,7 @@ function renderActions(pane, email) {
   besideStar.className = "reader-star-group";
   besideStar.append(star);
   renderTranslate(besideStar, email);
-  bar.append(reply, replyAll, suggest, forward, summary, besideStar, archive, trash, menus);
+  bar.append(reply, replyAll, suggest, forward, summary, timeline, besideStar, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
 }
@@ -26488,13 +26483,7 @@ async function bootTranslateWindow() {
 }
 
 async function boot() {
-  window.morrowTimeline?.mount({ api, getSelection(mode) {
-    if (mode === "search" || (mode === "current" && !selectedMessages().length && !state.email && state.query)) {
-      return { search: { query: state.query, accountId: state.searchAccountId || "" }, expandThreads: false };
-    }
-    const messages = selectedMessages().length ? selectedMessages() : mode === "selected" ? [] : [state.email].filter(Boolean);
-    return { messages: messages.map(message => ({ accountId: message.accountId, messageId: message.id })), expandThreads: true };
-  } });
+  timelineView = window.morrowTimeline?.mount({ api, openDialog, closeDialog });
   if (isComposeWindow()) {
     await bootComposeWindow();
     return;

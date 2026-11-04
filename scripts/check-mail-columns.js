@@ -96,7 +96,19 @@ async function run() {
     loadList = async (network, offset) => { loads.push({network,offset,sort:{...state.listSort}}); };
     paintMailListColumns($('message-list'));
   `);
-  assert.equal(dom.window.document.querySelectorAll('[role="columnheader"]').length, 5);
+  assert.equal(dom.window.document.querySelectorAll('[role="columnheader"]').length, 4);
+  assert.equal(dom.window.document.querySelector('[data-sort-key="status"]'), null);
+  for (const [replied, forwarded, expected] of [[true, false, ["replied"]], [false, true, ["forwarded"]], [true, true, ["replied", "forwarded"]], [false, false, []], [null, null, []], [true, null, ["replied"]]]) {
+    ui.context.flagFixture = { id: "flags", subject: "Synthetic subject", replied, forwarded };
+    const row = ui.run("messageRow(flagFixture)");
+    const prefix = row.querySelector('[data-mail-column="subject"] .mail-reply-forward');
+    assert.equal(row.querySelector('[data-mail-column="status"]'), null);
+    assert.deepEqual([...prefix.querySelectorAll("svg")].map(icon => icon.dataset.state), expected);
+    assert.equal(prefix.hidden, !expected.length);
+    assert.equal(prefix.nextElementSibling.className, "subject");
+    assert.doesNotMatch(prefix.textContent, /—/);
+    if (expected.length) assert.match(prefix.title, /provider flag/);
+  }
   await ui.run(`changeMailListSort('subject')`);
   ui.run(`paintMailListColumns($('message-list'))`);
   assert.equal(dom.window.document.querySelector('[data-sort-key="subject"]').getAttribute("aria-sort"), "ascending");
@@ -109,13 +121,29 @@ async function run() {
   assert.equal(ui.run("readMailListSort().sortDirection"), "desc");
   assert.equal(ui.run(`mailListRequest({allInbox:true,listSort:state.listSort}).params.sortBy`), "subject");
   assert.equal(ui.run(`mailRecipientText({to:['first@fixture.invalid','second@fixture.invalid']})`), "first@fixture.invalid, second@fixture.invalid");
+  ui.run(`
+    state.emails = [{id:'refresh-flags',accountId:'synthetic',subject:'Flag refresh',replied:true,forwarded:false}];
+    renderList();
+    globalThis.flagRow = $('message-list').querySelector('.message-row');
+    globalThis.flagButton = flagRow.querySelector('button.message');
+    flagButton.focus();
+    state.emails[0].replied = false; state.emails[0].forwarded = true; renderList();
+  `);
+  assert.equal(ui.run("$('message-list').querySelector('.message-row') === flagRow"), true);
+  assert.equal(ui.run("document.activeElement === flagButton"), true);
+  assert.equal(dom.window.document.querySelector('[data-mail-column="subject"] .mail-reply-forward svg').dataset.state, "forwarded");
+  ui.run("state.emails[0].forwarded = null; renderList()");
+  assert.equal(dom.window.document.querySelector('[data-mail-column="subject"] .mail-reply-forward').hidden, true);
   ui.run(`state.outbox=true;paintMailListColumns($('message-list'))`);
   assert.ok([...dom.window.document.querySelectorAll('[role="columnheader"][aria-sort] button')].every(button => button.disabled));
   assert.equal(ui.run(`messageRow({id:"missing",to:[],date:""}).querySelector("time").textContent`), "");
   assert.equal(ui.run(`messageRow({id:"bad-date",to:[],date:"invalid"}).querySelector("time").textContent`), "");
   ui.run(`paintFeatureCatalog()`);
   assert.match(dom.window.document.getElementById("features-catalog").textContent, /sort all matching downloaded mail before paging/);
+  assert.match(dom.window.document.getElementById("features-catalog").textContent, /Reply \/ forward icons appear inline before the Subject text/);
+  assert.doesNotMatch(dom.window.document.getElementById("features-catalog").textContent, /The Reply \/ forward column shows/);
   assert.match(dom.window.document.getElementById("mail-sort-help").textContent, /first To recipient/);
+  assert.match(dom.window.document.getElementById("mail-sort-help").textContent, /icons appear before the subject/);
   dom.window.close();
   console.log("mail-columns-ui-ok: toggles, persistence, page reset, reader retention, accessible headers and rendered Features help");
 }
