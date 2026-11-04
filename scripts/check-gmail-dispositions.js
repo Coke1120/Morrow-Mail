@@ -62,6 +62,8 @@ test('Gmail dispositions use confirmed identities and conservative cached Sent e
   assert.equal(read('original'), 1); assert.equal(read('original', 'forwarded'), 1);
   admit('a', 'original', { replied: false }); assert.equal(read('original'), 0, 'provider false wins');
   admit('a', 'original'); assert.equal(read('original'), 1);
+  db.updateMessage(db.gmailCopies('a', 'original')[0].id, { replied: null, forwarded: null }, { disposition: { replied: null, forwarded: null } });
+  assert.equal(read('original'), 1); assert.equal(read('original', 'forwarded'), 1, 'body flag refresh retains saved evidence');
   db.pruneGmailCopies('a', 'original', []); admit('a', 'original'); assert.equal(read('original'), 1, 'provider identity survives row replacement');
 
   for (const outbox of [false, true]) {
@@ -109,6 +111,8 @@ test('Gmail dispositions use confirmed identities and conservative cached Sent e
   admit('a', 'later'); assert.equal(read('later'), 1);
   db.pruneGmailCopies('a', 'sent-first', []); admit('a', 'later');
   assert.equal(read('later'), 1, 'inferred evidence survives removing cached Sent rows');
+  db.insertMessage({ ...fixture.message(91), id: 'unbound-original', accountId: 'a', folderPath: 'INBOX', rfcMessageId: '<later@fixture.invalid>' });
+  admit('a', 'later'); assert.equal(read('later'), null, 'unbound legacy duplicates also make the original ambiguous');
   const history = admit('a', 'history');
   const reply = message('actual-reply', ['SENT']);
   reply.payload.headers.push({ name: 'In-Reply-To', value: history.rfc_message_id });
@@ -125,6 +129,9 @@ test('Gmail dispositions use confirmed identities and conservative cached Sent e
     admit('a', 'child-' + name, { inReplyTo: target.rfc_message_id, ...extra }, [folder]);
     assert.equal(read('no-' + name), null);
   }
+  const draftOriginal = admit('a', 'draft-original', { isDraft: true }, ['Drafts']);
+  admit('a', 'draft-original-child', { inReplyTo: draftOriginal.rfc_message_id, replyInferenceEligible: true }, ['Sent']);
+  assert.equal(read('draft-original'), null, 'draft originals cannot receive inferred indicators');
   const startup = admit('a', 'startup');
   admit('a', 'startup-sent', { inReplyTo: startup.rfc_message_id, replyInferenceEligible: true }, ['Sent']);
   db.updateMessage(startup.id, { replied: null });

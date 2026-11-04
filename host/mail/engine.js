@@ -2529,8 +2529,7 @@ async function ensureBody(row, options) {
       from_address: fetched.fromAddress || row.from_address || null,
       ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
       ...require("./reply-forward-state").patch(fetched),
-    });
-    if (account.mail_transport === "gmail_api") db.refreshDisposition(row.id, fetched);
+    }, account.mail_transport === "gmail_api" ? { disposition: fetched } : undefined);
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);

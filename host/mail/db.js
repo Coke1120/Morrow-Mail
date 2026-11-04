@@ -1662,11 +1662,13 @@ function threadMembership(accountId, threadId) {
     WHERE account_id = ? AND thread_id = ? ORDER BY list_sort_ts ASC`, [accountId, threadId]));
 }
 
-function updateMessage(id, patch) {
+function updateMessage(id, patch, options) {
   if (!Object.keys(patch).length) return;
   const reindex = Object.keys(patch).some((key) => INDEXED_PATCH.has(key));
   transaction(() => {
     if (updateChanged("messages", patch, "id = ?", [id]) && reindex) indexText(id);
+    // Body flags and saved evidence must publish in the same durable commit.
+    if (options?.disposition) module.exports.refreshDisposition(id, options.disposition);
   });
 }
 
@@ -2721,10 +2723,10 @@ function confirmDisposition(accountId, proof) {
 function refreshGmailDisposition(accountId, rfc, providerId) {
   const valid = singleMessageId(rfc);
   const columns = "id, rfc_message_id, gmail_id, disposition_provider_replied, disposition_provider_forwarded";
-  const targets = providerId ? all(`SELECT ${columns} FROM messages WHERE account_id = ? AND gmail_id = ?`, [accountId, providerId])
-    : valid ? all(`SELECT ${columns} FROM messages WHERE account_id = ? AND rfc_message_id = ? AND gmail_id IS NOT NULL`, [accountId, valid]) : [];
+  const targets = providerId ? all(`SELECT ${columns} FROM messages WHERE account_id = ? AND gmail_id = ? AND is_draft = 0`, [accountId, providerId])
+    : valid ? all(`SELECT ${columns} FROM messages WHERE account_id = ? AND rfc_message_id = ? AND gmail_id IS NOT NULL AND is_draft = 0`, [accountId, valid]) : [];
   if (!targets.length) return;
-  const unique = valid && get("SELECT COUNT(DISTINCT gmail_id) AS n FROM messages WHERE account_id = ? AND rfc_message_id = ? AND gmail_id IS NOT NULL", [accountId, valid]).n === 1;
+  const unique = valid && get("SELECT COUNT(DISTINCT CASE WHEN gmail_id IS NOT NULL THEN 'gmail:' || gmail_id ELSE 'local:' || id END) AS n FROM messages WHERE account_id = ? AND rfc_message_id = ? AND is_draft = 0", [accountId, valid]).n === 1;
   const sent = unique && get(`SELECT 1 FROM messages m JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder_path
     WHERE m.account_id = ? AND m.in_reply_to = ? AND m.gmail_id IS NOT NULL AND m.gmail_id != ?
       AND m.is_draft = 0 AND m.reply_inference_eligible = 1 AND f.well_known = 'sentitems' LIMIT 1`, [accountId, valid, targets[0].gmail_id]);
