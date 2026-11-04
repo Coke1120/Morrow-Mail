@@ -130,7 +130,10 @@ AI automatically. No raw prompt/body copies are saved with jobs.
 Disclosure version 2 requires fresh explicit-action AI permission. Preparation and
 exports need no model request. Generation uses only reviewed text, subjects and
 attachment names through the existing saved provider plumbing, without Brain,
-Agent notes, chat history, tools or automatic provider/billing fallback. Generated
+Agent notes, chat history, tools or automatic provider/billing fallback.
+Prompt version `mail-chronology-vivi-1` asks for a chronology of the user's
+currently selected mail in the current mailbox account (no named person or fixed
+inbox); the host still owns dates, addresses and opaque IDs. Generated
 text remains untrusted: the UI uses text nodes, Markdown escapes syntax/HTML, and
 PDF uses a separate scriptless, network-blocked sandbox with escaped text.
 
