@@ -60,3 +60,29 @@ were exercised in Chromium instead. No native Windows/macOS, screen-reader,
 live OAuth/provider/credential, packaging or deployment validation was performed.
 No skill Python, upstream installer, live mail action, PR, push, merge or deploy
 was performed.
+
+## Focused final review
+
+Review of `655c26c` found and fixed two edge cases: a first-account fallback was
+not yet pinned against later Mail selection changes, and focus could stay on the
+Remove button when its original account disappeared. Settings now pins the
+displayed fallback, and moves focus to a surviving account card or Add account
+when the focused account is removed. The three-case DOM suite and Chromium suite
+include both regressions. The existing unsaved Out of Office review, removed
+migration-target checks, generation-scoped permission replies and English shell /
+message translation separation were reviewed again. No translation channels,
+language options or message translation code changed.
+
+The desktop and narrow screenshots were uploaded successfully as native ChatGPT
+Library images using OpenAI Library, rather than relying on local filesystem
+links. Uploads returned these native identifiers:
+
+- `accounts-light-1440x1000.png`: file `file_00000000e70481fdb84e4b0ce74aa45e`,
+  Library `libfile_cf160b85b0e08191bb59e0e9a904f857`.
+- `accounts-dark-390x844.png`: file `file_00000000fb3081fda95a6e0c6c2ccb9b`,
+  Library `libfile_77c5274b136481919ecd5ad4add24d6d`.
+
+After these fixes, `npm run check` was rerun to exit 0 (`ui-path-ok`), the Account
+settings DOM suite passed 3/3, Google OAuth UI passed 12/12, and the complete
+Chromium/axe matrix passed again. The evidence logs and screenshots contain the
+latest results. The native Electron runner limitation remains unchanged.

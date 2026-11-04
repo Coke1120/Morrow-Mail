@@ -54,6 +54,9 @@ async function run() {
     await page.waitForFunction(() => settingsFoldLoaded.has('mailbox:a'));
     const card = id => page.locator(`#settings-accounts button[data-account-id="${id}"]`);
     assert.match(await page.locator('#settings-account-title').textContent(), /alex@example.invalid/);
+    await page.evaluate(() => { state.accountId = null; state.settingsAccountId = null; renderSettingsAccounts(); state.accountId = 'b'; renderSettingsAccounts(); });
+    assert.equal(await page.evaluate(() => settingsAccount().id), 'a', 'the displayed fallback stays independent of Mail');
+    await page.evaluate(() => { state.accountId = 'a'; });
     assert.equal(await page.locator('.settings-account-context').isVisible(), false);
     await card('b').focus(); await page.keyboard.press('Enter');
     await page.waitForFunction(() => settingsFoldLoaded.has('mailbox:b'));
@@ -124,7 +127,10 @@ async function run() {
       }
     }
     await page.setViewportSize({ width: 1280, height: 900 });
+    await page.evaluate(() => { document.getElementById('account-recovery').open = true; document.getElementById('remove').focus(); });
     await page.evaluate(() => { state.accounts = [state.accounts[1]]; state.accountId = null; state.settingsAccountId = 'removed'; renderSettingsAccounts(); });
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.accountId), 'b', 'removed-account action focus returns to the remaining account');
+    await page.evaluate(() => { document.getElementById('account-recovery').open = false; });
     assert.equal(await page.locator('#settings-accounts button').count(), 1);
     assert.equal(await card('b').getAttribute('aria-pressed'), 'true');
     assert.match(await page.locator('#settings-account-title').textContent(), /operations.and.support/);
@@ -136,8 +142,9 @@ async function run() {
     await card('b').focus(); await page.keyboard.press('Tab');
     assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-reconnect');
     await page.keyboard.press('Escape'); await page.locator('#settings').waitFor({ state: 'hidden' });
-    await page.evaluate(() => { state.accounts = []; state.settingsAccountId = null; state.accountId = null; openSettings(); revealSettingsFold('mailbox'); });
+    await page.evaluate(() => { openSettings(); revealSettingsFold('mailbox'); document.getElementById('account-recovery').open = true; document.getElementById('remove').focus(); state.accounts = []; state.settingsAccountId = null; state.accountId = null; renderSettingsAccounts(); });
     await page.waitForFunction(() => settingsFoldLoaded.has('mailbox:'));
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'connect-open', 'last-account removal focuses Add account');
     assert.equal(await page.locator('#settings-account-detail').isVisible(), false);
     await page.screenshot({ path: path.join(output, 'accounts-empty.png') });
     await page.evaluate(() => { document.getElementById('settings').close(); showFeatures(); });

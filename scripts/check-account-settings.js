@@ -35,6 +35,10 @@ test('account overview opens directly, wraps full identities safely and keeps Se
   assert.equal(f.get('settings-account-detail').hidden, false);
   assert.equal(f.document.querySelector('.settings-account-context').hidden, true);
   assert.match(f.get('settings-account-title').textContent, /a@example.invalid/);
+  f.ui.run(`state.accountId=null; state.settingsAccountId=null; renderSettingsAccounts(); state.accountId='b'; renderSettingsAccounts()`);
+  assert.equal(f.ui.run('state.settingsAccountId'), 'a', 'fallback selection is pinned independently of later Mail changes');
+  assert.match(f.get('settings-account-title').textContent, /a@example.invalid/);
+  f.ui.run(`state.accountId='a'`);
   f.card('b').focus(); f.card('b').click(); await tick();
   assert.equal(f.ui.run('settingsAccount().id'), 'b');
   assert.equal(f.ui.run('state.accountId'), 'a');
@@ -82,10 +86,14 @@ test('removing the viewed account refreshes fallback permissions and retires del
   }; settingsFoldLoaded.clear(); loadSettingsFold('mailbox');`);
   await tick(); assert.equal(f.get('settings-mailbox-panel').inert, false);
   assert.equal(f.ui.run('typeof oldPermissions'), 'function');
+  f.get('remove').focus();
   f.ui.run(`call=async(channel)=>channel==='mail:oauthStatus'?{accounts:[{id:'b',rules:true,organize:true}]}:{ready:true}; state.accounts=state.accounts.filter(a=>a.id!=='a'); renderSettingsAccounts()`);
   await tick();
+  assert.equal(f.document.activeElement, f.card('b'), 'focus leaves a removed account’s destructive action');
   assert.match(f.get('settings-account-title').textContent, /b@example.invalid/);
   assert.match(f.get('settings-capabilities').textContent, /Rules: Permission granted/);
   f.ui.run(`oldPermissions({accounts:[{id:'a',rules:false,organize:false}]})`); await tick();
   assert.match(f.get('settings-capabilities').textContent, /Rules: Permission granted/);
+  f.get('remove').focus(); f.ui.run(`state.accounts=[]; renderSettingsAccounts()`); await tick();
+  assert.equal(f.document.activeElement, f.get('connect-open'), 'last-account removal returns focus to Add account');
 });

@@ -25,3 +25,9 @@ removal confirmation and account-scoped IPC continue through existing handlers.
 No host, credential, provider, translation or IPC contract changes are required.
 The first-party settings shell uses English strings today; message translation
 and its language choices remain unchanged.
+
+Final review pins the first displayed fallback in Settings state so later Mail
+selection changes cannot silently retarget it. If the viewed account disappears
+while a scoped action has keyboard focus, focus returns to the surviving selected
+card, or Add account when none remain, instead of staying on another account's
+Remove button. Both paths have real DOM and Chromium regression coverage.

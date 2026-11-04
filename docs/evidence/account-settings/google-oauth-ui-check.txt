@@ -1,15 +1,15 @@
-✔ new connection clears old manual/reconnect state on every open and close (233.596348ms)
-✔ Gmail OAuth reconnects collapse manual fields for legacy and API accounts (115.208604ms)
-✔ manual-provider reconnects preserve the form and exact custom servers; Gmail password accounts remain manual (105.123071ms)
-✔ empty-state, Settings and setup entrypoints use the same fresh connection route (97.565693ms)
-✔ actual Google button bypasses required manual password/email validation without submitting IMAP (97.722919ms)
-✔ unavailable Google stays disabled with optional advanced guidance and no password fallback (114.853931ms)
-✔ exact migration-required host envelope replaces retry advice with review-only action (128.908641ms)
-✔ removed migration target never navigates or migrates another account (105.983484ms)
-✔ unpinned migration error asks for mailbox selection and closing/reopening clears old action (93.003987ms)
-✔ removing the pinned Gmail during discard confirmation or permission loading cancels review instead of focusing another mailbox (194.658394ms)
-✔ other OAuth errors retain their message without migration action or automatic password request (81.612665ms)
-✔ Features, help and optional import status agree without changing explicit client selection (82.983605ms)
+✔ new connection clears old manual/reconnect state on every open and close (240.008506ms)
+✔ Gmail OAuth reconnects collapse manual fields for legacy and API accounts (120.914164ms)
+✔ manual-provider reconnects preserve the form and exact custom servers; Gmail password accounts remain manual (115.25615ms)
+✔ empty-state, Settings and setup entrypoints use the same fresh connection route (161.321927ms)
+✔ actual Google button bypasses required manual password/email validation without submitting IMAP (119.78602ms)
+✔ unavailable Google stays disabled with optional advanced guidance and no password fallback (164.509742ms)
+✔ exact migration-required host envelope replaces retry advice with review-only action (156.020799ms)
+✔ removed migration target never navigates or migrates another account (142.018589ms)
+✔ unpinned migration error asks for mailbox selection and closing/reopening clears old action (112.361797ms)
+✔ removing the pinned Gmail during discard confirmation or permission loading cancels review instead of focusing another mailbox (224.894661ms)
+✔ other OAuth errors retain their message without migration action or automatic password request (106.569375ms)
+✔ Features, help and optional import status agree without changing explicit client selection (98.888816ms)
 ℹ tests 12
 ℹ suites 0
 ℹ pass 12
@@ -17,4 +17,4 @@
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 1729.685847
+ℹ duration_ms 2063.901729

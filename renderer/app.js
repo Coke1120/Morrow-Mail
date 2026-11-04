@@ -6216,6 +6216,9 @@ function pushIcon() {
 
 function renderSettingsAccounts() {
   if (!$("settings").open) return;
+  const detail = $("settings-account-detail");
+  const previousId = detail?.dataset?.accountId;
+  const focusedInDetail = detail?.contains?.(document.activeElement);
   paintSettingsMailbox();
   if (!document.querySelector('#settings .fold[data-fold="mailbox"].is-open')) return;
   const list = $("settings-accounts");
@@ -6225,6 +6228,7 @@ function renderSettingsAccounts() {
   const stamp = JSON.stringify(rows);
   if (list.dataset.stamp === stamp) return;
   const focusedId = list.contains(document.activeElement) ? document.activeElement.dataset.accountId : null;
+  const restoreTargetFocus = focusedId || (focusedInDetail && previousId && previousId !== selectedId);
   list.dataset.stamp = stamp;
   list.replaceChildren();
   if (!state.accounts.length) {
@@ -6232,7 +6236,7 @@ function renderSettingsAccounts() {
     empty.className = "empty";
     empty.textContent = "No accounts yet. Add an account to connect your mail and manage its settings here.";
     list.appendChild(empty);
-    if (focusedId) $("connect-open").focus({ preventScroll: true });
+    if (restoreTargetFocus) $("connect-open").focus({ preventScroll: true });
     loadSettingsFold("mailbox");
     return;
   }
@@ -6262,7 +6266,7 @@ function renderSettingsAccounts() {
     row.append(button);
     list.appendChild(row);
   }
-  if (focusedId) ([...list.querySelectorAll("button")].find(button => button.dataset.accountId === focusedId)
+  if (restoreTargetFocus) ([...list.querySelectorAll("button")].find(button => button.dataset.accountId === focusedId)
     || list.querySelector('[aria-pressed="true"]'))?.focus({ preventScroll: true });
   // Account removal/reconnect can change the target outside a card click.
   loadSettingsFold("mailbox");
@@ -18834,6 +18838,8 @@ function paintSettingsMailbox() {
   if (!select) return;
   if (state.settingsAccountId && !state.accounts.some(a => a.id === state.settingsAccountId)) state.settingsAccountId = null;
   const account = settingsAccount();
+  // Pin the displayed fallback; later Mail selection changes must not retarget Settings.
+  if (account && !state.settingsAccountId) state.settingsAccountId = account.id;
   fillAccountOptions(select, state.accounts, account?.id);
   const detail = $("settings-account-detail");
   if (detail) detail.hidden = !account;
