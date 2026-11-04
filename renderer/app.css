@@ -652,6 +652,39 @@ textarea:focus-visible {
 
 .mailbox-actions { margin-top: 4px; }
 
+/* Account management keeps identity, selection and scoped tools on one surface. */
+#settings .accounts-heading,
+#settings .account-detail-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+#settings .accounts-heading > div,
+#settings .account-detail-heading > div { min-width: 0; }
+#settings .accounts-heading h3,
+#settings .account-detail-heading h4 { margin: 0; }
+#settings .accounts-heading p,
+#settings .account-detail-heading p { margin: 4px 0; }
+#settings .accounts-heading > button,
+#settings .account-detail-heading > button { flex: none; min-height: 44px; }
+#settings .account-choices { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 10px; margin-bottom: 20px; }
+#settings .account-choices > li { min-width: 0; }
+#settings .account-choice { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; height: 100%; gap: 5px; padding: 14px; text-align: left; border: 1px solid var(--line); border-radius: 12px; white-space: normal; }
+#settings .account-choice[aria-pressed="true"] { background: var(--selected); border-color: var(--accent-ink); box-shadow: inset 0 0 0 1px var(--accent-ink); }
+#settings .account-choice .name { overflow: visible; white-space: normal; overflow-wrap: anywhere; font-size: 14px; font-weight: 600; }
+#settings .account-provider { color: var(--muted); font-size: 12px; }
+#settings .account-choice .push { white-space: normal; font-size: 12px; }
+#settings .account-choice .push svg { flex: none; }
+#settings .account-choice-action { margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--accent-ink); }
+#settings .account-detail { padding: 16px; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 16px; }
+#settings .account-detail[hidden] { display: none; }
+#settings .account-detail-heading h4 { font-size: 16px; overflow-wrap: anywhere; }
+#settings .account-detail button { min-height: 44px; white-space: normal; }
+#settings .account-choices .empty { padding: 24px 16px; border: 1px dashed var(--line); border-radius: 12px; line-height: 1.6; }
+#settings .account-choice:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 3px; }
+#settings #account-recovery #remove { color: var(--danger); }
+@media (max-width: 620px) {
+  #settings .accounts-heading,
+  #settings .account-detail-heading { flex-direction: column; gap: 10px; }
+  #settings .account-detail { padding: 12px; }
+}
+
 .sheet-head {
   display: flex;
   align-items: center;

@@ -1,0 +1,891 @@
+
+> morrow-mail@0.3.25 check
+> node scripts/check-boot-path.js
+
+sponsor-ui-ok
+oauth-reliability-ok: provider errors, durable rotation/restart, missing-token preservation, reconnect race, storage access
+gmail-auth-retry-ok: durable renewal, expiry, concurrency, bounded reads, refresh failures, account/client races, no write replay, rendered help
+outlook-sync-auth-ok: queued expiry, bounded login recovery, durable refresh, real reauth, races, no write replay, rendered help
+mail-columns-db-ok: 40 paginated orders, 8 global search orders, stale cursor and input allowlist
+mail-columns-ui-ok: toggles, persistence, page reset, reader retention, accessible headers and rendered Features help
+✔ actual preload saves a validated view independently of pane widths, columns and theme (7.866458ms)
+✔ View menu supports arrows, Home/End, Escape, outside dismissal and focus return (253.953007ms)
+✔ view switches retain reader DOM, selection, query, columns, sort and scroll; Outbox keeps a preview (143.568455ms)
+✔ Separate window only selects on mouse click, opens once on double click or keyboard, and preserves account identity (164.143407ms)
+✔ pending reads cannot overwrite a chosen view and serialized saves retain the latest choice (112.591468ms)
+✔ bottom splitter uses height and leaves saved right preview widths intact (113.762197ms)
+✔ an in-flight shell preference refresh keeps a newer reading layout (117.594334ms)
+✔ failed preference writes keep the usable layout and a later choice can save (102.039185ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1021.108819
+✔ noisy IMAP roles produce a bounded, canonical chip order without changing server folders (202.688483ms)
+✔ known aliases share labels while disabled, malformed and custom folders do not create chips (114.701683ms)
+✔ the selected duplicate retains its real folder id and chip click stays in that mailbox (113.819349ms)
+✔ adding and switching accounts never merges folder chips; All Account Mail and Outbox keep their own views (133.437555ms)
+✔ expanded custom IMAP, Gmail and Outlook accounts retain identical colorful icon rows (129.607101ms)
+✔ saved provider collapse is respected and expanding restores the shared icon list (128.784375ms)
+✔ a known-role metadata refresh updates the cached sidebar icon without renaming a custom folder (111.043913ms)
+✔ the actual Features catalog tab describes chip scope, supported roles and shared folder icons (74.963159ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1022.413048
+✔ Separate window keys follow the single clicked message across accounts, not the hidden preview (229.235624ms)
+✔ captured reply survives later selection without retargeting; repeat and failed/mismatched reads never compose stale mail (109.611932ms)
+✔ right/bottom previews block old-message shortcuts during opens, stale completion and failures (200.010008ms)
+✔ independent reader retains its own target with Separate window preferences and shell selection (82.654844ms)
+✔ busy shortcut dispatch does not queue repeated replies or substitute a newer selection (88.07852ms)
+✔ help describes selection scope and blocked previews in the rendered Features and Shortcuts (92.210699ms)
+✔ open View menu blocks mail actions and selection shortcuts (78.867303ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 885.765836
+✔ provider flags survive full sync, rotating refresh, cache restart and metadata lists; Outbox recipients preserve queue summaries (608.67842ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 612.379059
+✔ independent scopes default off, exact desktop consent is required, describe reflects writes (66.170523ms)
+✔ archive uses one confirmed move, idempotent polling, stable UUID casing and normal Undo (60.418777ms)
+✔ read and unread are explicit provider writes, including a matching cached read state (67.784913ms)
+✔ Trash never expunges, repeated Trash does not replace Undo and unsupported identities fail honestly (53.556568ms)
+✔ cross-account IDs, ungranted/disconnected accounts and arbitrary inputs admit no writes (47.648292ms)
+✔ revoke during beforeSecret prevents the provider write and rolls back the optimistic projection (51.721531ms)
+✔ revoke during beforeConnect prevents the provider write and rolls back the optimistic projection (52.037566ms)
+✔ revoke during beforeLock prevents the provider write and rolls back the optimistic projection (49.578692ms)
+✔ an already-submitted change remains recorded after revocation (56.35387ms)
+✔ provider refusal and uncertainty preserve independent outcomes and never resubmit a UUID (58.885003ms)
+✔ receipt failures cannot authorize queued work, and corrupt stores fail closed (48.227722ms)
+✔ grant rotation, listener stop, missing folders and later desktop changes cannot broaden an admitted request (58.357291ms)
+✔ restart retires accepted bot work without retry (50.160166ms)
+✔ restart retires publishing as unknown (48.361013ms)
+✔ real HTTP dispatch uses catalog scopes and stable request IDs with mocked authentication (89.246336ms)
+✔ Gmail checks the grant after asynchronous token reads at the actual write boundary (5.600303ms)
+✔ Gmail bridge writes use real label/Trash adapters, preserve labels and never call permanent deletion (111.835672ms)
+✔ ambiguous legacy Gmail identities do not mutate any guessed message (72.615701ms)
+✔ update preparation retires queued bot changes and waits for admitted provider work (97.287565ms)
+ℹ tests 19
+ℹ suites 0
+ℹ pass 19
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1152.216674
+✔ chained no-expiry and sending confirmations survive queued close (reduced motion) (286.570576ms)
+✔ chained no-expiry and sending confirmations survive queued close (motion) (138.52096ms)
+✔ cancel at expiry review writes nothing and permits a fresh attempt (116.929514ms)
+✔ escape at expiry review writes nothing and permits a fresh attempt (118.815667ms)
+✔ cancel at sending review writes nothing and permits a fresh attempt (122.251318ms)
+✔ escape at sending review writes nothing and permits a fresh attempt (98.955101ms)
+✔ the reviewed mailbox labels and entire grant request retain the submitted selection (111.787078ms)
+✔ persistence failure remains visible, exposes no secret and requires fresh reviews on retry (97.149096ms)
+✔ transport failure remains visible, exposes no secret and requires fresh reviews on retry (96.690728ms)
+✔ repeated clicks during slow fake persistence cannot duplicate a grant (93.86926ms)
+✔ finite expiry, default read access, missing accounts and Features retain their boundaries (96.154733ms)
+✔ mail.archive starts off and needs a separate exact-mailbox review after expiry and sending (95.999601ms)
+✔ mail.read_state.write starts off and needs a separate exact-mailbox review after expiry and sending (99.787921ms)
+✔ mail.trash starts off and needs a separate exact-mailbox review after expiry and sending (91.655685ms)
+✔ cancel at the mail-change review cannot create a write grant (86.542292ms)
+✔ escape at the mail-change review cannot create a write grant (85.75465ms)
+✔ mail-change receipt UI and CLI expose actual contract operations and honest pending state (92.802798ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 17
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1938.030899
+✔ column normalization upgrades missing/new columns and rejects unknown/duplicate entries (1.463349ms)
+✔ actual preload/settings persist order independently of sorting and other preferences (5.629657ms)
+✔ keyboard and dialog movement reorder headers and cells without sorting; reset restores defaults (283.489277ms)
+✔ drag cancellation, foreign drops and Escape do not save or sort; successful drop saves once (127.932994ms)
+✔ sidebar flag rows replace Inbox chip; counts, selection and invalidation use aggregate scope (116.255341ms)
+✔ host aggregate lists match per-account flags and counts, with bounded pages and account-specific exclusions (1286.290198ms)
+✔ repainting an unchanged header preserves keyboard focus and pending load cannot overwrite an edit (98.604864ms)
+✔ header menu and dialog share visibility without changing sorting or full order; keyboard closes and restores focus (184.236725ms)
+✔ subject prefix icons only describe explicit positive flags, with no status column or visibility control (106.102237ms)
+✔ a failed visibility save is visible and queued later writes can recover; a late settings read cannot undo visibility edits (100.745771ms)
+✔ switching aggregate filters fences a late starred page and keeps unread selection (91.575434ms)
+✔ failed star/read writes restore aggregate membership without clearing another selection (86.439248ms)
+✔ keyboard moves choose visible neighbors while retaining hidden-column order (110.123549ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2605.149429
+✔ full fresh boot: changelog-ok releases one guide; Later persists across restart (440.569178ms)
+✔ full fresh boot: changelog-close releases one guide; Later persists across restart (298.194522ms)
+✔ full fresh boot: Escape releases one guide; Later persists across restart (253.46491ms)
+✔ new user with bundled Google configuration still receives the five-step guide (107.623092ms)
+✔ existing mailboxes are preserved without automatic onboarding (110.033774ms)
+✔ late and dynamic dialogs defer onboarding, and close resumes exactly once (122.34608ms)
+✔ slow changelog readiness releases the guide on seen, unseen and failed reads (354.010154ms)
+✔ skip and finish work without mailbox, calendar or AI, with restart at saved step (244.952927ms)
+✔ connect handoff returns after cancel and delayed OAuth account updates (130.358207ms)
+✔ account-specific completion and editors never inherit another mailbox status (114.685501ms)
+✔ stale calendar read cannot repaint another step or a closed guide (107.200677ms)
+✔ actual preload and settings host persist navigation only and preserve configured preferences (5.024888ms)
+✔ calendar action is pinned, deduplicated and cancellable; late completion does not reopen a dismissed guide (132.681837ms)
+✔ failed completion reads never claim connection or a saved signature (106.545674ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2616.617655
+✔ first use offers import and Later, with actual Accounts settings entry visible outside Advanced (334.223323ms)
+✔ configured profiles and existing accounts never receive the setup prompt (479.158308ms)
+✔ Escape/back cancellation and programmatic close persist dismissal (222.049704ms)
+✔ picker cancellation and invalid schema keep retry available without storing dismissal (91.67956ms)
+✔ repeat clicks share importer; success saves dismissal and does not start authorization (93.620145ms)
+✔ Later remains nonblocking during picker and other windows observe dismissal (163.989341ms)
+✔ readiness failure or another open dialog never triggers a setup prompt (162.419603ms)
+✔ successful Settings import records onboarding completion, even without the prompt (79.417148ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1631.245808
+PASS platform file metadata: POSIX 0600 remains mandatory; Windows 0666 uses supported read/write flags; directories are rejected
+PASS environment file > primary JSON > alias JSON > userData > repository > packaged; clear preserves fallbacks
+PASS native-picker handler with synthetic selection: BOM, cancel, malformed/Web/bare/array/missing/oversized, picker/write failure; prior file preserved; platform file metadata/status
+PASS actual preload -> renderer handlers -> host; readiness without restart; repeated/pending/cancelled/failed import; synthetic Features/CLI DOM
+PASS OAuth busy controls and environment-file/JSON diagnostics identify the actual failing source
+PASS Out of Office enablement cannot replace a current Calendar grant with an identityless shared bundle
+PASS Gmail reconnect preserves a current-client primary Calendar fallback instead of an identityless Calendar slot
+PASS reviewed Gmail reauthorization preserves a current-client shared Calendar fallback instead of a different-client Calendar slot
+PASS same-client control: existing expired Calendar token refreshes and lists successfully
+PASS client switch preserves Calendar credential but marks it disconnected; partial consent preserves it; ordinary enable reauthorizes and then reuses the bound grant
+PASS mail and Calendar pending OAuth reject import/clear and save only grants for the unchanged client
+PASS external client changes during mail/Calendar OAuth cannot commit obsolete credentials
+PASS unknown/mismatched grants block cached access and refresh without network; ordinary reauthorization recovers; a matching fallback remains usable
+PASS clear to another bundled client reports reconnect immediately; saved tokens remain and switching back restores their binding
+PASS late refresh is rejected after a client change; cancelling an exchange retains the lease until settlement and then permits retry
+PASS persisted client binding survives a process restart and follows later effective-client changes
+google-client-switching-ok: 16 fixture groups; provider I/O mocked; local loopback only; no native/live validation
+✔ new connection clears old manual/reconnect state on every open and close (232.58362ms)
+✔ Gmail OAuth reconnects collapse manual fields for legacy and API accounts (104.294431ms)
+✔ manual-provider reconnects preserve the form and exact custom servers; Gmail password accounts remain manual (105.349026ms)
+✔ empty-state, Settings and setup entrypoints use the same fresh connection route (104.252698ms)
+✔ actual Google button bypasses required manual password/email validation without submitting IMAP (97.356989ms)
+✔ unavailable Google stays disabled with optional advanced guidance and no password fallback (114.444169ms)
+✔ exact migration-required host envelope replaces retry advice with review-only action (121.99951ms)
+✔ removed migration target never navigates or migrates another account (104.766201ms)
+✔ unpinned migration error asks for mailbox selection and closing/reopening clears old action (98.673077ms)
+✔ removing the pinned Gmail during discard confirmation or permission loading cancels review instead of focusing another mailbox (214.458911ms)
+✔ other OAuth errors retain their message without migration action or automatic password request (84.519774ms)
+✔ Features, help and optional import status agree without changing explicit client selection (90.804796ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1479.155712
+✔ account overview opens directly, wraps full identities safely and keeps Settings independent of Mail (322.624519ms)
+✔ repeated account choices cannot replace an unsaved Out of Office discard review (176.648163ms)
+✔ removing the viewed account refreshes fallback permissions and retires delayed reads (168.417102ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 672.229633
+attachment-engine-ok (IMAP: shared reads, identity, Save ordering, cancellation, reconnect, retry)
+attachment-engine-ok (Gmail API: shared reads, identity, Save ordering, cancellation, reconnect, retry)
+attachment-ui-ok (real renderer functions, synthetic DOM: repeated actions, progress, preview close, independent Save)
+attachment-transfers-ok (bounded cache/TTL/LRU, real provider/handler source, offline only)
+responsive-attachments-ok: worker parity/heartbeat/cancellation/admission/recovery, retained sidebar linear lookups, rendered help
+Gmail cache fixtures: production persistence/parser
+✔ legacy cache ids, complete bodies, local work and arbitrary Gmail ids survive adoption (121.88852ms)
+✔ ambiguous RFC matches retain cache and refuse reads/moves rather than guessing (51.97382ms)
+✔ bounded paging resumes across sessions and history removes known copies, with expired-cursor backfill (70.653772ms)
+✔ the engine's numeric zero means All history; shorter horizons retain existing cache (60.630815ms)
+✔ body retrieval fetches text and attachment bytes only when needed (56.16104ms)
+✔ complete IMAP bodies retain text while attachment metadata rebinds to distinct Gmail part ids (53.01963ms)
+✔ label copies cannot repeat Trash or replace its snapshot; Undo from All Mail restores Inbox and later flags (57.599236ms)
+✔ verified Trash reconciles legacy copies outside live labels without touching unrelated or pending mail (56.615303ms)
+✔ ambiguous legacy copies in a non-live folder refuse reconciliation atomically (46.195528ms)
+✔ moves/Trash/restore use stable provider identity and label rename preserves cache ids (62.250048ms)
+✔ unuploaded drafts survive migration; removed accounts cannot be resurrected by late responses (47.076732ms)
+✔ Gmail protected Sent/Draft labels are never manually applied or removed; Trash Undo uses untrash (62.786363ms)
+✔ migration blocks unsettled writes but does not strand already superseded/confirmed flags (44.128936ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 796.918344
+gmail-engine-ok: explicit migration, declined/partial/mismatch/storage rollback, cache retention and separate Calendar
+gmail-engine-ok: repeated openEmail(full:true) refreshes unadopted attachment metadata and retains complete cached text/HTML
+gmail-engine-ok: actual cache/network list handlers remove all verified legacy label copies after one Trash while retaining unrelated mail/local edits
+gmail-engine-ok: migrated attachment bytes, conversation Trash deduplication/Undo, Archive from All Mail/search and preserved later flags
+gmail-engine-ok: save before legacy draft adoption, repeated Save and discard; earlier unmapped server draft is retained
+gmail-engine-ok: actual MIME/Bcc/reply headers, draft revisions/cleanup/failure retention, send receipts and ambiguous/scheduled delivery
+gmail-engine-ok: cancellation/removal cannot commit a late OAuth result
+✔ legacy and RPC reasons distinguish quota, permission, disabled API and domain policy (25.776453ms)
+✔ HTTP evidence survives absent/unsupported/conflicting details without a false missing-scope claim (4.089664ms)
+✔ malformed, oversized and unreadable error bodies have bounded safe fallbacks (7.161839ms)
+✔ stalled, aborted and cancellation-resistant streams cannot hide a known HTTP result (1501.562595ms)
+✔ transport diagnostics use static operations and never resubmit writes (16.161309ms)
+✔ trusted Gmail category decides rate limits; legacy text heuristic stays (0.853342ms)
+✔ engine sync activity, IPC, Debug log and actual DOM keep safe details without a false auth gate (799.423377ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2377.346617
+✔ the real IMAP cap reaches body activity as Limited and a later complete read clears it (402.416174ms)
+✔ IMAP flags-only response without usable body keeps unread and Retry recovers mail pane (271.924368ms)
+✔ IMAP flags-only response without usable body keeps unread and Retry recovers reader window (186.519846ms)
+✔ IMAP empty response without usable body keeps unread and Retry recovers mail pane (171.675244ms)
+✔ IMAP empty response without usable body keeps unread and Retry recovers reader window (158.035085ms)
+✔ IMAP other-uid response without usable body keeps unread and Retry recovers mail pane (148.855178ms)
+✔ IMAP other-uid response without usable body keeps unread and Retry recovers reader window (165.220813ms)
+✔ IMAP flags-only refresh preserves partial cached body (151.097071ms)
+✔ IMAP flags-only refresh preserves complete cached body (133.452119ms)
+✔ failed body GET keeps unread and Retry recovers mail pane (156.269593ms)
+✔ failed body GET keeps unread and Retry recovers reader window (150.718954ms)
+✔ failed partial-body refresh keeps cached HTML, exposes retry, and clears warning on success (151.078524ms)
+✔ a failed background fill publishes a warning without replacing cached content (54.675509ms)
+✔ one history record with 105 messages is bounded and resumes after reopening the store (526.706778ms)
+✔ a queued foreground open runs before the remainder of a large history record (169.98016ms)
+✔ a failed resume checkpoint rolls back message adoption and can retry without lost IDs (61.573362ms)
+✔ bootstrap newest-page refresh and cached verification share the actual-read budget (615.691941ms)
+✔ deadline, 404 and history page continuation retain every remaining change (55.093757ms)
+✔ removal during a pending history read cannot recreate data or its checkpoint (47.276172ms)
+✔ Gmail label copies count once, retain the selected copy and leave folder storage intact (275.615666ms)
+✔ a real conversation counts distinct provider messages rather than its nine label copies (151.645757ms)
+✔ missing IDs, duplicate RFC IDs, distinct provider messages and accounts are not conflated (52.576305ms)
+✔ Features and Settings describe the tested read, sync, signature and conversation behavior (78.600781ms)
+✔ cross-account From preserves rich body (text signature edit; destination signature true) (94.354278ms)
+✔ cross-account From preserves rich body (text signature edit; destination signature false) (83.652111ms)
+✔ cross-account From preserves rich body (markup signature edit; destination signature true) (78.583996ms)
+✔ cross-account From preserves rich body (markup signature edit; destination signature false) (77.711405ms)
+✔ cross-account From preserves rich body (none signature edit; destination signature true) (88.261815ms)
+✔ cross-account From preserves rich body (none signature edit; destination signature false) (92.407614ms)
+✔ HTML automatic divs signature follows From (none edit; destination signature true) (91.670977ms)
+✔ HTML automatic divs signature follows From (none edit; destination signature false) (85.105524ms)
+✔ HTML automatic divs signature follows From (text edit; destination signature true) (95.403814ms)
+✔ HTML automatic divs signature follows From (text edit; destination signature false) (86.380449ms)
+✔ HTML automatic divs signature follows From (markup edit; destination signature true) (87.472138ms)
+✔ HTML automatic divs signature follows From (markup edit; destination signature false) (86.502253ms)
+✔ HTML automatic entities signature follows From (none edit; destination signature true) (80.887777ms)
+✔ HTML automatic entities signature follows From (none edit; destination signature false) (91.115132ms)
+✔ HTML automatic entities signature follows From (text edit; destination signature true) (134.342527ms)
+✔ HTML automatic entities signature follows From (text edit; destination signature false) (82.975393ms)
+✔ HTML automatic entities signature follows From (markup edit; destination signature true) (83.13937ms)
+✔ HTML automatic entities signature follows From (markup edit; destination signature false) (84.252953ms)
+ℹ tests 41
+ℹ suites 0
+ℹ pass 41
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5952.954792
+fresh-review-renderer-ok: immutable preview, AI gates, calendar type sanitization
+local-sent-reply-ok: bot/synthetic SMTP, filing success/failure, legacy repair, adoption and remote-header gates
+legacy-alias-reply-ok: original v0.3.0 bot/Sent-filing/fallback fixtures, reopened DB, recipients/name, 11 remote negatives and provider adoption
+fresh-review-host-ok: Gmail charset/MIME isolation, structured Reply-To, draft hydration/MIME/queue/failure/cancel/retry
+mail-performance-ok: metadata parity/Unicode, cached open, unchanged-index journal evidence, changed-field search/recovery, bounded private timings and fake Keychain
+mail-phase-two-ok: {"completeListQueries":15,"incompleteListQueries":15,"bodyNotificationBytes":145,"cachedListMedianMs":3.52,"cachedListP95Ms":3.92,"unopenedNotices":1000,"retainedUnopenedBodies":0,"cacheEntries":32,"cacheBytes":8388608,"entryBytes":2097152,"burstReads":2,"bodyReloads":0}
+PASS: actual background scheduler completion survives a synthetic >15s wall-clock advance
+PASS: worker failures propagate and retain sealed input
+PASS: malformed production worker reports fail and retain sealed input
+PASS: absent scheduling remains a bounded failure
+startup-preparation-ok: fixed phases, durable budgeted batches, startup/size/cost/age/headroom gating, retries and owned cleanup; no native dependencies
+startup-upgrade-progress {"scenario":"complete","event":"start","phase":"opening","completed":0,"expectedRemaining":300,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"complete","event":"closed","phase":"ready","completed":300,"expectedRemaining":300,"updates":300,"batches":300,"yields":313,"elapsedMs":388,"cpuUserMs":350,"cpuSystemMs":93}
+startup-upgrade-progress {"scenario":"warm","event":"start","phase":"opening","completed":0,"expectedRemaining":0,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"warm","event":"closed","phase":"ready","completed":0,"expectedRemaining":0,"updates":0,"batches":0,"yields":5,"elapsedMs":60,"cpuUserMs":53,"cpuSystemMs":15}
+startup-upgrade-progress {"scenario":"abort","event":"start","phase":"opening","completed":0,"expectedRemaining":300,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"abort","event":"closed","phase":"cancelled","completed":2,"expectedRemaining":300,"updates":2,"batches":2,"yields":4,"elapsedMs":44,"cpuUserMs":38,"cpuSystemMs":11}
+startup-upgrade-progress {"scenario":"resume","event":"start","phase":"opening","completed":0,"expectedRemaining":298,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"resume","event":"closed","phase":"ready","completed":298,"expectedRemaining":298,"updates":298,"batches":298,"yields":311,"elapsedMs":369,"cpuUserMs":330,"cpuSystemMs":91}
+startup-upgrade-progress {"scenario":"close","event":"start","phase":"opening","completed":0,"expectedRemaining":300,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"close","event":"closed","phase":"cancelled","completed":2,"expectedRemaining":300,"updates":2,"batches":2,"yields":4,"elapsedMs":45,"cpuUserMs":34,"cpuSystemMs":16}
+startup-upgrade-progress {"scenario":"resume","event":"start","phase":"opening","completed":0,"expectedRemaining":298,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"resume","event":"closed","phase":"ready","completed":298,"expectedRemaining":298,"updates":298,"batches":298,"yields":311,"elapsedMs":368,"cpuUserMs":345,"cpuSystemMs":52}
+startup-upgrade-progress {"scenario":"journal-failure","event":"start","phase":"opening","completed":0,"expectedRemaining":300,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"journal-failure","event":"closed","phase":"failed","completed":1,"expectedRemaining":300,"updates":2,"batches":2,"yields":3,"elapsedMs":44,"cpuUserMs":37,"cpuSystemMs":13}
+startup-upgrade-progress {"scenario":"resume","event":"start","phase":"opening","completed":0,"expectedRemaining":299,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"resume","event":"closed","phase":"ready","completed":299,"expectedRemaining":299,"updates":299,"batches":299,"yields":312,"elapsedMs":348,"cpuUserMs":308,"cpuSystemMs":69}
+startup-upgrade-progress {"scenario":"sqlite-full","event":"start","phase":"opening","completed":0,"expectedRemaining":300,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"sqlite-full","event":"closed","phase":"failed","completed":1,"expectedRemaining":300,"updates":2,"batches":1,"yields":3,"elapsedMs":44,"cpuUserMs":42,"cpuSystemMs":9}
+startup-upgrade-progress {"scenario":"resume","event":"start","phase":"opening","completed":0,"expectedRemaining":299,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"resume","event":"closed","phase":"ready","completed":299,"expectedRemaining":299,"updates":299,"batches":299,"yields":312,"elapsedMs":341,"cpuUserMs":311,"cpuSystemMs":60}
+startup-upgrade-progress {"scenario":"resume","event":"start","phase":"opening","completed":0,"expectedRemaining":298,"updates":0,"batches":0,"yields":0,"elapsedMs":0,"cpuUserMs":0,"cpuSystemMs":0}
+startup-upgrade-progress {"scenario":"resume","event":"closed","phase":"ready","completed":298,"expectedRemaining":298,"updates":298,"batches":298,"yields":311,"elapsedMs":352,"cpuUserMs":295,"cpuSystemMs":85}
+startup-upgrade-ok: fresh checkpoint admission, legacy bodies, phase/admission boundaries, per-message budgets, abort/close/journal-failure/SQLITE_FULL/process-exit resume, parity and numeric worker timings
+startup-upgrade-resources []
+keychain-reads-ok: blocked/timeout/queue/output/error/cancel/shared/revision/account/client/scan/compatibility; synthetic children only
+outbox-ok
+agent todos ok
+agent card view ok
+agent-learning-store-ok: Unicode IDs, revoke, non-adjacent retries, out-of-order success, schema preservation
+agent-learning-followups-ok: actual renderer receipts, deferred completion, projection, reply source, mounted suggestions
+agent-learning-journal-ok: real durable actions and renderer-to-host sends, delayed success/failure, partial/canceled sends
+agent learning ok
+ui-editor-feedback-ok (signature races, mail-only keys, calendar inline errors; no live I/O)
+calendar-keyboard-followup-ok (Cancel/read races, local dates in 4 time zones, focused controls, form errors; no live I/O)
+body-sync-status-ok (sessions, ownership, states, privacy, sync tooltip; no live I/O)
+✔ Outbox Undo forwards the validated original Agent todo through draft resume and confirmed resend (18.372371ms)
+✔ Outbox Undo omits missing or malformed Agent todo metadata (21.448973ms)
+✔ Outbox Undo keeps the original Agent todo open after a failed resend (2.858625ms)
+✔ failed-first settlement retains unreported rows and their pending ownership (3.506728ms)
+✔ separate Archive, Trash and Move batches accumulate without replacing earlier Undo (3.17515ms)
+✔ restoring the completed checklist does not retire another pending batch (2.672746ms)
+✔ new batch settlements wait for an in-flight restore and preserve both results (2.777462ms)
+✔ clearing a session rejects its late completion instead of reviving Undo (2.894429ms)
+✔ delayed bulk accepted keeps reader ownership after all Undo (4.498599ms)
+✔ delayed bulk accepted keeps reader ownership after subset Undo (3.264385ms)
+✔ delayed bulk accepted keeps reader ownership after replacement Undo (2.96891ms)
+✔ delayed bulk accepted keeps reader ownership after none Undo (3.001399ms)
+✔ delayed bulk completed keeps reader ownership after all Undo (4.549505ms)
+✔ delayed bulk completed keeps reader ownership after subset Undo (2.833798ms)
+✔ delayed bulk completed keeps reader ownership after replacement Undo (2.659145ms)
+✔ delayed bulk completed keeps reader ownership after none Undo (2.602049ms)
+✔ a replayed removal receipt cannot resurrect a restored item in the accumulated session (2.295578ms)
+✔ pending restore settlements drain queued later batches without losing their Undo (2.426335ms)
+✔ conflicting changes to one message remain distinct and cannot restore together (2.532044ms)
+✔ later batches preserve an open Details selection until Undo selected (467.162554ms)
+✔ a second subset cannot overwrite a pending Undo tracker (2.493727ms)
+✔ a repeated completion cannot resolve the last outstanding row (2.154597ms)
+✔ an old settlement of the same message cannot claim a replacement Undo (2.538022ms)
+✔ settlement before a rejected invoke never resurrects completed Undo rows (2.579174ms)
+✔ an old rejected Undo cannot overwrite the replacement session receipt (2.049138ms)
+✔ a list reload failure does not report a completed restore as unknown (2.09662ms)
+✔ an older scheduled restore leaves the replacement Undo and receipt intact (2.610622ms)
+✔ Details cancels the notice dwell timer until dismissed (2.112704ms)
+✔ late same-session account completions preserve Details, checks, scroll and checkbox focus (126.509695ms)
+✔ closed Details retain surviving checks when the current session grows (116.06921ms)
+✔ duplicate and absent subjects describe sender, action, destination and owning mailbox (113.392909ms)
+✔ single-mailbox Details stay compact and unavailable mailboxes never expose opaque account IDs (98.987288ms)
+✔ rendered Features describe preserved late Details updates and accepted scheduled restores (108.487696ms)
+✔ an accepted scheduled restore reports success after its offer expires (2.824102ms)
+✔ an old scheduled restore success cannot overwrite a newer active cancellation offer (2.202179ms)
+✔ an old scheduled restore success cannot overwrite a newer expired cancellation offer (2.086935ms)
+✔ an accepted scheduled restore reports failure after its offer expires (2.117611ms)
+✔ an old scheduled restore failure cannot overwrite a newer active cancellation offer (2.157191ms)
+✔ an old scheduled restore failure cannot overwrite a newer expired cancellation offer (2.185403ms)
+✔ unclaimed scheduled offers still expire and restore failures can retry only before expiry (2.348343ms)
+✔ rendered Undo buttons require review, cancel without writes and freeze the submitted subset (121.137213ms)
+✔ rendered Undo review refuses a retired session (141.562809ms)
+ℹ tests 42
+ℹ suites 0
+ℹ pass 42
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1426.070357
+✔ Mail F1: an uncertain Outbox claim retains content, identity and recovery across a lost notification (3.145235ms)
+✔ Mail F2/F8: CSS image functions cannot bypass opt-out and backgrounds expose the per-message gate (24.258483ms)
+✔ Mail F3: split-account settlements stay in one Undo session: one,two (11.20957ms)
+✔ Mail F3: split-account settlements stay in one Undo session: two,one (8.1275ms)
+✔ Mail F3: settlement before invoke return accumulates across batches but cannot revive a cleared session (8.112628ms)
+✔ Mail F4/F5: the actual separate-reader boot subscribes to settlements and applies terminal flag refusal (8.490655ms)
+✔ Mail F5: a delayed terminal refusal cannot overwrite a newer flag projection (6.446364ms)
+✔ Mail F6: late mail:listFromNetwork cannot replace Outbox (11.096831ms)
+✔ Mail F6: late mail:searchLocal cannot replace Outbox (6.33736ms)
+✔ Mail F7: selected Outbox renders Unknown and Retry with an empty or stale queue (15.055698ms)
+✔ Agent F1/F2: filing follows matching journal receipts without overwriting interleaved state (12.025295ms)
+✔ Agent F1: direct and delayed failed filing remains reviewable (2.898094ms)
+✔ Agent F1: direct and delayed unknown filing remains reviewable (2.432254ms)
+✔ Agent F1: direct and delayed not_attempted filing remains reviewable (2.884473ms)
+✔ Agent F2: a proposal dismissed during a successful provider write is not resurrected (1.569568ms)
+✔ Agent F1/F2: a successful API filing preserves newer todo, proposal, run and schedule deletions (1.606463ms)
+✔ Agent F1: saved filing links reconcile missed settlement from the matching durable journal (1.630289ms)
+✔ Agent F1: pending and unsuccessful filing cards remain rendered and only completion removes them (6.899045ms)
+✔ Agent F1: the rendered filing button does not announce a pending receipt as confirmed (7.771435ms)
+✔ Agent F3: Learned suppression applies to conversation triage, mail cards and reopened history (11.650492ms)
+✔ Agent F4: blurred notes, page reopen and save acknowledgments preserve newer edits (14.745662ms)
+✔ Agent F5: rendered Run and Home chips preserve duplicate or command-like skill IDs (9.653473ms)
+✔ Agent F6: Retry download stays in unread peek and ignores superseded results (6.907547ms)
+✔ Agent F9: polling retains focused and blurred dirty Minutes between runs (7.003081ms)
+✔ Agent F9: polling retains focused and blurred dirty Cron schedule (5.824931ms)
+✔ Agent F9: polling retains focused and blurred dirty Contact email for this schedule (6.409048ms)
+✔ Agent F9: schedule-event reads recheck editor ownership after their await (7.503362ms)
+✔ Settings F1: actual Bot handlers retain disable, enable-then-disable and revoke while probing (9.756067ms)
+✔ Settings F1: an older access-status read cannot repaint an acknowledged disable (13.859ms)
+✔ Settings F2: delayed Out of Office writes and refreshes retain edits and update the saved revision (20.456661ms)
+✔ Settings F3: the real fold loader owns A to B to A vacation reads (7.964875ms)
+✔ Settings F4: schedule autosave preserves newer minutes after success (6.772314ms)
+✔ Settings F4: schedule autosave preserves newer minutes after failure (6.193294ms)
+✔ Settings F4: overlapping schedule changes serialize the submitted hour/minute snapshots (6.04424ms)
+✔ Settings F4: ordinary preference readback does not replace a newer unsaved input (6.5967ms)
+✔ Settings F5: General reads only local learning and the rendered navigation fixture uses the real write channel (6.183299ms)
+✔ cheap P3: Compose mailbox, provider consent, image defaults and AI Setup status match their owners (7.132926ms)
+✔ Features: actual catalog render and tab switching keep recovery, privacy and CLI claims aligned (11.338443ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2096.956625
+✔ Compose P1: actual host broadcasts and late completion/cancel events preserve manual edits and dirty state (42.297343ms)
+✔ Compose P2: Undo and failed-send snapshots preserve empty recipients and exactly one signature (22.877319ms)
+✔ Compose P2: Undo retains an inert recovery draft on both Compose creation and main-frame load failures (22.47956ms)
+✔ Compose P2: attachment read and upload block every finalization and cannot mutate a later session (24.664384ms)
+✔ Compose P2: attachment completion or failure clears its pending state before actions resume (19.416129ms)
+✔ Compose P2: production scheduled-to-draft conversion rolls back both sides of failed recovery (8.881061ms)
+✔ Compose P2/P3: query changes fence highlighted/clicked choices and escaped contact names round-trip (15.938284ms)
+✔ Compose P2: untouched multiline HTML signatures follow an alias; edited signatures do not (16.024083ms)
+✔ Brain P1: Refresh and Rebuild preserve concurrent rule additions, edits, deletions and categories (7.506397ms)
+✔ Brain P2: non-Latin facts and names survive all production normalizers (3.02901ms)
+✔ Brain P2: voice Fix persists; obsolete positional Fix and missing rows cannot report success (1.364229ms)
+✔ Brain P1/P2: a learned Fix completed during analysis is not overwritten by the older persona job (0.630667ms)
+✔ Brain P2: category save/readback preserves both newer list edits and unsubmitted form typing (20.251063ms)
+✔ Brain P3: actual compose preferences accept equals in both CC and BCC recipients (1.792103ms)
+✔ Calendar P2: title-only edits omit time fields for both providers during the repeated DST hour (47.231495ms)
+✔ Calendar P2: literal descriptions survive Google HTML and Graph Text serializers; HTML projections retain links (0.836427ms)
+✔ Calendar P2: actual editor retries reuse provider creation IDs after a committed response is lost (21.419849ms)
+✔ Calendar P2: known grant failures request explicit reauthorization, without changing ordinary reuse (19.453105ms)
+✔ Calendar P2: the actual sidecar reenters consent for a revoked stored grant and preserves credentials on cancellation (17.364116ms)
+✔ Calendar P2: confirmed Delete invalidates the captured account even after Cancel or account switch (20.280477ms)
+✔ Calendar P3: Google calendar pagination preserves later-page selection and rejects incomplete enumeration (1.19171ms)
+✔ Calendar P3: agenda and shared day-cell comparator order different offsets by actual instant (12.086057ms)
+✔ Features: production catalog rendering and page/CLI help describe the fixed contracts (9.13279ms)
+✔ Existing provider description guards still reject lossy, stale, oversized and uncertain replacements (7.340628ms)
+ℹ tests 24
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 371.197698
+✔ F1: selected Gmail provider IDs and saved UID aliases win over duplicate RFC matches (11.545014ms)
+✔ F1: duplicate and paginated legacy Gmail lookups fail closed without a provider write (4.128251ms)
+✔ F1/F5: provider acknowledgements retain all memberships, not just the label edit limit (1.69073ms)
+✔ F1: malformed legacy RFC identities cannot broaden the provider search (4.717477ms)
+✔ F1: legacy Gmail lookup verifies the source folder and rechecks the selected row/account before POST (6.459163ms)
+✔ F1: Outlook lookup is scoped to the selected source folder, never the mailbox's first RFC hit (1.711701ms)
+✔ F1: ambiguous, paginated or missing Outlook matches and cross-account requests cannot write (3.836603ms)
+✔ F1/F4: legacy Outlook source resolution follows the full hierarchy and rejects duplicate paths (14.869228ms)
+✔ F2: a folder switch retires actual rendered rows before pending or failed cache reads (42.541219ms)
+✔ F2: reversed folder replies still preserve the newer list (10.320564ms)
+✔ F2: same-scope refresh keeps current rows actionable until its replacement is ready (6.103128ms)
+✔ F3: completed folder moves cannot remap another mailbox or a revisited selection (26.334703ms)
+✔ F3: an owned folder move follows its new path, without a delayed accounts refresh stealing navigation (8.951898ms)
+✔ F4: provider IDs and complete Gmail/Outlook paths outrank repeated leaf names (6.140865ms)
+✔ F4: production account views carry provider folder identity independently of IMAP paths (2.023329ms)
+✔ F5: actual list/detail projections hydrate rendered Gmail label checks and survive fresh projections (9.653693ms)
+✔ F5: membership projection batches bounded account-scoped queries and leaves IMAP labels unknown (2.482379ms)
+✔ F6: real provider label removal persists memberships and prunes only matching, unheld cached copies (1.807706ms)
+✔ F6: single current-label removal reconciles rows, reader and selection without consuming removal Undo (6.392163ms)
+✔ F6: bulk removal confirms and reconciles only successful current-label removals, retaining failed/unattempted/add-only rows (7.06213ms)
+✔ F6: canceled/failed label changes and delayed completion after navigation preserve the current view (6.676841ms)
+✔ F7: actual Open in Mail enters immediately and delayed completion cannot override newer Support navigation (59.305263ms)
+✔ F8: Escape preserves hidden Mail selection on every non-Mail page and retains Mail typing/overlay guards (10.193524ms)
+✔ P3 R5: Learned patterns and Delete recover after a failed read over mail (8.220039ms)
+✔ P3 R5: Learned empty state recover after a failed read over mail (7.168529ms)
+✔ P3 R5: Learned patterns and Delete recover after a failed read over agent (7.063211ms)
+✔ P3 R5: Learned empty state recover after a failed read over agent (6.530501ms)
+✔ P3 R6: rendered Features reuses clickable Settings Support destinations without moving or changing them (10.662218ms)
+✔ Features: wave3 catalog, rendered Features/Shortcuts/CLI tabs and identity claims stay aligned (8.928854ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 313.697155
+unread filter hold checks passed
+recipient-suggest-ok
+brain persona distill checks passed
+Signed update manifest and constrained downloads checks passed.
+(node:9602) [DEP0176] DeprecationWarning: fs.F_OK is deprecated, use fs.constants.F_OK instead
+(Use `node --trace-deprecation ...` to show where the warning was created)
+update installer: ZIP attacks, framework links, app.asar extract, identity/arch/strict checks, exit timeout, replacement and rollback passed
+Update launcher: private handoff, startup identity, duplicate receipt and uncertain-exit recovery checks passed.
+Signed update publisher checks passed
+Update shutdown gate, authenticated renderer handshake, editor refusal and recovery checks passed.
+signed-macos-controller-ok (linux; fixtures; native transition still required)
+signed-macos-controller-ok (Windows path emulation; fixtures; native transition still required)
+Windows update controller: draft refusal, draining, final-quit installation, scheduled quit refusal, cleanup, duplicates and failure recovery passed (mock installer).
+update-schedule-ok
+Release preflight and signing checks passed (ephemeral fixture keys only)
+Paired release staging and draft-only publication failure tests passed (mock API; no network).
+changelog-ok
+mail-discovery-ok
+bot-client-ok
+cli-capabilities-ok: 14 host operations; 7 intercepted command examples
+bot-setup-ux-ok (synthetic presentation only)
+bot-probe-ok
+macos-sign-hook-ok (mocked; native macOS verification still required)
+mail-calendar-consent-ok
+OAuth callback and Graph v1.0 folder regressions passed.
+mail reader synthetic checks passed
+settings-horizon-ok (180/365/All, catch-up, restart, race, UID reset, 2105-row paging)
+gmail-pace-ok
+bot-bridge-ok
+bot-send-authorization-ok: 24 invalidation races; submitted/join/replay preserved
+ux-workflows-ok
+operation-receipts-ok
+mail-actions-ok
+compose-recovery-ok
+dialog-feedback-ok
+search-scope-ok
+rules-context-ok
+scheduled-management-ok
+quit-scheduled-ok
+ux-remainder-ok
+mail-startup-failure-ok
+mail-persistence-hot-paths-ok flagBytes=267 warmSyncBytes=0
+mail-background-checkpoint-ok workerMs=105 sequence=311
+mail-persistence-large-file-ok
+mail-persistence-copy-failure-ok
+mail-persistence-recovery-ok
+sender-names-host-ok: MIME Unicode/quotes, draft resume/edit, scheduled snapshots/recovery, Sent and injection gates
+compose-identity-ok
+batch-b-ok
+background-folders-ok
+overnight-bodies-ok
+mail-review-regressions-ok (UID validity, rotating flags, discovery ownership)
+confirmed-identity-ok (dependent writes/retry/restart, body/parts, bound calendar edits)
+move-calendar-patches-ok (COPYUID generations, preview preservation, explicit clears, conflicts/retries)
+draft-scheduled-recovery-ok (local data, durable claims/receipts, crash/restart, uncertainty and recovery)
+draft-partial-delivery-ok (verified correlation, recipient receipts, Bcc-safe recovery, restart/failures)
+legacy-sender-proof-ok: production MIME/parser/IMAP formatter, historical display text, queued cleanup and real name/From/body edits
+draft-revisions-ok (pending edits, replace-before-retire, versioned cleanup, concurrency/crash, delayed and stale receipts)
+message-summary-ok: real consent/API/ChatGPT transport, identity/content fences, owned cancellation, late output, HTML/partial/long/empty input, both readers, preload and rendered help
+account-liveness-ok (23 reconnect invalidations; connected controls, orphan routes, process restart)
+index-opening-control-ok: join/conflict/admission/abort/late-load/boot-throttle/quit/failure/progress; synthetic storage/window only
+search-index-rebuild-ok: yield/progress/admission/parity/markers/abort/close/journal-failure/process-restart/incremental/warm; synthetic SQLite only
+startup-credential-quit-ok: actual engine/SQLite/held credential scan/pending scheduled mail; stay/dismiss/accepted window close; no live I/O
+bot-proactive-ok (synthetic cache, consent, lifecycle, cursor failures, import isolation, dedup, retry and transport)
+bot-proactive-ui-ok (actual preload, Settings DOM, native submission, host validation, Features and CLI)
+hermes-webhook-ok (independent golden vectors, exact bytes, legacy settings/cursor, secrets, admission codes, retry timestamps/IDs, permission and cancellation)
+ipc-diagnostics-ok (payloads, credentials, malformed channels, console/load copies; dispatch and dedup preserved)
+bot-provider-metadata-ok (reader local, sender may call; 2 intercepted alias lookups, 1 synthetic SMTP for join/replay)
+reconnect-calendar-preservation-ok (23 account cases; 16 calendar cases; reopen + process restart; no live I/O)
+✔ official dynamic registration, automatic callback, PKCE, identity and safe public status (77.426204ms)
+✔ cancelled, repeated, expired, stale, duplicate and hostile callback attempts do not exchange (5.327216ms)
+✔ real timer timeout and browser launch failure allow fresh retry (27.04362ms)
+✔ signature, issuer, audience, expiry, nonce, client and subject checks reject invalid credentials (29.98758ms)
+✔ discovery is pinned, unknown keys refresh, and incomplete registration retries issued client (6.067158ms)
+✔ identity-only grants remain connected and cannot infer; explicit reconsent enables plan usage (7.577767ms)
+✔ account registrations with matching email stay separate; explicit select and reauth preserve identities (8.240624ms)
+✔ refresh single-flight, rotation and terminal versus temporary failures (4.031148ms)
+✔ cancel and repeated login while code exchange is waiting cannot save stale tokens (3.405067ms)
+✔ logout waits for rotated refresh, aborts requests and cannot be undone by stale refresh/login (256.617816ms)
+✔ reauthorization supersedes an older refresh without overwriting its new credentials (7.993883ms)
+✔ logout discloses uncertain revocation when a racing refresh response is lost (2.680998ms)
+✔ explicit background opt-in, withdrawal, mode invalidation and sign-out storage failures fail closed (2.595189ms)
+✔ account model catalog and Responses constraints; text completion consumes streamed terminal event (6.772147ms)
+✔ truncated, incomplete, malformed, refused and failed streaming never retries or falls back (18.512691ms)
+✔ midstream quota limits pause requests until explicit retry and safe errors preserve diagnostics (3.607261ms)
+✔ account/mode change and user cancellation discard late Responses output (2.690062ms)
+✔ encrypted atomic credential storage preserves damaged files and never falls back to plaintext (1.801998ms)
+✔ existing API key/custom endpoint behavior and separate ChatGPT settings survive mode changes (7.975425ms)
+✔ host background classification survives async work and cannot be removed by foreground options (5.215668ms)
+ℹ tests 20
+ℹ suites 0
+ℹ pass 20
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 493.529125
+chatgpt-ui-ok: settings mode/login/cancel/manual callback/consent/models/save/test/logout and Features/CLI using synthetic DOM; no browser/native/live validation
+✔ settings: unsaved connection edits, saves and fresh permission reads require a new review (65.656206ms)
+✔ settings: revoke supersedes a pending permission read and reopen ignores an old load (24.669983ms)
+✔ settings: data consent is affirmative, background is separate, revoke wins over late grants and reads (25.615705ms)
+✔ settings: save keeps later mode, endpoint, model and key edits dirty; repeated save is serialized (27.846376ms)
+✔ settings: ChatGPT model edits made during save remain unsaved (22.569226ms)
+✔ settings: save failure preserves edits and retry, late save cannot overwrite a newer test (32.088902ms)
+✔ settings: test results and errors belong to the tested mode/configuration (157.448148ms)
+✔ settings: repeated tests ignore out-of-order success and failure; close ignores late results (32.45339ms)
+✔ settings: provider reads cannot replace a newer action or changed form (17.40825ms)
+✔ setup: unsaved connection edits, saves and fresh permission reads require a new review (5.421187ms)
+✔ setup: revoke supersedes a pending permission read and reopen ignores an old load (4.058498ms)
+✔ setup: data consent is affirmative, background is separate, revoke wins over late grants and reads (4.389477ms)
+✔ setup: save keeps later mode, endpoint, model and key edits dirty; repeated save is serialized (4.174724ms)
+✔ setup: ChatGPT model edits made during save remain unsaved (3.207329ms)
+✔ setup: save failure preserves edits and retry, late save cannot overwrite a newer test (4.154844ms)
+✔ setup: test results and errors belong to the tested mode/configuration (22.800424ms)
+✔ setup: repeated tests ignore out-of-order success and failure; close ignores late results (4.740053ms)
+✔ setup: provider reads cannot replace a newer action or changed form (2.633448ms)
+✔ shared login: cancel permits immediate retry and ignores old success/failure and status (32.194431ms)
+✔ shared login: failed cancellation remains retryable; disposal prevents late UI work (24.885057ms)
+✔ host discovery: cancel aborts the old wait; retry and late success/failure stay separate (19.173744ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 544.444001
+imap-client-errors-ok: 16 offline lifecycle cases; synthetic Features/help DOM; no native/live validation
+✔ an unready saved target names the missing step and still refuses grant (2.896882ms)
+✔ existing API/ChatGPT/background settings, corrupt files and old disclosures never grandfather permission (4.397757ms)
+✔ manual permission, separate background permission and local/remote disclosure (19.648679ms)
+✔ provider, path, model, key, mode and account changes require fresh consent and reject stale approval (5.292581ms)
+✔ revoke aborts concurrent API requests and ignores providers that deliver after abort (2.708018ms)
+✔ queued actions cannot resume after revoke/regrant and changed streams cannot send a fallback (3.363133ms)
+✔ actual host test and account-change IPC enforce permission independently of the renderer (3.933369ms)
+✔ actual Brain, Agent, custom/catalog skill, draft, suggestion and translation entrypoints all fail closed (26.068574ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 72.186139
+✔ Setup: a late initial account read cannot overwrite a successful save baseline or newer edits (433.723766ms)
+✔ Settings: repeatedly reopening a dirty draft reactivates review and saves without consent (574.244281ms)
+✔ Settings: closing and reopening during a pending read does not join or paint the old session (114.923055ms)
+✔ Settings: Cancel / revoke after reopening a dirty draft defeats an earlier pending Allow (116.235897ms)
+✔ actual preload and Settings read saved consent; affirmative manual and separate background choices reach validated host handlers (26.336707ms)
+✔ unready saved API/ChatGPT connections cannot enable Allow through the real bridge (107.866012ms)
+✔ connection validation and legacy-channel failures explain recovery and never approve a checked form (20.02198ms)
+✔ an unsaved key explains the blocked Allow and Save & review repairs the saved prerequisite without granting consent (19.353045ms)
+✔ unsaved provider/model edits cannot approve the earlier saved target and delayed status blocks Allow until reviewed (38.869195ms)
+✔ edits made while the initial permission read is pending stay unsaved after loading finishes (16.407199ms)
+✔ exposing the channels retains host token/manual/background validation and rejects unknown channels before IPC (16.023703ms)
+✔ a destination/model changed in another window invalidates the old Settings checkbox/token until fresh review (37.079947ms)
+✔ Save AI through Settings refreshes the saved binding without approving the new model (20.396864ms)
+✔ status and persistence errors leave Settings unapproved; failed revoke still stops host use (20.122321ms)
+✔ pending grant disables repeated clicks and defers review refresh; a changed model cannot win the pending grant (44.885273ms)
+✔ the existing AI Setup preload still uses the same explicit consent handlers; closing Settings disables its controls (15.997024ms)
+✔ ready ChatGPT consent stays bound to its selected account and separately chosen background use (17.625229ms)
+✔ Features and Settings help render the same explicit consent prerequisites (18.928308ms)
+✔ Settings and Setup keep material disclosure outside accordions, after connection controls, with accessible checkbox descriptions (193.921429ms)
+ℹ tests 19
+ℹ suites 0
+ℹ pass 19
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1860.476604
+✔ paged message/history/body/attachment reads retain provider ids and MIME without IMAP assumptions (22.471344ms)
+✔ draft create/update/resume preserve MIME, replies and attachments; save never sends and discard trashes (2.783933ms)
+✔ send requires an explicit action and preserves To/Cc/Bcc/threading/MIME without an automatic retry (2.688991ms)
+✔ read/star/archive/labels and Trash Undo preserve membership without erasing later flags (2.220697ms)
+✔ existing label hierarchy API is reused with redirects disabled (1.265091ms)
+✔ HTTP failure, lost writes, history expiry, malformed data and cancellation stay explicit (4.738119ms)
+✔ real batch/legacy action paths turn Gmail deletion into Trash while preserving other providers (3.057043ms)
+✔ real IMAP draft cleanup moves Gmail copies to Trash and never expunges; other-provider cleanup stays unchanged (3.810285ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 49.83612
+sender-names-ok: defaults, overrides, validation, lookup lifecycle, Settings DOM and draft SQL snapshots
+✔ W4-1 host account snapshots count cached primary unread, not provider badges or held read rows (24.150436ms)
+✔ W4-1 selected and page-wide read changes repaint the chip, including a provider refusal (8.320101ms)
+✔ W4-3 bulk trash paints immediately, releases guard and bounds background IPC before settlement Undo (11.012457ms)
+✔ W4-3 bulk archive paints immediately, releases guard and bounds background IPC before settlement Undo (7.037073ms)
+✔ W4-3 confirmation cancel is inert; unknown IPC stops later chunks and retains earlier Undo (6.563231ms)
+✔ W4-3 a failed list refresh does not relabel an accepted removal as an unknown write (6.028668ms)
+✔ W4-3 an optimistic removal preserves an unread hold through failed settlement and real list reloads (6.080807ms)
+✔ W4-3 terminal settlement before the acceptance reply wins, even after a newer flag generation (5.58365ms)
+✔ W4-3 late bulk trash completion keeps an early selective restore retired and open (8.973352ms)
+✔ W4-3 late bulk archive completion keeps an early selective restore retired and open (9.099112ms)
+✔ W4-2 rendered Details preserves checked rows, focus and scroll across batches and restores only the selection (6.126285ms)
+✔ W4-5 cached loads paint synchronously, refresh quietly and join in-flight stale triage (5.526665ms)
+✔ W4-5 cold and explicit refresh overlay; failed cached refresh retains the last payload (5.301325ms)
+✔ W4-5 an obsolete triage failure cannot blank or repaint a newer cached load (5.534656ms)
+✔ W4-4 All Account OOO reads only the selected mailbox and keeps its compact off controls (17.43067ms)
+✔ W4-4 All Account OOO uses the same status and compact conditions as a single mailbox (6.585716ms)
+✔ W4-4 All Account OOO coalesces pending reads and ignores obsolete picker success or failure (9.813165ms)
+✔ OOO pending feedback and accessible actions stay tied to the selected mailbox (5.196047ms)
+✔ OOO never presents a mismatched response or removed mailbox as disabled (5.135526ms)
+✔ W4-4 All Account OOO retries the picker mailbox and cancels retries after changing it (6.960248ms)
+✔ W4-4 real DOM paint, picker and Refresh events check only the selected mailbox and render Features help (491.859306ms)
+✔ Wave4 rendered Features catalog and CLI describe implemented scope and settlement boundaries (7.309573ms)
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 671.850568
+✔ public schema accepts a portable document and offset timestamps (16.359139ms)
+✔ public validation rejects unknown envelope fields (0.434573ms)
+✔ public validation rejects unknown event fields (0.198257ms)
+✔ public validation rejects unsupported versions (0.106079ms)
+✔ public validation rejects unsupported timezones (0.339881ms)
+✔ public validation rejects bad coverage equations (0.347342ms)
+✔ public validation rejects unknown thread references (0.324218ms)
+✔ public validation rejects duplicate thread IDs (0.29927ms)
+✔ public validation rejects duplicate event IDs (0.335924ms)
+✔ public validation rejects unknown date with a timestamp (0.393912ms)
+✔ public validation rejects known date without a timestamp (0.285809ms)
+✔ public validation rejects timestamps without an offset (0.146089ms)
+✔ public validation rejects attachment paths (0.112109ms)
+✔ public validation rejects backslash attachment paths (0.103025ms)
+✔ public validation rejects overlong attachment names (0.165809ms)
+✔ public validation rejects control characters (0.119049ms)
+✔ public validation rejects invalid addresses (0.097096ms)
+✔ semantic validation rejects duplicate messages even with unique event IDs (0.236115ms)
+✔ unknown timestamps remain null and omitted counts remain explicit (0.274843ms)
+✔ strict JSON rejects duplicate keys, escaped duplicate keys, depth and invalid UTF-8 (2.194848ms)
+✔ public documents enforce the complete UTF-8 byte limit (33.33091ms)
+✔ source deduplication trusts only same-account provider IDs (1.190099ms)
+✔ frozen sources keep stable opaque IDs, authoritative sender metadata and alias evidence (5.79008ms)
+✔ unproven aliases are null and legacy/synthetic dates retain provenance (1.050759ms)
+✔ missing/warned bodies and invalid attachment evidence are counted as omissions (1.212191ms)
+✔ source liveness ignores flags but rejects content edits and account replacement (1.027434ms)
+✔ search preparation exceeds the ordinary display cap without claiming remote completeness (12.868595ms)
+✔ over-limit search and thread selections refuse silent truncation (1.526834ms)
+✔ explicit expansion changes only the reviewed local thread membership (1.082736ms)
+✔ Unicode/paragraph chunking preserves every character and source token (1.184249ms)
+✔ deterministic merge deduplicates semantic items without collapsing different mail (0.322184ms)
+✔ candidate validation rejects forged, missing, repeated or extra fields (0.657628ms)
+✔ extraction retries validation once, fills only host metadata and preserves unknown dates (1.411671ms)
+✔ repeated invalid model output stops after two calls (0.356997ms)
+✔ long-message consolidation sees validated summaries only (1.138941ms)
+✔ run limits reject excessive chunk plans and provider usage (11.259377ms)
+✔ cancellation rejects an uncooperative late provider response (0.54608ms)
+✔ prepare/list/get make no model call; generation uses manual permission and isolated context (5.706435ms)
+✔ free-text focus is bound to the manifest, guides extraction only and stays outside public JSON (2.98202ms)
+✔ host rejects unbounded or malformed focus before any AI request (1.462747ms)
+✔ old disclosure grants do not authorize the expanded timeline purpose (0.32572ms)
+✔ manifest ownership, option digests, expiry and payload allowlists are enforced (1.285311ms)
+✔ missing-body download is explicit, frozen and read-only (1.133713ms)
+✔ partial selections require affirmative acceptance (1.294605ms)
+✔ cancellation ownership and late-result rejection preserve older artifacts (1.92975ms)
+✔ revocation followed by reapproval cannot revive an in-flight extraction (1.671242ms)
+✔ content/account changes after an await reject derived output (1.733815ms)
+✔ account invalidation cancels owned work without automatic continuation (4.189154ms)
+✔ export requires fresh confirmation and an exact saved revision (0.508253ms)
+✔ exporters keep generated markup inert and preserve CJK, uncertainty and coverage (1.4441ms)
+✔ PDF uses a scriptless isolated renderer, blocks network/navigation and destroys it (1.109387ms)
+✔ native export saves only a confirmed chosen file and respects cancellation (1.021886ms)
+✔ trusted IPC requires the bundled reader main frame (0.174612ms)
+✔ saved API adapter forwards the output cap, usage and finish reason without changing ordinary completions (17.276387ms)
+✔ saved API adapter enforces a response byte bound before JSON parsing (1.013123ms)
+✔ ChatGPT adapter preserves its separate route, output cap, store policy and reported usage (3.073078ms)
+✔ ChatGPT response bytes are bounded without another provider or request (0.483777ms)
+✔ production IMAP parser preserves header/received/unknown provenance and decoded sender metadata (111.203124ms)
+✔ actual preload allows only the exact timeline invokes and progress event (186.779821ms)
+✔ reader toolbar is the only Timeline entry and captures the opened message, not selection or search (158.92729ms)
+✔ Timeline opens one local sheet with optional keywords and editable From/To/Cc/Reply-To contacts (90.555064ms)
+✔ Timeline derives title, supported language and timezone without exposing settings (82.246727ms)
+✔ recipient prefills accept structured mailboxes and formatted strings without adding Bcc (83.896196ms)
+✔ closing a pending preparation cannot leak the previous message into a reopened sheet (96.525561ms)
+✔ Timeline dialog leaves Bottom, Separate window and narrow reader layout intact (118.332797ms)
+✔ one Generate click prepares edited free-text focus and starts explicit extraction (78.606593ms)
+✔ empty focus adds no keyword or contact restriction and invalid contacts never generate (73.091491ms)
+✔ partial coverage is conditional and still requires explicit acceptance (71.627182ms)
+✔ new omissions discovered by Generate require acceptance instead of silently starting AI (70.655751ms)
+✔ closing during final preparation prevents the AI start even when preparation later succeeds (72.540334ms)
+✔ disabled AI permission or no usable body cannot start extraction (138.393018ms)
+✔ Timeline keyboard events cannot reach mail shortcuts and Escape closes without AI (61.750947ms)
+✔ closing while generation starts cancels the acknowledged job, including an early progress event (70.670373ms)
+✔ saved history loads and deletes results locally with secondary export actions (74.672497ms)
+✔ completion arriving before the start acknowledgement renders the saved result once (74.463716ms)
+✔ rendered generated text is inert and exports require a fresh review checkbox (82.263371ms)
+✔ stale preparation responses do not restore an invalidated Generate permission (105.551838ms)
+✔ Features catalog, CLI tab, format asset and reduced-motion claims stay aligned (78.332446ms)
+✔ account removal confirmation discloses derived-artifact deletion before any operation (3.522131ms)
+✔ SQLite timeline migration, atomic rollback, reopen and account removal preserve lifecycle (328.304779ms)
+✔ production Gmail parser/cache persists header, received and unknown date provenance (81.753415ms)
+ℹ tests 81
+ℹ suites 0
+ℹ pass 81
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2554.091259
+✔ recent arrivals are generic by default and click pulls a validated same-account target once (3.045345ms)
+✔ old server arrival timestamps from startup/history/import, read mail, drafts and malformed IDs are silent (0.256305ms)
+✔ a genuine new server arrival notifies despite an old, missing or future sender Date (0.494533ms)
+✔ reconnect invalidates pending/native clicks and restart cannot replay successful reservations (0.68548ms)
+✔ bursts across accounts batch, count and rate limit globally; IDs remain account scoped (0.381573ms)
+✔ failed, throwing, unsupported and OS-suppressed notifications never retry or bypass the OS (0.804028ms)
+✔ privacy modes sanitize and bound text; settings changes close old previews and clear pending (0.796988ms)
+✔ account removal, cross-account substitution and moved/missing messages route safely (0.736106ms)
+✔ persistence failure halts delivery without changing mail and queues/dedup are bounded (12.057726ms)
+✔ queued mail expires across long sleep; broken history and preference reads cannot interrupt sync (0.539631ms)
+✔ Gmail label copy retirement before show retains preview and correct target; stopped controllers reject late sync (0.440442ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 31.482889
+✔ Outlook and password IMAP: bootstrap/history/flags suppress; committed recent arrivals notify; resync/UID reset suppress (171.845657ms)
+✔ Gmail: only messagesAdded with current Inbox membership emit arrivals; persisted pending pages resume without duplicate or history alerts (223.044208ms)
+✔ production IMAP parser carries INTERNALDATE independently of an old Date header (8.771799ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 411.968524
+✔ Settings uses the real allowlisted preload, strict values, durable defaults and save/error feedback (190.764251ms)
+✔ click routing waits for shell/account readiness and opens the validated account/message; invalid/missing targets stay safe (87.087738ms)
+✔ main-process notification wiring keeps Windows identity aligned and exposes no renderer show channel (0.574453ms)
+✔ notification uses a visible right destination without opening a hidden preview (85.371ms)
+✔ notification uses a visible bottom destination without opening a hidden preview (86.155588ms)
+✔ notification uses a visible window destination without opening a hidden preview (75.255913ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 546.458709
+ui-path-ok
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.1
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.1
+npm notice To update run: npm install -g npm@12.2.1
+npm notice

@@ -760,7 +760,7 @@ app.whenReady().then(async () => {
     await run(`setSettingsFold('${name}',true,true)`);
     await waitFor(`settingsFoldLoaded.has(settingsFoldKey('${name}')) && !document.querySelector('#settings .fold.is-open .fold-panel').inert`);
     assert.equal(await run(`$('settings').querySelector('.dialog-body').scrollWidth<=$('settings').querySelector('.dialog-body').clientWidth+1`), true, name+' must not scroll horizontally');
-    assert.equal(await run(`document.querySelector('.settings-account-context').hidden`), !['mailbox','ooo'].includes(name));
+    assert.equal(await run(`document.querySelector('.settings-account-context').hidden`), name !== 'ooo');
     await shot('settings-short-dark-'+name);
   }
   await run(`$('bot-review-link').click()`);

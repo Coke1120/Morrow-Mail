@@ -46,9 +46,9 @@ assert.equal(html.split(COFFEE).length - 1, 2);
 
 const app = fs.readFileSync(path.join(root, "renderer/app.js"), "utf8");
 assert.match(app, /if \(name === "support"\) return Promise\.resolve\(\);/);
-assert.match(app, /settings-account-context"\)\.hidden = !\["mailbox", "ooo"\]\.includes\(name\)/);
+assert.match(app, /settings-account-context"\)\.hidden = name !== "ooo"/);
 assert.match(app, /\["mailbox", "ooo"\]\.includes\(name\) \? settingsAccount\(\)/);
-assert.equal([...app.matchAll(/\["mailbox", "ooo"\]/g)].length, 2);
+assert.equal([...app.matchAll(/\["mailbox", "ooo"\]/g)].length, 1);
 
 const boot = fs.readFileSync(path.join(__dirname, "check-boot-path.js"), "utf8");
 assert.ok(boot.includes('"scripts/check-sponsor-ui.js"'));
