@@ -393,6 +393,8 @@ test("export requires fresh confirmation and an exact saved revision", async con
   await assert.rejects(fixture.service.invoke(1, "timeline:export", { ...input, confirmed: false }), { code: "timeline-input" });
   await assert.rejects(fixture.service.invoke(1, "timeline:export", { ...input, revision: 2 }), { code: "timeline-revision" });
   assert.equal((await fixture.service.invoke(1, "timeline:export", input)).saved, true);
+  assert.equal((await fixture.service.invoke(1, "timeline:export", { ...input, format: "html" })).saved, true);
+  await assert.rejects(fixture.service.invoke(1, "timeline:export", { ...input, format: "url" }), { code: "timeline-input" });
   assert.equal(fixture.calls.length, 0);
 });
 
@@ -548,6 +550,7 @@ function rendererFixture(replies = {}) {
 test("actual preload allows only the exact timeline invokes and progress event", async () => {
   const fixture = rendererFixture();
   await fixture.bridge.invoke("timeline:prepare", {});
+  await fixture.bridge.invoke("timeline:check", {});
   await assert.rejects(fixture.bridge.invoke("timeline:unknown", {}), /Unsupported channel/);
   assert.equal(fixture.calls[0].channel, "timeline:prepare");
   fixture.dom.window.close();
@@ -805,7 +808,8 @@ test("rendered generated text is inert and exports require a fresh review checkb
 });
 test("stale preparation responses do not restore an invalidated Generate permission", async () => {
   let resolve;
-  const fixture = rendererFixture({ "timeline:prepare": () => new Promise(done => { resolve = done; }) });
+  const fixture = rendererFixture({ "timeline:prepare": () => new Promise(done => { resolve = done; }),
+    "timeline:check": () => ({ success: false, error: { code: "timeline-source-changed" } }) });
   const pending = fixture.mounted.open(fixture.email); await pause();
   fixture.events.get("mail:accountsUpdated")();
   resolve({ success: true, data: fixture.prepared }); await pending;
@@ -925,4 +929,111 @@ test("production Gmail parser/cache persists header, received and unknown date p
   await session.sync("INBOX");
   const found = db.timelineSearch({ query: "Synthetic", accountId: "timeline-google" });
   for (const kind of ["header", "received", "unknown"]) assert.equal(found.find(value => value.gmail_id === kind).date_source, kind);
+});
+
+test("routine account refreshes and repeated opens keep the source usable", async () => {
+  const fixture = rendererFixture();
+  for (let i = 0; i < 3; i++) {
+    await fixture.mounted.open(fixture.email);
+    fixture.events.get("mail:accountsUpdated")({ accounts: [{ id: "mailbox-1", sync: "busy" }] });
+    await pause();
+    assert.equal(fixture.document.getElementById("timeline-generate").disabled, false);
+    assert.doesNotMatch(fixture.document.getElementById("timeline-status").textContent, /accounts changed/);
+    fixture.document.getElementById("timeline-close").click();
+  }
+  fixture.dom.window.close();
+});
+test("genuine account replacement invalidates even an edited focus", async () => {
+  let changed = false;
+  const fixture = rendererFixture({ "timeline:check": () => changed ? { success: false, error: { code: "timeline-source-changed" } } : { success: true, data: { valid: true } } });
+  await fixture.mounted.open(fixture.email);
+  fixture.document.getElementById("timeline-keywords").dispatchEvent(new fixture.window.Event("input"));
+  changed = true;
+  fixture.events.get("mail:accountsUpdated")(); await pause();
+  assert.equal(fixture.document.getElementById("timeline-generate").disabled, true);
+  assert.match(fixture.document.getElementById("timeline-status").textContent, /Source mail or its account changed/);
+  fixture.dom.window.close();
+});
+test("late source invalidation from an older open cannot clear the new source", async () => {
+  let finish, pending = false;
+  const fixture = rendererFixture({ "timeline:check": () => pending ? new Promise(resolve => { finish = resolve; }) : { success: true, data: { valid: true } } });
+  await fixture.mounted.open(fixture.email);
+  pending = true; fixture.events.get("mail:accountsUpdated")();
+  fixture.document.getElementById("timeline-close").click();
+  pending = false; await fixture.mounted.open({ ...fixture.email, id: "other-message" });
+  finish({ success: false, error: { code: "timeline-source-changed" } }); await pause();
+  assert.equal(fixture.document.getElementById("timeline-generate").disabled, false);
+  fixture.dom.window.close();
+});
+test("host source checks are owner-bound and re-preparation cannot switch incarnations", async context => {
+  const fixture = memory(context), prepared = await fixture.prepare();
+  assert.equal((await fixture.service.invoke(1, "timeline:check", { manifestToken: prepared.manifestToken })).valid, true);
+  await assert.rejects(fixture.service.invoke(2, "timeline:check", { manifestToken: prepared.manifestToken }), { code: "timeline-manifest" });
+  fixture.changeAccount();
+  await assert.rejects(fixture.service.invoke(1, "timeline:check", { manifestToken: prepared.manifestToken }), { code: "timeline-source-changed" });
+  await assert.rejects(fixture.service.invoke(1, "timeline:prepare", { selection: fixture.selection, options, manifestToken: prepared.manifestToken }), { code: "timeline-source-changed" });
+  assert.equal(fixture.calls.length, 0);
+});
+test("chronology sorts actual instants across offsets and leaves unknown dates last", async () => {
+  const sources = [
+    { ...metadata({ occurred_at: "2026-11-01T09:00:00-08:00" }), text: "Later decision", subject: "Later" },
+    { ...metadata({ occurred_at: null, date_source: "unknown" }), text: "Unknown", subject: "Unknown" },
+    { ...metadata({ occurred_at: "2026-11-01T18:00:00+08:00" }), text: "Earlier request", subject: "Earlier" },
+  ];
+  const result = await extract({ sources, envelope: envelopeFor(sources), complete: async messages => modelResponse(messages) });
+  assert.deepEqual(result.document.events.map(event => event.source_message_id), [sources[2], sources[0], sources[1]].map(source => source.source_message_id));
+  const fixture = rendererFixture(); fixture.mounted.renderResult({ document: documentFixture(sources.map(source => { const { text, subject, ...meta } = source; return { ...meta, summary: text, open_actions: [], unclear: [] }; })), revision: 1 });
+  assert.deepEqual([...fixture.document.querySelectorAll(".timeline-summary")].map(node => node.textContent), ["Earlier request", "Later decision", "Unknown"]);
+  assert.equal(fixture.document.querySelectorAll("ol.timeline-sequence > li").length, 3);
+  assert.equal(fixture.document.querySelectorAll(".timeline-evidence summary").length, 3);
+  fixture.dom.window.close();
+});
+test("readable HTML has escaped evidence, no active content and responsive chronology", () => {
+  const document = documentFixture();
+  document.title = '<script>attack</script>';
+  document.events[0].summary = '<img src=x onerror=attack()> javascript:attack https://example.org';
+  document.events[0].from.name = '</p><iframe src="https://example.org">';
+  const dom = new JSDOM(exporters.printHtml(document));
+  const body = dom.window.document;
+  assert.equal(body.querySelectorAll('script,img,iframe,a,form,object,embed,link,[src],[href],[onerror]').length, 0);
+  assert.equal(body.querySelector('.summary').textContent, document.events[0].summary);
+  assert.match(body.querySelector('.evidence').textContent, /Source:/);
+  assert.match(body.querySelector('meta[http-equiv]').content, /script-src 'none'/);
+  assert.match(body.querySelector('style').textContent, /max-width:480px/);
+  assert.equal(body.querySelectorAll('ol.sequence > li').length, 1);
+  dom.window.close();
+});
+test("HTML export uses native save and checks the revision again after file selection", async context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-html-export-")); context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, "timeline.html"); let changed = false, block = false;
+  const electron = { BrowserWindow: { fromWebContents: () => ({ isDestroyed: () => false }) }, webContents: { fromId: () => ({}) }, dialog: { showSaveDialog: async (_parent, options) => {
+    assert.match(options.defaultPath, /\.html$/); changed = block; return { canceled: false, filePath };
+  } } };
+  const check = () => { if (changed) throw Object.assign(new Error(), { code: "timeline-revision" }); };
+  await exporters.exportFile(documentFixture(), "html", { owner: 1, check, electron });
+  assert.match(fs.readFileSync(filePath, "utf8"), /<ol class="sequence"/);
+  fs.unlinkSync(filePath); block = true;
+  await assert.rejects(exporters.exportFile(documentFixture(), "html", { owner: 1, check, electron }), { code: "timeline-revision" });
+  assert.equal(fs.existsSync(filePath), false);
+});
+
+test("extraction entries carry host sender and date evidence without recipient or raw account metadata", () => {
+  const source = { ...metadata(), text: "A specific request", subject: "Request" };
+  const [chunk] = planChunks([source]);
+  assert.deepEqual(chunk[0].from, source.from);
+  assert.equal(chunk[0].mail_timestamp, source.occurred_at);
+  assert.equal(chunk[0].date_source, "header");
+  assert.equal(chunk[0].to, undefined);
+  assert.equal(chunk[0].account_id, undefined);
+});
+test("routine account notification during generation startup does not cancel the job", async () => {
+  let acknowledge;
+  const fixture = rendererFixture({ "timeline:generate": () => new Promise(resolve => { acknowledge = resolve; }) });
+  await fixture.mounted.open(fixture.email);
+  fixture.document.getElementById("timeline-form").dispatchEvent(new fixture.window.Event("submit", { cancelable: true })); await pause();
+  fixture.events.get("mail:accountsUpdated")();
+  acknowledge({ success: true, data: { jobId: "refresh-safe" } }); await pause();
+  assert.equal(fixture.calls.some(value => value.channel === "timeline:cancel"), false);
+  assert.equal(fixture.document.getElementById("timeline-cancel").hidden, false);
+  fixture.dom.window.close();
 });

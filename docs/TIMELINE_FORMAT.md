@@ -28,7 +28,7 @@ starting; data already delivered cannot be recalled.
 
 Completed artifacts show a compact result with secondary reviewed export/delete
 actions. **Saved timelines** is collapsed history in the sheet, not a permanent
-picker or reader panel. JSON 1.0.0, Markdown and isolated PDF exports require fresh
+picker or reader panel. Readable HTML, JSON 1.0.0, Markdown and isolated PDF exports require fresh
 personal-information, coverage and uncertainty review each time. There is no bot
 operation, CLI command, scheduled generation, automatic rerun or URL/webhook export.
 
@@ -136,10 +136,10 @@ AI automatically. No raw prompt/body copies are saved with jobs.
 ## Privacy, retention and exports
 
 Disclosure version 2 requires fresh explicit-action AI permission. Preparation and
-exports need no model request. Generation uses only reviewed text, subjects,
+exports need no model request. Generation uses only reviewed text, subjects, sender/date evidence,
 attachment names and optional keyword/contact focus through the existing saved provider plumbing, without Brain,
 Agent notes, chat history, tools or automatic provider/billing fallback.
-Prompt version `mail-chronology-2` asks for a chronology of the user's
+Prompt version `mail-chronology-3` asks for a chronology of the user's
 currently selected mail in the current mailbox account (no named person or fixed
 inbox), treating focus as topics rather than instructions or additional evidence;
 the host still owns dates, addresses and opaque IDs. Generated
@@ -162,7 +162,7 @@ and manifests. Explicit artifact deletion removes its source links. Stable opaqu
 mappings remain for future extractions until account removal. There is no automatic
 retention timer. Local artifacts are not end-to-end encrypted by this feature.
 
-Before each JSON, Markdown or PDF save, review addresses/names, attachment names,
+Before each HTML, JSON, Markdown or PDF save, review addresses/names, attachment names,
 summaries, omissions and uncertainty and affirm the export checkbox. The host uses
 a native save dialog, never a renderer-provided path. Exports do not run AI and
 are never automatically transmitted. Deletion does not erase exported files,
@@ -177,3 +177,12 @@ runs the existing regression suite plus the timeline checks. PDF text/CJK escapi
 wrapping/pagination styles and sandbox options are tested synthetically; native
 font availability, actual pagination and PDF save behavior on Windows and macOS
 still require manual platform validation before a release.
+
+HTML export is a standalone, responsive, printable chronology, oldest first with
+undated mail last. It includes coverage, timezone, uncertainty and source references,
+without raw bodies, internal account IDs, credentials or the private focus fields.
+All mail and model text is escaped; there are no scripts, links, images, external
+resources or forms. The same HTML layout is used for isolated PDF printing.
+Routine account refresh notifications revalidate the window-owned host manifest,
+rather than invalidating the renderer source. Host incarnation, credential and
+source-fingerprint checks still reject real changes before AI calls and saving.
