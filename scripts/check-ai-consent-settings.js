@@ -102,7 +102,7 @@ function fixture({ config: initial = {}, account: accountInput = {}, useDom = fa
   ui.run(source("renderer/chatgpt-settings.js"));
   ui.run("mountChatgptSettings()");
   const component = ui.run("chatgptSettings");
-  return { bridge, preload, consent, config, ui, component, get, calls, intercept, interceptReply,
+  return { seedConsent: record => files.set(path.join(directory, "ai-consent.json"), JSON.stringify(record)), bridge, preload, consent, config, ui, component, get, calls, intercept, interceptReply,
     load: async () => { await ui.run("loadAiSettings()"); await tick(); },
     checkManual: async value => {
       get("ai-consent-manual").checked = value;
@@ -533,4 +533,32 @@ test("Settings and Setup keep material disclosure outside accordions, after conn
     assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
     f.assertNoModelCalls(); component.dispose(); dom.window.close();
   }
+});
+
+test("saved v2 consent renders the expanded Timeline disclosure with no implicit manual or background opt-in", async t => {
+  const f = fixture({ useDom: true }); t.after(f.dispose);
+  const cfg = f.config.loadConfig();
+  const legacy = { id: "legacy-v2-grant", version: 2, manual: true, background: true,
+    fingerprint: require("node:crypto").createHash("sha256").update(JSON.stringify([2, cfg.authMode, `${cfg.baseUrl}/chat/completions`, cfg.model, "", cfg.apiKey])).digest("hex") };
+  f.seedConsent(legacy);
+  await f.load();
+  const review = f.consent.status();
+  assert.equal(review.version, 3); assert.equal(review.manual, false); assert.equal(review.background, false);
+  for (const id of ["ai-consent-data", "ai-consent-full-data"]) {
+    assert.match(f.get(id).textContent, /sender names and addresses, mail timestamps and date provenance/);
+    assert.match(f.get(id).textContent, /optional keywords and contact emails/);
+  }
+  assert.equal(f.get("ai-consent-manual").checked, false);
+  assert.equal(f.get("ai-consent-background").checked, false);
+  assert.equal(f.get("ai-consent-allow").disabled, true);
+  assert.equal(f.writes, 0);
+  assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
+  await assert.rejects(f.bridge.invoke("host:aiConsentGrant", { token: review.token, manual: false, background: false }), /Affirmatively/);
+  await f.checkManual(true);
+  f.get("ai-consent-allow").click(); await tick();
+  assert.equal(f.consent.status().manual, true);
+  assert.equal(f.consent.status().background, false);
+  const grant = f.calls.find(row => row.channel === "host:aiConsentGrant" && row.input.manual === true);
+  assert.equal(grant.input.background, false);
+  f.assertNoModelCalls();
 });

@@ -21,3 +21,9 @@ revision checks. The standalone responsive document also supplies PDF layout.
 Escape every dynamic value; emit no links, scripts, forms, remote fonts or images,
 and retain a restrictive CSP. Include coverage, timezone, provenance and uncertainty
 so a portable report does not imply a complete mailbox or verified event dates.
+
+Sender names/addresses, mail timestamps/date provenance and optional keyword/contact
+focus are explicitly included in all host Timeline disclosures. Consent version 3
+invalidates earlier grants through the existing version-bound fingerprint; reading
+status never rewrites consent. A fresh manual choice does not restore background
+permission, and generation still requires a newly prepared snapshot and Generate.

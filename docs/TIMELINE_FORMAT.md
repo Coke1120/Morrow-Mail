@@ -135,8 +135,11 @@ AI automatically. No raw prompt/body copies are saved with jobs.
 
 ## Privacy, retention and exports
 
-Disclosure version 2 requires fresh explicit-action AI permission. Preparation and
-exports need no model request. Generation uses only reviewed text, subjects, sender/date evidence,
+Disclosure version 3 requires renewed explicit-action AI permission for prior
+grants, including version 2. Reading permission status does not migrate or approve
+an old grant; manual and background use stay off until a fresh affirmative choice.
+Manual approval does not enable background use. Preparation and exports need no
+model request. Generation uses only reviewed text, subjects, sender/date evidence,
 attachment names and optional keyword/contact focus through the existing saved provider plumbing, without Brain,
 Agent notes, chat history, tools or automatic provider/billing fallback.
 Prompt version `mail-chronology-3` asks for a chronology of the user's

@@ -84,7 +84,7 @@ function memory(context, overrides = {}) {
   const service = createService(dependencies);
   const selection = { messages: [{ accountId: "mailbox-1", messageId: [...rows.keys()][0] }], expandThreads: true };
   const prepare = (owner = 1, selected = selection) => service.invoke(owner, "timeline:prepare", { selection: selected, options }, () => {}, () => closed);
-  return { db, rows, accounts, dependencies, service, selection, prepare, consent, approve, calls, downloads, artifacts, savedJobs,
+  return { directory, db, rows, accounts, dependencies, service, selection, prepare, consent, approve, calls, downloads, artifacts, savedJobs,
     changeAccount: () => epoch++, expire: () => { now += 300001; }, close: () => { closed = true; service.close(1); } };
 }
 async function generation(fixture, prepared, owner = 1) {
@@ -317,11 +317,50 @@ test("host rejects unbounded or malformed focus before any AI request", async co
   }
   assert.equal(fixture.calls.length, 0);
 });
-test("old disclosure grants do not authorize the expanded timeline purpose", context => {
+test("a valid saved v2 grant cannot transmit sender/date evidence before renewed manual consent", async context => {
   const fixture = memory(context, { noPermission: true });
-  assert.equal(VERSION, 2);
-  assert.equal(fixture.consent.status().manual, false);
-  assert.match(fixture.consent.status().purposes, /timeline/);
+  // Recreate a valid prior-version grant using the production module's v2
+  // version-bound persistence/target logic, not a record with missing metadata.
+  const priorModule = { exports: {} };
+  vm.runInNewContext(read("host/ai-consent.js").replace("const VERSION = 3;", "const VERSION = 2;"), {
+    module: priorModule, exports: priorModule.exports, URL, AbortController, AbortSignal,
+    require: require("node:module").createRequire(path.join(__dirname, "../host/ai-consent.js")),
+  });
+  const prior = priorModule.exports.createConsent({ directory: () => fixture.directory, config: fixture.dependencies.config });
+  prior.grant({ token: prior.status().token, manual: true, background: true });
+  assert.equal(prior.status().manual, true); assert.equal(prior.status().background, true);
+  const filename = path.join(fixture.directory, "ai-consent.json");
+  const legacy = JSON.parse(fs.readFileSync(filename));
+  assert.equal(legacy.version, 2);
+  assert.equal(VERSION, 3);
+  const review = fixture.consent.status();
+  assert.equal(review.manual, false); assert.equal(review.background, false);
+  for (const text of [review.disclosure, review.dataSummary, review.purposes]) {
+    assert.match(text, /sender names and addresses, mail timestamps and date provenance/);
+    assert.match(text, /optional keywords and contact emails/);
+    assert.doesNotMatch(text, /attachment names only/);
+  }
+  const prepared = await fixture.prepare();
+  assert.equal(prepared.allowed, false);
+  const input = { manifestToken: prepared.manifestToken, optionsDigest: prepared.optionsDigest, acceptPartial: true };
+  await assert.rejects(fixture.service.invoke(1, "timeline:generate", input), { code: "ai-consent-required" });
+  assert.equal(fixture.calls.length, 0); assert.equal(fixture.savedJobs.size, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(filename)), legacy, "review does not rewrite or approve old permission");
+  assert.throws(() => fixture.consent.grant({ token: review.token, manual: false, background: false }), { code: "ai-consent-required" });
+  fixture.consent.grant({ token: review.token, manual: true, background: false });
+  assert.equal(fixture.consent.status().manual, true); assert.equal(fixture.consent.status().background, false);
+  assert.equal(JSON.parse(fs.readFileSync(filename)).version, 3);
+  assert.equal(fixture.calls.length, 0, "Allow is permission, not a Generate action");
+  await assert.rejects(fixture.service.invoke(1, "timeline:generate", input), { code: "ai-consent-required" });
+  const renewed = await fixture.prepare();
+  assert.equal(renewed.allowed, true);
+  assert.equal(fixture.calls.length, 0, "preparation remains local");
+  const running = await generation(fixture, renewed);
+  assert.equal((await running.terminal).phase, "completed");
+  const [sent] = JSON.parse(fixture.calls[0].messages[1].content);
+  assert.equal(sent.from.address, "ada@example.org");
+  assert.equal(sent.mail_timestamp, "2026-11-01T10:00:00.000Z");
+  assert.equal(sent.date_source, "header");
 });
 test("manifest ownership, option digests, expiry and payload allowlists are enforced", async context => {
   const fixture = memory(context);
