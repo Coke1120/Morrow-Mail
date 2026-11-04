@@ -730,12 +730,38 @@
     <dialog id="setup-guide" aria-labelledby="setup-guide-title" aria-describedby="setup-guide-help">
       <section class="dialog-body setup-guide-sheet">
         <div class="sheet-head"><div><p class="hint">MAKE YOURSELF AT HOME</p><h2 id="setup-guide-title">Welcome to Morrow Mail</h2></div><button type="button" class="ghost" id="setup-guide-later">Finish later</button></div>
-        <p id="setup-guide-help">A few small steps to make your mailbox feel like yours. Calendar and AI are optional.</p>
+        <p id="setup-guide-help">A few small steps to make your mailbox feel like yours. Calendar, AI and mail preferences are optional.</p>
         <label for="setup-guide-account">Set up mailbox</label><select id="setup-guide-account"></select>
         <nav id="setup-guide-steps" aria-label="Setup steps"></nav>
         <section class="setup-guide-card" aria-labelledby="setup-guide-heading">
           <p class="hint" id="setup-guide-position"></p><h3 id="setup-guide-heading" tabindex="-1"></h3>
           <p id="setup-guide-copy"></p><p id="setup-guide-state" role="status" aria-live="polite"></p>
+          <div id="setup-guide-mail" hidden>
+            <div class="field">
+              <label for="setup-undo">Undo send (seconds)</label>
+              <input id="setup-undo" type="number" min="0" max="30" step="1" inputmode="numeric" aria-describedby="setup-undo-help" />
+              <p class="hint" id="setup-undo-help">0 sends immediately. Otherwise mail waits in Outbox for up to 30 seconds. Undo cancels it before delivery starts and saves a recovery draft.</p>
+              <button type="button" class="ghost" id="setup-undo-save">Save undo send</button>
+              <p class="hint" id="setup-undo-status" role="status" aria-live="polite"></p>
+            </div>
+            <div class="schedule-delay-field">
+              <span id="setup-delay-label">Default schedule delay</span>
+              <div class="schedule-delay" role="group" aria-labelledby="setup-delay-label">
+                <div class="schedule-delay-cell"><label for="setup-delay-hours">Hours</label><input id="setup-delay-hours" type="number" min="0" max="168" step="1" inputmode="numeric" aria-describedby="setup-delay-help" /></div>
+                <div class="schedule-delay-cell"><label for="setup-delay-minutes">Minutes</label><input id="setup-delay-minutes" type="number" min="0" max="59" step="1" inputmode="numeric" aria-describedby="setup-delay-help" /></div>
+              </div>
+              <p class="hint" id="setup-delay-help">0 uses normal Send and its undo delay. Otherwise Send schedules this far ahead, up to 7 days. Send now remains available. Scheduled delivery requires Morrow to be open.</p>
+              <button type="button" class="ghost" id="setup-delay-save">Save schedule delay</button>
+              <p class="hint" id="setup-delay-status" role="status" aria-live="polite"></p>
+            </div>
+            <div class="field">
+              <label for="setup-images">Load remote images</label>
+              <select id="setup-images" aria-describedby="setup-images-help"><option value="">Keep current setting</option><option value="off">Block remote images</option><option value="on">Allow remote images</option></select>
+              <p class="hint" id="setup-images-help">Remote images can include tracking pixels that report when and where you opened a message and may identify your device to the sender. Blocking also covers CSS and table backgrounds; Load remote content allows them for one message. Choose Allow or Block and save to change this setting.</p>
+              <button type="button" class="ghost" id="setup-images-save">Save remote images choice</button>
+              <p class="hint" id="setup-images-status" role="status" aria-live="polite"></p>
+            </div>
+          </div>
           <button type="button" class="primary" id="setup-guide-action"></button>
           <button type="button" class="ghost" id="setup-guide-import" hidden>Import Google Console JSON…</button>
         </section>
@@ -1135,7 +1161,7 @@
       <div class="settings-folds">
         <section class="fold is-open" id="settings-prefs" data-fold="prefs" role="tabpanel" aria-labelledby="settings-tab-prefs" tabindex="0">
           <div class="fold-panel" id="settings-prefs-panel">
-          <div class="setup-guide-settings"><h3>Make Morrow yours</h3><p class="hint">Connect mail and calendar, choose your sender name and signature, and review optional AI settings.</p><button type="button" class="ghost" id="setup-guide-open">Open setup guide</button></div>
+          <div class="setup-guide-settings"><h3>Make Morrow yours</h3><p class="hint">Connect mail and calendar, choose your sender name and signature, review optional AI settings, and choose sending and remote image preferences.</p><button type="button" class="ghost" id="setup-guide-open">Open setup guide</button></div>
           <h3 id="settings-prefs-title">Appearance</h3>
           <div id="prefs">
             <div class="field">

@@ -18536,12 +18536,16 @@ let setupTransition = false;
 let setupRevision = 0;
 let setupCalendarPending = false;
 let setupSave = Promise.resolve();
+let setupMailLoaded = false;
+let setupMailLoading = null;
+const setupMailSaving = new Set();
 const setupSteps = [
   ["Connect a mailbox", "Read and send mail from your own account. Use Google, Microsoft, or your provider’s IMAP and SMTP settings. Google sign-in may require a Desktop client JSON from Google Cloud Console; importing it does not sign you in.", "Connect mailbox"],
   ["Connect its calendar", "Bring this mailbox’s calendar into Morrow. Google Calendar has separate consent; Microsoft uses its mailbox features grant. Other providers are not supported here. You can keep using mail without a calendar.", "Connect calendar"],
   ["Choose your sender name", "Choose the name recipients see for this mailbox and each From address in Sender identities. Names are local preferences, not permission to send as another address. An empty override uses the address alone.", "Edit sender name"],
   ["Add your signature", "Add an account default or a signature for a send-as domain. The editor opens for the mailbox selected above. You can also send without a signature.", "Edit signatures"],
   ["Make AI work for you", "Optionally connect ChatGPT or an API provider, then choose a model. Review the saved destination and data permission separately. Saving a connection never grants permission to use your mail; background use requires its own choice.", "Review AI settings"],
+  ["Choose mail preferences", "These preferences apply to all mailboxes. Save each choice below. Skip, Back and Finish later leave saved preferences unchanged; unsaved edits last only while this window stays open.", ""],
 ];
 function saveSetupProgress(status = setupProgress.status) {
   setupProgress = { ...setupProgress, status };
@@ -18586,21 +18590,23 @@ async function paintSetupGuide() {
   $("setup-guide-steps").replaceChildren();
   setupSteps.forEach((item, index) => {
     const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
-    button.textContent = `${index + 1}. ${["Mailbox", "Calendar", "Sender name", "Signature", "AI setup"][index]}`;
+    button.textContent = `${index + 1}. ${["Mailbox", "Calendar", "Sender name", "Signature", "AI setup", "Mail preferences"][index]}`;
     button.title = item[0];
     if (index === step) button.setAttribute("aria-current", "step");
     button.addEventListener("click", () => moveSetupGuide(index));
     $("setup-guide-steps").append(button);
   });
-  $("setup-guide-position").textContent = `STEP ${step + 1} OF 5${step === 1 || step === 4 ? " · OPTIONAL" : ""}`;
+  $("setup-guide-position").textContent = `STEP ${step + 1} OF ${setupSteps.length}${step === 1 || step >= 4 ? " · OPTIONAL" : ""}`;
   $("setup-guide-heading").textContent = spec[0];
   $("setup-guide-copy").textContent = spec[1];
   $("setup-guide-action").textContent = spec[2];
+  $("setup-guide-action").hidden = step === 5;
+  $("setup-guide-mail").hidden = step !== 5;
   $("setup-guide-action").disabled = step === 1 || (step > 0 && step < 4 && !account);
   $("setup-guide-import").hidden = step !== 0;
   $("setup-guide-cancel").hidden = !setupCalendarPending;
   $("setup-guide-back").disabled = step === 0;
-  $("setup-guide-next").textContent = step === 4 ? "Finish guide" : "Skip for now";
+  $("setup-guide-next").textContent = step === setupSteps.length - 1 ? "Finish guide" : "Skip for now";
   $("setup-guide-state").textContent = "Checking saved settings…";
   let summary = "", complete = false;
   try {
@@ -18626,6 +18632,9 @@ async function paintSetupGuide() {
       const pack = await call("mail:listSignatures", { accountId: account.id });
       complete = signatureRows(pack).some(row => (!row.accountId || row.accountId === account.id) && (signaturePlain(row) || signatureMarkup(row)));
       summary = complete ? "Signature saved for this mailbox. Review its default or domain assignment in the editor." : "No signature saved for this mailbox yet.";
+    } else if (step === 5) {
+      await loadSetupMailPreferences();
+      summary = "Only Save changes a preference. Finishing the guide keeps your current settings.";
     } else {
       const cfg = await api.invoke("host:aiGetConfig");
       if (cfg?.authMode === "chatgpt") {
@@ -18634,7 +18643,13 @@ async function paintSetupGuide() {
       } else complete = !!(cfg?.hasKey && cfg?.model);
       summary = complete ? "AI connection configured. Review data permission separately in AI settings." : "AI is optional. Mail works without an AI connection.";
     }
-  } catch { summary = "Could not check saved settings. Open this step to review or try again later."; }
+  } catch {
+    summary = "Could not check saved settings. Open this step to review or try again later.";
+    if (step === 5 && revision === setupRevision && $("setup-guide").open) {
+      $("setup-guide-action").hidden = false;
+      $("setup-guide-action").textContent = "Retry loading preferences";
+    }
+  }
   if (revision !== setupRevision || !$("setup-guide").open) return;
   $("setup-guide-state").textContent = summary;
   if (step < 4 && complete) $("setup-guide-next").textContent = "Continue";
@@ -18651,9 +18666,76 @@ async function dismissSetupGuide(status = "later") {
   await saveSetupProgress(status).catch(() => {});
   await closeDialog("setup-guide");
 }
+const setupMailFields = {
+  undo: ["setup-undo"], delay: ["setup-delay-hours", "setup-delay-minutes"], images: ["setup-images"],
+};
+function setupMailDisabled(kind, disabled) {
+  for (const id of [...setupMailFields[kind], `setup-${kind}-save`]) $(id).disabled = disabled;
+}
+async function loadSetupMailPreferences() {
+  if (setupMailLoaded) return;
+  if (!setupMailLoading) setupMailLoading = readSetupMailPreferences().finally(() => { setupMailLoading = null; });
+  return setupMailLoading;
+}
+async function readSetupMailPreferences() {
+  for (const kind of Object.keys(setupMailFields)) setupMailDisabled(kind, true);
+  const [undo, delay, images] = await Promise.all([
+    api.invoke("morrow:configGetUndoSendDelaySeconds"),
+    api.invoke("morrow:configGetDefaultScheduleDelayMinutes"),
+    api.invoke("morrow:configGetAutoLoadRemoteImages"),
+  ]);
+  $("setup-undo").value = String(undo);
+  const parts = splitScheduleDelay(delay);
+  $("setup-delay-hours").value = String(parts.hours);
+  $("setup-delay-minutes").value = String(parts.minutes);
+  $("setup-images").value = "";
+  $("setup-images").options[0].textContent = `Keep current setting (${images ? "on" : "off"})`;
+  setupMailLoaded = true;
+  for (const kind of Object.keys(setupMailFields)) setupMailDisabled(kind, false);
+}
+async function saveSetupMailPreference(kind) {
+  if (!setupMailLoaded || setupMailSaving.has(kind)) return;
+  const status = $(`setup-${kind}-status`);
+  const value = kind === "undo" ? readPref("seconds", $("setup-undo"))
+    : kind === "delay" ? joinScheduleDelay(readWhole($("setup-delay-hours").value), readWhole($("setup-delay-minutes").value))
+    : $("setup-images").value;
+  if (kind === "undo" && (!Number.isInteger(value) || value < 0 || value > 30)) {
+    status.textContent = "Enter a whole number from 0 to 30 seconds."; $("setup-undo").focus(); return;
+  }
+  if (kind === "delay" && value === null) {
+    status.textContent = "Enter 0 to 168 hours and 0 to 59 minutes, at most 7 days."; $("setup-delay-hours").focus(); return;
+  }
+  if (kind === "images" && !["on", "off"].includes(value)) {
+    status.textContent = "Choose Allow or Block to change this setting. Your current setting is unchanged."; return;
+  }
+  const channels = { undo: "UndoSendDelaySeconds", delay: "DefaultScheduleDelayMinutes", images: "AutoLoadRemoteImages" };
+  setupMailSaving.add(kind); setupMailDisabled(kind, true); status.textContent = "Saving…";
+  try {
+    await api.invoke(`morrow:configSet${channels[kind]}`, kind === "images" ? value === "on" : value);
+    const saved = await api.invoke(`morrow:configGet${channels[kind]}`);
+    if (kind === "delay") {
+      state.prefs.scheduleDelay = scheduleDelayMinutes(saved);
+      const parts = splitScheduleDelay(saved);
+      $("setup-delay-hours").value = String(parts.hours);
+      $("setup-delay-minutes").value = String(parts.minutes);
+      if ($("compose").open) syncCompose();
+    } else {
+      takePref(`morrow:configGet${channels[kind]}`, kind === "images" ? "bool" : "seconds", { checked: saved === true, value: String(saved) });
+      if (kind === "undo") $("setup-undo").value = String(saved);
+      paintPrefs();
+    }
+    status.textContent = "Saved.";
+    if (kind === "images") {
+      $("setup-images").options[0].textContent = `Keep current setting (${saved ? "on" : "off"})`;
+      $("setup-images").value = "";
+    }
+  } catch (error) { status.textContent = `Could not save. ${error.message || "Try again."}`; }
+  finally { setupMailSaving.delete(kind); setupMailDisabled(kind, false); }
+}
 async function setupGuideAction() {
   const step = setupProgress.step, account = setupAccount();
   if (setupTransition || (step > 0 && step < 4 && !account)) return;
+  if (step === 5) { await paintSetupGuide(); return; }
   if (step === 1) {
     if (setupCalendarPending) return;
     setupCalendarPending = true;
@@ -18691,9 +18773,13 @@ async function setupGuideAction() {
   } finally { setupTransition = false; setTimeout(resumeSetupGuide, 0); }
 }
 function wireSetupGuide() {
+  for (const kind of Object.keys(setupMailFields)) {
+    $(`setup-${kind}-save`).addEventListener("click", () => saveSetupMailPreference(kind));
+    for (const id of setupMailFields[kind]) $(id).addEventListener("input", () => { $(`setup-${kind}-status`).textContent = "Unsaved choice. Choose Save to apply."; });
+  }
   $("setup-guide").addEventListener("keydown", event => {
     if (event.key !== "Tab") return;
-    const controls = [...$("setup-guide").querySelectorAll("button:not(:disabled), select:not(:disabled), a[href]")].filter(node => node.getClientRects().length);
+    const controls = [...$("setup-guide").querySelectorAll("button:not(:disabled), select:not(:disabled), input:not(:disabled), a[href]")].filter(node => node.getClientRects().length);
     const first = controls[0], last = controls[controls.length - 1];
     if (!first) return;
     if (event.shiftKey && (document.activeElement === first || document.activeElement === $("setup-guide-heading"))) {
@@ -18725,7 +18811,7 @@ function wireSetupGuide() {
     saveSetupProgress("active").catch(() => {}); paintSetupGuide();
   });
   $("setup-guide-back").addEventListener("click", () => moveSetupGuide(Math.max(0, setupProgress.step - 1)));
-  $("setup-guide-next").addEventListener("click", () => setupProgress.step === 4 ? dismissSetupGuide("done") : moveSetupGuide(setupProgress.step + 1));
+  $("setup-guide-next").addEventListener("click", () => setupProgress.step === setupSteps.length - 1 ? dismissSetupGuide("done") : moveSetupGuide(setupProgress.step + 1));
   $("setup-guide-action").addEventListener("click", () => setupGuideAction().catch(error => { $("setup-guide-error").textContent = error.message; }));
   $("setup-guide-import").addEventListener("click", async () => {
     $("setup-guide-import").disabled = true;

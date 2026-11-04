@@ -8,8 +8,8 @@ Mail shortcuts follow the active reading surface. In Separate window mode, Delet
 
 Scheduled and Out of Office share a sidebar row and open native dialogs. Close or Escape dismisses the Out of Office dialog and returns focus to its trigger. Its panel labels its mailbox chooser, shows the full selected address separately, and keeps status and actions on their own rows. Checking and retry states stay scoped to that mailbox; Manage opens its reviewed Settings editor without changing replies. Disabled replies show Off with Manage and no Refresh.
 
-New profiles see a five-step setup guide after startup dialogs: mailbox, calendar,
-sender names, signatures and optional AI. Settings → General → Open setup guide
+New profiles see a six-step setup guide after startup dialogs: mailbox, calendar,
+sender names, signatures, optional AI and mail preferences. Settings → General → Open setup guide
 resumes saved progress. Existing mailboxes are not interrupted. The guide reads
 saved settings and opens existing account-specific editors; Skip does not mark a
 connection complete. Google Desktop JSON import lives inside the mailbox step.
@@ -174,5 +174,13 @@ reviewed removal use the displayed account. Unsaved Out of Office edits still
 require discard confirmation. No-account profiles show Add account and guidance.
 Connection & credential help and the optional computer-wide Google client stay
 below; sender names and aliases stay in Compose.
+
+The final Mail preferences step saves Undo send (0–30 seconds), Default schedule
+delay (0–7 days) and Load remote images through the existing settings channels.
+Each setting has an explicit Save button. The image chooser starts on Keep current
+setting, shows the saved on/off value and explains tracking before an explicit
+Allow or Block choice. Defaults remain unchanged. Skip, Back, Finish later and
+Finish guide do not write preferences. Unsaved choices survive navigation within
+this window; only saved choices survive restart. Existing step numbers stay stable.
 
 Each sidebar account has a collapse button, including Yahoo and custom IMAP. Choices are stored separately by mailbox id. Before a mailbox has an individual choice, it inherits its previous Gmail/Outlook expansion default; other providers start expanded. The General tab’s Gmail/Outlook checkboxes set those defaults. Folder filtering reveals matching folders temporarily. Collapse All leaves account expansion unchanged.

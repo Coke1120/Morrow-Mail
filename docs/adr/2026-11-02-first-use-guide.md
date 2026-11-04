@@ -1,6 +1,6 @@
 # First-use guide and existing settings
 
-The first-use experience is one five-step guide. It runs after the initial account
+The first-use experience is one six-step guide. It runs after the initial account
 load and yields to the changelog or any open dialog, resuming after the final close.
 A profile with existing mailboxes is grandfathered; a new profile sees the guide
 even when Google client configuration is already available. Google Desktop JSON
@@ -39,3 +39,11 @@ with `MORROW_CHROMIUM` if Chromium is not `/usr/bin/chromium`, and
 `MORROW_UI_OUTPUT` chooses the screenshot directory; it defaults to the OS temp
 folder. The local HTTP fixture uses synthetic accounts and settings and never
 submits live OAuth, AI requests or mail.
+
+The final Mail preferences step saves Undo send (0–30 seconds), Default schedule
+delay (0–7 days) and Load remote images through the existing settings channels.
+Each setting has an explicit Save button. The image chooser starts on Keep current
+setting, shows the saved on/off value and explains tracking before an explicit
+Allow or Block choice. Defaults remain unchanged. Skip, Back, Finish later and
+Finish guide do not write preferences. Unsaved choices survive navigation within
+this window; only saved choices survive restart. Existing step numbers stay stable.
