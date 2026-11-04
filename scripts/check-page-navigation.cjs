@@ -708,6 +708,9 @@ app.whenReady().then(async () => {
   await run(`refreshMailVacation=productionRefreshMailVacation;mailVacation.clear();state.accountId='box-0';state.allInbox=true;renderAccounts()`);
   await waitFor(`mailVacation.get('box-0')?.data?.settings?.mode==='disabled'`);
   assert.equal(count('mail:vacationGet'), vacationReadsBeforeAll + 1, 'mail paint reads only the selected All Account mailbox');
+  assert.equal(await run(`$('mail-ooo').checkVisibility()`), false);
+  await run(`$('mail-ooo-open').click()`);
+  await waitFor(`$('mail-ooo-dialog').open`);
   assert.equal(await run(`$('mail-ooo').checkVisibility() && $('mail-ooo-account').checkVisibility()`), true);
   assert.equal(await run(`$('mail-ooo-status').textContent`), 'Off');
   assert.equal(await run(`$('mail-ooo').classList.contains('is-off')`), true);

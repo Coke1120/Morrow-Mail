@@ -457,7 +457,7 @@ test('W4-4 All Account OOO reads only the selected mailbox and keeps its compact
   assert.deepEqual(ui.json('calls.map(row => [row.channel,row.params.accountId])'),
     [['mail:vacationGet','alpha'],['mail:vacationGet','beta'],['mail:vacationGet','beta']]);
   ui.run(`globalThis.openedFold='';
-    openSettings = () => {state.settingsAccountId='alpha';}; changeSettingsMailbox = async id => {state.settingsAccountId=id;return true;};
+    openSettings = () => {}; changeSettingsMailbox = async id => {state.settingsAccountId=id;return true;};
     revealSettingsFold = fold => {openedFold=fold;};`);
   await ui.run('manageMailVacation()');
   assert.equal(ui.run('state.settingsAccountId'), 'beta');

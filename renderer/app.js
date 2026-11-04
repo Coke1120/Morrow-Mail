@@ -59,6 +59,7 @@ const state = {
     markReadCompletesTodos: false,
     gmailOpen: true,
     outlookOpen: false,
+    accountExpanded: {},
     theme: "light",
     accent: "#193C34",
     translateLang: "zh-Hant",
@@ -238,6 +239,9 @@ let listMotionKey = "";
 let listOpenKey = "";
 let folderRenderKey = "";
 let folderCollapseGen = 0;
+let accountExpansionRevision = 0;
+const accountExpansionGenerations = new Map();
+const accountExpansionPending = new Set();
 let folderNavKey = "";
 let folderNavRestore = false;
 let chipRenderKey = "";
@@ -1034,6 +1038,11 @@ function providerExpanded(provider, prefs) {
   if (provider === "gmail") return flags.gmailOpen !== false;
   if (provider === "outlook") return flags.outlookOpen === true;
   return true;
+}
+
+function accountFoldersExpanded(account, prefs = state.prefs) {
+  const value = prefs.accountExpanded?.[account.id];
+  return typeof value === "boolean" ? value : providerExpanded(folderProvider(account), prefs);
 }
 
 function opensAiWrite(seed, prefs) {
@@ -3338,6 +3347,7 @@ function outboxEmails(rows) {
     fromAddress: row.fromAddress,
     fromDisplayName: row.fromDisplayName,
     attachments: row.attachments,
+    sourceMessageId: row.sourceMessageId, kind: row.kind,
     inReplyTo: row.inReplyTo,
     threadId: row.threadId,
   }));
@@ -3362,6 +3372,8 @@ function outboxComposeSeed(row, payload) {
     attachments: source.attachments || (row && row.attachments),
     draftId: source.draftId || (row && row.draftId),
     draftRevision: typeof source.draftRevision === "string" ? source.draftRevision : row && row.draftRevision,
+    sourceMessageId: source.sourceMessageId || (row && row.sourceMessageId) || "",
+    kind: source.kind || (row && row.kind) || "new",
     inReplyTo: source.inReplyTo || (row && row.inReplyTo) || "",
     threadId: source.threadId || (row && row.threadId) || "",
     status: "Send canceled. Your draft is ready to edit.",
@@ -5113,10 +5125,7 @@ function onFolderNavKey(event) {
     return;
   }
   if (node.dataset.navKind === "account") {
-    const provider = node.dataset.navId || "";
-    if (provider === "gmail" || provider === "outlook") {
-      toggleProviderFolders(provider).catch((error) => showStatus(error.message, true));
-    } else folderNavRestore = false;
+    toggleAccountFolders(node.dataset.navAccount).catch((error) => showStatus(error.message, true));
     return;
   }
   if (node.dataset.navKind === "folder") {
@@ -5139,6 +5148,7 @@ function renderAccounts() {
     state.accountId,
     state.prefs.gmailOpen,
     state.prefs.outlookOpen,
+    state.prefs.accountExpanded,
     state.prefs.collapsedFolders || {},
     folderQuery,
   ]);
@@ -5197,40 +5207,34 @@ function renderAccounts() {
   for (const account of state.accounts) {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
-    const expanded = filtering || providerExpanded(provider, state.prefs);
+    const expanded = filtering || accountFoldersExpanded(account);
     const tree = folderTree(foldersOf(account), accountDelimiter(account));
     const rows = expanded ? sidebarFolderRows(tree, account.id) : [];
     if (filtering && !rows.length) continue;
     shownFolder = true;
-    let heading;
-    if (provider) {
-      heading = document.createElement("button");
-      heading.type = "button";
-      heading.className = "account";
-      heading.setAttribute("aria-expanded", expanded ? "true" : "false");
-      const mark = document.createElement("span");
-      mark.setAttribute("aria-hidden", "true");
-      mark.textContent = expanded ? "▾ " : "▸ ";
-      heading.append(mark, accountLabel(account));
-      heading.title = accountLabel(account);
-      heading.addEventListener("click", () => {
-        folderNavKey = "account:" + account.id;
-        folderNavRestore = true;
-        toggleProviderFolders(provider).catch((error) => showStatus(error.message, true));
-      });
-    } else {
-      heading = document.createElement("h2");
-      heading.textContent = accountLabel(account);
-      heading.title = accountLabel(account);
-    }
+    const heading = document.createElement("button");
+    heading.type = "button";
+    heading.className = "account";
+    heading.setAttribute("aria-expanded", expanded ? "true" : "false");
+    heading.setAttribute("aria-label", filtering ? accountLabel(account) + ", expanded to show matching folders"
+      : (expanded ? "Collapse " : "Expand ") + accountLabel(account));
+    if (filtering) heading.setAttribute("aria-disabled", "true");
+    heading.append(folderTwistMark(expanded), accountLabel(account));
+    heading.title = accountLabel(account);
+    heading.addEventListener("click", () => {
+      folderNavKey = "account:" + account.id;
+      folderNavRestore = true;
+      if (filtering) { folderNavRestore = false; return; }
+      toggleAccountFolders(account.id).catch((error) => showStatus(error.message, true));
+    });
     markFolderNav(heading, {
       key: "account:" + account.id,
       kind: "account",
       accountId: account.id,
       id: provider || "",
-      hasChild: tree.length > 0,
-      expanded: !!(expanded && tree.length),
-      lock: !provider || filtering,
+      hasChild: true,
+      expanded: !!expanded,
+      lock: filtering,
     });
     heading.addEventListener("contextmenu", (event) => {
       event.preventDefault();
@@ -6749,7 +6753,7 @@ function mailReplyForwardCell(email) {
   const labels = [];
   for (const [key, label, icon] of [["replied", "Replied", "Reply"], ["forwarded", "Forwarded", "Forward"]]) {
     if (email[key] === true) {
-      labels.push(label + " (provider flag)");
+      labels.push(label + " (saved evidence)");
       const svg = rowIcon(icon); svg.dataset.state = key; cell.append(svg);
     }
   }
@@ -13006,6 +13010,8 @@ function composePayload(account) {
     draftId: state.draftId || undefined,
     emailId: state.draftId || undefined,
     draftRevision: state.draftRevision || undefined,
+    sourceMessageId: meta.sourceMessageId || undefined,
+    kind: meta.kind || "new",
   };
   const cc = $("compose-cc").value.trim();
   const bcc = $("compose-bcc").value.trim();
@@ -14803,6 +14809,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
   const session = state.composeSession;
   const previous = {
     accountId: state.composeMeta.accountId,
+    sourceMessageId: state.composeMeta.sourceMessageId,
     draftId: state.draftId,
     draftRevision: state.draftRevision,
     threadId: state.composeMeta.threadId,
@@ -14817,6 +14824,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
   state.draftId = null;
   state.draftRevision = null;
   state.composeMeta.threadId = "";
+  state.composeMeta.sourceMessageId = "";
   let switched = false;
   try {
     const context = await call("mail:getComposeContext", {
@@ -14849,6 +14857,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
     state.draftId = previous.draftId;
     state.draftRevision = previous.draftRevision;
     state.composeMeta.threadId = previous.threadId;
+    state.composeMeta.sourceMessageId = previous.sourceMessageId;
     state.composeMeta.fromAddress = previous.fromAddress;
     state.composeMeta.fromDisplayName = previous.fromDisplayName;
     state.composeIdentity = previous.identity;
@@ -15190,6 +15199,8 @@ async function openCompose(seed) {
   state.signatureHtml = "";
   state.composeMeta = {
     accountId: fields.accountId || state.accountId,
+    sourceMessageId: fields.sourceMessageId || "",
+    kind: fields.kind || "new",
     inReplyTo: fields.inReplyTo || "",
     threadId: fields.threadId || "",
   };
@@ -17113,6 +17124,7 @@ async function loadLook() {
 }
 
 async function loadShellPrefs() {
+  const expansionRevision = accountExpansionRevision;
   const next = { ...state.prefs };
   try {
     for (const [channel, key] of Object.entries(SHELL_PREFS)) {
@@ -17132,6 +17144,9 @@ async function loadShellPrefs() {
     next.collapsedFolders = collapse
       ? collapse.normalize(await api.invoke("morrow:configGetSidebarCollapsedFolders"))
       : (state.prefs.collapsedFolders || {});
+    next.accountExpanded = collapse
+      ? collapse.normalizeAccountExpanded(await api.invoke("morrow:configGetSidebarAccountFoldersExpanded"))
+      : (state.prefs.accountExpanded || {});
     next.undoSend = sendDelayMs(await api.invoke("morrow:configGetUndoSendDelaySeconds")) / 1000;
     next.quoteWidth = quoteWidthPref(await api.invoke("morrow:configGetComposeQuoteWidth"));
     next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
@@ -17148,6 +17163,9 @@ async function loadShellPrefs() {
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
+  }
+  if (expansionRevision !== accountExpansionRevision || accountExpansionPending.size) {
+    next.accountExpanded = state.prefs.accountExpanded;
   }
   next.mailView = state.prefs.mailView;
   state.prefs = next;
@@ -17246,27 +17264,50 @@ function repaintClockSurfaces() {
   if (state.view === "agent" && agentPaintPayload && $("agent-status")) paintAgent(agentPaintPayload, "");
 }
 
-async function toggleProviderFolders(provider) {
-  const spec = provider === "gmail"
-    ? ["gmailOpen", "morrow:configSetSidebarGmailFoldersExpanded"]
-    : ["outlookOpen", "morrow:configSetSidebarOutlookFoldersExpanded"];
-  const key = spec[0];
-  const gen = ++folderCollapseGen;
-  const next = !state.prefs[key];
-  state.prefs[key] = next;
+async function toggleAccountFolders(accountId) {
+  const account = state.accounts.find(row => row.id === accountId);
+  const collapse = folderCollapse();
+  if (!account || !collapse) return;
+  const generation = (accountExpansionGenerations.get(accountId) || 0) + 1;
+  accountExpansionGenerations.set(accountId, generation);
+  accountExpansionPending.add(accountId);
+  ++accountExpansionRevision;
+  const previous = collapse.normalizeAccountExpanded(state.prefs.accountExpanded);
+  const expanded = !accountFoldersExpanded(account);
+  state.prefs.accountExpanded = { ...previous, [accountId]: expanded };
   renderAccounts();
+  const current = () => accountExpansionGenerations.get(accountId) === generation;
+  const applySaved = (saved) => {
+    const map = collapse.normalizeAccountExpanded(saved);
+    const next = { ...state.prefs.accountExpanded };
+    if (typeof map[accountId] === "boolean") next[accountId] = map[accountId];
+    else delete next[accountId];
+    state.prefs.accountExpanded = next;
+  };
   try {
-    const saved = (await api.invoke(spec[1], next)) === true;
-    if (gen !== folderCollapseGen) return;
-    state.prefs[key] = saved;
+    const saved = await api.invoke("morrow:configSetSidebarAccountFoldersExpanded", { accountId, expanded });
+    if (!current()) return;
+    if (typeof saved?.[accountId] !== "boolean") throw new Error("Could not save account expansion.");
+    applySaved(saved);
   } catch (error) {
-    if (gen !== folderCollapseGen) return;
+    if (!current()) return;
     showStatus(error instanceof Error ? error.message : String(error), true);
-    await loadShellPrefs();
+    try {
+      const saved = await api.invoke("morrow:configGetSidebarAccountFoldersExpanded");
+      if (!current()) return;
+      applySaved(saved);
+    } catch {
+      if (!current()) return;
+      applySaved(previous);
+    }
+  } finally {
+    if (current()) {
+      accountExpansionPending.delete(accountId);
+      ++accountExpansionRevision;
+      renderAccounts();
+      folderNavRestore = false;
+    }
   }
-  if (gen !== folderCollapseGen) return;
-  renderAccounts();
-  folderNavRestore = false;
 }
 
 async function toggleSidebarFolder(accountId, folderId) {
@@ -17310,23 +17351,12 @@ async function collapseAllFolders() {
     }
     next = collapse.collapseIds(next, account.id, parents);
   }
-  const closeGmail = state.prefs.gmailOpen !== false;
-  const closeOutlook = state.prefs.outlookOpen === true;
   const changed = JSON.stringify(next) !== JSON.stringify(collapse.normalize(state.prefs.collapsedFolders));
-  if (!changed && !closeGmail && !closeOutlook) return;
+  if (!changed) return;
   state.prefs.collapsedFolders = next;
-  if (closeGmail) state.prefs.gmailOpen = false;
-  if (closeOutlook) state.prefs.outlookOpen = false;
   renderAccounts();
   try {
-    if (closeGmail && gen === folderCollapseGen) {
-      state.prefs.gmailOpen = (await api.invoke("morrow:configSetSidebarGmailFoldersExpanded", false)) === true;
-    }
-    if (closeOutlook && gen === folderCollapseGen) {
-      state.prefs.outlookOpen = (await api.invoke("morrow:configSetSidebarOutlookFoldersExpanded", false)) === true;
-    }
-    if (gen !== folderCollapseGen) return;
-    if (changed) state.prefs.collapsedFolders = collapse.normalize(await api.invoke("morrow:configSetSidebarCollapsedFolders", next));
+    state.prefs.collapsedFolders = collapse.normalize(await api.invoke("morrow:configSetSidebarCollapsedFolders", next));
   } catch (error) {
     if (gen !== folderCollapseGen) return;
     showStatus(error instanceof Error ? error.message : String(error), true);
@@ -18398,6 +18428,7 @@ function paintMailVacation() {
   }
   const account = mailVacationAccount();
   box.hidden = !account;
+  if ($("mail-ooo-open")) $("mail-ooo-open").disabled = !account;
   if (!account) return;
   const entry = mailVacation.get(account.id);
   const pending = mailVacationPending.has(account.id);
@@ -18459,11 +18490,19 @@ async function refreshMailVacation(force = false) {
     paintMailVacation();
   }
 }
+async function showMailVacation() {
+  if ($("compose").open && !(await requestComposeClose())) return;
+  paintMailVacation();
+  if (!mailVacationAccount()) return;
+  openDialog("mail-ooo-dialog");
+  await refreshMailVacation();
+}
 async function manageMailVacation() {
   const id = state.allInbox ? $("mail-ooo-account")?.value : state.accountId;
   if (!state.accounts.some((account) => account.id === id)) return;
-  openSettings();
   if (settingsAccount()?.id !== id && !(await changeSettingsMailbox(id))) return;
+  await closeDialog("mail-ooo-dialog");
+  openSettings();
   revealSettingsFold("ooo");
   $("ooo-refresh").focus();
 }
@@ -18497,12 +18536,16 @@ let setupTransition = false;
 let setupRevision = 0;
 let setupCalendarPending = false;
 let setupSave = Promise.resolve();
+let setupMailLoaded = false;
+let setupMailLoading = null;
+const setupMailSaving = new Set();
 const setupSteps = [
   ["Connect a mailbox", "Read and send mail from your own account. Use Google, Microsoft, or your provider’s IMAP and SMTP settings. Google sign-in may require a Desktop client JSON from Google Cloud Console; importing it does not sign you in.", "Connect mailbox"],
   ["Connect its calendar", "Bring this mailbox’s calendar into Morrow. Google Calendar has separate consent; Microsoft uses its mailbox features grant. Other providers are not supported here. You can keep using mail without a calendar.", "Connect calendar"],
   ["Choose your sender name", "Choose the name recipients see for this mailbox and each From address in Sender identities. Names are local preferences, not permission to send as another address. An empty override uses the address alone.", "Edit sender name"],
   ["Add your signature", "Add an account default or a signature for a send-as domain. The editor opens for the mailbox selected above. You can also send without a signature.", "Edit signatures"],
   ["Make AI work for you", "Optionally connect ChatGPT or an API provider, then choose a model. Review the saved destination and data permission separately. Saving a connection never grants permission to use your mail; background use requires its own choice.", "Review AI settings"],
+  ["Choose mail preferences", "These preferences apply to all mailboxes. Save each choice below. Skip, Back and Finish later leave saved preferences unchanged; unsaved edits last only while this window stays open.", ""],
 ];
 function saveSetupProgress(status = setupProgress.status) {
   setupProgress = { ...setupProgress, status };
@@ -18547,21 +18590,23 @@ async function paintSetupGuide() {
   $("setup-guide-steps").replaceChildren();
   setupSteps.forEach((item, index) => {
     const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
-    button.textContent = `${index + 1}. ${["Mailbox", "Calendar", "Sender name", "Signature", "AI setup"][index]}`;
+    button.textContent = `${index + 1}. ${["Mailbox", "Calendar", "Sender name", "Signature", "AI setup", "Mail preferences"][index]}`;
     button.title = item[0];
     if (index === step) button.setAttribute("aria-current", "step");
     button.addEventListener("click", () => moveSetupGuide(index));
     $("setup-guide-steps").append(button);
   });
-  $("setup-guide-position").textContent = `STEP ${step + 1} OF 5${step === 1 || step === 4 ? " · OPTIONAL" : ""}`;
+  $("setup-guide-position").textContent = `STEP ${step + 1} OF ${setupSteps.length}${step === 1 || step >= 4 ? " · OPTIONAL" : ""}`;
   $("setup-guide-heading").textContent = spec[0];
   $("setup-guide-copy").textContent = spec[1];
   $("setup-guide-action").textContent = spec[2];
+  $("setup-guide-action").hidden = step === 5;
+  $("setup-guide-mail").hidden = step !== 5;
   $("setup-guide-action").disabled = step === 1 || (step > 0 && step < 4 && !account);
   $("setup-guide-import").hidden = step !== 0;
   $("setup-guide-cancel").hidden = !setupCalendarPending;
   $("setup-guide-back").disabled = step === 0;
-  $("setup-guide-next").textContent = step === 4 ? "Finish guide" : "Skip for now";
+  $("setup-guide-next").textContent = step === setupSteps.length - 1 ? "Finish guide" : "Skip for now";
   $("setup-guide-state").textContent = "Checking saved settings…";
   let summary = "", complete = false;
   try {
@@ -18587,6 +18632,9 @@ async function paintSetupGuide() {
       const pack = await call("mail:listSignatures", { accountId: account.id });
       complete = signatureRows(pack).some(row => (!row.accountId || row.accountId === account.id) && (signaturePlain(row) || signatureMarkup(row)));
       summary = complete ? "Signature saved for this mailbox. Review its default or domain assignment in the editor." : "No signature saved for this mailbox yet.";
+    } else if (step === 5) {
+      await loadSetupMailPreferences();
+      summary = "Only Save changes a preference. Finishing the guide keeps your current settings.";
     } else {
       const cfg = await api.invoke("host:aiGetConfig");
       if (cfg?.authMode === "chatgpt") {
@@ -18595,7 +18643,13 @@ async function paintSetupGuide() {
       } else complete = !!(cfg?.hasKey && cfg?.model);
       summary = complete ? "AI connection configured. Review data permission separately in AI settings." : "AI is optional. Mail works without an AI connection.";
     }
-  } catch { summary = "Could not check saved settings. Open this step to review or try again later."; }
+  } catch {
+    summary = "Could not check saved settings. Open this step to review or try again later.";
+    if (step === 5 && revision === setupRevision && $("setup-guide").open) {
+      $("setup-guide-action").hidden = false;
+      $("setup-guide-action").textContent = "Retry loading preferences";
+    }
+  }
   if (revision !== setupRevision || !$("setup-guide").open) return;
   $("setup-guide-state").textContent = summary;
   if (step < 4 && complete) $("setup-guide-next").textContent = "Continue";
@@ -18612,9 +18666,76 @@ async function dismissSetupGuide(status = "later") {
   await saveSetupProgress(status).catch(() => {});
   await closeDialog("setup-guide");
 }
+const setupMailFields = {
+  undo: ["setup-undo"], delay: ["setup-delay-hours", "setup-delay-minutes"], images: ["setup-images"],
+};
+function setupMailDisabled(kind, disabled) {
+  for (const id of [...setupMailFields[kind], `setup-${kind}-save`]) $(id).disabled = disabled;
+}
+async function loadSetupMailPreferences() {
+  if (setupMailLoaded) return;
+  if (!setupMailLoading) setupMailLoading = readSetupMailPreferences().finally(() => { setupMailLoading = null; });
+  return setupMailLoading;
+}
+async function readSetupMailPreferences() {
+  for (const kind of Object.keys(setupMailFields)) setupMailDisabled(kind, true);
+  const [undo, delay, images] = await Promise.all([
+    api.invoke("morrow:configGetUndoSendDelaySeconds"),
+    api.invoke("morrow:configGetDefaultScheduleDelayMinutes"),
+    api.invoke("morrow:configGetAutoLoadRemoteImages"),
+  ]);
+  $("setup-undo").value = String(undo);
+  const parts = splitScheduleDelay(delay);
+  $("setup-delay-hours").value = String(parts.hours);
+  $("setup-delay-minutes").value = String(parts.minutes);
+  $("setup-images").value = "";
+  $("setup-images").options[0].textContent = `Keep current setting (${images ? "on" : "off"})`;
+  setupMailLoaded = true;
+  for (const kind of Object.keys(setupMailFields)) setupMailDisabled(kind, false);
+}
+async function saveSetupMailPreference(kind) {
+  if (!setupMailLoaded || setupMailSaving.has(kind)) return;
+  const status = $(`setup-${kind}-status`);
+  const value = kind === "undo" ? readPref("seconds", $("setup-undo"))
+    : kind === "delay" ? joinScheduleDelay(readWhole($("setup-delay-hours").value), readWhole($("setup-delay-minutes").value))
+    : $("setup-images").value;
+  if (kind === "undo" && (!Number.isInteger(value) || value < 0 || value > 30)) {
+    status.textContent = "Enter a whole number from 0 to 30 seconds."; $("setup-undo").focus(); return;
+  }
+  if (kind === "delay" && value === null) {
+    status.textContent = "Enter 0 to 168 hours and 0 to 59 minutes, at most 7 days."; $("setup-delay-hours").focus(); return;
+  }
+  if (kind === "images" && !["on", "off"].includes(value)) {
+    status.textContent = "Choose Allow or Block to change this setting. Your current setting is unchanged."; return;
+  }
+  const channels = { undo: "UndoSendDelaySeconds", delay: "DefaultScheduleDelayMinutes", images: "AutoLoadRemoteImages" };
+  setupMailSaving.add(kind); setupMailDisabled(kind, true); status.textContent = "Saving…";
+  try {
+    await api.invoke(`morrow:configSet${channels[kind]}`, kind === "images" ? value === "on" : value);
+    const saved = await api.invoke(`morrow:configGet${channels[kind]}`);
+    if (kind === "delay") {
+      state.prefs.scheduleDelay = scheduleDelayMinutes(saved);
+      const parts = splitScheduleDelay(saved);
+      $("setup-delay-hours").value = String(parts.hours);
+      $("setup-delay-minutes").value = String(parts.minutes);
+      if ($("compose").open) syncCompose();
+    } else {
+      takePref(`morrow:configGet${channels[kind]}`, kind === "images" ? "bool" : "seconds", { checked: saved === true, value: String(saved) });
+      if (kind === "undo") $("setup-undo").value = String(saved);
+      paintPrefs();
+    }
+    status.textContent = "Saved.";
+    if (kind === "images") {
+      $("setup-images").options[0].textContent = `Keep current setting (${saved ? "on" : "off"})`;
+      $("setup-images").value = "";
+    }
+  } catch (error) { status.textContent = `Could not save. ${error.message || "Try again."}`; }
+  finally { setupMailSaving.delete(kind); setupMailDisabled(kind, false); }
+}
 async function setupGuideAction() {
   const step = setupProgress.step, account = setupAccount();
   if (setupTransition || (step > 0 && step < 4 && !account)) return;
+  if (step === 5) { await paintSetupGuide(); return; }
   if (step === 1) {
     if (setupCalendarPending) return;
     setupCalendarPending = true;
@@ -18652,9 +18773,13 @@ async function setupGuideAction() {
   } finally { setupTransition = false; setTimeout(resumeSetupGuide, 0); }
 }
 function wireSetupGuide() {
+  for (const kind of Object.keys(setupMailFields)) {
+    $(`setup-${kind}-save`).addEventListener("click", () => saveSetupMailPreference(kind));
+    for (const id of setupMailFields[kind]) $(id).addEventListener("input", () => { $(`setup-${kind}-status`).textContent = "Unsaved choice. Choose Save to apply."; });
+  }
   $("setup-guide").addEventListener("keydown", event => {
     if (event.key !== "Tab") return;
-    const controls = [...$("setup-guide").querySelectorAll("button:not(:disabled), select:not(:disabled), a[href]")].filter(node => node.getClientRects().length);
+    const controls = [...$("setup-guide").querySelectorAll("button:not(:disabled), select:not(:disabled), input:not(:disabled), a[href]")].filter(node => node.getClientRects().length);
     const first = controls[0], last = controls[controls.length - 1];
     if (!first) return;
     if (event.shiftKey && (document.activeElement === first || document.activeElement === $("setup-guide-heading"))) {
@@ -18686,7 +18811,7 @@ function wireSetupGuide() {
     saveSetupProgress("active").catch(() => {}); paintSetupGuide();
   });
   $("setup-guide-back").addEventListener("click", () => moveSetupGuide(Math.max(0, setupProgress.step - 1)));
-  $("setup-guide-next").addEventListener("click", () => setupProgress.step === 4 ? dismissSetupGuide("done") : moveSetupGuide(setupProgress.step + 1));
+  $("setup-guide-next").addEventListener("click", () => setupProgress.step === setupSteps.length - 1 ? dismissSetupGuide("done") : moveSetupGuide(setupProgress.step + 1));
   $("setup-guide-action").addEventListener("click", () => setupGuideAction().catch(error => { $("setup-guide-error").textContent = error.message; }));
   $("setup-guide-import").addEventListener("click", async () => {
     $("setup-guide-import").disabled = true;
@@ -26046,6 +26171,8 @@ function wire() {
   $("compose-view-scheduled").addEventListener("click", () => showScheduled());
   $("scheduled-refresh").addEventListener("click", () => loadScheduled());
   $("scheduled-close").addEventListener("click", () => closeDialog("scheduled-dialog"));
+  $("mail-ooo-open").addEventListener("click", () => guard(showMailVacation));
+  $("mail-ooo-close").addEventListener("click", () => closeDialog("mail-ooo-dialog"));
   $("mail-ooo-manage").addEventListener("click", () => manageMailVacation());
   $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
   $("mail-ooo-account").addEventListener("change", () => refreshMailVacation());

@@ -25,3 +25,17 @@
   .ai-consent { padding: 12px; }
   .ai-consent-actions button { width: 100%; }
 }
+.ai-consent-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.ai-consent-heading h3 { margin: 0; }
+.ai-consent-modal {
+  box-sizing: border-box; width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+  inset: 0; margin: auto; padding: 24px; overflow: auto; border: 1px solid var(--line, #bfd2c5);
+  border-radius: 12px; color: var(--ink, #102822); background: var(--paper, #ffffff);
+}
+.ai-consent-modal::backdrop { background: rgb(0 0 0 / 40%); }
+.ai-consent-modal button { min-height: 44px; }
+.ai-consent-modal a { color: var(--accent-ink, #193c34); }
+
+@media (max-width: 480px) {
+  .ai-consent-modal .ai-consent-heading h3 { flex-basis: 100%; }
+}

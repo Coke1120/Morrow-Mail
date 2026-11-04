@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const INVOKE = [
+  "timeline:check",
   "timeline:prepare",
   "timeline:download",
   "timeline:generate",
@@ -44,6 +45,8 @@ const INVOKE = [
   "morrow:configSetMarkReadCompletesAgentTodos",
   "morrow:configGetSidebarCollapsedFolders",
   "morrow:configSetSidebarCollapsedFolders",
+  "morrow:configGetSidebarAccountFoldersExpanded",
+  "morrow:configSetSidebarAccountFoldersExpanded",
   "morrow:configGetComposeQuoteWidth",
   "morrow:configSetComposeQuoteWidth",
   "morrow:configGetSyncHorizonDays",

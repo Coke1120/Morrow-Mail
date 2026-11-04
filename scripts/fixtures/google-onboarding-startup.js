@@ -8,6 +8,8 @@
       calls: [],
       ready: false,
       onboarding: options.onboarding || null,
+      preferences: { UndoSendDelaySeconds: 30, DefaultScheduleDelayMinutes: 0, AutoLoadRemoteImages: true, ...options.preferences },
+      preferenceWrites: [],
       readStatus: null,
       readSeen: null,
     };
@@ -20,6 +22,11 @@
         state.calls.push(channel);
         if (channel === 'morrow:configGetOnboarding') return state.onboarding;
         if (channel === 'morrow:configSetOnboarding') { state.onboarding = args[0]; return state.onboarding; }
+        const pref = channel.match(/^morrow:config(Get|Set)(UndoSendDelaySeconds|DefaultScheduleDelayMinutes|AutoLoadRemoteImages)$/);
+        if (pref) {
+          if (pref[1] === 'Set') { state.preferences[pref[2]] = args[0]; state.preferenceWrites.push([pref[2], args[0]]); }
+          return state.preferences[pref[2]];
+        }
         if (channel === 'app:getVersion') return state.version;
         if (channel === 'morrow:configGetChangelogSeen') return state.readSeen ? state.readSeen() : window.localStorage.getItem('synthetic.changelogSeen') || '';
         if (channel === 'morrow:configSetChangelogSeen') { window.localStorage.setItem('synthetic.changelogSeen', args[0]); return true; }
