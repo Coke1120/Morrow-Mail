@@ -469,12 +469,61 @@ function inboxOf(account) {
   return folders.find((folder) => folder.wellKnownName === "inbox") || folders[0] || null;
 }
 
-function chipFolders(account) {
+function canonicalFolderRole(wellKnownName) {
+  const role = String(wellKnownName || "").trim().toLowerCase().replace(/[\s_-]/g, "");
+  switch (role) {
+    case "all":
+    case "allmail": return "all";
+    case "inbox": return "inbox";
+    case "sent":
+    case "sentmail":
+    case "sentitems": return "sentitems";
+    case "draft":
+    case "drafts": return "drafts";
+    case "starred": return "starred";
+    case "unread": return "unread";
+    case "deleted":
+    case "deletedmessages":
+    case "deleteditems":
+    case "trash": return "deleteditems";
+    case "junk":
+    case "junkmail":
+    case "junkemail":
+    case "spam": return "junkemail";
+    case "archive":
+    case "archives":
+    case "archived": return "archive";
+    case "important": return "important";
+    default: return "";
+  }
+}
+
+function chipFolders(account, selectedId) {
   const folders = account && account.folders;
   const primary = folders && Array.isArray(folders.primary) ? folders.primary : [];
   const more = folders && Array.isArray(folders.more) ? folders.more : [];
-  const list = primary.length ? primary : more;
-  return list.filter((folder) => folder && folder.chip === true);
+  const labels = {
+    inbox: "Inbox", sentitems: "Sent", drafts: "Drafts", starred: "Starred",
+    unread: "Unread", deleteditems: "Trash", junkemail: "Junk", archive: "Archived",
+    all: "All Mail", important: "Important",
+  };
+  const chosen = new Map();
+  const delimiter = String((account && account.delimiter) || "/");
+  const depth = folder => String(folder.id).split(delimiter).length;
+  for (const folder of [...primary, ...more]) {
+    if (!folder || !folder.id || folder.chip !== true) continue;
+    const role = canonicalFolderRole(folder.wellKnownName || folder.wellKnown);
+    if (!role) continue;
+    const previous = chosen.get(role);
+    if (!previous || folder.id === selectedId || (previous.id !== selectedId
+      && (depth(folder) < depth(previous) || (depth(folder) === depth(previous) && String(folder.id) < String(previous.id))))) {
+      chosen.set(role, folder);
+    }
+  }
+  return Object.entries(labels).flatMap(([role, label]) => {
+    const folder = chosen.get(role);
+    return folder ? [{ ...folder, label }] : [];
+  });
 }
 
 function selectedFolderNode() {
@@ -2841,22 +2890,16 @@ function paneWidth(current, delta, min, max) {
 }
 
 function folderIcon(wellKnownName) {
-  switch (String(wellKnownName || "").toLowerCase()) {
+  switch (canonicalFolderRole(wellKnownName)) {
     case "all": return "📨";
     case "inbox": return "📥";
     case "starred": return "⭐";
     case "unread": return "✉️";
-    case "sentitems":
-    case "sent": return "📤";
-    case "drafts":
-    case "draft": return "📝";
+    case "sentitems": return "📤";
+    case "drafts": return "📝";
     case "archive": return "📦";
-    case "deleteditems":
-    case "trash":
-    case "deleted": return "🗑️";
-    case "junkemail":
-    case "spam":
-    case "junk": return "🚫";
+    case "deleteditems": return "🗑️";
+    case "junkemail": return "🚫";
     case "important": return "❗";
     default: return "📁";
   }
@@ -5092,7 +5135,7 @@ function renderAccounts() {
   const key = JSON.stringify([
     state.accounts.map(account => [account.id, account.email, account.label, account.senderName, account.imapSmtpProfile,
       account.needsReauth, account.reauthReason, account.delimiter,
-      foldersOf(account).map(folder => [folder.id, folder.name, folder.wellKnownName, folder.type])]),
+      foldersOf(account).map(folder => [folder.id, folder.name, folder.wellKnownName, folder.wellKnown, folder.type])]),
     state.accountId,
     state.prefs.gmailOpen,
     state.prefs.outlookOpen,
@@ -5240,7 +5283,7 @@ function renderAccounts() {
       const icon = document.createElement("span");
       icon.className = "folder-icon";
       icon.setAttribute("aria-hidden", "true");
-      icon.textContent = folderIcon(folder.wellKnownName);
+      icon.textContent = folderIcon(folder.wellKnownName || folder.wellKnown);
       const name = document.createElement("span");
       name.className = "name";
       const labelText = chipLabel(folder);
@@ -5715,7 +5758,7 @@ function threadMembers(fromOpen, listed) {
 function renderChips(account) {
   const row = $("list-chips");
   if (!row) return;
-  const folders = state.prefs.chips && account ? chipFolders(account) : [];
+  const folders = state.prefs.chips && account ? chipFolders(account, state.folderId) : [];
   const key = JSON.stringify([account?.id, state.folderId, folders]);
   if (key === chipRenderKey) return;
   chipRenderKey = key;
@@ -7037,7 +7080,7 @@ function renderList() {
     title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly, state.allInboxStarredOnly) : (chipLabel(folder) || "Messages")));
   }
   renderChips(state.allInbox || state.outbox ? null : account);
-  if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account).some(item => item.id === state.folderId));
+  if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account, state.folderId).some(item => item.id === state.folderId));
   const shown = shownEmails();
   paintSelectionBar(shown);
   paintSearchCoverage(shown);

@@ -41,6 +41,12 @@ id: "mail-workflow-feedback",
         blurb: "All Account Mail has Inbox, Outbox, Starred and Unread rows. Inbox keeps its existing primary-folder scope: Gmail All Mail (Inbox until All Mail is available), otherwise Inbox. Starred and Unread aggregate the existing per-account downloaded filters and their counts. Unread excludes Sent, Drafts, Trash, Spam, search-only copies and snoozed messages; Starred uses the saved star flag across folders. Counts exclude a read row held open. The Inbox unread chip is removed; per-account unread counts remain. Provider folder badges can include mail not downloaded here. Local read changes and definitive mailbox receipts refresh the counts. Confirmed bulk Archive and Trash hide the reviewed rows immediately and submit groups of at most four messages between paints; the rest of Mail stays usable. This is not a cancellation window. Accepted writes await mailbox confirmation before joining Undo. Failed, unknown and unattempted rows reconcile with downloaded mail; refresh before retrying an unknown change. Agent reopens with its last payload, refreshes quietly and shows a non-blocking triage notice when stale; first load and explicit Refresh may show Working. Failed refresh keeps saved suggestions visible.",
       },
       {
+        id: "mail-folder-navigation",
+        title: "Folder chips and sidebar icons",
+        category: "Mail",
+        blurb: "Mailbox folder chips show one canonical name per enabled role: Inbox, Sent, Drafts, Starred, Unread, Trash, Junk and Archived, plus All Mail or Important when enabled. Sent Items, Sent Mail and casing variants share one Sent chip. Chips stay in a fixed order and belong to the selected mailbox, never a merge of every account's raw folder names. Selecting another folder with the same role keeps that real folder selected; all server folders remain available in the sidebar. Expanded IMAP, Gmail and Outlook accounts share the same colorful folder icons for known roles, with a folder icon for custom folders. Saved account expansion choices are respected. All Account Mail keeps its Inbox, Outbox, Starred and Unread sidebar views; cross-account Sent, Drafts, Trash, Junk and Archived chips are unavailable.",
+      },
+      {
         id: "folder-label-safety",
         title: "Folders and Gmail labels",
         category: "Mail",

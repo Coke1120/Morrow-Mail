@@ -68,6 +68,7 @@ const syntax = [
   "scripts/check-oauth-graph-regressions.js",
   "scripts/check-mail-reader.js",
   "scripts/check-mail-review-regressions.js",
+  "scripts/check-folder-chips.js",
   "scripts/check-confirmed-identity.js",
   "scripts/check-move-calendar-patches.js",
   "scripts/check-draft-scheduled-recovery.js",
@@ -186,6 +187,10 @@ assert.strictEqual(mailColumns.status, 0, "mail columns failed");
 const mailView = spawnSync(process.execPath, [path.join(__dirname, "check-mail-view.js")], { stdio: "inherit", timeout: 30000 });
 assert.ifError(mailView.error);
 assert.strictEqual(mailView.status, 0, "mail reading layouts failed");
+
+const folderChips = spawnSync(process.execPath, [path.join(__dirname, "check-folder-chips.js")], { stdio: "inherit", timeout: 30000 });
+assert.ifError(folderChips.error);
+assert.strictEqual(folderChips.status, 0, "folder chips and sidebar icons failed");
 
 // Isolate provider fixtures from the legacy suite's mutable host mocks.
 for (const name of ["check-mail-shortcut-target.js", "check-mail-status-columns.js", "check-bot-mail-actions.js", "check-bot-send-confirm-ui.js", "check-mail-list-layout.js", "check-google-onboarding-startup.js", "check-google-onboarding.js", "check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-attachment-transfers.js", "check-responsive-attachments.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-startup-preparation.js", "check-startup-upgrade.js", "check-keychain-reads.js", "check-outbox.js", "check-agent-todos.js", "check-agent-card-view.js", "check-agent-learning.js"]) {
@@ -1192,16 +1197,19 @@ assert.strictEqual(paneWidth(200, -80, 140, 400), 140);
 assert.strictEqual(paneWidth(200, 300, 140, 400), 400);
 assert.strictEqual(paneWidth(200, 20, 140, 400), 220);
 
-const folderIcon = extractFunction(appJs, "folderIcon");
+const folderIcon = loadFunctions(appJs, ["canonicalFolderRole", "folderIcon"]).folderIcon;
 assert.strictEqual(folderIcon("all"), "📨");
 assert.strictEqual(folderIcon("inbox"), "📥");
 assert.strictEqual(folderIcon("starred"), "⭐");
 assert.strictEqual(folderIcon("unread"), "✉️");
 assert.strictEqual(folderIcon("archive"), "📦");
 assert.strictEqual(folderIcon("deleteditems"), "🗑️");
+assert.strictEqual(folderIcon(" Sent Items "), "📤");
+assert.strictEqual(folderIcon("ARCHIVED"), "📦");
+assert.strictEqual(folderIcon("junk_email"), "🚫");
 assert.strictEqual(folderIcon(null), "📁");
 
-const chipFolders = extractFunction(appJs, "chipFolders");
+const chipFolders = loadFunctions(appJs, ["canonicalFolderRole", "chipFolders"]).chipFolders;
 const folderProvider = extractFunction(appJs, "folderProvider");
 const providerExpanded = extractFunction(appJs, "providerExpanded");
 const opensAiWrite = extractFunction(appJs, "opensAiWrite");
@@ -1229,7 +1237,7 @@ const outlookAccount = {
   },
 };
 assert.deepStrictEqual(chipFolders(gmailAccount).map((folder) => folder.wellKnownName), ["inbox", "sentitems", "drafts"]);
-assert.deepStrictEqual(chipFolders(outlookAccount).map((folder) => folder.wellKnownName), ["inbox", "drafts", "sentitems"]);
+assert.deepStrictEqual(chipFolders(outlookAccount).map((folder) => folder.wellKnownName), ["inbox", "sentitems", "drafts"]);
 assert.deepStrictEqual(chipFolders(null), []);
 assert.deepStrictEqual(chipFolders({ folders: { primary: [], more: [{ id: "in", wellKnownName: "inbox", chip: true }] } }).map((folder) => folder.id), ["in"]);
 assert.deepStrictEqual(chipFolders({ folders: { primary: [{ id: "x", wellKnownName: "archive" }] } }), []);
@@ -4273,6 +4281,7 @@ const featureSeed = [
   ["mail-list-columns","Mail columns and sorting","Mail","Date, Recipient, Sender and Subject headers sort all matching downloaded mail before paging, in folders including Inbox, Drafts and Sent and All Account Mail. Click again to reverse direction; the choice is remembered on this device. Drag headers to reorder columns independently of sorting, or use Columns and its Move left / Move right buttons, or Alt + Left / Right on a header. Right-click a header, or focus one and press Shift + F10, to choose visible columns. Columns offers the same checkboxes for keyboard and touch. Subject always stays visible; Show all columns restores visibility. Hiding a sorted column keeps its sort. Keyboard moves use visible neighbors while preserving hidden columns in the saved order. Reset column order restores Date, Recipient, Sender, Subject without changing visibility. Reply / forward indicators are inline subject prefixes, not a column or sort option; legacy saved status-column preferences are ignored. Layout is saved in settings.json and shared by all mailboxes, search and Outbox. Cancelling a drag leaves the order unchanged. Missing columns are appended and unknown or duplicate saved columns are ignored. Recipient shows all To recipients and sorts by the first; missing text sorts first ascending and last descending. Sender sorts by the saved display name when available, otherwise the cached From text. Date uses the existing message timestamp (saved time for local drafts). Equal values use message ID for stable ordering. Changing sort returns to the first page and keeps the reader open; selection remains only for rows on that page. Search sorts all downloaded matches before its existing 100-result limit. Filter this page still filters only loaded rows. Narrow lists scroll horizontally. Outbox retains scheduled send order and its sorting headers are disabled. The Recipient column accepts downloaded address arrays and formatted Outbox summaries, including multiple recipients across accounts; empty To fields show (no recipient), including CC/BCC-only sends. Undownloaded provider mail is not included."],
   ["mail-reply-forward","Reply / forward indicators","Mail","Reply / forward icons appear inline before the Subject text for cached IMAP provider flags: Replied for \\Answered and Forwarded for $Forwarded. Both icons can appear. No positive flags means no visible prefix, not proof that no reply or forward happened. Gmail API has no equivalent state; old caches, local drafts and Outbox show nothing unless a provider reports a flag. There is no separate status column, header, Columns checkbox or status sort. No status is inferred from subjects, In-Reply-To, thread membership or opening a composer. Morrow sends do not currently set these flags. Flags depend on the server and other clients. Normal sync refreshes up to 200 cached IMAP UIDs per rotating flag pass, so older messages may need several passes. Flag refresh updates only the prefix and preserves the focused row. Icons have accessible text and hover descriptions. Native provider and screen-reader validation remain pending."],
   ["mail-workflow-feedback","Mail and Agent feedback","Mail","All Account Mail has Inbox, Outbox, Starred and Unread rows. Inbox keeps its existing primary-folder scope: Gmail All Mail (Inbox until All Mail is available), otherwise Inbox. Starred and Unread aggregate the existing per-account downloaded filters and their counts. Unread excludes Sent, Drafts, Trash, Spam, search-only copies and snoozed messages; Starred uses the saved star flag across folders. Counts exclude a read row held open. The Inbox unread chip is removed; per-account unread counts remain. Provider folder badges can include mail not downloaded here. Local read changes and definitive mailbox receipts refresh the counts. Confirmed bulk Archive and Trash hide the reviewed rows immediately and submit groups of at most four messages between paints; the rest of Mail stays usable. This is not a cancellation window. Accepted writes await mailbox confirmation before joining Undo. Failed, unknown and unattempted rows reconcile with downloaded mail; refresh before retrying an unknown change. Agent reopens with its last payload, refreshes quietly and shows a non-blocking triage notice when stale; first load and explicit Refresh may show Working. Failed refresh keeps saved suggestions visible."],
+  ["mail-folder-navigation","Folder chips and sidebar icons","Mail","Mailbox folder chips show one canonical name per enabled role: Inbox, Sent, Drafts, Starred, Unread, Trash, Junk and Archived, plus All Mail or Important when enabled. Sent Items, Sent Mail and casing variants share one Sent chip. Chips stay in a fixed order and belong to the selected mailbox, never a merge of every account's raw folder names. Selecting another folder with the same role keeps that real folder selected; all server folders remain available in the sidebar. Expanded IMAP, Gmail and Outlook accounts share the same colorful folder icons for known roles, with a folder icon for custom folders. Saved account expansion choices are respected. All Account Mail keeps its Inbox, Outbox, Starred and Unread sidebar views; cross-account Sent, Drafts, Trash, Junk and Archived chips are unavailable."],
   ["folder-label-safety", "Folders and Gmail labels", "Mail", "Switching folders retires the previous list before loading downloaded mail. Folder-move completion follows only its original mailbox selection, not a newer folder or account visit. Open in Mail matches provider identity or the complete folder hierarchy, never a same-named leaf. Gmail label checkboxes use saved provider memberships, including labels outside the current folder; confirmed removal of the current label refreshes that view and clears only removed messages from its reader and selection. Provider label edits and Outlook moves target the selected cached identity. Legacy RFC Message-ID lookup must be unique and match the source folder; ambiguous or paginated matches are refused. Existing provider grants are required; no new scopes or bot operations are added."],
   ["support-navigation", "Support and mailbox selection", "Support", "Features, Shortcuts and Debug log preserve the hidden Mail selection. Escape clears selected messages only on the Mail page when no overlay or text input owns it. Open in Mail switches pages immediately; a delayed folder read cannot pull you out of a newer Support visit."],
   ["compose-work-preservation", "Compose recovery and preparation", "Mail", "Unrelated, completed and canceled AI draft events cannot replace manual edits. Selected files show Preparing attachment and block Save, previews, Send and Schedule until preparation settles; closing Compose abandons unfinished preparation. Undo atomically saves an inert recovery draft before opening Compose. Exact recipients and body, including cleared Cc/Bcc and one existing signature, are preserved. If Compose fails, resume from local Drafts; Undo never requeues delivery. Failed-send snapshots also bypass new-message defaults. Untouched multiline HTML signatures follow same-mailbox aliases; edited signatures stay intact. Changing recipient input retires old suggestion choices immediately, and escaped display-name quotes round-trip."],
