@@ -7,6 +7,9 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.0": [
+      "Maintenance rebuild after synchronizing main and dev history. The application behavior and features remain the same as v0.3.25.",
+    ],
     "0.3.25": [
       "Settings → Accounts opens on actionable account cards with each mailbox’s full identity, provider and connection status. Its settings appear immediately, with clear Add account and no-account guidance.",
       "Settings keeps its selected mailbox independent of Mail. Switching accounts preserves the Out of Office discard review, rejects stale permission results, and restores keyboard focus when an account is removed.",
