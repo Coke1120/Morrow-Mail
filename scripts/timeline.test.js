@@ -549,6 +549,32 @@ test("Timeline container retains Bottom, Separate window and narrow layout rules
     assert.ok(applied(narrow).some(rule => rule.style.getPropertyValue("grid-column") === "1"), "Narrow windows must stack the reader container in one column");
   } finally { fixture.dom.window.close(); }
 });
+test("Separate window selection opens a visible Timeline review and Message restores the full list", async () => {
+  const fixture = rendererFixture();
+  try {
+    const style = fixture.document.createElement("style");
+    style.textContent = read("renderer/app.css");
+    fixture.document.head.append(style);
+    const shell = fixture.document.getElementById("shell");
+    const area = fixture.document.getElementById("reader-area");
+    shell.dataset.mailLayout = "window";
+    fixture.document.getElementById("reader").textContent = "Existing mail preview";
+    const displayRule = () => [...style.sheet.cssRules].filter(rule => rule.selectorText?.includes('#shell[data-mail-layout="window"]')
+      && rule.style.getPropertyValue("display") && area.matches(rule.selectorText)).at(-1)?.style.getPropertyValue("display");
+    assert.equal(displayRule(), "none");
+    fixture.document.getElementById("timeline-from-selection").click();
+    await pause();
+    assert.equal(displayRule(), "flex", "the actual selection action must expose the reviewed Timeline surface");
+    assert.equal(fixture.document.getElementById("timeline-preflight").hidden, false);
+    assert.equal(fixture.document.getElementById("timeline-generate").disabled, false);
+    assert.equal(fixture.calls.filter(call => call.channel === "timeline:prepare").length, 1);
+    assert.equal(fixture.calls.filter(call => call.channel === "timeline:generate").length, 0);
+    assert.equal(shell.dataset.mailLayout, "window", "opening Timeline cannot change mail-selection semantics or the saved layout");
+    fixture.document.getElementById("message-tab").click();
+    assert.equal(displayRule(), "none");
+    assert.equal(fixture.document.getElementById("reader").textContent, "Existing mail preview");
+  } finally { fixture.dom.window.close(); }
+});
 test("rendered preflight requires an explicit Generate click and preserves the reader", async () => {
   const fixture = rendererFixture(); const { document, window } = fixture;
   document.getElementById("reader").textContent = "Existing message";
