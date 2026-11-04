@@ -5,6 +5,9 @@ const state = {
   accountId: null,
   allInbox: false,
   allInboxUnreadOnly: false,
+  allInboxStarredOnly: false,
+  mailColumnOrder: ["date", "recipient", "sender", "subject", "status"],
+  mailHiddenColumns: [],
   outbox: false,
   outboxRows: [],
   outboxError: "",
@@ -12,6 +15,7 @@ const state = {
   reconnectAccountId: null,
   folderId: null,
   emails: [],
+  listSort: readMailListSort(),
   listOffset: 0,
   listCursors: [],
   listTotal: 0,
@@ -64,9 +68,12 @@ const state = {
     quoteWidth: 420,
     syncHorizon: 0,
     compactList: true,
+    mailNotifications: true,
+    mailNotificationPreview: "hidden",
     collapsedFolders: {},
     scheduleDelay: 0,
     layout: { folders: 260, list: 360, reading: 0 },
+    mailView: { layout: "right", listHeight: 320 },
     timeFormat: "system",
     dateFormat: "system",
   },
@@ -143,6 +150,8 @@ const agentReplySelection = new Set();
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
+let messageSummary = null;
+let summarySeq = 0;
 let composeSuggestGen = 0;
 let signatureGen = 0;
 let signatureEditId = "";
@@ -304,7 +313,7 @@ function scheduleStatusCollapse() {
 
 function statusInteractionActive() {
   const notice = $("notice");
-  return undoPopoverOpen() || !!notice?.matches?.(":hover, :focus-within");
+  return undoConfirmationPending || undoPopoverOpen() || !!notice?.matches?.(":hover, :focus-within");
 }
 
 function collapseStatus() {
@@ -373,7 +382,7 @@ function statusControl(event) {
 }
 
 function statusDismissPointer(event) {
-  if (undoPopoverOpen() && !eventInsideUndoDetails(event)) closeUndoDetails(false);
+  if (!undoConfirmationPending && undoPopoverOpen() && !eventInsideUndoDetails(event)) closeUndoDetails(false);
   if (!statusExpanded) return false;
   if (event && event.button !== undefined && event.button !== 0) return false;
   const status = $("status");
@@ -412,10 +421,15 @@ function wireStatusNotice() {
     notice.addEventListener("pointerenter", clearStatusTimer);
     notice.addEventListener("pointerleave", scheduleStatusCollapse);
     notice.addEventListener("focusin", clearStatusTimer);
-    notice.addEventListener("focusout", () => Promise.resolve().then(() => {
-      if (undoPopoverOpen() && !eventInsideUndoDetails({ target: document.activeElement })) closeUndoDetails(false);
-      scheduleStatusCollapse();
-    }));
+    notice.addEventListener("focusout", (event) => {
+      // Native focusout runs before the next control receives focus. Its destination
+      // is authoritative; a microtask can still observe document.body here.
+      if (eventInsideUndoDetails({ target: event.relatedTarget }) || undoConfirmationPending) return;
+      Promise.resolve().then(() => {
+        if (!undoConfirmationPending && undoPopoverOpen() && !eventInsideUndoDetails({ target: document.activeElement })) closeUndoDetails(false);
+        scheduleStatusCollapse();
+      });
+    });
   }
   document.addEventListener("mousedown", statusDismissPointer);
   document.addEventListener("keydown", statusDismissKey);
@@ -569,7 +583,8 @@ function allAccountMailLabel() {
   return "All Account Mail";
 }
 
-function allAccountMailTitle(unreadOnly) {
+function allAccountMailTitle(unreadOnly, starredOnly) {
+  if (starredOnly) return "All Account Mail · Starred";
   return unreadOnly ? "All Account Mail · Unread" : "All Account Mail";
 }
 
@@ -577,7 +592,8 @@ function allAccountMailSyncCopy() {
   return "All Account Mail shows mail already downloaded. Open Gmail All Mail, or Inbox for another account, to sync that account.";
 }
 
-function allAccountMailEmptyCopy(unreadOnly) {
+function allAccountMailEmptyCopy(unreadOnly, starredOnly) {
+  if (starredOnly) return "No starred messages in the mail already downloaded across your accounts.";
   if (unreadOnly) return "No unread messages in All Account Mail.";
   return "No downloaded messages in All Account Mail. Open Gmail All Mail, or Inbox for another account, and use Sync to download recent mail.";
 }
@@ -641,19 +657,303 @@ function allAccountMailChoice(current, control) {
   return { allInbox: true, unreadOnly: false };
 }
 
+let mailColumnDrag = null;
+let mailColumnClickUntil = 0;
+let mailColumnSave = Promise.resolve();
+let mailColumnRevision = 0;
+const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject", status: "Reply / forward" };
+function mailColumnOrder() {
+  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder : ["date", "recipient", "sender", "subject", "status"];
+}
+function visibleMailColumns() {
+  return window.morrowMailColumns ? window.morrowMailColumns.visible(mailColumnOrder(), state.mailHiddenColumns)
+    : mailColumnOrder().filter(key => key === "subject" || !state.mailHiddenColumns.includes(key));
+}
+function cancelMailColumnDrag() {
+  if (mailColumnDrag) mailColumnClickUntil = Date.now() + 300;
+  mailColumnDrag = null;
+  for (const cell of document.querySelectorAll(".mail-column-drop")) cell.classList.remove("mail-column-drop");
+}
+async function loadMailColumnOrder() {
+  const revision = mailColumnRevision;
+  try {
+    const [saved, hidden] = await Promise.all([api.invoke("morrow:configGetMailColumnOrder"), api.invoke("morrow:configGetMailHiddenColumns")]);
+    if (revision !== mailColumnRevision) return;
+    state.mailColumnOrder = window.morrowMailColumns.normalize(saved);
+    state.mailHiddenColumns = window.morrowMailColumns.normalizeHidden(hidden);
+  } catch { /* Keep the default layout if settings are unavailable. */ }
+}
+function changeMailColumnOrder(order) {
+  const next = window.morrowMailColumns.normalize(order);
+  state.mailColumnOrder = next;
+  const revision = ++mailColumnRevision;
+  cancelMailColumnDrag();
+  renderList();
+  paintMailColumnEditor();
+  paintMailColumnMenu();
+  const message = "Column order: " + next.map(key => mailColumnLabels[key]).join(", ") + ".";
+  $("mail-columns-status").textContent = message;
+  showStatus(message);
+  mailColumnSave = mailColumnSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailColumnOrder", next));
+  mailColumnSave.catch(() => { if (revision !== mailColumnRevision) return; $("mail-columns-status").textContent = "Could not save the column order. This window keeps your layout; try again to save it."; showStatus("Could not save the column order. Try again to keep it after restart.", true); });
+  return mailColumnSave;
+}
+function changeMailColumnVisibility(key, show) {
+  const hidden = new Set(state.mailHiddenColumns);
+  if (show) hidden.delete(key); else hidden.add(key);
+  state.mailHiddenColumns = window.morrowMailColumns.normalizeHidden([...hidden]);
+  const revision = ++mailColumnRevision;
+  cancelMailColumnDrag();
+  renderList(); paintMailColumnEditor(); paintMailColumnMenu();
+  const message = "Visible columns: " + visibleMailColumns().map(key => mailColumnLabels[key]).join(", ") + ".";
+  $("mail-columns-status").textContent = message;
+  showStatus(message);
+  const value = state.mailHiddenColumns.slice();
+  mailColumnSave = mailColumnSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailHiddenColumns", value));
+  mailColumnSave.catch(() => {
+    if (revision !== mailColumnRevision) return;
+    $("mail-columns-status").textContent = "Could not save column visibility. This window keeps your choice; try again to save it.";
+    showStatus("Could not save column visibility. Try again to keep it after restart.", true);
+  });
+  return mailColumnSave;
+}
+let mailColumnMenuAnchor = null;
+function closeMailColumnMenu(restoreFocus = false) {
+  const menu = $("mail-column-menu");
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  if (restoreFocus) {
+    const anchor = mailColumnMenuAnchor?.isConnected && !mailColumnMenuAnchor.closest("[hidden]") ? mailColumnMenuAnchor : $("mail-columns-open");
+    anchor?.focus();
+  }
+}
+function paintMailColumnMenu() {
+  const menu = $("mail-column-menu");
+  if (!menu) return;
+  for (const button of menu.querySelectorAll("[data-column]")) button.setAttribute("aria-checked", String(visibleMailColumns().includes(button.dataset.column)));
+}
+function openMailColumnMenu(event, anchor) {
+  event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag();
+  closeOrganizeMenu(); closeMailViewMenu();
+  anchor = anchor || $("mail-columns-open");
+  mailColumnMenuAnchor = anchor;
+  let menu = $("mail-column-menu");
+  if (!menu) {
+    menu = document.createElement("div"); menu.id = "mail-column-menu"; menu.className = "mail-column-menu";
+    menu.setAttribute("role", "menu"); menu.setAttribute("aria-label", "Show mail columns");
+    for (const key of window.morrowMailColumns.defaults) {
+      const button = document.createElement("button"); button.type = "button";
+      button.setAttribute("role", "menuitemcheckbox"); button.dataset.column = key;
+      button.textContent = mailColumnLabels[key] + (key === "subject" ? " (always shown)" : "");
+      button.disabled = key === "subject";
+      button.addEventListener("click", () => changeMailColumnVisibility(key, !visibleMailColumns().includes(key)).catch(() => {}));
+      menu.append(button);
+    }
+    menu.addEventListener("keydown", event => {
+      event.stopPropagation();
+      if (["Escape", "Tab"].includes(event.key)) { event.preventDefault(); closeMailColumnMenu(true); return; }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const buttons = [...menu.querySelectorAll("button:not(:disabled)")], index = buttons.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+    });
+    document.body.append(menu);
+  }
+  paintMailColumnMenu(); menu.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const keyboard = event.type === "keydown" || (!event.clientX && !event.clientY);
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(keyboard ? rect.left : event.clientX, window.innerWidth - bounds.width - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(keyboard ? rect.bottom : event.clientY, window.innerHeight - bounds.height - 8)) + "px";
+  menu.querySelector("button:not(:disabled)")?.focus();
+}
+function moveMailColumn(key, direction, includeHidden = false) {
+  const order = includeHidden ? mailColumnOrder() : visibleMailColumns(), index = order.indexOf(key), target = order[index + direction];
+  if (!target) return;
+  changeMailColumnOrder(window.morrowMailColumns.move(mailColumnOrder(), key, target, direction > 0)).catch(() => {});
+}
+function wireMailColumnHeader(cell, button, key) {
+  button.draggable = true;
+  button.addEventListener("dragstart", event => {
+    cancelMailColumnDrag();
+    mailColumnDrag = key;
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-morrow-mail-column", key);
+  });
+  button.addEventListener("dragend", cancelMailColumnDrag);
+  cell.addEventListener("dragover", event => {
+    if (!mailColumnDrag) return;
+    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move";
+    cell.classList.add("mail-column-drop");
+  });
+  cell.addEventListener("dragleave", () => cell.classList.remove("mail-column-drop"));
+  cell.addEventListener("drop", event => {
+    const source = mailColumnDrag;
+    if (!source || event.dataTransfer.getData("application/x-morrow-mail-column") !== source) return;
+    event.preventDefault(); event.stopPropagation();
+    const rect = cell.getBoundingClientRect();
+    const next = window.morrowMailColumns.move(mailColumnOrder(), source, key, event.clientX > rect.left + rect.width / 2);
+    cancelMailColumnDrag();
+    changeMailColumnOrder(next).catch(() => {});
+  });
+  button.addEventListener("keydown", event => {
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { openMailColumnMenu(event, button); return; }
+    if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); return; }
+    if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    moveMailColumn(key, event.key === "ArrowLeft" ? -1 : 1);
+    document.querySelector(`[data-sort-key="${key}"] button`)?.focus();
+  });
+}
+function paintMailColumnEditor() {
+  const root = $("mail-columns-order");
+  if (!root || !$("mail-columns").open) return;
+  root.replaceChildren();
+  mailColumnOrder().forEach((key, index, order) => {
+    const row = document.createElement("li"), label = document.createElement("label"), check = document.createElement("input");
+    check.type = "checkbox"; check.dataset.visibility = key;
+    check.checked = visibleMailColumns().includes(key); check.disabled = key === "subject";
+    check.addEventListener("change", () => {
+      changeMailColumnVisibility(key, check.checked).catch(() => {});
+      root.querySelector(`[data-visibility="${key}"]`)?.focus();
+    });
+    label.append(check, mailColumnLabels[key] + (key === "subject" ? " (always shown)" : "")); row.append(label);
+    for (const direction of [-1, 1]) {
+      const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
+      button.textContent = direction < 0 ? "Move left" : "Move right";
+      button.setAttribute("aria-label", `${button.textContent}: ${mailColumnLabels[key]}`);
+      button.dataset.column = key; button.dataset.direction = direction;
+      button.disabled = index + direction < 0 || index + direction >= order.length;
+      button.addEventListener("click", () => {
+        moveMailColumn(key, direction, true);
+        const candidates = [...root.querySelectorAll("button")].filter(node => node.dataset.column === key && !node.disabled);
+        (candidates.find(node => node.dataset.direction === String(direction)) || candidates[0])?.focus();
+      });
+      row.append(button);
+    }
+    root.append(row);
+  });
+}
+function wireMailColumnEditor() {
+  $("mail-columns-open").addEventListener("click", () => { openDialog("mail-columns"); paintMailColumnEditor(); });
+  $("mail-columns-close").addEventListener("click", () => closeDialog("mail-columns"));
+  $("mail-columns-reset").addEventListener("click", () => changeMailColumnOrder(window.morrowMailColumns.defaults).catch(() => {}));
+  $("mail-columns-show-all").addEventListener("click", () => {
+    state.mailHiddenColumns = [];
+    changeMailColumnVisibility("subject", true).catch(() => {});
+  });
+  document.addEventListener("pointerdown", event => { if (!event.target.closest?.("#mail-column-menu")) closeMailColumnMenu(); });
+  window.addEventListener("resize", () => closeMailColumnMenu(true));
+  $("message-list").addEventListener("scroll", () => closeMailColumnMenu(true));
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && mailColumnDrag) { event.preventDefault(); event.stopPropagation(); cancelMailColumnDrag(); } });
+}
+
+function readMailListSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("morrow.mailListSort"));
+    if (["date", "recipient", "sender", "subject"].includes(saved?.sortBy)
+      && ["asc", "desc"].includes(saved.sortDirection)) return saved;
+  } catch { /* Use the existing newest-first default. */ }
+  return { sortBy: "date", sortDirection: "desc" };
+}
+
+async function changeMailListSort(sortBy) {
+  if (state.outbox || !["date", "recipient", "sender", "subject"].includes(sortBy)) return;
+  const sortDirection = state.listSort.sortBy === sortBy
+    ? (state.listSort.sortDirection === "asc" ? "desc" : "asc") : (sortBy === "date" ? "desc" : "asc");
+  state.listSort = { sortBy, sortDirection };
+  try { localStorage.setItem("morrow.mailListSort", JSON.stringify(state.listSort)); } catch { /* Keep window choice. */ }
+  state.listCursors = [];
+  await loadList(false, 0);
+  $("message-list").scrollTop = 0;
+}
+
+function paintMailListColumns(list) {
+  let header = list.querySelector(".mail-list-columns");
+  if (!header) {
+    header = document.createElement("div");
+    header.className = "mail-list-columns";
+    // A header table exposes aria-sort without replacing native message buttons.
+    header.setAttribute("role", "table");
+    header.setAttribute("aria-label", "Mail column sorting");
+    const row = document.createElement("div");
+    row.setAttribute("role", "row");
+    for (const [key, label] of Object.entries(mailColumnLabels)) {
+      const cell = document.createElement("div");
+      cell.setAttribute("role", "columnheader");
+      cell.dataset.sortKey = key;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.label = label;
+      button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil && key !== "status") guard(() => changeMailListSort(key)); });
+      wireMailColumnHeader(cell, button, key);
+      cell.appendChild(button);
+      row.appendChild(cell);
+    }
+    header.appendChild(row);
+    header.addEventListener("contextmenu", event => openMailColumnMenu(event, event.target.closest("button") || header.querySelector("button:not(:disabled)")));
+    list.prepend(header);
+  }
+  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)", status: "90px" };
+  const visible = visibleMailColumns();
+  list.style.setProperty("--mail-columns", visible.map(key => widths[key]).join(" "));
+  const minimum = { date: 78, recipient: 130, sender: 130, subject: 180, status: 90 };
+  list.style.setProperty("--mail-columns-min", (visible.reduce((sum, key) => sum + minimum[key], 54) + (visible.length - 1) * 10) + "px");
+  const headerRow = header.querySelector('[role="row"]');
+  mailColumnOrder().forEach((key, index) => {
+    const cell = header.querySelector(`[data-sort-key="${key}"]`);
+    cell.hidden = !visible.includes(key);
+    if (headerRow.children[index] !== cell) headerRow.insertBefore(cell, headerRow.children[index] || null);
+  });
+  for (const cell of header.querySelectorAll("[data-sort-key]")) {
+    if (cell.dataset.sortKey === "status") {
+      cell.removeAttribute("aria-sort");
+      const button = cell.querySelector("button");
+      button.textContent = button.dataset.label;
+      button.title = "Provider-reported reply / forward flags; unavailable for Gmail API. Drag to reorder. Right-click or press Shift + F10 to choose columns.";
+      button.setAttribute("aria-label", "Reply / forward status. Drag to reorder, or press Alt + Left / Right. Shift + F10 chooses columns.");
+      continue;
+    }
+    const active = !state.outbox && cell.dataset.sortKey === state.listSort.sortBy;
+    const ascending = state.listSort.sortDirection === "asc";
+    cell.setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
+    const button = cell.querySelector("button");
+    button.disabled = state.outbox;
+    button.textContent = button.dataset.label + (active ? (ascending ? " ↑" : " ↓") : "");
+    button.title = state.outbox ? "Outbox uses scheduled send order. Use Columns to change the layout." : "Click to sort by " + button.dataset.label.toLowerCase() + ". Drag to reorder, or press Alt + Left / Right.";
+    button.setAttribute("aria-label", button.dataset.label + (active ? (ascending ? ", ascending. Sort descending" : ", descending. Sort ascending") : ". Sort " + (cell.dataset.sortKey === "date" ? "descending" : "ascending")));
+  }
+  return header;
+}
+
+function mailRecipientText(email) {
+  // Scheduled/Outbox summaries already contain a formatted address string;
+  // downloaded mail carries an array. Preserve both transport-independent forms.
+  if (typeof email.to === "string") return email.to.trim();
+  return (Array.isArray(email.to) ? email.to : []).map(value => typeof value === "string" ? value
+    : (value?.name && value?.address ? `${value.name} <${value.address}>` : value?.address || "")).filter(Boolean).join(", ");
+}
+
 function mailListRequest(view) {
   const source = view || {};
   const limit = source.limit || 200;
   const offset = Number.isFinite(source.offset) ? source.offset : 0;
   if (source.query) {
-    const params = { query: source.query, limit: 100 };
+    const params = { query: source.query, limit: 100, ...(source.listSort || {}) };
     if (source.searchAccountId) params.accountId = source.searchAccountId;
     return { channel: "mail:searchLocal", params };
   }
   const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
+  if (source.allInbox && (source.aggregateView === "starred" || source.aggregateView === "unread")) {
+    const params = { aggregateView: source.aggregateView, limit, offset, ...(source.listSort || {}) };
+    if (retainId && source.aggregateView === "unread") params.retainIds = [retainId];
+    return { channel: "mail:listFromCache", params };
+  }
   if (source.allInbox) {
-    const params = { folderKey: "primary", limit, offset };
+    const params = { folderKey: "primary", limit, offset, ...(source.listSort || {}) };
     if (source.pageCursor) params.pageCursor = source.pageCursor;
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
     if (helper && typeof helper.primaryMailboxes === "function") {
@@ -664,7 +964,7 @@ function mailListRequest(view) {
     if (retainId) params.retainIds = [retainId];
     return { channel: "mail:listFromCache", params };
   }
-  const params = { accountId: source.accountId, folderId: source.folderId, limit, offset };
+  const params = { accountId: source.accountId, folderId: source.folderId, limit, offset, ...(source.listSort || {}) };
   if (source.pageCursor) params.pageCursor = source.pageCursor;
   if (retainId) params.retainIds = [retainId];
   return {
@@ -2371,8 +2671,8 @@ function askConfirm(copy) {
   const pending = new Promise((resolve) => {
     resolveConfirm = resolve;
   });
-  // Close motion still has the dialog open. Drop that generation before the
-  // close event so it cannot cancel this prompt, then show the new one now.
+  // Retire the old close motion before showing the next prompt. Its queued
+  // close event must not settle a prompt that has already reopened the dialog.
   if (dialog.open && dialog.dataset.closing === "1") {
     confirmResult = null;
     releaseClosingDialog(dialog);
@@ -2681,17 +2981,176 @@ function applyLayoutPanes(value) {
   root.style.setProperty("--list", panes.list + "px");
 }
 
+let mailViewRevision = 0;
+let mailViewSave = Promise.resolve();
+let mailViewScrollScope = "";
+const mailViewScroll = new Map();
+const mailViewLabels = { right: "Right preview", bottom: "Bottom preview", window: "Separate window" };
+
+function mailViewPref(value) {
+  return {
+    layout: value && Object.hasOwn(mailViewLabels, value.layout) ? value.layout : "right",
+    listHeight: value && Number.isInteger(value.listHeight) && value.listHeight >= 200 && value.listHeight <= 1600 ? value.listHeight : 320,
+  };
+}
+
+function effectiveMailViewLayout() {
+  const layout = mailViewPref(state.prefs.mailView).layout;
+  return layout === "window" && state.outbox ? "bottom" : layout;
+}
+
+function mailListMinimumHeight() {
+  const head = $("list-head"), paging = $("list-paging");
+  return Math.min(1600, Math.max(200, Math.ceil((head ? head.getBoundingClientRect().height : 0)
+    + (paging && !paging.hidden ? paging.getBoundingClientRect().height : 0) + 96)));
+}
+
+function syncMailListMinimum() {
+  const shell = $("shell");
+  if (shell) shell.style.setProperty("--mail-list-min-height", mailListMinimumHeight() + "px");
+}
+
+function syncMailSplitterValues() {
+  const shell = $("shell");
+  if (!shell) return;
+  for (const handle of shell.querySelectorAll(".split")) {
+    const folders = handle.dataset.split === "folders";
+    const vertical = !folders && effectiveMailViewLayout() === "bottom";
+    const pane = folders ? sideColumn() : $("messages");
+    const min = vertical ? mailListMinimumHeight() : folders ? 140 : 200;
+    const max = vertical ? Math.max(min, Math.min(1600, shell.getBoundingClientRect().height - 200)) : folders ? 1600 : 2000;
+    const value = clampLayoutMeasure(pane.getBoundingClientRect()[vertical ? "height" : "width"], min, max, min);
+    handle.setAttribute("aria-controls", folders ? "side-mail" : "messages");
+    handle.setAttribute("aria-valuemin", String(min));
+    handle.setAttribute("aria-valuemax", String(max));
+    handle.setAttribute("aria-valuenow", String(value));
+    handle.setAttribute("aria-valuetext", value + (vertical ? " pixels high" : " pixels wide"));
+  }
+}
+
+function applyMailView() {
+  const shell = $("shell");
+  if (!shell || typeof shell.getBoundingClientRect !== "function" || isReaderWindow()) return;
+  const pref = mailViewPref(state.prefs.mailView);
+  const layout = effectiveMailViewLayout();
+  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox]);
+  if (mailViewScrollScope !== scope) { mailViewScroll.clear(); mailViewScrollScope = scope; }
+  const previous = shell.dataset.mailLayout, list = $("message-list");
+  const moving = previous && previous !== layout && list;
+  const position = moving ? { left: list.scrollLeft, top: list.scrollTop } : null;
+  if (moving) mailViewScroll.set(previous, position);
+  shell.dataset.mailLayout = layout;
+  shell.style.setProperty("--mail-list-height", pref.listHeight + "px");
+  if (previous !== layout) syncMailListMinimum();
+  if (moving) {
+    const restore = mailViewScroll.get(layout) || position;
+    list.scrollLeft = restore.left;
+    list.scrollTop = restore.top;
+  }
+  const handle = shell.querySelector('[data-split="messages"]');
+  if (handle) {
+    handle.setAttribute("aria-orientation", layout === "bottom" ? "horizontal" : "vertical");
+    handle.setAttribute("aria-label", layout === "bottom" ? "Resize message list height" : "Resize message list");
+  }
+  if (previous !== layout) syncMailSplitterValues();
+  const opener = $("mail-view-open");
+  if (opener) opener.title = "Reading layout: " + mailViewLabels[pref.layout];
+  for (const button of shell.ownerDocument.querySelectorAll("[data-mail-view]")) {
+    button.setAttribute("aria-checked", String(button.dataset.mailView === pref.layout));
+  }
+}
+
+async function loadMailView() {
+  const revision = mailViewRevision;
+  try {
+    const saved = await api.invoke("morrow:configGetMailView");
+    if (revision !== mailViewRevision) return;
+    state.prefs.mailView = mailViewPref(saved);
+    applyMailView();
+  } catch { /* Keep the current view if settings are unavailable. */ }
+}
+
+function saveMailView(pref) {
+  const revision = ++mailViewRevision;
+  state.prefs.mailView = mailViewPref(pref);
+  const saved = { ...state.prefs.mailView };
+  applyMailView();
+  mailViewSave = mailViewSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailView", saved));
+  mailViewSave.catch(() => {
+    if (revision === mailViewRevision) showStatus("Could not save the reading layout. Choose it again to keep it after restart.", true);
+  });
+  return mailViewSave;
+}
+
+function closeMailViewMenu(restoreFocus = false) {
+  const menu = $("mail-view-menu"), opener = $("mail-view-open");
+  if (!menu || !opener || menu.hidden) return;
+  menu.hidden = true;
+  opener.setAttribute("aria-expanded", "false");
+  if (restoreFocus) opener.focus({ preventScroll: true });
+}
+
+function wireMailView() {
+  const control = $("mail-view-control"), menu = $("mail-view-menu"), opener = $("mail-view-open");
+  if (!control || control.dataset.wired) return;
+  control.dataset.wired = "1";
+  const items = [...menu.querySelectorAll("[data-mail-view]")];
+  const open = (last = false) => {
+    menu.hidden = false;
+    opener.setAttribute("aria-expanded", "true");
+    (last ? items[items.length - 1] : items.find(item => item.getAttribute("aria-checked") === "true") || items[0]).focus();
+  };
+  opener.addEventListener("click", () => { if (menu.hidden) open(); else closeMailViewMenu(); });
+  opener.addEventListener("keydown", event => {
+    if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+    event.preventDefault();
+    open(event.key === "ArrowUp");
+  });
+  menu.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      event.preventDefault(); event.stopPropagation(); closeMailViewMenu(true); return;
+    }
+    const index = items.indexOf(document.activeElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+      : event.key === "ArrowDown" ? (index + 1) % items.length
+      : event.key === "ArrowUp" ? (index + items.length - 1) % items.length : -1;
+    if (next < 0) return;
+    event.preventDefault(); event.stopPropagation(); items[next].focus();
+  });
+  for (const item of items) item.addEventListener("click", () => {
+    saveMailView({ ...mailViewPref(state.prefs.mailView), layout: item.dataset.mailView }).catch(() => {});
+    closeMailViewMenu(true);
+  });
+  document.addEventListener("pointerdown", event => { if (!control.contains(event.target)) closeMailViewMenu(); });
+  control.addEventListener("focusout", event => { if (!control.contains(event.relatedTarget)) closeMailViewMenu(); });
+  if (typeof window.ResizeObserver === "function") {
+    const observer = new window.ResizeObserver(() => { syncMailListMinimum(); syncMailSplitterValues(); });
+    observer.observe($("list-head"));
+    observer.observe($("list-paging"));
+    observer.observe($("messages"));
+    observer.observe(sideColumn());
+  }
+  applyMailView();
+}
+
 function rememberLayoutPanes() {
   const side = sideColumn();
   const list = $("messages");
   const reader = $("reader");
   if (!side || !list || !reader || !api || typeof side.getBoundingClientRect !== "function") return;
-  const panes = measuredLayoutPanes(
+  let panes = measuredLayoutPanes(
     side.getBoundingClientRect().width,
     list.getBoundingClientRect().width,
     reader.getBoundingClientRect().width
   );
+  if (effectiveMailViewLayout() !== "right") {
+    panes = { ...layoutPanesPref(state.prefs.layout), folders: panes.folders };
+    if (effectiveMailViewLayout() === "bottom") {
+      saveMailView({ ...mailViewPref(state.prefs.mailView), listHeight: clampLayoutMeasure(list.getBoundingClientRect().height, 200, 1600, 320) }).catch(() => {});
+    }
+  }
   state.prefs.layout = panes;
+  syncMailSplitterValues();
   clearTimeout(layoutSaveTimer);
   layoutSaveTimer = setTimeout(() => {
     layoutSaveTimer = null;
@@ -4288,21 +4747,39 @@ function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
   return nest;
 }
 
+function aggregateFlagCount(kind) {
+  return state.accounts.reduce((sum, account) => {
+    const folder = foldersOf(account).find(row => row.type === "virtual" && (kind === "starred" ? row.view?.flagged === true : row.view?.unread === true));
+    const count = Number(folder?.totalCount);
+    return sum + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0);
+  }, 0);
+}
 function applyAllAccountMailChrome(root) {
   if (!root || typeof root.querySelector !== "function") return;
-  const current = !!state.allInbox;
-  const inbox = root.querySelector("button.all-inbox");
-  if (inbox) {
-    if (current) inbox.setAttribute("aria-current", "true");
-    else inbox.removeAttribute("aria-current");
+  for (const kind of ["inbox", "starred", "unread"]) {
+    const button = root.querySelector("button.all-" + kind);
+    if (!button) continue;
+    const current = state.allInbox && (kind === "unread" ? state.allInboxUnreadOnly : kind === "starred" ? state.allInboxStarredOnly : !state.allInboxUnreadOnly && !state.allInboxStarredOnly);
+    if (current) button.setAttribute("aria-current", "true"); else button.removeAttribute("aria-current");
+    const count = button.querySelector(".count");
+    if (count) count.textContent = String(aggregateFlagCount(kind));
   }
-  const chip = root.querySelector("button.all-account-unread");
-  if (!chip) return;
-  const model = allAccountUnreadChip(allInboxUnread(state.accounts), current && !!state.allInboxUnreadOnly);
-  chip.textContent = model.text;
-  chip.title = model.label;
-  chip.setAttribute("aria-label", model.label);
-  chip.setAttribute("aria-pressed", model.pressed ? "true" : "false");
+}
+function allAccountFlagRow(kind) {
+  const line = document.createElement("div"); line.className = "folder-line";
+  const indent = document.createElement("span"); indent.className = "folder-indent"; indent.style.width = "14px"; indent.setAttribute("aria-hidden", "true");
+  const button = document.createElement("button"); button.type = "button"; button.className = "folder all-" + kind;
+  button.setAttribute("data-testid", "all-account-" + kind);
+  const label = document.createElement("span"); label.className = "folder-label";
+  const icon = document.createElement("span"); icon.className = "folder-icon"; icon.setAttribute("aria-hidden", "true"); icon.textContent = folderIcon(kind);
+  const name = document.createElement("span"); name.className = "name"; name.textContent = kind === "starred" ? "Starred" : "Unread";
+  label.append(icon, name);
+  const count = document.createElement("span"); count.className = "count";
+  button.append(label, count);
+  button.title = kind === "unread" ? "Unread downloaded mail across accounts, excluding Sent, Drafts, Trash, Spam and snoozed messages." : "Starred downloaded mail across accounts.";
+  markFolderNav(button, { key: "all-" + kind, kind: "aggregate", parent: "all" });
+  button.addEventListener("click", () => { folderNavKey = "all-" + kind; selectAllInbox(kind === "unread", kind === "starred").catch(error => showStatus(error.message, true)); });
+  line.append(indent, button); applyAllAccountMailChrome(line); return line;
 }
 
 function allAccountMailRow(open, hasChild, filtering) {
@@ -4368,18 +4845,7 @@ function allAccountInboxRow() {
     const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "mail");
     selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
   });
-  const chip = document.createElement("button");
-  chip.type = "button";
-  chip.className = "count all-account-unread";
-  chip.setAttribute("data-testid", "all-account-unread");
-  chip.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    folderNavKey = "inbox";
-    const next = allAccountMailChoice({ allInbox: state.allInbox, unreadOnly: state.allInboxUnreadOnly }, "unread");
-    selectAllInbox(next.unreadOnly).catch((error) => showStatus(error.message, true));
-  });
-  line.append(indent, button, chip);
+  line.append(indent, button);
   applyAllAccountMailChrome(line);
   return line;
 }
@@ -4641,9 +5107,14 @@ function renderAccounts() {
     folderQuery,
   ]);
   if (key === folderRenderKey) {
+    const foldersByAccount = new Map();
+    for (const account of state.accounts) {
+      const folders = new Map();
+      for (const folder of foldersOf(account)) if (!folders.has(folder.id)) folders.set(folder.id, folder);
+      if (!foldersByAccount.has(account.id)) foldersByAccount.set(account.id, folders);
+    }
     for (const button of nav.querySelectorAll("button.folder")) {
-      const account = state.accounts.find(row => row.id === button.dataset.accountId);
-      const folder = foldersOf(account).find(row => row.id === button.dataset.folderId);
+      const folder = foldersByAccount.get(button.dataset.accountId)?.get(button.dataset.folderId);
       if (folder) {
         let count = button.querySelector(".count");
         if (folder.unreadCount && !count) { count = document.createElement("span"); count.className = "count"; button.appendChild(count); }
@@ -4673,7 +5144,9 @@ function renderAccounts() {
   const filtering = !!folderQuery;
   const inboxMatch = inboxMatches(folderQuery);
   const outboxMatch = outboxMatches(folderQuery);
-  const sectionHasChild = filtering ? (inboxMatch || outboxMatch) : true;
+  const starredMatch = !folderQuery || "starred".includes(folderQuery);
+  const unreadMatch = !folderQuery || "unread".includes(folderQuery);
+  const sectionHasChild = filtering ? (inboxMatch || outboxMatch || starredMatch || unreadMatch) : true;
   const sectionOpen = filtering ? sectionHasChild : allAccountSectionOpen();
   const showSection = allAccountMailMatches(folderQuery) || (filtering && sectionHasChild);
   let shownFolder = false;
@@ -4682,6 +5155,8 @@ function renderAccounts() {
     nav.appendChild(allAccountMailRow(sectionOpen, sectionHasChild, filtering));
     if (sectionOpen && inboxMatch) nav.appendChild(allAccountInboxRow());
     if (sectionOpen && outboxMatch) nav.appendChild(outboxMailRow());
+    if (sectionOpen && starredMatch) nav.appendChild(allAccountFlagRow("starred"));
+    if (sectionOpen && unreadMatch) nav.appendChild(allAccountFlagRow("unread"));
   }
   for (const account of state.accounts) {
     const provider = folderProvider(account);
@@ -6196,9 +6671,26 @@ function rowCheck(email, selected) {
   return box;
 }
 
+function mailReplyForwardCell(email) {
+  const cell = document.createElement("span"); cell.className = "mail-reply-forward";
+  const labels = [];
+  for (const [key, label, icon] of [["replied", "Replied", "Reply"], ["forwarded", "Forwarded", "Forward"]]) {
+    if (email[key] === true) {
+      labels.push(label + " (provider flag)");
+      const svg = rowIcon(icon); svg.dataset.state = key; cell.append(svg);
+    } else labels.push(email[key] === false ? "No " + (key === "replied" ? "reply" : "forward") + " flag reported" : label + " status unavailable");
+  }
+  if (email.replied == null || email.forwarded == null) {
+    const unknown = document.createElement("span"); unknown.textContent = "—"; unknown.setAttribute("aria-hidden", "true"); cell.append(unknown);
+  }
+  const text = document.createElement("span"); text.className = "sr"; text.textContent = labels.join(". ") + "."; cell.append(text);
+  cell.title = text.textContent;
+  return cell;
+}
+
 function messageRow(email) {
   const row = document.createElement("div");
-  row.className = "message-row";
+  row.className = "message-row" + (email.outbox ? " outbox-row" : "");
   row.mailMessage = email;
   row.dataset.emailId = email.id || "";
   row.dataset.accountId = email.accountId || "";
@@ -6251,7 +6743,8 @@ function messageRow(email) {
     from.appendChild(star);
   }
   if (email.isStarred) row.dataset.starred = "true";
-  from.append(name);
+  from.append(email.from || "(no sender)");
+  from.title = email.from || "(no sender)";
   const subjectLine = document.createElement("span");
   subjectLine.className = "subject-line";
   const subject = document.createElement("span");
@@ -6261,7 +6754,13 @@ function messageRow(email) {
   when.className = "when";
   if (email.date) when.dateTime = email.date;
   when.textContent = listWhen(email.date);
-  subjectLine.append(subject, when);
+  subject.title = subject.textContent;
+  when.title = email.date || "No date";
+  const recipient = document.createElement("span");
+  recipient.className = "recipient";
+  recipient.textContent = mailRecipientText(email) || "(no recipient)";
+  recipient.title = recipient.textContent;
+  subjectLine.append(subject);
   const snippet = document.createElement("span");
   snippet.className = "snippet";
   const mailbox = state.accounts.find((row) => row.id === email.accountId);
@@ -6269,7 +6768,9 @@ function messageRow(email) {
     ? accountLabel(mailbox) + " · "
     : (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "");
   snippet.textContent = prefix + (email.snippet || "");
-  main.append(from, subjectLine, snippet);
+  const cells = { date: when, recipient, sender: from, subject: subjectLine, status: mailReplyForwardCell(email) };
+  for (const key of visibleMailColumns()) { cells[key].dataset.mailColumn = key; main.append(cells[key]); }
+  main.append(snippet);
   button.append(gutter, avatar, main);
   button.addEventListener("click", (event) => {
     if (email.outbox) {
@@ -6278,12 +6779,23 @@ function messageRow(email) {
     }
     const mods = { shift: event.shiftKey, meta: event.metaKey, ctrl: event.ctrlKey };
     const visible = shownEmails().map((item) => item && item.id);
-    commitSelection(listClickSelection(state.selectedIds, state.selectionAnchor, visible, email.id, mods));
+    const selecting = effectiveMailViewLayout() === "window" && !mods.shift && !mods.meta && !mods.ctrl;
+    commitSelection(selecting ? { ids: [String(email.id)], anchor: String(email.id) }
+      : listClickSelection(state.selectedIds, state.selectionAnchor, visible, email.id, mods));
     if (mods.shift || mods.meta || mods.ctrl) {
       event.preventDefault();
       return;
     }
+    if (effectiveMailViewLayout() === "window") {
+      if (event.detail === 0) openSenderReader(row.mailMessage);
+      return;
+    }
     openMessage(email.id).catch((error) => showStatus(error.message, true));
+  });
+  button.addEventListener("dblclick", (event) => {
+    if (email.outbox || effectiveMailViewLayout() !== "window" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    event.preventDefault();
+    openSenderReader(row.mailMessage);
   });
   const actions = document.createElement("div");
   actions.className = "row-actions";
@@ -6337,7 +6849,7 @@ function shownEmails() {
   const emails = state.emails.filter((email) => !optimisticRemovals.has(email.id));
   if (state.outbox) return visibleList(emails, query, null);
   const folder = state.allInbox
-    ? (state.allInboxUnreadOnly ? { view: { unread: true } } : null)
+    ? (state.allInboxUnreadOnly ? { view: { unread: true } } : state.allInboxStarredOnly ? { view: { flagged: true } } : null)
     : selectedFolderNode();
   const holdId = unreadListActive(currentUnreadView()) && state.unreadHold ? state.unreadHold.id : "";
   return visibleList(emails, query, folder, holdId);
@@ -6520,16 +7032,18 @@ async function reviewedRemoval(messages, kind) {
 }
 
 function renderList() {
+  applyMailView();
   paintSyncControl();
   paintListPaging();
   rememberLoadedSelection();
   const list = $("message-list");
+  const columnHeader = paintMailListColumns(list);
   $("messages").classList.toggle("compact-list", state.prefs.compactList === true);
   const account = selectedAccount();
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = $("list-title");
   if (title) {
-    title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly) : (chipLabel(folder) || "Messages")));
+    title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly, state.allInboxStarredOnly) : (chipLabel(folder) || "Messages")));
   }
   renderChips(state.allInbox || state.outbox ? null : account);
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account).some(item => item.id === state.folderId));
@@ -6565,8 +7079,8 @@ function renderList() {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
     } else if (state.outbox && !listQuery && !state.emails.length) {
       empty.textContent = state.outboxError ? "Waiting sends are unknown. Retry to load Outbox." : outboxEmptyCopy();
-    } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || !state.emails.length)) {
-      empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly);
+    } else if (state.allInbox && !listQuery && (state.allInboxUnreadOnly || state.allInboxStarredOnly || !state.emails.length)) {
+      empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly, state.allInboxStarredOnly);
     } else if (!listQuery && folder && folder.emptyCopy) {
       empty.textContent = folder.emptyCopy;
     } else if (!state.emails.length) {
@@ -6578,15 +7092,15 @@ function renderList() {
     }
     list.appendChild(empty);
   } else {
-    let previous = null;
+    let previous = columnHeader;
     const selected = new Set(state.selectedIds);
     for (const email of shown) {
       const key = email.accountId + "\0" + email.id;
       // Compare displayed fields only: bodies and attachments can be large.
       // Retained rows keep keyboard focus and read the latest message for actions.
       const mailbox = state.accounts.find((item) => item.id === email.accountId);
-      const stamp = JSON.stringify([email.folderId, email.from, email.subject, email.snippet, email.date,
-        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox,
+      const stamp = JSON.stringify([email.folderId, email.from, email.to, email.subject, email.snippet, email.date,
+        email.unread, email.isStarred, !!state.query, state.allInbox, state.outbox, visibleMailColumns().join(","),
         state.allInbox && mailbox ? accountLabel(mailbox) : "",
         state.query && mailbox ? mailbox.email : "",
         state.prefs.timeFormat, state.prefs.dateFormat]);
@@ -6594,10 +7108,16 @@ function renderList() {
       if (!cached || cached.stamp !== stamp) {
         const row = messageRow(email);
         if (cached) cached.row.replaceWith(row);
-        cached = { row, stamp, selected: selected.has(email.id), current: readerCurrentId() === email.id };
+        cached = { row, stamp, replied: email.replied, forwarded: email.forwarded, selected: selected.has(email.id), current: readerCurrentId() === email.id };
         messageRows.set(key, cached);
       }
       const row = cached.row;
+      // Provider flag refreshes must not replace a focused message or its actions.
+      if (cached.replied !== email.replied || cached.forwarded !== email.forwarded) {
+        const previous = row.querySelector('[data-mail-column="status"]');
+        if (previous) { const cell = mailReplyForwardCell(email); cell.dataset.mailColumn = "status"; previous.replaceWith(cell); }
+        cached.replied = email.replied; cached.forwarded = email.forwarded;
+      }
       row.mailMessage = email;
       const isSelected = selected.has(email.id);
       if (cached.selected !== isSelected) {
@@ -6622,7 +7142,7 @@ function renderList() {
       previous = row;
     }
   }
-  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.outbox ? "outbox" : "", state.allInboxUnreadOnly ? "unread" : ""].join("\0");
+  const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.outbox ? "outbox" : "", state.allInboxUnreadOnly ? "unread" : "", state.allInboxStarredOnly ? "starred" : ""].join("\0");
   if (motionKey !== listMotionKey) {
     listMotionKey = motionKey;
     const motion = motionApi();
@@ -6777,6 +7297,9 @@ function renderActions(pane, email) {
   suggest.setAttribute("aria-label", "Suggest a reply");
   suggest.setAttribute("aria-busy", suggestPending ? "true" : "false");
   suggest.disabled = suggestPending;
+  const summary = readerButton("summary", "Summary", () => { requestMessageSummary(email); },
+    strokeIcon(["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h5"]));
+  summary.setAttribute("aria-controls", "message-summary");
   const forward = readerButton("forward", "Forward", () => openReaderCompose("forward"));
   forward.setAttribute("aria-keyshortcuts", "F");
   const menus = document.createElement("div");
@@ -6795,9 +7318,144 @@ function renderActions(pane, email) {
   besideStar.className = "reader-star-group";
   besideStar.append(star);
   renderTranslate(besideStar, email);
-  bar.append(reply, replyAll, suggest, forward, besideStar, archive, trash, menus);
+  bar.append(reply, replyAll, suggest, forward, summary, besideStar, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
+}
+
+function summarySource(email) {
+  return [email.subject, email.from, email.date, email.textBody, email.htmlBody, email.bodyComplete, email.bodyWarning];
+}
+
+function summaryMatches(email, view = messageSummary) {
+  const identity = bodyIdentity(email);
+  if (!view || !identity || view.key !== identity.key) return false;
+  const source = summarySource(email);
+  return view.source.every((value, index) => value === source[index]);
+}
+
+function clearMessageSummary() {
+  const view = messageSummary;
+  messageSummary = null; // Retire ownership before the asynchronous cancellation reply.
+  if (view?.pending) call("mail:cancelSummary", { reqId: view.reqId }).catch(() => {});
+}
+
+function stopMessageSummary() {
+  const view = messageSummary;
+  if (!view) return;
+  clearMessageSummary();
+  if (summaryMatches(state.email, view)) {
+    messageSummary = { ...view, pending: false, text: "", error: "", notice: "Summary cancelled. Choose Summary to try again." };
+    paintMessageSummary(state.email);
+    $("reader").querySelector('[data-action="summary"]')?.focus();
+  }
+}
+
+async function requestMessageSummary(email) {
+  if (!email || state.email !== email || (pendingOpenId && pendingOpenId !== email.id) || messageSummary?.pending) return;
+  const identity = bodyIdentity(email);
+  if (!identity) { showStatus("The mailbox connection changed. Reopen the message.", true); return; }
+  const view = { key: identity.key, source: summarySource(email), reqId: "summary-" + Date.now() + "-" + (++summarySeq),
+    pending: true, text: "", error: "", warnings: [], notice: "" };
+  messageSummary = view;
+  paintMessageSummary(email);
+  try {
+    const data = await call("mail:summarizeEmail", { reqId: view.reqId, accountId: identity.accountId,
+      emailId: identity.id, bodyEpoch: identity.bodyEpoch });
+    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+    if (!data || data.reqId !== view.reqId || data.accountId !== identity.accountId || data.emailId !== identity.id
+        || data.bodyEpoch !== identity.bodyEpoch || typeof data.text !== "string" || !data.text.trim()) throw new Error("The summary response did not match this message. Choose Summary to try again.");
+    view.text = data.text;
+    view.warnings = Array.isArray(data.warnings) ? data.warnings.map(String) : [];
+  } catch (error) {
+    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+    view.error = error instanceof Error ? error.message : String(error);
+    view.settings = ["ai-unconfigured", "ai-consent-required"].includes(error.code)
+      || /AI Setup|AI data permission|API key|ChatGPT/i.test(view.error);
+  } finally {
+    if (messageSummary === view) {
+      view.pending = false;
+      if (summaryMatches(state.email, view)) paintMessageSummary(state.email);
+      else clearMessageSummary();
+    }
+  }
+}
+
+function renderMessageSummary(pane, email) {
+  const box = document.createElement("section");
+  box.id = "message-summary";
+  box.className = "message-summary";
+  box.setAttribute("aria-labelledby", "message-summary-title");
+  const top = document.createElement("div");
+  top.className = "message-summary-heading";
+  const title = document.createElement("h3");
+  title.id = "message-summary-title";
+  title.textContent = "Summary";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "ghost";
+  close.textContent = "Dismiss summary";
+  close.onclick = () => { clearMessageSummary(); paintMessageSummary(state.email); pane.querySelector('[data-action="summary"]')?.focus(); };
+  top.append(title, close);
+  const context = document.createElement("p");
+  context.className = "hint message-summary-context";
+  const mailbox = state.accounts.find(account => account.id === email.accountId);
+  context.textContent = [email.subject || "(no subject)", email.from, mailbox?.email].filter(Boolean).join(" · ");
+  const scope = document.createElement("p");
+  scope.className = "hint";
+  scope.textContent = "Uses your configured AI and AI data permission. Up to 24,000 characters of downloaded text, including quoted history; attachment files are excluded.";
+  const status = document.createElement("p");
+  status.dataset.role = "summary-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const warnings = document.createElement("p");
+  warnings.className = "hint";
+  warnings.dataset.role = "summary-warnings";
+  const body = document.createElement("div");
+  body.className = "message-summary-text";
+  body.dataset.role = "summary-text";
+  const actions = document.createElement("div");
+  actions.className = "message-summary-controls";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "ghost";
+  cancel.dataset.role = "summary-cancel";
+  cancel.textContent = "Cancel summary";
+  cancel.onclick = stopMessageSummary;
+  const settings = document.createElement("button");
+  settings.type = "button";
+  settings.className = "ghost";
+  settings.dataset.role = "summary-settings";
+  settings.textContent = "Review AI settings";
+  settings.onclick = () => { openSettings(); revealSettingsFold("ai"); };
+  actions.append(cancel, settings);
+  box.append(top, context, scope, status, warnings, body, actions);
+  pane.appendChild(box);
+  paintMessageSummary(email);
+}
+
+function paintMessageSummary(email) {
+  const pane = $("reader");
+  if (!pane || typeof pane.querySelector !== "function") return;
+  const view = summaryMatches(email) ? messageSummary : null;
+  const button = pane.querySelector('[data-action="summary"]');
+  if (button) {
+    button.disabled = !!view?.pending;
+    button.setAttribute("aria-busy", String(!!view?.pending));
+    button.setAttribute("aria-expanded", String(!!view));
+  }
+  const box = pane.querySelector(".message-summary");
+  if (!box) return;
+  box.hidden = !view;
+  if (!view) return;
+  const status = box.querySelector('[data-role="summary-status"]');
+  status.className = view.error ? "hint error" : "hint";
+  status.textContent = view.pending ? "Summarizing this message…" : view.error || view.notice || "AI-generated summary. Check details against the message.";
+  box.querySelector('[data-role="summary-text"]').textContent = view.text;
+  box.querySelector('[data-role="summary-warnings"]').textContent = view.pending && (email.bodyComplete !== true || email.bodyWarning)
+    ? "The downloaded message may be incomplete. Missing content is not included." : view.warnings.join(" ");
+  box.querySelector('[data-role="summary-cancel"]').hidden = !view.pending;
+  box.querySelector('[data-role="summary-settings"]').hidden = !view.settings;
 }
 
 function indentedName(folder) {
@@ -7050,6 +7708,10 @@ function readerFromLine(email) {
 }
 
 function renderReader(focus, onlyChanged = false) {
+  if (messageSummary && !summaryMatches(state.email)) {
+    clearMessageSummary();
+    paintMessageSummary(state.email);
+  }
   if (pendingOpenBody && pendingOpenId) {
     paintReaderPending(listedMessage(pendingOpenId));
     return;
@@ -7124,6 +7786,7 @@ function renderReader(focus, onlyChanged = false) {
   }
   renderActions(pane, email);
   renderSuggestions(pane, email);
+  renderMessageSummary(pane, email);
   appendReaderClose(pane);
   appendTranslateStatus(pane);
   paintTranslation();
@@ -7710,7 +8373,7 @@ function attachmentTaskCopy(task) {
   if (task.cancelRequested) return `${task.label}: cancelling…`;
   const phases = { choosing: "Choose a save location…", queued: "Waiting for mailbox…", connecting: "Connecting…",
     downloading: "Downloading…", ready: task.cached ? "Using cached file…" : "Download complete…",
-    writing: "Saving…", opening: "Opening application…" };
+    packing: "Creating ZIP…", waitingToSave: "Waiting to save…", writing: "Saving…", opening: "Opening application…" };
   const bytes = task.phase === "downloading" && task.loaded > 0 ? ` (${Math.ceil(task.loaded / 1024).toLocaleString()} KiB received)` : "";
   const file = task.count > 1 ? ` File ${(task.index || 0) + 1} of ${task.count}.` : "";
   return `${task.label}: ${phases[task.phase] || "Waiting…"}${bytes}${file}`;
@@ -8690,7 +9353,7 @@ async function settleOpenView() {
   if (typeof selectedFolderNode !== "function" || typeof loadList !== "function") return;
   if (openViewReload) return;
   const folder = selectedFolderNode();
-  if (!folder || !folder.view) return;
+  if (!(state.allInbox && (state.allInboxUnreadOnly || state.allInboxStarredOnly)) && (!folder || !folder.view)) return;
   openViewReload = true;
   try {
     await loadList(false);
@@ -8878,13 +9541,18 @@ async function deleteFromList(email) {
 }
 
 async function replyFromList(email, kind) {
-  let opened = state.email && state.email.id === email.id ? state.email : null;
+  const target = { id: email.id, accountId: email.accountId };
+  let opened = state.email && state.email.id === target.id && state.email.accountId === target.accountId
+    && !state.email.bodyError && listedHasBody(state.email) ? state.email : null;
   if (!opened) {
-    const data = await call("mail:openEmail", { emailId: email.id, full: true, includeThread: false });
+    const data = await call("mail:openEmail", { emailId: target.id, accountId: target.accountId, full: true, includeThread: false });
     opened = data && data.email;
   }
-  if (!opened) throw new Error("That message is no longer in the mailbox.");
-  const account = state.accounts.find((item) => item.id === opened.accountId) || selectedAccount();
+  if (!opened || opened.id !== target.id || opened.accountId !== target.accountId) {
+    throw new Error("That message is no longer in this mailbox.");
+  }
+  const account = state.accounts.find((item) => item.id === target.accountId);
+  if (!account) throw new Error("That mailbox is no longer connected.");
   const self = (account && (account.preferredFromAddress || account.email)) || "";
   await presentCompose(composeSeed(opened, kind, self));
 }
@@ -9027,6 +9695,48 @@ function retainedUndoOpIds(requested, outcomes, items) {
   }
   if (completed.size) return requested.filter((opId) => !completed.has(opId));
   return requested.slice();
+}
+
+// UI review owns a frozen set of operations, separate from backend restore ownership.
+let undoConfirmationPending = false;
+async function requestUndoRemoval(requested) {
+  if (undoConfirmationPending || undoBusy || undoPending.size) return;
+  const epoch = undoEpoch;
+  const kind = undoKind;
+  const readItems = readUndoItems;
+  const ids = (Array.isArray(requested) ? requested : undoOpIds || []).filter(id => (undoOpIds || []).includes(id));
+  const count = kind === "read" ? (readItems || []).length : ids.length;
+  if (!count) return;
+  const opener = document.activeElement;
+  const actions = new Map();
+  for (const item of undoItems || []) {
+    if (ids.includes(item.opId)) actions.set(item.action || "move", (actions.get(item.action || "move") || 0) + 1);
+  }
+  undoConfirmationPending = true;
+  clearStatusTimer();
+  try {
+    const answer = await askConfirm({
+      title: "Undo " + count + (count === 1 ? " change?" : " changes?"),
+      body: kind === "read"
+        ? "Restore the previous read state of " + count + (count === 1 ? " message?" : " messages?")
+        : "Restore the previous folder for " + count + (count === 1 ? " completed change" : " completed changes") +
+          " (" + [...actions].map(([action, n]) => n + " " + action).join(", ") + "). Newly completed changes are not included.",
+      confirm: "Undo " + count + (count === 1 ? " change" : " changes"),
+    });
+    await confirmSettled();
+    if (!answer.ok) return;
+    if (epoch !== undoEpoch || kind !== undoKind || undoBusy || undoPending.size ||
+        (kind === "read" ? readItems !== readUndoItems : ids.some(id => !(undoOpIds || []).includes(id)))) {
+      showStatus("Undo changed while you were reviewing. Review the current changes and try again.", true);
+      return;
+    }
+    await undoRemoval(kind === "read" ? undefined : ids);
+  } finally {
+    undoConfirmationPending = false;
+    if (!document.querySelector("dialog[open]") && opener?.isConnected && !opener.hidden && !opener.disabled &&
+        (!opener.closest("#undo-details-popover") || undoPopoverOpen())) opener.focus();
+    scheduleStatusCollapse();
+  }
 }
 
 async function undoRemoval(requested) {
@@ -9188,6 +9898,7 @@ function rememberSelection(preferredId) {
   if (!state.accounts.length) {
     state.allInbox = false;
     state.allInboxUnreadOnly = false;
+    state.allInboxStarredOnly = false;
     state.outbox = false;
     state.outboxRows = [];
     state.outboxCount = 0;
@@ -9196,6 +9907,7 @@ function rememberSelection(preferredId) {
     if (state.accountId !== preferredId) {
       state.allInbox = false;
       state.allInboxUnreadOnly = false;
+      state.allInboxStarredOnly = false;
     }
     state.accountId = preferredId;
   }
@@ -9308,6 +10020,8 @@ async function offerChangelog() {
     // A failed settings read is not an acknowledgement.
   } finally {
     changelogPending = false;
+    if (googleOnboardingPending) setTimeout(resumeGoogleOnboarding, 0);
+    setTimeout(resumeSetupGuide, 0);
   }
 }
 
@@ -9320,7 +10034,7 @@ function noteMailListLoaded(gen) {
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   noteUnreadScope();
-  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
+  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
   const scopeChanged = state.listScope !== scope;
   if (scopeChanged) {
     state.listScope = scope;
@@ -9347,7 +10061,7 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     if (state.query) {
-      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
+      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...state.listSort, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
       if (gen !== listGen) return null;
       state.emails = takeEmails(Array.isArray(data) ? data : []);
       renderList();
@@ -9365,7 +10079,9 @@ async function loadList(fromNetwork, requestedOffset) {
     const pageCursor = state.listCursors.find(entry => entry.offset === offset)?.cursor;
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
+      listSort: state.listSort,
       allInbox: state.allInbox,
+      aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
       unreadOnly: state.allInbox && state.allInboxUnreadOnly,
       fromNetwork: !state.allInbox && fromNetwork && isLive(account),
       accountId: account && account.id,
@@ -9382,7 +10098,9 @@ async function loadList(fromNetwork, requestedOffset) {
     if (offset > 0 && Number.isFinite(data?.total) && offset >= data.total) {
       offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
       const again = mailListRequest({
+        listSort: state.listSort,
         allInbox: state.allInbox,
+        aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
         unreadOnly: state.allInbox && state.allInboxUnreadOnly,
         accountId: account && account.id,
         folderId: state.folderId,
@@ -10710,7 +11428,7 @@ function wireSelection() {
 }
 
 function onSelectionKey(event) {
-  if (state.view !== "mail") return;
+  if (state.view !== "mail" || $("mail-view-menu")?.hidden === false) return;
   const menu = $("organize-menu");
   const menuOpen = menu && !menu.hidden;
   if (event.key === "Escape") {
@@ -11112,6 +11830,7 @@ async function selectOutbox() {
   state.outbox = true;
   state.allInbox = false;
   state.allInboxUnreadOnly = false;
+  state.allInboxStarredOnly = false;
   noteUnreadScope();
   state.query = "";
   const search = $("search-query");
@@ -11134,11 +11853,11 @@ async function selectOutbox() {
   renderList();
 }
 
-async function selectAllInbox(unreadOnly) {
+async function selectAllInbox(unreadOnly, starredOnly = false) {
   if (!state.accounts.length) return;
   ++mailboxNavigationGen;
   const nextUnread = unreadOnly === true;
-  const staying = state.allInbox && !state.query;
+  const staying = state.allInbox && !state.query && state.allInboxStarredOnly === starredOnly;
   if (!staying) {
     invalidateReaderOpen();
     state.email = null;
@@ -11156,6 +11875,7 @@ async function selectAllInbox(unreadOnly) {
   state.outbox = false;
   state.allInbox = true;
   state.allInboxUnreadOnly = nextUnread;
+  state.allInboxStarredOnly = starredOnly;
   state.listScope = "";
   renderAccounts();
   if (state.view === "folders") paintProviderPage();
@@ -11172,6 +11892,7 @@ async function selectFolder(accountId, folderId) {
   state.outbox = false;
   state.allInbox = false;
   state.allInboxUnreadOnly = false;
+  state.allInboxStarredOnly = false;
   state.listScope = "";
   state.accountId = accountId;
   state.folderId = folderId;
@@ -11209,6 +11930,7 @@ function readerCurrentId() {
 }
 
 function invalidateReaderOpen() {
+  clearMessageSummary();
   openGen += 1;
   pendingOpenId = "";
   pendingOpenBody = false;
@@ -11369,6 +12091,10 @@ function pumpBodyRefreshes() {
 function acceptBodyAccounts(accounts) {
   const previous = new Map(state.accounts.map(account => [account.id, account.bodyEpoch || 0]));
   state.accounts = Array.isArray(accounts) ? accounts : [];
+  if (messageSummary && !summaryMatches(state.email)) {
+    clearMessageSummary();
+    paintMessageSummary(state.email);
+  }
   for (const [key, entry] of latestBodies) if (!bodyIdentity(entry.body)) dropBody(key);
   for (const key of bodyReadFences.keys()) {
     const [accountId, epoch] = JSON.parse(key);
@@ -11430,7 +12156,10 @@ function paintReaderPending(email) {
 }
 
 async function openMessage(emailId, focus, full = false) {
+  clearMessageSummary();
+  paintMessageSummary(state.email);
   const known = listedMessage(emailId);
+  const expectedAccountId = known?.accountId || (state.email?.id === emailId ? state.email.accountId : "");
   const openedUnread = !!(known && known.unread);
   if (known && known.outbox) {
     invalidateReaderOpen();
@@ -11455,7 +12184,7 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -11463,7 +12192,7 @@ async function openMessage(emailId, focus, full = false) {
   }
   if (gen !== openGen) return;
   const email = data && data.email;
-  if (!email || String(email.id) !== String(emailId)) {
+  if (!email || String(email.id) !== String(emailId) || (expectedAccountId && email.accountId !== expectedAccountId)) {
     const message = email ? "That message could not be loaded." : "That message is no longer in the mailbox.";
     abandonOpen(emailId, message);
     throw new Error(message);
@@ -11541,7 +12270,8 @@ let snoozeDirty = false;
 
 function onEmailsUpdated(payload) {
   if (state.outbox) return;
-  const request = mailListRequest({ allInbox: state.allInbox, accountId: state.accountId, folderId: state.folderId,
+  const request = mailListRequest({
+      listSort: state.listSort, allInbox: state.allInbox, aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "", accountId: state.accountId, folderId: state.folderId,
     accounts: state.accounts, query: state.query, searchAccountId: state.searchAccountId });
   const params = request.params || {};
   if (payload?.accountId) {
@@ -15354,7 +16084,7 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open and you are not typing in a field. In Separate window, select exactly one visible message for Delete, Backspace, R, A or F; these act on that message, never the hidden preview. Preview shortcuts wait until loading succeeds. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
@@ -15407,6 +16137,9 @@ function cliCatalog() {
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "After the Tailscale steps, use the exact paired HTTPS endpoint. TLS is verified; redirects and non-loopback plain HTTP are rejected." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.list_cached --params-file ./list.json", action: "List the granted account's cached inbox with the list.json example above. This does not fetch new mail or mark it read." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Mail-provider submission cannot be recalled once it begins." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.archive --request-id '<uuid>' --params-file ./message.json", action: "Archive one explicit cached message with mail.archive permission. Repeat this exact UUID and payload to observe pending results without resubmitting." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.mark_read --request-id '<uuid>' --params-file ./read.json", action: "Set one message read with mail.read_state.write permission. Use isRead false for unread. Pending is not provider confirmation." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.trash --request-id '<uuid>' --params-file ./message.json", action: "Move one message to Trash with mail.trash permission. Never permanently deletes; an unknown outcome requires review rather than a new UUID." },
     { group: "Tailscale Serve", command: "tailscale serve --bg --https=8443 --accept-app-caps=com.coke1120.morrow-mail/bot-access http://127.0.0.1:47831", action: "Run this on the computer where Morrow is open. Morrow does not run it. Settings copies the same command. The port stays 8443 until you save another HTTPS port. Do not run tailscale funnel." },
     { group: "Tailscale Serve", command: "tailscale serve status --json", action: "Show Serve status as JSON. Morrow does not run this." },
     { group: "Tailscale Serve", command: "tailscale funnel status --json", action: "Confirm Funnel is not serving this port. Do not run tailscale funnel." },
@@ -15436,6 +16169,22 @@ function topOpenDialog() {
   return open.length ? open[open.length - 1] : null;
 }
 
+// The shell's hidden preview is not the selection in Separate window mode.
+function mailShortcutTarget() {
+  if (state.view !== "mail" || state.outbox) return null;
+  let email;
+  if (!isReaderWindow() && effectiveMailViewLayout() === "window") {
+    if (state.selectedIds.length !== 1) return null;
+    email = shownEmails().find(row => String(row.id) === state.selectedIds[0]);
+  } else {
+    if (pendingOpenId) return null;
+    email = state.email;
+  }
+  if (!email || !email.id || !email.accountId || email.outbox || email.bodyError) return null;
+  if (!state.accounts.some(account => account.id === email.accountId)) return null;
+  return email;
+}
+
 function mailShortcutContext(event) {
   const menu = $("organize-menu");
   const top = topOpenDialog();
@@ -15447,9 +16196,9 @@ function mailShortcutContext(event) {
   return {
     typing: !!editableField(event && event.target),
     dialog: !!top || undoPopoverOpen() || !!event?.target?.closest?.("#body-sync"),
-    menu: !!(menu && menu.hidden === false),
+    menu: !!(menu && menu.hidden === false) || $("mail-view-menu")?.hidden === false,
     topDialog: top && top.id ? top.id : "",
-    mailOpen: !!(state.email && state.email.id && !state.email.outbox),
+    mailOpen: !!mailShortcutTarget(),
     view: state.view,
     textSelected: textSelected,
   };
@@ -15499,11 +16248,11 @@ function mailShortcut(event, context) {
   return "";
 }
 
-function openReaderCompose(kind) {
-  const email = state.email;
+function openReaderCompose(kind, email = mailShortcutTarget()) {
   if (!email || email.outbox) return;
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
-  const self = (account && (account.preferredFromAddress || account.email)) || "";
+  const account = state.accounts.find((item) => item.id === email.accountId);
+  if (!account) return;
+  const self = (account.preferredFromAddress || account.email) || "";
   return presentCompose(composeSeed(email, kind, self));
 }
 
@@ -15519,9 +16268,12 @@ let mailShortcutAction = "";
 let mailShortcutStamp = 0;
 
 function runMailShortcut(action) {
+  const target = readerWindowShortcut(action) ? mailShortcutTarget() : null;
+  if (readerWindowShortcut(action) && !target) return;
+  const key = JSON.stringify([action, target?.accountId, target?.id]);
   const now = Date.now();
-  if (action && action === mailShortcutAction && now - mailShortcutStamp < 50) return;
-  mailShortcutAction = action || "";
+  if (action && key === mailShortcutAction && now - mailShortcutStamp < 50) return;
+  mailShortcutAction = key;
   mailShortcutStamp = now;
   if (action === "new-mail") {
     const button = $("compose-open");
@@ -15538,13 +16290,14 @@ function runMailShortcut(action) {
     return;
   }
   if (action === "delete") {
-    if (!state.email) return;
-    guard(() => trashOpen(state.email));
+    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
+      ? deleteFromList(target) : trashOpen(target));
     return;
   }
   if (action === "reply" || action === "reply-all" || action === "forward") {
     const kind = action === "reply" ? "reply" : action === "reply-all" ? "all" : "forward";
-    guard(() => openReaderCompose(kind));
+    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
+      ? replyFromList(target, kind) : openReaderCompose(kind, target));
     return;
   }
   const commandId = action === "send" ? "compose-send" : action === "save-draft" ? "compose-save" : action === "send-confirm" ? "compose-preview-confirm" : "";
@@ -15569,6 +16322,46 @@ function onMailShortcut(event) {
 function onMenuAction(payload) {
   const action = payload && payload.action;
   if (action === "new-mail" || action === "settings") runMailShortcut(action);
+}
+
+let notificationShellReady = false;
+let notificationNavigationGen = 0;
+async function onMailNotificationClick() {
+  if (!notificationShellReady) return;
+  const gen = ++notificationNavigationGen;
+  try {
+    const target = await call("mail:takeNotificationTarget");
+    const validId = value => typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value);
+    if (gen !== notificationNavigationGen || !target || !validId(target.accountId) || !validId(target.folderId)
+      || (target.messageId !== null && !validId(target.messageId))) return;
+    if (!state.accounts.some(account => account.id === target.accountId)) await loadAccounts();
+    if (gen !== notificationNavigationGen || !state.accounts.some(account => account.id === target.accountId)) return;
+    showMail();
+    await selectFolder(target.accountId, target.folderId);
+    if (gen !== notificationNavigationGen || state.accountId !== target.accountId || state.folderId !== target.folderId) return;
+    if (target.messageId) {
+      if (effectiveMailViewLayout() === "window") await openSenderReader({ id: target.messageId, accountId: target.accountId });
+      else await openMessage(target.messageId);
+    } else showStatus("That message is no longer available. Its Inbox is open.");
+  } catch {
+    if (gen === notificationNavigationGen) showStatus("That notification's message is no longer available. Refresh the mailbox to check.", true);
+  }
+}
+
+async function refreshMailNotificationStatus() {
+  const node = $("mail-notification-status");
+  if (!node) return;
+  try {
+    const result = await call("mail:getNotificationSettings");
+    const labels = {
+      disabled: "System notifications are off in Morrow Mail.",
+      unsupported: "Native notifications are unavailable in this environment. Use an installed Windows or macOS build.",
+      failed: "The last notification could not be shown. Check system notification permissions. It will not be retried.",
+      "storage-error": "Notifications paused because local delivery history could not be saved. Check storage, then restart Morrow Mail.",
+      ready: "System notifications are enabled. Your system controls permission, Focus / Do Not Disturb and delivery.",
+    };
+    node.textContent = labels[result?.state] || "Your system controls notification delivery.";
+  } catch { node.textContent = "Notification status is unavailable. Check system notification settings."; }
 }
 
 function cliCopyIcon() {
@@ -15885,10 +16678,17 @@ function setPane(which, width, geometry) {
   const total = geometry?.total ?? shell.getBoundingClientRect().width;
   const folders = geometry?.folders ?? sideColumn().getBoundingClientRect().width;
   const list = geometry?.list ?? $("messages").getBoundingClientRect().width;
+  const layout = effectiveMailViewLayout();
+  if (which === "messages" && layout === "bottom") {
+    const height = geometry?.height ?? shell.getBoundingClientRect().height;
+    const min = mailListMinimumHeight();
+    shell.style.setProperty("--mail-list-height", Math.round(paneWidth(width, 0, min, Math.max(min, height - 200))) + "px");
+    return;
+  }
   const readerMin = 260;
   const handle = 12;
   if (which === "folders") {
-    const max = Math.max(140, total - list - readerMin - handle);
+    const max = Math.max(140, total - (layout === "right" ? list + readerMin : 280) - handle);
     document.documentElement.style.setProperty("--folders", `${Math.round(paneWidth(width, 0, 140, max))}px`);
     return;
   }
@@ -15899,26 +16699,29 @@ function setPane(which, width, geometry) {
 function wireSplits() {
   for (const handle of document.querySelectorAll(".split")) {
     handle.addEventListener("keydown", (event) => {
-      const step = event.key === "ArrowRight" ? 24 : event.key === "ArrowLeft" ? -24 : 0;
+      const vertical = handle.dataset.split === "messages" && effectiveMailViewLayout() === "bottom";
+      const step = event.key === (vertical ? "ArrowDown" : "ArrowRight") ? 24 : event.key === (vertical ? "ArrowUp" : "ArrowLeft") ? -24 : 0;
       if (!step) return;
       event.preventDefault();
       event.stopPropagation();
       const pane = handle.dataset.split === "folders" ? sideColumn() : $("messages");
-      setPane(handle.dataset.split, pane.getBoundingClientRect().width + step);
+      setPane(handle.dataset.split, pane.getBoundingClientRect()[vertical ? "height" : "width"] + step);
       rememberLayoutPanes();
     });
     handle.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
       const which = handle.dataset.split;
-      const startX = event.clientX;
-      const start = (which === "folders" ? sideColumn() : $("messages")).getBoundingClientRect().width;
+      const vertical = which === "messages" && effectiveMailViewLayout() === "bottom";
+      const startX = vertical ? event.clientY : event.clientX;
+      const start = (which === "folders" ? sideColumn() : $("messages")).getBoundingClientRect()[vertical ? "height" : "width"];
       const geometry = { total: document.querySelector(".shell").getBoundingClientRect().width,
-        folders: sideColumn().getBoundingClientRect().width, list: $("messages").getBoundingClientRect().width };
+        folders: sideColumn().getBoundingClientRect().width, list: $("messages").getBoundingClientRect().width,
+        height: document.querySelector(".shell").getBoundingClientRect().height };
       let frame = 0, nextWidth = start;
       const paint = () => { frame = 0; setPane(which, nextWidth, geometry); };
       function move(ev) {
-        nextWidth = start + ev.clientX - startX;
+        nextWidth = start + (vertical ? ev.clientY : ev.clientX) - startX;
         if (!frame) frame = requestAnimationFrame(paint);
       }
       function stop() {
@@ -15993,7 +16796,8 @@ function updateView(snapshot, version) {
   if (snap.manualRequired) {
     status = "Manual installation required. Your current app has not been replaced.";
   } else if (error) {
-    status = "Update failed.";
+    status = snap.downloaded ? "Downloaded update retained." : "Update failed.";
+    install = !!snap.downloaded;
   } else if (snap.installing) {
     status = "Installing…";
     busy = true;
@@ -16010,7 +16814,7 @@ function updateView(snapshot, version) {
   } else if (snap.available) {
     status = snap.version ? "Update " + snap.version + " available." : "Update available.";
   } else if (snap.enabled === false) {
-    status = "Updater is off until the app is packaged.";
+    status = snap.disabledReason || "Updater is off until the app is packaged.";
   }
   const pending = !!(snap.available || snap.downloaded || snap.downloading);
   const attention = !!snap.manualRequired || (!error && pending);
@@ -16205,6 +17009,7 @@ function sendDelayMs(seconds) {
 }
 
 const SHELL_PREFS = {
+  "morrow:configGetMailNotificationsEnabled": "mailNotifications",
   "morrow:configGetCompactMessageList": "compactList",
   "morrow:configGetShowFolderChips": "chips",
   "morrow:configGetAiWriteAutoOpenOnReply": "aiReply",
@@ -16252,6 +17057,7 @@ async function loadShellPrefs() {
     next.undoSend = sendDelayMs(await api.invoke("morrow:configGetUndoSendDelaySeconds")) / 1000;
     next.quoteWidth = quoteWidthPref(await api.invoke("morrow:configGetComposeQuoteWidth"));
     next.syncHorizon = await api.invoke("morrow:configGetSyncHorizonDays");
+    next.mailNotificationPreview = await api.invoke("morrow:configGetMailNotificationPreview") || "hidden";
     next.scheduleDelay = scheduleDelayMinutes(await api.invoke("morrow:configGetDefaultScheduleDelayMinutes"));
     next.layout = layoutPanesPref(await api.invoke("morrow:configGetLayoutPanes"));
     const formats = typeof morrowDisplayFormat === "object" && morrowDisplayFormat ? morrowDisplayFormat : null;
@@ -16265,6 +17071,7 @@ async function loadShellPrefs() {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
   }
+  next.mailView = state.prefs.mailView;
   state.prefs = next;
   applyLook(next);
   applyLayoutPanes(next.layout);
@@ -16288,6 +17095,10 @@ function refreshReader() {
 }
 
 function takePref(getChannel, kind, control) {
+  if (getChannel === "morrow:configGetMailNotificationPreview") {
+    state.prefs.mailNotificationPreview = readPref(kind, control);
+    return false;
+  }
   const key = SHELL_PREFS[getChannel] || READER_PREFS[getChannel];
   if (key) {
     state.prefs[key] = control.checked === true;
@@ -16448,6 +17259,8 @@ async function collapseAllFolders() {
 
 function prefRows() {
   return [
+    ["pref-mail-notifications", "morrow:configGetMailNotificationsEnabled", "morrow:configSetMailNotificationsEnabled", "bool"],
+    ["pref-mail-notification-preview", "morrow:configGetMailNotificationPreview", "morrow:configSetMailNotificationPreview", "select"],
     ["pref-theme", "config:getTheme", "config:setTheme", "select"],
     ["pref-accent", "morrow:configGetAccent", "morrow:configSetAccent", "text"],
     ["pref-time-format", "morrow:configGetTimeFormat", "morrow:configSetTimeFormat", "select"],
@@ -16502,6 +17315,7 @@ async function loadSettings() {
   // Boot and preference writes already maintain this snapshot. Opening a dialog
   // must not repeat preference IPC reads or load closed provider/AI/Bot tabs.
   const keys = { ...SHELL_PREFS, ...READER_PREFS, "config:getTheme": "theme",
+    "morrow:configGetMailNotificationPreview": "mailNotificationPreview",
     "morrow:configGetAccent": "accent", "morrow:configGetUndoSendDelaySeconds": "undoSend",
     "morrow:configGetSyncHorizonDays": "syncHorizon",
     "morrow:configGetTimeFormat": "timeFormat", "morrow:configGetDateFormat": "dateFormat",
@@ -16632,6 +17446,7 @@ function loadSettingsFold(name) {
   const key = settingsFoldKey(name);
   if (settingsFoldLoaded.has(key)) {
     if (name === "compose") return loadComposeSettings();
+    if (name === "mail") return refreshMailNotificationStatus();
     return Promise.resolve();
   }
   if (settingsFoldPending.has(key)) return settingsFoldPending.get(key);
@@ -16643,7 +17458,10 @@ function loadSettingsFold(name) {
     panel.inert = true;
     panel.setAttribute("aria-busy", "true");
     setSettingsFoldLoading(fold, settingsFoldLoadingLabels[name] || "Loading…");
-    if (name === "prefs" || name === "mail") await loadSettings();
+    if (name === "prefs" || name === "mail") {
+      await loadSettings();
+      if (name === "mail") await refreshMailNotificationStatus();
+    }
     else if (name === "ai") {
       await loadSettings();
       if (settingsFoldPending.get(key) !== pending || !$("settings").open) return;
@@ -17250,6 +18068,7 @@ async function savePref(row) {
     } else {
       setPrefSaveStatus(id, edited ? "Saved. Newer edits are not saved yet." : "Saved.", false);
     }
+    if (id === "pref-mail-notifications" || id === "pref-mail-notification-preview") await refreshMailNotificationStatus();
   } catch (error) {
     if (serial !== prefWriteSerial.get(id)) return;
     const message = error instanceof Error ? error.message : String(error);
@@ -17487,6 +18306,7 @@ function paintMailVacation() {
   if (!box) return;
   const picker = $("mail-ooo-account");
   if (picker) picker.hidden = !state.allInbox;
+  if ($("mail-ooo-chooser")) $("mail-ooo-chooser").hidden = !state.allInbox;
   if (state.allInbox) {
     const key = JSON.stringify(state.accounts.map((account) => [account.id, accountLabel(account)]));
     if (picker && picker.dataset.accounts !== key) {
@@ -17500,15 +18320,21 @@ function paintMailVacation() {
   box.hidden = !account;
   if (!account) return;
   const entry = mailVacation.get(account.id);
-  const compact = !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
-  const summary = vacationChipSummary(entry) || vacationSummary(entry?.data);
+  const pending = mailVacationPending.has(account.id);
+  const compact = !pending && !entry?.error && entry?.data?.supported && !entry.data.requiresReconnect && !entry.data.scheduleWarning && entry.data.settings?.mode === "disabled";
+  const summary = pending && !entry?.retrying ? "Out of Office: checking…" : vacationChipSummary(entry) || vacationSummary(entry?.data);
   const detail = account.email + " · " + summary + (entry?.at ? " · Checked " + shownWhen(new Date(entry.at)) : "");
   box.classList.toggle("is-off", !!compact);
+  box.classList.toggle("is-multi", !!state.allInbox);
   box.title = detail;
-  $("mail-ooo-status").textContent = compact ? "Out of Office: off" : detail;
+  if ($("mail-ooo-identity")) $("mail-ooo-identity").textContent = account.email;
+  const status = summary.replace(/^Out of Office: /, "");
+  $("mail-ooo-status").textContent = status.charAt(0).toUpperCase() + status.slice(1);
   $("mail-ooo-status").setAttribute("aria-label", detail);
-  $("mail-ooo-status").setAttribute("aria-busy", entry?.retrying ? "true" : "false");
-  $("mail-ooo-manage").textContent = compact ? "Manage" : "Manage / disable";
+  $("mail-ooo-status").setAttribute("aria-busy", pending || entry?.retrying ? "true" : "false");
+  $("mail-ooo-manage").setAttribute("aria-label", "Manage Out of Office for " + account.email);
+  $("mail-ooo-refresh").setAttribute("aria-label", "Refresh Out of Office status for " + account.email);
+  $("mail-ooo-refresh").disabled = pending;
   $("mail-ooo-refresh").hidden = !!compact;
 }
 function releaseVacationRetry(accountId) {
@@ -17535,6 +18361,7 @@ async function refreshMailVacation(force = false) {
   });
   if (decision !== "fetch") return;
   mailVacationPending.add(id);
+  paintMailVacation();
   try {
     const data = await call("mail:vacationGet", { accountId: id });
     if (mailVacationAccount()?.id !== id) return;
@@ -17547,7 +18374,10 @@ async function refreshMailVacation(force = false) {
     if (plan.retry) mailVacation.set(id, { error: true, retrying: true, at: previous && previous.at });
     else mailVacation.set(id, { error: true, at: Date.now() });
     paintMailVacation();
-  } finally { mailVacationPending.delete(id); }
+  } finally {
+    mailVacationPending.delete(id);
+    paintMailVacation();
+  }
 }
 async function manageMailVacation() {
   const id = state.allInbox ? $("mail-ooo-account")?.value : state.accountId;
@@ -17578,6 +18408,283 @@ function paintOooDirty() {
   note.textContent = dirty ? "Unsaved changes. Review and save to the provider." : "";
   if (dirty && $("ooo-status") && $("ooo-status").textContent === "Saved on the provider.") setOooStatus("", false);
 }
+// A profile-local, non-secret preference, shared by shell windows.
+// The guide stores navigation only. Completion is derived from saved account settings.
+let setupProgress = null;
+let setupPending = false;
+let setupReturning = false;
+let setupTransition = false;
+let setupRevision = 0;
+let setupCalendarPending = false;
+let setupSave = Promise.resolve();
+const setupSteps = [
+  ["Connect a mailbox", "Read and send mail from your own account. Use Google, Microsoft, or your provider’s IMAP and SMTP settings. Google sign-in may require a Desktop client JSON from Google Cloud Console; importing it does not sign you in.", "Connect mailbox"],
+  ["Connect its calendar", "Bring this mailbox’s calendar into Morrow. Google Calendar has separate consent; Microsoft uses its mailbox features grant. Other providers are not supported here. You can keep using mail without a calendar.", "Connect calendar"],
+  ["Choose your sender name", "Choose the name recipients see for this mailbox and each From address in Sender identities. Names are local preferences, not permission to send as another address. An empty override uses the address alone.", "Edit sender name"],
+  ["Add your signature", "Add an account default or a signature for a send-as domain. The editor opens for the mailbox selected above. You can also send without a signature.", "Edit signatures"],
+  ["Make AI work for you", "Optionally connect ChatGPT or an API provider, then choose a model. Review the saved destination and data permission separately. Saving a connection never grants permission to use your mail; background use requires its own choice.", "Review AI settings"],
+];
+function saveSetupProgress(status = setupProgress.status) {
+  setupProgress = { ...setupProgress, status };
+  const snapshot = { ...setupProgress };
+  setupSave = setupSave.catch(() => {}).then(() => api.invoke("morrow:configSetOnboarding", snapshot));
+  setupSave.catch(() => { $("setup-guide-error").textContent = "Could not save guide progress. Your mailbox settings are unchanged; the guide may appear again next time."; });
+  return setupSave;
+}
+async function startSetupGuide() {
+  try { setupProgress = await api.invoke("morrow:configGetOnboarding"); }
+  catch { return; } // Do not overwrite unknown profile state.
+  if (!setupProgress) {
+    setupProgress = { status: state.accounts.length ? "existing" : "active", step: 0, accountId: "" };
+    await saveSetupProgress().catch(() => {});
+  }
+  setupPending = setupProgress.status === "active";
+  return resumeSetupGuide();
+}
+function setupAccount() {
+  return state.accounts.find(account => account.id === setupProgress?.accountId) || null;
+}
+async function resumeSetupGuide() {
+  if ((!setupPending && !setupReturning) || setupTransition || changelogPending || document.querySelector("dialog[open]")) return;
+  setupPending = false;
+  setupReturning = false;
+  openDialog("setup-guide");
+  $("setup-guide-heading").focus();
+  await paintSetupGuide();
+}
+async function paintSetupGuide() {
+  if (!$("setup-guide").open || !setupProgress) return;
+  const revision = ++setupRevision;
+  const select = $("setup-guide-account");
+  if (!setupAccount()) setupProgress.accountId = state.accounts[0]?.id || "";
+  select.replaceChildren();
+  for (const account of state.accounts.length ? state.accounts : [{ email: "Connect your first mailbox", id: "" }]) {
+    const option = document.createElement("option"); option.value = account.id; option.textContent = account.email; select.append(option);
+  }
+  select.value = setupProgress.accountId;
+  select.disabled = !state.accounts.length;
+  const step = setupProgress.step, account = setupAccount(), spec = setupSteps[step];
+  $("setup-guide-steps").replaceChildren();
+  setupSteps.forEach((item, index) => {
+    const button = document.createElement("button"); button.type = "button"; button.className = "ghost";
+    button.textContent = `${index + 1}. ${["Mailbox", "Calendar", "Sender name", "Signature", "AI setup"][index]}`;
+    button.title = item[0];
+    if (index === step) button.setAttribute("aria-current", "step");
+    button.addEventListener("click", () => moveSetupGuide(index));
+    $("setup-guide-steps").append(button);
+  });
+  $("setup-guide-position").textContent = `STEP ${step + 1} OF 5${step === 1 || step === 4 ? " · OPTIONAL" : ""}`;
+  $("setup-guide-heading").textContent = spec[0];
+  $("setup-guide-copy").textContent = spec[1];
+  $("setup-guide-action").textContent = spec[2];
+  $("setup-guide-action").disabled = step === 1 || (step > 0 && step < 4 && !account);
+  $("setup-guide-import").hidden = step !== 0;
+  $("setup-guide-cancel").hidden = !setupCalendarPending;
+  $("setup-guide-back").disabled = step === 0;
+  $("setup-guide-next").textContent = step === 4 ? "Finish guide" : "Skip for now";
+  $("setup-guide-state").textContent = "Checking saved settings…";
+  let summary = "", complete = false;
+  try {
+    if (step === 0) {
+      complete = !!account && !account.needsReauth;
+      summary = account ? account.needsReauth ? `Reconnect ${account.email} in Settings → Accounts.` : `Connected: ${account.email}` : "No mailbox connected yet.";
+      const status = await call("mail:googleOauthStatus");
+      if (revision !== setupRevision) return;
+      $("setup-guide-import").hidden = !!status?.ready;
+    } else if (!account && step < 4) summary = "Connect a mailbox first, or skip this step for now.";
+    else if (step === 1) {
+      const connection = calendarConnection(await call("calendar:status"), account);
+      complete = connection.connected;
+      summary = complete ? "Calendar access saved for this mailbox." : connection.canGrant ? "Calendar is not connected. You can connect it or continue with mail only." : connection.reason || "Calendar is unavailable for this mailbox type. Google and Microsoft mailboxes are supported.";
+      if (revision !== setupRevision) return;
+      $("setup-guide-action").disabled = !connection.canGrant || complete || setupCalendarPending;
+    } else if (step === 2) {
+      const prefs = await call("emailBrain:getComposeSettings");
+      const names = prefs?.accounts?.[account.id]?.senderNames || {};
+      complete = Object.keys(names).length > 0;
+      summary = complete ? "Sender name preferences saved for this mailbox. Review each From address in Sender identities." : "Using provider defaults. Review the name or choose an address-only sender.";
+    } else if (step === 3) {
+      const pack = await call("mail:listSignatures", { accountId: account.id });
+      complete = signatureRows(pack).some(row => (!row.accountId || row.accountId === account.id) && (signaturePlain(row) || signatureMarkup(row)));
+      summary = complete ? "Signature saved for this mailbox. Review its default or domain assignment in the editor." : "No signature saved for this mailbox yet.";
+    } else {
+      const cfg = await api.invoke("host:aiGetConfig");
+      if (cfg?.authMode === "chatgpt") {
+        const reply = await api.invoke("host:chatgptStatus"), status = reply?.data || reply;
+        complete = status?.connected === true && status?.planEnabled === true && !!cfg.chatgptModel;
+      } else complete = !!(cfg?.hasKey && cfg?.model);
+      summary = complete ? "AI connection configured. Review data permission separately in AI settings." : "AI is optional. Mail works without an AI connection.";
+    }
+  } catch { summary = "Could not check saved settings. Open this step to review or try again later."; }
+  if (revision !== setupRevision || !$("setup-guide").open) return;
+  $("setup-guide-state").textContent = summary;
+  if (step < 4 && complete) $("setup-guide-next").textContent = "Continue";
+}
+function moveSetupGuide(step) {
+  setupProgress.step = step;
+  $("setup-guide-error").textContent = "";
+  saveSetupProgress("active").catch(() => {});
+  paintSetupGuide();
+  $("setup-guide-heading").focus();
+}
+async function dismissSetupGuide(status = "later") {
+  setupPending = false; setupReturning = false; ++setupRevision;
+  await saveSetupProgress(status).catch(() => {});
+  await closeDialog("setup-guide");
+}
+async function setupGuideAction() {
+  const step = setupProgress.step, account = setupAccount();
+  if (setupTransition || (step > 0 && step < 4 && !account)) return;
+  if (step === 1) {
+    if (setupCalendarPending) return;
+    setupCalendarPending = true;
+    $("setup-guide-cancel").hidden = false;
+    $("setup-guide-action").disabled = true;
+    const revision = setupRevision;
+    $("setup-guide-error").textContent = "Complete calendar consent in your browser. You can finish this guide later while consent is pending.";
+    try { await call("calendar:connect", { accountId: account.id });
+      if (revision === setupRevision) $("setup-guide-error").textContent = ""; }
+    catch (error) { if (revision === setupRevision) $("setup-guide-error").textContent = error.message || "Calendar connection did not complete."; }
+    setupCalendarPending = false;
+    $("setup-guide-cancel").hidden = true;
+    if ($("setup-guide").open) await paintSetupGuide();
+    return;
+  }
+  setupTransition = true;
+  setupReturning = true;
+  await saveSetupProgress("active").catch(() => {});
+  await closeDialog("setup-guide");
+  try {
+    if (step === 0) openConnectFor(null);
+    else if (step === 3) openSignatures(account.id);
+    else {
+      if (account) state.settingsAccountId = account.id;
+      openSettings();
+      revealSettingsFold(step === 4 ? "ai" : "compose");
+      if (step === 2) {
+        await loadSettingsFold("compose");
+        const select = $("brain-compose-account");
+        if ($("settings").open && state.accounts.some(row => row.id === account.id) && !select.disabled) {
+          select.value = account.id; select.dispatchEvent(new Event("change"));
+        }
+      }
+    }
+  } finally { setupTransition = false; setTimeout(resumeSetupGuide, 0); }
+}
+function wireSetupGuide() {
+  $("setup-guide").addEventListener("keydown", event => {
+    if (event.key !== "Tab") return;
+    const controls = [...$("setup-guide").querySelectorAll("button:not(:disabled), select:not(:disabled), a[href]")].filter(node => node.getClientRects().length);
+    const first = controls[0], last = controls[controls.length - 1];
+    if (!first) return;
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === $("setup-guide-heading"))) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
+  $("setup-guide-open").addEventListener("click", async () => {
+    setupTransition = true;
+    setupProgress ||= { status: "active", step: 0, accountId: "" };
+    setupPending = true;
+    await closeDialog("settings");
+    setupTransition = false;
+    resumeSetupGuide();
+  });
+  $("setup-guide-cancel").addEventListener("click", () => {
+    if (setupCalendarPending) call("mail:cancelOAuth").catch(error => { $("setup-guide-error").textContent = error.message; });
+  });
+  $("setup-guide-later").addEventListener("click", () => dismissSetupGuide());
+  $("setup-guide").addEventListener("cancel", event => { event.preventDefault(); dismissSetupGuide(); });
+  $("setup-guide").addEventListener("close", () => {
+    ++setupRevision;
+    if (!setupReturning && !setupTransition && setupProgress?.status === "active") saveSetupProgress("later").catch(() => {});
+  });
+  document.addEventListener("close", event => {
+    if (event.target?.tagName === "DIALOG") setTimeout(resumeSetupGuide, 0);
+  }, true);
+  $("setup-guide-account").addEventListener("change", () => {
+    setupProgress.accountId = $("setup-guide-account").value;
+    saveSetupProgress("active").catch(() => {}); paintSetupGuide();
+  });
+  $("setup-guide-back").addEventListener("click", () => moveSetupGuide(Math.max(0, setupProgress.step - 1)));
+  $("setup-guide-next").addEventListener("click", () => setupProgress.step === 4 ? dismissSetupGuide("done") : moveSetupGuide(setupProgress.step + 1));
+  $("setup-guide-action").addEventListener("click", () => setupGuideAction().catch(error => { $("setup-guide-error").textContent = error.message; }));
+  $("setup-guide-import").addEventListener("click", async () => {
+    $("setup-guide-import").disabled = true;
+    try { await changeGoogleOauthClient("mail:importGoogleOauth"); await paintSetupGuide(); }
+    finally { $("setup-guide-import").disabled = false; }
+  });
+  window.addEventListener("focus", () => { if ($("setup-guide").open) paintSetupGuide(); });
+}
+
+const googleOnboardingKey = "morrow.googleOnboarding.v1";
+let googleOnboardingHandled = false;
+let googleOnboardingPending = false;
+let googleOnboardingCheck = null;
+let googleOnboardingCloseSerial = 0;
+function googleOnboardingDone() {
+  if (googleOnboardingHandled) return true;
+  try { return window.localStorage.getItem(googleOnboardingKey) === "done"; }
+  catch { return false; }
+}
+function rememberGoogleOnboarding() {
+  googleOnboardingPending = false;
+  googleOnboardingHandled = true;
+  try { window.localStorage.setItem(googleOnboardingKey, "done"); }
+  catch { /* Keep this session usable when profile storage is unavailable. */ }
+}
+function dismissGoogleOnboarding() {
+  rememberGoogleOnboarding();
+  closeDialog("google-onboarding");
+}
+function maybeShowGoogleOnboarding() {
+  googleOnboardingPending = !googleOnboardingDone();
+  return resumeGoogleOnboarding();
+}
+function resumeGoogleOnboarding() {
+  if (!googleOnboardingPending || googleOnboardingDone()) return Promise.resolve();
+  if (googleOnboardingCheck) return googleOnboardingCheck;
+  if (changelogPending || document.querySelector("dialog[open]")) return Promise.resolve();
+  const serial = googleOnboardingCloseSerial;
+  googleOnboardingCheck = (async () => {
+    let status;
+    try { status = await call("mail:googleOauthStatus"); }
+    catch { return; } // Unknown readiness is not a reason to request credentials.
+    // A dialog may have changed configuration while this read was in flight.
+    if (serial !== googleOnboardingCloseSerial || !googleOnboardingPending || googleOnboardingDone()) return;
+    if (state.accounts.length || status?.ready || status?.imported || status?.source !== "none") {
+      rememberGoogleOnboarding();
+      return;
+    }
+    state.googleOauthClient = status;
+    if (document.querySelector("dialog[open]")) return;
+    googleOnboardingPending = false;
+    openDialog("google-onboarding");
+  })().finally(() => {
+    googleOnboardingCheck = null;
+    if (googleOnboardingPending && serial !== googleOnboardingCloseSerial) setTimeout(resumeGoogleOnboarding, 0);
+  });
+  return googleOnboardingCheck;
+}
+function wireGoogleOnboarding() {
+  // Capture also covers dialogs created after boot. Let their close handlers
+  // finish (and possibly open another dialog) before checking the pending offer.
+  // Native dispatch may run microtasks between listeners, so use the next task.
+  document.addEventListener("close", event => {
+    if (event.target?.tagName !== "DIALOG" || !googleOnboardingPending) return;
+    googleOnboardingCloseSerial += 1;
+    setTimeout(resumeGoogleOnboarding, 0);
+  }, true);
+  const dialog = $("google-onboarding");
+  $("google-onboarding-later").addEventListener("click", dismissGoogleOnboarding);
+  $("google-onboarding-import").addEventListener("click", () => changeGoogleOauthClient("mail:importGoogleOauth"));
+  dialog.addEventListener("close", rememberGoogleOnboarding);
+  window.addEventListener("storage", event => {
+    if (event.key === googleOnboardingKey && event.newValue === "done") {
+      googleOnboardingHandled = true;
+      closeDialog("google-onboarding");
+    }
+  });
+}
 let googleOauthClientBusy = false;
 function paintGoogleOauthClient() {
   const node = $("google-oauth-client-status");
@@ -17592,6 +18699,7 @@ function paintGoogleOauthClientButtons() {
   if (clear) clear.disabled = busy || !(state.googleOauthClient && state.googleOauthClient.imported);
   const button = $("google-oauth-import");
   if (button) button.disabled = busy;
+  if ($("google-onboarding-import")) $("google-onboarding-import").disabled = busy;
   for (const id of ["settings-gmail-migrate", "settings-gmail-calendar"]) {
     const action = $(id);
     if (action) action.disabled = busy || gmailMigrationBusy;
@@ -17611,7 +18719,9 @@ async function loadGoogleOauthClient() {
 async function changeGoogleOauthClient(channel) {
   if (googleOauthClientBusy || state.oauthPending) return;
   const node = $("google-oauth-client-status");
+  const onboarding = $("setup-guide").open ? $("setup-guide-error") : $("google-onboarding").open ? $("google-onboarding-status") : null;
   googleOauthClientBusy = true;
+  if (onboarding) onboarding.textContent = "Choose a Google Cloud Console Desktop app client JSON…";
   paintGoogleOauthClient();
   paintConnectPending();
   if (node) {
@@ -17621,10 +18731,18 @@ async function changeGoogleOauthClient(channel) {
   try {
     const result = await call(channel);
     state.googleOauthClient = result || state.googleOauthClient;
+    if (channel === "mail:importGoogleOauth" && result?.imported && !result.cancelled) dismissGoogleOnboarding();
+    if (onboarding) {
+      if (result?.cancelled) onboarding.textContent = "No file imported. Try again or choose Later.";
+      else if (result?.imported) {
+        showStatus("Desktop client imported. Use Continue with Google to sign in; Google Cloud setup and access still need to be valid.");
+      }
+    }
     paintGoogleOauthClient();
     await loadOauthStatus();
     await loadSettingsCapabilities();
   } catch (error) {
+    if (onboarding) onboarding.textContent = "Could not import. Choose a valid Google Cloud Console OAuth Desktop app client JSON, then try again. You can also choose Later.";
     if (node) {
       node.textContent = error instanceof Error ? error.message : String(error);
       node.classList.add("error");
@@ -23168,7 +24286,7 @@ function botPermissionNames(capabilities) {
   const names = { "accounts.read": "account details", "mail.headers.read": "cached mail headers",
     "health.read": "sync health", "agent.proposals.read": "pending proposals", "mail.bodies.read": "message text",
     "mail.attachments.read": "attachment names", "draft.proposals.create": "draft proposals",
-    "mail.send": "send mail as you" };
+    "mail.send": "send mail as you", "mail.archive": "archive mail", "mail.read_state.write": "mark read or unread", "mail.trash": "move mail to Trash" };
   return (capabilities || []).map((cap) => names[cap] || cap).join(", ");
 }
 
@@ -23183,6 +24301,13 @@ function botListenerStatus(access) {
 
 function botPlatformLabel(platform) {
   return platform === "hermes_agent" ? "Hermes Agent" : "Grok Bot";
+}
+
+function botDeliveryResult(code) {
+  if (code === "OK") return "HTTP acknowledged; agent completion unverified";
+  if (code === "HERMES_HTTP_202") return "Hermes HTTP 202 accepted for handling (queued or buffered); agent completion unverified";
+  if (/^HERMES_HTTP_2\d\d$/.test(code)) return `Hermes HTTP ${code.slice(-3)} acknowledged (may be duplicate, ignored or direct delivery); agent completion unverified`;
+  return code || "—";
 }
 
 function botProactiveForm(grant) {
@@ -23201,7 +24326,7 @@ function botProactiveForm(grant) {
     : saved.enabled
     ? `Saved for ${saved.webhookUrl}. ${state.botAccess?.enabled && state.botAccess?.listen?.listening ? "Runs while Morrow is open and awake." : "Paused until bot access is listening."}`
     : "No background delivery is allowed for this bot.";
-  if (delivery && !delivery.halted) status.textContent += ` Last result: ${delivery.lastCode || "—"}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
+  if (delivery && !delivery.halted) status.textContent += ` Last result: ${botDeliveryResult(delivery.lastCode)}. Next slot: ${delivery.nextRunAt ? shownWhen(new Date(delivery.nextRunAt)) : "after saving"}.`;
   const form = document.createElement("form");
   const fields = {};
   function field(name, title, type, value) {
@@ -23233,6 +24358,8 @@ function botProactiveForm(grant) {
     form.append(label); fields[name] = input; return input;
   }
   select("platform", "Platform", [["grok_bot", "Grok Bot"], ["hermes_agent", "Hermes Agent"]], grant.platform || "grok_bot");
+  const mode = select("webhookMode", "Webhook authentication", [["bearer", "Bearer webhook (existing receivers)"],
+    ["hermes_hmac_v2", "Hermes native webhook · HMAC V2"]], saved.webhookMode || (grant.proactive ? "bearer" : grant.platform === "hermes_agent" ? "hermes_hmac_v2" : "bearer"));
   const url = field("webhookUrl", "Webhook URL", "url", saved.webhookUrl);
   url.placeholder = "https://bot.your-tailnet.ts.net:8443/notify";
   url.autocomplete = "off";
@@ -23257,20 +24384,44 @@ function botProactiveForm(grant) {
   }
   const body = field("includeBody", "Include cached body text (never download missing bodies)", "checkbox", saved.includeBody);
   body.disabled = !(grant.capabilities || []).includes("mail.bodies.read");
-  const secret = field("secret", saved.hasSecret ? "Replace webhook bearer (blank keeps saved token)" : "Optional webhook bearer", "password", "");
+  const secret = field("secret", "Webhook credential", "password", "");
   secret.autocomplete = "new-password";
-  const clear = field("clearSecret", "Remove saved webhook bearer", "checkbox", false);
-  clear.disabled = !saved.hasSecret;
+  const clear = field("clearSecret", "Remove saved webhook credential", "checkbox", false);
+  const modeHelp = document.createElement("p"); modeHelp.className = "hint";
+  modeHelp.id = `bot-notify-${grant.clientId}-auth-help`;
+  mode.setAttribute("aria-describedby", modeHelp.id);
+  secret.setAttribute("aria-describedby", modeHelp.id);
+  form.append(modeHelp);
   const disclosure = document.createElement("p");
   disclosure.className = "hint";
-  disclosure.textContent = "Background permission: send raw cached headers and snippets, plus cached text only if selected, from these mailboxes to this webhook. The platform bot decides whether to ignore, ask you, read again, propose a draft or send if granted. Morrow does not run AI, triage, draft or send as a result. The bot’s storage and forwarding rules apply; delivered data cannot be recalled. Use private Tailscale HTTPS or loopback, never Funnel. Changing the destination removes its saved bearer. Push covers the newest 50 cached rows, up to 10 per mailbox per delivery; remembers 2,000 delivered IDs per mailbox. No attachment bytes. Missed schedules do not replay.";
+  disclosure.textContent = "Background permission: send raw cached headers and snippets, plus cached text only if selected, from these mailboxes to this webhook. The platform bot decides whether to ignore, ask you, read again, propose a draft or send if granted. Morrow does not run AI, triage, draft or send as a result. The bot’s storage and forwarding rules apply; delivered data cannot be recalled. Use private Tailscale HTTPS or loopback, never Funnel. Changing the URL, platform or authentication removes its saved credential unless replaced. Push covers the newest 50 cached rows, up to 10 per mailbox per delivery; remembers 2,000 acknowledged IDs per mailbox. HTTP acknowledgement does not verify agent completion. No attachment bytes. Missed schedules do not replay.";
   form.append(disclosure);
   const allow = field("allow", "Allow proactive notify to this webhook in the background", "checkbox", false);
+  const showAuthentication = () => {
+    const hermes = mode.value === "hermes_hmac_v2";
+    let sameUrl = false;
+    try { sameUrl = new URL(url.value).toString() === saved.webhookUrl; } catch { /* invalid or empty URL */ }
+    const keepsSecret = saved.hasSecret && sameUrl && fields.platform.value === (grant.platform || "grok_bot")
+      && mode.value === (saved.webhookMode || "bearer");
+    clear.disabled = !keepsSecret;
+    if (clear.disabled) clear.checked = false;
+    secret.required = hermes && allow.checked && (!keepsSecret || clear.checked);
+    secret.parentElement.firstChild.textContent = keepsSecret
+      ? `Replace ${hermes ? "Hermes signing secret" : "webhook bearer"} (blank keeps saved credential)`
+      : hermes ? "Hermes route signing secret (required to allow delivery)" : "Optional webhook bearer";
+    url.placeholder = hermes ? "http://127.0.0.1:8644/p/email/webhooks/morrow-mail" : "https://bot.your-tailnet.ts.net:8443/notify";
+    modeHelp.textContent = hermes
+      ? "Use the exact Hermes route secret; Morrow signs each request with HMAC V2 and a fresh timestamp, and keeps the delivery ID for retries. Keep both computers’ clocks synchronized. /p/email/webhooks/morrow-mail selects the email profile only when Hermes multiplexing and route profile: email are configured; deliver: email selects an output destination. Loopback reaches this computer only; another host needs private Tailscale HTTPS. HTTP 202 means accepted for handling; HTTP 200 can mean duplicate, ignored or direct delivery. Verify the intended agent result before disabling fallback cron."
+      : "Optional Bearer authentication for existing receivers. Blank keeps a saved credential only for the same URL, platform and authentication mode. Receivers must deduplicate deliveryId. HTTP acknowledgement does not verify agent completion.";
+  };
+  mode.addEventListener("change", () => { secret.value = ""; allow.checked = false; showAuthentication(); });
+  for (const input of [url, fields.platform, clear, allow]) input.addEventListener("input", showAuthentication);
+  showAuthentication();
   const review = document.createElement("p"); review.className = "hint";
   review.textContent = "Tick this permission after reviewing the fields above, then Save. Saving with it unticked turns proactive notify off. This permission is separate from Settings → AI data permission.";
   form.append(review);
   for (const input of [...Object.values(fields), ...accountInputs]) {
-    if (input !== allow) input.addEventListener("input", () => { allow.checked = false; });
+    if (input !== allow) input.addEventListener("input", () => { allow.checked = false; showAuthentication(); });
   }
   const actions = document.createElement("div"); actions.className = "row";
   const save = document.createElement("button"); save.type = "submit"; save.className = "primary icon-label";
@@ -23287,7 +24438,7 @@ function botProactiveForm(grant) {
       enabled: allow.checked, backgroundConfirmed: allow.checked,
       schedule: kind.value === "interval" ? { kind: "interval", everyMinutes: Number(minutes.value) } : { kind: "cron", cron: cron.value },
       accountIds: accountInputs.filter(input => input.checked && !input.disabled).map(input => input.value),
-      folder: fields.folder.value, includeBody: body.checked, webhookUrl: url.value,
+      folder: fields.folder.value, includeBody: body.checked, webhookUrl: url.value, webhookMode: mode.value,
       secret: secret.value, clearSecret: clear.checked };
     secret.value = "";
     save.disabled = true;
@@ -23485,7 +24636,8 @@ function paintBotAudit(rows) {
   for (const row of items) {
     const item = document.createElement("li");
     const audit = row.auditId ? `${row.auditId} · ` : "";
-    item.textContent = `${audit}${row.at || ""} · ${row.operation || "call"} · ${row.code || "ok"} · ${row.accountId || "no account"}`;
+    const result = row.operation === "proactive.mail_digest" ? botDeliveryResult(row.code) : row.code || "ok";
+    item.textContent = `${audit}${row.at || ""} · ${row.operation || "call"} · ${result} · ${row.accountId || "no account"}`;
     list.append(item);
   }
 }
@@ -23505,6 +24657,21 @@ function paintBotSends(rows) {
     const item = document.createElement("li");
     const to = row.recipientSummary && row.recipientSummary.to ? row.recipientSummary.to.join(", ") : "";
     item.textContent = `${row.auditId || ""} · ${row.state || ""} · ${row.accountId || ""} · ${to} · ${row.subject || ""} · ${row.claimedAt || ""} · ${row.finishedAt || ""}` + (row.warning ? " · " + row.warning : "");
+    list.append(item);
+  }
+}
+
+function paintBotMailActions(rows, available = true) {
+  const list = $("bot-mail-actions");
+  list.replaceChildren();
+  for (const row of rows || []) {
+    const item = document.createElement("li");
+    item.textContent = `${row.operation} · ${row.state} · ${row.accountId} · ${row.messageId} · ${row.requestId}`
+      + (row.undoOpId ? " · Undo available in Mail while this operation remains valid." : "");
+    list.append(item);
+  }
+  if (!list.children.length) { const item = document.createElement("li");
+    item.textContent = available ? "No bot mail changes." : "Mail change receipts are unavailable. New bot mail changes are blocked until storage is repaired.";
     list.append(item);
   }
 }
@@ -23554,6 +24721,7 @@ function paintBotAccess(data) {
   paintBotDrafts(access.draftsAvailable === false ? null : (access.drafts || []));
   if (typeof paintBotAudit === "function") paintBotAudit(access.audit || []);
   if (typeof paintBotSends === "function") paintBotSends(access.sends || []);
+  if (typeof paintBotMailActions === "function") paintBotMailActions(access.mailActions || [], access.mailActionsAvailable !== false);
   paintBotProbe(access);
 }
 
@@ -23694,9 +24862,9 @@ function selectedBotCaps() {
   return caps;
 }
 
-function selectedBotAccountLabels() {
+function selectedBotAccountLabels(accountIds = selectedBotAccounts()) {
   const accounts = (state.botAccess && state.botAccess.accounts) || [];
-  return selectedBotAccounts().map((id) => {
+  return accountIds.map((id) => {
     const account = accounts.find((row) => row.accountId === id);
     return account ? (account.email || account.displayName || id) : id;
   });
@@ -23711,6 +24879,13 @@ function botSendConfirmCopy(labels) {
     confirm: "Allow sending",
     cancel: "Cancel",
   };
+}
+
+const BOT_MAIL_ACTION_NAMES = { "mail.archive": "archive mail", "mail.read_state.write": "mark mail read or unread", "mail.trash": "move mail to Trash" };
+function botMailActionConfirmCopy(labels, capabilities) {
+  const changes = capabilities.filter(cap => BOT_MAIL_ACTION_NAMES[cap]).map(cap => BOT_MAIL_ACTION_NAMES[cap]);
+  return { title: "Allow this bot to change mail?", confirm: "Allow mail changes", cancel: "Cancel",
+    body: `This bot can ${changes.join(", ")} in ${labels.join(", ")}. Calls act immediately without another confirmation. Trash never permanently deletes mail. Sending is a separate permission. Cancel leaves these permissions off.` };
 }
 
 function showBotSection(name) {
@@ -23870,6 +25045,9 @@ function wireBot() {
         setBotStatus("Choose at least one mailbox for this bot.", true);
         return;
       }
+      const accountLabels = selectedBotAccountLabels(accountIds);
+      const label = $("bot-label").value;
+      const platform = $("bot-platform").value;
       const capabilities = selectedBotCaps();
       const choice = $("bot-expiry").value;
       let expiry;
@@ -23886,15 +25064,23 @@ function wireBot() {
         expiry = { kind: "finite", days: Number(choice) };
       }
       if (capabilities.includes("mail.send")) {
-        const answer = await askConfirm(botSendConfirmCopy(selectedBotAccountLabels()));
+        const answer = await askConfirm(botSendConfirmCopy(accountLabels));
         if (!answer || !answer.ok) return;
       }
+      const mailActions = capabilities.filter(cap => BOT_MAIL_ACTION_NAMES[cap]);
+      let mailActionConsent;
+      if (mailActions.length) {
+        const answer = await askConfirm(botMailActionConfirmCopy(accountLabels, capabilities));
+        if (!answer || !answer.ok) return;
+        mailActionConsent = { accountIds, capabilities: mailActions };
+      }
       const minted = await call("bot:mintGrant", {
-        label: $("bot-label").value,
-        platform: $("bot-platform").value,
+        label,
+        platform,
         accountIds,
         capabilities,
         expiry,
+        ...(mailActionConsent ? { mailActionConsent } : {}),
       });
       showBotSecret(minted.secret);
       paintBotAccess(minted.access);
@@ -24491,11 +25677,20 @@ function wire() {
   wireSelection();
   const motion = motionApi();
   if (motion) motion.bindChrome(document);
+  wireGoogleOnboarding();
+  wireSetupGuide();
+  wireMailColumnEditor();
+  wireMailView();
   wireSettingsFolds();
   wireAgentTabs();
   wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "google-onboarding") {
+        event.preventDefault();
+        dismissGoogleOnboarding();
+        return;
+      }
       if (dialog.id === "quit-scheduled") {
         event.preventDefault();
         if (quitScheduledPrompt) replyQuitScheduled("stay");
@@ -24628,7 +25823,7 @@ function wire() {
   });
   wireSplits();
   wireQuoteSplit();
-  $("undo").addEventListener("click", () => guard(undoRemoval));
+  $("undo").addEventListener("click", () => guard(() => requestUndoRemoval()));
   const undoDetailsButton = $("undo-details");
   if (undoDetailsButton) undoDetailsButton.addEventListener("click", () => openUndoDetails());
   const undoDetailsAll = $("undo-details-all");
@@ -24636,7 +25831,7 @@ function wire() {
   const undoDetailsClear = $("undo-details-clear");
   if (undoDetailsClear) undoDetailsClear.addEventListener("click", () => setUndoDetailChecks(false));
   const undoDetailsSelected = $("undo-details-selected");
-  if (undoDetailsSelected) undoDetailsSelected.addEventListener("click", () => guard(() => undoSelected()));
+  if (undoDetailsSelected) undoDetailsSelected.addEventListener("click", () => guard(() => requestUndoRemoval(selectedUndoOpIds())));
   $("undo-send").addEventListener("click", cancelUndoSend);
   $("profile").addEventListener("change", () => {
     cancelDiscovery();
@@ -24840,7 +26035,7 @@ function wire() {
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
   $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
-  window.addEventListener("beforeunload", () => { for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
+  window.addEventListener("beforeunload", () => { clearMessageSummary(); for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
   $("attachment-preview").addEventListener("close", clearAttachmentPreview);
   $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
   $("agent-peek-mail").addEventListener("click", () => {
@@ -24848,7 +26043,9 @@ function wire() {
   });
   $("agent-peek").addEventListener("close", invalidatePeek);
   $("confirm").addEventListener("close", () => {
-    if (!confirmResult) return;
+    // close() queues an event. A chained confirmation may already have opened
+    // this same dialog again before that event is delivered.
+    if ($("confirm").open || !confirmResult) return;
     const pending = confirmResult;
     confirmResult = null;
     confirmCopy = null;
@@ -25332,12 +26529,14 @@ async function boot() {
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
+  api.on("mail:accountsUpdated", () => setTimeout(() => { if ($("setup-guide").open) paintSetupGuide(); }, 0));
   api.on("nativeAgent:homeUpdated", (payload) => {
     if (!payload || typeof payload !== "object") return;
     agentPaintPayload = payload;
     if (state.view === "agent") paintAgent(payload, "");
   });
   api.on("mail:emailsUpdated", onEmailsUpdated);
+  api.on("mail:notificationClicked", onMailNotificationClick);
   api.on("mail:bodyUpdated", applyBodyUpdate);
   api.on("mail:bodySyncStatus", acceptBodySync);
   api.on("mail:actionsSettled", applyActionSettlement);
@@ -25376,8 +26575,13 @@ async function boot() {
   await loadPresets();
   await loadOauthStatus();
   await loadShellPrefs();
+  await loadMailView();
+  await loadMailColumnOrder();
   await loadAccounts();
+  notificationShellReady = true;
+  await onMailNotificationClick();
   applyFeaturesHash();
+  await startSetupGuide();
   loadScheduled().catch(() => {});
   if (typeof api.reportUpdateReady === "function") api.reportUpdateReady();
 }

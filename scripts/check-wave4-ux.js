@@ -63,12 +63,13 @@ function fixture(syncRetry) {
     },
   };
   for (const id of ['notice','status','status-chip','undo','undo-details','undo-details-popover','list-filter',
-    'mail-ooo','mail-ooo-account','mail-ooo-status','mail-ooo-manage','mail-ooo-refresh','ooo-refresh',
+    'mail-ooo','mail-ooo-account','mail-ooo-chooser','mail-ooo-identity','mail-ooo-status','mail-ooo-manage','mail-ooo-refresh','ooo-refresh',
     'agent-status','agent-greeting','features-catalog','features-empty','undo-details-list','undo-details-selected']) {
     const node = document.createElement('div');
     node.id = id;
     nodes.set(id, node);
   }
+  nodes.get('mail-ooo-manage').textContent = 'Manage';
   nodes.get('undo-details-popover').append(nodes.get('undo-details-list'), nodes.get('undo-details-selected'));
   const ui = renderer({ document, window: { morrow: {}, morrowSyncRetry: syncRetry }, setTimeout: () => 1, clearTimeout() {} });
   ui.context.window.morrowPrimaryMailboxes = primaryMailboxes;
@@ -437,13 +438,13 @@ test('W4-4 All Account OOO reads only the selected mailbox and keeps its compact
   assert.equal(ui.nodes.get('mail-ooo').hidden, false);
   assert.equal(ui.nodes.get('mail-ooo-account').hidden, false);
   assert.equal(ui.nodes.get('mail-ooo-account').children.length, 2);
-  assert.match(ui.nodes.get('mail-ooo-status').textContent, /alpha@example.test · Out of Office: unknown/);
+  assert.match(ui.nodes.get('mail-ooo-status').textContent, /^Unknown$/);
   assert.equal(ui.nodes.get('mail-ooo-refresh').hidden, false);
   await ui.run('refreshMailVacation()');
-  assert.match(ui.nodes.get('mail-ooo-status').textContent, /alpha@example.test · Out of Office: on until disabled/);
+  assert.match(ui.nodes.get('mail-ooo-status').textContent, /^On until disabled$/);
   ui.run(`$('mail-ooo-account').value='beta'`);
   await ui.run('refreshMailVacation()');
-  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Off');
   assert.equal(ui.nodes.get('mail-ooo').classList.contains('is-off'), true);
   assert.equal(ui.nodes.get('mail-ooo-manage').textContent, 'Manage');
   assert.equal(ui.nodes.get('mail-ooo-refresh').hidden, true);
@@ -466,9 +467,9 @@ test('W4-4 All Account OOO reads only the selected mailbox and keeps its compact
   assert.equal(ui.context.document.activeElement, ui.nodes.get('ooo-refresh'));
   ui.run('state.allInbox=false;paintMailVacation()');
   assert.equal(ui.nodes.get('mail-ooo-account').hidden, true);
-  assert.match(ui.nodes.get('mail-ooo-status').textContent, /alpha@example.test · Out of Office: on until disabled/);
+  assert.match(ui.nodes.get('mail-ooo-status').textContent, /^On until disabled$/);
   ui.run(`state.accountId='beta';paintMailVacation()`);
-  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Off');
   ui.run('state.allInbox=true;state.accounts=[]');
   await ui.run('refreshMailVacation()');
   assert.equal(ui.nodes.get('mail-ooo').hidden, true);
@@ -504,7 +505,7 @@ test('W4-4 All Account OOO uses the same status and compact conditions as a sing
     assert.equal(snapshot().compact, false);
     assert.equal(snapshot().refreshHidden, false);
     assert.equal(snapshot().busy, String(retrying));
-    assert.match(snapshot().text, retrying ? /beta@example.test · Out of Office: Retrying…/ : /beta@example.test · Out of Office: unknown — refresh to retry/);
+    assert.match(snapshot().text, retrying ? /^Retrying…$/ : /^Unknown — refresh to retry$/);
   }
 });
 
@@ -523,7 +524,7 @@ test('W4-4 All Account OOO coalesces pending reads and ignores obsolete picker s
   ui.run(`requests[0].resolve({accountId:'alpha',supported:true,settings:{mode:'always'}})`);
   await alpha;
   assert.equal(ui.run(`mailVacation.has('alpha')`), false);
-  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Off');
   ui.run(`$('mail-ooo-account').value='alpha'`);
   const obsolete = ui.run('refreshMailVacation()');
   ui.run(`$('mail-ooo-account').value='beta'`);
@@ -531,8 +532,49 @@ test('W4-4 All Account OOO coalesces pending reads and ignores obsolete picker s
   ui.run(`requests[2].reject(Error('Obsolete provider failure'))`);
   await obsolete;
   assert.equal(ui.run(`mailVacation.has('alpha')`), false);
-  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Off');
   assert.deepEqual(ui.json('calls.map(row => row.params.accountId)'), ['alpha','beta','alpha']);
+});
+
+test('OOO pending feedback and accessible actions stay tied to the selected mailbox', async () => {
+  const ui = fixture();
+  ui.run(`call = (channel,params) => new Promise(resolve => {
+    calls.push({channel,params});globalThis.finishRead=resolve;
+  });paintMailVacation();`);
+  const pending = ui.run('refreshMailVacation()');
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Checking…');
+  assert.equal(ui.nodes.get('mail-ooo-status').getAttribute('aria-busy'), 'true');
+  assert.equal(ui.nodes.get('mail-ooo-refresh').disabled, true);
+  assert.equal(ui.nodes.get('mail-ooo-identity').textContent, 'alpha@example.test');
+  assert.match(ui.nodes.get('mail-ooo-manage').getAttribute('aria-label'), /for alpha@example.test$/);
+  await ui.run('refreshMailVacation(true)');
+  assert.equal(ui.run('calls.length'), 1, 'a pending read cannot be duplicated');
+  ui.run(`$('mail-ooo-account').value='beta';paintMailVacation()`);
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Unknown');
+  assert.equal(ui.nodes.get('mail-ooo-refresh').disabled, false);
+  assert.equal(ui.nodes.get('mail-ooo-identity').textContent, 'beta@example.test');
+  assert.match(ui.nodes.get('mail-ooo-refresh').getAttribute('aria-label'), /for beta@example.test$/);
+  ui.run(`finishRead({accountId:'alpha',supported:true,settings:{mode:'disabled'}})`);
+  await pending;
+  assert.equal(ui.run(`mailVacation.has('alpha')`), false);
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Unknown');
+  assert.equal(ui.nodes.get('mail-ooo-status').getAttribute('aria-busy'), 'false');
+});
+
+test('OOO never presents a mismatched response or removed mailbox as disabled', async () => {
+  const ui = fixture();
+  ui.run(`call = async () => ({accountId:'beta',supported:true,settings:{mode:'disabled'}})`);
+  await ui.run('refreshMailVacation()');
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Unknown — refresh to retry');
+  assert.equal(ui.nodes.get('mail-ooo-refresh').hidden, false);
+  assert.equal(ui.nodes.get('mail-ooo-refresh').disabled, false);
+  ui.run(`call = () => new Promise(resolve => {globalThis.finishRead=resolve});`);
+  const pending = ui.run('refreshMailVacation(true)');
+  ui.run(`state.accounts=[];paintMailVacation();finishRead({accountId:'alpha',supported:true,settings:{mode:'disabled'}})`);
+  await pending;
+  assert.equal(ui.nodes.get('mail-ooo').hidden, true);
+  assert.equal(ui.run(`mailVacationPending.size`), 0);
+  assert.equal(ui.run(`mailVacation.get('alpha').data`), undefined);
 });
 
 test('W4-4 All Account OOO retries the picker mailbox and cancels retries after changing it', async () => {
@@ -549,7 +591,7 @@ test('W4-4 All Account OOO retries the picker mailbox and cancels retries after 
       return {accountId:params.accountId,supported:true,settings:{mode:'disabled'}};
     };`);
   await ui.run('refreshMailVacation()');
-  assert.match(ui.nodes.get('mail-ooo-status').textContent, /beta@example.test · Out of Office: Retrying…/);
+  assert.match(ui.nodes.get('mail-ooo-status').textContent, /^Retrying…$/);
   assert.equal(ui.nodes.get('mail-ooo-status').getAttribute('aria-busy'), 'true');
   await ui.run('refreshMailVacation()');
   assert.equal(ui.run('calls.length'), 1);
@@ -559,7 +601,7 @@ test('W4-4 All Account OOO retries the picker mailbox and cancels retries after 
   timers.delete(timerId);
   timer.callback();
   await new Promise(setImmediate);
-  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Out of Office: off');
+  assert.equal(ui.nodes.get('mail-ooo-status').textContent, 'Off');
   assert.equal(ui.run('calls.length'), 2);
   ui.run('failVacation=true');
   await ui.run('refreshMailVacation(true)');
@@ -591,7 +633,7 @@ test('W4-4 real DOM paint, picker and Refresh events check only the selected mai
   const run = code => vm.runInContext(code, context);
   const document = dom.window.document;
   const css = fs.readFileSync(path.join(__dirname, '../renderer/app.css'), 'utf8');
-  const compactStart = css.indexOf('.mail-ooo.is-off {');
+  const compactStart = css.indexOf('.mail-ooo {');
   const style = document.createElement('style');
   style.textContent = css.slice(compactStart, css.indexOf('@media', compactStart));
   document.head.appendChild(style);
@@ -602,16 +644,17 @@ test('W4-4 real DOM paint, picker and Refresh events check only the selected mai
     await new Promise(setImmediate);
     assert.deepEqual(calls, ['alpha']);
     assert.equal(document.getElementById('mail-ooo-account').hidden, false);
-    assert.equal(document.getElementById('mail-ooo-status').textContent, 'Out of Office: off');
+    assert.equal(document.getElementById('mail-ooo-status').textContent, 'Off');
     assert.equal(document.getElementById('mail-ooo').classList.contains('is-off'), true);
     assert.equal(document.getElementById('mail-ooo-manage').textContent, 'Manage');
     assert.equal(document.getElementById('mail-ooo-refresh').hidden, true);
-    assert.equal(dom.window.getComputedStyle(document.getElementById('mail-ooo')).flexWrap, 'wrap');
-    assert.equal(dom.window.getComputedStyle(document.querySelector('#mail-ooo .row')).flexBasis, '100%');
+    assert.equal(dom.window.getComputedStyle(document.querySelector('#mail-ooo .row')).flexWrap, 'wrap');
+    assert.equal(document.querySelector('label[for="mail-ooo-account"]').textContent, 'Mailbox');
+    assert.equal(document.getElementById('mail-ooo-identity').textContent, 'alpha@example.test');
     run(`renderAccounts();renderAccounts();$('mail-ooo-account').value='beta';$('mail-ooo-account').dispatchEvent(new Event('change'))`);
     await new Promise(setImmediate);
     assert.deepEqual(calls, ['alpha','beta']);
-    assert.match(document.getElementById('mail-ooo-status').textContent, /^beta@example.test · Out of Office: on until disabled · Checked /);
+    assert.match(document.getElementById('mail-ooo-status').textContent, /^On until disabled$/);
     assert.equal(document.getElementById('mail-ooo-refresh').hidden, false);
     document.getElementById('mail-ooo-refresh').click();
     await new Promise(setImmediate);
@@ -622,7 +665,7 @@ test('W4-4 real DOM paint, picker and Refresh events check only the selected mai
     const card = [...document.querySelectorAll('.feature-card')].find(node => node.querySelector('h4').textContent === 'Out of Office');
     assert.match(card.textContent, /selected mailbox's Out of Office status/);
     assert.match(card.textContent, /Status reads and Refresh check only that mailbox, never every account/);
-    assert.match(card.textContent, /compact Out of Office: off with Manage and no Refresh/);
+    assert.match(card.textContent, /Off with Manage and no Refresh/);
   } finally { dom.window.close(); }
 });
 
@@ -630,10 +673,10 @@ test('Wave4 rendered Features catalog and CLI describe implemented scope and set
   const ui = fixture();
   ui.run('paintFeatureCatalog()');
   const text = ui.nodes.get('features-catalog').textContent;
-  for (const claim of [/downloaded unread messages in each account's primary folder/,/Snoozed messages and a read row held open are excluded/,
+  for (const claim of [/Starred and Unread aggregate the existing per-account downloaded filters and their counts/,/Counts exclude a read row held open/,
     /groups of at most four messages between paints/,/Accepted writes await mailbox confirmation before joining Undo/,
     /accumulate completed changes across batches/,/select one change per message/i,/not a merged on\/off status/,/selected mailbox's Out of Office status/,
-    /Status reads and Refresh check only that mailbox, never every account/,/compact Out of Office: off with Manage and no Refresh/,/Agent reopens with its last payload/,
+    /Status reads and Refresh check only that mailbox, never every account/,/Off with Manage and no Refresh/,/Agent reopens with its last payload/,
     /restored before the rest of its bulk request finishes stays out of Undo/,
     /Refreshing Scheduled also updates visible Outbox rows and the open message/,
     /Each background pass scans at most two 200-header pages/]) assert.match(text, claim);

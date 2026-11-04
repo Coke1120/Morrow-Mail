@@ -33,8 +33,9 @@ const requestFlag = flag("--request-id");
 if (!tokenFile || !installation || !operation) {
   fail("Required: --token-file --installation --operation", 2);
 }
-if (operation === "mail.send" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestFlag)) {
-  fail("mail.send requires --request-id with a UUID. Retry that same id.", 2);
+const requiresId = catalog.operation(operation)?.requestId === "required-uuid";
+if (requiresId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestFlag)) {
+  fail(operation + " requires --request-id with a UUID. Retry that same id.", 2);
 }
 
 let url;
@@ -69,7 +70,7 @@ if (paramsFile) {
 
 const body = JSON.stringify({
   apiVersion: API_VERSION,
-  requestId: operation === "mail.send" ? requestFlag : (requestFlag || crypto.randomUUID()),
+  requestId: requiresId ? requestFlag : (requestFlag || crypto.randomUUID()),
   installationId: installation,
   operation,
   params,

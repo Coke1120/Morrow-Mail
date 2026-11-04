@@ -246,7 +246,7 @@ function rendererChecks() {
   ui.run("renderAccounts()");
   const nav = document.getElementById("folders");
   const testIds = () => [...nav.querySelectorAll("[data-testid]")].map((node) => node.getAttribute("data-testid"));
-  assert.deepEqual(testIds(), ["all-account-mail", "all-account-inbox", "all-account-unread", "outbox"]);
+  assert.deepEqual(testIds(), ["all-account-mail", "all-account-inbox", "outbox", "all-account-starred", "all-account-unread"]);
   const header = nav.querySelector("[data-testid=all-account-mail]");
   assert.equal(header.getAttribute("aria-expanded"), "true");
   assert.equal(header.querySelector(".name").textContent, "All Account Mail");
@@ -264,7 +264,7 @@ function rendererChecks() {
     return ui.run("new Promise((resolve) => setTimeout(resolve, 0))");
   }).then(() => {
     assert.equal(nav.querySelector("[data-testid=all-account-mail]").getAttribute("aria-expanded"), "true");
-    assert.deepEqual(testIds(), ["all-account-mail", "all-account-inbox", "all-account-unread", "outbox"]);
+    assert.deepEqual(testIds(), ["all-account-mail", "all-account-inbox", "outbox", "all-account-starred", "all-account-unread"]);
     assert.deepEqual(ui.run("state.prefs.collapsedFolders"), {});
     ui.run(`onFolderNavKey({ key: "ArrowLeft", target: document.querySelector("[data-testid=all-account-mail]"), preventDefault() {}, stopPropagation() {} })`);
     return ui.run("new Promise((resolve) => setTimeout(resolve, 0))");

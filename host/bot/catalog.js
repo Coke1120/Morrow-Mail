@@ -21,6 +21,7 @@ const CONTENT_TRUST = "untrusted_mail_data";
 const ORDINARY_BYTES = MAX_REQUEST_BYTES;
 const LARGE_BYTES = 48 * 1024;
 const ORDINARY_TIMEOUT_MS = 5000;
+const MAIL_ACTION_CAPABILITIES = ["mail.archive", "mail.read_state.write", "mail.trash"];
 
 const ROWS = [
   {
@@ -138,6 +139,14 @@ const ROWS = [
       perInstallationPerDay: SEND_PER_INSTALLATION_PER_DAY,
     },
   },
+  ...[
+    ["mail.archive", "mail.archive", ["accountId", "messageId"]],
+    ["mail.mark_read", "mail.read_state.write", ["accountId", "messageId", "isRead"]],
+    ["mail.trash", "mail.trash", ["accountId", "messageId"]],
+  ].map(([operation, capability, params]) => ({
+    operation, caps: [capability], params, kind: "call", requestBytes: ORDINARY_BYTES,
+    responseTimeoutMs: ORDINARY_TIMEOUT_MS, requestId: "required-uuid", budgets: null,
+  })),
 ];
 
 const DEFAULT_CAPABILITIES = [
@@ -252,6 +261,7 @@ function responseTimeoutMs(name) {
 }
 
 module.exports = {
+  MAIL_ACTION_CAPABILITIES,
   CONTENT_TRUST,
   CAPABILITIES,
   DEFAULT_CAPABILITIES,

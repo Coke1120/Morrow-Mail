@@ -60,6 +60,9 @@ function explain(error, secret, account) {
   }
   let message = parts.filter(Boolean).join(" ");
   if (secret && message.includes(secret)) message = message.split(secret).join("");
+  if (["needs_auth", "oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration"].includes(error?.code)) {
+    return message.replace(/\s+/g, " ").trim().slice(0, 280);
+  }
   const authFailed = error && error.authenticationFailed === true
     || /auth|invalid credentials|LOGIN failed|AUTHENTICATIONFAILED|535|Invalid login/i.test(message);
   if (authFailed) {
@@ -106,22 +109,33 @@ function makeClient(account, secret, options) {
   return client;
 }
 
-async function withClient(account, password, fn, { signal } = {}) {
+async function withClient(account, password, fn, { signal, refreshAuthentication } = {}) {
   signal?.throwIfAborted();
   if (gmail.migrated(account)) return fn({ gmail: gmail.createSession(account, password, { signal }) });
-  const client = makeClient(account, password);
-  const abort = () => { try { client.close(); } catch { /* already closed */ } };
-  signal?.addEventListener("abort", abort, { once: true });
-  try {
+  for (let attempt = 0; ; attempt++) {
+    const client = makeClient(account, password);
+    let connected = false;
+    const abort = () => { try { client.close(); } catch { /* already closed */ } };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      signal?.throwIfAborted();
+      await client.connect();
+      connected = true;
+      signal?.throwIfAborted();
+      return await fn(client);
+    } catch (error) {
+      const cause = connectionError(client, error);
+      // Retry only a rejected OAuth login, before the callback can issue a write.
+      // A failure after connect (including AUTH-like operation errors) is final.
+      const retryAuthentication = !connected && attempt === 0 && account.auth_kind === "oauth2"
+        && cause?.authenticationFailed === true && typeof refreshAuthentication === "function";
+      if (!retryAuthentication) throw cause;
+    } finally {
+      try { await client.logout(); } catch { client.close(); }
+      signal?.removeEventListener("abort", abort);
+    }
     signal?.throwIfAborted();
-    await client.connect();
-    signal?.throwIfAborted();
-    return await fn(client);
-  } catch (error) {
-    throw connectionError(client, error);
-  } finally {
-    try { await client.logout(); } catch { client.close(); }
-    signal?.removeEventListener("abort", abort);
+    password = await refreshAuthentication();
   }
 }
 
@@ -403,9 +417,11 @@ async function readFetched(msg, validity, cap) {
     bcc: formatList(envelope.bcc),
     recipientHeaders: require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo),
     date: when.toISOString(),
+    receivedAt: msg.internalDate instanceof Date && Number.isFinite(msg.internalDate.getTime()) ? msg.internalDate.getTime() : null,
     listSortTs: when.getTime(),
     unread: !seen,
     starred: !!(flags && flags.has("\\Flagged")),
+    ...require("./reply-forward-state").fromFlags(flags),
     isDraft: !!(flags && flags.has("\\Draft")),
     hasAttachments: hasFileAttachment(attachments),
     htmlBody: presented.htmlBody,
@@ -461,7 +477,8 @@ async function searchUids(client, folderPath, query, flagPage) {
         for await (const message of client.fetch([...wanted].join(","), { uid: true, flags: true }, { uid: true })) {
           const uid = Number(message.uid);
           if (!wanted.has(uid) || !(message.flags instanceof Set)) continue;
-          flags.push({ uid, unread: !message.flags.has("\\Seen"), starred: message.flags.has("\\Flagged") });
+          flags.push({ uid, unread: !message.flags.has("\\Seen"), starred: message.flags.has("\\Flagged"),
+            ...require("./reply-forward-state").fromFlags(message.flags) });
         }
       }
     }
@@ -631,6 +648,7 @@ async function moveUid(client, folderPath, uid, destination, expectedValidity, l
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);
+    options?.beforeSubmit?.();
     const moved = await client.messageMove(String(uid), destination, { uid: true });
     const next = Number(moved && moved.uidMap && moved.uidMap.get(Number(uid)));
     // COPYUID binds these two values to the same destination generation. A
@@ -645,13 +663,20 @@ async function moveUid(client, folderPath, uid, destination, expectedValidity, l
   }
 }
 
-async function changeFlags(client, folderPath, uid, add, remove, expectedValidity, localMessageId) {
-  if (client.gmail) return client.gmail.flags(folderPath, uid, add, remove, expectedValidity, localMessageId);
+async function changeFlags(client, folderPath, uid, add, remove, expectedValidity, localMessageId, options = {}) {
+  if (client.gmail) return client.gmail.flags(folderPath, uid, add, remove, expectedValidity, localMessageId, options);
   const lock = await client.getMailboxLock(folderPath);
   try {
     assertUidValidity(client, expectedValidity);
-    if (add.length) await client.messageFlagsAdd(String(uid), add, { uid: true });
-    if (remove.length) await client.messageFlagsRemove(String(uid), remove, { uid: true });
+    if (options.beforeSubmit) {
+      options.beforeSubmit();
+      const present = await client.fetchOne(String(uid), { uid: true }, { uid: true });
+      if (!present || Number(present.uid) !== Number(uid)) {
+        throw Object.assign(new Error("That message is no longer on the server. Refresh before changing its read state."), { operationIssued: false });
+      }
+    }
+    if (add.length) { options.beforeSubmit?.(); await client.messageFlagsAdd(String(uid), add, { uid: true }); }
+    if (remove.length) { options.beforeSubmit?.(); await client.messageFlagsRemove(String(uid), remove, { uid: true }); }
   } finally {
     lock.release();
   }

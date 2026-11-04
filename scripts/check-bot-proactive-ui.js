@@ -100,7 +100,7 @@ async function run() {
     await assert.rejects(exposed.morrow.invoke("bot:notAChannel", {}), /Unsupported channel/);
     assert.equal((await manage.answer("bot:configureProactive", {}, { sender: { getURL: () => "https://untrusted.invalid" } })).success, false);
     let copied = "";
-    const ui = renderer({ document: dom.window.document, window: { morrow: exposed.morrow },
+    const ui = renderer({ document: dom.window.document, window: { morrow: exposed.morrow }, URL,
       navigator: { clipboard: { writeText: async value => { copied = value; } } } });
     const $ = id => dom.window.document.getElementById(id);
     ui.run("showBotSecret = () => {}; wireBot();");
@@ -117,6 +117,9 @@ async function run() {
     let form = $("bot-grants").querySelector(".bot-proactive form");
     const field = name => form.querySelector(`[data-notify-field="${name}"]`);
     assert.equal(field("allow").checked, false);
+    assert.equal(field("webhookMode").value, "hermes_hmac_v2", "new Hermes editor suggests native signing without saving");
+    assert.match(field("secret").labels[0].textContent, /Hermes route signing secret/);
+    assert.match(dom.window.document.getElementById(field("webhookMode").getAttribute("aria-describedby")).textContent, /deliver: email.*output destination/);
     assert.equal(field("includeBody").checked, false);
     assert.equal(field("includeBody").disabled, true, "body checkbox obeys grant");
     assert.equal(field("account-fixture-mail").checked, false, "mailbox selection is explicit");
@@ -138,10 +141,26 @@ async function run() {
     assert.equal(configured.proactive.enabled, true);
     assert.equal(configured.proactive.schedule.everyMinutes, 15);
     assert.equal(configured.proactive.hasSecret, true);
+    assert.equal(configured.proactive.webhookMode, "hermes_hmac_v2");
     assert.equal(auth.isEnabled(), false, "saving proactive consent does not start the listener");
     assert.doesNotMatch(JSON.stringify(manage.snapshot()), /synthetic-ui-bearer|secretKey/);
     form = $("bot-grants").querySelector(".bot-proactive form");
     assert.equal(field("secret").value, ""); assert.equal(field("allow").checked, false);
+    assert.match(field("secret").labels[0].textContent, /Replace Hermes signing secret.*blank keeps/);
+    field("allow").checked = true;
+    field("webhookMode").value = "bearer";
+    field("webhookMode").dispatchEvent(new dom.window.Event("input"));
+    field("webhookMode").dispatchEvent(new dom.window.Event("change"));
+    assert.equal(field("allow").checked, false, "authentication mode changes require fresh permission");
+    assert.match(field("secret").labels[0].textContent, /Optional webhook bearer/);
+    assert.equal(field("clearSecret").disabled, true, "another mode cannot keep the saved credential");
+    field("webhookMode").value = "hermes_hmac_v2";
+    field("webhookMode").dispatchEvent(new dom.window.Event("change"));
+    assert.equal(field("clearSecret").disabled, false);
+    ui.run('paintBotAudit([{ operation: "proactive.mail_digest", code: "HERMES_HTTP_202" }, { operation: "proactive.mail_digest", code: "HERMES_HTTP_200" }, { operation: "proactive.mail_digest", code: "OK" }])');
+    assert.match($("bot-audit").textContent, /202 accepted for handling.*agent completion unverified/);
+    assert.match($("bot-audit").textContent, /200 acknowledged.*duplicate, ignored or direct delivery/);
+    assert.match($("bot-audit").textContent, /HTTP acknowledged; agent completion unverified/);
     assert.match($("bot-grants").textContent, /Paused until bot access is listening/);
     let submits = 0;
     form.addEventListener("submit", () => { submits++; });
@@ -179,6 +198,8 @@ async function run() {
     $("bot-copy-setup").click(); await tick(); await tick();
     assert.match(copied, /Hermes Agent/); assert.match(copied, /inbound webhook.*proactive.mail_digest/);
     assert.match(copied, /platform bot owns every decision/); assert.doesNotMatch(copied, /synthetic-ui-bearer/);
+    assert.match(copied, /HMAC V2/); assert.match(copied, /X-Request-ID/);
+    assert.match(copied, /deliver: email is an output destination/);
     const denied = await exposed.morrow.invoke("bot:configureProactive", { ...calls.find(row => row.channel === "bot:configureProactive").payload, backgroundConfirmed: false });
     assert.equal(denied.success, false);
     await haltedDeliveryChecks(ui, dom, grant.clientId, temp);
@@ -193,6 +214,9 @@ async function run() {
     assert.match($("features-catalog").textContent, /Delete.*webhook credential.*cannot be removed/);
     assert.match($("cli-proactive").textContent, /platform bot decides/);
     assert.match($("cli-proactive").textContent, /halt.*restart.*Inspect storage/);
+    assert.match($("cli-hermes").textContent, /X-Webhook-Signature-V2/);
+    assert.match($("cli-hermes").textContent, /Neither confirms agent completion/);
+    assert.match($("features-catalog").textContent, /native Hermes HMAC V2.*saved Bearer settings keep their mode/);
     const contract = require("../shared/bot-contract-v1.json");
     assert.deepEqual([...dom.window.document.querySelectorAll("[data-bot-operation]")].map(node => node.textContent).sort(), Object.keys(contract.operations).sort());
     for (const file of ["host/bot/proactive.js", "host/bot/proactive-config.js", "host/bot/proactive-transport.js"]) {

@@ -7,6 +7,42 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.22": [
+      "Choose Right, Bottom or Separate window reading layouts from View. Mail list corners and Sync menu layering stay consistent across layouts.",
+      "Mail lists show available reply and forward status, let you choose visible columns, and display Outbox recipients correctly. Keyboard reordering preserves hidden-column positions.",
+      "Summary on the reader toolbar summarizes the downloaded message on demand using your configured AI and existing data permission. You can cancel or retry; incomplete content is identified.",
+      "Separate window keyboard shortcuts follow the single selected message and its mailbox. Loading, failed or ambiguous selections cannot act on an old preview. Notification clicks open a visible reader.",
+      "Out of Office makes the selected mailbox, status and reviewed controls clearer. Features and README describe the current mail, Agent, bot and CLI capabilities.",
+    ],
+    "0.3.21": [
+      "New Inbox mail can show system notifications on Windows and macOS. Alerts are on by default with sender and content hidden; Settings → Mail & Sync controls alerts and previews.",
+      "Saved connections retry temporary renewal and secure-storage failures instead of unnecessarily asking for sign-in. Renewed credentials must be saved before use.",
+      "Proactive notify supports explicit native Hermes HMAC V2 authentication while preserving existing Bearer settings. HTTP acknowledgement does not verify agent completion.",
+      "Updates keep checking after a cached Mac download. Installed Windows updates wait for final shutdown, and portable Windows copies use manual downloads.",
+    ],
+    "0.3.20": [
+      "New users get a five-step setup guide for mailbox, calendar, sender name, signature and optional AI. Settings can reopen it and resume progress.",
+      "Drag mail column headers to reorder them, or use Columns and keyboard controls. The saved layout is independent of sorting and can be reset.",
+      "All Account Mail adds Starred and Unread views with downloaded-mail counts. The Inbox unread chip is removed; each mailbox keeps its unread counts.",
+      "Allow sending responds correctly after the No expiry bot review. Cancel, Escape and failed creation retain the form for another review.",
+      "Bots can separately request permission to archive, mark read or unread, and move one message to Trash. Permissions start off, stay limited to selected mailboxes, and never allow permanent deletion.",
+      "Bot mail changes report pending and confirmed outcomes. Repeating a request ID observes its original result; unknown outcomes require review instead of automatic retry.",
+    ],
+    "0.3.19": [
+      "Undo asks you to confirm the reviewed changes; Cancel or Escape keeps your selection without changing mail.",
+      "Select all and Clear selection keep Undo Details open when using the mouse or keyboard.",
+      "First-use Google setup appears after What's New or another startup dialog closes, without needing to restart; Later is still remembered.",
+    ],
+    "0.3.18": [
+      "Mail lists show Date, Recipient, Sender and Subject columns; select a header to sort matching downloaded mail before paging.",
+      "Your mail sort order is remembered on this device, and changing it returns to page one while keeping the reader open.",
+      "New profiles without accounts or a Google client can import Desktop JSON or choose Later; Accounts keeps a visible import reminder.",
+    ],
+    "0.3.17": [
+      "Save as ZIP stays more responsive during archive preparation, with progress and cancellation before saving.",
+      "Attachment saves keep writes in order and check cancellation before opening an external application.",
+      "Sidebars with many folders refresh more efficiently while retaining unread counts and selection.",
+    ],
     "0.3.16": [
       "Residual mail journal and mailbox work stays bounded, with a scoped refresh cursor.",
       "Deleting a bot removes its webhook credential before its grant, and Settings shows storage-related delivery halts truthfully.",

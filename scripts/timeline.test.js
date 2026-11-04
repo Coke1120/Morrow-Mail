@@ -553,6 +553,9 @@ test("Timeline keyboard events cannot reach mail navigation, selection or destru
   }
   fixture.document.getElementById("timeline-tab").dispatchEvent(new fixture.window.KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
   assert.equal(mailKeys, 0);
+  // showTab loads saved timelines asynchronously; settle that read before
+  // destroying its document so teardown cannot create an unhandled rejection.
+  await pause();
   fixture.dom.window.close();
 });
 test("rendered generated text is inert and exports require a fresh review checkbox", async () => {

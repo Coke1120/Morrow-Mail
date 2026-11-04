@@ -266,6 +266,10 @@ function migrate() {
   for (const column of ["body_retry_blocked", "body_retry_after"]) {
     if (!all("PRAGMA table_info(messages)").some(row => row.name === column)) run(`ALTER TABLE messages ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
   }
+  // NULL distinguishes old caches and unsupported providers from observed flags.
+  for (const column of ["replied", "forwarded"]) {
+    if (!all("PRAGMA table_info(messages)").some(row => row.name === column)) run(`ALTER TABLE messages ADD COLUMN ${column} INTEGER`);
+  }
   run(`CREATE TRIGGER IF NOT EXISTS body_retry_identity AFTER UPDATE OF account_id, folder_path, uid, uid_validity, gmail_id ON messages
     WHEN OLD.account_id IS NOT NEW.account_id OR OLD.folder_path IS NOT NEW.folder_path OR OLD.uid IS NOT NEW.uid
       OR OLD.uid_validity IS NOT NEW.uid_validity OR OLD.gmail_id IS NOT NEW.gmail_id
@@ -302,6 +306,9 @@ function migrate() {
   run(`CREATE TABLE IF NOT EXISTS gmail_sync (
     account_id TEXT NOT NULL, folder_path TEXT NOT NULL, state_json TEXT NOT NULL,
     PRIMARY KEY (account_id, folder_path)
+  )`);
+  run(`CREATE TABLE IF NOT EXISTS mail_notification_state (
+    account_id TEXT PRIMARY KEY, state_json TEXT NOT NULL
   )`);
   run("CREATE INDEX IF NOT EXISTS messages_gmail ON messages(account_id, gmail_id, folder_path)");
   run(`CREATE INDEX IF NOT EXISTS messages_thread ON messages(account_id, thread_id)`);
@@ -425,7 +432,7 @@ function migrate() {
   run("INSERT OR IGNORE INTO mail_list_revision VALUES (1, 0)");
   run("CREATE TABLE IF NOT EXISTS mail_changes (account_id TEXT NOT NULL, folder_path TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(account_id, folder_path))");
   run("CREATE INDEX IF NOT EXISTS mail_changes_revision ON mail_changes(revision)");
-  const summaryFields = ["account_id", "folder_path", "thread_id", "uid", "list_sort_ts", "unread", "starred", "is_draft", "has_attachments", "body_complete", "body_retry_blocked", "body_retry_after", "subject", "from_addr", "to_json", "cc_json", "snippet"];
+  const summaryFields = ["account_id", "folder_path", "thread_id", "uid", "list_sort_ts", "unread", "starred", "is_draft", "has_attachments", "body_complete", "body_retry_blocked", "body_retry_after", "subject", "from_addr", "to_json", "cc_json", "snippet", "replied", "forwarded"];
   for (const table of ["messages", "folders", "snooze", "accounts"]) {
     for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
       const condition = table === "messages" && operation === "UPDATE"
@@ -674,7 +681,7 @@ function removeAccount(id) {
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
     run("DELETE FROM mail_actions WHERE account_id = ?", [id]);
-    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
+    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
@@ -1221,7 +1228,7 @@ function searchMessages(options, { headersOnly = false, timelineLimit = false } 
     `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m JOIN accounts connected ON connected.id = m.account_id
      ${joins.join("\n")}
      ${where}
-     ORDER BY (${rank}) DESC, m.list_sort_ts DESC, m.id DESC
+     ORDER BY ${query.sortBy ? messageOrder(query) : `(${rank}) DESC, m.list_sort_ts DESC, m.id DESC`}
      LIMIT ?`,
     params
   );
@@ -1341,6 +1348,7 @@ function applyFolderSync(accountId, folderPath, report) {
         );
       }
       if (reindex) indexText(id);
+      updateChanged("messages", require("./reply-forward-state").patch(message), "id = ?", [id]);
       updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
       updateChanged("messages", { date_source: message.dateSource || null }, "id = ?", [id]);
     }
@@ -1348,7 +1356,7 @@ function applyFolderSync(accountId, folderPath, report) {
       const row = get("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
         [accountId, folderPath, Number(flags.uid), report.validity]);
       if (!row || messageHeld(row.id)) continue;
-      const patch = {};
+      const patch = require("./reply-forward-state").patch(flags);
       if (typeof flags.unread === "boolean" && !flagHeld(row.id, "read")) patch.unread = flags.unread ? 1 : 0;
       if (typeof flags.starred === "boolean" && !flagHeld(row.id, "star")) patch.starred = flags.starred ? 1 : 0;
       if (updateChanged("messages", patch, "id = ?", [row.id])) flagsChanged = true;
@@ -1479,17 +1487,17 @@ function flagUidsFor(accountId, folderPath, validity, beforeUid = 0) {
   [accountId, folderPath, validity, ...(beforeUid > 0 ? [beforeUid] : [])]).map((row) => Number(row.uid));
 }
 
-function messageByUid(accountId, folderPath, uid, validity) {
+function messageByUid(accountId, folderPath, uid, validity, { headersOnly = false } = {}) {
   return get(
-    "SELECT * FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
+    `SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?`,
     [accountId, folderPath, uid, validity]
   );
 }
 
-function messageByRfc(accountId, rfcMessageId) {
+function messageByRfc(accountId, rfcMessageId, { headersOnly = false } = {}) {
   if (!rfcMessageId) return null;
   return get(
-    "SELECT * FROM messages WHERE account_id = ? AND rfc_message_id = ? ORDER BY uid DESC LIMIT 1",
+    `SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE account_id = ? AND rfc_message_id = ? ORDER BY uid DESC LIMIT 1`,
     [accountId, rfcMessageId]
   );
 }
@@ -1546,12 +1554,13 @@ function insertMessageRecord(row) {
     );
     if (row.bodyWarning) run("UPDATE messages SET body_warning = ? WHERE id = ?", [row.bodyWarning, row.id]);
     if (row.dateSource) run("UPDATE messages SET date_source = ? WHERE id = ?", [row.dateSource, row.id]);
+    updateChanged("messages", require("./reply-forward-state").patch(row), "id = ?", [row.id]);
     indexText(row.id);
 }
 
-function messageById(id) {
+function messageById(id, { headersOnly = false } = {}) {
   if (!id) return null;
-  return get("SELECT * FROM messages WHERE id = ?", [id]);
+  return get(`SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE id = ?`, [id]);
 }
 
 // Revision proof for compose/scheduled cleanup. UID/flags may change without
@@ -1674,6 +1683,10 @@ function whereFor(query, now = Date.now()) {
     clauses.push(`m.folder_path NOT IN (${query.excludeFolderPaths.map(() => "?").join(", ")})`);
     params.push(...query.excludeFolderPaths);
   }
+  if (Array.isArray(query.excludeMailboxes) && query.excludeMailboxes.length) {
+    clauses.push(`NOT (${query.excludeMailboxes.map(() => "(m.account_id = ? AND m.folder_path = ?)").join(" OR ")})`);
+    for (const box of query.excludeMailboxes) params.push(box.accountId, box.path);
+  }
   if (query.category && query.category !== "all" && query.category !== "primary") {
     clauses.push("0 = 1");
   }
@@ -1785,9 +1798,23 @@ function resolveScope(query) {
 const BODY_SPACE = "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)";
 const METADATA_COLUMNS = ["id", "account_id", "folder_path", "uid", "uid_validity", "thread_id", "rfc_message_id", "in_reply_to", "subject", "snippet",
   "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "date_source", "list_sort_ts", "unread", "starred", "is_draft",
-  "has_attachments", "attachments_json", "body_complete", "body_warning", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id"];
+  "has_attachments", "attachments_json", "body_complete", "body_warning", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id", "replied", "forwarded"];
 function metadataColumns(table) {
   return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
+}
+
+// SQL identifiers and directions come only from this allowlist, never IPC text.
+function messageOrder(query, table = "m") {
+  const prefix = table ? table + "." : "";
+  const dir = query.sortDirection === "asc" ? "ASC" : "DESC";
+  const fields = {
+    date: `${prefix}list_sort_ts`,
+    sender: `COALESCE(NULLIF(${prefix}from_display_name, ''), ${prefix}from_addr, '') COLLATE NOCASE`,
+    recipient: `COALESCE(json_extract(${prefix}to_json, '$[0]'), '') COLLATE NOCASE`,
+    subject: `COALESCE(${prefix}subject, '') COLLATE NOCASE`,
+  };
+  const field = Object.hasOwn(fields, query.sortBy) ? query.sortBy : "date";
+  return `${fields[field]} ${dir}, ${prefix}id ${dir}`;
 }
 
 function selectMessages(query, { headersOnly = false, now = Date.now() } = {}) {
@@ -1813,13 +1840,13 @@ function selectMessages(query, { headersOnly = false, now = Date.now() } = {}) {
       if (retainId && branch.retainOnly) filtered.clauses.push("m.unread != 1");
       bindings.push(...filtered.params, limit + offset);
       return `SELECT * FROM (SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join}
-        WHERE ${filtered.clauses.join(" AND ")} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ?)`;
+        WHERE ${filtered.clauses.join(" AND ")} ORDER BY ${messageOrder(query)} LIMIT ?)`;
     });
     return perf.sync("db.list.merged", () => all(`SELECT * FROM (${parts.join(" UNION ALL ")})
-      ORDER BY list_sort_ts DESC, id DESC LIMIT ? OFFSET ?`, [...bindings, limit, offset]));
+      ORDER BY ${messageOrder(query, "")} LIMIT ? OFFSET ?`, [...bindings, limit, offset]));
   }
   return perf.sync(headersOnly ? "db.list.headers" : "db.list.full", () => all(
-    `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join} ${where} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?`,
+    `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join} ${where} ORDER BY ${messageOrder(query)} LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   ));
 }
@@ -1838,6 +1865,8 @@ function summaryScope(query) {
   for (const field of ["folderPaths", "excludeFolderPaths"]) {
     if (scope[field]?.length) scope[field] = [...new Set(scope[field])].sort();
   }
+  if (scope.excludeMailboxes?.length) scope.excludeMailboxes = mailboxPairs(scope.excludeMailboxes).sort((left, right) =>
+    left.accountId.localeCompare(right.accountId) || left.path.localeCompare(right.path));
   if (scope.mailboxes?.length) scope.mailboxes = mailboxPairs(scope.mailboxes).sort((left, right) =>
     left.accountId.localeCompare(right.accountId) || left.path.localeCompare(right.path));
   return scope;
@@ -2486,6 +2515,7 @@ function enableGmail(accountId) {
     do { generation = crypto.randomInt(1, 2147483647); }
     while (get("SELECT 1 FROM messages WHERE account_id = ? AND uid_validity = ? LIMIT 1", [accountId, generation]));
     run("UPDATE accounts SET mail_transport = 'gmail_api', gmail_generation = ? WHERE id = ?", [generation, accountId]);
+    run("UPDATE messages SET replied = NULL, forwarded = NULL WHERE account_id = ?", [accountId]);
     // Unuploaded edits have a newer RFC id than their old server copy. Keep their
     // content/revision, but never guess which old server draft may be replaced.
     const pending = get("SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND draft_pending = 1 AND uid > 0", [accountId]).n;
@@ -2610,7 +2640,8 @@ function applyGmailMessage(accountId, folderPaths, message) {
           date_iso: input.date, date_source: input.dateSource || null, list_sort_ts: input.listSortTs, unread: input.unread ? 1 : 0, starred: input.starred ? 1 : 0,
           is_draft: input.isDraft ? 1 : 0, html_body: input.htmlBody || null, text_body: input.textBody || null,
           has_attachments: input.hasAttachments ? 1 : 0, attachments_json: JSON.stringify(input.attachments || []),
-          body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}) };
+          body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}),
+          ...require("./reply-forward-state").patch(input) };
         if (flagHeld(found.id, "read")) delete patch.unread;
         if (flagHeld(found.id, "star")) delete patch.starred;
         const indexed = Object.entries(patch).some(([key, value]) => INDEXED_PATCH.has(key) && found[key] !== value);
@@ -2621,8 +2652,8 @@ function applyGmailMessage(accountId, folderPaths, message) {
   });
 }
 
-function gmailCopies(accountId, providerId) {
-  return all("SELECT * FROM messages WHERE account_id = ? AND gmail_id = ?", [accountId, providerId]);
+function gmailCopies(accountId, providerId, { headersOnly = false } = {}) {
+  return all(`SELECT ${headersOnly ? metadataColumns("messages") : "*"} FROM messages WHERE account_id = ? AND gmail_id = ?`, [accountId, providerId]);
 }
 
 function pruneGmailCopies(accountId, providerId, livePaths) {
@@ -2658,6 +2689,17 @@ function gmailSyncState(accountId, folderPath, next) {
     "account_id = ? AND path = ?", [accountId, folderPath]);
   });
   observedSync.set(JSON.stringify([accountId, folderPath, accountById(accountId).gmail_generation]), Date.now());
+}
+
+function notificationState(accountId, next) {
+  if (next === undefined) {
+    return JSON.parse(get("SELECT state_json FROM mail_notification_state WHERE account_id = ?", [accountId])?.state_json || "{}");
+  }
+  transaction(() => {
+    assertAccountPresent(accountId);
+    run("INSERT INTO mail_notification_state (account_id, state_json) VALUES (?, ?) ON CONFLICT(account_id) DO UPDATE SET state_json = excluded.state_json",
+      [accountId, JSON.stringify(next)]);
+  });
 }
 
 function recipientHeaderRows(after = "", limit = 128) {
@@ -2715,6 +2757,7 @@ module.exports = {
   timelineSearch: query => searchMessages(query, { headersOnly: true, timelineLimit: true }),
   timelineMessage: id => get(`SELECT ${metadataColumns("messages")} FROM messages WHERE id = ?`, [id]),
   timelineThread: (accountId, threadId) => all(`SELECT ${metadataColumns("messages")} FROM messages WHERE account_id = ? AND thread_id = ? ORDER BY list_sort_ts ASC, id ASC LIMIT 1001`, [accountId, threadId]),
+  notificationState,
   enableGmail, setMailTransport, gmailMigrationBlockers, gmailMap, gmailLabelMemberships, rememberGmail, gmailAlias, bindGmailAlias,
   gmailLegacy, applyGmailMessage, gmailCopies, pruneGmailCopies, gmailSyncState, gmailVerifyPage,
   open,

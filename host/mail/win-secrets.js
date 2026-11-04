@@ -2,7 +2,7 @@ const { spawnSync } = require("child_process");
 const { SERVICE } = require("./secret-service");
 const perf = require("../performance-diagnostics");
 const { createReader, TIMEOUT_MS, MAX_OUTPUT } = require("./keychain-reader");
-const read = createReader({ command: "powershell.exe", decode: output => Buffer.from(output.trim(), "base64").toString("utf8") });
+const read = createReader({ command: "powershell.exe", missingStatus: 2, decode: output => Buffer.from(output.trim(), "base64").toString("utf8") });
 
 const STORE_DIR = "morrow-mail";
 
@@ -61,7 +61,9 @@ function readPassword(dirName, service, account) {
     code: result.error.code === "ETIMEDOUT" ? "secure_storage_timeout" : "secure_storage_unavailable",
   });
   if (result.status === 2) return null;
-  if (result.status !== 0) return null;
+  if (result.status !== 0) throw Object.assign(new Error("Secure storage could not be read. Check access and retry."), {
+    code: "secure_storage_unavailable",
+  });
   return result.stdout;
 }
 

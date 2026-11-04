@@ -137,7 +137,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     const labels = data.labelIds || [];
     const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
     const root = references[0] || parsed.inReplyTo || parsed.messageId;
-    return { providerId: data.id, providerThreadId: data.threadId, labelIds: labels, rfcMessageId: parsed.messageId || null,
+    return { providerId: data.id, providerThreadId: data.threadId, labelIds: labels, receivedAt: Number(data.internalDate) || null, rfcMessageId: parsed.messageId || null,
       threadId: root ? `thr:${String(root).replace(/[<>\s]/g, "").slice(0, 180)}` : `gmail:${data.threadId || data.id}`,
       inReplyTo: parsed.inReplyTo || null, subject: presented.subject, from: stringAddresses(parsed.from).join(", "),
       fromAddress: parsed.from?.value?.[0]?.address || "",
@@ -146,6 +146,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
       date: date.toISOString(), dateSource: headerDate ? "header" : receivedDate ? "received" : "unknown",
       listSortTs: date.getTime(), snippet: data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ").slice(0, 180),
       unread: labels.includes("UNREAD"), starred: labels.includes("STARRED"), isDraft: labels.includes("DRAFT"),
+      replied: null, forwarded: null, // Gmail labels expose neither state.
       hasAttachments: attachments.some(row => !row.isInlineFromApi || !row.mimeType.startsWith("image/")), attachments,
       htmlBody: presented.htmlBody, textBody: presented.textBody, bodyComplete: complete, bodyWarning };
   }
@@ -160,7 +161,9 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     return db.transaction(() => {
       const mapping = db.rememberGmail(account.id, value);
       const paths = pathsFor(value.labelIds);
-      if (cache && (after == null || value.listSortTs >= after || db.gmailCopies(account.id, data.id).length)) {
+      // The download horizon follows provider receipt time, as IMAP SINCE does.
+      // A delayed delivery can have a years-old, sender-controlled Date header.
+      if (cache && (after == null || value.receivedAt >= after || db.gmailCopies(account.id, data.id).length)) {
         db.applyGmailMessage(account.id, paths, value);
         db.pruneGmailCopies(account.id, value.providerId, paths);
       }
@@ -193,9 +196,11 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     if (state.horizonDays !== horizonDays) state = { verifyNeeded: true };
     limit = Math.max(1, Math.min(20, Math.floor(Number(limit) || 20)));
     let reads = 0;
+    const arrivals = [];
     const stop = () => reads >= limit || Date.now() >= deadline || shouldYield();
     const save = () => { alive(); db.gmailSyncState(account.id, path, state); };
-    async function read(providerId, committed) {
+    async function read(providerId, committed, arrival = false) {
+      const known = !!db.gmailMap(account.id, providerId);
       reads += 1;
       let data;
       try { data = await api.getMessage(providerId); }
@@ -207,7 +212,12 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
       }
       // Message data and its resume position commit together, with no await in
       // the transaction. A failed checkpoint cannot skip unapplied changes.
-      await adopt(data, { after, committed });
+      const value = await adopt(data, { after, committed });
+      if (arrival && !known && value.labelIds.includes("INBOX") && !value.labelIds.some(label => ["TRASH", "SPAM", "DRAFT", "SENT"].includes(label))) {
+        const inbox = db.folderByWellKnown(account.id, "inbox");
+        const row = inbox && db.messageByUid(account.id, inbox.path, value.uid, incarnation, { headersOnly: true });
+        if (row) arrivals.push({ messageId: row.id, identity: `gmail:${providerId}`, receivedAt: value.receivedAt });
+      }
     }
     async function verifyCached() {
       if (!state.verifyNeeded) return;
@@ -223,7 +233,8 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
       const pending = state.pending;
       while (pending.offset < pending.ids.length) {
         if (stop()) return;
-        await read(pending.ids[pending.offset], () => { pending.offset += 1; save(); });
+        const providerId = pending.ids[pending.offset];
+        await read(providerId, () => { pending.offset += 1; save(); }, pending.kind === "history" && (pending.arrivalIds || []).includes(providerId));
       }
       if (pending.kind === "history") {
         state.historyPageToken = pending.nextPageToken;
@@ -235,7 +246,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
       delete state.pending;
       save();
     }
-    const result = () => ({ paused: false, bootstrapped: !!state.complete && !state.pending && !state.verifyNeeded && !state.historyPageToken });
+    const result = () => ({ paused: false, arrivals, bootstrapped: !!state.complete && !state.pending && !state.verifyNeeded && !state.historyPageToken });
     if (state.pending) {
       await drainPage();
       if (!state.pending) await verifyCached();
@@ -252,13 +263,14 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     if (state.complete && state.historyId) {
       try {
         const page = await api.history({ startHistoryId: state.historyId, pageToken: state.historyPageToken || "", limit });
-        const changed = new Set(), deleted = new Set();
+        const changed = new Set(), deleted = new Set(), added = new Set();
         for (const event of page.history) {
           for (const item of event.messagesDeleted || []) deleted.add(item.message.id);
+          for (const item of event.messagesAdded || []) added.add(item.message.id);
           for (const item of [...(event.messagesAdded || []), ...(event.labelsAdded || []), ...(event.labelsRemoved || [])]) changed.add(item.message.id);
           for (const item of event.messages || []) changed.add(item.id);
         }
-        state.pending = { kind: "history", ids: [...changed].filter(id => !deleted.has(id)), offset: 0,
+        state.pending = { kind: "history", ids: [...changed].filter(id => !deleted.has(id)), arrivalIds: [...added].filter(id => !deleted.has(id)), offset: 0,
           nextPageToken: page.nextPageToken || "", historyId: page.historyId || "" };
         alive();
         db.transaction(() => { for (const providerId of deleted) db.pruneGmailCopies(account.id, providerId, []); save(); });
@@ -321,7 +333,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
         } else {
           providerUndo = { kind: "trash", messageId: mapped.provider_id, labelIds: [...(prior.labelIds || [])] };
           db.rememberGmail(account.id, { providerId: mapped.provider_id, priorTrashLabels: providerUndo.labelIds });
-          result = (await api.trash(mapped.provider_id)).message;
+          result = (await api.trash(mapped.provider_id, options)).message;
         }
       }
       else {
@@ -331,9 +343,9 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
         } else if (to === ALL) {
           const prior = result || await api.getMessage(mapped.provider_id, { format: "metadata" });
           providerUndo = { kind: "archive", messageId: mapped.provider_id, labelIds: [...(prior.labelIds || [])] };
-          result = await api.archive(mapped.provider_id);
+          result = await api.archive(mapped.provider_id, options);
         }
-        else result = await api.modifyLabels(mapped.provider_id, [to], [ALL, "TRASH", "SENT", "DRAFT"].includes(from) ? [] : [from]);
+        else result = await api.modifyLabels(mapped.provider_id, [to], [ALL, "TRASH", "SENT", "DRAFT"].includes(from) ? [] : [from], options);
       }
     }
     alive();
@@ -347,10 +359,10 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     }
     return { uid: mapped.local_uid, uidValidity: incarnation, providerUndo, undoable, ...cache };
   }
-  async function flags(path, uid, add, remove, validity, localMessageId) {
+  async function flags(path, uid, add, remove, validity, localMessageId, options = {}) {
     const mapped = await resolve(path, uid, validity, localMessageId);
-    if (add.includes("\\Seen") || remove.includes("\\Seen")) await api.markRead(mapped.provider_id, add.includes("\\Seen"));
-    if (add.includes("\\Flagged") || remove.includes("\\Flagged")) await api.star(mapped.provider_id, add.includes("\\Flagged"));
+    if (add.includes("\\Seen") || remove.includes("\\Seen")) await api.markRead(mapped.provider_id, add.includes("\\Seen"), options);
+    if (add.includes("\\Flagged") || remove.includes("\\Flagged")) await api.star(mapped.provider_id, add.includes("\\Flagged"), options);
     alive();
   }
   async function append(path, raw) {

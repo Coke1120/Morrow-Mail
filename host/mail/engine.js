@@ -12,10 +12,12 @@ const virtuals = require("./virtual-folders");
 const presets = require("./presets");
 const discovery = require("./discovery");
 const remote = require("./remote");
+const notifications = require("./notifications");
 const zipBytes = require("./zip-bytes");
 const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
+const messageSummaries = require("../message-summary").createSummaryService({ readMessage: summaryMessage });
 
 const secrets = require("./secrets");
 const oauth = require("./oauth");
@@ -349,6 +351,8 @@ function listRow(row, generations, memberships) {
     unread: row.unread === 1,
     isRead: row.unread !== 1,
     isStarred: row.starred === 1,
+    replied: row.replied == null ? null : row.replied === 1,
+    forwarded: row.forwarded == null ? null : row.forwarded === 1,
     actionGeneration: generations instanceof Map ? generations.get(row.id) || 0 : actions.generationOf(row.id),
     isDraft: row.is_draft === 1,
     hasAttachments: row.has_attachments === 1,
@@ -422,6 +426,17 @@ function cachedBody(row) {
   return detailOf(row);
 }
 
+function summaryMessage(params) {
+  const row = db.messageById(params.emailId);
+  if (!row || row.account_id !== params.accountId || !db.accountById(row.account_id)) {
+    throw Object.assign(new Error("That message is no longer in this mailbox."), { code: "email-gone" });
+  }
+  if (params.bodyEpoch !== (accountEpochs.get(row.account_id) || 0)) {
+    throw Object.assign(new Error("The mailbox connection changed. Reopen the message."), { code: "message_changed" });
+  }
+  return cachedBody(row);
+}
+
 function threadMeta(rows) {
   const threads = {};
   for (const email of rows) {
@@ -456,7 +471,15 @@ function queryFrom(params) {
     limit: query.limit,
     offset: query.offset,
     pageCursor: query.pageCursor,
+    sortBy: query.sortBy,
+    sortDirection: query.sortDirection,
   };
+  if (query.aggregateView === "starred" || query.aggregateView === "unread") {
+    // An explicit account constraint must survive, including scoped callers.
+    out.folderKey = null;
+    out.folderId = query.aggregateView === "starred" ? virtuals.STARRED_ID : virtuals.UNREAD_ID;
+    out.aggregateView = query.aggregateView;
+  }
   out = virtuals.apply(out);
   if (!out.folderKey && out.folderId && !out.accountId && KEY_TO_WELL[out.folderId]) {
     out.folderKey = out.folderId;
@@ -510,7 +533,7 @@ function listPayload(params) {
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const summary = db.messageSummary(query, { now });
   const cursor = query.pageCursor;
-  const cursorEligible = !query.filterUnread && !query.filterFlagged && typeof query.filterAttachments !== "boolean" && !query.beforeTs;
+  const cursorEligible = (!query.sortBy || query.sortBy === "date") && query.sortDirection !== "asc" && !query.filterUnread && !query.filterFlagged && typeof query.filterAttachments !== "boolean" && !query.beforeTs;
   const cursorValid = cursorEligible && cursor && cursor.version === summary.version && cursor.offset === offset
     && Number.isSafeInteger(cursor.ts) && typeof cursor.id === "string" && cursor.id.length > 0 && cursor.id.length <= 200;
   let stored = db.selectMessages(cursorValid ? { ...query, offset: 0, beforeMessage: { ts: cursor.ts, id: cursor.id } } : query, { headersOnly: true, now });
@@ -557,7 +580,7 @@ function cachedList(params) {
   return { ...payload, sync: publicSync(params) };
 }
 
-async function secretFor(account) {
+async function secretFor(account, { forceRefresh = false } = {}) {
   account = bindAccount(account);
   const revision = secrets.revision(account.id);
   function assertCurrent(expectedRevision) {
@@ -580,7 +603,18 @@ async function secretFor(account) {
     let grant; try { grant = JSON.parse(stored); } catch { grant = {}; }
     if (!oauthConfig.hasPurposeScopes(grant.grantedScopes || "", "google", "imap")) throw Object.assign(new Error("Gmail API mail permission is missing. Reconnect Google; cached work was retained."), { code: "scope_missing" });
   }
-  const result = await oauth.accessTokenFor(account, stored, "imap");
+  let result;
+  try { result = await oauth.accessTokenFor(account, stored, "imap", { forceRefresh }); } catch (error) {
+    // A rejected renewal may belong to a grant replaced during the request.
+    // Do not publish its sign-in failure against the new connection.
+    assertCurrent(revision);
+    if (oauthConfig.providerKey(account.profile) === "google") {
+      let grant;
+      try { grant = JSON.parse(stored); } catch { /* retain the original corrupt-secret diagnostic */ }
+      if (grant && typeof grant === "object" && !Array.isArray(grant)) oauthConfig.requireGoogleGrantClient(grant);
+    }
+    throw error;
+  }
   assertCurrent();
   // A failed synchronous reconnect may have restored the exact prior state.
   // Preserve that contract; pin this read window and compare the actual value.
@@ -598,7 +632,11 @@ async function secretFor(account) {
   if (typeof result === "string") return result;
   if (result && result.store) {
     if (account.mail_transport === "gmail_api" && !oauthConfig.hasPurposeScopes(JSON.parse(result.store).grantedScopes || "", "google", "imap")) throw Object.assign(new Error("The refreshed Google grant is missing Gmail API mail permission. Reauthorize the mailbox."), { code: "scope_missing" });
-    try { secrets.setPassword(account.id, result.store); } catch { /* best effort */ }
+    try { secrets.setPassword(account.id, result.store); } catch {
+      throw Object.assign(new Error("The renewed connection could not be saved. Check secure-storage access and retry."), {
+        code: "secure_storage_write", retryable: true,
+      });
+    }
     return result.token;
   }
   throw new Error("Could not refresh OAuth access token.");
@@ -855,6 +893,28 @@ function withSyncSecret(account, secret, work) {
   });
 }
 
+// Call inside the mailbox lane, immediately before each new connection. Do not
+// retain a token across queue waits or folder-walk yields (including sleep).
+async function withSyncClient(account, work) {
+  let password = await secretFor(account);
+  const revision = secrets.revision(account.id);
+  try {
+    return await remote.withClient(account, password, client => withSyncSecret(account, password, () => work(client)), {
+      refreshAuthentication: account.auth_kind === "oauth2" && account.profile === "outlook" ? async () => {
+        assertAccountCurrent(account);
+        if (secrets.revision(account.id) !== revision) {
+          throw Object.assign(new Error("This mailbox connection changed. Retry with the current connection."), { code: "conflict" });
+        }
+        password = await secretFor(account, { forceRefresh: true });
+        return password;
+      } : undefined,
+    });
+  } catch (error) {
+    if (error && typeof error === "object") syncErrorText.set(error, remote.explain(error, password, account));
+    throw error;
+  }
+}
+
 function explainSyncError(account, error, secret) {
   if (/^secure_storage_/.test(error?.code || "")) {
     return "Secure storage is temporarily unavailable. Check access and retry.";
@@ -1027,6 +1087,13 @@ async function warmFolder(client, account, folder, started, days, limits) {
     const page = fresh.slice(0, REFRESH_PAGES[index]);
     const fetched = await remote.fetchMessages(client, folder.path, page);
     assertAccountCurrent(account);
+    const arrivals = folder.well_known === "inbox" && Number(fetched.validity || found.validity) === Number(folder.uid_validity)
+      ? fetched.messages.filter(message => {
+        if (db.messageByUid(account.id, folder.path, message.uid, folder.uid_validity, { headersOnly: true })) return false;
+        const known = message.rfcMessageId && db.messageByRfc(account.id, message.rfcMessageId, { headersOnly: true });
+        // Gmail IMAP's All Mail can sync before Inbox for the same delivery.
+        return !known || db.folderByPath(account.id, known.folder_path)?.well_known === "all";
+      }) : [];
     next = Math.max(next, ...page);
     await db.applyFolderSyncAsync(account.id, folder.path, {
       messages: fetched.messages,
@@ -1054,6 +1121,10 @@ async function warmFolder(client, account, folder, started, days, limits) {
         });
       }
     }
+    notifications.enqueue(account, arrivals.flatMap(message => {
+      const row = db.messageByUid(account.id, folder.path, message.uid, folder.uid_validity, { headersOnly: true });
+      return row ? [{ messageId: row.id, identity: `imap:${folder.path}:${folder.uid_validity}:${message.uid}`, receivedAt: message.receivedAt }] : [];
+    }));
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
     if (fresh.length > REFRESH_PAGES[index]) backlog = true;
     if (fresh.length <= REFRESH_PAGES[index]) break;
@@ -1120,6 +1191,7 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
       const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: gmailPace.SYNC_PAGE,
         deadline: bounds.deadline, shouldYield: () => priorityWaiting(account.id) });
       assertAccountCurrent(account);
+      notifications.enqueue(account, result.arrivals || []);
       clearStrikes(account.id);
       emitFolderSync(account.id, folderPath, result.bootstrapped);
       broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folderPath, folderIds: [folderPath] });
@@ -1159,8 +1231,7 @@ async function syncFolderPath(account, folderPath) {
 async function syncFolderPathAdmitted(account, folderPath) {
   return exclusive(account.id, async () => {
     assertAccountCurrent(account);
-    const password = await secretFor(account);
-    const result = await withSyncSecret(account, password, () => remote.withClient(account, password, (client) => syncFolderPolicy(client, account, folderPath)));
+    const result = await withSyncClient(account, (client) => syncFolderPolicy(client, account, folderPath));
     assertAccountCurrent(account);
     finishSync([folderPath], result && result.paused, result && result.bootstrapped, account.id);
     return result;
@@ -1213,7 +1284,6 @@ async function syncAccountAdmitted(account, options) {
     emitSync("paused", { accountId: account.id, message: syncGates.get(account.id)?.message || "Paused for rate limit" });
     return;
   }
-  const password = await secretFor(account);
   const background = !!(options && options.background);
   const deadline = Date.now() + tickMs();
   // One pass keeps its folder list and visited set across yields. The cursor
@@ -1241,7 +1311,7 @@ async function syncAccountAdmitted(account, options) {
         yielded = true;
         return;
       }
-      await withSyncSecret(account, password, () => remote.withClient(account, password, async (client) => {
+      await withSyncClient(account, async (client) => {
         if (!jobs) {
           emitSync("syncing", { accountId: account.id, phase: "listing" });
           const listed = await remote.listFolderRecords(client);
@@ -1279,7 +1349,7 @@ async function syncAccountAdmitted(account, options) {
         if (background && plan) {
           backgroundCursor.set(account.id, pausedPath ? plan.cursorFor(pausedPath) : plan.nextCursor(visited));
         }
-      }));
+      });
       const passDone = !!(jobs && jobs.length && visited.size === jobs.length && !incomplete);
       assertAccountCurrent(account);
       finishSync(jobs || [], paused, passDone, account.id);
@@ -1897,6 +1967,8 @@ async function connectAccount(params) {
 }
 
 function invalidateAttachmentAccount(id) {
+  notifications.invalidate(id);
+  messageSummaries.invalidateAccount(id);
   accountEpochs.set(id, (accountEpochs.get(id) || 0) + 1);
   overnightCursor = null;
   const error = removedAccountError();
@@ -2406,6 +2478,7 @@ async function ensureBody(row, options) {
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
       from_address: fetched.fromAddress || row.from_address || null,
       ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
+      ...require("./reply-forward-state").patch(fetched),
     });
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
     return db.messageById(row.id);
@@ -2582,6 +2655,8 @@ function searchLocal(params) {
   const query = params || {};
   return listRows(db.searchMessages({
     query: query.query,
+    sortBy: query.sortBy,
+    sortDirection: query.sortDirection,
     accountId: query.accountId || null,
     limit: query.limit,
   }, { headersOnly: true }));
@@ -3038,6 +3113,10 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
   return result;
 }
 
+// Preserve the old non-overlapping writes, including saves to the same path.
+// Recheck each request when it reaches the front; a failed write must not poison it.
+let attachmentWriteTail = Promise.resolve();
+
 async function attachmentOperation(channel, params, owner) {
   let request;
   try {
@@ -3064,9 +3143,9 @@ async function attachmentOperation(channel, params, owner) {
     assertCurrent();
     const parts = await attachmentParts(row, files, { signal: request.signal, onProgress: value => request.report(value) });
     assertCurrent();
-    const data = zip ? zipBytes.zipFiles(parts) : parts[0].data;
+    if (zip) request.report({ phase: "packing" });
+    const data = zip ? await zipBytes.zipFilesAsync(parts, { signal: request.signal }) : parts[0].data;
     if (channel === "mail:fetchAttachmentBytes") return ok(data);
-    request.report({ phase: "writing" });
     assertCurrent();
     if (channel === "mail:openAttachmentExternally") {
       const dir = path.join(os.tmpdir(), "morrow-mail-attachments");
@@ -3074,7 +3153,17 @@ async function attachmentOperation(channel, params, owner) {
       const safe = filename.replace(/[^\w.\- ()[\]]+/g, "_").slice(0, 120) || "attachment";
       target = path.join(dir, `${crypto.randomUUID()}-${safe}`);
     }
-    fs.writeFileSync(target, data, { mode: 0o600 });
+    // A started write can finish after cancellation; never launch an external
+    // application or report a stale request as current after this await.
+    request.report({ phase: "waitingToSave" });
+    const write = attachmentWriteTail.then(async () => {
+      assertCurrent();
+      request.report({ phase: "writing" });
+      await fs.promises.writeFile(target, data, { mode: 0o600 });
+    });
+    attachmentWriteTail = write.catch(() => {});
+    await write;
+    assertCurrent();
     if (channel === "mail:openAttachmentExternally") {
       request.report({ phase: "opening" });
       const opened = await require("electron").shell.openPath(target);
@@ -4068,7 +4157,9 @@ function answer(channel, args, event) {
     case "mail:getUnifiedCategorySettings":
       return ok({ enabled: true });
     case "mail:getNotificationSettings":
-      return ok({ enhanced_notifications_enabled: false });
+      return ok({ ...notifications.status(), enhanced_notifications_enabled: false });
+    case "mail:takeNotificationTarget":
+      return ok(notifications.takeTarget());
     case "mail:getNotificationBadgeCount":
       return ok(accountViews().reduce((sum, item) => sum + item.unreadCount, 0));
     case "mail:listFailedDraftIds":
@@ -4125,6 +4216,10 @@ function answer(channel, args, event) {
           threadMessages: members,
         });
       })();
+    case "mail:summarizeEmail":
+      return messageSummaries.summarize(params, event?.sender);
+    case "mail:cancelSummary":
+      return messageSummaries.cancel(params, event?.sender);
     case "mail:readCachedBody": {
       const row = db.messageById(params?.emailId);
       if (!row || row.account_id !== params?.accountId || !db.accountById(row.account_id)) return fail("email-gone", "That message is no longer in this mailbox.");
@@ -4568,6 +4663,7 @@ module.exports = {
   init,
   answer,
   settleActions: actions.settleActions,
+  submitBotAction: actions.submitBotAction,
   settleAccount: actions.settleAccount,
   bytesFor,
   attachmentCacheForTest: attachmentCache,

@@ -5,6 +5,7 @@ const db = require("./db");
 const remote = require("./remote");
 const virtuals = require("./virtual-folders");
 const { isGmail } = require("./gmail-policy");
+const { gate: updateGate } = require("../update-quiescence");
 
 // A thrown command that already entered STORE or MOVE may have landed.
 // Revert only when issued is still false. Flag sync preserves pending/unknown writes.
@@ -24,6 +25,9 @@ let hooks = {
 const drains = new Map();
 const scheduled = new Set();
 const batchStopped = new Set();
+// Bot writes require a live, private authorization closure. Only the marker is
+// journaled; interrupted work cannot regain authority after an app restart.
+const botAuthorizers = new Map();
 const settledLog = [];
 let settledCursor = 0;
 let clock = 0;
@@ -34,6 +38,7 @@ function install(next) {
 
 function resetForTests() {
   batchStopped.clear();
+  botAuthorizers.clear();
   scheduled.clear();
   settledLog.length = 0;
   settledCursor = 0;
@@ -220,6 +225,7 @@ function assertIdentityReady(messageId) {
 }
 
 function applyClose(action, receipt, error, dest, skipWrite) {
+  botAuthorizers.delete(action.id);
   const intent = parse(action.intent_json, {});
   // A definitely unissued Undo can be retried; completed/uncertain Undo cannot.
   if (intent.kind === "undo" && (receipt === "completed" || receipt === "unknown")) db.saveOp(intent.opId, { moves: [] });
@@ -312,12 +318,20 @@ function publishAccount(accountId) {
 }
 
 async function publishOne(row) {
+  if (parse(row.intent_json, {}).botAction) {
+    if (updateGate.closed) return applyClose(row, "not_attempted", "An update is preparing to restart. This bot change was not submitted.", null);
+    return updateGate.run(() => publishOneAdmitted(row));
+  }
+  return publishOneAdmitted(row);
+}
+
+async function publishOneAdmitted(row) {
   if (batchStopped.has(row.batch_id)) return applyClose(row, "not_attempted", null, null);
   if (newerPending(row)) return applyClose(row, "superseded", null, null, true);
   db.updateMailAction(row.id, { phase: "publishing" });
   const fresh = db.mailActionById(row.id);
   const attempt = await runRemote(fresh);
-  if (!db.mailActionById(fresh.id)) return null; // Account removal invalidated this result.
+  if (!db.mailActionById(fresh.id)) { botAuthorizers.delete(fresh.id); return null; } // Account removal invalidated this result.
   if (newerPending(fresh)) return applyClose(fresh, "superseded", null, null, true);
   if (attempt.issued && !attempt.error) {
     return applyClose(fresh, "completed", attempt.value?.warning || null, attempt.value && attempt.value.dest);
@@ -337,6 +351,14 @@ async function runRemote(action) {
   const intent = parse(action.intent_json, {});
   const source = parse(action.source_json, {});
   const account = db.accountById(action.account_id);
+  const beforeSubmit = intent.botAction ? () => {
+    const authority = botAuthorizers.get(action.id);
+    if (!authority || authority.generation !== action.generation) {
+      throw Object.assign(new Error("This bot operation no longer has live authorization."), { operationIssued: false });
+    }
+    authority.check();
+  } : null;
+  try { beforeSubmit?.(); } catch (error) { return { issued: false, error: error.message }; }
   if (isGmail(account) && intent.kind === "remove" && intent.permanent) return { issued: false, error: "Permanent Gmail deletion is unavailable. Use Move to Trash; mail already in Trash stays there." };
   if (!source.uid) {
     if (intent.kind === "undo") {
@@ -360,7 +382,7 @@ async function runRemote(action) {
         return { dest: null };
       }
       if (intent.kind === "read") {
-        await remote.changeFlags(client, source.folderPath, source.uid, intent.unread ? [] : ["\\Seen"], intent.unread ? ["\\Seen"] : [], source.uidValidity, action.message_id);
+        await remote.changeFlags(client, source.folderPath, source.uid, intent.unread ? [] : ["\\Seen"], intent.unread ? ["\\Seen"] : [], source.uidValidity, action.message_id, { beforeSubmit });
         return { dest: null };
       }
       if (intent.kind === "remove" && intent.permanent) {
@@ -369,7 +391,7 @@ async function runRemote(action) {
       }
       const destination = intent.kind === "undo" ? intent.restore.folderPath : intent.destPath;
       const next = await remote.moveUid(client, source.folderPath, source.uid, destination, source.uidValidity, action.message_id,
-        { kind: intent.well === "archive" ? "archive" : intent.kind, providerUndo: intent.providerUndo });
+        { kind: intent.well === "archive" ? "archive" : intent.kind, providerUndo: intent.providerUndo, beforeSubmit });
       return {
         warning: next.cacheWarning,
         dest: {
@@ -452,7 +474,7 @@ function acceptOne(command, batchId, stopped) {
   const gmailArchive = db.accountById(row?.account_id)?.mail_transport === "gmail_api" && command.intent.kind === "remove"
     && (command.intent.well === "archive" || command.intent.destWell === "all");
   const open = db.openMailAction(command.messageId);
-  if (open && open.phase === "accepted") {
+  if (open && open.phase === "accepted" && !command.intent.botAction) {
     const openIntent = parse(open.intent_json, {});
     if (openIntent.kind === command.intent.kind) {
       const prior = parse(open.prior_json, {});
@@ -469,7 +491,7 @@ function acceptOne(command, batchId, stopped) {
   }
   const current = db.messageById(command.messageId);
   const prior = priorOf(current);
-  if (matches(prior, command.intent) && !gmailArchive && !uncertain(command.messageId) && !command.intent.permanent) {
+  if (matches(prior, command.intent) && !gmailArchive && !uncertain(command.messageId) && !command.intent.permanent && !command.intent.botAction) {
     const action = insertAction({
       batchId, messageId: command.messageId, accountId: current.account_id,
       generation: db.maxActionGeneration(command.messageId) + 1,
@@ -695,6 +717,17 @@ function handle(channel, params) {
     if (!target) return fail("move", "Choose a folder.");
   }
   const ids = idsFrom(params, channel);
+  // Check explicit mailbox hints before accepting any removal in the request.
+  // Message IDs remain authoritative for legacy callers without an account hint.
+  const targets = [...(Array.isArray(params?.items) ? params.items : []),
+    ...(params?.emailId ? [params] : [])];
+  for (const target of targets) {
+    const accountId = target.accountId || params?.accountId;
+    const row = db.messageById(target.emailId || target.id);
+    if (accountId && row && row.account_id !== accountId) {
+      return fail("email-gone", "That message is no longer in this mailbox.");
+    }
+  }
   if (!ids.length) return ok({ pending: [], outcomes: [], opIds: [] });
   const permanent = channel === "mail:deleteBatch"
     && (params.folderWellKnownName === "deleteditems" || params.folderWellKnownName === "trash");
@@ -712,6 +745,43 @@ function handle(channel, params) {
   return ok(data);
 }
 
+function submitBotAction(channel, params, check) {
+  if (!["mail:archive", "mail:delete", "mail:markRead"].includes(channel) || typeof check !== "function") {
+    return fail("invalid", "That bot operation is unavailable.");
+  }
+  const row = db.messageById(params?.emailId);
+  if (!row || row.account_id !== params?.accountId || !db.accountById(row.account_id)) return fail("not_found", "That cached message is unavailable.");
+  // Local drafts and speculative or unsettled identities cannot prove a
+  // provider mutation. Bot callers never receive a cache-only completion.
+  if (!(Number.isSafeInteger(row.uid) && row.uid > 0 && Number.isSafeInteger(row.uid_validity) && row.uid_validity > 0)
+    || row.draft_pending || db.openMailAction(row.id)) {
+    return fail("unsupported", "Refresh and select a confirmed server message before changing it.");
+  }
+  let command;
+  if (channel === "mail:markRead") {
+    if (typeof params.isRead !== "boolean") return fail("invalid", "Read state must be true or false.");
+    command = { messageId: row.id, intent: { kind: "read", unread: params.isRead ? 0 : 1 }, stopBatch: true };
+  } else {
+    const source = db.folderByPath(row.account_id, row.folder_path);
+    if (channel === "mail:archive" && ["deleteditems", "trash", "drafts"].includes(source?.well_known)) {
+      return fail("unsupported", "Archive from Trash or Drafts is unavailable to bots.");
+    }
+    command = removeCommand(row.id, channel === "mail:archive" ? "archive" : "deleteditems", null, false);
+    if (command.error) return fail("unsupported", command.error.message);
+    if (command.intent.destPath === row.folder_path && !(channel === "mail:archive" && db.accountById(row.account_id).mail_transport === "gmail_api")) {
+      return fail("unsupported", "The cache already places this message in that destination. No server change was made.");
+    }
+  }
+  command.intent.botAction = true;
+  // Older app versions retire non-resumable source records on startup. Keep
+  // that compatibility gate closed too: only this run's private closure can
+  // authorize these otherwise validated server UIDs, including after rollback.
+  command.source = { ...sourceOf(row), confirmed: false };
+  const data = acceptAll([command]);
+  for (const action of data.pending) botAuthorizers.set(action.actionId, { generation: action.generation, check });
+  return ok(data);
+}
+
 function resume() {
   resetForTests();
   const unknown = [];
@@ -724,6 +794,10 @@ function resume() {
   // pair. Such queued identities cannot be replayed safely after an upgrade.
   for (const accountId of db.acceptedAccountIds()) {
     for (const row of db.acceptedMailActions(accountId)) {
+      if (parse(row.intent_json, {}).botAction) {
+        unknown.push(applyClose(row, "not_attempted", "This bot operation was interrupted before submission. No automatic retry was made.", null));
+        continue;
+      }
       if (parse(row.source_json, {}).confirmed === true) continue;
       unknown.push(applyClose(row, "unknown", "This saved operation has no confirmed server identity. Refresh the folders and select a confirmed server copy before retrying.", null));
     }
@@ -768,6 +842,7 @@ function generationOf(messageId) {
 module.exports = {
   install,
   handle,
+  submitBotAction,
   resume,
   settleActions,
   settleAccount,

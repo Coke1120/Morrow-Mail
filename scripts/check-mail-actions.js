@@ -59,6 +59,17 @@ async function run() {
       { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
       { path: "Archive", name: "Archive", wellKnown: "archive" },
     ]);
+    for (const [channel, params] of [
+      ["mail:delete", {emailId:"act-local", accountId:"other"}],
+      ["mail:threadTrash", {emailId:"act-local", accountId:"other", threadId:"missing"}],
+      ["mail:deleteBatch", {items:[{emailId:"act-local", accountId:"act"}, {emailId:"act-1", accountId:"other"}]}],
+    ]) {
+      const before = db.mailActionsForMessage("act-local").length;
+      const denied = await engine.answer(channel, [params]);
+      assert.equal(denied.success, false, channel + " must reject the wrong mailbox");
+      assert.equal(db.messageById("act-local").folder_path, "INBOX");
+      assert.equal(db.mailActionsForMessage("act-local").length, before, "no partial batch acceptance");
+    }
     const moved = await engine.answer("mail:archive", [{ emailId: "act-local", accountId: "act" }]);
     assert.equal(moved.success, true);
     assert.equal(moved.data.opIds.length, 1);

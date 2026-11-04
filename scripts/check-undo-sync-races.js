@@ -553,3 +553,48 @@ test('unclaimed scheduled offers still expire and restore failures can retry onl
   assert.equal(ui.run('restoreCalls'), 0);
   assert.equal(ui.run('SCHEDULE_UNDO_MS'), 8000);
 });
+
+test('rendered Undo buttons require review, cancel without writes and freeze the submitted subset', async context => {
+  const ui = detailsFixture(context);
+  ui.run(`for (const dialog of document.querySelectorAll('dialog')) {
+    dialog.showModal = function () { this.open = true; };
+    dialog.close = function () { this.open = false; this.dispatchEvent(new Event('close')); };
+  }
+  globalThis.reviewCalls = [];
+  call = async (channel,payload) => { reviewCalls.push({channel,payload}); return {outcomes:[]}; };
+  startRemovalSession('Completed.', items.map(item=>item.opId), false, items);`);
+  const click = id => ui.document.getElementById(id).click();
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  click('undo-details'); click('undo-details-all'); click('undo-details-selected');
+  assert.equal(ui.document.getElementById('confirm').open, true);
+  assert.match(ui.document.getElementById('confirm-body').textContent, /3 completed changes/);
+  assert.equal(ui.run('reviewCalls.length'), 0);
+  click('confirm-cancel'); await settle();
+  assert.equal(ui.run('reviewCalls.length'), 0);
+  assert.equal(ui.run('undoPopoverOpen()'), true);
+  click('undo-details-clear');
+  ui.document.querySelector('#undo-details-list input').click();
+  click('undo-details-selected');
+  click('undo'); // Programmatic repeated activation must not replace the review.
+  assert.equal(ui.document.getElementById('confirm-title').textContent, 'Undo 1 change?');
+  click('confirm-ok'); click('confirm-ok'); await settle();
+  assert.deepEqual(ui.json('reviewCalls'), [{channel:'mail:undoRemoval',payload:{opIds:['op-a'],kind:'move'}}]);
+  assert.equal(ui.document.getElementById('undo').disabled, true);
+});
+
+test('rendered Undo review refuses a retired session', async context => {
+  const ui = detailsFixture(context);
+  ui.run(`for (const dialog of document.querySelectorAll('dialog')) {
+    dialog.showModal = function () { this.open = true; };
+    dialog.close = function () { this.open = false; this.dispatchEvent(new Event('close')); };
+  }
+  globalThis.reviewCalls = [];
+  call = async (...args) => { reviewCalls.push(args); return {outcomes:[]}; };
+  startRemovalSession('Completed.', items.map(item=>item.opId), false, items);`);
+  ui.document.getElementById('undo').click();
+  ui.run(`startRemovalSession('Replacement.', ['op-a'], false, [items[0]])`);
+  ui.document.getElementById('confirm-ok').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(ui.run('reviewCalls.length'), 0);
+  assert.deepEqual(ui.json('undoOpIds'), ['op-a']);
+});

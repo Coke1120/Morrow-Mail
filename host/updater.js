@@ -1,6 +1,11 @@
 const { app, ipcMain, BrowserWindow } = require("electron");
 const auth = require("./update-auth");
-const { platform } = require("node:process");
+const { platform, env } = require("node:process");
+
+// electron-builder's portable launcher exports these before starting Electron.
+// Its extracted app is not an NSIS installation and must not launch an installer.
+const portableWindows = platform === "win32" && !!(env?.PORTABLE_EXECUTABLE_FILE || env?.PORTABLE_EXECUTABLE_DIR);
+const OFFICIAL_RELEASES = "https://github.com/Coke1120/Morrow-Mail/releases/latest";
 
 // Hourly discovery uses the same check as the About button. It does not install.
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -30,6 +35,7 @@ let installLifecycle = null;
 let installing = null;
 let resumeInstall = null;
 let installTimer = null;
+let installOnQuit = null;
 let hourlyTimer = null;
 let startupTimer = null;
 let checkFlight = null;
@@ -37,6 +43,8 @@ let progressTimer = null;
 function resumeAfterFailedInstall() {
   if (installTimer) clearTimeout(installTimer);
   installTimer = null;
+  if (installOnQuit) app.removeListener("quit", installOnQuit);
+  installOnQuit = null;
   const resume = resumeInstall;
   resumeInstall = null;
   if (resume) resume();
@@ -129,6 +137,11 @@ function bind(updater) {
     state.lastCheckedAt = new Date().toISOString();
     state.checking = false;
     state.available = true;
+    // Discovery finishes before the returned downloadPromise. Progress may not
+    // arrive at all for a cached or stalled transfer; retire any older install.
+    state.downloading = true;
+    state.downloaded = false;
+    state.progress = 0;
     state.needsToken = false;
     state.version = info && info.version ? info.version : null;
     publish();
@@ -192,7 +205,10 @@ async function runCheck() {
   state.checking = true;
   state.error = null;
   publish();
-  await updater.checkForUpdates();
+  const result = await updater.checkForUpdates();
+  // The provider also emits error, but rethrows download failures through this
+  // separate promise. Observe it to avoid unhandled rejections and overlap.
+  if (result?.downloadPromise) await result.downloadPromise;
   return snapshot();
 }
 
@@ -201,6 +217,7 @@ async function runCheck() {
 // until the provider emits a terminal event, and Check must still run again.
 function requestCheck(options) {
   if (!app.isPackaged) return Promise.resolve(snapshot());
+  if (portableWindows) return Promise.resolve(init());
   if (checkFlight) return checkFlight;
   if (state.downloading || state.installing) return Promise.resolve(snapshot());
   if (options && options.periodic && state.enabled === false) return Promise.resolve(snapshot());
@@ -229,6 +246,14 @@ function init() {
     stopPeriodicCheck();
     return snapshot();
   }
+  if (portableWindows) {
+    state.enabled = false;
+    state.requiresExplicitInstall = true;
+    state.manualAvailable = true;
+    state.disabledReason = "Portable Windows copies use manual updates. Download the portable executable from official releases.";
+    stopPeriodicCheck();
+    return snapshot();
+  }
   if (platform === "darwin") {
     const mac = signedMacUpdater();
     const initial = mac.init();
@@ -251,12 +276,14 @@ function registerIpc() {
   ipcMain.handle("host:updateGetState", () => platform === "darwin" && app.isPackaged ? signedMacUpdater().refreshStatus() : snapshot());
   ipcMain.handle("host:updateCheck", () => requestCheck());
   ipcMain.handle("host:updateManual", (event) => {
-    if (platform !== "darwin") return snapshot();
+    if (platform !== "darwin" && !portableWindows) return snapshot();
     authorizeInstall(event);
+    if (portableWindows) return require("electron").shell.openExternal(OFFICIAL_RELEASES).then(() => snapshot());
     return signedMacUpdater().manual();
   });
   ipcMain.handle("host:updateInstall", (event) => {
     authorizeInstall(event);
+    if (portableWindows) return snapshot();
     if (platform === "darwin") {
       return signedMacUpdater().install();
     }
@@ -267,9 +294,22 @@ function registerIpc() {
       try {
         resumeInstall = await installLifecycle.prepare();
         if (!state.installing) { resumeAfterFailedInstall(); return snapshot(); }
-        // electron-updater can emit error synchronously instead of throwing.
-        autoUpdater.quitAndInstall(false, true);
-        if (state.installing) {
+        // NSIS --updated may force-close a running app. Launch it only from the
+        // final, non-cancellable quit event, after normal confirmation/cleanup.
+        // This is the same event used by electron-updater's install-on-quit path,
+        // but armed only by this explicit main-window action.
+        installOnQuit = (_event, exitCode) => {
+          installOnQuit = null;
+          if (installTimer) clearTimeout(installTimer);
+          installTimer = null;
+          if (exitCode === 0 && state.installing) {
+            try { autoUpdater.quitAndInstall(false, true); }
+            catch (err) { setError(err); }
+          }
+        };
+        app.once("quit", installOnQuit);
+        installLifecycle.quit();
+        if (state.installing && installOnQuit) {
           installTimer = setTimeout(() => setError(new Error("The app did not exit for the update. Finish active work and retry.")), 120000);
           if (installTimer.unref) installTimer.unref();
         }

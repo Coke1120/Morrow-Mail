@@ -94,6 +94,11 @@ const ERRORS = {
     message: "That operation is not available.",
     retryable: false,
   },
+  UNSUPPORTED_OPERATION: {
+    status: 409,
+    message: "That mail change is unavailable for this cached message or mailbox. Refresh and review it in Morrow.",
+    retryable: false,
+  },
   INSTALLATION_MISMATCH: {
     status: 409,
     message: "This credential belongs to another Morrow installation.",

@@ -106,8 +106,12 @@ async function completeAdmitted(messages, options) {
   }
   const payload = options.detailed ? await boundedPayload(response, (options.maxOutputBytes || 128000) + 32000) : await response.json();
   options.check();
-  const message = payload && payload.choices && payload.choices[0] && payload.choices[0].message;
-  if (options.detailed) return { text: messageText(message), finishReason: payload.choices?.[0]?.finish_reason || "unknown",
+  const choice = payload && payload.choices && payload.choices[0];
+  if (options.requireComplete && choice?.finish_reason && choice.finish_reason !== "stop") {
+    throw Object.assign(new Error("The model returned an incomplete response. Try again or review the selected model in AI settings."), { code: "ai-incomplete" });
+  }
+  const message = choice && choice.message;
+  if (options.detailed) return { text: messageText(message), finishReason: choice?.finish_reason || "unknown",
     usage: { inputTokens: payload.usage?.prompt_tokens || 0, outputTokens: payload.usage?.completion_tokens || 0 } };
   return messageText(message);
 }

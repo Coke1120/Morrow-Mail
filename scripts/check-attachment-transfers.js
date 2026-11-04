@@ -101,10 +101,19 @@ function fixture(apiTransport = false) {
   const source = fs.readFileSync(path.join(__dirname, "../host/mail/engine.js"), "utf8");
   const cache = createAttachmentCache(), requests = createAttachmentRequests();
   const context = { Buffer, crypto: require("node:crypto"), path, os: { tmpdir: () => "/synthetic-temp" }, db, remote,
+    notifications: { invalidate() {} }, messageSummaries: { invalidateAccount() {} },
     attachmentCache: cache, attachmentRequests: requests, attachmentTransfers: require("../host/mail/attachment-cache"),
     updateGate: { run: fn => fn() }, actions: { assertIdentityReady() { if (controls.pendingAction) throw Error("message moving"); } },
-    pumpBodyFills() {}, secretFor: async () => "synthetic-token", zipBytes: require("../host/mail/zip-bytes"), textEncoding: { repairMojibake: x => x },
-    fs: { mkdirSync() {}, writeFileSync() { events.push("write"); } }, require(name) { assert.equal(name, "electron"); return {
+    pumpBodyFills() {}, secretFor: async () => "synthetic-token", zipBytes: { ...require("../host/mail/zip-bytes"),
+      async zipFilesAsync(...args) {
+        const packed = await require("../host/mail/zip-bytes").zipFilesAsync(...args);
+        events.push("packed"); controls.onPacked?.(); if (controls.packed) await controls.packed.wait;
+        return packed;
+      } }, textEncoding: { repairMojibake: x => x },
+    fs: { mkdirSync() {}, promises: { async writeFile() {
+      events.push("write"); if (controls.write) await controls.write.wait;
+      if (controls.writeError) throw new Error("synthetic write failure");
+    } } }, require(name) { assert.equal(name, "electron"); return {
       BrowserWindow: { getFocusedWindow() {}, getAllWindows: () => [] },
       dialog: { showSaveDialog: async () => { events.push("dialog"); if (controls.dialog) await controls.dialog.wait; return { canceled: controls.cancelSave, filePath: "/synthetic-file" }; } },
       shell: { openPath: async () => { events.push("open"); return ""; } },
@@ -195,6 +204,54 @@ async function extraChecks() {
   await until(() => count(disappearing, "part:2") === 1); window.emit("destroyed");
   assert.equal((await closed).error.code, "cancelled"); disappearing.controls.held.release();
   await until(() => disappearing.cache.stats().active === 0); assert.equal(disappearing.requests.size(), 0);
+
+  const writing = fixture(), writer = writing.owner(); writing.controls.write = gate();
+  const opening = writing.invoke("mail:openAttachmentExternally", { ...writing.params, requestId: "writing" }, writer);
+  await until(() => count(writing, "write") === 1);
+  writer.emit("destroyed"); writing.controls.write.release();
+  assert.equal((await opening).error.code, "cancelled");
+  assert.equal(count(writing, "open"), 0, "cancellation during a started write cannot launch an external application");
+  assert.equal(writing.requests.size(), 0); writing.cache.clear();
+
+  const failedWrite = fixture(); failedWrite.controls.writeError = true;
+  assert.equal((await failedWrite.invoke("mail:openAttachmentExternally", failedWrite.params, failedWrite.owner())).success, false);
+  assert.equal(count(failedWrite, "open"), 0); assert.equal(failedWrite.requests.size(), 0);
+  failedWrite.controls.writeError = false;
+  assert.equal((await failedWrite.invoke("mail:downloadAttachment", failedWrite.params, failedWrite.owner())).success, true);
+  failedWrite.cache.clear();
+
+  const ordered = fixture(), saver = ordered.owner(); ordered.controls.write = gate();
+  const initial = ordered.invoke("mail:downloadAttachment", { ...ordered.params, requestId: "initial" }, saver);
+  await until(() => count(ordered, "write") === 1);
+  const waiting = id => new Promise(resolve => {
+    const listener = value => { if (value.requestId === id && value.phase === "waitingToSave") {
+      saver.removeListener("mail:attachmentProgress", listener); resolve();
+    } };
+    saver.on("mail:attachmentProgress", listener);
+  });
+  const secondReady = waiting("second"), thirdReady = waiting("third");
+  const second = ordered.invoke("mail:downloadAttachment", { ...ordered.params, requestId: "second" }, saver);
+  const third = ordered.invoke("mail:downloadAttachment", { ...ordered.params, requestId: "third" }, saver);
+  await Promise.all([secondReady, thirdReady]);
+  assert.equal(count(ordered, "write"), 1, "concurrent saves cannot interleave writes to the same file");
+  ordered.requests.cancel("third", saver); ordered.controls.write.release();
+  assert.equal((await initial).success, true); assert.equal((await second).success, true);
+  assert.equal((await third).error.code, "cancelled");
+  assert.equal(count(ordered, "write"), 2, "cancelled waiting saves do not write");
+  assert.equal(ordered.requests.size(), 0); ordered.cache.clear();
+
+  for (const invalidate of [f => f.requests.cancel("packing", f.window), f => f.remove(), f => { f.row.uid++; }]) {
+    const packing = fixture(); packing.window = packing.owner(); packing.controls.packed = gate();
+    const packed = new Promise(resolve => { packing.controls.onPacked = resolve; });
+    const saving = packing.invoke("mail:downloadAttachmentsZip", { emailId: "message", requestId: "packing" }, packing.window);
+    await packed;
+    // Hold the completed worker result at the newly introduced await boundary.
+    // The actual worker cancellation path is exercised in responsive-attachments.
+    invalidate(packing); packing.controls.packed.release();
+    assert.equal((await saving).success, false);
+    assert.equal(count(packing, "write"), 0, "a ZIP cannot publish after cancellation or identity changes");
+    assert.equal(packing.requests.size(), 0); packing.cache.clear();
+  }
 }
 
 async function uiChecks() {

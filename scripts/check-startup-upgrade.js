@@ -8,6 +8,7 @@ const crypto = require("node:crypto");
 const vm = require("node:vm");
 const { createRequire } = require("node:module");
 const { spawnSync } = require("node:child_process");
+const { performance } = require("node:perf_hooks");
 process.env.MORROW_PERF = "1";
 const Database = require("better-sqlite3");
 const { Persistence } = require("../host/mail/persistence");
@@ -73,6 +74,21 @@ async function freshAdmissionChecks(directory) {
 
 async function upgrade(file, { abortAfter = 0, closeAfter = 0, exitAfter = 0, failAt = 0, sqlFullAt = 0, expectedRemaining = count, expectedHash } = {}) {
   let clock = 0, adapter, owner, batches = 0, updates = 0, startupCopies = 0, yields = 0;
+  const began = performance.now(), cpu = process.cpuUsage();
+  const scenario = exitAfter ? "process-exit" : abortAfter ? "abort" : closeAfter ? "close" : failAt ? "journal-failure"
+    : sqlFullAt ? "sqlite-full" : expectedRemaining === 0 ? "warm" : expectedRemaining === count ? "complete" : "resume";
+  let phase = "opening", completed = 0;
+  const diagnostic = event => {
+    const usage = process.cpuUsage(cpu);
+    console.log("startup-upgrade-progress " + JSON.stringify({ scenario, event, phase, completed, expectedRemaining,
+      updates, batches, yields, elapsedMs: Math.round(performance.now() - began),
+      cpuUserMs: Math.round(usage.user / 1000), cpuSystemMs: Math.round(usage.system / 1000) }));
+  };
+  // Fixed synthetic counters identify healthy durable work versus an idle wait.
+  // This timer never keeps the process alive and changes no storage behavior.
+  const heartbeat = setInterval(() => diagnostic("heartbeat"), 10000);
+  heartbeat.unref();
+  diagnostic("start");
   const events = [], errors = [], controller = new AbortController();
   const originalOpen = Persistence.prototype.open;
   const originalDispatch = Persistence.prototype.dispatchCheckpoint;
@@ -117,6 +133,8 @@ async function upgrade(file, { abortAfter = 0, closeAfter = 0, exitAfter = 0, fa
   const database = databaseModule.exports;
   const stop = database.subscribeStartupProgress(event => {
     try {
+      phase = event.phase;
+      if (event.phase === "body-backfill" && Number.isSafeInteger(event.completed)) completed = event.completed;
       events.push(event);
       if (!["idle", "ready", "failed", "cancelled"].includes(event.phase)) {
         assert.equal(database.isReady(), false);
@@ -161,9 +179,14 @@ async function upgrade(file, { abortAfter = 0, closeAfter = 0, exitAfter = 0, fa
     assert.equal(progress.at(-1).completed, failAt || sqlFullAt ? (failAt || sqlFullAt) - 1 : abortAfter || closeAfter || expectedRemaining);
     return { events, batches };
   } finally {
-    stop(); await database.close();
-    Persistence.prototype.open = originalOpen;
-    Persistence.prototype.dispatchCheckpoint = originalDispatch;
+    stop();
+    try { await database.close(); }
+    finally {
+      clearInterval(heartbeat);
+      diagnostic("closed");
+      Persistence.prototype.open = originalOpen;
+      Persistence.prototype.dispatchCheckpoint = originalDispatch;
+    }
   }
 }
 
@@ -200,5 +223,6 @@ async function upgrade(file, { abortAfter = 0, closeAfter = 0, exitAfter = 0, fa
     assert.ok(logs.every(row => Object.keys(row).sort().join() === "event,stage"));
     assert.ok(!JSON.stringify(logs).includes("private"));
     console.log("startup-upgrade-ok: fresh checkpoint admission, legacy bodies, phase/admission boundaries, per-message budgets, abort/close/journal-failure/SQLITE_FULL/process-exit resume, parity and numeric worker timings");
+    console.log("startup-upgrade-resources " + JSON.stringify(process.getActiveResourcesInfo()));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

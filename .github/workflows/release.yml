@@ -56,8 +56,9 @@ jobs:
 
   macos:
     needs: windows
-    # Mac mini self-hosted runner. Pull requests and CI stay on GitHub-hosted runners.
-    runs-on: [self-hosted, macOS, mac-mini]
+    # Standard GitHub-hosted ARM64 runner; public-repository compute is free.
+    # Pin the OS label so macos-latest cannot silently move this build.
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
@@ -75,6 +76,8 @@ jobs:
       # externally managed, so pip needs the system-packages override.
       - name: Install setuptools for the native module compile
         run: python3 -m pip install --upgrade setuptools --break-system-packages
+      - name: Verify native ARM64 toolchain
+        run: node -e "const assert = require('node:assert/strict'); assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64');"
       - run: npm ci
       - run: npm run check
       - name: Bake Google Desktop OAuth client

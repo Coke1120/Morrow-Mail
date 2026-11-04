@@ -91,8 +91,8 @@ async function childContracts() {
   const queued = cancelled.read(["must-not-start"], { signal: controller.signal });
   const rejected = assert.rejects(queued, { code: "ABORT_ERR" });
   controller.abort(); await rejected;
-  cancelled.children[0].emit("close", 1);
-  assert.equal(await first, null, "non-zero find exit preserves the compatibility result");
+  cancelled.children[0].emit("close", 44);
+  assert.equal(await first, null, "only a missing-item exit reports an absent credential");
   assert.equal(cancelled.children.length, 1);
   const preaborted = new AbortController(); preaborted.abort();
   await assert.rejects(cancelled.read(["never"], { signal: preaborted.signal }), { code: "ABORT_ERR" });
@@ -174,7 +174,9 @@ function engineFixture(oauthAccount = false) {
   };
   const source = fs.readFileSync(path.join(__dirname, "../host/mail/engine.js"), "utf8");
   const bindings = source.slice(source.indexOf("function removedAccountError()"), source.indexOf("function ok(data)"));
-  const secret = source.slice(source.indexOf("async function secretFor(account)"), source.indexOf("/** @deprecated sync callers"));
+  const secretStart = source.indexOf("async function secretFor(");
+  assert.ok(secretStart >= 0, "credential fixture must extract the production secret reader");
+  const secret = source.slice(secretStart, source.indexOf("/** @deprecated sync callers"));
   const missing = source.slice(source.indexOf("async function markMissingOAuthSecrets()"), source.indexOf("function startMailApiPoll"));
   // Keep only the two credential-scan/cancellation functions from that region.
   const cancellationEnd = missing.indexOf("\n}", missing.indexOf("function cancelOAuth()")) + 2;

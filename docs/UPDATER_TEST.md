@@ -6,6 +6,31 @@ this branch is not ready for a release. The macOS feed checklist below is retain
 as the historical Electron 0.2.4/0.2.5 behavior, not a successful transition claim.
 Windows keeps its existing updater.
 
+Windows portable copies use manual downloads from **Open official releases**;
+they never load the NSIS updater. Test both portable launcher environment markers
+and confirm **Restart and install** is absent. Installed Windows copies observe
+the provider's separate download promise, including errors before any progress
+event. A newly offered release removes the previous download's install action.
+Check cannot overlap that transfer. The installer starts only on the final
+successful `quit` event: a scheduled-mail **Stay open** choice or delayed shutdown
+cleanup must not start NSIS. A prevented quit's watchdog removes the pending
+installer listener before resuming the app. If installer launch fails after the
+app has quit, reopen the existing installation and retry; there is no running
+window to resume at that point. Native NSIS launch/UAC behavior remains unverified.
+
+macOS retrieves the manifest through `latest`, then its signature from that
+manifest version's fixed release tag. Test a latest alias that moves between
+those requests: the matching versioned signature must succeed, and a mismatched
+signature must still fail. Check refreshes metadata with a valid cached archive,
+reuses unchanged authenticated bytes, notices a newer release, and clears a
+transient installer error so the install action can be retried.
+An unavailable metadata endpoint retains a previously authenticated download only
+after revalidating its bytes; the error remains visible beside the retry action.
+
+These fixture cases are in `check-update-schedule.js`, `check-update-windows.js`
+and `check-update-macos.js`, included in `npm run check`. They do not install,
+launch or quit a native app, access credentials, or publish feed assets.
+
 `Coke1120/Morrow-Mail` is public. The packaged app checks the prerelease feed with no GitHub token. `allowPrerelease` is on, so alpha prereleases count. `GH_TOKEN`, `GITHUB_TOKEN`, and legacy userData `github-update.json` are ignored by the app updater. A token in the feed configuration selects the private provider in electron-updater even with `private: false`; the public feed therefore never includes one. Publishing from CI still uses its build token.
 
 `host:updateGetState`, `host:updateCheck`, and `host:updateInstall` are the shell channels. `host:updateState` pushes the same snapshot to the open windows.

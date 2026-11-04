@@ -7,6 +7,7 @@ const drafts = require("./drafts");
 const probe = require("./probe");
 const prompt = require("./prompt");
 const send = require("./send");
+const mailActions = require("./mail-actions");
 const proactive = require("./proactive");
 const proactiveConfig = require("./proactive-config");
 const { DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, PORT, SERVE_CAPABILITY } = require("./constants");
@@ -57,6 +58,7 @@ function snapshot() {
   const view = auth.view();
   const local = drafts.listLocal();
   const proactiveStatuses = proactive.statuses(view.grants);
+  const mailActionStatus = mailActions.settingsStatus();
   return {
     available: view.available,
     enabled: view.enabled === true,
@@ -79,6 +81,8 @@ function snapshot() {
     drafts: local.proposals,
     draftsAvailable: local.available,
     sends: send.recentForSettings(),
+    mailActions: mailActionStatus.receipts,
+    mailActionsAvailable: mailActionStatus.available,
     audit: audit.recent(8),
   };
 }

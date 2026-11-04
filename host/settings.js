@@ -25,9 +25,15 @@ const DEFAULTS = {
   brainCompose: { ccByDomain: {}, bccByDomain: {}, accounts: {} },
   syncHorizonDays: 0, // 0 means all available history. Fresh installs use All.
   compactMessageList: true,
+  mailNotificationsEnabled: true,
+  mailNotificationPreview: "hidden",
   defaultScheduleDelayMinutes: 0, // 0 sends immediately. Otherwise Send schedules this far ahead.
   layoutPanes: { folders: 260, list: 360, reading: 0 },
+  mailView: { layout: "right", listHeight: 320 },
   changelogSeen: "",
+  onboarding: null,
+  mailColumnOrder: ["date", "recipient", "sender", "subject", "status"],
+  mailHiddenColumns: [],
 };
 
 const GET = {
@@ -50,8 +56,14 @@ const GET = {
   "emailBrain:getComposeSettings": "brainCompose",
   "morrow:configGetSyncHorizonDays": "syncHorizonDays",
   "morrow:configGetCompactMessageList": "compactMessageList",
+  "morrow:configGetMailNotificationsEnabled": "mailNotificationsEnabled",
+  "morrow:configGetMailNotificationPreview": "mailNotificationPreview",
   "morrow:configGetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
   "morrow:configGetLayoutPanes": "layoutPanes",
+  "morrow:configGetMailView": "mailView",
+  "morrow:configGetMailColumnOrder": "mailColumnOrder",
+  "morrow:configGetMailHiddenColumns": "mailHiddenColumns",
+  "morrow:configGetOnboarding": "onboarding",
   "morrow:configGetChangelogSeen": "changelogSeen",
 };
 
@@ -75,8 +87,14 @@ const SET = {
   "emailBrain:saveComposeSettings": "brainCompose",
   "morrow:configSetSyncHorizonDays": "syncHorizonDays",
   "morrow:configSetCompactMessageList": "compactMessageList",
+  "morrow:configSetMailNotificationsEnabled": "mailNotificationsEnabled",
+  "morrow:configSetMailNotificationPreview": "mailNotificationPreview",
   "morrow:configSetDefaultScheduleDelayMinutes": "defaultScheduleDelayMinutes",
   "morrow:configSetLayoutPanes": "layoutPanes",
+  "morrow:configSetMailView": "mailView",
+  "morrow:configSetMailColumnOrder": "mailColumnOrder",
+  "morrow:configSetMailHiddenColumns": "mailHiddenColumns",
+  "morrow:configSetOnboarding": "onboarding",
   "morrow:configSetChangelogSeen": "changelogSeen",
 };
 
@@ -90,6 +108,7 @@ const BOOLS = new Set([
   "sidebarGmailFoldersExpanded",
   "sidebarOutlookFoldersExpanded",
   "compactMessageList",
+  "mailNotificationsEnabled",
 ]);
 
 function storePath() {
@@ -136,6 +155,32 @@ function castChangelogSeen(value, loose) {
 }
 
 function cast(key, value, loose) {
+  if (key === "mailView") {
+    if (value && typeof value === "object" && !Array.isArray(value)
+      && ["right", "bottom", "window"].includes(value.layout)
+      && Number.isInteger(value.listHeight) && value.listHeight >= 200 && value.listHeight <= 1600) {
+      return { layout: value.layout, listHeight: value.listHeight };
+    }
+    if (loose) return { ...DEFAULTS.mailView };
+    throw new Error("Mail view must use right, bottom, or window and a list height from 200 to 1600");
+  }
+  if (key === "mailNotificationPreview") {
+    if (["hidden", "sender", "message"].includes(value)) return value;
+    if (loose) return "hidden";
+    throw new Error("Notification preview must be hidden, sender, or message");
+  }
+  if (key === "mailColumnOrder") return require("../shared/mail-columns").normalize(value);
+  if (key === "mailHiddenColumns") return require("../shared/mail-columns").normalizeHidden(value);
+  if (key === "onboarding") {
+    if (value === null) return null;
+    if (!value || typeof value !== "object" || !["active", "later", "done", "existing"].includes(value.status)
+      || !Number.isInteger(value.step) || value.step < 0 || value.step > 4) {
+      if (loose) return null;
+      throw new Error("Invalid setup guide progress");
+    }
+    return { status: value.status, step: value.step,
+      accountId: typeof value.accountId === "string" ? value.accountId.slice(0, 256) : "" };
+  }
   if (key === "changelogSeen") return castChangelogSeen(value, loose);
   if (key === "sidebarCollapsedFolders") {
     if (loose) return folderCollapse.normalize(value);
@@ -205,6 +250,9 @@ function answer(channel, args) {
   const store = readStore();
   store[setKey] = cast(setKey, args && args[0], false);
   writeStore(store);
+  if (setKey === "mailNotificationsEnabled" || setKey === "mailNotificationPreview") {
+    require("./mail/notifications").settingsChanged();
+  }
   return store[setKey];
 }
 
@@ -212,4 +260,9 @@ function syncHorizonDays() {
   return readStore().syncHorizonDays;
 }
 
-module.exports = { answer, syncHorizonDays };
+function notificationPreferences() {
+  const store = readStore();
+  return { enabled: store.mailNotificationsEnabled, preview: store.mailNotificationPreview };
+}
+
+module.exports = { answer, syncHorizonDays, notificationPreferences };
