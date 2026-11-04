@@ -530,6 +530,25 @@ test("rendered Timeline tab opens locally and keyboard navigation maintains ARIA
   assert.equal(document.activeElement.id, "message-tab");
   fixture.dom.window.close();
 });
+test("Timeline container retains Bottom, Separate window and narrow layout rules", () => {
+  const fixture = rendererFixture();
+  try {
+    const style = fixture.document.createElement("style");
+    style.textContent = read("renderer/app.css");
+    fixture.document.head.append(style);
+    const shell = fixture.document.getElementById("shell");
+    const area = fixture.document.getElementById("reader-area");
+    const rules = [...style.sheet.cssRules];
+    const applied = values => values.filter(rule => rule.selectorText?.includes("#shell[data-mail-layout") && area.matches(rule.selectorText));
+    shell.dataset.mailLayout = "bottom";
+    assert.ok(applied(rules).some(rule => rule.style.getPropertyValue("grid-row") === "3"), "Bottom preview must place the entire reader container below the list");
+    shell.dataset.mailLayout = "window";
+    assert.ok(applied(rules).some(rule => rule.style.getPropertyValue("display") === "none"), "Separate window must hide the entire shell preview, including Timeline");
+    const narrow = rules.filter(rule => rule.conditionText?.includes("max-width: 800px")).flatMap(rule => [...rule.cssRules]);
+    shell.dataset.mailLayout = "right";
+    assert.ok(applied(narrow).some(rule => rule.style.getPropertyValue("grid-column") === "1"), "Narrow windows must stack the reader container in one column");
+  } finally { fixture.dom.window.close(); }
+});
 test("rendered preflight requires an explicit Generate click and preserves the reader", async () => {
   const fixture = rendererFixture(); const { document, window } = fixture;
   document.getElementById("reader").textContent = "Existing message";

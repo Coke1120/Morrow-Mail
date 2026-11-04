@@ -6024,12 +6024,12 @@ pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
 #shell[data-mail-layout="bottom"] > [data-split="folders"] { grid-column: 2; grid-row: 1 / -1; }
 #shell[data-mail-layout="bottom"] > #messages { grid-column: 3; grid-row: 1; }
 #shell[data-mail-layout="bottom"] > [data-split="messages"] { grid-column: 3; grid-row: 2; cursor: row-resize; }
-#shell[data-mail-layout="bottom"] > #reader { grid-column: 3; grid-row: 3; }
+#shell[data-mail-layout="bottom"] > #reader-area { grid-column: 3; grid-row: 3; }
 #shell[data-mail-layout="bottom"] > [data-split="messages"]::after {
   top: 3px; bottom: auto; left: 24px; right: 24px; width: auto; height: 2px;
 }
 #shell[data-mail-layout="window"] { grid-template-rows: minmax(var(--mail-list-min-height, 200px), 1fr); overflow: auto; }
-#shell[data-mail-layout="window"] > #reader, #shell[data-mail-layout="window"] > [data-split="messages"] { display: none; }
+#shell[data-mail-layout="window"] > #reader-area, #shell[data-mail-layout="window"] > [data-split="messages"] { display: none; }
 
 @media (max-width: 800px) {
   #shell[data-mail-layout] {
@@ -6037,7 +6037,7 @@ pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
     grid-template-rows: 120px minmax(var(--mail-list-min-height, 200px), 1fr) minmax(180px, 1fr);
     overflow: auto;
   }
-  #shell[data-mail-layout] > .side, #shell[data-mail-layout] > #messages, #shell[data-mail-layout] > #reader { grid-column: 1; grid-row: auto; }
+  #shell[data-mail-layout] > .side, #shell[data-mail-layout] > #messages, #shell[data-mail-layout] > #reader-area { grid-column: 1; grid-row: auto; }
   #shell[data-mail-layout="window"] { grid-template-rows: 120px minmax(var(--mail-list-min-height, 200px), 1fr); }
   #mail-view-control { margin-left: 4px; }
 }
