@@ -1,3 +1,5 @@
+Gmail reply / forward subject icons use confirmed local sends and conservative cached Sent header evidence. See [Gmail disposition evidence](adr/2026-11-04-gmail-disposition-evidence.md) for identity rules and limits.
+
 Notification clicks use an independent reader in Separate window mode, without opening or marking read through the hidden shell preview. Keyboard header moves use visible neighbors while retaining hidden columns in the complete saved order.
 
 The open View menu blocks message and selection shortcuts until it closes.

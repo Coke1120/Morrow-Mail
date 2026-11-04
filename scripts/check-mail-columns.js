@@ -107,7 +107,7 @@ async function run() {
     assert.equal(prefix.hidden, !expected.length);
     assert.equal(prefix.nextElementSibling.className, "subject");
     assert.doesNotMatch(prefix.textContent, /—/);
-    if (expected.length) assert.match(prefix.title, /provider flag/);
+    if (expected.length) assert.match(prefix.title, /saved evidence/);
   }
   await ui.run(`changeMailListSort('subject')`);
   ui.run(`paintMailListColumns($('message-list'))`);
@@ -140,7 +140,11 @@ async function run() {
   assert.equal(ui.run(`messageRow({id:"bad-date",to:[],date:"invalid"}).querySelector("time").textContent`), "");
   ui.run(`paintFeatureCatalog()`);
   assert.match(dom.window.document.getElementById("features-catalog").textContent, /sort all matching downloaded mail before paging/);
-  assert.match(dom.window.document.getElementById("features-catalog").textContent, /Reply \/ forward icons appear inline before the Subject text/);
+  assert.match(dom.window.document.getElementById("features-catalog").textContent, /Reply \/ forward icons appear inline before Subject/);
+  const dispositionHelp = dom.window.document.getElementById("mail-columns-provider-help").textContent;
+  assert.match(dispositionHelp, /confirmed successful Morrow sends/);
+  assert.match(dispositionHelp, /emoji reactions are excluded/);
+  assert.match(dispositionHelp, /cross-device forwards cannot be inferred/);
   assert.doesNotMatch(dom.window.document.getElementById("features-catalog").textContent, /The Reply \/ forward column shows/);
   assert.match(dom.window.document.getElementById("mail-sort-help").textContent, /first To recipient/);
   assert.match(dom.window.document.getElementById("mail-sort-help").textContent, /icons appear before the subject/);

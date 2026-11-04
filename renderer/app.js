@@ -3347,6 +3347,7 @@ function outboxEmails(rows) {
     fromAddress: row.fromAddress,
     fromDisplayName: row.fromDisplayName,
     attachments: row.attachments,
+    sourceMessageId: row.sourceMessageId, kind: row.kind,
     inReplyTo: row.inReplyTo,
     threadId: row.threadId,
   }));
@@ -3371,6 +3372,8 @@ function outboxComposeSeed(row, payload) {
     attachments: source.attachments || (row && row.attachments),
     draftId: source.draftId || (row && row.draftId),
     draftRevision: typeof source.draftRevision === "string" ? source.draftRevision : row && row.draftRevision,
+    sourceMessageId: source.sourceMessageId || (row && row.sourceMessageId) || "",
+    kind: source.kind || (row && row.kind) || "new",
     inReplyTo: source.inReplyTo || (row && row.inReplyTo) || "",
     threadId: source.threadId || (row && row.threadId) || "",
     status: "Send canceled. Your draft is ready to edit.",
@@ -6750,7 +6753,7 @@ function mailReplyForwardCell(email) {
   const labels = [];
   for (const [key, label, icon] of [["replied", "Replied", "Reply"], ["forwarded", "Forwarded", "Forward"]]) {
     if (email[key] === true) {
-      labels.push(label + " (provider flag)");
+      labels.push(label + " (saved evidence)");
       const svg = rowIcon(icon); svg.dataset.state = key; cell.append(svg);
     }
   }
@@ -13007,6 +13010,8 @@ function composePayload(account) {
     draftId: state.draftId || undefined,
     emailId: state.draftId || undefined,
     draftRevision: state.draftRevision || undefined,
+    sourceMessageId: meta.sourceMessageId || undefined,
+    kind: meta.kind || "new",
   };
   const cc = $("compose-cc").value.trim();
   const bcc = $("compose-bcc").value.trim();
@@ -14804,6 +14809,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
   const session = state.composeSession;
   const previous = {
     accountId: state.composeMeta.accountId,
+    sourceMessageId: state.composeMeta.sourceMessageId,
     draftId: state.draftId,
     draftRevision: state.draftRevision,
     threadId: state.composeMeta.threadId,
@@ -14818,6 +14824,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
   state.draftId = null;
   state.draftRevision = null;
   state.composeMeta.threadId = "";
+  state.composeMeta.sourceMessageId = "";
   let switched = false;
   try {
     const context = await call("mail:getComposeContext", {
@@ -14850,6 +14857,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
     state.draftId = previous.draftId;
     state.draftRevision = previous.draftRevision;
     state.composeMeta.threadId = previous.threadId;
+    state.composeMeta.sourceMessageId = previous.sourceMessageId;
     state.composeMeta.fromAddress = previous.fromAddress;
     state.composeMeta.fromDisplayName = previous.fromDisplayName;
     state.composeIdentity = previous.identity;
@@ -15191,6 +15199,8 @@ async function openCompose(seed) {
   state.signatureHtml = "";
   state.composeMeta = {
     accountId: fields.accountId || state.accountId,
+    sourceMessageId: fields.sourceMessageId || "",
+    kind: fields.kind || "new",
     inReplyTo: fields.inReplyTo || "",
     threadId: fields.threadId || "",
   };
