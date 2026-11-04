@@ -21,6 +21,8 @@ Body download failures, including IMAP responses without the requested source, s
 
 The reader also has Message / Timeline tabs. Selected-mail timeline generation is
 an explicit reviewed action, separate from normal open-and-mark-read behavior.
+In Separate window layout, Timeline appears below the list while open; Message
+restores the full list without changing the saved layout or mail-selection behavior.
 Saved artifacts and reviewed JSON, Markdown and isolated PDF exports stay local;
 no scheduled generation or URL delivery is available. See [the public format and
 privacy boundaries](TIMELINE_FORMAT.md).
