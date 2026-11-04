@@ -1,8 +1,10 @@
 # Shell parity
 
-Message / Timeline tabs preserve the existing reader element. Timeline preparation
-uses frozen downloaded sources, and only Generate starts the saved AI provider.
-Read-only body downloads do not use the normal renderer mail-open path. See
+Timeline is a single reader action beside Summary, opening a modal sheet without
+replacing the message or changing Right, Bottom or Separate window layouts. It
+uses the opened message and its downloaded thread, not list selections or search.
+Keywords and contact emails guide extraction; only Generate starts the saved AI
+provider after explicit-action permission. The sheet never downloads older mail. See
 [timeline scope, public JSON and export limits](TIMELINE_FORMAT.md).
 
 Mail & Sync includes native Windows/macOS new-Inbox-mail notifications, an on/off

@@ -289,6 +289,34 @@ test("prepare/list/get make no model call; generation uses manual permission and
   assert.doesNotMatch(fixture.calls[0].messages[1].content, /from_addr|recipient_headers|rfc_message_id|apiKey/);
   assert.equal((await fixture.service.invoke(1, "timeline:get", { id: terminal.timelineId })).revision, 1);
 });
+test("free-text focus is bound to the manifest, guides extraction only and stays outside public JSON", async context => {
+  const fixture = memory(context, { rows: [row(), row("mail-2", { uid: 2, from_addr: "Other <other@example.org>", from_address: "other@example.org" }), row("unrelated", { thread_id: "other-thread" })] });
+  const focused = { ...options, keywords: "delivery dates and planning decisions", contactEmails: ["ada@example.org"] };
+  const prepared = await fixture.service.invoke(1, "timeline:prepare", { selection: fixture.selection, options: focused });
+  assert.equal(prepared.coverage.included_message_count, 2);
+  assert.equal(fixture.calls.length, 0);
+  focused.keywords = "mutated after prepare";
+  focused.contactEmails.push("mutated@example.org");
+  const running = await generation(fixture, prepared);
+  const terminal = await running.terminal;
+  assert.equal(terminal.phase, "completed");
+  const messages = fixture.calls[0].messages;
+  assert.match(messages[0].content, /current mailbox account/);
+  assert.match(messages[0].content, /not instructions or additional evidence/);
+  assert.deepEqual(JSON.parse(messages[2].content), { focus: { keywords: "delivery dates and planning decisions", contact_emails: ["ada@example.org"] } });
+  const document = fixture.artifacts.get(terminal.timelineId).document;
+  assert.equal(document.schema_version, "1.0.0"); assert.equal(document.events.length, 2);
+  assert.equal(Object.hasOwn(document, "focus"), false);
+  assert.equal(fixture.downloads.length, 0);
+});
+test("host rejects unbounded or malformed focus before any AI request", async context => {
+  const fixture = memory(context);
+  for (const extra of [{ keywords: "x".repeat(1001) }, { keywords: "line\nbreak" }, { contactEmails: "ada@example.org" },
+    { contactEmails: ["invalid"] }, { contactEmails: Array(101).fill("ada@example.org") }, { contactEmails: [null] }]) {
+    await assert.rejects(fixture.service.invoke(1, "timeline:prepare", { selection: fixture.selection, options: { ...options, ...extra } }), { code: "timeline-input" });
+  }
+  assert.equal(fixture.calls.length, 0);
+});
 test("old disclosure grants do not authorize the expanded timeline purpose", context => {
   const fixture = memory(context, { noPermission: true });
   assert.equal(VERSION, 2);
@@ -508,9 +536,14 @@ function rendererFixture(replies = {}) {
   const api = { async invoke(channel, input) { calls.push({ channel, input }); if (replies[channel]) return replies[channel](input); return { success: true, data: channel === "timeline:prepare" ? prepared : channel === "timeline:list" ? [] : channel === "timeline:generate" ? { jobId: "synthetic-job" } : { saved: true } }; }, on: (channel, work) => events.set(channel, work) };
   const handlers = new Map();
   vm.runInNewContext(read("renderer/preload.js"), { require: () => ({ contextBridge: { exposeInMainWorld: (_name, value) => handlers.set("preload", value) }, ipcRenderer: { on() {}, invoke: api.invoke } }) });
+  const dialog = window.document.getElementById("timeline-dialog");
+  dialog.showModal = () => { dialog.open = true; };
+  dialog.close = () => { dialog.open = false; dialog.dispatchEvent(new window.Event("close")); };
   window.eval(read("renderer/timeline.js"));
-  const mounted = window.morrowTimeline.mount({ api, getSelection: () => ({ messages: [{ accountId: "mailbox-1", messageId: "mail-1" }], expandThreads: true }) });
-  return { dom, window, document: window.document, calls, events, prepared, mounted, bridge: handlers.get("preload") };
+  const email = { id: "mail-1", accountId: "mailbox-1", subject: "Planning notes", from: "Example, Ada <ada@example.org>", fromAddress: "ada@example.org",
+    to: ["Owner Example <owner@example.org>"], cc: ["CC Example <cc@example.org>"], replyTo: ["Reply Desk <reply@example.org>", "ADA@example.org"], bcc: ["private@example.org"] };
+  const mounted = window.morrowTimeline.mount({ api });
+  return { dom, window, document: window.document, calls, events, prepared, mounted, email, bridge: handlers.get("preload") };
 }
 test("actual preload allows only the exact timeline invokes and progress event", async () => {
   const fixture = rendererFixture();
@@ -519,88 +552,243 @@ test("actual preload allows only the exact timeline invokes and progress event",
   assert.equal(fixture.calls[0].channel, "timeline:prepare");
   fixture.dom.window.close();
 });
-test("rendered Timeline tab opens locally and keyboard navigation maintains ARIA", async () => {
-  const fixture = rendererFixture(); const { document, window } = fixture;
-  document.getElementById("timeline-tab").click(); await pause();
-  assert.equal(document.getElementById("timeline-panel").hidden, false);
-  assert.equal(document.getElementById("reader").hidden, true);
-  assert.equal(fixture.calls.filter(value => value.channel === "timeline:generate").length, 0);
-  document.getElementById("timeline-tab").dispatchEvent(new window.KeyboardEvent("keydown", { key: "Home", bubbles: true }));
-  assert.equal(document.getElementById("message-tab").getAttribute("aria-selected"), "true");
-  assert.equal(document.activeElement.id, "message-tab");
+test("reader toolbar is the only Timeline entry and captures the opened message, not selection or search", async () => {
+  const fixture = rendererFixture();
+  const { renderer } = require("./check-ux-workflows");
+  const ui = renderer({ document: fixture.document, fixtureTimeline: fixture.mounted, fixtureEmail: fixture.email });
+  ui.run(`
+    timelineView = fixtureTimeline;
+    state.prefs.snooze = false;
+    state.selectedIds = ['other']; state.emails = [{id:'other',accountId:'other-account'}];
+    state.email = {id:'other',accountId:'other-account'}; state.query = 'unrelated';
+    renderActions($('reader'), fixtureEmail);
+  `);
+  const button = fixture.document.querySelector('[data-action="timeline"]');
+  assert.equal(fixture.document.querySelectorAll('[data-action="timeline"]').length, 1);
+  assert.equal(button.textContent, "Timeline");
+  assert.equal(button.previousElementSibling.dataset.action, "summary");
+  assert.equal(button.getAttribute("aria-haspopup"), "dialog");
+  for (const id of ["message-tab", "timeline-tab", "timeline-panel", "timeline-from-selection", "timeline-from-reader", "timeline-from-search", "timeline-review"]) assert.equal(fixture.document.getElementById(id), null);
+  button.click(); await pause();
+  const prepared = fixture.calls.find(value => value.channel === "timeline:prepare").input;
+  assert.deepEqual(copy(prepared.selection), { messages: [{ accountId: "mailbox-1", messageId: "mail-1" }], expandThreads: true });
+  assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
   fixture.dom.window.close();
 });
-test("Timeline container retains Bottom, Separate window and narrow layout rules", () => {
-  const fixture = rendererFixture();
-  try {
-    const style = fixture.document.createElement("style");
-    style.textContent = read("renderer/app.css");
-    fixture.document.head.append(style);
-    const shell = fixture.document.getElementById("shell");
-    const area = fixture.document.getElementById("reader-area");
-    const rules = [...style.sheet.cssRules];
-    const applied = values => values.filter(rule => rule.selectorText?.includes("#shell[data-mail-layout") && area.matches(rule.selectorText));
-    shell.dataset.mailLayout = "bottom";
-    assert.ok(applied(rules).some(rule => rule.style.getPropertyValue("grid-row") === "3"), "Bottom preview must place the entire reader container below the list");
-    shell.dataset.mailLayout = "window";
-    assert.ok(applied(rules).some(rule => rule.style.getPropertyValue("display") === "none"), "Separate window must hide the entire shell preview, including Timeline");
-    const narrow = rules.filter(rule => rule.conditionText?.includes("max-width: 800px")).flatMap(rule => [...rule.cssRules]);
-    shell.dataset.mailLayout = "right";
-    assert.ok(applied(narrow).some(rule => rule.style.getPropertyValue("grid-column") === "1"), "Narrow windows must stack the reader container in one column");
-  } finally { fixture.dom.window.close(); }
-});
-test("Separate window selection opens a visible Timeline review and Message restores the full list", async () => {
-  const fixture = rendererFixture();
-  try {
-    const style = fixture.document.createElement("style");
-    style.textContent = read("renderer/app.css");
-    fixture.document.head.append(style);
-    const shell = fixture.document.getElementById("shell");
-    const area = fixture.document.getElementById("reader-area");
-    shell.dataset.mailLayout = "window";
-    fixture.document.getElementById("reader").textContent = "Existing mail preview";
-    const displayRule = () => [...style.sheet.cssRules].filter(rule => rule.selectorText?.includes('#shell[data-mail-layout="window"]')
-      && rule.style.getPropertyValue("display") && area.matches(rule.selectorText)).at(-1)?.style.getPropertyValue("display");
-    assert.equal(displayRule(), "none");
-    fixture.document.getElementById("timeline-from-selection").click();
-    await pause();
-    assert.equal(displayRule(), "flex", "the actual selection action must expose the reviewed Timeline surface");
-    assert.equal(fixture.document.getElementById("timeline-preflight").hidden, false);
-    assert.equal(fixture.document.getElementById("timeline-generate").disabled, false);
-    assert.equal(fixture.calls.filter(call => call.channel === "timeline:prepare").length, 1);
-    assert.equal(fixture.calls.filter(call => call.channel === "timeline:generate").length, 0);
-    assert.equal(shell.dataset.mailLayout, "window", "opening Timeline cannot change mail-selection semantics or the saved layout");
-    fixture.document.getElementById("message-tab").click();
-    assert.equal(displayRule(), "none");
-    assert.equal(fixture.document.getElementById("reader").textContent, "Existing mail preview");
-  } finally { fixture.dom.window.close(); }
-});
-test("rendered preflight requires an explicit Generate click and preserves the reader", async () => {
-  const fixture = rendererFixture(); const { document, window } = fixture;
+test("Timeline opens one local sheet with optional keywords and editable From/To/Cc/Reply-To contacts", async () => {
+  const fixture = rendererFixture(); const { document } = fixture;
   document.getElementById("reader").textContent = "Existing message";
-  await fixture.mounted.startReview("selected");
-  assert.match(document.getElementById("timeline-preview").textContent, /owner@example.org/);
-  assert.match(document.getElementById("timeline-preview").textContent, /one validation retry/);
-  assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
+  await fixture.mounted.open(fixture.email);
+  assert.equal(document.getElementById("timeline-dialog").open, true);
+  assert.equal(document.getElementById("reader").hidden, false);
   assert.equal(document.getElementById("reader").textContent, "Existing message");
-  document.getElementById("timeline-preflight").dispatchEvent(new window.Event("submit", { cancelable: true })); await pause();
+  assert.equal(document.activeElement.id, "timeline-keywords");
+  assert.equal(document.getElementById("timeline-keywords").value, "");
+  assert.equal(document.getElementById("timeline-contacts").value, "ada@example.org\nowner@example.org\ncc@example.org\nreply@example.org");
+  assert.equal(document.getElementById("timeline-generate").textContent, "Generate");
+  assert.equal(document.getElementById("timeline-generate").disabled, false);
+  assert.equal(document.getElementById("timeline-partial-choice").hidden, true);
+  assert.equal(document.getElementById("timeline-history").hidden, true);
+  assert.equal(fixture.calls.some(value => /generate|download|search/.test(value.channel)), false);
+  fixture.dom.window.close();
+});
+test("Timeline derives title, supported language and timezone without exposing settings", async () => {
+  const fixture = rendererFixture();
+  Object.defineProperty(fixture.window.navigator, "language", { value: "zh-HK" });
+  await fixture.mounted.open({ ...fixture.email, subject: "Planning\nnotes", fromAddress: undefined, replyTo: undefined, recipientHeaders: { replyTo: ["desk@example.org"] } });
+  const input = fixture.calls.find(value => value.channel === "timeline:prepare").input.options;
+  assert.equal(input.title, "Planning notes");
+  assert.equal(input.language, "zh-Hant");
+  assert.ok(input.displayTimezone);
+  assert.match(fixture.document.getElementById("timeline-contacts").value, /desk@example.org/);
+  for (const id of ["timeline-title", "timeline-language", "timeline-timezone", "timeline-expand", "timeline-preflight"]) assert.equal(fixture.document.getElementById(id), null);
+  fixture.dom.window.close();
+});
+test("recipient prefills accept structured mailboxes and formatted strings without adding Bcc", async () => {
+  const fixture = rendererFixture();
+  await fixture.mounted.open({ ...fixture.email, to: "Team <team@example.org>, Other <other@example.org>", cc: [{ address: "cc@example.org", name: "CC" }] });
+  const contacts = fixture.document.getElementById("timeline-contacts").value;
+  assert.match(contacts, /team@example.org\nother@example.org/);
+  assert.match(contacts, /cc@example.org/);
+  assert.doesNotMatch(contacts, /private@example.org/);
+  fixture.dom.window.close();
+});
+test("closing a pending preparation cannot leak the previous message into a reopened sheet", async () => {
+  let finish;
+  let count = 0;
+  const fixture = rendererFixture({ "timeline:prepare": () => ++count === 1 ? new Promise(resolve => { finish = resolve; }) : { success: true, data: fixture.prepared } });
+  const pending = fixture.mounted.open(fixture.email); await pause();
+  fixture.document.getElementById("timeline-close").click();
+  await fixture.mounted.open({ ...fixture.email, id: "new-message", accountId: "new-account", subject: "New context" });
+  finish({ success: true, data: fixture.prepared }); await pending;
+  fixture.document.getElementById("timeline-form").dispatchEvent(new fixture.window.Event("submit", { cancelable: true })); await pause();
+  const prepared = fixture.calls.filter(value => value.channel === "timeline:prepare").at(-1).input;
+  assert.deepEqual(copy(prepared.selection.messages), [{ accountId: "new-account", messageId: "new-message" }]);
+  assert.equal(prepared.options.title, "New context");
+  assert.equal(fixture.calls.filter(value => value.channel === "timeline:generate").length, 1);
+  fixture.dom.window.close();
+});
+test("Timeline dialog leaves Bottom, Separate window and narrow reader layout intact", async () => {
+  const fixture = rendererFixture();
+  const style = fixture.document.createElement("style");
+  style.textContent = read("renderer/app.css"); fixture.document.head.append(style);
+  const shell = fixture.document.getElementById("shell"), area = fixture.document.getElementById("reader-area");
+  const rules = [...style.sheet.cssRules];
+  const applied = values => values.filter(rule => rule.selectorText?.includes("#shell[data-mail-layout") && area.matches(rule.selectorText));
+  shell.dataset.mailLayout = "bottom";
+  assert.ok(applied(rules).some(rule => rule.style.getPropertyValue("grid-row") === "3"));
+  shell.dataset.mailLayout = "window";
+  await fixture.mounted.open(fixture.email);
+  assert.ok(applied(rules).some(rule => rule.style.getPropertyValue("display") === "none"));
+  assert.equal(fixture.document.getElementById("timeline-dialog").closest("#reader-area"), null);
+  fixture.document.getElementById("timeline-close").click();
+  assert.equal(shell.dataset.mailLayout, "window");
+  const narrow = rules.filter(rule => rule.conditionText?.includes("max-width: 800px")).flatMap(rule => [...rule.cssRules]);
+  shell.dataset.mailLayout = "right";
+  assert.ok(applied(narrow).some(rule => rule.style.getPropertyValue("grid-column") === "1"));
+  assert.doesNotMatch(read("renderer/app.css"), /:has\(#timeline-panel/);
+  fixture.dom.window.close();
+});
+test("one Generate click prepares edited free-text focus and starts explicit extraction", async () => {
+  const fixture = rendererFixture(); const { document, window } = fixture;
+  await fixture.mounted.open(fixture.email);
+  document.getElementById("timeline-keywords").value = "planning decisions and delivery dates";
+  document.getElementById("timeline-contacts").value = "new@example.org; NEW@example.org\nother@example.org";
+  document.getElementById("timeline-contacts").dispatchEvent(new window.Event("input"));
+  document.getElementById("timeline-form").dispatchEvent(new window.Event("submit", { cancelable: true })); await pause();
+  const prepared = fixture.calls.filter(value => value.channel === "timeline:prepare").at(-1).input;
+  assert.equal(prepared.options.keywords, "planning decisions and delivery dates");
+  assert.deepEqual(copy(prepared.options.contactEmails), ["new@example.org", "other@example.org"]);
   assert.equal(fixture.calls.filter(value => value.channel === "timeline:generate").length, 1);
   assert.equal(document.getElementById("timeline-cancel").hidden, false);
+  assert.equal(document.getElementById("timeline-generate").disabled, true);
   fixture.dom.window.close();
 });
-test("Timeline keyboard events cannot reach mail navigation, selection or destructive shortcuts", async () => {
+test("empty focus adds no keyword or contact restriction and invalid contacts never generate", async () => {
+  const fixture = rendererFixture(); const { document, window } = fixture;
+  await fixture.mounted.open(fixture.email);
+  document.getElementById("timeline-contacts").value = "invalid-address";
+  document.getElementById("timeline-form").dispatchEvent(new window.Event("submit", { cancelable: true })); await pause();
+  assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
+  assert.match(document.getElementById("timeline-status").textContent, /email addresses/);
+  document.getElementById("timeline-contacts").value = "";
+  document.getElementById("timeline-form").dispatchEvent(new window.Event("submit", { cancelable: true })); await pause();
+  const input = fixture.calls.filter(value => value.channel === "timeline:prepare").at(-1).input.options;
+  assert.equal(input.keywords, ""); assert.deepEqual(copy(input.contactEmails), []);
+  assert.equal(fixture.calls.filter(value => value.channel === "timeline:generate").length, 1);
+  fixture.dom.window.close();
+});
+test("partial coverage is conditional and still requires explicit acceptance", async () => {
+  const fixture = rendererFixture(); const { document, window } = fixture;
+  fixture.prepared.coverage = { selected_message_count: 3, included_message_count: 1, omitted_message_count: 2 };
+  await fixture.mounted.open(fixture.email);
+  assert.equal(document.getElementById("timeline-partial-choice").hidden, false);
+  assert.match(document.getElementById("timeline-preview").textContent, /2 omitted/);
+  assert.equal(document.getElementById("timeline-generate").disabled, true);
+  document.getElementById("timeline-form").dispatchEvent(new window.Event("submit", { cancelable: true })); await pause();
+  assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
+  document.getElementById("timeline-partial").click();
+  document.getElementById("timeline-form").dispatchEvent(new window.Event("submit", { cancelable: true })); await pause();
+  assert.equal(fixture.calls.find(value => value.channel === "timeline:generate").input.acceptPartial, true);
+  assert.equal(fixture.calls.some(value => value.channel === "timeline:download"), false);
+  fixture.dom.window.close();
+});
+test("new omissions discovered by Generate require acceptance instead of silently starting AI", async () => {
+  let count = 0;
+  const fixture = rendererFixture({ "timeline:prepare": () => ({ success: true, data: { ...fixture.prepared,
+    coverage: ++count === 1 ? fixture.prepared.coverage : { selected_message_count: 2, included_message_count: 1, omitted_message_count: 1 } } }) });
+  await fixture.mounted.open(fixture.email);
+  fixture.document.getElementById("timeline-form").dispatchEvent(new fixture.window.Event("submit", { cancelable: true })); await pause();
+  assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
+  assert.equal(fixture.document.getElementById("timeline-partial-choice").hidden, false);
+  fixture.document.getElementById("timeline-partial").click();
+  fixture.document.getElementById("timeline-form").dispatchEvent(new fixture.window.Event("submit", { cancelable: true })); await pause();
+  assert.equal(fixture.calls.filter(value => value.channel === "timeline:generate").length, 1);
+  fixture.dom.window.close();
+});
+test("closing during final preparation prevents the AI start even when preparation later succeeds", async () => {
+  let finish;
+  let count = 0;
+  const fixture = rendererFixture({ "timeline:prepare": () => ++count === 1 ? { success: true, data: fixture.prepared } : new Promise(resolve => { finish = resolve; }) });
+  await fixture.mounted.open(fixture.email);
+  fixture.document.getElementById("timeline-form").dispatchEvent(new fixture.window.Event("submit", { cancelable: true })); await pause();
+  fixture.document.getElementById("timeline-close").click();
+  finish({ success: true, data: fixture.prepared }); await pause();
+  assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
+  fixture.dom.window.close();
+});
+test("disabled AI permission or no usable body cannot start extraction", async () => {
+  for (const blocked of ["permission", "body"]) {
+    const fixture = rendererFixture();
+    if (blocked === "permission") fixture.prepared.allowed = false;
+    else fixture.prepared.coverage.included_message_count = 0;
+    await fixture.mounted.open(fixture.email);
+    assert.equal(fixture.document.getElementById("timeline-generate").disabled, true);
+    fixture.document.getElementById("timeline-form").dispatchEvent(new fixture.window.Event("submit", { cancelable: true })); await pause();
+    assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
+    fixture.dom.window.close();
+  }
+});
+test("Timeline keyboard events cannot reach mail shortcuts and Escape closes without AI", async () => {
   const fixture = rendererFixture();
   let mailKeys = 0;
   fixture.document.addEventListener("keydown", () => { mailKeys++; });
-  fixture.mounted.showTab("timeline");
-  for (const key of ["Delete", "Backspace", "ArrowDown", "Enter", "r"]) {
-    fixture.document.getElementById("timeline-panel").dispatchEvent(new fixture.window.KeyboardEvent("keydown", { key, bubbles: true }));
-  }
-  fixture.document.getElementById("timeline-tab").dispatchEvent(new fixture.window.KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+  await fixture.mounted.open(fixture.email);
+  for (const key of ["Delete", "Backspace", "ArrowDown", "Enter", "r"]) fixture.document.getElementById("timeline-contacts").dispatchEvent(new fixture.window.KeyboardEvent("keydown", { key, bubbles: true }));
   assert.equal(mailKeys, 0);
-  // showTab loads saved timelines asynchronously; settle that read before
-  // destroying its document so teardown cannot create an unhandled rejection.
-  await pause();
+  fixture.document.getElementById("timeline-dialog").dispatchEvent(new fixture.window.Event("cancel", { cancelable: true }));
+  assert.equal(fixture.document.getElementById("timeline-dialog").open, false);
+  assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
+  fixture.dom.window.close();
+});
+test("closing while generation starts cancels the acknowledged job, including an early progress event", async () => {
+  let acknowledge;
+  const fixture = rendererFixture({ "timeline:generate": () => new Promise(resolve => { acknowledge = resolve; }) });
+  await fixture.mounted.open(fixture.email);
+  fixture.document.getElementById("timeline-form").dispatchEvent(new fixture.window.Event("submit", { cancelable: true })); await pause();
+  await fixture.events.get("timeline:progress")({ jobId: "delayed-job", phase: "extracting", calls: 1, total: 1, completed: 0 });
+  fixture.document.getElementById("timeline-close").click();
+  acknowledge({ success: true, data: { jobId: "delayed-job" } }); await pause();
+  assert.equal(fixture.calls.filter(value => value.channel === "timeline:cancel").length, 1);
+  assert.equal(fixture.calls.find(value => value.channel === "timeline:cancel").input.jobId, "delayed-job");
+  assert.equal(fixture.document.getElementById("timeline-dialog").open, false);
+  fixture.dom.window.close();
+});
+test("saved history loads and deletes results locally with secondary export actions", async () => {
+  const stored = { document: documentFixture(), revision: 1 };
+  let rows = [{ id: stored.document.timeline_id, generated_at: stored.document.generated_at }];
+  const fixture = rendererFixture({
+    "timeline:list": () => ({ success: true, data: rows }),
+    "timeline:get": () => ({ success: true, data: stored }),
+    "timeline:delete": () => { rows = []; return { success: true, data: { deleted: true } }; },
+  });
+  await fixture.mounted.open(fixture.email);
+  assert.equal(fixture.document.getElementById("timeline-history").hidden, false);
+  assert.equal(fixture.document.getElementById("timeline-history").open, false);
+  fixture.document.querySelector("#timeline-saved button").click(); await pause();
+  assert.equal(fixture.document.getElementById("timeline-form").hidden, true);
+  assert.match(fixture.document.getElementById("timeline-result").textContent, /Planning correspondence/);
+  assert.equal(fixture.document.getElementById("timeline-export").disabled, true);
+  fixture.document.getElementById("timeline-delete").click(); await pause();
+  assert.equal(fixture.document.getElementById("timeline-history").hidden, true);
+  assert.equal(fixture.document.getElementById("timeline-exports").hidden, true);
+  assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
+  fixture.dom.window.close();
+});
+test("completion arriving before the start acknowledgement renders the saved result once", async () => {
+  const stored = { document: documentFixture(), revision: 1 };
+  const fixture = rendererFixture({
+    "timeline:generate": async () => {
+      await fixture.events.get("timeline:progress")({ phase: "completed", jobId: "fast-job", timelineId: stored.document.timeline_id });
+      return { success: true, data: { jobId: "fast-job" } };
+    },
+    "timeline:get": () => ({ success: true, data: stored }),
+  });
+  await fixture.mounted.open(fixture.email);
+  fixture.document.getElementById("timeline-form").dispatchEvent(new fixture.window.Event("submit", { cancelable: true })); await pause();
+  assert.equal(fixture.document.getElementById("timeline-form").hidden, true);
+  assert.equal(fixture.document.getElementById("timeline-cancel").hidden, true);
+  assert.equal(fixture.calls.filter(value => value.channel === "timeline:get").length, 1);
   fixture.dom.window.close();
 });
 test("rendered generated text is inert and exports require a fresh review checkbox", async () => {
@@ -615,10 +803,10 @@ test("rendered generated text is inert and exports require a fresh review checkb
   assert.equal(document.getElementById("timeline-export-confirm").checked, false);
   fixture.dom.window.close();
 });
-test("stale preflight responses do not restore an invalidated Generate permission", async () => {
+test("stale preparation responses do not restore an invalidated Generate permission", async () => {
   let resolve;
   const fixture = rendererFixture({ "timeline:prepare": () => new Promise(done => { resolve = done; }) });
-  const pending = fixture.mounted.startReview("selected"); await pause();
+  const pending = fixture.mounted.open(fixture.email); await pause();
   fixture.events.get("mail:accountsUpdated")();
   resolve({ success: true, data: fixture.prepared }); await pending;
   assert.equal(fixture.document.getElementById("timeline-generate").disabled, true);
