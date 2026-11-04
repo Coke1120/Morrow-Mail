@@ -6104,3 +6104,9 @@ pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
 .mail-column-menu button { display: block; width: 100%; min-height: 36px; padding: 6px 10px 6px 30px; position: relative; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; font-size: 13px; }
 .mail-column-menu button:hover, .mail-column-menu button:focus-visible { background: var(--hover); }
 .mail-column-menu [aria-checked="true"]::before { content: ""; position: absolute; left: 11px; top: 15px; width: 8px; height: 4px; border-left: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); }
+
+#setup-guide-mail:not([hidden]) { display: grid; gap: 24px; margin-top: 18px; }
+#setup-guide-mail .schedule-delay { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 8px; }
+#setup-guide-mail .schedule-delay-cell { display: grid; gap: 6px; min-width: 0; }
+#setup-guide-mail .schedule-delay-cell input { width: 100%; min-width: 0; }
+#setup-guide-mail button { margin-top: 6px; }

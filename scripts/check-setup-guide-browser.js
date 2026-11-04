@@ -23,6 +23,31 @@ const server=http.createServer((req,res)=>{
  await page.screenshot({path:path.join(output,'morrow-onboarding-desktop.png')});
  assert.equal(await page.locator('dialog[open]').count(),1);
  for(let i=0;i<18;i++){await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>!!document.activeElement.closest('#setup-guide')),true);}
+ await page.getByRole('button',{name:'6. Mail preferences',exact:true}).click();
+ await page.locator('#setup-undo:enabled').waitFor();
+ assert.equal(await page.locator('#setup-undo').inputValue(),'30');
+ assert.match(await page.locator('#setup-images').textContent(),/Keep current setting \(on\)/);
+ await page.locator('#setup-images-save').click();
+ assert.equal(await page.evaluate(()=>syntheticStartup.preferenceWrites.length),0);
+ for(const theme of ['light','dark']) {
+   await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+   for(const width of [1280,390]) {
+     await page.setViewportSize({width,height:900});
+     assert.equal(await page.evaluate(()=>document.querySelector('#setup-guide').scrollWidth<=document.querySelector('#setup-guide').clientWidth),true);
+     await page.screenshot({path:path.join(output,`morrow-mail-preferences-${theme}-${width}.png`)});
+   }
+ }
+ await page.addScriptTag({url:'/axe.js'});
+ const mailAccessibility=await page.evaluate(()=>axe.run(document.querySelector('#setup-guide'),{runOnly:{type:'tag',values:['wcag2a','wcag2aa']}}));
+ assert.deepEqual(mailAccessibility.violations.map(v=>v.id),[]);
+ await page.setViewportSize({width:1280,height:900});
+ await page.locator('#setup-undo').fill('15');await page.locator('#setup-undo-save').click();
+ await page.waitForFunction(()=>syntheticStartup.preferences.UndoSendDelaySeconds===15);
+ await page.locator('#setup-delay-hours').fill('2');await page.locator('#setup-delay-minutes').fill('30');await page.locator('#setup-delay-save').click();
+ await page.waitForFunction(()=>syntheticStartup.preferences.DefaultScheduleDelayMinutes===150);
+ await page.locator('#setup-images').selectOption('off');await page.locator('#setup-images-save').click();
+ await page.waitForFunction(()=>syntheticStartup.preferences.AutoLoadRemoteImages===false);
+ for(let i=0;i<30;i++){await page.keyboard.press('Tab');assert.equal(await page.evaluate(()=>!!document.activeElement.closest('#setup-guide')),true);}
  await page.getByRole('button',{name:'3. Sender name',exact:true}).click();
  assert.equal(await page.locator('#setup-guide-action').isDisabled(),true);
  await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.getElementById('setup-guide').open);

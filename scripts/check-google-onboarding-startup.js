@@ -49,10 +49,10 @@ for (const action of ['changelog-ok', 'changelog-close', 'Escape']) {
     assert.equal(f.host.calls.some(c => /importGoogleOauth|addAccount|aiConsentGrant|aiTest/.test(c)), false);
   });
 }
-test('new user with bundled Google configuration still receives the five-step guide', async t => {
+test('new user with bundled Google configuration still receives the six-step guide', async t => {
   const f = fixture(t, { seen: version, status: { ready: true, source: 'bundled' } }); await f.boot();
   assert.deepEqual(f.opened, ['setup-guide']); assert.equal(f.get('setup-guide-import').hidden, true);
-  assert.equal(f.get('setup-guide-steps').children.length, 5);
+  assert.equal(f.get('setup-guide-steps').children.length, 6);
 });
 test('existing mailboxes are preserved without automatic onboarding', async t => {
   const f = fixture(t, { seen: version, accounts: [{ id: 'a', email: 'a@example.invalid', folders: [] }] }); await f.boot();
@@ -83,7 +83,7 @@ test('skip and finish work without mailbox, calendar or AI, with restart at save
   assert.equal(f.saved().step, 1); assert.equal(f.get('setup-guide-action').disabled, true);
   const reload = fixture(t, { seen: version, onboarding: f.saved() }); await reload.boot();
   assert.match(reload.get('setup-guide-heading').textContent, /calendar/);
-  for (let i = 0; i < 4; i++) { reload.get('setup-guide-next').click(); await settle(); }
+  for (let i = 0; i < 5; i++) { reload.get('setup-guide-next').click(); await settle(); }
   assert.equal(reload.saved().status, 'done'); assert.equal(reload.get('setup-guide').open, false);
   assert.equal(reload.host.calls.includes('host:aiConsentGrant'), false);
 });
@@ -140,6 +140,20 @@ test('actual preload and settings host persist navigation only and preserve conf
   await bridge.invoke('morrow:configSetOnboarding', { status:'later',step:3,accountId:'b',token:'must-not-persist' });
   assert.deepEqual(host.answer('morrow:configGetOnboarding'), {status:'later',step:3,accountId:'b'});
   assert.equal(host.answer('config:getTheme'), 'dark');
+  await bridge.invoke('morrow:configSetOnboarding', {status:'active',step:5,accountId:''});
+  assert.equal(host.answer('morrow:configGetOnboarding').step,5);
+  assert.equal(await bridge.invoke('morrow:configGetUndoSendDelaySeconds'),30);
+  assert.equal(await bridge.invoke('morrow:configGetDefaultScheduleDelayMinutes'),0);
+  assert.equal(await bridge.invoke('morrow:configGetAutoLoadRemoteImages'),true);
+  await bridge.invoke('morrow:configSetUndoSendDelaySeconds',0);
+  await bridge.invoke('morrow:configSetDefaultScheduleDelayMinutes',10080);
+  await bridge.invoke('morrow:configSetAutoLoadRemoteImages',false);
+  const stored=JSON.parse(fs.readFileSync(path.join(directory,'settings.json'),'utf8'));
+  assert.equal(stored.undoSendDelaySeconds,0);assert.equal(stored.defaultScheduleDelayMinutes,10080);assert.equal(stored.remoteImages,false);
+  await assert.rejects(bridge.invoke('morrow:configSetUndoSendDelaySeconds',31));
+  await assert.rejects(bridge.invoke('morrow:configSetDefaultScheduleDelayMinutes',10081));
+  await assert.rejects(bridge.invoke('morrow:configSetAutoLoadRemoteImages','on'));
+
   assert.doesNotMatch(fs.readFileSync(path.join(directory, 'settings.json'),'utf8'), /must-not-persist/);
   await assert.rejects(bridge.invoke('morrow:configSetOnboarding',{status:'later',step:99}), /Invalid setup guide/);
   await assert.rejects(bridge.invoke('unsupported:setup'), /Unsupported channel/);
@@ -163,4 +177,56 @@ test('failed completion reads never claim connection or a saved signature', asyn
   f.ui.run("state.accounts=[{id:'a',email:'a@example.invalid'}];setupProgress.accountId='a';setupProgress.step=3;call=async()=>{throw new Error('unavailable')}");
   await f.ui.run('paintSetupGuide()'); assert.match(f.get('setup-guide-state').textContent,/Could not check/);
   assert.equal(f.get('setup-guide-next').textContent,'Skip for now');
+});
+
+test('mail preferences use saved values; navigation never writes; explicit saves survive restart', async t => {
+  const preferences = {UndoSendDelaySeconds:12,DefaultScheduleDelayMinutes:125,AutoLoadRemoteImages:false};
+  const f = fixture(t,{seen:version,preferences}); await f.boot();
+  f.ui.run('moveSetupGuide(5)'); await settle();
+  assert.equal(f.get('setup-undo').value,'12');
+  assert.equal(f.get('setup-delay-hours').value,'2'); assert.equal(f.get('setup-delay-minutes').value,'5');
+  assert.equal(f.get('setup-images').value,''); assert.match(f.get('setup-images').options[0].textContent,/off/);
+  assert.match(f.get('setup-images-help').textContent,/tracking pixels/);
+  for (const id of ['setup-undo','setup-delay-hours','setup-delay-minutes','setup-images']) assert.ok(f.get(id).labels.length);
+  f.get('setup-images-save').click(); await settle(); assert.equal(f.host.preferenceWrites.length,0);
+  f.get('setup-undo').value='20'; f.get('setup-images').value='on';
+  f.get('setup-guide-back').click(); await settle(); f.get('setup-guide-next').click(); await settle();
+  assert.equal(f.get('setup-undo').value,'20'); assert.equal(f.get('setup-images').value,'on');
+  f.get('setup-guide-later').click(); await settle(); assert.equal(f.host.preferenceWrites.length,0);
+  const reload=fixture(t,{seen:version,preferences:f.host.preferences,onboarding:f.saved()});await reload.boot();
+  reload.get('settings').showModal();reload.get('setup-guide-open').click();await settle();
+  assert.equal(reload.get('setup-undo').value,'12'); assert.equal(reload.get('setup-images').value,'');
+  reload.get('setup-undo').value='0';reload.get('setup-undo-save').click();await settle();
+  reload.get('setup-delay-hours').value='168';reload.get('setup-delay-minutes').value='0';reload.get('setup-delay-save').click();await settle();
+  reload.get('setup-images').value='on';reload.get('setup-images-save').click();await settle();
+  assert.deepEqual(reload.host.preferenceWrites,[['UndoSendDelaySeconds',0],['DefaultScheduleDelayMinutes',10080],['AutoLoadRemoteImages',true]]);
+  assert.equal(reload.ui.run('state.prefs.undoSend'),0);assert.equal(reload.ui.run('state.prefs.scheduleDelay'),10080);assert.equal(reload.ui.run('state.prefs.images'),true);
+  const saved=fixture(t,{seen:version,preferences:reload.host.preferences,onboarding:{status:'active',step:5,accountId:''}});await saved.boot();
+  assert.equal(saved.get('setup-undo').value,'0');assert.equal(saved.get('setup-delay-hours').value,'168');assert.match(saved.get('setup-images').options[0].textContent,/on/);
+  saved.get('setup-guide-next').click();await settle();assert.equal(saved.saved().status,'done');assert.equal(saved.host.preferenceWrites.length,0);
+});
+test('mail preference validation, failed reads, failed saves and pending save dismissal', async t => {
+  const f=fixture(t,{seen:version});await f.boot();
+  const invoke=f.window.morrow.invoke;
+  let failRead=true,finish;
+  f.window.morrow.invoke=async(channel,...args)=>{
+    if(failRead && channel==='morrow:configGetUndoSendDelaySeconds')throw new Error('synthetic read failure');
+    return invoke(channel,...args);
+  };
+  f.ui.run('moveSetupGuide(5)');await settle();
+  assert.equal(f.get('setup-undo').disabled,true);assert.equal(f.get('setup-guide-action').textContent,'Retry loading preferences');
+  failRead=false;f.get('setup-guide-action').click();await settle();assert.equal(f.get('setup-undo').disabled,false);
+  for(const invalid of ['', '-1','31','1.5']){f.get('setup-undo').value=invalid;f.get('setup-undo-save').click();await settle();assert.match(f.get('setup-undo-status').textContent,/whole number/);}
+  for(const [hours,minutes] of [['168','1'],['169','0'],['0','60'],['1.5','0'],['-1','0']]){
+    f.get('setup-delay-hours').value=hours;f.get('setup-delay-minutes').value=minutes;f.get('setup-delay-save').click();await settle();assert.match(f.get('setup-delay-status').textContent,/at most 7 days/);
+  }
+  assert.equal(f.host.preferenceWrites.length,0);
+  f.window.morrow.invoke=async(channel,...args)=>{if(channel==='morrow:configSetAutoLoadRemoteImages')throw new Error('synthetic write failure');return invoke(channel,...args)};
+  f.get('setup-images').value='off';f.get('setup-images-save').click();await settle();
+  assert.match(f.get('setup-images-status').textContent,/Could not save/);assert.equal(f.get('setup-images').value,'off');assert.equal(f.host.preferences.AutoLoadRemoteImages,true);
+  f.window.morrow.invoke=async(channel,...args)=>{if(channel==='morrow:configSetAutoLoadRemoteImages')await new Promise(resolve=>{finish=resolve});return invoke(channel,...args)};
+  f.get('setup-images-save').click();await settle();f.ui.run('saveSetupMailPreference("images")');
+  assert.equal(f.get('setup-images-save').disabled,true);
+  f.get('setup-guide-later').click();await settle();finish();await settle();
+  assert.deepEqual(f.host.preferenceWrites,[['AutoLoadRemoteImages',false]]);assert.equal(f.get('setup-guide').open,false);
 });

@@ -174,7 +174,7 @@ function cast(key, value, loose) {
   if (key === "onboarding") {
     if (value === null) return null;
     if (!value || typeof value !== "object" || !["active", "later", "done", "existing"].includes(value.status)
-      || !Number.isInteger(value.step) || value.step < 0 || value.step > 4) {
+      || !Number.isInteger(value.step) || value.step < 0 || value.step > 5) {
       if (loose) return null;
       throw new Error("Invalid setup guide progress");
     }
