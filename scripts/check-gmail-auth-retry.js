@@ -192,6 +192,42 @@ async function run() {
     await assert.rejects(session(account, api => api.markRead("message", true)), e => e.code === "conflict" && e.operationIssued === true);
     assert.equal(calls.filter(c => c.method === "POST").length, 1, "post-submit conflict retains uncertain write evidence");
 
+    for (const status of [503, 408, 400, 401]) {
+      account = reset();
+      const mapping = db.rememberGmail(account.id, { providerId: "journal-message", labelIds: ["INBOX"] });
+      const messageId = `${account.id}-journal`;
+      db.insertMessage({ id: messageId, accountId: account.id, folderPath: "INBOX", uid: mapping.local_uid,
+        uidValidity: account.gmail_generation, date: new Date().toISOString(), listSortTs: Date.now(), starred: false });
+      db.bindGmailAlias(db.messageById(messageId), "journal-message");
+      route = (_url, init) => {
+        assert.equal(init.method, "POST");
+        const response = reply({ error: { status: "UNAVAILABLE" } }, status);
+        const getReader = response.body.getReader.bind(response.body);
+        response.body.getReader = () => {
+          const reader = getReader(), read = reader.read.bind(reader);
+          let changed = false;
+          reader.read = async () => {
+            // Change only while gmailError reads the body, after the first
+            // post-response connection guard has already succeeded.
+            if (!changed) { changed = true; secrets.setPassword(account.id, grant("replacement")); }
+            return read();
+          };
+          return reader;
+        };
+        return response;
+      };
+      const accepted = await engine.answer("mail:toggleStar", [{ emailId: messageId, isStarred: true }]);
+      assert.equal(accepted.success, true);
+      const settled = await engine.settleActions();
+      const uncertain = status === 503 || status === 408;
+      assert.equal(settled.outcomes.find(outcome => outcome.id === messageId)?.status, uncertain ? "unknown" : "failed",
+        `HTTP ${status}: error-body connection changes must preserve the provider's write evidence`);
+      assert.equal(db.messageById(messageId).starred, uncertain ? 1 : 0, "uncertain writes retain local state; known rejection rolls back");
+      await engine.settleActions();
+      assert.equal(calls.length, 1, "a submitted write is never replayed while settling the journal");
+      assert.equal(posts.length, 0, "a rejected write never triggers token renewal");
+    }
+
     account = reset();
     await assert.rejects(session(account, api => api.markRead("message", true, { beforeSubmit() { throw new Error("synthetic cancellation"); } })), e => e.operationIssued === false);
     assert.equal(calls.length, 0, "the final write authorization check runs after token awaits and before submission");

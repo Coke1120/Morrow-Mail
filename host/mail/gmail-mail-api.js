@@ -81,8 +81,13 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
       catch (error) { error.operationIssued = (options.method || "GET") !== "GET"; throw error; }
       if (response.ok) return response;
       const error = await gmailError(response, operation, { method: options.method || "GET", signal: options.signal });
-      alive();
-      readSignal?.throwIfAborted();
+      try { alive(); readSignal?.throwIfAborted(); }
+      catch (cause) {
+        // Reading the error body can await a reconnect or cancellation. Keep
+        // the HTTP result's write evidence when retiring the old connection.
+        cause.operationIssued = error.operationIssued;
+        throw cause;
+      }
       if ((options.method || "GET") !== "GET" || response.status !== 401 || attempt !== 0 || typeof refreshAccessToken !== "function") throw error;
       credential = await refreshAccessToken(credential);
       alive();

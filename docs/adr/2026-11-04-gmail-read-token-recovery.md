@@ -20,6 +20,10 @@ share this behavior per HTTP request, without restarting a workflow that may hav
 already written. POST, PUT, PATCH and DELETE are never replayed. New-account
 verification still uses its provisional token before credentials are committed.
 Send's separate transport path remains one submission with no automatic replay.
+If a connection changes while an error response body is being read, preserve
+that HTTP result's write-submission evidence: 408/5xx writes remain unknown,
+while known rejections remain unissued. Retiring a stale session must not turn
+an uncertain provider write into a local rollback.
 
 The existing-account wrapper covers sync, body/attachment reads, search, actions
 and draft/label sessions. The post-sign-in profile check uses the same supplier so
