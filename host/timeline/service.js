@@ -35,11 +35,14 @@ function selectionInput(value) {
   }
 }
 function optionsInput(value) {
-  shape(value, ["title", "language", "displayTimezone"], ["title", "language", "displayTimezone"]);
+  shape(value, ["title", "language", "displayTimezone", "keywords", "contactEmails"], ["title", "language", "displayTimezone"]);
   if (typeof value.title !== "string" || !value.title.trim() || value.title.length > 500 || /[\x00-\x1f\x7f\u2028\u2029]/.test(value.title)) throw failure("timeline-input");
   if (!Object.hasOwn(LANGUAGES, value.language)) throw failure("timeline-language");
   if (typeof value.displayTimezone !== "string" || value.displayTimezone.length > 64) throw failure("timeline-timezone");
   try { new Intl.DateTimeFormat("en", { timeZone: value.displayTimezone }).format(); } catch { throw failure("timeline-timezone"); }
+  if (value.keywords !== undefined && (typeof value.keywords !== "string" || value.keywords.length > 1000 || /[\x00-\x1f\x7f]/.test(value.keywords))) throw failure("timeline-input");
+  if (value.contactEmails !== undefined && (!Array.isArray(value.contactEmails) || value.contactEmails.length > 100
+    || value.contactEmails.some(address => typeof address !== "string" || address.length > 254 || !/^[^\s@<>,;]+@[^\s@<>,;]+$/.test(address)))) throw failure("timeline-input");
 }
 
 function createService(dependencies) {
@@ -67,7 +70,7 @@ function createService(dependencies) {
     if (estimatedInputTokens > LIMITS.inputTokens) throw failure("timeline-budget");
     const status = consent.status();
     const id = crypto.randomUUID();
-    const entry = { owner, snapshot, options: { ...input.options }, expires: now() + 300000, consentToken: status.token, closed };
+    const entry = { owner, snapshot, options: { ...input.options, ...(input.options.contactEmails ? { contactEmails: [...input.options.contactEmails] } : {}) }, expires: now() + 300000, consentToken: status.token, closed };
     entry.optionsDigest = hash([snapshot.digest, entry.options, status.token]);
     manifests.set(id, entry);
     return { manifestToken: id, optionsDigest: entry.optionsDigest, expiresAt: entry.expires,
@@ -108,7 +111,7 @@ function createService(dependencies) {
           $schema: "urn:morrow-mail:timeline:1.0.0", schema_version: "1.0.0", timeline_id: crypto.randomUUID(), source_namespace: db.timeline.namespace(),
           generator: { name: "Morrow Mail", version }, generated_at: new Date(now()).toISOString(), title: entry.options.title,
           display_timezone: entry.options.displayTimezone, time_basis: "mail_timestamp", coverage: entry.snapshot.coverage, source_threads: entry.snapshot.sourceThreads,
-        }, language: entry.options.language, signal: lease.signal, check,
+        }, language: entry.options.language, focus: { keywords: entry.options.keywords || "", contact_emails: entry.options.contactEmails || [] }, signal: lease.signal, check,
         complete: (messages, options) => complete(messages, { ...options, config: config(), background: false }),
         progress: value => { calls = value.calls; send(value); } });
         check();

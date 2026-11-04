@@ -1,20 +1,22 @@
 #reader-area { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.reader-tabs { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; padding: 8px; margin-bottom: 8px; background: var(--paper); border-radius: 12px; }
-.reader-tabs [role="tab"] { display: inline-flex; gap: 6px; align-items: center; background: transparent; color: var(--ink); }
-.reader-tabs [aria-selected="true"] { background: var(--selected); box-shadow: var(--shadow-card); }
 #reader-area > #reader { flex: 1 1 auto; }
-#timeline-panel { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px; background: var(--paper); border-radius: 16px; box-shadow: var(--shadow-card); }
-#timeline-panel label { display: grid; gap: 6px; margin: 12px 0; }
-#timeline-panel .timeline-choice { display: flex; gap: 8px; align-items: flex-start; }
-#timeline-panel .timeline-choice input { flex: 0 0 auto; margin-top: 3px; width: auto; }
-#timeline-panel input, #timeline-panel select { max-width: 100%; }
+#timeline-dialog { width: min(680px, calc(100vw - 24px)); }
+#timeline-dialog label { display: block; margin: 12px 0 6px; }
+#timeline-dialog input:not([type="checkbox"]), #timeline-dialog textarea { width: 100%; box-sizing: border-box; }
+#timeline-dialog textarea { resize: vertical; }
+#timeline-dialog .timeline-choice { display: flex; gap: 8px; align-items: flex-start; }
+#timeline-dialog .timeline-choice input { flex: 0 0 auto; margin-top: 3px; width: auto; }
+#timeline-dialog .row { flex-wrap: wrap; }
+#timeline-dialog details { margin-top: 16px; }
+#timeline-dialog summary { cursor: pointer; }
 #timeline-status, #timeline-preview, #timeline-result { overflow-wrap: anywhere; white-space: pre-wrap; }
+#timeline-status:empty, #timeline-result:empty { display: none; }
 .timeline-event { border-left: 2px solid var(--accent-ink); padding: 0 0 18px 16px; margin: 18px 0; }
 .timeline-event h3 { font-size: 14px; }
 .timeline-event p { margin: 6px 0; }
-.timeline-saved { margin-top: 24px; border-top: 1px solid var(--line); }
+#timeline-saved { display: grid; gap: 6px; margin-top: 8px; }
+#timeline-saved button { white-space: normal; text-align: left; }
 html[data-window="reader"] #reader-area { flex: 1 1 auto; width: 100%; }
 html[data-window="compose"] #reader-area { display: none !important; }
 html[data-window="translate"] #reader-area { flex: 1 1 auto; }
-html[data-window="translate"] #reader-tabs, html[data-window="translate"] #timeline-panel { display: none !important; }
-@media (prefers-reduced-motion: reduce) { #reader-area *, #timeline-panel * { animation: none !important; transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { #reader-area *, #timeline-dialog * { animation: none !important; transition: none !important; } }

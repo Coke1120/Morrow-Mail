@@ -32,7 +32,7 @@ test('actual preload saves a validated view independently of pane widths, column
   assert.deepEqual(await bridge.invoke('morrow:configGetMailView'), { layout: 'bottom', listHeight: 440 });
   for (const invalid of [null, { layout: 'url', listHeight: 320 }, { layout: 'right', listHeight: 199 }, { layout: 'window', listHeight: 2001 }]) await assert.rejects(bridge.invoke('morrow:configSetMailView', invalid), /Mail view must/);
   assert.deepEqual(await bridge.invoke('morrow:configGetLayoutPanes'), { folders: 260, list: 720, reading: 480 });
-  assert.deepEqual(await bridge.invoke('morrow:configGetMailColumnOrder'), ['subject', 'date', 'sender', 'recipient', 'status']);
+  assert.deepEqual(await bridge.invoke('morrow:configGetMailColumnOrder'), ['subject', 'date', 'sender', 'recipient']);
   assert.equal(await bridge.invoke('config:getTheme'), 'dark');
   await bridge.openReaderWindow({ accountId: 'b', messageId: 'message-b' });
   assert.equal(channels.at(-1).channel, 'reader:open');
