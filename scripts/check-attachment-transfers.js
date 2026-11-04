@@ -118,6 +118,8 @@ function fixture(apiTransport = false) {
       dialog: { showSaveDialog: async () => { events.push("dialog"); if (controls.dialog) await controls.dialog.wait; return { canceled: controls.cancelSave, filePath: "/synthetic-file" }; } },
       shell: { openPath: async () => { events.push("open"); return ""; } },
     }; } };
+  // This fixture isolates transfer/cache behavior; token ownership is covered separately.
+  context.withMailClient = (...args) => remote.withClient(...args);
   vm.runInNewContext(`const lanes = new Map(), accountEpochs = new Map(), ACCOUNT_EPOCH = Symbol();\n`
     + cut(source, "function removedAccountError()", "function dataFile()")
     + cut(source, "function laneFor(", "function broadcast(")

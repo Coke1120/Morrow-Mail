@@ -8,6 +8,7 @@
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
     "0.3.23": [
+      "Gmail API mail reads renew saved tokens per request and can retry one rejected read after renewal. Writes are never replayed; unconfirmed submissions remain for review. Legacy IMAP, Calendar and provider sign-in policies are unchanged.",
       "The reader adds a Timeline tab for reviewed selected messages, downloaded threads and downloaded search results. Only Generate starts AI; no mail is marked read, relabeled or sent.",
       "Save timelines locally and export reviewed Markdown, PDF or public JSON 1.0.0 files. Coverage, timestamp provenance and uncertainty remain visible; exports require personal-information review.",
       "AI data permission needs a fresh review for Timeline extraction. Existing users must approve the saved AI destination again; background permission remains a separate choice.",

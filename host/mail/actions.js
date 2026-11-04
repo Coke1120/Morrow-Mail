@@ -375,7 +375,7 @@ async function runRemote(action) {
   }
   let entered = false;
   try {
-    const value = await remote.withClient(account, password, async (client) => {
+    const value = await (hooks.withMailClient || remote.withClient)(account, password, async (client) => {
       entered = true;
       if (intent.kind === "star") {
         await remote.changeFlags(client, source.folderPath, source.uid, intent.starred ? ["\\Flagged"] : [], intent.starred ? [] : ["\\Flagged"], source.uidValidity, action.message_id);
