@@ -38,7 +38,7 @@ function page(value, key) {
   return { ...value, [key]: value[key] || [], nextPageToken };
 }
 
-function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...args), check = () => {}, signal, accountKey } = {}) {
+function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...args) => fetch(...args), check = () => {}, signal, accountKey } = {}) {
   if (typeof accessToken !== "function") throw invalid("A Gmail access-token supplier is required.");
   function alive() { signal?.throwIfAborted(); check(); }
   async function token() {
@@ -47,6 +47,53 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     alive();
     if (typeof value !== "string" || !value) throw invalid("Gmail authorization is unavailable.");
     return value;
+  }
+  // Retry the rejected HTTP read only, never its caller or a compound write.
+  async function authorizedFetch(url, options, operation, readSignal, beforeSubmit) {
+    let credential;
+    try { credential = await token(); }
+    catch (error) { error.operationIssued = false; throw error; }
+    for (let attempt = 0; ; attempt++) {
+      if (attempt > 0) {
+        const wait = gmailPace.reserve(accountKey, gmailPace.readUnits(operation));
+        if (wait) await gmailPace.sleep(wait);
+        // Pacing may yield while another read renews this session again.
+        // Recheck the durable supplier immediately before the retry submission.
+        try { credential = await token(); }
+        catch (error) { error.operationIssued = false; throw error; }
+      }
+      try {
+        alive();
+        readSignal?.throwIfAborted();
+        options.signal?.throwIfAborted();
+        if ((options.method || "GET") !== "GET") beforeSubmit?.();
+      } catch (error) { error.operationIssued = false; throw error; }
+      let response;
+      try {
+        response = await fetchImpl(url, { ...options,
+          headers: { ...options.headers, authorization: `Bearer ${credential}` } });
+      } catch {
+        throw Object.assign(new Error("Gmail request could not be confirmed. Refresh before retrying a write."), {
+          code: options.signal?.aborted ? "aborted" : "provider_network", operationIssued: (options.method || "GET") !== "GET",
+        });
+      }
+      try { alive(); readSignal?.throwIfAborted(); }
+      catch (error) { error.operationIssued = (options.method || "GET") !== "GET"; throw error; }
+      if (response.ok) return response;
+      const error = await gmailError(response, operation, { method: options.method || "GET", signal: options.signal });
+      try { alive(); readSignal?.throwIfAborted(); }
+      catch (cause) {
+        // Reading the error body can await a reconnect or cancellation. Keep
+        // the HTTP result's write evidence when retiring the old connection.
+        cause.operationIssued = error.operationIssued;
+        throw cause;
+      }
+      if ((options.method || "GET") !== "GET" || response.status !== 401 || attempt !== 0 || typeof refreshAccessToken !== "function") throw error;
+      credential = await refreshAccessToken(credential);
+      alive();
+      readSignal?.throwIfAborted();
+      if (typeof credential !== "string" || !credential) throw invalid("Gmail authorization is unavailable.");
+    }
   }
   async function request(path, { operation, method = "GET", body, query, signal: readSignal, beforeSubmit } = {}) {
     alive();
@@ -63,24 +110,10 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
     for (const [name, value] of Object.entries(query || {})) {
       for (const item of Array.isArray(value) ? value : [value]) if (item !== undefined && item !== "") url.searchParams.append(name, String(item));
     }
-    const credential = await token();
     const requestSignal = AbortSignal.any([signal, readSignal, AbortSignal.timeout(45000)].filter(Boolean));
-    let response;
-    let issued = false;
-    try {
-      alive();
-      if (method !== "GET") beforeSubmit?.();
-      issued = true;
-      response = await fetchImpl(url.href, { method, redirect: "error", signal: requestSignal,
-        headers: { authorization: `Bearer ${credential}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
-        ...(body ? { body: JSON.stringify(body) } : {}) });
-      alive();
-    } catch (cause) {
-      throw Object.assign(new Error("Gmail request could not be confirmed. Refresh before retrying a write."), { code: requestSignal.aborted ? "aborted" : "provider_network", operationIssued: method !== "GET" && issued, cause });
-    }
-    if (!response.ok) {
-      throw await gmailError(response, operation, { method, signal: requestSignal });
-    }
+    const response = await authorizedFetch(url.href, { method, redirect: "error", signal: requestSignal,
+      headers: { accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}) }, operation, readSignal, beforeSubmit);
     if (response.status === 204) return {};
     let text;
     try { text = await response.text(); alive(); readSignal?.throwIfAborted(); }
@@ -158,20 +191,17 @@ function createGmailMailApi({ accessToken, fetchImpl = (...args) => fetch(...arg
   }
   // Reuse the existing provider label hierarchy implementation, with strict transport ownership.
   async function labelsCall(work) {
-    const credential = await token();
+    const credential = ""; // Authorization is supplied per HTTP request below.
     let failure;
     const guardedFetch = async (url, options) => {
       alive();
       if (!String(url).startsWith(`${ROOT}/labels`)) throw invalid("Unexpected Gmail label destination.");
       const combined = signal ? AbortSignal.any([signal, AbortSignal.timeout(45000)]) : AbortSignal.timeout(45000);
-      const result = await fetchImpl(url, { ...options, redirect: "error", signal: combined });
-      alive();
-      if (!result.ok) {
-        const method = options.method || "GET";
-        const operation = { GET: "labels.list", POST: "labels.create", PATCH: "labels.update", DELETE: "labels.delete" }[method];
-        failure = await gmailError(result, operation, { method, signal: combined });
-        throw failure;
-      }
+      const method = options.method || "GET";
+      const operation = { GET: "labels.list", POST: "labels.create", PATCH: "labels.update", DELETE: "labels.delete" }[method];
+      let result;
+      try { result = await authorizedFetch(url, { ...options, redirect: "error", signal: combined }, operation); }
+      catch (error) { failure = error; throw error; }
       return result;
     };
     try { return await work(credential, guardedFetch); }

@@ -27,7 +27,7 @@ function parts(root, malformed = () => {}) {
 }
 function stringAddresses(value) { return (value?.value || []).map(row => row.name ? `${row.name} <${row.address}>` : row.address).filter(Boolean); }
 
-function createSession(account, token, { api, check = () => {}, signal } = {}) {
+function createSession(account, token, { api, check = () => {}, signal, accessToken } = {}) {
   const incarnation = account.gmail_generation;
   function alive() {
     signal?.throwIfAborted();
@@ -35,7 +35,7 @@ function createSession(account, token, { api, check = () => {}, signal } = {}) {
     const current = db.accountById(account.id);
     if (!migrated(current) || current.gmail_generation !== incarnation) throw Object.assign(new Error("This Gmail connection changed. Start the action again."), { code: "account_removed", operationIssued: false });
   }
-  api ||= createGmailMailApi({ accessToken: async () => token, check: alive, signal, accountKey: account.id });
+  api ||= createGmailMailApi({ accessToken: accessToken || (async () => token), refreshAccessToken: accessToken ? rejectedToken => accessToken({ forceRefresh: true, rejectedToken }) : undefined, check: alive, signal, accountKey: account.id });
   const rfcChecks = new Map();
   async function folders() {
     alive();
