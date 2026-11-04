@@ -44,6 +44,7 @@ async function publishRelease({ github, context, artifactDirectory = 'staging',
       (context.eventName === 'push' ? context.ref !== `refs/tags/v${version}` : context.ref !== 'refs/heads/main')) throw Error('Release context rejected.');
   const assets = await verifyInputs({ artifactDirectory, version, sha: context.sha, publicKey, runId, runAttempt });
   const tag = `v${version}`;
+  const releaseName = version === '0.4.0' ? 'v0.4' : version;
   const existing = await maybe(() => github.rest.repos.getReleaseByTag({ owner, repo, tag }));
   if (existing) throw Error('Release already exists; existing assets will not be replaced.');
   const latest = await maybe(() => github.rest.repos.getLatestRelease({ owner, repo }));
@@ -59,7 +60,7 @@ async function publishRelease({ github, context, artifactDirectory = 'staging',
   const details = await fs.readFile(path.join(__dirname, '..', 'docs', 'releases', `v${version}.md`), 'utf8')
     .catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
   const body = `${notes.data.body}${appNotes ? `\n\n## App changes\n${appNotes}` : ''}${details ? `\n\n${details.trim()}` : ''}\n\nmacOS update migration: Electron 0.2.4/0.2.5 requires one manual bridge installation. This macOS release is ad hoc signed and is not Apple Developer ID signed or notarized. Ed25519 authenticates the release download; it does not grant macOS execution permission or promise unattended installation. The updater checks policy on the destination Mac and, when approval or permissions are needed, offers a verified download for manual installation through Finder and macOS prompts. Automated replacement, when permitted, retains a recovery backup. Windows remains unsigned. See docs/SIGNED_UPDATES.md at this release tag for installation and recovery limits.\n\nValidation limits: Native macOS/Windows updater end-to-end transitions and real Microsoft personal/work-account authorization remain unverified. Microsoft onboarding still uses separate resource-specific authorization steps; combined one-step consent is not implemented. OS overlay and always-show scrollbar preferences still need native smoke checks.\n\nSource: ${context.sha}\n`;
-  const release = (await github.rest.repos.createRelease({ owner, repo, tag_name: tag, target_commitish: context.sha, name: version, body, draft: true, prerelease: false, make_latest: 'false' })).data;
+  const release = (await github.rest.repos.createRelease({ owner, repo, tag_name: tag, target_commitish: context.sha, name: releaseName, body, draft: true, prerelease: false, make_latest: 'false' })).data;
   // Any failure from here preserves a private draft; never delete or overwrite
   // existing assets, and never promote an incompletely verified release.
   const uploaded = [];

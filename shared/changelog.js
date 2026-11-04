@@ -7,7 +7,7 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
-    "0.3.26": [
+    "0.4.0": [
       "Maintenance rebuild after synchronizing main and dev history. The application behavior and features remain the same as v0.3.25.",
     ],
     "0.3.25": [

@@ -57,6 +57,8 @@ function mock({ failUpload = false, corruptDownload = false, existing = false, w
     }
     const args = { context: { repo: { owner: 'Coke1120', repo: 'Morrow-Mail' }, sha, eventName: 'push', ref: `refs/tags/v${version}` }, artifactDirectory: staging, version, publicKey, runId, runAttempt };
     const good = mock(); await publish({ ...args, github: good });
+    assert.equal(good.calls[0][1].tag_name, `v${version}`, 'release tag retains the full package Semver');
+    assert.equal(good.calls[0][1].name, version === '0.4.0' ? 'v0.4' : version, 'v0.4 display name is separate from its v0.4.0 tag');
     assert.match(good.calls[0][1].body, /Fixture release notes/);
     for (const line of require('../shared/changelog').notesFor(version)) assert.ok(good.calls[0][1].body.includes(line));
     const details = await fs.readFile(path.join(__dirname, '..', 'docs', 'releases', `v${version}.md`), 'utf8')
