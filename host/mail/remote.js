@@ -109,9 +109,9 @@ function makeClient(account, secret, options) {
   return client;
 }
 
-async function withClient(account, password, fn, { signal, refreshAuthentication } = {}) {
+async function withClient(account, password, fn, { signal, refreshAuthentication, accessToken, check } = {}) {
   signal?.throwIfAborted();
-  if (gmail.migrated(account)) return fn({ gmail: gmail.createSession(account, password, { signal }) });
+  if (gmail.migrated(account)) return fn({ gmail: gmail.createSession(account, password, { signal, accessToken, check }) });
   for (let attempt = 0; ; attempt++) {
     const client = makeClient(account, password);
     let connected = false;

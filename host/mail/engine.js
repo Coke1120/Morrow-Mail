@@ -580,13 +580,15 @@ function cachedList(params) {
   return { ...payload, sync: publicSync(params) };
 }
 
-async function secretFor(account, { forceRefresh = false } = {}) {
+async function secretFor(account, { forceRefresh = false, snapshot = false } = {}) {
   account = bindAccount(account);
   const revision = secrets.revision(account.id);
   function assertCurrent(expectedRevision) {
     assertAccountCurrent(account);
     const current = db.accountById(account.id);
     if (current.auth_kind !== account.auth_kind || current.mail_transport !== account.mail_transport
+        || current.profile !== account.profile || current.username !== account.username || current.email !== account.email
+        || current.gmail_generation !== account.gmail_generation
         || (expectedRevision != null && secrets.revision(account.id) !== expectedRevision)) {
       throw Object.assign(new Error("This mailbox connection changed. Try again with the current connection."), { code: "conflict" });
     }
@@ -629,7 +631,8 @@ async function secretFor(account, { forceRefresh = false } = {}) {
   if (oauthConfig.providerKey(account.profile) === "google") {
     oauthConfig.requireGoogleGrantClient(JSON.parse(stored));
   }
-  if (typeof result === "string") return result;
+  const deliver = token => snapshot ? { token, revision: secrets.revision(account.id) } : token;
+  if (typeof result === "string") return deliver(result);
   if (result && result.store) {
     if (account.mail_transport === "gmail_api" && !oauthConfig.hasPurposeScopes(JSON.parse(result.store).grantedScopes || "", "google", "imap")) throw Object.assign(new Error("The refreshed Google grant is missing Gmail API mail permission. Reauthorize the mailbox."), { code: "scope_missing" });
     try { secrets.setPassword(account.id, result.store); } catch {
@@ -637,7 +640,7 @@ async function secretFor(account, { forceRefresh = false } = {}) {
         code: "secure_storage_write", retryable: true,
       });
     }
-    return result.token;
+    return deliver(result.token);
   }
   throw new Error("Could not refresh OAuth access token.");
 }
@@ -893,13 +896,59 @@ function withSyncSecret(account, secret, work) {
   });
 }
 
+// A supplier owns only revisions produced by its own durable renewals. Each
+// request rereads the store; reconnects and removal retire the entire session.
+function gmailTokenSupplier(account) {
+  account = bindAccount(account);
+  let revision = secrets.revision(account.id);
+  const googleClientId = oauthConfig.loadGoogleClient()?.clientId;
+  const check = () => {
+    assertAccountCurrent(account);
+    oauthConfig.requireGoogleGrantClient({ googleClientId });
+    const current = db.accountById(account.id);
+    if (current.auth_kind !== account.auth_kind || current.mail_transport !== account.mail_transport
+        || current.profile !== account.profile || current.username !== account.username || current.email !== account.email
+        || current.gmail_generation !== account.gmail_generation
+        || secrets.revision(account.id) !== revision) {
+      throw Object.assign(new Error("This mailbox connection changed. Retry with the current connection."), { code: "conflict", operationIssued: false });
+    }
+  };
+  let tail = Promise.resolve();
+  const accessToken = (options = {}) => {
+    const work = tail.then(async () => {
+      check();
+      const read = async forceRefresh => {
+        const value = await secretFor(account, { forceRefresh, snapshot: true });
+        assertAccountCurrent(account);
+        if (secrets.revision(account.id) !== value.revision) throw Object.assign(new Error("This mailbox connection changed. Retry with the current connection."), { code: "conflict", operationIssued: false });
+        revision = value.revision;
+        check();
+        return value.token;
+      };
+      let token = await read(false);
+      // Another queued request may already have renewed this rejected token.
+      if (options.forceRefresh && token === options.rejectedToken) token = await read(true);
+      return token;
+    });
+    tail = work.then(() => {}, () => {});
+    return work;
+  };
+  return { accessToken, check };
+}
+
+function withMailClient(account, password, work, options = {}) {
+  if (account.mail_transport !== "gmail_api") return remote.withClient(account, password, work, options);
+  const supplier = gmailTokenSupplier(account);
+  return remote.withClient(account, password, work, { ...options, ...supplier });
+}
+
 // Call inside the mailbox lane, immediately before each new connection. Do not
 // retain a token across queue waits or folder-walk yields (including sleep).
 async function withSyncClient(account, work) {
   let password = await secretFor(account);
   const revision = secrets.revision(account.id);
   try {
-    return await remote.withClient(account, password, client => withSyncSecret(account, password, () => work(client)), {
+    return await withMailClient(account, password, client => withSyncSecret(account, password, () => work(client)), {
       refreshAuthentication: account.auth_kind === "oauth2" && account.profile === "outlook" ? async () => {
         assertAccountCurrent(account);
         if (secrets.revision(account.id) !== revision) {
@@ -1614,7 +1663,7 @@ async function settleOAuthMailbox(id) {
     return;
   }
   try {
-    await remote.withClient(row, token, async (client) => {
+    await withMailClient(row, token, async (client) => {
       const listed = await remote.listFolderRecords(client);
       db.replaceFolders(id, listed.folders || [], listed.delimiter || "/");
     });
@@ -1623,7 +1672,8 @@ async function settleOAuthMailbox(id) {
   }
   try {
     const current = db.accountById(id);
-    if (current) await remote.verifySmtp(current, token);
+    if (current?.mail_transport === "gmail_api") await withMailClient(current, token, client => client.gmail.api.profile());
+    else if (current) await remote.verifySmtp(current, token);
   } catch (error) {
     const message = remote.explain(error, token);
     if (/rejected/i.test(message)) db.setAuthError(id, message);
@@ -2448,7 +2498,7 @@ async function ensureBody(row, options) {
     const password = await secretFor(account);
     bodyProgress.start(bodyTask);
     const metadataOnly = account.mail_transport === "gmail_api" && row.body_complete === 1;
-    const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity, { metadataOnly }));
+    const fetched = await withMailClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity, { metadataOnly }));
     bodyResult = "incomplete";
     // Flags-only/empty FETCH results are unsuccessful body reads too. Keep
     // mismatched UID data out of the cache and use the recoverable failure path.
@@ -2597,7 +2647,7 @@ function rememberApiHit(account, hit) {
 
 async function searchImap(account, text, limit) {
   const password = await secretFor(account);
-  return exclusive(account.id, () => remote.withClient(account, password, async (client) => {
+  return exclusive(account.id, () => withMailClient(account, password, async (client) => {
     if (client.gmail) {
       const all = db.folderByWellKnown(account.id, "all");
       const found = await client.gmail.search(all.path, text, limit);
@@ -2797,7 +2847,7 @@ async function refillSenderApi(account, address, cursor, runPage) {
 
 async function searchSenderGmailApi(account, address, cursor, token) {
   let pageToken = cursor && cursor.pageToken ? String(cursor.pageToken) : "";
-  if (account.mail_transport === "gmail_api") return exclusive(account.id, () => remote.withClient(account, token.accessToken, async client => {
+  if (account.mail_transport === "gmail_api") return exclusive(account.id, () => withMailClient(account, token.accessToken, async client => {
     return refillSenderApi(account, address, pageToken ? { pageToken } : null, async (step, limit) => {
       const page = await client.gmail.api.listMessages({ query: senderHistory.gmailFromQuery(address), pageToken: step?.pageToken || "", limit });
       const stored = [];
@@ -2837,7 +2887,7 @@ async function searchSenderGraph(account, address, cursor, token) {
 async function searchSenderImapGmail(account, address, cursor) {
   const beforeUid = cursor && Number(cursor.beforeUid) > 0 ? Number(cursor.beforeUid) : 0;
   const password = await secretFor(account);
-  return exclusive(account.id, () => remote.withClient(account, password, async (client) => {
+  return exclusive(account.id, () => withMailClient(account, password, async (client) => {
     let unsupported = null;
     for (const box of GMAIL_ALL) {
       try {
@@ -2875,7 +2925,7 @@ async function searchSenderImap(account, address, cursor) {
     beforeUid = Number(cursor.beforeUid) > 0 ? Number(cursor.beforeUid) : null;
   }
   const password = await secretFor(account);
-  return exclusive(account.id, () => remote.withClient(account, password, async (client) => {
+  return exclusive(account.id, () => withMailClient(account, password, async (client) => {
     const hits = [];
     let scanned = 0;
     let nextCursor = null;
@@ -3085,7 +3135,7 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
           for (const entry of entries) entry.report({ phase: "connecting", loaded: 0 });
           const password = await secretFor(account);
           groupSignal.throwIfAborted(); assertRemote();
-          await remote.withClient(account, password, async client => {
+          await withMailClient(account, password, async client => {
             for (const entry of entries) {
               groupSignal.throwIfAborted();
               if (entry.signal.aborted) continue;
@@ -3674,7 +3724,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
     if (password && account.profile !== "gmail") {
       try {
         const raw = await remote.buildRaw({ ...options, messageId: keptId });
-        const appended = await remote.withClient(account, password, (client) => remote.appendRaw(client, sent.path, raw, ["\\Seen"]));
+        const appended = await withMailClient(account, password, (client) => remote.appendRaw(client, sent.path, raw, ["\\Seen"]));
         if (appended && appended.uid) {
           db.updateMessage(emailId, {
             uid: Number(appended.uid),
@@ -3686,7 +3736,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       }
     } else if (password) {
       try {
-        const report = await remote.withClient(account, password, (client) => remote.syncFolder(client, sent.path, { limit: 40 }));
+        const report = await withMailClient(account, password, (client) => remote.syncFolder(client, sent.path, { limit: 40 }));
         await db.applyFolderSyncAsync(account.id, sent.path, report);
       } catch {
         // The local Sent row stays until a later sync can adopt it.
@@ -3752,7 +3802,7 @@ async function cleanupSubmittedDraft(account, proof) {
       actions.assertIdentityReady(proof.id);
       current = db.messageById(proof.id);
       if (!matches(current)) return false;
-      await remote.withClient(account, password, async client => {
+      await withMailClient(account, password, async client => {
         // Connecting can await I/O while another window saves locally.
         if (!matches(db.messageById(proof.id))) return;
         await remote.removeUid(client, current.folder_path, current.uid, current.uid_validity);
@@ -4323,7 +4373,7 @@ function answer(channel, args, event) {
         try {
           await exclusive(account.id, async () => {
             const password = await secretFor(account);
-            await remote.withClient(account, password, async (client) => {
+            await withMailClient(account, password, async (client) => {
               await remote.renameBox(client, plan.source, plan.next);
               listed = await remote.listFolderRecords(client);
             });
@@ -4374,7 +4424,7 @@ function answer(channel, args, event) {
         try {
           await exclusive(account.id, async () => {
             const password = await secretFor(account);
-            await remote.withClient(account, password, async (client) => {
+            await withMailClient(account, password, async (client) => {
               await remote.createBox(client, folderPath);
               const listed = await remote.listFolderRecords(client);
               db.replaceFolders(account.id, listed.folders, listed.delimiter);
@@ -4509,7 +4559,7 @@ function answer(channel, args, event) {
               messageId,
               keepBcc: account.mail_transport === "gmail_api",
             });
-            await remote.withClient(account, password, async (client) => {
+            await withMailClient(account, password, async (client) => {
               if (!matches()) { warning = "A newer draft revision was saved. This upload was skipped."; return; }
               actions.assertIdentityReady(emailId);
               const prior = db.messageById(emailId);
@@ -4557,7 +4607,7 @@ function answer(channel, args, event) {
                 actions.assertIdentityReady(row.id);
                 const current = db.messageById(row.id);
                 if (account.mail_transport === "gmail_api" && current && db.draftRevision(current) !== db.draftRevision(row)) throw Object.assign(new Error("This draft changed while deletion was waiting. Review the current draft before discarding it."), { code: "draft_changed" });
-                if (current) await remote.withClient(account, password, (client) => remote.removeUid(client, current.folder_path, current.uid, current.uid_validity));
+                if (current) await withMailClient(account, password, (client) => remote.removeUid(client, current.folder_path, current.uid, current.uid_validity));
               });
             }
           } catch (error) {
@@ -4642,7 +4692,7 @@ function noteBotSent(receipt) {
   }
 }
 
-actions.install({ exclusive, secretFor, emitAccounts, broadcast });
+actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast });
 
 module.exports = {
   init,

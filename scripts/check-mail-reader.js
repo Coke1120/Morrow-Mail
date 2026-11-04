@@ -270,6 +270,7 @@ async function assertDownloadedBodyStaysOnTheRequestedUid() {
       }),
     },
   });
+  mismatch.withMailClient = (...args) => mismatch.remote.withClient(...args);
   vm.runInContext(between(engine, 'function storedBodyText', '// Visible-list prefetch only.'), mismatch);
   vm.runInContext(between(engine, 'function needsGmailMetadata', 'function pushRows'), mismatch);
   await assert.rejects(mismatch.ensureBody(stored.get('a')), { code: 'body_download_failed' });
