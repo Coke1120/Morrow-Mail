@@ -5,7 +5,7 @@ const { failure } = require("./validate");
 const { freezeSources, assertSources, hash, fingerprint } = require("./sources");
 const { LIMITS, LANGUAGES, PROMPT_VERSION, planChunks, extract } = require("./extract");
 
-const CHANNELS = new Set(["timeline:prepare", "timeline:download", "timeline:generate", "timeline:cancel", "timeline:list", "timeline:get", "timeline:delete", "timeline:export"]);
+const CHANNELS = new Set(["timeline:check", "timeline:prepare", "timeline:download", "timeline:generate", "timeline:cancel", "timeline:list", "timeline:get", "timeline:delete", "timeline:export"]);
 const codes = new Set(["timeline-validation", "timeline-version", "timeline-size", "timeline-depth", "timeline-selection-limit", "timeline-empty", "timeline-source-changed", "timeline-query", "timeline-budget", "timeline-not-found", "timeline-manifest", "timeline-partial", "timeline-busy", "timeline-cancelled", "ai-consent-required", "timeline-language", "timeline-timezone", "timeline-input", "timeline-revision"]);
 
 function shape(value, keys, required = []) {
@@ -60,7 +60,9 @@ function createService(dependencies) {
     return entry;
   }
   function prepare(owner, input, closed = () => false) {
-    shape(input, ["selection", "options"], ["selection", "options"]);
+    shape(input, ["selection", "options", "manifestToken"], ["selection", "options"]);
+    // Re-preparing edited focus must not silently switch account incarnations.
+    if (input.manifestToken !== undefined) manifest(owner, token(input.manifestToken));
     selectionInput(input.selection); optionsInput(input.options);
     for (const [id, entry] of manifests) if (entry.owner === owner || entry.expires < now()) manifests.delete(id);
     if (manifests.size >= 8) throw failure("timeline-busy");
@@ -132,6 +134,11 @@ function createService(dependencies) {
   }
   async function invoke(owner, channel, input = {}, publish = () => {}, closed = () => false) {
     if (Buffer.byteLength(JSON.stringify(input)) > 128000) throw failure("timeline-input");
+    if (channel === "timeline:check") {
+      shape(input, ["manifestToken"], ["manifestToken"]);
+      manifest(owner, token(input.manifestToken));
+      return { valid: true };
+    }
     if (channel === "timeline:prepare") return prepare(owner, input, closed);
     if (channel === "timeline:generate") return generate(owner, input, publish);
     if (channel === "timeline:download") {
@@ -158,7 +165,7 @@ function createService(dependencies) {
     }
     if (channel === "timeline:export") {
       shape(input, ["id", "revision", "format", "confirmed"], ["id", "revision", "format", "confirmed"]); token(input.id);
-      if (!["json", "markdown", "pdf"].includes(input.format) || input.confirmed !== true || !Number.isSafeInteger(input.revision)) throw failure("timeline-input");
+      if (!["json", "markdown", "html", "pdf"].includes(input.format) || input.confirmed !== true || !Number.isSafeInteger(input.revision)) throw failure("timeline-input");
       const stored = db.timeline.get(input.id);
       const check = () => { if (closed()) throw failure("timeline-cancelled"); if (db.timeline.get(input.id).revision !== input.revision) throw failure("timeline-revision"); };
       check();
