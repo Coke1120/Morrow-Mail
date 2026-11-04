@@ -139,7 +139,7 @@ test('subject prefix icons only describe explicit positive flags, with no status
     f.ui.context.email={id:'status',subject:'Re: Fwd: subject',inReplyTo:'parent',replied,forwarded};
     const cell=f.ui.run('mailReplyForwardCell(email)');assert.equal(cell.querySelectorAll('svg').length,count);
     assert.equal(cell.hidden,count===0);
-    if(count)assert.match(cell.textContent,/provider flag/);
+    if(count)assert.match(cell.textContent,/saved evidence/);
     const row=f.ui.run('messageRow(email)');
     assert.equal(row.querySelector('[data-mail-column="subject"]').firstElementChild.className,'mail-reply-forward');
     assert.equal(row.querySelector('[data-mail-column="status"]'),null);

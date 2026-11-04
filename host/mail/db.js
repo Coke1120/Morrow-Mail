@@ -270,6 +270,17 @@ function migrate() {
   for (const column of ["replied", "forwarded"]) {
     if (!all("PRAGMA table_info(messages)").some(row => row.name === column)) run(`ALTER TABLE messages ADD COLUMN ${column} INTEGER`);
   }
+  if (!all("PRAGMA table_info(messages)").some(row => row.name === "disposition_json")) run("ALTER TABLE messages ADD COLUMN disposition_json TEXT");
+  for (const column of ["disposition_provider_replied", "disposition_provider_forwarded", "reply_inference_eligible"]) {
+    if (!all("PRAGMA table_info(messages)").some(row => row.name === column)) run(`ALTER TABLE messages ADD COLUMN ${column} INTEGER`);
+  }
+  run(`CREATE TABLE IF NOT EXISTS gmail_dispositions (
+    account_id TEXT NOT NULL, provider_id TEXT NOT NULL, replied INTEGER NOT NULL DEFAULT 0,
+    forwarded INTEGER NOT NULL DEFAULT 0, inferred INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(account_id, provider_id))`);
+  run("CREATE INDEX IF NOT EXISTS messages_rfc_identity ON messages(account_id, rfc_message_id)");
+  run("CREATE INDEX IF NOT EXISTS messages_reply_parent ON messages(account_id, in_reply_to)");
+  run("CREATE INDEX IF NOT EXISTS messages_reply_candidates ON messages(account_id, folder_path, in_reply_to) WHERE reply_inference_eligible = 1 AND is_draft = 0");
   run(`CREATE TRIGGER IF NOT EXISTS body_retry_identity AFTER UPDATE OF account_id, folder_path, uid, uid_validity, gmail_id ON messages
     WHEN OLD.account_id IS NOT NEW.account_id OR OLD.folder_path IS NOT NEW.folder_path OR OLD.uid IS NOT NEW.uid
       OR OLD.uid_validity IS NOT NEW.uid_validity OR OLD.gmail_id IS NOT NEW.gmail_id
@@ -555,7 +566,10 @@ async function openDatabase(target, operation) {
     if (!storage.initialized) await startupPhase(operation, "initialize", "startup.initialize", () => storage.initialize(db));
     assertOpening(operation);
     await startupPhase(operation, "body-backfill", "startup.body-backfill", () => ensureBodyMetadata(operation));
-    await startupPhase(operation, "summaries", "startup.summaries", () => ensureScheduledSummaries(operation));
+    await startupPhase(operation, "summaries", "startup.summaries", async () => {
+      await ensureScheduledSummaries(operation);
+      await ensureGmailDispositions(operation);
+    });
     await startupPhase(operation, "search", "startup.index", () => ensureSearchIndex(operation));
     assertOpening(operation);
     await startupPhase(operation, "admit", "startup.admit", () => {
@@ -572,6 +586,24 @@ async function openDatabase(target, operation) {
       await ownedStorage.close();
     }
     throw error;
+  }
+}
+
+async function ensureGmailDispositions(operation) {
+  let cursor = 0;
+  while (true) {
+    assertOpening(operation);
+    const rows = internal(() => all(`SELECT m.rowid AS position, m.account_id, m.in_reply_to FROM messages m
+      JOIN accounts a ON a.id = m.account_id JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder_path
+      WHERE a.mail_transport = 'gmail_api' AND m.gmail_id IS NOT NULL AND f.well_known = 'sentitems'
+      AND m.reply_inference_eligible = 1 AND m.is_draft = 0 AND m.in_reply_to IS NOT NULL
+      AND m.rowid > ? ORDER BY m.rowid LIMIT 100`, [cursor]));
+    if (!rows.length) return;
+    internal(() => transaction(() => {
+      for (const row of rows) refreshGmailDisposition(row.account_id, row.in_reply_to);
+    }));
+    cursor = rows[rows.length - 1].position;
+    await new Promise(resolve => setImmediate(resolve));
   }
 }
 
@@ -681,7 +713,7 @@ function removeAccount(id) {
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
     run("DELETE FROM mail_actions WHERE account_id = ?", [id]);
-    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
+    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state", "gmail_dispositions"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
@@ -1552,6 +1584,7 @@ function insertMessageRecord(row) {
         senderHeader.bareAddress(row.fromAddress) || senderHeader.bareAddress(row.from) || null,
       ]
     );
+    if (row.disposition) run("UPDATE messages SET disposition_json = ? WHERE id = ?", [JSON.stringify(row.disposition), row.id]);
     if (row.bodyWarning) run("UPDATE messages SET body_warning = ? WHERE id = ?", [row.bodyWarning, row.id]);
     if (row.dateSource) run("UPDATE messages SET date_source = ? WHERE id = ?", [row.dateSource, row.id]);
     updateChanged("messages", require("./reply-forward-state").patch(row), "id = ?", [row.id]);
@@ -1576,6 +1609,7 @@ function draftRevision(row) {
   // already participates in the old proof. Include only a different, nonempty
   // name; null -> empty and equivalent provider-formatted display text retain
   // the queued proof, including names that are not valid unquoted MIME headers.
+  if (row.disposition_json) content.push(row.disposition_json);
   if (row.from_display_name && !senderHeader.cachedNameMatches(row)) content.push(row.from_display_name);
   return crypto.createHash("sha256").update(JSON.stringify(content)).digest("hex");
 }
@@ -1798,7 +1832,7 @@ function resolveScope(query) {
 const BODY_SPACE = "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)";
 const METADATA_COLUMNS = ["id", "account_id", "folder_path", "uid", "uid_validity", "thread_id", "rfc_message_id", "in_reply_to", "subject", "snippet",
   "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "date_source", "list_sort_ts", "unread", "starred", "is_draft",
-  "has_attachments", "attachments_json", "body_complete", "body_warning", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id", "replied", "forwarded"];
+  "has_attachments", "attachments_json", "body_complete", "body_warning", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id", "replied", "forwarded", "disposition_json", "disposition_provider_replied", "disposition_provider_forwarded", "reply_inference_eligible"];
 function metadataColumns(table) {
   return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
 }
@@ -2318,14 +2352,15 @@ function claimScheduled(id, messageId) {
   });
 }
 
-function acceptScheduled(id, messageId, receipt) {
+function acceptScheduled(id, messageId, receipt, disposition) {
   const partial = !!receipt?.rejected?.length;
   return transaction(() => {
     run("UPDATE scheduled_sends SET status = ?, message_id = ?, receipt_json = ?, error = ? WHERE id = ? AND status = 'sending'",
       [partial ? "partial" : "sent", messageId, receipt ? JSON.stringify(receipt) : null,
         partial ? require("./delivery-receipt").summary(receipt) : "SMTP accepted this message. If filing was interrupted, check Sent before recovering a copy. It will not send again automatically.", id]);
-    if (db.getRowsModified()) return true;
-    return ["sent", "partial"].includes(scheduledById(id)?.status);
+    const saved = db.getRowsModified() > 0 || ["sent", "partial"].includes(scheduledById(id)?.status);
+    if (saved && !partial && disposition) confirmDisposition(scheduledById(id).account_id, disposition);
+    return saved;
   });
 }
 
@@ -2647,9 +2682,63 @@ function applyGmailMessage(accountId, folderPaths, message) {
         const indexed = Object.entries(patch).some(([key, value]) => INDEXED_PATCH.has(key) && found[key] !== value);
         updateChanged("messages", patch, "id = ?", [found.id]); if (indexed) indexText(found.id);
       }
-      updateChanged("messages", { gmail_id: message.providerId }, "id = ?", [input.id]);
+      updateChanged("messages", { gmail_id: message.providerId,
+        reply_inference_eligible: typeof message.replyInferenceEligible === "boolean" ? Number(message.replyInferenceEligible) : null,
+        disposition_provider_replied: typeof message.replied === "boolean" ? Number(message.replied) : null,
+        disposition_provider_forwarded: typeof message.forwarded === "boolean" ? Number(message.forwarded) : null }, "id = ?", [input.id]);
     }
+    refreshGmailDisposition(accountId, message.rfcMessageId);
+    refreshGmailDisposition(accountId, message.inReplyTo);
+
   });
+}
+
+// Strict single RFC Message-ID only: no subject, thread or References guesses.
+function singleMessageId(value) {
+  return typeof value === "string" && /^<[^<>\s@]+@[^<>\s@]+>$/.test(value) ? value : null;
+}
+
+function captureDisposition(accountId, input) {
+  const kind = input?.kind === "forward" ? "forwarded" : ["reply", "all"].includes(input?.kind) ? "replied" : null;
+  const row = kind && messageById(input.sourceMessageId);
+  if (!row || row.account_id !== accountId || row.is_draft || accountById(accountId)?.mail_transport !== "gmail_api") return null;
+  // A stable provider identity is required. Unbound legacy rows stay unknown.
+  if (!row.gmail_id || (kind === "replied" && input.inReplyTo !== row.rfc_message_id)) return null;
+  return { accountId, generation: accountById(accountId).gmail_generation, providerId: row.gmail_id, kind };
+}
+
+function confirmDisposition(accountId, proof) {
+  if (!proof || proof.accountId !== accountId || !["replied", "forwarded"].includes(proof.kind)
+      || accountById(accountId)?.mail_transport !== "gmail_api"
+      || proof.generation !== accountById(accountId).gmail_generation) return;
+  transaction(() => {
+    run(`INSERT INTO gmail_dispositions(account_id, provider_id, ${proof.kind}) VALUES (?, ?, 1)
+      ON CONFLICT(account_id, provider_id) DO UPDATE SET ${proof.kind} = 1 WHERE ${proof.kind} != 1`, [accountId, proof.providerId]);
+    for (const row of gmailCopies(accountId, proof.providerId, { headersOnly: true })) refreshGmailDisposition(accountId, row.rfc_message_id, proof.providerId);
+  });
+}
+
+function refreshGmailDisposition(accountId, rfc, providerId) {
+  const valid = singleMessageId(rfc);
+  const columns = "id, rfc_message_id, gmail_id, disposition_provider_replied, disposition_provider_forwarded";
+  const targets = providerId ? all(`SELECT ${columns} FROM messages WHERE account_id = ? AND gmail_id = ?`, [accountId, providerId])
+    : valid ? all(`SELECT ${columns} FROM messages WHERE account_id = ? AND rfc_message_id = ? AND gmail_id IS NOT NULL`, [accountId, valid]) : [];
+  if (!targets.length) return;
+  const unique = valid && get("SELECT COUNT(DISTINCT gmail_id) AS n FROM messages WHERE account_id = ? AND rfc_message_id = ? AND gmail_id IS NOT NULL", [accountId, valid]).n === 1;
+  const sent = unique && get(`SELECT 1 FROM messages m JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder_path
+    WHERE m.account_id = ? AND m.in_reply_to = ? AND m.gmail_id IS NOT NULL AND m.gmail_id != ?
+      AND m.is_draft = 0 AND m.reply_inference_eligible = 1 AND f.well_known = 'sentitems' LIMIT 1`, [accountId, valid, targets[0].gmail_id]);
+  if (sent) run(`INSERT INTO gmail_dispositions(account_id, provider_id, inferred) VALUES (?, ?, 1)
+    ON CONFLICT(account_id, provider_id) DO UPDATE SET inferred = 1 WHERE inferred != 1`, [accountId, targets[0].gmail_id]);
+  for (const row of targets) {
+    const evidence = get("SELECT * FROM gmail_dispositions WHERE account_id = ? AND provider_id = ?", [accountId, row.gmail_id]);
+    // Existing explicit provider booleans win. Gmail's usual null can be enriched.
+    const patch = {
+      replied: row.disposition_provider_replied ?? (evidence?.replied || unique && evidence?.inferred ? 1 : null),
+      forwarded: row.disposition_provider_forwarded ?? (evidence?.forwarded ? 1 : null),
+    };
+    updateChanged("messages", patch, "id = ?", [row.id]);
+  }
 }
 
 function gmailCopies(accountId, providerId, { headersOnly = false } = {}) {
@@ -2753,6 +2842,15 @@ function gmailVerifyPage(accountId, folderPath, beforeUid = 0) {
 }
 
 module.exports = {
+  captureDisposition, confirmDisposition, refreshDisposition(messageId, provider) {
+    transaction(() => {
+      const row = messageById(messageId);
+      if (!row || accountById(row.account_id)?.mail_transport !== "gmail_api") return;
+      if (provider) updateChanged("messages", { disposition_provider_replied: typeof provider.replied === "boolean" ? Number(provider.replied) : null,
+        disposition_provider_forwarded: typeof provider.forwarded === "boolean" ? Number(provider.forwarded) : null }, "id = ?", [messageId]);
+      refreshGmailDisposition(row.account_id, row.rfc_message_id, row.gmail_id);
+    });
+  },
   timeline: require("../timeline/storage").createStore({ run, get, all, transaction }),
   timelineSearch: query => searchMessages(query, { headersOnly: true, timelineLimit: true }),
   timelineMessage: id => get(`SELECT ${metadataColumns("messages")} FROM messages WHERE id = ?`, [id]),

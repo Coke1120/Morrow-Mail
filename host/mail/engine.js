@@ -2530,6 +2530,7 @@ async function ensureBody(row, options) {
       ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
       ...require("./reply-forward-state").patch(fetched),
     });
+    if (account.mail_transport === "gmail_api") db.refreshDisposition(row.id, fetched);
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
@@ -3420,6 +3421,7 @@ function outboxNoticeSeed(row, payload, presented) {
     draftId: payload.draftId,
     draftRevision: payload.draftRevision,
     inReplyTo: payload.inReplyTo || "",
+    sourceMessageId: payload.sourceMessageId || "", kind: payload.kind || "new",
     threadId: payload.threadId || "",
   };
   const todo = agentTodoOf(payload);
@@ -3456,10 +3458,17 @@ function publicScheduled(row) {
     if (payload.draftId) out.draftId = payload.draftId;
     if (typeof payload.draftRevision === "string") out.draftRevision = payload.draftRevision;
     if (payload.inReplyTo) out.inReplyTo = payload.inReplyTo;
+    if (payload.sourceMessageId) { out.sourceMessageId = payload.sourceMessageId; out.kind = payload.kind; }
     if (payload.threadId) out.threadId = payload.threadId;
     if (Array.isArray(payload.attachments) && payload.attachments.length) out.attachments = payload.attachments;
   }
   return out;
+}
+
+function savedDisposition(accountId, input) {
+  const draft = db.messageById(input.draftId || input.emailId);
+  if (!draft?.is_draft || draft.account_id !== accountId || !draft.disposition_json) return null;
+  try { return JSON.parse(draft.disposition_json); } catch { return null; }
 }
 
 function scheduleSend(params) {
@@ -3486,7 +3495,10 @@ function scheduleSend(params) {
     subject: input.subject ? String(input.subject).trim() : "",
     htmlBody: typeof input.body === "string" ? input.body : "",
   });
+  const disposition = db.captureDisposition(account.id, input) || savedDisposition(account.id, input);
   const payload = {
+    disposition,
+    sourceMessageId: input.sourceMessageId, kind: input.kind,
     to,
     cc,
     bcc,
@@ -3640,6 +3652,7 @@ function editScheduled(params) {
   db.scheduledToDraft(id, {
     id: emailId, accountId: account.id, folderPath: drafts.path,
     threadId: payload.threadId || emailId, inReplyTo: payload.inReplyTo || null,
+    disposition: payload.disposition || null,
     rfcMessageId: rfcMessageId(account.email), subject: presented.subject,
     from: payload.fromAddress || account.email, fromDisplayName: typeof payload.fromDisplayName === "string" ? payload.fromDisplayName : "",
     to: addrList(payload.to), cc: addrList(payload.cc), bcc: addrList(payload.bcc),
@@ -3830,6 +3843,7 @@ async function deliver(params, lifecycle) {
   delete params.outbox;
   let account = db.accountById(params && params.accountId);
   if (!account) return fail("not-found", "Choose an account before sending.");
+  const disposition = lifecycle?.disposition || db.captureDisposition(account.id, params) || savedDisposition(account.id, params);
   const draftId = params && (params.draftId || params.emailId);
   const proof = draftId && /^[a-f0-9]{64}$/.test(params.draftRevision || "")
     ? { id: draftId, revision: params.draftRevision } : null;
@@ -3859,11 +3873,17 @@ async function deliver(params, lifecycle) {
       messageId: lifecycle?.messageId || rfcMessageId(account.email),
       onAccepted(next) {
         receipt = next;
-        if (lifecycle?.onAccepted) return lifecycle.onAccepted(next);
+        const intended = deliveryReceipt.addresses([...options.to, ...options.cc, ...options.bcc]).map(address => address.toLowerCase());
+        const accepted = new Set(next.accepted.map(address => address.toLowerCase()));
+        const confirmed = intended.length && !next.rejected.length && intended.every(address => accepted.has(address));
+        if (lifecycle?.onAccepted) lifecycle.onAccepted(next, confirmed ? disposition : null);
+        else if (confirmed) db.confirmDisposition(account.id, disposition);
+        if (lifecycle) return;
         if (!next.rejected.length) return;
         db.insertScheduled({ id: candidateId, accountId: account.id, status: "partial", sendAt: Date.now(), createdAt: Date.now(),
           messageId: next.messageId, receiptJson: JSON.stringify(next), error: deliveryReceipt.summary(next),
           payloadJson: JSON.stringify({ to: params.to, cc: params.cc, bcc: params.bcc, subject: options.subject, body: options.html,
+            disposition, sourceMessageId: params.sourceMessageId, kind: params.kind,
             fromAddress: params.fromAddress, fromDisplayName: params.fromDisplayName, attachments: resolved.meta, inReplyTo: params.inReplyTo, threadId: params.threadId, references: params.references }) });
         recoveryId = candidateId;
         scheduledDelivering.add(candidateId);
@@ -3951,8 +3971,8 @@ async function pumpScheduledAdmitted() {
           accountId: row.account_id,
           subject: presented.subject,
           body: presented.htmlBody || "",
-        }, { messageId: row.message_id, onAccepted(receipt) {
-          if (!db.acceptScheduled(row.id, receipt.messageId, receipt)) throw new Error("The delivery receipt could not be saved. Check Sent before retrying.");
+        }, { messageId: row.message_id, disposition: payload.disposition, onAccepted(receipt, disposition) {
+          if (!db.acceptScheduled(row.id, receipt.messageId, receipt, disposition)) throw new Error("The delivery receipt could not be saved. Check Sent before retrying.");
         } });
       } catch (error) {
         result = fail("send", error instanceof Error ? error.message : String(error));
@@ -4518,6 +4538,7 @@ function answer(channel, args, event) {
           recipientHeaders: { replyTo: [] },
           draftPending: true,
           inReplyTo: params.inReplyTo || null,
+          disposition: db.captureDisposition(account.id, params) || savedDisposition(account.id, params),
         };
         if (existing) {
           db.updateMessage(emailId, {
@@ -4544,6 +4565,7 @@ function answer(channel, args, event) {
             recipient_headers_json: JSON.stringify(record.recipientHeaders),
             draft_pending: 1,
             in_reply_to: record.inReplyTo,
+            disposition_json: record.disposition ? JSON.stringify(record.disposition) : null,
           });
         } else {
           db.insertMessage(record);
