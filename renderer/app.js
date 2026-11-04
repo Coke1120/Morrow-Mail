@@ -15972,7 +15972,7 @@ async function removeAccount() {
   const account = settingsAccount();
   if (!isLive(account)) return;
   const label = account.email || account.id;
-  if (!window.confirm(`Remove ${label} from Morrow Mail? Messages stay on the server.`)) return;
+  if (!window.confirm(`Remove ${label} from Morrow Mail? Messages stay on the server. Every related local timeline is deleted, including multi-account results. Exported files, backups and historical journal bytes remain.`)) return;
   hideUndoSend();
   clearUndo();
   showStatus("Removing account…");
@@ -26488,6 +26488,13 @@ async function bootTranslateWindow() {
 }
 
 async function boot() {
+  window.morrowTimeline?.mount({ api, getSelection(mode) {
+    if (mode === "search" || (mode === "current" && !selectedMessages().length && !state.email && state.query)) {
+      return { search: { query: state.query, accountId: state.searchAccountId || "" }, expandThreads: false };
+    }
+    const messages = selectedMessages().length ? selectedMessages() : mode === "selected" ? [] : [state.email].filter(Boolean);
+    return { messages: messages.map(message => ({ accountId: message.accountId, messageId: message.id })), expandThreads: true };
+  } });
   if (isComposeWindow()) {
     await bootComposeWindow();
     return;

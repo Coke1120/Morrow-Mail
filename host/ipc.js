@@ -123,6 +123,7 @@ function mailEnvelope(data) {
 }
 
 function fallback(channel, args, event) {
+  if (typeof channel === "string" && channel.startsWith("timeline:")) return require("./timeline/service").answer(channel, args, event);
   if (channel === "update:getState" || channel === "app:getVersion") {
     try {
       const updater = require("./updater");

@@ -227,13 +227,13 @@ async function signatureIdentitySave() {
   ui.run(`
     state.accounts = [{id:'box', email:'leo@gmail.com', platform:'imap', sendAs:[
       {email:'leo@gmail.com', verified:true},
-      {email:'leo@hkbscl.com', verified:true}
+      {email:'leo@northstar.example', verified:true}
     ]}];
     signatureEditorAccountId = 'box';
     paintSignatures({signatures:[{id:'def', name:'Account line', text:'Account line', accountId:'box'}],
       defaultSignaturePerAccount:{box:'def'}, signatureByDomainPerAccount:{box:{}}});
   `);
-  const domain = node("signature-list").children.find((row) => row.dataset && row.dataset.signatureKey === "domain:hkbscl.com");
+  const domain = node("signature-list").children.find((row) => row.dataset && row.dataset.signatureKey === "domain:northstar.example");
   domain.children[0].events.click();
   node("signature-html").checked = false;
   node("signature-name").value = "";
@@ -243,8 +243,8 @@ async function signatureIdentitySave() {
   assert.equal(payload.id, undefined);
   assert.equal(payload.accountId, "box");
   assert.equal(payload.isDefault, false);
-  assert.deepEqual(payload.domains, ["hkbscl.com"]);
-  assert.equal(payload.name, "hkbscl.com");
+  assert.deepEqual(payload.domains, ["northstar.example"]);
+  assert.equal(payload.name, "northstar.example");
   assert.equal(payload.text, "Domain only");
   assert.equal(ui.run("calls.filter(row => row.channel === 'mail:upsertSignature').length"), 1);
   ui.run("pending[0].resolve({id:'dom'})");

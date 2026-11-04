@@ -1,5 +1,10 @@
 # Shell parity
 
+Message / Timeline tabs preserve the existing reader element. Timeline preparation
+uses frozen downloaded sources, and only Generate starts the saved AI provider.
+Read-only body downloads do not use the normal renderer mail-open path. See
+[timeline scope, public JSON and export limits](TIMELINE_FORMAT.md).
+
 Mail & Sync includes native Windows/macOS new-Inbox-mail notifications, an on/off
 switch and hidden/sender/message preview choices. Default previews hide sender and
 content. Notifications use the existing running sync, preserve OS permissions and

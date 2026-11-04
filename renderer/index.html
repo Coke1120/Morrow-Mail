@@ -8,6 +8,7 @@
     <link rel="icon" href="./morrow-icon.svg" />
     <link rel="stylesheet" href="./app.css" />
     <link rel="stylesheet" href="./ai-consent.css" />
+    <link rel="stylesheet" href="./timeline.css" />
     <script src="./compose-role.js"></script>
   </head>
   <body data-ui="first-party">
@@ -224,6 +225,7 @@
           <div id="selection-bar" class="selection-bar" hidden>
             <p id="selection-count">0 selected</p>
             <div id="selection-actions" class="selection-actions" role="toolbar" aria-label="Selected messages"></div>
+            <button type="button" class="ghost" id="timeline-from-selection">Generate timeline…</button>
           </div>
           <div class="list-filter">
             <label class="page-select" title="Select messages shown on this page"><input type="checkbox" id="select-visible" aria-label="Select messages shown on this page" /></label>
@@ -245,7 +247,40 @@
           </div>
       </div>
       <div class="split" data-split="messages" role="separator" aria-orientation="vertical" aria-label="Resize message list" tabindex="0"></div>
-      <article id="reader" aria-label="Message"></article>
+      <section id="reader-area" aria-label="Message and timeline">
+        <div id="reader-tabs" class="reader-tabs" role="tablist" aria-label="Reader views">
+          <button type="button" id="message-tab" role="tab" aria-selected="true" aria-controls="reader" tabindex="0"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="m22 6-10 7L2 6"></path></svg>Message</button>
+          <button type="button" id="timeline-tab" role="tab" aria-selected="false" aria-controls="timeline-panel" tabindex="-1"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 3v18M8 5h12M8 12h9M8 19h12"></path></svg>Timeline</button>
+          <button type="button" class="ghost" id="timeline-from-reader">Generate timeline…</button>
+        </div>
+        <article id="reader" role="tabpanel" aria-labelledby="message-tab" tabindex="0" aria-label="Message"></article>
+        <section id="timeline-panel" role="tabpanel" aria-labelledby="timeline-tab" tabindex="0" hidden>
+          <h2>Timeline</h2>
+          <p class="hint">Read-only correspondence chronology from downloaded mail. Nothing runs when you open this tab. Summaries and requests need human review.</p>
+          <div class="row"><button type="button" class="ghost" id="timeline-review">Review selected threads</button><button type="button" class="ghost" id="timeline-from-search">Generate from search results…</button></div>
+          <p id="timeline-status" role="status" aria-live="polite"></p>
+          <form id="timeline-preflight" hidden>
+            <label>Title<input id="timeline-title" maxlength="500" value="Email timeline" required /></label>
+            <label>Output language<select id="timeline-language"><option value="en">English</option><option value="zh-Hant">繁體中文</option><option value="zh-Hans">简体中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="es">Español</option></select></label>
+            <label>Display timezone<input id="timeline-timezone" maxlength="64" required /></label>
+            <label class="timeline-choice"><input type="checkbox" id="timeline-expand" />Expand matches into their complete downloaded threads (never fetch older mail automatically)</label>
+            <button type="button" class="ghost" id="timeline-refresh">Review this selection</button>
+            <div id="timeline-preview"></div>
+            <button type="button" class="ghost" id="timeline-download" hidden>Download missing messages</button>
+            <label class="timeline-choice"><input type="checkbox" id="timeline-partial" />I accept explicitly omitted messages and partial coverage.</label>
+            <p class="hint">Only reviewed message text, subjects and attachment names go to the saved AI destination. Attachment files, Brain, Agent notes and conversation history are excluded. Requests are not tasks. No mail is marked read, relabeled or sent. Review AI data permission in Settings → AI first.</p>
+            <button type="submit" id="timeline-generate" disabled>Generate timeline</button>
+          </form>
+          <button type="button" class="ghost" id="timeline-cancel" hidden>Cancel generation</button>
+          <div class="timeline-saved"><label>Saved timelines (newest 100)<select id="timeline-saved"><option value="">Choose a saved timeline</option></select></label><button type="button" class="ghost" id="timeline-load">Open saved</button></div>
+          <div id="timeline-result"></div>
+          <div id="timeline-exports" hidden>
+            <label class="timeline-choice"><input type="checkbox" id="timeline-export-confirm" />I reviewed the personal information, coverage and uncertainty in this timeline for this export.</label>
+            <div class="row"><select id="timeline-format" aria-label="Export format"><option value="json">Public JSON 1.0.0</option><option value="markdown">Markdown</option><option value="pdf">PDF</option></select><button type="button" class="ghost" id="timeline-export" disabled>Export file…</button><button type="button" class="ghost" id="timeline-delete">Delete local timeline…</button></div>
+            <p class="hint">Exports may contain addresses, names, attachment names and sensitive summaries. No URL or webhook export is available. Account removal deletes every local timeline using that account, including multi-account timelines. Deletion does not erase exports, backups or historical journal bytes.</p>
+          </div>
+        </section>
+      </section>
     </div>
     <section id="provider-panel" class="primary-space" hidden aria-labelledby="provider-title">
       <div class="space-head motion-block"><h2 id="provider-title">Folders &amp; labels</h2></div>
@@ -584,6 +619,7 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
+        <p class="hint" id="cli-timeline">Selected-mail timelines are explicit desktop actions in the reader's Timeline tab, not bot operations, CLI commands or scheduled skills. Generation requires reviewed sources and explicit-action AI permission; opening the tab and exporting saved results use no AI. Public JSON 1.0.0, Markdown and isolated PDF file exports require a fresh personal-information review. URL/webhook export is unavailable. Run <code>npm run test:timeline</code> for synthetic schema, source, extraction, export, persistence, consent and rendered-tab checks; no real mail, credentials, AI requests or Electron GUI are used.</p>
         <p class="hint" id="cli-page-recovery">Compose attachment preparation, inert Undo recovery and Calendar retry identities are desktop operations; bot capabilities and permissions are unchanged. Calendar reauthorization uses the existing provider grant, separately from Google mail. These fixes do not expose calendar writes through the Node bot client.</p>
         <p class="hint" id="cli-folder-labels">Folders &amp; labels and Open in Mail are desktop actions. Label edits and Outlook moves use the selected message identity; ambiguous legacy Message-ID matches are refused. These fixes add no bot operations, command-line options or provider scopes.</p>
         <p class="hint" id="cli-mail-feedback">Downloaded-primary unread counts, background bulk Archive/Trash, accumulated removal Undo, the per-mailbox Out of Office chooser and cache-first Agent navigation are desktop behaviors. They add no bot commands, permissions, bulk cancellation or automatic retries. Out of Office changes still require review in Settings for one mailbox.</p>
@@ -1803,6 +1839,7 @@
     <script src="../shared/changelog.js"></script>
     <script src="./chatgpt-settings.js"></script>
     <script src="./ai-provider-indicator.js"></script>
+    <script src="./timeline.js"></script>
     <script src="../shared/mail-columns.js"></script>
     <script src="./app.js"></script>
   </body>

@@ -67,13 +67,16 @@ function createResponses({ auth = getAuth(), fetcher = (...args) => fetch(...arg
       }
       const response = await send(lease, "/responses", {
         method: "POST", headers: { "content-type": "application/json", accept: "text/event-stream" },
-        body: JSON.stringify({ model: options.model, input, store: false, stream: true }),
+        body: JSON.stringify({ model: options.model, input, store: false, stream: true,
+          ...(Number.isInteger(options.max_tokens) && options.max_tokens > 0 ? { max_output_tokens: options.max_tokens } : {}) }),
       });
       if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) throw new Error("ChatGPT returned an invalid or empty event stream.");
       reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
       let completed = false;
+      let outputBytes = 0;
+      let usage = { inputTokens: 0, outputTokens: 0 };
       const event = (frame) => {
         const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
         if (!data || data === "[DONE]") return;
@@ -86,11 +89,16 @@ function createResponses({ auth = getAuth(), fetcher = (...args) => fetch(...arg
           throw error;
         }
         if (payload.type === "response.incomplete") throw new Error("ChatGPT response was incomplete. Retry when ready.");
-        if (payload.type === "response.output_text.delta" && typeof payload.delta === "string") onChunk(payload.delta);
+        if (payload.type === "response.output_text.delta" && typeof payload.delta === "string") {
+          outputBytes += Buffer.byteLength(payload.delta);
+          if (options.maxOutputBytes && outputBytes > options.maxOutputBytes) throw new Error("AI response exceeds the output limit");
+          onChunk(payload.delta);
+        }
         if (payload.type === "response.refusal.delta") throw new Error("ChatGPT declined this request.");
         if (payload.type === "response.completed") {
           if (payload.response?.status && payload.response.status !== "completed") throw new Error("ChatGPT response did not complete successfully.");
           completed = true;
+          usage = { inputTokens: payload.response?.usage?.input_tokens || 0, outputTokens: payload.response?.usage?.output_tokens || 0 };
         }
       };
       while (!completed) {
@@ -112,6 +120,7 @@ function createResponses({ auth = getAuth(), fetcher = (...args) => fetch(...arg
         }
       }
       lease.check();
+      return { finishReason: "completed", usage };
     } finally {
       if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock(); }
       lease.release();
@@ -120,7 +129,8 @@ function createResponses({ auth = getAuth(), fetcher = (...args) => fetch(...arg
 
   async function complete(messages, options = {}) {
     let output = "";
-    await stream(messages, piece => { output += piece; }, options);
+    const details = await stream(messages, piece => { output += piece; }, options);
+    if (options.detailed) return { text: output, ...details };
     return output;
   }
   return { complete, stream, listModels };

@@ -383,7 +383,7 @@ test("account model catalog and Responses constraints; text completion consumes 
   const result = await f.adapter.complete([{ role: "system", content: "Keep it short" }, { role: "user", content: "Synthetic text" }], { model: "synthetic-sol", temperature: 1, max_tokens: 100, background: false });
   assert.equal(result, "Hello 你好");
   const request = f.responseCalls.find(call => call.url.endsWith("/responses"));
-  assert.deepEqual(JSON.parse(request.input.body), { model: "synthetic-sol", input: [{ role: "developer", content: "Keep it short" }, { role: "user", content: "Synthetic text" }], store: false, stream: true });
+  assert.deepEqual(JSON.parse(request.input.body), { model: "synthetic-sol", input: [{ role: "developer", content: "Keep it short" }, { role: "user", content: "Synthetic text" }], store: false, stream: true, max_output_tokens: 100 });
   await assert.rejects(f.adapter.complete([{ role: "user", content: "Hi" }], { model: "unavailable" }), /choose one available/);
   assert.equal(f.responseCalls.filter(call => call.url.endsWith("/responses")).length, 1);
 });

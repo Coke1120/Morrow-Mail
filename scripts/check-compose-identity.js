@@ -7,40 +7,40 @@ const policy = require("../shared/compose-policy");
 const { recipientHeaders } = require("../host/mail/recipient-headers");
 
 const account = { id: "aliases", email: "leo@gmail.com", sendAs: [
-  { email: "leo@hkbscl.com", verified: true },
+  { email: "leo@northstar.example", verified: true },
   { email: "leo@second.example", verified: true, isDefault: true },
 ] };
 const prefs = policy.normalizeSettings({ ccByDomain: {
-  "@HKBSCL.com": ["manager@hkbscl.com", "team@hkbscl.com", "MANAGER@hkbscl.com"],
+  "@NORTHSTAR.example": ["manager@northstar.example", "team@northstar.example", "MANAGER@northstar.example"],
   "second.example": ["ops@second.example"], "project.example": ["project@project.example"],
 }, bccByDomain: {
   "@gmail.com": ["logs@gmail.com", "LOGS@gmail.com"],
-  "hkbscl.com": ["audit@hkbscl.com"],
+  "northstar.example": ["audit@northstar.example"],
   "project.example": ["project-bcc@project.example"],
-}, accounts: { aliases: { aliases: [{ address: "inbound@relay.example", domain: "hkbscl.com" }], defaultDomain: "project.example" } } });
+}, accounts: { aliases: { aliases: [{ address: "inbound@relay.example", domain: "northstar.example" }], defaultDomain: "project.example" } } });
 
 function decisions() {
-  assert.deepEqual(prefs.ccByDomain["hkbscl.com"], ["manager@hkbscl.com", "team@hkbscl.com"]);
-  const gmail = { from: "client@client.example", to: ["Leo <leo@hkbscl.com>", "someone@second.example"],
+  assert.deepEqual(prefs.ccByDomain["northstar.example"], ["manager@northstar.example", "team@northstar.example"]);
+  const gmail = { from: "client@client.example", to: ["Leo <leo@northstar.example>", "someone@second.example"],
     recipientHeaders: { deliveredTo: ["leo@gmail.com"] } };
   for (const kind of ["reply", "all", "forward"]) {
     const result = policy.resolve(account, gmail, prefs, kind);
-    assert.equal(result.fromAddress, "leo@hkbscl.com", "visible business alias wins over Gmail's primary delivery hop");
-    assert.equal(result.domain, "hkbscl.com");
-    assert.deepEqual(result.defaultCc, prefs.ccByDomain["hkbscl.com"]);
+    assert.equal(result.fromAddress, "leo@northstar.example", "visible business alias wins over Gmail's primary delivery hop");
+    assert.equal(result.domain, "northstar.example");
+    assert.deepEqual(result.defaultCc, prefs.ccByDomain["northstar.example"]);
   }
   const bcc = { to: ["undisclosed-recipients:;"], recipientHeaders: { originalTo: ["leo@second.example"] } };
   assert.equal(policy.resolve(account, bcc, prefs, "reply").fromAddress, "leo@second.example");
-  const conflicting = { to: ["leo@hkbscl.com"], recipientHeaders: { originalTo: ["leo@second.example"] } };
+  const conflicting = { to: ["leo@northstar.example"], recipientHeaders: { originalTo: ["leo@second.example"] } };
   assert.equal(policy.resolve(account, conflicting, prefs, "reply").fromAddress, "leo@second.example");
   const relay = policy.resolve(account, { to: ["inbound@relay.example"] }, prefs, "reply");
   assert.equal(relay.fromAddress, "inbound@relay.example");
-  assert.equal(relay.domain, "hkbscl.com", "an explicit CC mapping never rewrites From");
-  assert.equal(policy.resolve(account, { to: ["stranger@hkbscl.com"] }, prefs, "reply").fallback, true);
-  assert.equal(policy.resolve(account, { cc: ["leo@hkbscl.com"] }, prefs, "all").fromAddress, "leo@hkbscl.com");
-  assert.equal(policy.resolve(account, { from: "leo@hkbscl.com", to: ["client@client.example"] }, prefs, "reply").fromAddress, "leo@hkbscl.com");
+  assert.equal(relay.domain, "northstar.example", "an explicit CC mapping never rewrites From");
+  assert.equal(policy.resolve(account, { to: ["stranger@northstar.example"] }, prefs, "reply").fallback, true);
+  assert.equal(policy.resolve(account, { cc: ["leo@northstar.example"] }, prefs, "all").fromAddress, "leo@northstar.example");
+  assert.equal(policy.resolve(account, { from: "leo@northstar.example", to: ["client@client.example"] }, prefs, "reply").fromAddress, "leo@northstar.example");
   assert.equal(policy.resolve(account, null, prefs, "new").fromAddress, "leo@second.example");
-  assert.equal(policy.resolve(account, null, prefs, "new", "leo@hkbscl.com").domain, "hkbscl.com");
+  assert.equal(policy.resolve(account, null, prefs, "new", "leo@northstar.example").domain, "northstar.example");
   const gmailNew = policy.resolve(account, null, prefs, "new", "leo@gmail.com");
   assert.equal(gmailNew.domain, "project.example");
   assert.equal(gmailNew.policyDomain, "gmail.com");
@@ -54,32 +54,32 @@ function decisions() {
   assert.equal(policy.resolve(account, gmail, prefs, "reply", "leo@gmail.com").policyDomain, "gmail.com");
   assert.deepEqual(policy.resolve(account, gmail, prefs, "reply", "leo@gmail.com").defaultBcc, ["logs@gmail.com"]);
   assert.equal(policy.resolve({ id: "other", email: "other@example.com" }, gmail, prefs, "all").fromAddress, "other@example.com");
-  const pending = { id: "p", email: "me@example.com", sendAs: [{ email: "pending@hkbscl.com", verificationStatus: "pending" }] };
-  assert.equal(policy.resolve(pending, { to: ["pending@hkbscl.com"] }, prefs, "reply").fromAddress, pending.email);
-  assert.equal(policy.seedRecipients("Manager <manager@hkbscl.com>", ["manager@hkbscl.com", "team@hkbscl.com", "leo@hkbscl.com"],
-    ["TEAM@hkbscl.com", ""], ["leo@hkbscl.com"]), "Manager <manager@hkbscl.com>");
+  const pending = { id: "p", email: "me@example.com", sendAs: [{ email: "pending@northstar.example", verificationStatus: "pending" }] };
+  assert.equal(policy.resolve(pending, { to: ["pending@northstar.example"] }, prefs, "reply").fromAddress, pending.email);
+  assert.equal(policy.seedRecipients("Manager <manager@northstar.example>", ["manager@northstar.example", "team@northstar.example", "leo@northstar.example"],
+    ["TEAM@northstar.example", ""], ["leo@northstar.example"]), "Manager <manager@northstar.example>");
   assert.equal(policy.seedRecipients("", ["a@example.com", "b@example.com"], ["", "B@example.com"], []), "a@example.com");
-  assert.equal(policy.seedRecipients("Team <team@hkbscl.com>", ["team@hkbscl.com"], ["team@hkbscl.com"], []), "Team <team@hkbscl.com>");
+  assert.equal(policy.seedRecipients("Team <team@northstar.example>", ["team@northstar.example"], ["team@northstar.example"], []), "Team <team@northstar.example>");
   const aliasPrefs = policy.normalizeSettings({
-    ccByDomain: { "hkbscl.com": ["manager@hkbscl.com"], "gmail.com": ["ops@gmail.com"], "project.example": ["project@project.example"] },
-    bccByDomain: { "hkbscl.com": ["audit@hkbscl.com"], "gmail.com": ["logs@gmail.com"], "project.example": ["project-bcc@project.example"] },
-    accounts: { aliases: { aliases: [{ address: "leo@gmail.com", domain: "@HKBSCL.com" }], defaultDomain: "project.example" } },
+    ccByDomain: { "northstar.example": ["manager@northstar.example"], "gmail.com": ["ops@gmail.com"], "project.example": ["project@project.example"] },
+    bccByDomain: { "northstar.example": ["audit@northstar.example"], "gmail.com": ["logs@gmail.com"], "project.example": ["project-bcc@project.example"] },
+    accounts: { aliases: { aliases: [{ address: "leo@gmail.com", domain: "@NORTHSTAR.example" }], defaultDomain: "project.example" } },
   });
   for (const kind of [undefined, "new", "reply", "all", "forward"]) {
     const row = policy.recipientDefaults("Leo <leo@gmail.com>", account, aliasPrefs, kind);
-    assert.equal(row.policyDomain, "hkbscl.com", kind || "missing kind");
-    assert.equal(row.ccDomain, "hkbscl.com");
-    assert.deepEqual(row.cc, ["manager@hkbscl.com"]);
-    assert.deepEqual(row.bcc, ["audit@hkbscl.com"]);
+    assert.equal(row.policyDomain, "northstar.example", kind || "missing kind");
+    assert.equal(row.ccDomain, "northstar.example");
+    assert.deepEqual(row.cc, ["manager@northstar.example"]);
+    assert.deepEqual(row.bcc, ["audit@northstar.example"]);
   }
-  const subdomain = policy.recipientDefaults("leo@mail.hkbscl.com", account, prefs, "new");
-  assert.equal(subdomain.policyDomain, "mail.hkbscl.com");
+  const subdomain = policy.recipientDefaults("leo@mail.northstar.example", account, prefs, "new");
+  assert.equal(subdomain.policyDomain, "mail.northstar.example");
   assert.equal(subdomain.ccDomain, "project.example");
   assert.deepEqual(subdomain.cc, ["project@project.example"]);
   assert.deepEqual(subdomain.bcc, []);
-  const subdomainReply = policy.recipientDefaults("leo@mail.hkbscl.com", account, prefs, "reply");
-  assert.equal(subdomainReply.policyDomain, "mail.hkbscl.com");
-  assert.equal(subdomainReply.ccDomain, "mail.hkbscl.com");
+  const subdomainReply = policy.recipientDefaults("leo@mail.northstar.example", account, prefs, "reply");
+  assert.equal(subdomainReply.policyDomain, "mail.northstar.example");
+  assert.equal(subdomainReply.ccDomain, "mail.northstar.example");
   assert.deepEqual(subdomainReply.cc, []);
   assert.deepEqual(subdomainReply.bcc, []);
   const emptyRule = policy.normalizeSettings({
@@ -92,7 +92,7 @@ function decisions() {
   assert.deepEqual(blocked.cc, []);
   assert.equal(blocked.policyDomain, "gmail.com");
   assert.deepEqual(blocked.bcc, ["logs@gmail.com"]);
-  assert.deepEqual(policy.normalizeSettings({ ccByDomain: { "hkbscl.com": ["a@hkbscl.com"] } }).bccByDomain, {});
+  assert.deepEqual(policy.normalizeSettings({ ccByDomain: { "northstar.example": ["a@northstar.example"] } }).bccByDomain, {});
   assert.deepEqual(policy.normalizeSettings({ bccByDomain: { "@GMAIL.com": ["Logs@gmail.com", "logs@gmail.com"] } }).bccByDomain, { "gmail.com": ["logs@gmail.com"] });
   assert.deepEqual(prefs.ccByDomain["second.example"], ["ops@second.example"]);
   assert.throws(() => policy.normalizeSettings({ ccByDomain: { "bad domain": [] } }), /CC domain/);
@@ -132,14 +132,14 @@ function decisions() {
   const savedFields = policy.applyRecipientSeeds(saved, { cc: ["a@example.com"], bcc: ["b@example.com"] }, { to: "person@example.com", cc: "", bcc: "draft-bcc@example.com" }, []);
   assert.equal(savedFields.cc, "");
   assert.equal(savedFields.bcc, "draft-bcc@example.com");
-  assert.deepEqual(policy.normalizeDomainKeys(["@HKBSCL.com", " Gmail.com "]), ["hkbscl.com", "gmail.com"]);
-  assert.deepEqual(policy.normalizeDomainKeys(["mail.hkbscl.com"]), ["mail.hkbscl.com"]);
+  assert.deepEqual(policy.normalizeDomainKeys(["@NORTHSTAR.example", " Gmail.com "]), ["northstar.example", "gmail.com"]);
+  assert.deepEqual(policy.normalizeDomainKeys(["mail.northstar.example"]), ["mail.northstar.example"]);
   assert.deepEqual(policy.normalizeDomainKeys([]), []);
   assert.deepEqual(policy.normalizeDomainKeys(undefined), []);
   assert.throws(() => policy.normalizeDomainKeys(["not a domain"]), /signature domain/);
-  assert.throws(() => policy.normalizeDomainKeys(["hkbscl.com", "@hkbscl.com"]), /only once/);
-  const headers = recipientHeaders("Delivered-To: leo@gmail.com\r\nX-Original-To:\r\n leo@hkbscl.com\r\nReceived: by mx.example for <leo@second.example>; Mon, 1 Jan\r\nX-Envelope-To: inbound@relay.example\r\n\r\nX-Original-To: body@evil.example");
-  assert.deepEqual(headers, { originalTo: ["leo@hkbscl.com"], deliveredTo: ["leo@gmail.com"], envelopeTo: ["leo@second.example", "inbound@relay.example"], replyTo: [] });
+  assert.throws(() => policy.normalizeDomainKeys(["northstar.example", "@northstar.example"]), /only once/);
+  const headers = recipientHeaders("Delivered-To: leo@gmail.com\r\nX-Original-To:\r\n leo@northstar.example\r\nReceived: by mx.example for <leo@second.example>; Mon, 1 Jan\r\nX-Envelope-To: inbound@relay.example\r\n\r\nX-Original-To: body@evil.example");
+  assert.deepEqual(headers, { originalTo: ["leo@northstar.example"], deliveredTo: ["leo@gmail.com"], envelopeTo: ["leo@second.example", "inbound@relay.example"], replyTo: [] });
 }
 
 async function hostRoundTrips() {
@@ -170,24 +170,24 @@ async function hostRoundTrips() {
       assert.match(String(url), /\/settings\/sendAs$/); assert.equal(init.method, "GET");
       return { ok: true, status: 200, text: async () => JSON.stringify({ sendAs: [
         { sendAsEmail: account.email, isPrimary: true },
-        { sendAsEmail: "leo@hkbscl.com", verificationStatus: "accepted" },
+        { sendAsEmail: "leo@northstar.example", verificationStatus: "accepted" },
         { sendAsEmail: "pending@example.com", verificationStatus: "pending" },
       ] }) };
     });
-    assert.deepEqual(providerResult.map((row) => row.email), [account.email, "leo@hkbscl.com"]);
+    assert.deepEqual(providerResult.map((row) => row.email), [account.email, "leo@northstar.example"]);
     sidecar.gmailSendAsToken = async () => ({ accessToken: "fixture" });
     let fetches = 0;
     provider.listSendAs = async () => { fetches++; return account.sendAs; };
-    const rawSource = Buffer.from("From: client@client.example\r\nTo: Leo <leo@hkbscl.com>\r\nDelivered-To: leo@gmail.com\r\nX-Original-To: leo@hkbscl.com\r\nSubject: Alias\r\n\r\nHello");
+    const rawSource = Buffer.from("From: client@client.example\r\nTo: Leo <leo@northstar.example>\r\nDelivered-To: leo@gmail.com\r\nX-Original-To: leo@northstar.example\r\nSubject: Alias\r\n\r\nHello");
     const fetched = await remote.fetchSource({ getMailboxLock: async () => ({ release() {} }), mailbox: { uidValidity: 1 },
-      fetch: async function* () { yield { uid: 1, source: rawSource, envelope: { from: [{ address: "client@client.example" }], to: [{ address: "leo@hkbscl.com" }] } }; }
+      fetch: async function* () { yield { uid: 1, source: rawSource, envelope: { from: [{ address: "client@client.example" }], to: [{ address: "leo@northstar.example" }] } }; }
     }, "INBOX", 1, 1);
-    assert.deepEqual(fetched.recipientHeaders.originalTo, ["leo@hkbscl.com"]);
+    assert.deepEqual(fetched.recipientHeaders.originalTo, ["leo@northstar.example"]);
     db.applyFolderSync(account.id, "INBOX", { validity: 1, messages: [{ ...fetched, id: "alias-message" }], keepOthers: true });
     db.applyFolderSync(account.id, "INBOX", { validity: 1, messages: [fetched], keepOthers: true });
-    assert.deepEqual((await request("mail:openEmail", { emailId: "alias-message" })).email.recipientHeaders.originalTo, ["leo@hkbscl.com"]);
+    assert.deepEqual((await request("mail:openEmail", { emailId: "alias-message" })).email.recipientHeaders.originalTo, ["leo@northstar.example"]);
     const context = await request("mail:getComposeContext", { accountId: account.id, sourceMessageId: "alias-message", kind: "reply" });
-    assert.equal(context.fromAddress, "leo@hkbscl.com"); assert.equal(context.domain, "hkbscl.com");
+    assert.equal(context.fromAddress, "leo@northstar.example"); assert.equal(context.domain, "northstar.example");
     assert.equal(engine.accountViews()[0].preferredFromAddress, "leo@second.example");
     assert.equal(fetches, 1);
     await request("mail:getComposeContext", { accountId: account.id }); assert.equal(fetches, 1, "compose reuses a fresh Gmail alias cache");
@@ -205,16 +205,16 @@ async function hostRoundTrips() {
     remote.sendSmtp = async (_account, _secret, options) => { sent.push(options); return { messageId: "<sent@example.com>" }; };
     const payload = { accountId: account.id, fromAddress: context.fromAddress, to: "client@client.example", cc: "", body: "<p>Reviewed</p>" };
     const draft = await request("mail:upsertDraft", payload);
-    assert.equal(db.messageById(draft.emailId).from_addr, "leo@hkbscl.com");
-    assert.match(appended[0], /From: leo@hkbscl.com/);
+    assert.equal(db.messageById(draft.emailId).from_addr, "leo@northstar.example");
+    assert.match(appended[0], /From: leo@northstar.example/);
     assert.doesNotMatch(appended[0], /Cc: manager/);
     await request("mail:send", payload);
-    assert.equal(sent[0].from, "leo@hkbscl.com"); assert.deepEqual(sent[0].cc, [], "the host never restores cleared CC");
+    assert.equal(sent[0].from, "leo@northstar.example"); assert.deepEqual(sent[0].cc, [], "the host never restores cleared CC");
     const scheduled = await request("mail:scheduleSend", { ...payload, sendAt: new Date(Date.now() + 60000).toISOString() });
     assert.equal(JSON.parse(db.scheduledById(scheduled.id).payload_json).fromAddress, context.fromAddress);
     db.setScheduledSendAt(scheduled.id, Date.now() - 1000);
     await engine.pumpScheduled();
-    assert.equal(sent[1].from, "leo@hkbscl.com");
+    assert.equal(sent[1].from, "leo@northstar.example");
     const editQueue = await request("mail:scheduleSend", { ...payload, sendAt: new Date(Date.now() + 60000).toISOString() });
     const edited = await request("mail:editScheduled", { id: editQueue.id });
     assert.equal(db.messageById(edited.emailId).from_addr, context.fromAddress);
@@ -233,11 +233,11 @@ async function hostRoundTrips() {
     const { simpleParser } = require("mailparser");
     const name = '陳美玲, "Morrow"';
     const namedPrefs = structuredClone(prefs);
-    namedPrefs.accounts.aliases.senderNames = { "leo@hkbscl.com": name };
+    namedPrefs.accounts.aliases.senderNames = { "leo@northstar.example": name };
     settings.answer("emailBrain:saveComposeSettings", [namedPrefs]);
     provider.listSendAs = async () => [
       { email: account.email, name: "Gmail Primary", verified: true, source: "gmail", isPrimary: true },
-      { email: "leo@hkbscl.com", name: "Gmail Business", verified: true, source: "gmail", isDefault: true },
+      { email: "leo@northstar.example", name: "Gmail Business", verified: true, source: "gmail", isDefault: true },
     ];
     const namedContext = await request("mail:getComposeContext", { accountId: account.id, refresh: true });
     assert.equal(namedContext.fromDisplayName, name);
@@ -247,16 +247,16 @@ async function hostRoundTrips() {
     assert.equal(namedRow.from_display_name, name);
     const draftMime = await simpleParser(Buffer.from(appended.at(-1)));
     assert.equal(draftMime.from.value[0].name, name);
-    assert.equal(draftMime.from.value[0].address, "leo@hkbscl.com");
+    assert.equal(draftMime.from.value[0].address, "leo@northstar.example");
     const opened = (await request("mail:openEmail", { emailId: namedDraft.emailId, full: true })).email;
     assert.equal(opened.fromDisplayName, name);
     const queued = await request("mail:scheduleSend", { ...namedPayload, sendAt: new Date(Date.now() + 60000).toISOString() });
-    namedPrefs.accounts.aliases.senderNames["leo@hkbscl.com"] = "Changed later";
+    namedPrefs.accounts.aliases.senderNames["leo@northstar.example"] = "Changed later";
     settings.answer("emailBrain:saveComposeSettings", [namedPrefs]);
     const savedText = await request("mail:upsertDraft", { ...namedPayload, emailId: namedDraft.emailId, draftRevision: opened.draftRevision, body: "<p>Edited text</p>" });
     assert.equal(db.messageById(savedText.emailId).from_display_name, name, "editing text retains the selected snapshot");
     db.setScheduledSendAt(queued.id, Date.now() - 1000); await engine.pumpScheduled();
-    assert.deepEqual(sent.at(-1).from, { address: "leo@hkbscl.com", name });
+    assert.deepEqual(sent.at(-1).from, { address: "leo@northstar.example", name });
     const sentMime = await simpleParser(await remote.buildRaw(sent.at(-1)));
     assert.equal(sentMime.from.value[0].name, name);
     const cachedSent = db.selectMessages({ accountId: account.id, folderId: "Sent" });
@@ -271,9 +271,9 @@ async function hostRoundTrips() {
     }
     assert.equal(sent.length, count);
     await request("mail:send", { ...namedPayload, fromDisplayName: "" });
-    assert.equal(sent.at(-1).from, "leo@hkbscl.com", "address-only overrides do not inherit a name");
+    assert.equal(sent.at(-1).from, "leo@northstar.example", "address-only overrides do not inherit a name");
     db.insertMessage({ id: "legacy-named", accountId: account.id, folderPath: "Drafts", isDraft: true,
-      from: '"Legacy, Name" <leo@hkbscl.com>', bodyComplete: true, textBody: "Legacy", date: new Date().toISOString(), listSortTs: Date.now() });
+      from: '"Legacy, Name" <leo@northstar.example>', bodyComplete: true, textBody: "Legacy", date: new Date().toISOString(), listSortTs: Date.now() });
     assert.equal((await request("mail:openEmail", { emailId: "legacy-named", full: true })).email.fromDisplayName, "Legacy, Name");
     // Exercise actual draft hydration -> renderer payload -> transport MIME.
     // A primary default ensures reparsing the display label cannot accidentally
@@ -341,7 +341,7 @@ async function rendererFlows() {
     resetDraftWrite = () => {}; syncScheduleFields = () => {}; paintComposeChrome = () => {};
     paintQuoteBody = () => {}; scheduleComposeLayout = () => {};
     fillSignatures = async () => {}; loadScheduled = async () => {}; loadList = async () => {};
-    globalThis.original = {id:'source',accountId:'aliases',from:'client@client.example',to:['leo@hkbscl.com','leo@gmail.com'],cc:['other@other.example'],subject:'Hello'};
+    globalThis.original = {id:'source',accountId:'aliases',from:'client@client.example',to:['leo@northstar.example','leo@gmail.com'],cc:['other@other.example'],subject:'Hello'};
     globalThis.calls=[]; globalThis.failed=false;
     call = async (channel, payload) => {
       calls.push({channel,payload});
@@ -355,30 +355,30 @@ async function rendererFlows() {
   `);
   for (const kind of ["reply", "all", "forward"]) {
     await ui.run(`openCompose(composeSeed(original, '${kind}', fixtureAccount.email))`);
-    assert.equal(get("compose-from").value, "leo@hkbscl.com");
-    assert.match(get("compose-cc").value, /manager@hkbscl.com/);
-    assert.match(get("compose-bcc").value, /audit@hkbscl.com/);
+    assert.equal(get("compose-from").value, "leo@northstar.example");
+    assert.match(get("compose-cc").value, /manager@northstar.example/);
+    assert.match(get("compose-bcc").value, /audit@northstar.example/);
     assert.doesNotMatch(get("compose-cc").value, /leo@/);
     assert.equal(ui.run("state.composeIdentity.seeds.cc.locked || state.composeIdentity.seeds.bcc.locked"), false);
     if (kind === "all") assert.match(get("compose-cc").value, /other@other.example/);
     if (kind === "forward") assert.equal(get("compose-to").value, "");
     get("compose-from").value = "leo@second.example"; ui.run("changeComposeFrom()");
     assert.match(get("compose-cc").value, /ops@second.example/);
-    assert.doesNotMatch(get("compose-cc").value, /manager@hkbscl.com/);
+    assert.doesNotMatch(get("compose-cc").value, /manager@northstar.example/);
     assert.equal(get("compose-bcc").value, "");
     get("compose-cc").value = ""; ui.run("state.composeIdentity.seeds.cc.locked=true");
-    get("compose-from").value = "leo@hkbscl.com"; ui.run("changeComposeFrom(); syncCompose(); paintComposeNote()");
+    get("compose-from").value = "leo@northstar.example"; ui.run("changeComposeFrom(); syncCompose(); paintComposeNote()");
     assert.equal(get("compose-cc").value, "", "From changes and repaint must respect a manual clear");
-    assert.equal(get("compose-bcc").value, "audit@hkbscl.com");
+    assert.equal(get("compose-bcc").value, "audit@northstar.example");
     get("compose-to").value = "client@client.example";
     await ui.run("saveDraft()"); await ui.run("scheduleMail()");
     ui.run("state.composeQueued=false"); await ui.run("sendMail()");
   }
   const writes = ui.run("calls.filter(row => ['mail:upsertDraft','mail:scheduleSend','mail:send'].includes(row.channel))");
   assert.equal(writes.length, 9);
-  assert.ok(writes.every((row) => row.payload.fromAddress === "leo@hkbscl.com" && !row.payload.cc && row.payload.bcc === "audit@hkbscl.com"));
-  await ui.run("openCompose({draftId:'saved',accountId:'aliases',fromAddress:'leo@hkbscl.com',cc:'',bcc:'secret@example.com',body:'Saved'})");
-  assert.equal(get("compose-from").value, "leo@hkbscl.com");
+  assert.ok(writes.every((row) => row.payload.fromAddress === "leo@northstar.example" && !row.payload.cc && row.payload.bcc === "audit@northstar.example"));
+  await ui.run("openCompose({draftId:'saved',accountId:'aliases',fromAddress:'leo@northstar.example',cc:'',bcc:'secret@example.com',body:'Saved'})");
+  assert.equal(get("compose-from").value, "leo@northstar.example");
   assert.equal(get("compose-cc").value, "");
   assert.equal(get("compose-bcc").value, "secret@example.com");
   assert.equal(ui.run("state.composeIdentity.seeds.cc.locked && state.composeIdentity.seeds.bcc.locked"), true);
@@ -389,7 +389,7 @@ async function rendererFlows() {
   await ui.run(`openCompose({accountId:'aliases',to:'client@client.example',cc:'kept@example.com',bcc:'secret@example.com',body:'Proposal',botDraft:{proposalId:'p',accountId:'aliases',to:'client@client.example',cc:'kept@example.com',bcc:'secret@example.com',subject:'',body:'Proposal'}})`);
   assert.equal(get("compose-cc").value, "kept@example.com");
   assert.equal(get("compose-bcc").value, "secret@example.com");
-  get("compose-from").value = "leo@hkbscl.com"; ui.run("changeComposeFrom()");
+  get("compose-from").value = "leo@northstar.example"; ui.run("changeComposeFrom()");
   assert.equal(get("compose-cc").value, "kept@example.com");
   assert.equal(get("compose-bcc").value, "secret@example.com");
   ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
@@ -399,10 +399,10 @@ async function rendererFlows() {
   get("compose-from").value = "leo@second.example"; ui.run("changeComposeFrom()");
   assert.equal(get("compose-bcc").value, "typed@example.com");
   assert.match(get("compose-cc").value, /ops@second.example/);
-  assert.doesNotMatch(get("compose-cc").value, /manager@hkbscl.com/);
+  assert.doesNotMatch(get("compose-cc").value, /manager@northstar.example/);
   ui.run("state.composeIdentity.seeds.cc.locked=true");
   get("compose-cc").value = "typed-cc@example.com";
-  get("compose-from").value = "leo@hkbscl.com"; ui.run("changeComposeFrom()");
+  get("compose-from").value = "leo@northstar.example"; ui.run("changeComposeFrom()");
   assert.equal(get("compose-cc").value, "typed-cc@example.com");
   assert.equal(get("compose-bcc").value, "typed@example.com");
   ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
@@ -421,10 +421,10 @@ async function rendererFlows() {
   ui.run(`
     fixtureAccount = {...fixtureAccount, sendAs:[
       {email:'leo@gmail.com',name:'Gmail Owner',source:'gmail',verified:true},
-      {email:'leo@hkbscl.com',name:'Business',source:'gmail',verified:true},
+      {email:'leo@northstar.example',name:'Business',source:'gmail',verified:true},
       {email:'leo@second.example',name:'Second',source:'gmail',verified:true,isDefault:true}]};
     fixturePrefs = {...fixturePrefs, accounts:{...fixturePrefs.accounts,aliases:{...fixturePrefs.accounts.aliases,
-      senderNames:{'leo@hkbscl.com':'Morrow Business','leo@second.example':'Morrow Second'}}}};
+      senderNames:{'leo@northstar.example':'Morrow Business','leo@second.example':'Morrow Second'}}}};
   `);
   await ui.run("openCompose()");
   assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Morrow Second");
@@ -436,12 +436,12 @@ async function rendererFlows() {
   ui.run("cancelComposePreview()");
   get("compose-from").value = "leo@gmail.com"; ui.run("changeComposeFrom()");
   assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Gmail Owner");
-  get("compose-from").value = "leo@hkbscl.com"; ui.run("changeComposeFrom()");
+  get("compose-from").value = "leo@northstar.example"; ui.run("changeComposeFrom()");
   assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Morrow Business");
   ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
-  await ui.run("openCompose({draftId:'saved',fromAddress:'leo@hkbscl.com',fromDisplayName:'Saved draft name'})");
+  await ui.run("openCompose({draftId:'saved',fromAddress:'leo@northstar.example',fromDisplayName:'Saved draft name'})");
   assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), "Saved draft name");
-  assert.match(get("compose-from-note").textContent, /Recipients see: Saved draft name <leo@hkbscl.com>/);
+  assert.match(get("compose-from-note").textContent, /Recipients see: Saved draft name <leo@northstar.example>/);
   ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
   ui.run(`
     const priorCall=call;
@@ -449,10 +449,10 @@ async function rendererFlows() {
     askConfirm=async()=>({ok:true});
   `);
   for (const displayName of ['Operations <West>', '陳美玲, "Ops <香港>"']) {
-    ui.context.restoredDraft = { id: "restored", isDraft: true, accountId: "aliases", fromAddress: "leo@hkbscl.com",
-      fromDisplayName: displayName, from: displayName + " <leo@hkbscl.com>", to: ["client@client.example"], textBody: "Restored text", bodyComplete: true };
+    ui.context.restoredDraft = { id: "restored", isDraft: true, accountId: "aliases", fromAddress: "leo@northstar.example",
+      fromDisplayName: displayName, from: displayName + " <leo@northstar.example>", to: ["client@client.example"], textBody: "Restored text", bodyComplete: true };
     await ui.run("resumeDraft({id:'restored',accountId:'aliases'})");
-    assert.equal(ui.run("composePayload(composeAccount()).fromAddress"), "leo@hkbscl.com");
+    assert.equal(ui.run("composePayload(composeAccount()).fromAddress"), "leo@northstar.example");
     assert.equal(ui.run("composePayload(composeAccount()).fromDisplayName"), displayName);
     ui.run("state.composeBaseline=composeSnapshot()"); await ui.run("requestComposeClose()");
   }
@@ -469,10 +469,10 @@ function brainLines() {
   const context = vm.createContext({ window: { morrowComposePolicy: policy }, document: { getElementById() { return null; } } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../renderer/brain-compose.js"), "utf8"), context);
   const parse = (text, label) => JSON.parse(JSON.stringify(context.window.morrowBrainCompose.parseDomainLines(text, label)));
-  assert.deepEqual(parse("@HKBSCL.com = Audit@hkbscl.com; audit@hkbscl.com", "BCC"), { "hkbscl.com": ["Audit@hkbscl.com", "audit@hkbscl.com"] });
-  assert.throws(() => parse("@hkbscl.com = a@hkbscl.com\nhkbscl.com = b@hkbscl.com", "BCC"), /Each BCC domain can appear only once/);
-  assert.throws(() => parse("@hkbscl.com = a@hkbscl.com\n@hkbscl.com = b@hkbscl.com", "CC"), /Each CC domain can appear only once/);
-  assert.throws(() => parse("not a domain = a@hkbscl.com", "BCC"), /each BCC line/);
+  assert.deepEqual(parse("@NORTHSTAR.example = Audit@northstar.example; audit@northstar.example", "BCC"), { "northstar.example": ["Audit@northstar.example", "audit@northstar.example"] });
+  assert.throws(() => parse("@northstar.example = a@northstar.example\nnorthstar.example = b@northstar.example", "BCC"), /Each BCC domain can appear only once/);
+  assert.throws(() => parse("@northstar.example = a@northstar.example\n@northstar.example = b@northstar.example", "CC"), /Each CC domain can appear only once/);
+  assert.throws(() => parse("not a domain = a@northstar.example", "BCC"), /each BCC line/);
   const advanced = context.window.morrowBrainCompose.advancedHasRules;
   assert.equal(advanced({}), false);
   assert.equal(advanced({ accounts: { a: { preferredFromAddress: "a@b.co", senderNames: { "a@b.co": "A" } } } }), false);
@@ -541,7 +541,7 @@ async function crossAccountFrom() {
     globalThis.signatureLoads = []; globalThis.calls = []; globalThis.denySwitch = false;
     fillSignatures = async (preserve) => { signatureLoads.push({ preserve, accountId: state.composeMeta.accountId }); };
     loadScheduled = async () => {};
-    globalThis.original = {id:'source', accountId:'aliases', from:'client@client.example', to:['leo@hkbscl.com','leo@gmail.com'],
+    globalThis.original = {id:'source', accountId:'aliases', from:'client@client.example', to:['leo@northstar.example','leo@gmail.com'],
       cc:['other@other.example'], subject:'Hello', messageId:'<msg@test>', threadId:'thread-a'};
     call = async (channel, payload) => {
       calls.push({ channel, payload });
@@ -554,13 +554,13 @@ async function crossAccountFrom() {
   await ui.run("openCompose(composeSeed(original, 'reply', fixtureAccount.email))");
   const from = document.getElementById("compose-from");
   assert.equal(ui.run("state.composeMeta.accountId"), "aliases");
-  assert.equal(from.value, "leo@hkbscl.com");
+  assert.equal(from.value, "leo@northstar.example");
   assert.match(document.getElementById("compose-to").value, /client@client.example/);
   assert.match(document.getElementById("compose-from-note").textContent, /Mailbox: leo@gmail.com/);
   assert.deepEqual(from.children.map((group) => group.label), ["leo@gmail.com", "ada@other.test"]);
   const emails = from.children.flatMap((group) => group.children.map((option) => option.value));
   assert.equal(emails.filter((email) => email === "leo@gmail.com").length, 1);
-  assert.ok(emails.includes("ada@other.test") && emails.includes("leo@hkbscl.com"));
+  assert.ok(emails.includes("ada@other.test") && emails.includes("leo@northstar.example"));
   assert.ok(!emails.includes("ghost@x.test"));
   assert.equal(from.children[1].children[0].dataset.accountId, "other");
   from.value = "leo@second.example"; ui.run("changeComposeFrom()");
@@ -584,7 +584,7 @@ async function crossAccountFrom() {
   assert.equal(ui.run("composePayload(composeAccount()).accountId"), "other");
   assert.equal(ui.run("composePayload(composeAccount()).fromAddress"), "ada@other.test");
   assert.equal(ui.run("composePayload(composeAccount()).draftId"), undefined);
-  assert.doesNotMatch(document.getElementById("compose-cc").value, /manager@hkbscl.com|ops@second.example/);
+  assert.doesNotMatch(document.getElementById("compose-cc").value, /manager@northstar.example|ops@second.example/);
   assert.match(document.getElementById("compose-to").value, /client@client.example/);
   assert.match(document.getElementById("compose-from-note").textContent, /Mailbox: ada@other.test/);
   const switched = ui.run("calls.filter(row => row.channel === 'mail:getComposeContext')").at(-1);
@@ -594,10 +594,10 @@ async function crossAccountFrom() {
   assert.equal(switched.payload.sourceMessageId, undefined);
   assert.equal(ui.run("signatureLoads.at(-1).accountId"), "other");
   assert.equal(ui.run("signatureLoads.at(-1).preserve"), false);
-  from.value = "leo@hkbscl.com";
+  from.value = "leo@northstar.example";
   await ui.run("changeComposeFrom()");
   assert.equal(ui.run("state.composeMeta.accountId"), "aliases");
-  assert.match(document.getElementById("compose-cc").value, /manager@hkbscl.com/);
+  assert.match(document.getElementById("compose-cc").value, /manager@northstar.example/);
   assert.equal(ui.run("composePayload(composeAccount()).accountId"), "aliases");
 }
 

@@ -395,12 +395,15 @@ async function readFetched(msg, validity, cap) {
   const attachments = attachmentsOf(msg.bodyStructure);
   const flags = msg.flags;
   const seen = !!(flags && flags.has("\\Seen"));
-  const when = envelope.date instanceof Date
+  const headerDate = envelope.date instanceof Date && Number.isFinite(envelope.date.getTime());
+  const receivedDate = msg.internalDate instanceof Date && Number.isFinite(msg.internalDate.getTime());
+  const when = headerDate
     ? envelope.date
-    : (msg.internalDate instanceof Date ? msg.internalDate : new Date());
+    : (receivedDate ? msg.internalDate : new Date());
   const uid = Number(msg.uid);
   return {
     uid,
+    dateSource: headerDate ? "header" : receivedDate ? "received" : "unknown",
     threadId: threadIdOf(parsed, envelope, `thr:${validity}:${uid}`),
     rfcMessageId: (parsed && parsed.messageId) || envelope.messageId || null,
     inReplyTo: (parsed && parsed.inReplyTo) || envelope.inReplyTo || null,

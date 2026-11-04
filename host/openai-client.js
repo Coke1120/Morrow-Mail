@@ -53,6 +53,27 @@ function complete(messages, options = {}) {
   return withConsent(options, admitted => completeAdmitted(messages, admitted));
 }
 
+function completeDetailed(messages, options = {}) {
+  return complete(messages, { ...options, detailed: true });
+}
+
+async function boundedPayload(response, maximum) {
+  if (!response.body) throw new Error("Empty AI response");
+  const reader = response.body.getReader();
+  const parts = [];
+  let size = 0;
+  try {
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      size += part.value.byteLength;
+      if (size > maximum) throw new Error("AI response exceeds the output limit");
+      parts.push(Buffer.from(part.value));
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(parts)));
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
 async function completeAdmitted(messages, options) {
   const cfg = options.config || requireConfig();
   if (cfg.authMode === "chatgpt") return require("./chatgpt-responses").getResponses().complete(messages, {
@@ -77,14 +98,21 @@ async function completeAdmitted(messages, options) {
   });
   options.check();
   if (!response.ok) {
+    if (options.detailed) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error("AI request failed");
+    }
     throw new Error(await readError(response));
   }
-  const payload = await response.json();
+  const payload = options.detailed ? await boundedPayload(response, (options.maxOutputBytes || 128000) + 32000) : await response.json();
+  options.check();
   const choice = payload && payload.choices && payload.choices[0];
   if (options.requireComplete && choice?.finish_reason && choice.finish_reason !== "stop") {
     throw Object.assign(new Error("The model returned an incomplete response. Try again or review the selected model in AI settings."), { code: "ai-incomplete" });
   }
   const message = choice && choice.message;
+  if (options.detailed) return { text: messageText(message), finishReason: choice?.finish_reason || "unknown",
+    usage: { inputTokens: payload.usage?.prompt_tokens || 0, outputTokens: payload.usage?.completion_tokens || 0 } };
   return messageText(message);
 }
 
@@ -227,4 +255,4 @@ function extractJson(text) {
   return JSON.parse(raw.slice(start, end + 1));
 }
 
-module.exports = { complete, stream, extractJson, requireConfig, listModels, modelIds };
+module.exports = { complete, completeDetailed, stream, extractJson, requireConfig, listModels, modelIds };

@@ -1,5 +1,9 @@
 # Brain skills and Agent triage
 
+Selected-mail timelines are separate explicit desktop actions, not skills. They do
+not read or write Brain profiles, Agent notes, conversation history or shared memory, and
+never run on page open or a schedule. See [timeline data use](TIMELINE_FORMAT.md).
+
 Explicit Agent Run buttons and Home chips retain the selected skill ID; free-form
 chat keeps name matching. Dirty standing notes and keyed skill schedule editors
 survive polling and page reopen. Save acknowledgments update saved baselines

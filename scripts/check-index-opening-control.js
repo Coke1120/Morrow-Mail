@@ -163,6 +163,7 @@ async function run() {
       if (name === "./persistence") return { Persistence };
       if (name === "crypto" || name === "node:perf_hooks") return require(name);
       if (name === "../../shared/primary-mailboxes" || name === "./sender-header") return {};
+      if (name === "../timeline/storage") return require("../host/timeline/storage");
       if (name === "../performance-diagnostics") return { sync: (_stage, work) => work(), measure: (_stage, work) => work() };
       throw new Error("Unexpected control-fixture dependency " + name);
     },
