@@ -1,0 +1,88 @@
+{
+  "result": "passed",
+  "errors": [],
+  "accessibility": [
+    {
+      "theme": "light",
+      "size": {
+        "width": 1440,
+        "height": 1000
+      },
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "size": {
+        "width": 1024,
+        "height": 768
+      },
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "size": {
+        "width": 800,
+        "height": 600
+      },
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "size": {
+        "width": 390,
+        "height": 844
+      },
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "size": {
+        "width": 844,
+        "height": 390
+      },
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "size": {
+        "width": 1440,
+        "height": 1000
+      },
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "size": {
+        "width": 1024,
+        "height": 768
+      },
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "size": {
+        "width": 800,
+        "height": 600
+      },
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "size": {
+        "width": 390,
+        "height": 844
+      },
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "size": {
+        "width": 844,
+        "height": 390
+      },
+      "violations": []
+    }
+  ],
+  "coverage": "empty, single, multi, keyboard, reconnect, signatures, Out of Office scope, repeated discard/cancel, stale permissions, removal cancel, reopen, Features",
+  "nativeWindows": "not run"
+}

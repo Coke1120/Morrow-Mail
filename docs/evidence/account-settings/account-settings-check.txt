@@ -1,0 +1,11 @@
+✔ account overview opens directly, wraps full identities safely and keeps Settings independent of Mail (320.723132ms)
+✔ repeated account choices cannot replace an unsaved Out of Office discard review (165.93406ms)
+✔ removing the viewed account refreshes fallback permissions and retires delayed reads (148.307982ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 639.701622

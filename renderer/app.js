@@ -6220,31 +6220,64 @@ function renderSettingsAccounts() {
   if (!document.querySelector('#settings .fold[data-fold="mailbox"].is-open')) return;
   const list = $("settings-accounts");
   if (!list) return;
-  const rows = state.accounts.map((account) => `${account.id}\t${pushStatusLabel(account)}`);
-  const stamp = rows.join("\n") || "empty";
+  const selectedId = settingsAccount()?.id;
+  const rows = state.accounts.map((account) => [account.id, accountLabel(account), settingsAccountProvider(account), pushStatusLabel(account), account.id === selectedId]);
+  const stamp = JSON.stringify(rows);
   if (list.dataset.stamp === stamp) return;
+  const focusedId = list.contains(document.activeElement) ? document.activeElement.dataset.accountId : null;
   list.dataset.stamp = stamp;
   list.replaceChildren();
   if (!state.accounts.length) {
     const empty = document.createElement("li");
     empty.className = "empty";
-    empty.textContent = "No mailbox connected.";
+    empty.textContent = "No accounts yet. Add an account to connect your mail and manage its settings here.";
     list.appendChild(empty);
+    if (focusedId) $("connect-open").focus({ preventScroll: true });
+    loadSettingsFold("mailbox");
     return;
   }
   for (const account of state.accounts) {
     const row = document.createElement("li");
     row.className = "settings-account";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost account-choice";
+    button.dataset.accountId = account.id;
+    button.setAttribute("aria-pressed", String(account.id === selectedId));
+    button.setAttribute("aria-controls", "settings-account-detail");
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = accountLabel(account);
+    const provider = document.createElement("span");
+    provider.className = "account-provider";
+    provider.textContent = settingsAccountProvider(account);
     const status = document.createElement("span");
     status.className = "push";
     const label = pushStatusLabel(account);
     status.append(pushIcon(), document.createTextNode(label));
-    row.append(name, status);
+    const action = document.createElement("span");
+    action.className = "account-choice-action";
+    action.textContent = account.id === selectedId ? "Viewing settings" : "Manage account";
+    button.append(name, provider, status, action);
+    row.append(button);
     list.appendChild(row);
   }
+  if (focusedId) ([...list.querySelectorAll("button")].find(button => button.dataset.accountId === focusedId)
+    || list.querySelector('[aria-pressed="true"]'))?.focus({ preventScroll: true });
+  // Account removal/reconnect can change the target outside a card click.
+  loadSettingsFold("mailbox");
+}
+
+function settingsAccountProvider(account) {
+  const profile = account?.imapSmtpProfile || account?.profile;
+  if (profile === "gmail") return "Google · " + (account.mailTransport === "gmail_api" ? "Gmail API" : "IMAP / SMTP");
+  if (["outlook", "office365", "microsoft"].includes(profile)) return "Microsoft · IMAP / SMTP";
+  return "IMAP / SMTP";
+}
+
+function focusSettingsAccountChoice() {
+  const selected = $("settings-accounts").querySelector('[aria-pressed="true"]');
+  (selected || $("connect-open")).focus();
 }
 
 function syncStatusLabel(sync) {
@@ -12536,14 +12569,17 @@ async function reviewConnectGmailMigration() {
     paintSettingsMailbox();
     revealSettingsFold("mailbox");
     $("account-permissions").open = false;
-    $("settings-account").focus();
+    focusSettingsAccountChoice();
     showStatus("That Gmail connection changed or was removed. Migration review was cancelled. Select the intended mailbox in Accounts to start again.", true);
   };
   await closeDialog("connect");
   openSettings();
   if (accountId) {
     if (!targetAvailable(false)) { cancelReview(); return; }
-    if (settingsAccount()?.id !== accountId && !(await changeSettingsMailbox(accountId))) return;
+    if (settingsAccount()?.id !== accountId && !(await changeSettingsMailbox(accountId))) {
+      if (!targetAvailable(false)) cancelReview();
+      return;
+    }
     if (!targetAvailable(true)) { cancelReview(); return; }
   }
   paintSettingsMailbox();
@@ -12553,7 +12589,7 @@ async function reviewConnectGmailMigration() {
   if (accountId && !targetAvailable(true)) { cancelReview(); return; }
   if (accountId && !$("settings-gmail-migrate").hidden) $("settings-gmail-migrate").focus();
   else {
-    $("settings-account").focus();
+    focusSettingsAccountChoice();
     showStatus("Select the Gmail mailbox in Accounts, then review Migrate Gmail to Gmail API under Permissions & calendar access.");
   }
 }
@@ -17493,7 +17529,8 @@ function loadSettingsFold(name) {
   const panel = fold.querySelector(".fold-panel");
   const pending = new Promise(resolve => afterPaint(resolve)).then(async () => {
     if (settingsFoldPending.get(key) !== pending || !$("settings").open || !fold.classList.contains("is-open") || key !== settingsFoldKey(name)) return;
-    panel.inert = true;
+    // Account navigation remains usable while read-only permission checks load.
+    panel.inert = name !== "mailbox";
     panel.setAttribute("aria-busy", "true");
     setSettingsFoldLoading(fold, settingsFoldLoadingLabels[name] || "Loading…");
     if (name === "prefs" || name === "mail") {
@@ -18173,7 +18210,8 @@ function setSettingsFold(name, open, animate) {
     button.setAttribute("aria-selected", String(selected));
     button.tabIndex = selected ? 0 : -1;
   }
-  document.querySelector("#settings .settings-account-context").hidden = !["mailbox", "ooo"].includes(name);
+  document.querySelector("#settings .settings-account-context").hidden = name !== "ooo";
+  if (name === "mailbox") renderSettingsAccounts();
   $("settings").querySelector(".dialog-body").scrollTop = 0;
   loadSettingsFold(name);
 }
@@ -18430,7 +18468,7 @@ let settingsVacationGen = 0;
 let settingsCapabilityGen = 0;
 let oooBaseline = "";
 function settingsAccount() {
-  return state.accounts.find(account => account.id === (state.settingsAccountId || state.accountId)) || null;
+  return state.accounts.find(account => account.id === (state.settingsAccountId || state.accountId)) || state.accounts[0] || null;
 }
 function oooSnapshot() {
   return JSON.stringify(["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience", "ooo-domain"].map(id => {
@@ -18797,6 +18835,16 @@ function paintSettingsMailbox() {
   if (state.settingsAccountId && !state.accounts.some(a => a.id === state.settingsAccountId)) state.settingsAccountId = null;
   const account = settingsAccount();
   fillAccountOptions(select, state.accounts, account?.id);
+  const detail = $("settings-account-detail");
+  if (detail) detail.hidden = !account;
+  if (detail?.dataset && detail.dataset.accountId !== (account?.id || "")) {
+    detail.dataset.accountId = account?.id || "";
+    ++settingsCapabilityGen;
+    $("settings-capabilities").textContent = account ? "Checking feature permissions…" : "";
+    settingsFoldLoaded.delete("mailbox:" + (account?.id || ""));
+  }
+  if ($("settings-account-title")) $("settings-account-title").textContent = accountLabel(account);
+  if ($("settings-account-provider")) $("settings-account-provider").textContent = settingsAccountProvider(account);
   $("settings-reconnect").disabled = !account;
   $("settings-reconnect").textContent = "Reconnect mailbox";
   $("settings-reconnect").title = account ? "Reconnect " + account.email : "Connect a mailbox first";
@@ -18811,20 +18859,31 @@ function paintSettingsMailbox() {
   $("settings-mailbox-note").textContent = account ? "Signatures, rules, and automatic replies use this mailbox." : "Connect an account in Accounts to get started.";
   syncRemove();
 }
+let settingsMailboxChoicePending = false;
 async function changeSettingsMailbox(id) {
   const previous = settingsAccount()?.id;
+  if (!state.accounts.some(account => account.id === id)) return false;
+  if (settingsMailboxChoicePending) { $("settings-account").value = previous || ""; return false; }
   if (state.busy) { $("settings-account").value = previous || ""; return false; }
   if (id === previous) return true;
   if (oooDirty()) {
-    const answer = await askConfirm({ title: "Change Settings mailbox?", body: "Discard unsaved Out of Office edits for " + settingsAccount().email + "? Saved provider settings are unchanged.", confirm: "Discard edits", cancel: "Keep editing" });
+    settingsMailboxChoicePending = true;
+    let answer;
+    try {
+      answer = await askConfirm({ title: "Change Settings mailbox?", body: "Discard unsaved Out of Office edits for " + settingsAccount().email + "? Saved provider settings are unchanged.", confirm: "Discard edits", cancel: "Keep editing" });
+    } finally { settingsMailboxChoicePending = false; }
     if (!answer?.ok) { $("settings-account").value = previous || ""; return false; }
+    if (settingsAccount()?.id !== previous || !state.accounts.some(account => account.id === id)) return false;
   }
   state.settingsAccountId = id;
+  ++settingsCapabilityGen;
+  $("settings-capabilities").textContent = "Checking feature permissions…";
   ++settingsVacationGen;
   oooBaseline = "";
   paintVacation(null);
   paintOooDirty();
   paintSettingsMailbox();
+  renderSettingsAccounts();
   for (const key of settingsFoldLoaded) if (key.startsWith("mailbox:") || key.startsWith("ooo:")) settingsFoldLoaded.delete(key);
   for (const key of settingsFoldPending.keys()) if (key.startsWith("mailbox:") || key.startsWith("ooo:")) settingsFoldPending.delete(key);
   const fold = document.querySelector("#settings .fold.is-open");
@@ -25985,6 +26044,12 @@ function wire() {
   $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
   $("mail-ooo-account").addEventListener("change", () => refreshMailVacation());
   $("settings-account").addEventListener("change", () => changeSettingsMailbox($("settings-account").value));
+  $("settings-accounts").addEventListener("click", event => {
+    const button = event.target.closest("button[data-account-id]");
+    if (!button) return;
+    changeSettingsMailbox(button.dataset.accountId).catch(error => showStatus(error.message || String(error), true));
+  });
+  $("settings-account-ooo").addEventListener("click", () => revealSettingsFold("ooo"));
   $("settings-reconnect").addEventListener("click", () => openConnectFor(settingsAccount()));
   $("google-oauth-import").addEventListener("click", () => changeGoogleOauthClient("mail:importGoogleOauth"));
   $("google-oauth-clear").addEventListener("click", () => changeGoogleOauthClient("mail:clearGoogleOauth"));
