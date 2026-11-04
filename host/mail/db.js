@@ -2689,6 +2689,8 @@ function applyGmailMessage(accountId, folderPaths, message) {
         disposition_provider_replied: typeof message.replied === "boolean" ? Number(message.replied) : null,
         disposition_provider_forwarded: typeof message.forwarded === "boolean" ? Number(message.forwarded) : null }, "id = ?", [input.id]);
     }
+    // Confirmed local proof is keyed by provider identity, independent of RFC headers.
+    refreshGmailDisposition(accountId, message.rfcMessageId, message.providerId);
     refreshGmailDisposition(accountId, message.rfcMessageId);
     refreshGmailDisposition(accountId, message.inReplyTo);
 

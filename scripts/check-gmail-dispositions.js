@@ -66,6 +66,17 @@ test('Gmail dispositions use confirmed identities and conservative cached Sent e
   assert.equal(read('original'), 1); assert.equal(read('original', 'forwarded'), 1, 'body flag refresh retains saved evidence');
   db.pruneGmailCopies('a', 'original', []); admit('a', 'original'); assert.equal(read('original'), 1, 'provider identity survives row replacement');
 
+  for (const [name, rfcMessageId] of [['missing-rfc', null], ['malformed-rfc', 'not-an-rfc-id']]) {
+    const target = admit('a', name, { rfcMessageId }, ['INBOX', 'Work']);
+    await send({ kind: 'forward', sourceMessageId: target.id, inReplyTo: undefined });
+    assert.ok(db.gmailCopies('a', name).every(row => row.forwarded === 1));
+    admit('a', name, { rfcMessageId }, ['INBOX', 'Work']);
+    assert.ok(db.gmailCopies('a', name).every(row => row.forwarded === 1), name + ' provider identity restores confirmed evidence after sync');
+    admit('a', name, { rfcMessageId, forwarded: false });
+    assert.equal(read(name, 'forwarded'), 0, 'authoritative false still wins');
+    admit('a', name, { rfcMessageId, forwarded: true });
+    assert.equal(read(name, 'forwarded'), 1, 'authoritative true still wins');
+  }
   for (const outbox of [false, true]) {
     const target = admit('a', `queued-${outbox}`);
     const queued = engine.answer('mail:scheduleSend', [{ ...fields, sourceMessageId: target.id, kind: 'forward',
