@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.3.24": [
+      "Timeline is one button beside Summary in the opened-message action bar. A sheet offers optional keywords and editable From/To/Cc/Reply-To contacts; only Generate starts AI on that message's downloaded thread.",
+      "Message/Timeline tabs and duplicate Generate timeline entries are removed. Right, Bottom and Separate window layouts keep the reader intact.",
+      "Cached reply and forward flags show as icons before the Subject instead of a separate list column. Column visibility, sort and keyboard reorder stay as before.",
+      "Public JSON 1.0.0, Markdown and isolated PDF exports, consent, coverage limits and personal-information review are unchanged.",
+    ],
     "0.3.23": [
       "Gmail API mail reads renew saved tokens per request and can retry one rejected read after renewal. Writes are never replayed; unconfirmed submissions remain for review. Legacy IMAP, Calendar and provider sign-in policies are unchanged.",
       "The reader adds a Timeline tab for reviewed selected messages, downloaded threads and downloaded search results. Only Generate starts AI; no mail is marked read, relabeled or sent.",
