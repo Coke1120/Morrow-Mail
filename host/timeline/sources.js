@@ -32,7 +32,7 @@ function dedupeRows(rows) {
   return [...result.values()].sort((left, right) => String(left.date_iso || "").localeCompare(String(right.date_iso || "")) || left.id.localeCompare(right.id));
 }
 
-function freezeSources({ db, stamp, identities }, selection) {
+function freezeSources({ db, stamp, identities }, selection, mode = "thread") {
   let matched = 0;
   const seeds = (selection.messages || []).map(reference => {
     const row = db.timelineMessage(reference.messageId);
@@ -73,8 +73,10 @@ function freezeSources({ db, stamp, identities }, selection) {
     }
     const threadId = db.timeline.identity(account.saved, "thread", row.thread_id || row.id);
     sourceThreads.set(threadId, (sourceThreads.get(threadId) || 0) + 1);
-    const record = { id: row.id, account_id: row.account_id, thread_id: row.thread_id || row.id, fingerprint: fingerprint(row) };
+    const phase = mode === "case" ? selection.messages.find(reference => reference.messageId === row.id)?.phase || "main" : null;
+    const record = { id: row.id, account_id: row.account_id, thread_id: row.thread_id || row.id, fingerprint: fingerprint(row), ...(phase ? { phase } : {}) };
     records.push(record);
+    if (mode === "context") continue;
     const text = row.text_body || htmlToPlain(row.html_body || "");
     if (row.body_complete !== 1 || !text.trim() || row.body_warning) {
       missingBodies++;
@@ -87,7 +89,7 @@ function freezeSources({ db, stamp, identities }, selection) {
       const metadata = metadataOf(row, account, db.timeline, threadId);
       validateMetadata(metadata);
       if ((row.subject || "").length > 500) throw failure("timeline-metadata");
-      sources.push({ ...metadata, subject: row.subject || "", text });
+      sources.push({ ...metadata, ...(phase ? { phase } : {}), subject: row.subject || "", text });
     } catch { invalidMetadata++; }
   }
   const coverage = { selected_message_count: rows.length, included_message_count: sources.length,
@@ -107,14 +109,17 @@ function metadataOf(row, account, store, threadId) {
   const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
   const evidence = [...to, ...cc].map(mailbox => mailbox.address).concat(...["originalTo", "deliveredTo", "envelopeTo"].map(key => recipientHeaders[key] || []));
   const aliases = account.aliases.filter(alias => alias !== account.saved.email.toLowerCase() && evidence.some(value => typeof value === "string" && value.toLowerCase() === alias));
-  const validDate = typeof row.date_iso === "string" && /(?:Z|[+-]\d\d:\d\d)$/.test(row.date_iso) && Number.isFinite(Date.parse(row.date_iso));
-  const dateSource = validDate && row.date_source !== "unknown" ? ["header", "received"].includes(row.date_source) ? row.date_source : "cached_unknown" : "unknown";
-  const provider = !row.draft_pending && typeof row.gmail_id === "string" && row.gmail_id.length <= 512 && row.gmail_id && !/[\s\x00-\x1f]/.test(row.gmail_id);
+  const { date, dateSource } = dateEvidence(row);
   return { event_id: crypto.randomUUID(), source_thread_id: threadId,
-    source_message_id: store.identity(account.saved, provider ? "provider-message" : "local-message", provider ? row.gmail_id : row.id),
-    occurred_at: dateSource === "unknown" ? null : new Date(row.date_iso).toISOString(), date_source: dateSource,
+    source_message_id: messageIdentity(row, account.saved, store),
+    occurred_at: date, date_source: dateSource,
     from: address ? { address, ...(name ? { name } : {}) } : null, to, cc, via_alias: aliases.length === 1 ? aliases[0] : null,
     attachments: JSON.parse(row.attachments_json || "[]").map(attachment => attachment.filename) };
+}
+
+function messageIdentity(row, account, store) {
+  const provider = !row.draft_pending && typeof row.gmail_id === "string" && row.gmail_id.length <= 512 && row.gmail_id && !/[\s\x00-\x1f]/.test(row.gmail_id);
+  return store.identity(account, provider ? "provider-message" : "local-message", provider ? row.gmail_id : row.id);
 }
 
 function assertSources({ db, stamp }, snapshot) {
@@ -125,4 +130,16 @@ function assertSources({ db, stamp }, snapshot) {
   }
 }
 
-module.exports = { hash, fingerprint, dedupeRows, mailboxes, freezeSources, assertSources };
+function dateEvidence(row) {
+  const valid = typeof row.date_iso === "string" && /(?:Z|[+-]\d\d:\d\d)$/.test(row.date_iso) && Number.isFinite(Date.parse(row.date_iso));
+  const dateSource = valid && row.date_source !== "unknown" ? ["header", "received"].includes(row.date_source) ? row.date_source : "cached_unknown" : "unknown";
+  return { date: dateSource === "unknown" ? null : new Date(row.date_iso).toISOString(), dateSource };
+}
+
+function messagePreview(row) {
+  return { messageId: row.id, accountId: row.account_id, threadId: row.thread_id || row.id,
+    subject: String(row.subject || "").slice(0, 500), from: String(row.from_addr || "").slice(0, 500),
+    ...dateEvidence(row), complete: row.body_complete === 1 && !row.body_warning };
+}
+
+module.exports = { hash, fingerprint, dedupeRows, mailboxes, freezeSources, assertSources, messageIdentity, messagePreview };

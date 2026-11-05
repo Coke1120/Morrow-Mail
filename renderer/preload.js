@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 const INVOKE = [
   "timeline:check",
+  "timeline:search",
+  "timeline:source",
   "timeline:prepare",
   "timeline:download",
   "timeline:generate",
@@ -91,6 +93,11 @@ const INVOKE = [
   "host:aiConsentGrant",
   "host:aiConsentRevoke",
   "mail:listAccounts",
+  "mail:localFolders",
+  "mail:manageLocalFolder",
+  "mail:transferToLocal",
+  "mail:moveLocalMessage",
+  "mail:exportLocalMessage",
   "mail:getComposeContext",
   "emailBrain:getComposeSettings",
   "emailBrain:saveComposeSettings",
@@ -252,6 +259,7 @@ const EVENTS = [
   "host:updateResume",
   "host:updateState",
   "mail:accountsUpdated",
+  "mail:localFoldersUpdated",
   "mail:emailsUpdated",
   "mail:notificationClicked",
   "mail:bodyUpdated",

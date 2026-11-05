@@ -36,7 +36,11 @@ async function fixture(messages, work) {
     await work({ db, engine, service, session, directory });
   } finally {
     global.fetch = priorFetch;
-    await engine.stopIdle(); await db.close();
+    await engine.stopIdle();
+    // Reader-window boot also opens the independently owned local archive.
+    // Windows cannot unlink that SQLite file until this fixture closes it.
+    engine.closeLocalArchiveForTest?.();
+    await db.close();
     secrets.deletePassword("gmail");
     fs.rmSync(directory, { recursive: true, force: true });
   }
