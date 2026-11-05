@@ -1,11 +1,15 @@
 const Ajv = require("ajv/dist/2020");
 const formats = require("ajv-formats");
 const schema = require("../../shared/timeline-schema/1.0.0.schema.json");
+const caseSchema = require("../../shared/timeline-schema/1.1.0.schema.json");
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const ajv = new Ajv({ strict: true, allErrors: true, validateFormats: true });
 formats(ajv);
 const documentCheck = ajv.compile(schema);
+const caseDocumentCheck = ajv.compile(caseSchema);
+const documentChecks = new Map([["1.0.0", documentCheck], ["1.1.0", caseDocumentCheck]]);
+const caseReportCheck = ajv.compile({ $ref: "urn:morrow-mail:timeline:1.1.0#/$defs/case_report" });
 const metadataCheck = ajv.compile({ $ref: "urn:morrow-mail:timeline:1.0.0#/$defs/event" });
 const semanticText = schema.$defs.text;
 const candidateCheck = ajv.compile({
@@ -88,8 +92,9 @@ function checkSchema(check, value) {
 }
 
 function validateDocument(document) {
-  if (document?.schema_version !== "1.0.0") throw failure("timeline-version");
-  checkSchema(documentCheck, document);
+  const check = documentChecks.get(document?.schema_version);
+  if (!check) throw failure("timeline-version");
+  checkSchema(check, document);
   try { new Intl.DateTimeFormat("en", { timeZone: document.display_timezone }).format(); }
   catch { throw failure("timeline-timezone"); }
   const threads = new Map(document.source_threads.map(thread => [thread.thread_id, thread.selected_message_count]));
@@ -107,8 +112,22 @@ function validateDocument(document) {
       || coverage.included_message_count !== document.events.length
       || [...threads.values()].reduce((total, count) => total + count, 0) !== coverage.selected_message_count
       || [...counts].some(([thread, count]) => count > threads.get(thread))) throw failure();
+  if (document.case_report) {
+    if (document.events.some(event => !event.phase) || document.case_scope.limited_search_count > document.case_scope.search_count) throw failure();
+    validateCaseReport(document.case_report, [...messageIds]);
+  }
   if (Buffer.byteLength(JSON.stringify(document)) > MAX_BYTES) throw failure("timeline-size");
   return document;
+}
+
+function validateCaseReport(value, sourceIds, sourceText = null) {
+  checkSchema(caseReportCheck, value);
+  const allowed = new Set(sourceIds);
+  for (const item of [...value.current_status, ...value.follow_ups, ...value.gaps, ...value.dates]) {
+    if (item.source_message_ids.some(id => !allowed.has(id))) throw failure("timeline-references");
+  }
+  if (sourceText && value.dates.some(item => !item.source_message_ids.some(id => sourceText.get(id)?.includes(item.date_text)))) throw failure("timeline-references");
+  return value;
 }
 
 function validateCandidates(value, tokens) {
@@ -122,5 +141,5 @@ function validateCandidates(value, tokens) {
   return value.events;
 }
 
-module.exports = { schema, MAX_BYTES, failure, parseJson, validateDocument, validateCandidates,
+module.exports = { schema, MAX_BYTES, failure, parseJson, validateDocument, validateCandidates, validateCaseReport,
   validateMetadata: value => checkSchema(metadataCheck, { ...value, summary: "Pending", open_actions: [], unclear: [] }) };

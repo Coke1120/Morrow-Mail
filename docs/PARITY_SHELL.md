@@ -11,10 +11,13 @@ the full server copy without claiming to recover already lost bytes. See
 Preview Send, scheduled-send previews and Outbox show safe HTML through the received-mail body renderer. The compose preview uses its frozen send payload; Outbox uses the saved queued payload. Remote images, including CSS and table backgrounds, stay blocked in these previews even when received-mail images are enabled. Raster data images can display; unsupported active content and unresolved CID images remain filtered. Both previews list included attachment names and sizes. Outbox attachment download/open/preview actions are unavailable. Confirm still rejects changed compositions, and opening Outbox does not change its send time or Undo boundary. See [safe send previews](adr/2026-11-05-safe-send-previews.md).
 
 Timeline is a single reader action beside Summary, opening a modal sheet without
-replacing the message or changing Right, Bottom or Separate window layouts. It
-uses the opened message and its downloaded thread, not list selections or search.
-Keywords and contact emails guide extraction; only Generate starts the saved AI
-provider after explicit-action permission. The sheet never downloads older mail. See
+replacing the reader or changing Right, Bottom or Separate window layouts. It keeps
+the downloaded-thread mode and adds Case / client mode for current-account local
+search, explicit cross-thread source selection and Main / Background roles. A fresh
+case review precedes Generate. Only Generate starts AI after version 4 consent.
+Case reports cite source mail for status, follow-ups, gaps and mentioned dates;
+cached source reading never downloads or marks read. Coverage is always limited.
+Both public schema 1.0.0 and 1.1.0 remain readable/exportable. See
 [timeline scope, public JSON and export limits](TIMELINE_FORMAT.md).
 
 Mail & Sync includes native Windows/macOS new-Inbox-mail notifications, an on/off

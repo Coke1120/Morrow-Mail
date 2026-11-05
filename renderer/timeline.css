@@ -3,6 +3,23 @@
 #timeline-dialog { width: min(680px, calc(100vw - 24px)); }
 #timeline-dialog label { display: block; margin: 12px 0 6px; }
 #timeline-dialog input:not([type="checkbox"]), #timeline-dialog textarea { width: 100%; box-sizing: border-box; }
+#timeline-dialog select { max-width: 100%; }
+#timeline-dialog .timeline-pick { border-bottom: 1px solid var(--line); padding: 8px 0 12px; overflow-wrap: anywhere; }
+#timeline-dialog .timeline-pick label { margin-top: 6px; }
+#timeline-dialog .timeline-pick button { margin: 4px 6px 0 0; }
+#timeline-dialog .timeline-pick select { margin-left: 8px; }
+#timeline-case { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 12px 0; }
+#timeline-search { flex: 1 1 200px; min-width: 0; }
+#timeline-candidates { max-height: 320px; overflow-y: auto; }
+#timeline-selection { max-height: 400px; overflow-y: auto; }
+#timeline-source { border: 1px solid var(--accent-ink); border-radius: 10px; padding: 12px; margin: 16px 0; overflow-wrap: anywhere; }
+#timeline-source pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 380px; overflow-y: auto; font: inherit; }
+.timeline-case-section { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 8px; }
+.timeline-case-item { margin-bottom: 16px; }
+.timeline-case-item button { margin: 0 6px 6px 0; }
+.timeline-case-item p { margin: 6px 0; }
+.timeline-phase { font-weight: 600; color: var(--accent-ink); }
+.timeline-filters button[aria-pressed="true"] { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 #timeline-dialog textarea { resize: vertical; }
 #timeline-dialog .timeline-choice { display: flex; gap: 8px; align-items: flex-start; }
 #timeline-dialog .timeline-choice input { flex: 0 0 auto; margin-top: 3px; width: auto; }
