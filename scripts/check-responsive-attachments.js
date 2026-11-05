@@ -91,6 +91,75 @@ function sidebarChecks() {
   } finally { dom.window.close(); }
 }
 
-async function run() { await workerChecks(); await queueChecks(); sidebarChecks(); console.log("responsive-attachments-ok: worker parity/heartbeat/cancellation/admission/recovery, retained sidebar linear lookups, rendered help"); }
+async function attachmentAccordionChecks() {
+  const { JSDOM } = require("jsdom"), { renderer } = require("./check-ux-workflows");
+  const dom = new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"), "utf8"));
+  try {
+    const doc = dom.window.document, pane = doc.getElementById("reader");
+    const ui = renderer({ document: doc, crypto });
+    ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
+    ui.run(`globalThis.calls=[];call=async(channel,payload)=>{calls.push({channel,payload});return {}};
+      globalThis.email={id:'fixture-mail',accountId:'fixture-box',attachments:[
+        {id:'one',filename:'same.jpg',size:1024},{id:'two',filename:'same.jpg',size:2048},
+        {id:'sheet',filename:'report.xlsx'}]};
+      renderAttachments($('reader'),email);`);
+    const toggle = () => pane.querySelector(".attachment-toggle");
+    const list = () => doc.getElementById(toggle().getAttribute("aria-controls"));
+    assert.equal(toggle().getAttribute("aria-label"), "Attachments (3)");
+    assert.equal(toggle().getAttribute("aria-expanded"), "false");
+    assert.equal(list().hidden, true);
+    assert.equal(pane.querySelector(".attachment-zip").closest("[hidden]"), null, "ZIP remains available while collapsed");
+    toggle().focus(); toggle().click();
+    assert.equal(list().hidden, false); assert.equal(toggle().getAttribute("aria-expanded"), "true");
+    assert.equal(doc.activeElement, toggle(), "toggle retains keyboard focus");
+    assert.equal(ui.run("calls.length"), 0, "expanding must not fetch files or save settings");
+    const ids = [list().id];
+    ui.run("$('reader').replaceChildren();renderAttachments($('reader'),{...email,textBody:'refreshed'})");
+    assert.equal(list().hidden, false, "message repaint preserves the choice");
+    ids.push(list().id);
+    const rows = pane.querySelectorAll(".attachments li");
+    assert.deepEqual(Array.from(rows, row => row.querySelector(".attachment-name").textContent), ["same.jpg", "same.jpg", "report.xlsx"]);
+    assert.equal(rows[2].querySelectorAll(".attachment-actions button").length, 2, "spreadsheets keep Save and Open");
+    assert.equal(rows[1].querySelector(".attachment-actions button").getAttribute("aria-label"), "Preview same.jpg, attachment 2 of 3");
+    rows[1].querySelectorAll(".attachment-actions button")[1].click();
+    rows[0].querySelectorAll(".attachment-actions button")[2].click();
+    pane.querySelector(".attachment-zip").click();
+    await tick(); await tick();
+    assert.deepEqual(Array.from(ui.run("calls"), row => [row.channel, row.payload.emailId, row.payload.attachmentId || Array.from(row.payload.attachmentIds)]), [
+      ["mail:downloadAttachment", "fixture-mail", "two"],
+      ["mail:openAttachmentExternally", "fixture-mail", "one"],
+      ["mail:downloadAttachmentsZip", "fixture-mail", ["one", "two", "sheet"]],
+    ], "duplicate names retain their exact file identities and ZIP selection");
+    ui.run("renderAttachments($('agent-peek-body'),email)");
+    const peekToggle = doc.querySelector("#agent-peek-body .attachment-toggle");
+    assert.equal(peekToggle.getAttribute("aria-expanded"), "false", "another surface has an independent choice");
+    ids.push(peekToggle.getAttribute("aria-controls"));
+    assert.equal(new Set(ids).size, ids.length, "disclosure controls target unique lists");
+    toggle().click();
+    ui.run("$('reader').replaceChildren();renderAttachments($('reader'),email)");
+    assert.equal(list().hidden, true, "collapsed choice also survives refresh");
+    toggle().click();
+    ui.run("$('reader').replaceChildren();renderAttachments($('reader'),{...email,accountId:'other-box'})");
+    assert.equal(list().hidden, true, "matching message ids in another mailbox do not inherit expansion");
+    toggle().click();
+    ui.run("$('reader').replaceChildren();renderAttachments($('reader'),{...email,id:'other-mail'})");
+    assert.equal(list().hidden, true, "another message starts collapsed");
+    ui.run("$('reader').replaceChildren();renderAttachments($('reader'),{id:'none',attachments:[]})");
+    assert.equal(pane.childElementCount, 0, "no empty attachment card");
+    ui.run("renderAttachments($('reader'),{id:'unknown',hasAttachments:true})");
+    assert.match(pane.textContent, /This message has attachments/);
+    assert.equal(pane.querySelector("button"), null, "unknown attachment metadata keeps its honest informational state");
+    ui.run("$('reader').replaceChildren();renderAttachments($('reader'),{id:'name-only',attachments:[{filename:'Name only'}]})");
+    assert.equal(pane.querySelector(".attachment-zip"), null);
+    assert.equal(pane.querySelector(".attachment-actions"), null, "metadata without an id offers no unsupported action");
+    ui.run("paintFeatureCatalog()");
+    const help = doc.getElementById("features-catalog").textContent;
+    assert.match(help, /Message attachments start collapsed/);
+    assert.match(help, /file count and Save as ZIP visible/);
+    assert.match(help, /Collapse does not cancel transfers/);
+  } finally { dom.window.close(); }
+}
+
+async function run() { await workerChecks(); await queueChecks(); sidebarChecks(); await attachmentAccordionChecks(); console.log("responsive-attachments-ok: worker parity/heartbeat/cancellation/admission/recovery, retained sidebar linear lookups, attachment disclosure/identity/actions/refresh/help"); }
 module.exports = { run };
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });

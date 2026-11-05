@@ -4148,10 +4148,41 @@ button.thread-item[aria-current="true"]:hover { background: var(--selected); }
   margin: 0;
   font-size: 13px;
   font-weight: 650;
+  flex: 1 1 160px;
+  min-width: 0;
 }
 
 .attachment-card-head h3 svg,
 button.attachment-zip svg { display: block; flex: none; }
+
+button.attachment-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+
+button.attachment-toggle:hover { background: var(--hover); }
+
+.attachment-toggle .attachment-chevron {
+  margin-left: auto;
+  transform: rotate(-90deg);
+  transition: transform 120ms ease;
+}
+
+.attachment-toggle[aria-expanded="true"] .attachment-chevron { transform: rotate(0); }
+
+@media (prefers-reduced-motion: reduce) {
+  .attachment-toggle .attachment-chevron { transition: none; }
+}
 
 button.attachment-zip {
   display: inline-flex;
@@ -4165,6 +4196,8 @@ button.attachment-zip {
   color: var(--ink);
   font-size: 12px;
   font-weight: 600;
+  flex: none;
+  margin-left: auto;
 }
 
 button.attachment-zip:hover { background: var(--selected); }
@@ -4201,9 +4234,7 @@ button.attachment-zip:hover { background: var(--selected); }
 
 .attachment-name {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 button.attachment-name {
