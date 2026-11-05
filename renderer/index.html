@@ -455,7 +455,7 @@
             <button type="button" class="ghost" id="brain-refresh">Refresh</button>
             <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
           </div>
-          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay, including saved edits made during analysis. A conflicting learned-profile change requires another refresh.</p>
+          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay, including saved edits made during analysis. A conflicting learned-profile change requires another refresh. Choose automatic frequency in Settings → Brain.</p>
         </section>
         <div id="brain-sections"></div>
         <p class="hint" id="brain-compose-pointer">Compose defaults live in <button type="button" class="inline-link" id="brain-open-compose-settings">Settings → Compose</button>.</p>
@@ -1151,6 +1151,7 @@
         <button type="button" id="settings-tab-mail" data-fold="mail" role="tab" aria-controls="settings-mail" aria-selected="false" aria-current="false" tabindex="-1">Mail &amp; Sync</button>
         <button type="button" id="settings-tab-mailbox" data-fold="mailbox" role="tab" aria-controls="settings-mailbox" aria-selected="false" aria-current="false" tabindex="-1">Accounts</button>
         <button type="button" id="settings-tab-compose" data-fold="compose" role="tab" aria-controls="settings-compose" aria-selected="false" aria-current="false" tabindex="-1">Compose</button>
+        <button type="button" id="settings-tab-brain" data-fold="brain" role="tab" aria-controls="settings-brain" aria-selected="false" aria-current="false" tabindex="-1">Brain</button>
         <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" aria-current="false" tabindex="-1">AI</button>
         <button type="button" id="settings-tab-ooo" data-fold="ooo" role="tab" aria-controls="settings-ooo" aria-selected="false" aria-current="false" tabindex="-1">Out of Office</button>
         <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
@@ -1305,6 +1306,24 @@
               </div>
             </div>
             <p class="hint settings-save-note">Changes save automatically. Saved or error messages appear beside each setting.</p>
+          </div>
+        </section>
+        <section class="fold" id="settings-brain" data-fold="brain" role="tabpanel" aria-labelledby="settings-tab-brain" tabindex="0" hidden>
+          <div class="fold-panel">
+            <h3>Automatic profile refresh</h3>
+            <label for="pref-brain-refresh">Refresh frequency</label>
+            <select id="pref-brain-refresh" aria-describedby="brain-refresh-help brain-refresh-permission">
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="manual">Manual only</option>
+            </select>
+            <p class="hint" id="brain-refresh-help">Daily is the default. Daily and Weekly wait at least 24 hours or 7 days between automatic attempts, including when you open Brain. Missed runs combine into one check while Morrow Mail is running. A failed attempt waits for the next interval; use Refresh on Brain → Profile to retry immediately. Manual only stops future automatic profile refresh. A run already processing can finish; revoke AI data permission to cancel requests.</p>
+            <p class="hint">The profile uses downloaded Sent and Inbox snippets across all connected mailboxes and the previous generated profile. It sends that context to your saved AI connection and may use API or plan usage. Attachment files are excluded. Skill schedules and Agent triage have their own controls.</p>
+            <p class="hint" id="brain-refresh-permission"></p>
+            <p class="hint" id="brain-refresh-last"></p>
+            <p class="hint" id="brain-refresh-next"></p>
+            <button type="button" class="ghost" id="brain-refresh-ai-settings">Review AI data permission</button>
+            <p class="hint" id="brain-refresh-setting-status" role="status" aria-live="polite"></p>
           </div>
         </section>
         <section class="fold" id="settings-ai" data-fold="ai" role="tabpanel" aria-labelledby="settings-tab-ai" tabindex="0" hidden>

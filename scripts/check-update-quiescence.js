@@ -68,12 +68,15 @@ async function main() {
     oooDirty: () => false, aiDirty: () => false, inboxRuleBaseline: "", updateAiBaseline: null,
     state: {}, sendTimer: null, agentChatBusy: false, brainSkillBusy: false,
     attachmentTasks: new Map(),
-    brainFixBusy: false, brainCategoryBusy: false, brainView: {},
+    brainFixBusy: false, brainCategoryBusy: false, brainView: {}, brainCadenceSave: null,
     brainCategories: [], updateCategoriesBaseline: "[]", updateMemoryBaseline: "",
     updateFreezeNonce: null, updateWasInert: false,
   });
   vm.runInContext(guards, context);
   assert.equal(context.updateRestartBlocked(), false);
+  context.brainCadenceSave = Promise.resolve();
+  assert.equal(context.updateRestartBlocked(), true, "a pending Brain cadence save blocks restart even after Settings closes");
+  context.brainCadenceSave = null;
   context.attachmentTasks.set("download", {});
   assert.equal(context.updateRestartBlocked(), true, "active attachment requests block restart");
   context.attachmentTasks.clear();

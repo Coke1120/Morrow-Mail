@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "theme": "light",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "theme": "light",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "theme": "dark",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "theme": "dark",
+      "width": 390,
+      "overflow": false
+    }
+  ],
+  "errors": [],
+  "syntheticOnly": true
+}
