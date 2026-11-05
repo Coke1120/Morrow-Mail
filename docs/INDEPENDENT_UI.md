@@ -1,4 +1,4 @@
-Gmail reply / forward subject icons use confirmed local sends and conservative cached Sent header evidence. See [Gmail disposition evidence](adr/2026-11-04-gmail-disposition-evidence.md) for identity rules and limits.
+Gmail reply / forward subject icons use confirmed local sends and conservative cached Sent header evidence. Confirmed local replies use verified provider identity even without an RFC Message-ID. Sent sync gradually inspects already-cached legacy reply candidates, at most two per pass within its normal read budget, resuming from durable MIME checks after restart or connection recovery. See [Gmail disposition evidence](adr/2026-11-04-gmail-disposition-evidence.md) for identity rules and limits.
 
 Notification clicks use an independent reader in Separate window mode, without opening or marking read through the hidden shell preview. Keyboard header moves use visible neighbors while retaining hidden columns in the complete saved order.
 
@@ -17,7 +17,7 @@ See [first-use guide](adr/2026-11-02-first-use-guide.md).
 
 Conversation display counts Gmail label-folder copies once per account/provider message ID and keeps the selected copy. Stored folder rows are retained. Different provider messages, absent provider IDs and pending local draft edits remain separate; RFC Message-ID alone does not collapse deliveries. A single unique message has no Earlier section.
 
-Body download failures, including IMAP responses without the requested source, show Retry download in the reader and a separate reader window. Without an available body, opening fails visibly and does not mark the message read. Partial cached content stays visible with a warning and retry. Gmail sync limits each folder pass to 20 actual full-message reads across history, bootstrap and verification; pending page IDs and committed positions survive restart. A waiting foreground open runs after the current read. From mailbox changes preserve rich content and edited signatures; only untouched automatic signatures, including multiline HTML signatures, follow the new mailbox. See [functional review fixes](adr/2026-10-28-reviewed-mail-flows.md).
+Body download failures, including IMAP responses without the requested source, show Retry download in the reader and a separate reader window. Without an available body, opening fails visibly and does not mark the message read. Partial cached content stays visible with a warning and retry. Gmail sync limits each folder pass to 20 actual full-message reads across history, bootstrap, verification and legacy Sent inspection; pending page IDs and committed positions survive restart. A waiting foreground open runs after the current read. From mailbox changes preserve rich content and edited signatures; only untouched automatic signatures, including multiline HTML signatures, follow the new mailbox. See [functional review fixes](adr/2026-10-28-reviewed-mail-flows.md).
 
 # Independent UI
 
