@@ -4285,6 +4285,8 @@ function answer(channel, args, event) {
           threadMessages: members,
         });
       })();
+    case "mail:prepareSummary":
+      return messageSummaries.prepare(params, event?.sender);
     case "mail:summarizeEmail":
       return messageSummaries.summarize(params, event?.sender);
     case "mail:cancelSummary":
