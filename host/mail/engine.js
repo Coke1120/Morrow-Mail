@@ -17,6 +17,7 @@ const zipBytes = require("./zip-bytes");
 const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
+const localFolders = require("./local-folders");
 const messageSummaries = require("../message-summary").createSummaryService({ readMessage: summaryMessage });
 
 const secrets = require("./secrets");
@@ -129,6 +130,132 @@ function dataFile() {
   }
   if (!dir) dir = require("../paths").userDataDir();
   return path.join(dir, "mail.sqlite");
+}
+
+let localStore = null;
+function localArchive() {
+  const file = path.join(path.dirname(dataFile()), "local-folders.sqlite");
+  if (localStore?.file !== file) {
+    localStore?.close();
+    localStore = localFolders.createLocalStore(file);
+  }
+  return localStore;
+}
+
+function emitLocalFolders() {
+  broadcast("mail:localFoldersUpdated", { account: localArchive().account() });
+  broadcast("mail:emailsUpdated", { accountId: localFolders.ACCOUNT_ID });
+}
+
+async function transferToLocal(params) {
+  if (!["copy", "move"].includes(params?.mode)) return fail("invalid", "Choose Copy or Move to Local Folders.");
+  const row = db.messageById(params.emailId);
+  if (!row || row.account_id !== params.accountId) return fail("email-gone", "That server message is no longer in this mailbox.");
+  if (row.is_draft || row.draft_pending || !(row.uid > 0 && row.uid_validity > 0)) return fail("unsupported", "Sync and choose a saved server message. Drafts cannot be archived here.");
+  try {
+    const snapshot = attachmentSnapshot(row);
+    const account = snapshot.account;
+    const store = localArchive();
+    store.folder(params.folderId);
+    return await updateGate.run(() => exclusive(account.id, async () => {
+      const check = () => { snapshot.assertSnapshot(); actions.assertIdentityReady(row.id); };
+      check();
+      const gmailId = row.gmail_id || (account.mail_transport === "gmail_api" && db.gmailAlias(account.id, row.folder_path, row.uid, row.uid_validity)?.provider_id);
+      const sourceKey = localFolders.digest(JSON.stringify([account.id, account.created_at, account.username,
+        account.imap_host, account.imap_port, account.imap_tls, account.mail_transport, account.gmail_generation,
+        gmailId ? ["gmail", gmailId] : [row.folder_path, row.uid_validity, row.uid, row.rfc_message_id]]));
+      const withClient = async work => {
+        check(); const secret = await secretFor(account); check();
+        return withMailClient(account, secret, work);
+      };
+      const result = await localFolders.transferToLocal({ store, destination: params.folderId, sourceKey,
+        source: { date: row.date_iso, dateSource: row.date_source, folderId: row.folder_path, accountEmail: account.email,
+          unread: row.unread === 1, isStarred: row.starred === 1, replied: row.replied == null ? null : !!row.replied,
+          forwarded: row.forwarded == null ? null : !!row.forwarded },
+        assertCurrent: check, move: params.mode === "move",
+        download: () => withClient(client => remote.fetchArchiveSource(client, row, { maxBytes: localFolders.RAW_LIMIT, check })),
+        trash: async () => {
+          check();
+          const trash = db.folderByWellKnown(account.id, "deleteditems");
+          if (!trash || trash.path === row.folder_path) throw Object.assign(new Error("Choose a source outside Trash and sync this account's Trash folder."), { operationIssued: false });
+          // remote.moveUid uses provider Trash/MOVE and verifies destination UID.
+          // Never call removeUid/messageDelete (which may permanently expunge).
+          let submitted = false;
+          try {
+            await withClient(async client => {
+              check();
+              if (!client.gmail && !client.capabilities?.has("MOVE")) throw new Error("This IMAP server does not support a recoverable MOVE. Use Copy to Local Folders.");
+              const providerId = client.gmail ? (await client.gmail.resolve(row.folder_path, row.uid, row.uid_validity, row.id)).provider_id : null;
+              check();
+              await remote.moveUid(client, row.folder_path, row.uid, trash.path, row.uid_validity, row.id,
+                { beforeSubmit: () => { check(); submitted = true; } });
+              check();
+              if (client.gmail) {
+                const confirmed = await client.gmail.api.getMessage(providerId, { format: "metadata" });
+                client.gmail.alive(); check();
+                if (confirmed.id !== providerId || !confirmed.labelIds?.includes("TRASH")) throw new Error("Gmail did not confirm Trash membership. Keep the local copy and check Gmail.");
+              }
+            });
+          } catch (error) { error.operationIssued = submitted; throw error; }
+        },
+      });
+      emitLocalFolders();
+      // A subsequent sync reconciles provider copies. No speculative cache
+      // deletion hides a retained original after failure or uncertainty.
+      if (result.status === "moved") setTimeout(() => syncAccountById(account.id).catch(() => {}), 0);
+      return ok(result);
+    }));
+  } catch (error) { return fail(error.code || "local_copy", error.message); }
+}
+
+function localAnswer(channel, params, event) {
+  try {
+    const store = localArchive();
+    if (params?.accountId && params.accountId !== localFolders.ACCOUNT_ID) return fail("email-gone", "That local message does not belong to this mailbox.");
+    if (channel === "mail:localFolders") return ok(store.account());
+    if (channel === "mail:manageLocalFolder") {
+      const result = store.manageFolder(params); emitLocalFolders(); return ok(result);
+    }
+    if (channel === "mail:exportLocalMessage") return (async () => {
+      try {
+        const email = store.message(params.emailId), raw = store.raw(email.id);
+        const { dialog, BrowserWindow } = require("electron");
+        const win = event?.sender && BrowserWindow.fromWebContents?.(event.sender);
+        const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: "message.eml", filters: [{ name: "Email message", extensions: ["eml"] }] });
+        if (picked.canceled || !picked.filePath) return ok({ cancelled: true });
+        await fs.promises.writeFile(picked.filePath, raw, { mode: 0o600 });
+        return ok({ saved: true });
+      } catch (error) { return fail("local_export", error.message); }
+    })();
+    if (["mail:listFromCache", "mail:listFromNetwork", "mail:listWindowRead"].includes(channel)) return ok(store.list(params));
+    if (channel === "mail:searchLocal") return ok(store.search(params));
+    const id = params?.emailId || params?.messageId;
+    if (id && params?.accountId && params.accountId !== localFolders.ACCOUNT_ID) return fail("email-gone", "That local message does not belong to this mailbox.");
+    if (channel === "mail:openEmail") return ok({ email: store.verify(id), isThread: false, threadMessages: [] });
+    if (["mail:readEmail", "mail:readCachedBody"].includes(channel)) return ok(channel === "mail:readCachedBody" ? { email: store.verify(id) } : store.verify(id));
+    if (["mail:listThreadMessages", "mail:getLocalThreadMembers"].includes(channel)) return ok([]);
+    if (["mail:downloadAttachment", "mail:downloadAttachmentsZip", "mail:fetchAttachmentBytes", "mail:openAttachmentExternally"].includes(channel)) return attachmentOperation(channel, params, event?.sender);
+    if (channel === "mail:moveLocalMessage") {
+      if (!["copy", "move"].includes(params.mode)) return fail("invalid", "Choose Copy or Move locally.");
+      if (params.accountId !== localFolders.ACCOUNT_ID) return fail("invalid", "Choose Local Folders.");
+      const ids = Array.isArray(params.items) ? params.items.map(item => item.emailId) : [id];
+      if (!ids.length || ids.length > 200 || ids.some(value => !localFolders.isMessage(value))) return fail("invalid", "Choose up to 200 local messages.");
+      store.folder(params.folderId);
+      for (const messageId of ids) store.verify(messageId);
+      const result = ids.map(messageId => params.mode === "copy" ? store.copy(messageId, params.folderId) : store.update(messageId, { folderId: params.folderId }));
+      emitLocalFolders(); return ok(result);
+    }
+    if (["mail:markRead", "mail:markReadBatch", "mail:toggleStar", "mail:toggleStarBatch"].includes(channel)) {
+      const items = Array.isArray(params.items) ? params.items : [{ emailId: id }];
+      if (items.length > 200 || items.some(item => !localFolders.isMessage(item.emailId || item.id) || (item.accountId && item.accountId !== localFolders.ACCOUNT_ID))) return fail("invalid", "Choose messages from Local Folders only.");
+      if ((channel.startsWith("mail:markRead") && typeof params.isRead !== "boolean") || (channel.startsWith("mail:toggleStar") && typeof params.isStarred !== "boolean")) return fail("invalid", "Choose a read or star state.");
+      for (const item of items) store.message(item.emailId || item.id, false);
+      const outcomes = items.map(item => { const messageId = item.emailId || item.id; return { id: messageId, status: "completed", projection: store.update(messageId, channel.startsWith("mail:markRead") ? { isRead: params.isRead } : { isStarred: params.isStarred }) }; });
+      emitLocalFolders(); return ok({ outcomes, pending: [], opIds: [], isStarred: params.isStarred });
+    }
+    if (channel === "mail:listSnoozed") return ok({ records: [] });
+    return fail("unsupported", "This operation needs a connected server mailbox. Local Folders supports offline reading, attachments, read/star flags, local copy/move and EML export.");
+  } catch (error) { return fail(error.code || "local_archive", error.code === "SQLITE_CONSTRAINT_UNIQUE" ? "A local folder with that name already exists here." : error.message); }
 }
 
 async function init() {
@@ -3069,8 +3196,12 @@ function saveUpload(params) {
 }
 
 function attachmentSelection(params, all = false) {
-  const row = db.messageById(params && (params.messageId || params.emailId));
+  const id = params && (params.messageId || params.emailId);
+  const local = localFolders.isMessage(id) ? localArchive().message(id) : null;
+  const row = local ? { id: local.id, account_id: localFolders.ACCOUNT_ID, folder_path: local.folderId, subject: local.subject,
+    attachments_json: JSON.stringify(local.attachments), local: true } : db.messageById(id);
   if (!row) return null;
+  if (params?.accountId && params.accountId !== row.account_id) throw new Error("That attachment does not belong to this mailbox.");
   const attachments = db.jsonList(row.attachments_json);
   if (all) return { row, files: selectableAttachments(attachments, params?.attachmentIds) };
   const explicit = params && params.attachmentId != null;
@@ -3098,6 +3229,14 @@ function selectableAttachments(attachments, ids) {
 }
 
 function attachmentSnapshot(row) {
+  if (row.local) {
+    const assertSnapshot = () => {
+      const current = localArchive().message(row.id, false);
+      if (current.folderId !== row.folder_path || JSON.stringify(current.attachments) !== row.attachments_json) throw new Error("This local message changed. Reopen it before saving files.");
+    };
+    assertSnapshot();
+    return { account: { id: localFolders.ACCOUNT_ID }, assertSnapshot, key: row.id };
+  }
   const account = bindAccount(db.accountById(row.account_id));
   const login = value => JSON.stringify([value.created_at, value.auth_kind, value.mail_transport, value.gmail_generation,
     value.username, value.imap_host, value.imap_port, value.imap_tls]);
@@ -3117,6 +3256,11 @@ function attachmentSnapshot(row) {
 
 async function attachmentParts(row, files, { signal, onProgress = () => {} } = {}) {
   signal?.throwIfAborted();
+  if (row.local) {
+    const parts = files.map(file => ({ name: file.filename || "attachment", data: localArchive().attachment(row.id, file.id) }));
+    if (parts.reduce((sum, part) => sum + part.data.length, 0) > attachmentTransfers.LIMITS.zipBytes) throw attachmentTransfers.tooLarge();
+    return parts;
+  }
   const { account, assertSnapshot, key } = attachmentSnapshot(row);
   const parts = new Map(), remoteItems = [];
   let localBytes = 0;
@@ -4146,8 +4290,12 @@ async function importGoogleOauthClientAdmitted(event) {
 
 function answer(channel, args, event) {
   if (!ready) return undefined;
-  if (sidecar.handles(channel)) return sidecar.answer(channel, args);
   const params = args && args.length ? args[0] : undefined;
+  if (channel === "mail:transferToLocal") return transferToLocal(params || {});
+  const localTarget = params?.accountId === localFolders.ACCOUNT_ID || localFolders.isMessage(params?.emailId || params?.messageId)
+    || (Array.isArray(params?.items) && params.items.some(item => localFolders.isMessage(item.emailId || item.id)));
+  if (["mail:localFolders", "mail:manageLocalFolder", "mail:moveLocalMessage", "mail:exportLocalMessage"].includes(channel) || localTarget) return localAnswer(channel, params || {}, event);
+  if (sidecar.handles(channel)) return sidecar.answer(channel, args);
   if (channel === "mail:cancelAttachmentRequest") return ok(attachmentRequests.cancel(params?.requestId, event?.sender));
   if (channel === "mail:listImapSmtpPresets") return ok(presets.CARDS);
   if (channel === "mail:discoverMail") return discoverMail(params || {});
@@ -4790,6 +4938,7 @@ function noteBotSent(receipt) {
 actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast });
 
 module.exports = {
+  closeLocalArchiveForTest() { localStore?.close(); localStore = null; },
   timelineAccountStamp(id) {
     const account = db.accountById(id);
     if (!account) throw removedAccountError();

@@ -1757,6 +1757,19 @@
       <p id="settings-status" role="status"></p>
       </div>
     </dialog>
+    <dialog id="local-transfer" aria-labelledby="local-transfer-title" aria-describedby="local-transfer-help">
+      <form id="local-transfer-form">
+        <h2 id="local-transfer-title">Copy to Local Folders</h2>
+        <p id="local-transfer-source"></p>
+        <p id="local-transfer-help" class="hint"></p>
+        <label for="local-transfer-mode">Action</label>
+        <select id="local-transfer-mode"><option value="copy">Copy · Keep original</option><option value="move">Move · Trash server original after copying</option></select>
+        <label for="local-transfer-folder">Local destination</label>
+        <select id="local-transfer-folder"></select>
+        <p id="local-transfer-status" role="status" aria-live="polite"></p>
+        <div class="row"><button type="submit" class="primary" id="local-transfer-ok">Copy</button><button type="button" class="ghost" id="local-transfer-cancel">Cancel</button></div>
+      </form>
+    </dialog>
     <dialog id="move-picker" aria-labelledby="move-picker-title">
       <form id="move-picker-form">
         <h2 id="move-picker-title">Move</h2>

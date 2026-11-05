@@ -640,6 +640,47 @@ async function readPart(client, folderPath, uid, part, expectedValidity, options
   }
 }
 
+// Full original bytes for a durable archive, never the bounded body preview.
+// RFC822.SIZE and exact UID matching reject truncated or unrelated FETCH data.
+async function fetchArchiveSource(client, row, { maxBytes = 64 * 1024 * 1024, check = () => {} } = {}) {
+  check();
+  if (client.gmail) {
+    const mapped = await client.gmail.resolve(row.folder_path, row.uid, row.uid_validity, row.id);
+    check();
+    const result = await client.gmail.api.raw(mapped.provider_id);
+    client.gmail.alive(); check();
+    if (result.id !== mapped.provider_id || !result.source?.length || result.source.length > maxBytes) {
+      throw Object.assign(new Error("Gmail did not return a complete message within the 64 MiB local-copy limit."), { operationIssued: false });
+    }
+    return result.source;
+  }
+  const lock = await client.getMailboxLock(row.folder_path);
+  let content;
+  try {
+    check(); assertUidValidity(client, row.uid_validity);
+    let matched;
+    for await (const candidate of client.fetch(String(row.uid), { uid: true, size: true }, { uid: true })) {
+      if (Number(candidate?.uid) === Number(row.uid)) matched = { ...matched, ...candidate };
+    }
+    check();
+    if (!Number.isSafeInteger(matched?.size) || matched.size <= 0 || matched.size > maxBytes) {
+      throw Object.assign(new Error("The full message size is unavailable or exceeds the 64 MiB local-copy limit. The server message was retained."), { operationIssued: false });
+    }
+    const downloaded = await client.download(String(row.uid), undefined, { uid: true, maxBytes: maxBytes + 1 });
+    content = downloaded?.content;
+    if (!content) throw new Error("The server did not return the original message. No local copy was created.");
+    const chunks = []; let size = 0;
+    for await (const chunk of content) {
+      check(); size += chunk.length;
+      if (size > maxBytes || size > matched.size) throw new Error("The original message download exceeded its expected size. The server message was retained.");
+      chunks.push(Buffer.from(chunk));
+    }
+    check(); assertUidValidity(client, row.uid_validity);
+    if (size !== matched.size) throw new Error("The original message download was incomplete. The server message was retained.");
+    return Buffer.concat(chunks);
+  } finally { content?.destroy?.(); lock.release(); }
+}
+
 function assertUidValidity(client, expected) {
   const actual = Number(client.mailbox && client.mailbox.uidValidity);
   if (Number.isSafeInteger(Number(expected)) && Number(expected) > 0 && actual === Number(expected)) return;
@@ -961,6 +1002,7 @@ module.exports = {
   searchUids,
   fetchMessages,
   fetchSource,
+  fetchArchiveSource,
   readPart,
   moveUid,
   changeFlags,
