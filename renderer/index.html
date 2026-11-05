@@ -1834,8 +1834,8 @@
           <div class="preview-row"><dt>Subject</dt><dd id="compose-preview-subject"></dd></div>
           <div class="preview-row" id="compose-preview-files-row" hidden><dt>Files</dt><dd id="compose-preview-files"></dd></div>
         </dl>
-        <pre id="compose-preview-body"></pre>
-        <p class="hint">Finish or cancel AI writing before previewing. Confirm sends the reviewed message; if it changes, review a new preview.</p>
+        <div id="compose-preview-body" role="region" aria-label="Message preview" tabindex="0"></div>
+        <p class="hint">Preview shows the reviewed message with safe formatting. Remote images stay blocked. Finish or cancel AI writing before previewing; changes require a new preview.</p>
         <div class="row">
           <button type="submit" class="primary" id="compose-preview-confirm">Confirm send</button>
           <button type="button" class="ghost" id="compose-preview-cancel">Cancel</button>
