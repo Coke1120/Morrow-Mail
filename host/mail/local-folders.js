@@ -18,6 +18,7 @@ const RAW_LIMIT = 64 * 1024 * 1024;
 const digest = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
 const problem = message => Object.assign(new Error(message), { code: "local_archive" });
 const isMessage = id => typeof id === "string" && id.startsWith("local-message:");
+const searchText = value => String(value ?? "").normalize("NFKC").toLowerCase();
 
 function addresses(header) {
   return (header?.value || []).flatMap(value => value.group ? addresses({ value: value.group })
@@ -65,6 +66,7 @@ function createLocalStore(file, { database = Database } = {}) {
     // EXTRA includes the journal unlink directory sync. No disposable live DB.
     sql.pragma("synchronous = EXTRA");
     sql.pragma("fullfsync = ON");
+    sql.function("morrow_local_search_text", { deterministic: true }, searchText);
     const version = sql.pragma("user_version", { simple: true });
     if (version > 1) throw problem("This local archive needs a newer version of Morrow Mail. Its files were retained.");
     if (existed && version !== 1) throw problem("This local archive format could not be recognized. Its files were retained; restore a backup before continuing.");
@@ -216,11 +218,11 @@ function createLocalStore(file, { database = Database } = {}) {
     return save(digest(JSON.stringify([id, existing.raw_sha])), destination, { raw: existing.raw, info, body, files }, message(id));
   }
   function search(params = {}) {
-    const query = String(params.query || "").trim().toLowerCase();
+    const query = searchText(params.query).trim();
     if (!query) return [];
     const rows = sql.prepare(`SELECT id FROM messages WHERE
-      (instr(lower(json_extract(info,'$.subject')),@query)>0 OR instr(lower(json_extract(info,'$.from')),@query)>0
-      OR instr(lower(json_extract(info,'$.to')),@query)>0 OR instr(lower(json_extract(body,'$.textBody')),@query)>0)
+      (instr(morrow_local_search_text(json_extract(info,'$.subject')),@query)>0 OR instr(morrow_local_search_text(json_extract(info,'$.from')),@query)>0
+      OR instr(morrow_local_search_text(json_extract(info,'$.to')),@query)>0 OR instr(morrow_local_search_text(json_extract(body,'$.textBody')),@query)>0)
       ${params.filterToMe ? "AND json_extract(info,'$.toMe')=1" : ""}
       ORDER BY ${ordering(params)} LIMIT 100`).all({ query });
     return rows.map(row => message(row.id, false));

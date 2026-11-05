@@ -45,6 +45,24 @@ test("complete MIME, headers, recipients, dates, inline and file bytes survive c
   assert.equal(f.store.account().id, L.ACCOUNT_ID);
 });
 
+test("archive search normalizes Unicode subject, sender, recipients and body consistently without rewriting stored bytes", async t => {
+  const f = fixture(t);
+  const raw = await remote.buildRaw({ from: { name: "ЛЮДМИЛА", address: "sender@fixture.invalid" },
+    to: [{ name: "ÜMLAUT", address: SOURCE.accountEmail }], subject: "ÉLODIE ＡＢＣ",
+    text: "ПРОЕКТ Cafe\u0301 ΓΙΩΡΓΟΣ 100%_literal", date: new Date("2026-10-01T12:34:56Z") });
+  const saved = await transfer(f.store, raw);
+  for (const query of ["ÉLODIE", "élodie", "E\u0301LODIE", "ABC", "ａｂｃ", "ЛЮДМИЛА", "людмила", "ÜMLAUT", "ümlaut", "ПРОЕКТ", "проект", "CAFÉ", "Cafe\u0301", "ΓΙΩΡΓΟΣ", "γιωργος", "100%_literal"]) {
+    assert.deepEqual(f.store.search({ query }).map(mail => mail.id), [saved.localId], query);
+  }
+  assert.equal(f.store.search({ query: "elodie" }).length, 0, "normalization preserves accents instead of claiming diacritic-insensitive search");
+  assert.equal(f.store.search({ query: "missing phrase" }).length, 0);
+  assert.deepEqual(f.store.search({ query: "проект", filterToMe: true }).map(mail => mail.id), [saved.localId]);
+  const restored = f.reopen();
+  assert.deepEqual(restored.search({ query: "élodie" }).map(mail => mail.id), [saved.localId], "the SQL function is registered after reopening an existing archive");
+  assert.equal(restored.verify(saved.localId).subject, "ÉLODIE ＡＢＣ", "search never normalizes saved display metadata");
+  assert.deepEqual(restored.raw(saved.localId), raw, "EML bytes and their checksums remain unchanged");
+});
+
 test("folder management preserves stable identities, rejects duplicate names, system changes and nonempty deletes", t => {
   const f = fixture(t), create = (name, parentId) => f.store.manageFolder({ action: "create", name, parentId }).id;
   const parent = create("Projects"), child = create("2026", parent);

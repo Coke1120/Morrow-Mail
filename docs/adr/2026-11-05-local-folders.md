@@ -77,3 +77,12 @@ be emptied by its retention policy; Local Folders does not sync or make an
 automatic external backup. Hardware/OS flush guarantees and live/native behavior
 remain outside synthetic validation. Evidence and commands are kept in
 `docs/testing/local-folders/README.md`.
+
+Local phrase search uses one deterministic JavaScript NFKC/lowercase function
+for the query and all searchable SQL values (subject, sender, To, plain text).
+SQLite's built-in ASCII-only lower() is insufficient for archived non-ASCII
+mail. The function is registered on every archive connection, so existing format
+1 archives work after reopen with no schema/data rewrite. Accents remain
+significant; original display metadata, MIME, attachments and checksums remain
+unchanged. This is still a synchronous archive scan, not an index or latency
+guarantee. Unicode compatibility normalization can match fullwidth text.
