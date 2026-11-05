@@ -64,7 +64,17 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('os').tmpdir(),
   await page.setViewportSize({width:1440,height:900});
   await page.evaluate(()=>{document.documentElement.style.setProperty('--list','740px');state.prefs.compactList=false;renderList();document.getElementById('message-list').scrollLeft=0;});
   await page.screenshot({path:path.join(output,'comfortable.png')});
+  await page.evaluate(()=>showFeatures());
+  const replyHelp=page.locator('.feature-card').filter({has:page.getByRole('heading',{name:'Reply / forward indicators',exact:true})});
+  await replyHelp.scrollIntoViewIfNeeded();
+  assert.match(await replyHelp.textContent(),/verified original Gmail identity even when its Message-ID is missing/);
+  assert.match(await replyHelp.textContent(),/at most two already cached, uninspected Sent reply candidates per pass/);
+  assert.match(await replyHelp.textContent(),/Completed MIME checks survive restart/);
+  assert.match(await page.locator('#mail-columns-provider-help').textContent(),/at most two per pass within its normal read budget/);
+  await page.screenshot({path:path.join(output,'reply-features.png')});
+  await page.setViewportSize({width:860,height:700});await replyHelp.scrollIntoViewIfNeeded();
+  await page.screenshot({path:path.join(output,'reply-features-narrow.png')});
   assert.deepEqual(errors,[]);
-  console.log('browser-ok: four columns, subject-prefix provider icons, no status column, real renderer sorting, aligned columns, narrow scroll, compact and comfortable layouts');
+  console.log('browser-ok: four columns, subject-prefix provider icons, real renderer sorting, aligned columns, narrow scroll, compact/comfortable layouts and current Gmail Reply Features/help');
  } finally {await browser.close();server.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

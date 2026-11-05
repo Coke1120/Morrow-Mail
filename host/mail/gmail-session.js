@@ -211,6 +211,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
         db.transaction(() => { db.pruneGmailCopies(account.id, providerId, []); committed(); });
         return;
       }
+      if (data.id !== providerId) throw ambiguous();
       // Message data and its resume position commit together, with no await in
       // the transaction. A failed checkpoint cannot skip unapplied changes.
       const value = await adopt(data, { after, committed });
@@ -247,7 +248,17 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       delete state.pending;
       save();
     }
-    const result = () => ({ paused: false, arrivals, bootstrapped: !!state.complete && !state.pending && !state.verifyNeeded && !state.historyPageToken });
+    const replyCandidates = () => selected.provider_id === "SENT" ? db.gmailReplyBackfillPage(account.id, path) : [];
+    const result = () => ({ paused: false, arrivals, bootstrapped: !!state.complete && !state.pending && !state.verifyNeeded && !state.historyPageToken && !replyCandidates().length });
+    // Repair only already-cached Sent candidates, at most two full reads per
+    // pass, inside the existing twenty-read/time/foreground budget. Adoption
+    // commits the MIME inspection and any inferred indicators together; there
+    // is no separate cursor that could skip a failed or interrupted read.
+    for (const row of replyCandidates().slice(0, 2)) {
+      if (stop()) break;
+      await read(row.gmail_id, () => {});
+    }
+    if (selected.provider_id === "SENT" && stop()) return result();
     if (state.pending) {
       await drainPage();
       if (!state.pending) await verifyCached();
