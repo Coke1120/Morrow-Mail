@@ -234,4 +234,4 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
   };
 }
 
-module.exports = { createGmailMailApi, MAIL_SCOPES, CALENDAR_SCOPES };
+module.exports = { createGmailMailApi, decodePartData: decode, MAIL_SCOPES, CALENDAR_SCOPES };

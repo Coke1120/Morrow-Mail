@@ -7458,7 +7458,7 @@ function renderActions(pane, email) {
 }
 
 function summarySource(email) {
-  return [email.subject, email.from, email.date, email.textBody, email.htmlBody, email.bodyComplete, email.bodyWarning];
+  return [email.subject, email.from, email.date, email.textBody, email.htmlBody, email.bodyComplete, email.bodyWarning, email.encodingWarning];
 }
 
 function summaryMatches(email, view = messageSummary) {
@@ -7954,7 +7954,7 @@ function renderReader(focus, onlyChanged = false) {
   }
   const pane = $("reader");
   const emailView = state.email;
-  const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.bodyError,
+  const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.encodingWarning, emailView?.bodyError,
     emailView?.unread, emailView?.isStarred, emailView?.outboxStatus, emailView?.subject, emailView?.from, emailView?.date,
     state.thread, state.translate, state.prefs.images, state.prefs.snooze,
     state.remoteAllowed?.[emailView?.id], snoozedUntilOf(emailView), state.accounts.length, state.providerFolders];
@@ -8110,15 +8110,32 @@ function bodyRetryButton(email, refresh) {
   return retry;
 }
 
+const plainBodyViews = new WeakMap();
 function renderBody(pane, email, refresh) {
-  if (email?.bodyWarning) {
+  if (email?.bodyWarning || email?.encodingWarning) {
     const warning = document.createElement("p");
-    warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = email.bodyWarning;
+    warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = [email.bodyWarning, email.encodingWarning].filter(Boolean).join(" ");
     pane.appendChild(warning);
     pane.appendChild(bodyRetryButton(email, refresh));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
-  appendMessageBody(pane, email, remoteVisible(state.prefs.images, allowed));
+  const key = JSON.stringify([email?.accountId, email?.id]);
+  let choice = plainBodyViews.get(pane);
+  if (!choice || choice.key !== key) { choice = { key, plain: false }; plainBodyViews.set(pane, choice); }
+  const body = document.createElement("div");
+  const paint = () => {
+    body.replaceChildren();
+    appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+  };
+  if (email?.htmlBody && email?.textBody?.trim()) {
+    const toggle = document.createElement("button");
+    toggle.type = "button"; toggle.className = "ghost"; toggle.dataset.action = "plain-body";
+    const label = () => { toggle.textContent = choice.plain ? "Show HTML version" : "Show plain-text version"; toggle.setAttribute("aria-pressed", String(choice.plain)); };
+    toggle.addEventListener("click", () => { choice.plain = !choice.plain; label(); paint(); });
+    label(); pane.appendChild(toggle);
+  }
+  pane.appendChild(body);
+  paint();
 }
 
 function renderRemoteGate(pane, email, repaint) {
@@ -12286,7 +12303,8 @@ function bodyFields(email, identity) {
     bodyVersion: Number.isSafeInteger(email.bodyVersion) ? email.bodyVersion : 0,
     htmlBody: typeof email.htmlBody === "string" ? email.htmlBody : null,
     textBody: typeof email.textBody === "string" ? email.textBody : null,
-    bodyComplete: email.bodyComplete === true, hasBody: listedHasBody(email), bodyWarning: typeof email.bodyWarning === "string" ? email.bodyWarning : "" };
+    bodyComplete: email.bodyComplete === true, hasBody: listedHasBody(email), bodyWarning: typeof email.bodyWarning === "string" ? email.bodyWarning : "",
+    encodingWarning: typeof email.encodingWarning === "string" ? email.encodingWarning : "" };
 }
 
 function dropBody(key) {
@@ -12307,7 +12325,7 @@ function noteBody(email, explicit = true) {
   const body = bodyFields(email, identity), previous = latestBodies.get(identity.key);
   if (previous && previous.body.bodyVersion > body.bodyVersion) return;
   dropBody(identity.key);
-  const bytes = 2 * (identity.key.length + (body.htmlBody || "").length + (body.textBody || "").length + body.bodyWarning.length);
+  const bytes = 2 * (identity.key.length + (body.htmlBody || "").length + (body.textBody || "").length + body.bodyWarning.length + body.encodingWarning.length);
   if (bytes > BODY_CACHE_LIMITS.entryBytes) return; // Open views still own their full body.
   while (latestBodies.size && (latestBodies.size >= BODY_CACHE_LIMITS.entries || latestBodyBytes + bytes > BODY_CACHE_LIMITS.bytes)) dropBody(latestBodies.keys().next().value);
   latestBodies.set(identity.key, { body, bytes }); latestBodyBytes += bytes;
@@ -12346,7 +12364,7 @@ function applyCachedBody(email) {
     if (target.pending || target.identity.key !== identity.key) continue;
     if ((target.email.bodyEpoch ?? 0) === identity.bodyEpoch && (target.email.bodyVersion || 0) > body.bodyVersion) continue;
     let changed = target.email.htmlBody !== body.htmlBody || target.email.textBody !== body.textBody
-      || target.email.bodyWarning !== body.bodyWarning || target.email.bodyComplete !== body.bodyComplete;
+      || target.email.bodyWarning !== body.bodyWarning || target.email.encodingWarning !== body.encodingWarning || target.email.bodyComplete !== body.bodyComplete;
     const metadata = {};
     for (const field of ["attachments", "hasAttachments", "draftRevision", "draftPending", "from", "fromAddress", "fromDisplayName", "recipientHeaders", "replyTo",
       "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft"]) {
@@ -12428,6 +12446,7 @@ function applyBodyUpdate(payload) {
       known.bodyComplete = incoming.bodyComplete === true;
       known.hasBody = full ? listedHasBody(full) : incoming.hasBody === true;
       known.bodyWarning = incoming.bodyWarning || "";
+      known.encodingWarning = incoming.encodingWarning || "";
     }
   }
   if (pendingPeekId === identity.id && !pendingPeekAccountId) pendingPeekAccountId = identity.accountId;
@@ -12488,7 +12507,7 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true, retry: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -22286,7 +22305,7 @@ async function peekMessage(messageId, full) {
   const accountId = pendingPeekAccountId;
   let data;
   try {
-    data = await call("mail:openEmail", { emailId: messageId, includeThread: false, ...(accountId ? { accountId } : {}), ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId: messageId, includeThread: false, ...(accountId ? { accountId } : {}), ...(full ? { full: true, retry: true } : {}) });
   } catch (error) {
     if (gen !== peekGen) return;
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();

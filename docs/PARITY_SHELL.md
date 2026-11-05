@@ -1,5 +1,13 @@
 # Shell parity
 
+Message readers disclose checked decoding loss and unsupported charsets without
+repeatedly fetching complete bodies. They prefer verified plain text over lossy
+HTML and offer an HTML/plain-text view switch when both are available. The safe
+HTML renderer and remote-image policy apply after every switch. Legacy cached
+replacement characters are disclosed as uncertain; an explicit retry rechecks
+the full server copy without claiming to recover already lost bytes. See
+[mail text decoding](adr/2026-11-05-mail-text-decoding.md).
+
 Preview Send, scheduled-send previews and Outbox show safe HTML through the received-mail body renderer. The compose preview uses its frozen send payload; Outbox uses the saved queued payload. Remote images, including CSS and table backgrounds, stay blocked in these previews even when received-mail images are enabled. Raster data images can display; unsupported active content and unresolved CID images remain filtered. Both previews list included attachment names and sizes. Outbox attachment download/open/preview actions are unavailable. Confirm still rejects changed compositions, and opening Outbox does not change its send time or Undo boundary. See [safe send previews](adr/2026-11-05-safe-send-previews.md).
 
 Timeline is a single reader action beside Summary, opening a modal sheet without

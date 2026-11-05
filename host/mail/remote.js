@@ -5,6 +5,7 @@ const { simpleParser } = require("mailparser");
 const { isRateLimit } = require("./provider-http");
 const mailboxRoles = require("../../shared/mailbox-roles");
 const textEncoding = require("./text-encoding");
+const decoding = require("./mime-decoding");
 const { isGmail } = require("./gmail-policy");
 const { diagnosticMessage } = require("./gmail-error");
 const clientAccounts = new WeakMap();
@@ -290,7 +291,7 @@ function hasFileAttachment(attachments) {
 
 function snippetOf(text, html) {
   const raw = text || String(html || "").replace(/<[^>]+>/g, " ");
-  return raw.replace(/\s+/g, " ").trim().slice(0, 180);
+  return decoding.snippet(raw.replace(/\s+/g, " ").trim());
 }
 
 function threadIdOf(parsed, envelope, fallback) {
@@ -305,6 +306,8 @@ async function parseSource(source, truncated) {
   if (!source || !source.length) return null;
   try {
     const parsed = await simpleParser(source);
+    const decodedQuality = await decoding.inspectSource(source);
+    decoding.noteHeaders(decodedQuality, parsed);
     return {
       html: typeof parsed.html === "string" ? parsed.html : null,
       text: typeof parsed.text === "string" ? parsed.text : null,
@@ -312,6 +315,7 @@ async function parseSource(source, truncated) {
       inReplyTo: parsed.inReplyTo || null,
       references: parsed.references || null,
       replyTo: parsed.replyTo || null,
+      decoding: decodedQuality,
       complete: !truncated,
     };
   } catch {
@@ -387,11 +391,12 @@ async function readFetched(msg, validity, cap) {
   const limit = cap || SOURCE_CAP;
   const truncated = !!(source && source.length >= limit - 1);
   const parsed = await parseSource(source, truncated);
+  if (parsed?.decoding) decoding.noteHeaders(parsed.decoding, { subject: envelope.subject, from: { value: envelope.from || [] } });
   const presented = textEncoding.presentMessage({
     subject: envelope.subject || "",
     htmlBody: parsed && parsed.html,
     textBody: parsed && parsed.text,
-  });
+  }, { preserveDecoded: true });
   const attachments = attachmentsOf(msg.bodyStructure);
   const flags = msg.flags;
   const seen = !!(flags && flags.has("\\Seen"));
@@ -427,6 +432,7 @@ async function readFetched(msg, validity, cap) {
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
     attachments,
+    decoding: parsed?.decoding || null,
     bodyComplete: !!(parsed && parsed.complete),
     // Keep the intentional full-source bound distinct from MIME/download failures.
     bodySourceLimited: truncated && limit === FULL_CAP,
