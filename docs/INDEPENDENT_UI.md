@@ -21,6 +21,11 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Folder chips stay left aligned in All Mail, Inbox and Sent. When a title remains
+visible, it has its own row above the chips. Chips wrap inside narrow lists;
+Sync remains after them in the keyboard order. Hiding folder chips keeps the
+title and Sync on one row.
+
 The **To Me** chip filters downloaded mail before paging, and local search before
 its 100-result limit. It checks only To against the owning mailbox's primary
 address, without regard to letter case. Cc, Bcc, aliases, plus variants and delivery

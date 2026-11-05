@@ -5768,7 +5768,9 @@ textarea { min-height: 140px; resize: vertical; }
 #message-list { border-radius: 0 0 16px 16px; }
 #messages:has(#list-paging:not([hidden])) #message-list { border-radius: 0; }
 .list-tools { gap: 4px; flex-wrap: wrap; }
-.list-tools .chips { padding: 0; gap: 2px; flex: 1; }
+/* A visible folder title must not consume the chip row's leading space. */
+.list-tools:has(#list-chips:not([hidden])) .list-title:not(.sr) { flex: 1 1 100%; }
+.list-tools .chips { padding: 0; gap: 2px; flex: 1; flex-wrap: wrap; }
 .list-tools button.chip { padding: 0 8px; }
 #list-refresh-slot { margin-left: auto; }
 #list-refresh-slot .sync-slot { max-width: none; }
