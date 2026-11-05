@@ -322,19 +322,28 @@ async function hostRoundTrips() {
 
 function composeUi() {
   const { renderer } = require("./check-ux-workflows");
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM(fs.readFileSync(path.join(__dirname, "../renderer/index.html"), "utf8"));
+  const previewDocument = dom.window.document;
+  for (const dialog of previewDocument.querySelectorAll("dialog")) {
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = () => { dialog.open = false; };
+  }
   const nodes = new Map();
   const get = (id) => {
+    if (id.startsWith("compose-preview")) return previewDocument.getElementById(id);
     if (!nodes.has(id)) nodes.set(id, { value: "", textContent: "", hidden: false, disabled: false, open: false, dataset: {},
       classList: { toggle() {} }, focus() {}, setSelectionRange() {}, replaceChildren() {}, appendChild() {},
       close() { this.open = false; }, showModal() { this.open = true; } });
     return nodes.get(id);
   };
-  const ui = renderer({ document: { getElementById: get, querySelector: () => null, createElement: () => ({}) } });
-  return { ui, get };
+  const ui = renderer({ document: { getElementById: get, querySelector: () => null,
+    createElement: (tag) => previewDocument.createElement(tag), createTextNode: (text) => previewDocument.createTextNode(text) } });
+  return { ui, get, close: () => dom.window.close() };
 }
 
 async function rendererFlows() {
-  const { ui, get } = composeUi();
+  const { ui, get, close } = composeUi();
   ui.context.fixtureAccount = account; ui.context.fixturePrefs = prefs;
   ui.run(`
     state.accounts = [{...fixtureAccount, platform:'imap'}]; state.accountId='aliases'; state.prefs.undoSend=0;
@@ -467,6 +476,7 @@ async function rendererFlows() {
   const count = ui.run("calls.length"); await ui.run("saveDraft(); scheduleMail(); sendMail()");
   assert.equal(ui.run("calls.length"), count, "identity failure blocks keyboard/programmatic send as well as buttons");
   assert.equal(get("compose-send").disabled, true);
+  close();
 }
 
 function brainLines() {
@@ -606,5 +616,5 @@ async function crossAccountFrom() {
 }
 
 async function run() { decisions(); brainLines(); await advancedDisclosure(); await hostRoundTrips(); await rendererFlows(); await crossAccountFrom(); console.log("compose-identity-ok"); }
-module.exports = { run, rendererFlows };
+module.exports = { run, rendererFlows, composeUi };
 if (require.main === module) run().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { JSDOM } = require("jsdom");
 const { renderer } = require("./check-ux-workflows");
 
 const root = path.join(__dirname, "..");
@@ -31,28 +32,6 @@ function functionSource(source, name) {
     }
   }
   throw new Error(`unclosed ${name}`);
-}
-
-function element() {
-  return {
-    value: "",
-    textContent: "",
-    hidden: false,
-    disabled: false,
-    open: false,
-    dataset: {},
-    classList: { toggle() {}, add() {}, remove() {} },
-    style: {},
-    focus() {},
-    setSelectionRange() {},
-    replaceChildren() {},
-    append() {},
-    appendChild() {},
-    addEventListener() {},
-    setAttribute() {},
-    close() { this.open = false; },
-    showModal() { this.open = true; },
-  };
 }
 
 function checkWindowState() {
@@ -158,20 +137,14 @@ function checkSources() {
 }
 
 async function checkComposeFlow() {
-  const nodes = new Map();
-  const style = { props: {}, setProperty(name, value) { this.props[name] = value; } };
-  const ui = renderer({
-    document: {
-      documentElement: { style },
-      getElementById: (id) => {
-        if (!nodes.has(id)) nodes.set(id, element());
-        return nodes.get(id);
-      },
-      querySelector: () => null,
-      querySelectorAll: () => [],
-      createElement: () => element(),
-    },
-  });
+  const dom = new JSDOM(fs.readFileSync(path.join(root, "renderer/index.html"), "utf8"));
+  const document = dom.window.document;
+  for (const dialog of document.querySelectorAll("dialog")) {
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = () => { dialog.open = false; };
+  }
+  const style = document.documentElement.style;
+  const ui = renderer({ document });
   ui.run(`
     state.accounts = [{ id: "a", email: "me@example.test", platform: "imap" }];
     state.accountId = "a";
@@ -203,9 +176,9 @@ async function checkComposeFlow() {
   assert.strictEqual(ui.run("scheduledSummary([])"), "");
   assert.strictEqual(ui.run('scheduledSummary([{id:"a",accountId:"one"},{id:"b",accountId:"two"}])'), "2 scheduled messages from 2 accounts.");
   ui.run("applyLayoutPanes({ folders: 300, list: 480, reading: 640 })");
-  assert.strictEqual(style.props["--folders"], "300px");
-  assert.strictEqual(style.props["--list"], "480px");
-  assert.strictEqual(style.props["--reading"], undefined);
+  assert.strictEqual(style.getPropertyValue("--folders"), "300px");
+  assert.strictEqual(style.getPropertyValue("--list"), "480px");
+  assert.strictEqual(style.getPropertyValue("--reading"), "");
 
   const before = ui.run("calls.length");
   assert.strictEqual(await ui.run("requestSendPreview()"), true);
@@ -278,6 +251,7 @@ async function checkComposeFlow() {
   assert.strictEqual(ui.run("calls.filter(item => item.channel === 'mail:restoreScheduled').length"), 1);
   assert.strictEqual(ui.run("scheduleUndo"), null);
   ui.run("hideScheduleUndo()");
+  dom.window.close();
 }
 
 async function run() {

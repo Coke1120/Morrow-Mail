@@ -308,7 +308,8 @@ function rendererChecks() {
   }).then(() => {
     const reader = document.getElementById("reader");
     assert.equal(reader.querySelector("[data-testid=outbox-undo]").textContent, "Undo send");
-    assert.equal(reader.querySelector("pre.outbox-body").textContent, "Hello Ada");
+    assert.equal(reader.querySelector(".outbox-body .body").textContent, "Hello Ada");
+    assert.equal(reader.querySelector(".outbox-body b").textContent, "Ada");
     assert.doesNotMatch(reader.textContent, /<b>|script/);
     assert.equal(ui.run("calls.some(item => item.channel === 'mail:openEmail')"), false);
     return ui.run("undoOutboxItem(state.emails.find(row => row.id === 's1'))");

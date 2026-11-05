@@ -145,7 +145,7 @@
             <button type="button" role="menuitemradio" aria-checked="false" tabindex="-1" data-mail-view="bottom">Bottom preview</button>
             <button type="button" role="menuitemradio" aria-checked="false" tabindex="-1" data-mail-view="window">Separate window</button>
           </div>
-          <p id="mail-view-help" class="sr">Separate window: single-click to select, double-click or press Enter to open. Outbox keeps a bottom preview. Small windows stack previews below the list.</p>
+          <p id="mail-view-help" class="sr">Separate window: single-click to select, double-click or press Enter to open. Delete and Backspace review the selected messages for Trash. The main reader Delete button uses the same selection. Outbox keeps a bottom preview. Small windows stack previews below the list.</p>
         </div>
       </div>
     </header>
@@ -204,6 +204,7 @@
             <div id="list-chips" class="chips" role="group" aria-label="Primary folders" hidden></div>
             <div id="list-refresh-slot"></div>
           </div>
+          <p class="sr" id="to-me-help">To Me shows downloaded messages whose To field includes the primary email address of that message's mailbox. Cc, Bcc, aliases and delivery headers do not match. It keeps the current folder, other filters and sort. It also applies to search before its 100-result limit. Sent mail to yourself can match. Outbox is excluded.</p>
           <p id="list-coverage" class="list-filter-note" role="status"></p>
           <div id="search-scope" hidden>
             <label class="sr" for="search-account">Search account</label>
@@ -219,6 +220,7 @@
             <label class="page-select" title="Select messages shown on this page"><input type="checkbox" id="select-visible" aria-label="Select messages shown on this page" /></label>
             <label class="sr" for="list-filter">Filter loaded messages</label>
             <input id="list-filter" data-testid="list-filter" type="search" aria-describedby="list-filter-help" placeholder="Filter this page" autocomplete="off" spellcheck="false" />
+            <button type="button" id="list-to-me" class="chip" data-filter="to-me" aria-pressed="false" aria-controls="message-list" aria-describedby="to-me-help" title="To includes this message's mailbox address. Cc, Bcc and aliases do not match." hidden>To Me</button>
             <button type="button" class="ghost" id="mail-columns-open" aria-haspopup="dialog">Columns</button>
             <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>
@@ -248,8 +250,9 @@
           <input id="timeline-keywords" type="text" maxlength="1000" autocomplete="off" aria-describedby="timeline-focus-help" />
           <label for="timeline-contacts">Contact emails</label>
           <textarea id="timeline-contacts" rows="3" maxlength="8192" spellcheck="false" aria-describedby="timeline-focus-help"></textarea>
-          <p id="timeline-focus-help" class="hint">Add or remove emails, separated by commas or new lines. Keywords and contacts guide the summaries; they do not exclude thread messages from the AI request. Leave either empty for no extra focus.</p>
+          <p id="timeline-focus-help" class="hint">Add or remove emails, separated by commas or new lines. Keywords and contacts guide the summaries; they do not exclude thread messages from the AI request. Leave either empty for no extra focus. Run limits include these fields.</p>
           <p id="timeline-preview" class="hint"></p>
+          <p id="timeline-limits-help" class="hint">Large downloaded threads can exceed run limits; nothing is silently truncated. A failed run may have sent earlier parts to AI. An explicit retry sends the reviewed mail again.</p>
           <label class="timeline-choice" id="timeline-partial-choice" hidden><input type="checkbox" id="timeline-partial" />I accept the omitted messages and partial coverage shown above.</label>
           <button type="submit" id="timeline-generate" disabled>Generate</button>
         </form>
@@ -452,7 +455,7 @@
             <button type="button" class="ghost" id="brain-refresh">Refresh</button>
             <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
           </div>
-          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay, including saved edits made during analysis. A conflicting learned-profile change requires another refresh.</p>
+          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay, including saved edits made during analysis. A conflicting learned-profile change requires another refresh. Choose automatic frequency in Settings → Brain.</p>
         </section>
         <div id="brain-sections"></div>
         <p class="hint" id="brain-compose-pointer">Compose defaults live in <button type="button" class="inline-link" id="brain-open-compose-settings">Settings → Compose</button>.</p>
@@ -602,7 +605,7 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
-        <p class="hint" id="cli-timeline">Timelines are explicit desktop actions from Timeline beside Summary in an opened message's action bar, not bot operations, CLI commands or scheduled skills. The sheet has optional keywords and editable From/To/Cc/Reply-To contact emails to guide summaries; all included local thread messages still go to AI, with sender names/addresses, mail timestamps/date provenance, subjects and attachment names. Disclosure version 3 requires renewed manual consent for older grants; background use remains separate. Title, supported language and timezone default from the subject/system. Generate uses only the opened message and its downloaded thread after explicit-action AI permission, with no automatic older-mail download. Omitted messages need conditional partial-coverage acceptance. Opening the sheet, saved history and reviewed exports use no AI. Readable HTML, public JSON 1.0.0, Markdown and isolated PDF file exports require a fresh personal-information review. URL/webhook export is unavailable. Run <code>npm run test:timeline</code> for synthetic schema, source, extraction, export, persistence, consent and rendered-sheet checks; no real mail, credentials, AI requests or Electron GUI are used.</p>
+        <p class="hint" id="cli-timeline">Timelines are explicit desktop actions from Timeline beside Summary in an opened message's action bar, not bot operations, CLI commands or scheduled skills. The sheet has optional keywords and editable From/To/Cc/Reply-To contact emails to guide summaries; all included local thread messages still go to AI, with sender names/addresses, mail timestamps/date provenance, subjects and attachment names. Disclosure version 3 requires renewed manual consent for older grants; background use remains separate. Title, supported language and timezone default from the subject/system. Generate uses only the opened message and its downloaded thread after explicit-action AI permission, with no automatic older-mail download. Omitted messages need conditional partial-coverage acceptance. Run budgets can reject smaller threads without silent truncation. Preflight includes the complete request and optional focus; oversized input names its limit and blocks Generate. Long-message summaries are reduced in bounded stages. Failed runs show attempted AI request counts because data may already have reached the provider. An explicit retry revalidates the same source and sends the reviewed mail again. Opening the sheet, saved history and reviewed exports use no AI. Readable HTML, public JSON 1.0.0, Markdown and isolated PDF file exports require a fresh personal-information review. URL/webhook export is unavailable. Run <code>npm run test:timeline</code> for synthetic schema, source, extraction, export, persistence, consent and rendered-sheet checks; no real mail, credentials, AI requests or Electron GUI are used.</p>
         <p class="hint" id="cli-page-recovery">Compose attachment preparation, inert Undo recovery and Calendar retry identities are desktop operations; bot capabilities and permissions are unchanged. Calendar reauthorization uses the existing provider grant, separately from Google mail. These fixes do not expose calendar writes through the Node bot client.</p>
         <p class="hint" id="cli-folder-labels">Folders &amp; labels and Open in Mail are desktop actions. Label edits and Outlook moves use the selected message identity; ambiguous legacy Message-ID matches are refused. These fixes add no bot operations, command-line options or provider scopes.</p>
         <p class="hint" id="cli-mail-feedback">Downloaded-primary unread counts, background bulk Archive/Trash, accumulated removal Undo, the per-mailbox Out of Office chooser and cache-first Agent navigation are desktop behaviors. They add no bot commands, permissions, bulk cancellation or automatic retries. Out of Office changes still require review in Settings for one mailbox.</p>
@@ -621,7 +624,7 @@
             <div><dt>Cached mail</dt><dd><code data-bot-operation>mail.list_cached</code>, <code data-bot-operation>mail.search_cached</code>, <code data-bot-operation>mail.get_cached</code> — local cache only. Missing bodies stay missing; reads do not mark mail read.</dd></div>
             <div><dt>Attachment metadata</dt><dd><code data-bot-operation>mail.attachment.get</code> — names and metadata with permission; no file bytes or download.</dd></div>
             <div><dt>Proposals</dt><dd><code data-bot-operation>agent.proposals.list</code>, <code data-bot-operation>draft.proposals.submit</code>, <code data-bot-operation>draft.proposals.list</code> — inert local proposals for review. Draft lists omit the body; proposals do not send or create mailbox drafts.</dd></div>
-            <div><dt>Send plain text</dt><dd><code data-bot-operation>mail.send</code> — separate permission; sends immediately. Optional <code>inReplyToMessageId</code> links a same-account reply; you supply recipients and text.</dd></div>
+            <div><dt>Send plain text</dt><dd><code data-bot-operation>mail.send</code> — separate permission; sends immediately. Optional <code>inReplyToMessageId</code> links a same-account reply; you supply recipients and text. A confirmed complete IMAP reply records its original-message indicator and attempts a server flag; flag failure never resubmits the message. Cross-device icons require server support.</dd></div>
             <div><dt>Mail changes</dt><dd><code data-bot-operation>mail.archive</code>, <code data-bot-operation>mail.mark_read</code>, <code data-bot-operation>mail.trash</code> — separate default-off permissions for selected mailboxes. Each request targets one cached message ID; Trash never permanently deletes. Read/unread requires an explicit <code>isRead</code> boolean.</dd></div>
           </dl>
           <p id="cli-gmail-transport" class="hint">Google sign-in stays OAuth. New or explicitly migrated Gmail accounts use Gmail API; other providers retain their transports. Gmail desktop Delete moves to Trash, including repeated Delete. Migration and separate Calendar reauthorization are reviewed in desktop Settings → Accounts; they are not bot commands. Requested scopes do not revoke older grants. Importing a Google Desktop OAuth client is a Settings → Accounts action. It is not a bot command, and the client secret is not shown or sent to the bot bridge.</p>
@@ -720,7 +723,7 @@
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="mail-columns-title">Mail columns</h2><button type="button" class="ghost" id="mail-columns-close">Close</button></div>
         <p id="mail-columns-help">Choose which columns to show. Subject stays visible. Right-click any header, or focus it and press Shift + F10, for the same visibility choices. Drag a column header to reorder it, or use these buttons. You can also focus a header and press Alt + Left or Right. Click Date, Recipient, Sender or Subject to sort, even if the sorted column is later hidden. The same layout is used across mailboxes, search and Outbox.</p>
-        <p class="hint" id="mail-columns-provider-help">Reply / forward icons sit before Subject. IMAP uses cached provider flags. Gmail uses confirmed successful Morrow sends or a unique matching In-Reply-To in downloaded Sent mail; emoji reactions are excluded. Failed, canceled, partial and uncertain sends add no local indicator. Local evidence stays on this device and survives ordinary sync and restart; cross-device forwards cannot be inferred. No icon means no positive evidence. Drafts and Outbox show no indicators. Both icons can appear; explicit provider evidence takes priority.</p>
+        <p class="hint" id="mail-columns-provider-help">Reply / forward icons sit before Subject. Outlook OAuth, Yahoo app-password and other IMAP accounts use cached provider flags and confirmed successful Morrow sends. After complete SMTP acceptance, Morrow adds the server flag where permitted. Read-only folders, unsupported keywords or flag errors keep a local indicator; flag errors never resend mail. Transient flag failures retry during ordinary sync after five minutes. Cross-device IMAP icons require server and client support. Gmail uses confirmed successful Morrow sends or a unique matching In-Reply-To in downloaded Sent mail; emoji reactions are excluded. Confirmed local replies keep the original Gmail identity even without a Message-ID. Sent sync gradually checks already cached, uninspected reply candidates, at most two per pass within its normal read budget, and resumes after restart or connection recovery. Failed, canceled, partial and uncertain sends add no local indicator. Local evidence stays on this device and survives ordinary sync and restart; cross-device forwards cannot be inferred. No icon means no positive evidence. Drafts and Outbox show no indicators. Both icons can appear; explicit Gmail provider evidence takes priority.</p>
         <ol id="mail-columns-order"></ol>
         <button type="button" class="ghost" id="mail-columns-reset">Reset column order</button>
         <button type="button" class="ghost" id="mail-columns-show-all">Show all columns</button>
@@ -1148,6 +1151,7 @@
         <button type="button" id="settings-tab-mail" data-fold="mail" role="tab" aria-controls="settings-mail" aria-selected="false" aria-current="false" tabindex="-1">Mail &amp; Sync</button>
         <button type="button" id="settings-tab-mailbox" data-fold="mailbox" role="tab" aria-controls="settings-mailbox" aria-selected="false" aria-current="false" tabindex="-1">Accounts</button>
         <button type="button" id="settings-tab-compose" data-fold="compose" role="tab" aria-controls="settings-compose" aria-selected="false" aria-current="false" tabindex="-1">Compose</button>
+        <button type="button" id="settings-tab-brain" data-fold="brain" role="tab" aria-controls="settings-brain" aria-selected="false" aria-current="false" tabindex="-1">Brain</button>
         <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" aria-current="false" tabindex="-1">AI</button>
         <button type="button" id="settings-tab-ooo" data-fold="ooo" role="tab" aria-controls="settings-ooo" aria-selected="false" aria-current="false" tabindex="-1">Out of Office</button>
         <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
@@ -1304,6 +1308,24 @@
             <p class="hint settings-save-note">Changes save automatically. Saved or error messages appear beside each setting.</p>
           </div>
         </section>
+        <section class="fold" id="settings-brain" data-fold="brain" role="tabpanel" aria-labelledby="settings-tab-brain" tabindex="0" hidden>
+          <div class="fold-panel">
+            <h3>Automatic profile refresh</h3>
+            <label for="pref-brain-refresh">Refresh frequency</label>
+            <select id="pref-brain-refresh" aria-describedby="brain-refresh-help brain-refresh-permission">
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="manual">Manual only</option>
+            </select>
+            <p class="hint" id="brain-refresh-help">Daily is the default. Daily and Weekly wait at least 24 hours or 7 days between automatic attempts, including when you open Brain. Missed runs combine into one check while Morrow Mail is running. A failed attempt waits for the next interval; use Refresh on Brain → Profile to retry immediately. Manual only stops future automatic profile refresh. A run already processing can finish; revoke AI data permission to cancel requests.</p>
+            <p class="hint">The profile uses downloaded Sent and Inbox snippets across all connected mailboxes and the previous generated profile. It sends that context to your saved AI connection and may use API or plan usage. Attachment files are excluded. Skill schedules and Agent triage have their own controls.</p>
+            <p class="hint" id="brain-refresh-permission"></p>
+            <p class="hint" id="brain-refresh-last"></p>
+            <p class="hint" id="brain-refresh-next"></p>
+            <button type="button" class="ghost" id="brain-refresh-ai-settings">Review AI data permission</button>
+            <p class="hint" id="brain-refresh-setting-status" role="status" aria-live="polite"></p>
+          </div>
+        </section>
         <section class="fold" id="settings-ai" data-fold="ai" role="tabpanel" aria-labelledby="settings-tab-ai" tabindex="0" hidden>
           <div class="fold-panel" id="settings-ai-panel" hidden>
           <h3 id="settings-ai-title">AI connection</h3>
@@ -1410,7 +1432,7 @@
           </section>
           <details class="settings-disclosure" id="account-connection-help"><summary>Connection &amp; credential help</summary>
           <p class="hint" id="mail-secure-storage-help">On Windows and macOS, routine mail credential reads and startup checks wait asynchronously and time out after 30 seconds. Feature/status checks share guarded grant reads within each request, without a global completed-credential cache. Read errors keep your saved credentials; check secure-storage access and retry. Account setup and credential writes retain synchronous compatibility commands with a 30-second limit per command; several commands can take longer. This does not change provider sign-in, permissions or your saved mailbox.</p>
-          <p class="hint" id="mail-oauth-renewal-help">Mail and calendar renew saved connections as needed while Morrow is open. Gmail API mail sessions reread the saved connection for each request and can renew a rejected read once. Sends, draft saves and other writes are never replayed automatically. Temporary network, sign-in-service or secure-storage errors keep the saved grant for retry. A renewed connection must be saved before mail or calendar uses it. An expired or revoked grant, or a provider requirement to sign in, needs Reconnect for that mailbox or feature. Google External projects in Testing issue seven-day refresh tokens for mail and calendar; the app owner must review publishing and verification. Microsoft organization policies can require earlier sign-in. Morrow does not check your Google project's publishing status or Microsoft tenant policy.</p>
+          <p class="hint" id="mail-oauth-renewal-help">Mail and calendar renew saved connections as needed while Morrow is open. Gmail API mail sessions reread the saved connection for each request and can renew a rejected read once. Calendar and provider-feature reads can renew a rejected read once before offering reauthorization. Calendar quota errors pause feature reads before retry; they do not require new consent. A temporary Google client configuration problem keeps saved connections available when the same client is restored. Sends, draft saves and other writes are never replayed automatically. Temporary network, sign-in-service or secure-storage errors keep the saved grant for retry. A renewed connection must be saved before mail or calendar uses it. An expired or revoked grant, or a provider requirement to sign in, needs Reconnect for that mailbox or feature. Google External projects in Testing issue seven-day refresh tokens for mail and calendar; the app owner must review publishing and verification. Microsoft organization policies can require earlier sign-in. Morrow does not check your Google project's publishing status or Microsoft tenant policy.</p>
           </details>
           <p class="hint" id="google-onboarding-settings-help">Skipped Google setup? Import your Google Console Desktop app JSON in Advanced below, then use Add account → Continue with Google.</p>
           <details class="settings-disclosure" id="google-oauth-client">
@@ -1831,8 +1853,8 @@
           <div class="preview-row"><dt>Subject</dt><dd id="compose-preview-subject"></dd></div>
           <div class="preview-row" id="compose-preview-files-row" hidden><dt>Files</dt><dd id="compose-preview-files"></dd></div>
         </dl>
-        <pre id="compose-preview-body"></pre>
-        <p class="hint">Finish or cancel AI writing before previewing. Confirm sends the reviewed message; if it changes, review a new preview.</p>
+        <div id="compose-preview-body" role="region" aria-label="Message preview" tabindex="0"></div>
+        <p class="hint">Preview shows the reviewed message with safe formatting. Remote images stay blocked. Finish or cancel AI writing before previewing; changes require a new preview.</p>
         <div class="row">
           <button type="submit" class="primary" id="compose-preview-confirm">Confirm send</button>
           <button type="button" class="ghost" id="compose-preview-cancel">Cancel</button>

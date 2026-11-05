@@ -12,9 +12,9 @@ There is no Timeline tab, selection/search entry point or mandatory settings wal
 
 The source is always that opened message's account and ID, plus its already-local
 thread, never current list selection or unrelated search results. Opening the sheet
-checks downloaded coverage and saved AI permission without making an AI request.
-Only **Generate** prepares a fresh, five-minute, window-owned manifest with the
-edited focus and starts extraction through the saved AI destination after explicit
+checks downloaded coverage and saved AI permission and prepares a five-minute,
+window-owned source manifest without making an AI request. Only **Generate**
+re-prepares with the edited focus and starts extraction through the saved AI destination after explicit
 action permission. Sources remain frozen for that run. Limits of 1,000 messages /
 200 threads are enforced without silent truncation. Expansion means **downloaded**
 thread members, not complete mailbox history; no older-mail fetch runs automatically.
@@ -25,6 +25,24 @@ complete bodies cannot start. Download mail separately in Mail if needed; the sh
 does not download it. Timeline operations never change mail flags, labels or folders
 and never send mail. Closing the sheet requests cancellation, including a job still
 starting; data already delivered cannot be recalled.
+
+Preparation uses the same complete request builder as extraction, including the
+prompt, output language, JSON escaping, optional focus and room for a fixed validation
+retry. Focus can reduce the available space for message fragments. The displayed
+input estimate covers the first extraction pass only; dynamic validation retries
+and summary reductions still spend the same total run budgets. A preparation error
+disables Generate until the focus changes or the sheet is reopened; the host also
+rejects a blocked plan independently. Oversized input names the exhausted limit.
+Shorten optional focus when requested, or open a smaller downloaded thread. Changing
+focus or opening a different message in the same thread does not filter the source.
+
+After failure, cancellation or local result deletion, an explicit Generate click
+can re-prepare the same source. The consumed authorization cannot start a second
+job, but its owner-bound source proof remains valid for checks and re-preparation
+for five minutes after the job ends. Real source/account changes or expired proofs
+require reopening; changing AI permission still requires a newly prepared consent
+binding. There is no automatic retry of an entire job. Retrying may send the same
+reviewed mail again.
 
 Completed artifacts show a compact result with secondary reviewed export/delete
 actions. **Saved timelines** is collapsed history in the sheet, not a permanent
@@ -116,7 +134,9 @@ unknown properties, missing/forged tokens or incomplete output receive at most o
 validation retry per step, using fixed error paths/codes rather than model text as
 instructions. Part summaries are deduplicated and combined. A bounded model
 consolidation is used only if the combined structured text exceeds field limits;
-it receives validated summaries, not expanded mail. Final documents are validated
+it receives validated summaries, not expanded mail. Large semantic arrays are split
+at item boundaries and reduced in bounded stages using the same complete request
+limit, without silently dropping items. A non-compacting reduction stops. Final documents are validated
 again before one synchronous durable commit.
 
 Requests are sequential. Limits: 32 calls including retries/consolidation,
@@ -127,6 +147,19 @@ measurements. Reported provider usage is recorded; missing output usage charges
 the reserved output allowance. Providers must honor their output-limit contract.
 These are not precise monetary limits. Limits can stop a large selection after
 some calls; earlier provider charges cannot be refunded by cancellation.
+
+The 128,000-unit budget also bounds the complete cached source text. Fragments are
+at most 4,500 serialized bytes and eight fragments per extraction request. These
+budgets can reject selections smaller than the 1,000-message / 200-thread ceiling;
+headers, attachment names, repeated quoted history and UTF-8 text all consume space.
+No model-context-size setting overrides these application limits.
+
+Failure diagnostics contain only an allowlisted limit name, numeric usage/limit
+and the number of AI completion calls attempted. Zero attempts means no AI call
+started for that attempt. A positive count means data may already have reached the
+saved provider; it is not a receipt proving delivery. Preparation never calls AI.
+Messages, addresses, prompts, credentials and raw provider errors are not included
+in these diagnostics. Failed or cancelled jobs save no partial timeline.
 
 Cancellation/revocation stops further calls and rejects late output, but cannot
 recall already delivered data. Failed, interrupted or cancelled work never replaces
@@ -142,7 +175,7 @@ Manual approval does not enable background use. Preparation and exports need no
 model request. Generation uses only reviewed text, subjects, sender/date evidence,
 attachment names and optional keyword/contact focus through the existing saved provider plumbing, without Brain,
 Agent notes, chat history, tools or automatic provider/billing fallback.
-Prompt version `mail-chronology-3` asks for a chronology of the user's
+Prompt version `mail-chronology-4` asks for a chronology of the user's
 currently selected mail in the current mailbox account (no named person or fixed
 inbox), treating focus as topics rather than instructions or additional evidence;
 the host still owns dates, addresses and opaque IDs. Generated

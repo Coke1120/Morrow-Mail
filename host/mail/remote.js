@@ -5,6 +5,7 @@ const { simpleParser } = require("mailparser");
 const { isRateLimit } = require("./provider-http");
 const mailboxRoles = require("../../shared/mailbox-roles");
 const textEncoding = require("./text-encoding");
+const decoding = require("./mime-decoding");
 const { isGmail } = require("./gmail-policy");
 const { diagnosticMessage } = require("./gmail-error");
 const clientAccounts = new WeakMap();
@@ -60,7 +61,7 @@ function explain(error, secret, account) {
   }
   let message = parts.filter(Boolean).join(" ");
   if (secret && message.includes(secret)) message = message.split(secret).join("");
-  if (["needs_auth", "oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration"].includes(error?.code)) {
+  if (["needs_auth", "oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration", "oauth_not_ready"].includes(error?.code)) {
     return message.replace(/\s+/g, " ").trim().slice(0, 280);
   }
   const authFailed = error && error.authenticationFailed === true
@@ -290,7 +291,7 @@ function hasFileAttachment(attachments) {
 
 function snippetOf(text, html) {
   const raw = text || String(html || "").replace(/<[^>]+>/g, " ");
-  return raw.replace(/\s+/g, " ").trim().slice(0, 180);
+  return decoding.snippet(raw.replace(/\s+/g, " ").trim());
 }
 
 function threadIdOf(parsed, envelope, fallback) {
@@ -305,6 +306,8 @@ async function parseSource(source, truncated) {
   if (!source || !source.length) return null;
   try {
     const parsed = await simpleParser(source);
+    const decodedQuality = await decoding.inspectSource(source);
+    decoding.noteHeaders(decodedQuality, parsed);
     return {
       html: typeof parsed.html === "string" ? parsed.html : null,
       text: typeof parsed.text === "string" ? parsed.text : null,
@@ -312,6 +315,7 @@ async function parseSource(source, truncated) {
       inReplyTo: parsed.inReplyTo || null,
       references: parsed.references || null,
       replyTo: parsed.replyTo || null,
+      decoding: decodedQuality,
       complete: !truncated,
     };
   } catch {
@@ -387,11 +391,12 @@ async function readFetched(msg, validity, cap) {
   const limit = cap || SOURCE_CAP;
   const truncated = !!(source && source.length >= limit - 1);
   const parsed = await parseSource(source, truncated);
+  if (parsed?.decoding) decoding.noteHeaders(parsed.decoding, { subject: envelope.subject, from: { value: envelope.from || [] } });
   const presented = textEncoding.presentMessage({
     subject: envelope.subject || "",
     htmlBody: parsed && parsed.html,
     textBody: parsed && parsed.text,
-  });
+  }, { preserveDecoded: true });
   const attachments = attachmentsOf(msg.bodyStructure);
   const flags = msg.flags;
   const seen = !!(flags && flags.has("\\Seen"));
@@ -427,6 +432,7 @@ async function readFetched(msg, validity, cap) {
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
     attachments,
+    decoding: parsed?.decoding || null,
     bodyComplete: !!(parsed && parsed.complete),
     // Keep the intentional full-source bound distinct from MIME/download failures.
     bodySourceLimited: truncated && limit === FULL_CAP,
@@ -682,6 +688,54 @@ async function changeFlags(client, folderPath, uid, add, remove, expectedValidit
   }
 }
 
+// A disposition write is best effort after SMTP acceptance. Verify the exact
+// UID under a mailbox lock and add one flag without replacing any other flags.
+async function setDisposition(client, proof, { beforeSubmit } = {}) {
+  if (client.gmail) return "unsupported";
+  const lock = await client.getMailboxLock(proof.folderPath);
+  try {
+    assertUidValidity(client, proof.uidValidity);
+    beforeSubmit?.();
+    const box = client.mailbox;
+    if (!box || box.path !== proof.folderPath || box.uidNotSticky || box.readOnly) return "unsupported";
+    const flag = proof.kind === "replied" ? "\\Answered" : proof.kind === "forwarded" ? "$Forwarded" : null;
+    if (!flag) return "unsupported";
+    const permanent = box.permanentFlags instanceof Set
+      ? new Set([...box.permanentFlags].map(value => String(value).toLowerCase())) : null;
+    // The wildcard permits new keywords, not unlisted system flags. Missing
+    // permission information is deliberately kept local rather than guessed.
+    if (!permanent || !permanent.has(flag.toLowerCase()) && !(flag[0] !== "\\" && permanent.has("\\*"))) return "unsupported";
+    // ImapFlow checks keyword spelling against its Set before issuing STORE.
+    const advertised = [...box.permanentFlags].find(value => String(value).toLowerCase() === flag.toLowerCase()) || flag;
+    async function readFlags() {
+      let matched;
+      for await (const message of client.fetch(String(proof.uid), { uid: true, flags: true }, { uid: true })) {
+        if (Number(message.uid) === proof.uid) matched = message;
+      }
+      return matched;
+    }
+    const current = await readFlags();
+    assertUidValidity(client, proof.uidValidity);
+    beforeSubmit?.();
+    if (!current) return "missing";
+    if (client.mailbox.readOnly) return "unsupported";
+    const hasFlag = message => message?.flags instanceof Set
+      && [...message.flags].some(value => String(value).toLowerCase() === flag.toLowerCase());
+    if (hasFlag(current)) return "stored";
+    const changed = await client.messageFlagsAdd(String(proof.uid), [advertised], { uid: true });
+    assertUidValidity(client, proof.uidValidity);
+    beforeSubmit?.();
+    if (!changed) return client.usable === false ? "pending" : "unsupported";
+    // Some servers acknowledge STORE while ignoring an unsupported keyword.
+    const after = await readFlags();
+    assertUidValidity(client, proof.uidValidity);
+    beforeSubmit?.();
+    return !after ? "missing" : hasFlag(after) ? "stored" : "unsupported";
+  } finally {
+    lock.release();
+  }
+}
+
 async function removeUid(client, folderPath, uid, expectedValidity) {
   if (client.gmail) return client.gmail.remove(folderPath, uid, expectedValidity);
   if (isGmail(clientAccounts.get(client))) {
@@ -910,6 +964,7 @@ module.exports = {
   readPart,
   moveUid,
   changeFlags,
+  setDisposition,
   removeUid,
   checkUidValidity,
   createBox,

@@ -36,6 +36,7 @@ const perf = require("../performance-diagnostics");
 const { diagnosticMessage: gmailDiagnosticMessage } = require("./gmail-error");
 const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
+const decoding = require("./mime-decoding");
 const composePolicy = require("../../shared/compose-policy");
 const senderHistory = require("../../shared/sender-history");
 const primaryMailboxes = require("../../shared/primary-mailboxes");
@@ -398,16 +399,17 @@ function conversationRows(rows, selectedId) {
 }
 
 function detailOf(row, generations, memberships) {
-  const presented = textEncoding.presentMessage({
+  const presented = decoding.presentation(row, textEncoding.presentMessage({
     subject: row.subject || "",
     htmlBody: row.html_body,
     textBody: row.text_body,
-  });
+  }, { preserveDecoded: Number(row.uid) > 0 && !row.draft_pending }));
   return {
     ...listRow(row, generations, memberships),
     subject: presented.subject,
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
+    encodingWarning: presented.warning,
     bodyMetadataVersion: bodyVersion,
     fromAddress: composeIdentity.savedAddress(row),
     ...(row.is_draft ? { draftRevision: db.draftRevision(row), draftPending: !!row.draft_pending,
@@ -417,7 +419,9 @@ function detailOf(row, generations, memberships) {
 
 function bodyAvailability(row) {
   return { accountId: row.account_id, emailId: row.id, bodyEpoch: accountEpochs.get(row.account_id) || 0, bodyVersion,
-    bodyComplete: row.body_complete === 1, hasBody: usableStoredBody(row), bodyWarning: row.body_warning || "" };
+    bodyComplete: row.body_complete === 1, hasBody: usableStoredBody(row),
+    bodyWarning: row.body_warning || "",
+    encodingWarning: decoding.presentation(row, { htmlBody: row.html_body, textBody: row.text_body }).warning };
 }
 
 function cachedBody(row) {
@@ -467,6 +471,7 @@ function queryFrom(params) {
     filterUnread: query.filterUnread === true,
     retainIds: oneRetainId(query.retainIds),
     filterFlagged: query.filterFlagged === true,
+    filterToMe: query.filterToMe === true,
     filterAttachments: query.filterAttachments,
     limit: query.limit,
     offset: query.offset,
@@ -1250,6 +1255,11 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
     const result = folder && windowOpen(folder, days)
       ? await warmFolder(client, account, folder, started, days, bounds)
       : await bootstrapFolder(client, account, folderPath, started, days, bounds);
+    if (!result.paused && Date.now() < bounds.deadline && !priorityWaiting(account.id)) {
+      await flushImapDispositions(account, client, db.imapDispositions.pending(account.id, folderPath), {
+        shouldYield: () => Date.now() >= bounds.deadline || priorityWaiting(account.id),
+      });
+    }
     if (!result.paused) clearStrikes(account.id);
     if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
@@ -2299,11 +2309,12 @@ function fillBodyInBackground(row, outcome, bodySource = "visible") {
   const beforeText = row.text_body;
   const beforeComplete = row.body_complete;
   const beforeWarning = row.body_warning;
+  const beforeDecoding = row.decoding_json;
   return ensureBody(row, { background: true, outcome, bodySource }).then((fresh) => {
     const next = fresh || row;
     if (outcome && outcome.skipped) return next;
     if (!db.isReady() || generation !== (accountEpochs.get(row.account_id) || 0) || !db.messageById(id) || next.account_id !== row.account_id) return next;
-    if (next.html_body !== beforeHtml || next.text_body !== beforeText || next.body_complete !== beforeComplete || next.body_warning !== beforeWarning) {
+    if (next.html_body !== beforeHtml || next.text_body !== beforeText || next.body_complete !== beforeComplete || next.body_warning !== beforeWarning || next.decoding_json !== beforeDecoding) {
       bodyVersion += 1;
       broadcast("mail:bodyUpdated", bodyAvailability(next));
     }
@@ -2475,7 +2486,7 @@ async function ensureBody(row, options) {
     if (!options?.replyHeaders) return value.recipient_headers_json != null;
     try { return Array.isArray(JSON.parse(value.recipient_headers_json).replyTo); } catch { return false; }
   };
-  if (row.body_complete === 1 && !row.body_warning && completeHeaders(row) && !needsGmailMetadata(row, account)) return row;
+  if (!options?.reload && row.body_complete === 1 && !row.body_warning && completeHeaders(row) && !needsGmailMetadata(row, account)) return row;
   if (background && priorityWaiting(account.id)) {
     markSkip();
     return row;
@@ -2490,7 +2501,7 @@ async function ensureBody(row, options) {
     }
     // Another open may have filled the cache while this request queued.
     row = db.messageById(row.id);
-    if (!row || row.draft_pending || !row.uid || (row.body_complete === 1 && !row.body_warning && completeHeaders(row) && !needsGmailMetadata(row, account))) return row;
+    if (!row || row.draft_pending || !row.uid || (!options?.reload && row.body_complete === 1 && !row.body_warning && completeHeaders(row) && !needsGmailMetadata(row, account))) return row;
     if (!options?.retry && (row.body_retry_blocked || row.body_retry_after > Date.now())) {
       bodyResult = row.body_retry_blocked ? "source-limit" : "incomplete";
       return row;
@@ -2498,7 +2509,7 @@ async function ensureBody(row, options) {
     actions.assertIdentityReady(row.id);
     const password = await secretFor(account);
     bodyProgress.start(bodyTask);
-    const metadataOnly = account.mail_transport === "gmail_api" && row.body_complete === 1;
+    const metadataOnly = account.mail_transport === "gmail_api" && row.body_complete === 1 && !options?.reload;
     const fetched = await withMailClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid, row.uid_validity, { metadataOnly }));
     bodyResult = "incomplete";
     // Flags-only/empty FETCH results are unsuccessful body reads too. Keep
@@ -2512,11 +2523,13 @@ async function ensureBody(row, options) {
       error.code = "message_moving";
       throw error;
     }
+    if (!metadataOnly && current.body_complete === 1 && !fetched.bodyComplete) throw new Error("The replacement message download was incomplete.");
     const localFiles = account.mail_transport === "gmail_api" && row.is_draft ? db.jsonList(row.attachments_json).filter(file => String(file.storageUrl || "").startsWith("local:")) : [];
     db.updateMessage(row.id, {
       ...(account.mail_transport === "gmail_api" && fetched.providerId && Number.isSafeInteger(fetched.providerUid) && fetched.providerUid > 0 && fetched.providerValidity === account.gmail_generation
         ? { gmail_id: fetched.providerId, uid: fetched.providerUid, uid_validity: fetched.providerValidity } : {}),
-      ...(metadataOnly ? {} : { html_body: fetched.htmlBody, text_body: fetched.textBody, body_complete: fetched.bodyComplete ? 1 : 0, snippet: fetched.snippet || row.snippet }),
+      ...(metadataOnly ? {} : { html_body: fetched.htmlBody, text_body: fetched.textBody, body_complete: fetched.bodyComplete ? 1 : 0,
+        decoding_json: decoding.serialize(fetched.decoding), snippet: fetched.snippet || row.snippet }),
       body_warning: fetched.bodyWarning || (!metadataOnly && !fetched.bodyComplete
         ? fetched.bodySourceLimited ? "This message exceeds the source download limit. Any cached content is shown. Choose Retry download to try again."
           : "The complete message could not be downloaded. Any cached content is shown. Choose Retry download to try again." : null),
@@ -2525,11 +2538,13 @@ async function ensureBody(row, options) {
       attachments_json: JSON.stringify(localFiles.length ? localFiles : fetched.attachments || []),
       has_attachments: localFiles.length > 0 || fetched.hasAttachments ? 1 : 0,
       subject: fetched.subject || row.subject,
+      ...(typeof fetched.from === "string" ? { from_addr: fetched.from } : {}),
+      ...(typeof fetched.fromDisplayName === "string" ? { from_display_name: fetched.fromDisplayName } : {}),
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
       from_address: fetched.fromAddress || row.from_address || null,
       ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
-      ...require("./reply-forward-state").patch(fetched),
-    }, account.mail_transport === "gmail_api" ? { disposition: fetched } : undefined);
+      ...(account.mail_transport === "gmail_api" ? require("./reply-forward-state").patch(fetched) : {}),
+    }, { disposition: fetched });
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
@@ -2557,6 +2572,7 @@ async function ensureBody(row, options) {
       }
       return db.messageById(row.id);
     }
+    if (options?.reload && !background) throw Object.assign(new Error("The message could not be downloaded again. Cached content was retained."), { code: "body_download_failed" });
     return current;
   } finally {
     bodyProgress.finish(bodyTask, bodyResult);
@@ -2709,6 +2725,7 @@ function searchLocal(params) {
     sortDirection: query.sortDirection,
     accountId: query.accountId || null,
     limit: query.limit,
+    filterToMe: query.filterToMe === true,
   }, { headersOnly: true }));
 }
 
@@ -3768,6 +3785,7 @@ async function submitSmtp(input) {
   let accepted = false;
   let receipt;
   let authorizationError;
+  const dispositionOwner = { ...account, [ACCOUNT_EPOCH]: accountEpochs.get(account.id) || 0 };
   try {
     const sentResult = await exclusive(account.id, async () => {
       let info;
@@ -3783,12 +3801,31 @@ async function submitSmtp(input) {
         try { input.beforeSubmit(); } catch (error) { authorizationError = error; throw error; }
       }
       if (credentialError) throw credentialError;
+      const submissionRevision = secrets.revision(account.id);
       if (smtpSenderForTest) info = await smtpSenderForTest({ account, options, messageId });
       else info = await remote.sendSmtp(account, password, { ...options, messageId });
       accepted = true;
       receipt = deliveryReceipt.fromSmtp(info, messageId);
       // Persist acceptance before any best-effort Sent filing can await I/O.
       if (input.onAccepted) await input.onAccepted(receipt);
+      // Never turn a verified send into a retryable send failure because an
+      // optional local indicator, IMAP flag or subsequent refresh failed.
+      if (input.disposition?.transport === "imap" && completeSubmission(options, receipt)) {
+        try {
+          assertAccountCurrent(dispositionOwner);
+          if (db.confirmDisposition(account.id, input.disposition) && password) {
+            const check = () => {
+              assertAccountCurrent(dispositionOwner);
+              if (secrets.revision(account.id) !== submissionRevision) throw removedAccountError();
+            };
+            check();
+            await withMailClient(dispositionOwner, password, client =>
+              flushImapDispositions(dispositionOwner, client, [input.disposition], { check }));
+          }
+        } catch {
+          try { db.imapDispositions.settle(input.disposition, "pending"); } catch { /* the send receipt stands */ }
+        }
+      }
       try {
         return await fileSentMessage(account, password, options, info, messageId, input);
       } catch {
@@ -3801,6 +3838,38 @@ async function submitSmtp(input) {
     const refusal = accepted ? "" : provedRefusal(error);
     if (refusal) return { kind: "rejected", refusal };
     return { kind: "unknown", detail: remote.explain(error, ""), receipt };
+  }
+}
+
+function completeSubmission(options, receipt) {
+  const intended = deliveryReceipt.addresses([].concat(options.to || [], options.cc || [], options.bcc || []));
+  const accepted = new Set(receipt.accepted.map(address => address.toLowerCase()));
+  return intended.length > 0 && !receipt.rejected.length && intended.every(address => accepted.has(address.toLowerCase()));
+}
+
+async function flushImapDispositions(account, client, proofs, {
+  check = () => assertAccountCurrent(account), shouldYield = () => false,
+} = {}) {
+  for (const proof of proofs) {
+    if (shouldYield()) return;
+    try {
+      const beforeSubmit = () => {
+        check();
+        const row = db.imapDispositions.target(proof);
+        if (!row) throw removedAccountError();
+        actions.assertIdentityReady(row.id);
+      };
+      beforeSubmit();
+      const state = await remote.setDisposition(client, proof, { beforeSubmit });
+      beforeSubmit();
+      db.imapDispositions.settle(proof, state);
+    } catch (error) {
+      // Permission/unsupported responses stay local. Transient failures are
+      // retried in bounded folder-sync passes after five minutes, never SMTP.
+      const state = ["NO", "BAD"].includes(error?.responseStatus) ? "unsupported" : "pending";
+      try { db.imapDispositions.settle(proof, state); } catch { /* a send receipt still stands */ }
+      return;
+    }
   }
 }
 
@@ -3868,15 +3937,15 @@ async function deliver(params, lifecycle) {
   try {
     const submitted = await submitSmtp({
       account,
+      disposition,
       options,
       messageId: lifecycle?.messageId || rfcMessageId(account.email),
       onAccepted(next) {
         receipt = next;
-        const intended = deliveryReceipt.addresses([...options.to, ...options.cc, ...options.bcc]).map(address => address.toLowerCase());
-        const accepted = new Set(next.accepted.map(address => address.toLowerCase()));
-        const confirmed = intended.length && !next.rejected.length && intended.every(address => accepted.has(address));
-        if (lifecycle?.onAccepted) lifecycle.onAccepted(next, confirmed ? disposition : null);
-        else if (confirmed) db.confirmDisposition(account.id, disposition);
+        const confirmed = completeSubmission(options, next);
+        const gmailDisposition = disposition?.transport === "imap" ? null : disposition;
+        if (lifecycle?.onAccepted) lifecycle.onAccepted(next, confirmed ? gmailDisposition : null);
+        else if (confirmed && gmailDisposition) db.confirmDisposition(account.id, gmailDisposition);
         if (lifecycle) return;
         if (!next.rejected.length) return;
         db.insertScheduled({ id: candidateId, accountId: account.id, status: "partial", sendAt: Date.now(), createdAt: Date.now(),
@@ -4266,11 +4335,11 @@ function answer(channel, args, event) {
         if (!stored) return fail("email-gone", "That message is no longer in the mailbox.");
         if (params?.accountId && params.accountId !== stored.account_id) return fail("email-gone", "That message is no longer in this mailbox.");
         const generation = accountEpochs.get(stored.account_id) || 0;
-        const paintFirst = !(params && params.full === true)
+        const paintFirst = !(params && (params.full === true || params.retry === true))
           && stored.body_complete !== 1
           && usableStoredBody(stored);
         let row;
-        try { row = assertReadableBody(paintFirst ? stored : await ensureBody(stored, { retry: params?.full === true })); }
+        try { row = assertReadableBody(paintFirst ? stored : await ensureBody(stored, { retry: params?.full === true || params?.retry === true, reload: params?.retry === true })); }
         catch (error) { return fail(error.code || "read", error.message); }
         if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
         if (generation !== (accountEpochs.get(stored.account_id) || 0)) return fail("message_changed", "The mailbox connection changed. Reopen the message.");
@@ -4285,6 +4354,8 @@ function answer(channel, args, event) {
           threadMessages: members,
         });
       })();
+    case "mail:prepareSummary":
+      return messageSummaries.prepare(params, event?.sender);
     case "mail:summarizeEmail":
       return messageSummaries.summarize(params, event?.sender);
     case "mail:cancelSummary":
@@ -4300,7 +4371,7 @@ function answer(channel, args, event) {
     case "mail:readEmail":
       return (async () => {
         let row;
-        try { row = assertReadableBody(await ensureBody(db.messageById(params && params.emailId), { retry: params?.retry === true })); }
+        try { row = assertReadableBody(await ensureBody(db.messageById(params && params.emailId), { retry: params?.retry === true, reload: params?.retry === true })); }
         catch (error) { return fail(error.code || "read", error.message); }
         if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
         return ok(detailOf(row));
@@ -4560,6 +4631,7 @@ function answer(channel, args, event) {
             attachments_json: JSON.stringify(resolved.meta),
             html_body: html,
             text_body: record.textBody,
+            decoding_json: null,
             body_complete: 1,
             recipient_headers_json: JSON.stringify(record.recipientHeaders),
             draft_pending: 1,

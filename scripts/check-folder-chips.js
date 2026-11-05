@@ -175,6 +175,7 @@ test("the actual Features catalog tab describes chip scope, supported roles and 
   const card = [...view.get("features-catalog").querySelectorAll(".feature-card")].find(node => node.querySelector("h4").textContent === "Folder chips and sidebar icons");
   assert.ok(card);
   assert.match(card.textContent, /one canonical name per enabled role/);
+  assert.match(card.textContent, /Folder chips stay left aligned below a visible title/);
   assert.match(card.textContent, /Sent Items, Sent Mail and casing variants share one Sent chip/);
   assert.match(card.textContent, /Expanded IMAP, Gmail and Outlook accounts share the same colorful folder icons/);
   assert.match(card.textContent, /cross-account Sent, Drafts, Trash, Junk and Archived chips are unavailable/);

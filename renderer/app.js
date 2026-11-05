@@ -7,6 +7,7 @@ const state = {
   allInbox: false,
   allInboxUnreadOnly: false,
   allInboxStarredOnly: false,
+  toMeOnly: false,
   mailColumnOrder: ["date", "recipient", "sender", "subject"],
   mailHiddenColumns: [],
   outbox: false,
@@ -989,17 +990,20 @@ function mailListRequest(view) {
   if (source.query) {
     const params = { query: source.query, limit: 100, ...(source.listSort || {}) };
     if (source.searchAccountId) params.accountId = source.searchAccountId;
+    if (source.toMeOnly) params.filterToMe = true;
     return { channel: "mail:searchLocal", params };
   }
   const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
   if (source.allInbox && (source.aggregateView === "starred" || source.aggregateView === "unread")) {
     const params = { aggregateView: source.aggregateView, limit, offset, ...(source.listSort || {}) };
+    if (source.toMeOnly) params.filterToMe = true;
     if (retainId && source.aggregateView === "unread") params.retainIds = [retainId];
     return { channel: "mail:listFromCache", params };
   }
   if (source.allInbox) {
     const params = { folderKey: "primary", limit, offset, ...(source.listSort || {}) };
+    if (source.toMeOnly) params.filterToMe = true;
     if (source.pageCursor) params.pageCursor = source.pageCursor;
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
     if (helper && typeof helper.primaryMailboxes === "function") {
@@ -1011,6 +1015,7 @@ function mailListRequest(view) {
     return { channel: "mail:listFromCache", params };
   }
   const params = { accountId: source.accountId, folderId: source.folderId, limit, offset, ...(source.listSort || {}) };
+  if (source.toMeOnly) params.filterToMe = true;
   if (source.pageCursor) params.pageCursor = source.pageCursor;
   if (retainId) params.retainIds = [retainId];
   return {
@@ -3078,7 +3083,7 @@ function applyMailView() {
   if (!shell || typeof shell.getBoundingClientRect !== "function" || isReaderWindow()) return;
   const pref = mailViewPref(state.prefs.mailView);
   const layout = effectiveMailViewLayout();
-  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox]);
+  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.toMeOnly]);
   if (mailViewScrollScope !== scope) { mailViewScroll.clear(); mailViewScrollScope = scope; }
   const previous = shell.dataset.mailLayout, list = $("message-list");
   const moving = previous && previous !== layout && list;
@@ -4218,8 +4223,16 @@ function replyParties(email, self, all) {
 function prefixedSubject(subject, prefix) {
   const text = String(subject || "").trim();
   if (!text) return prefix;
-  if (prefix === "Re:" && /^re\s*:/i.test(text)) return text;
-  if (prefix === "Fwd:" && /^(?:fwd|fw)\s*:/i.test(text)) return text;
+  // Only fresh reply/forward seeds use this helper. Saved/edited subjects stay
+  // verbatim. Collapse consecutive prefixes of the same action, preserving a
+  // different action (for example Fwd: Re: Topic) and the original Unicode text.
+  const pattern = prefix === "Re:"
+    ? /^(?:re|aw|回覆|回复|回復|答覆|答复|返信)(?:\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\)))?\s*[:：]\s*/i
+    : /^(?:fwd|fw|wg|轉寄|转寄|轉發|转发|転送)(?:\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\)))?\s*[:：]\s*/i;
+  let rest = text, count = 0, match;
+  while ((match = rest.match(pattern))) { rest = rest.slice(match[0].length); count++; }
+  if (count === 1 && (prefix === "Re:" ? /^re\s*:/i : /^(?:fwd|fw)\s*:/i).test(text)) return text;
+  if (count) return rest ? `${prefix} ${rest}` : prefix;
   return `${prefix} ${text}`;
 }
 
@@ -5786,6 +5799,20 @@ function renderChips(account) {
   }
 }
 
+function paintToMeFilter() {
+  const button = $("list-to-me");
+  if (!button) return;
+  button.hidden = !state.accounts.length || (state.outbox && !state.query);
+  button.setAttribute("aria-pressed", String(state.toMeOnly));
+}
+
+async function toggleToMeFilter() {
+  state.toMeOnly = !state.toMeOnly;
+  state.selectedIds = [];
+  state.selectionAnchor = "";
+  await loadList(false, 0);
+}
+
 // Filter stays on messages already loaded: subject, from, and snippet.
 // It does not call mail:search or mail:searchLocal. Toolbar search does.
 function filteredEmails(emails, query) {
@@ -6961,6 +6988,32 @@ function selectedMessages() {
   return state.selectedIds.map((id) => byId.get(id)).filter(Boolean);
 }
 
+// null means there is no shell selection; [] means it is stale and must not
+// fall back to an unrelated open preview. Filter-hidden selections stay included.
+function shellDeleteSelection() {
+  if (isReaderWindow() || state.view !== "mail" || state.outbox || !state.selectedIds.length) return null;
+  const messages = selectedMessages();
+  if (messages.length !== state.selectedIds.length || messages.some((email) =>
+    !email.accountId || email.outbox || optimisticRemovals.has(email.id)
+    || !state.accounts.some((account) => account.id === email.accountId))) return [];
+  return messages;
+}
+
+function readerDeleteLabel() {
+  const n = !isReaderWindow() && state.view === "mail" && !state.outbox ? state.selectedIds.length : 0;
+  return n ? `Delete ${n} selected ${n === 1 ? "message" : "messages"}` : "Delete";
+}
+
+function paintReaderDelete() {
+  const button = $("reader")?.querySelector?.('[data-action="trash"]');
+  if (!button) return;
+  const label = readerDeleteLabel();
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  const text = button.querySelector("span");
+  if (text) text.textContent = label;
+}
+
 function selectionMoveMessages() {
   const rows = selectedMessages();
   if (!rows.length) return [];
@@ -6997,6 +7050,7 @@ function setSelectionLabel(id, label) {
 }
 
 function paintSelectionBar(shown) {
+  paintReaderDelete();
   const bar = $("selection-bar");
   const count = $("selection-count");
   const selectAll = $("select-visible");
@@ -7121,6 +7175,7 @@ function renderList() {
     title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly, state.allInboxStarredOnly) : (chipLabel(folder) || "Messages")));
   }
   renderChips(state.allInbox || state.outbox ? null : account);
+  paintToMeFilter();
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account, state.folderId).some(item => item.id === state.folderId));
   const shown = shownEmails();
   paintSelectionBar(shown);
@@ -7340,7 +7395,7 @@ function renderActions(pane, email) {
     showStatus("Still finishing the last change.", true);
   }, true);
   const archive = readerButton("archive", "Archive", () => archiveOpen(email));
-  const trash = readerButton("trash", "Delete", () => trashOpen(email));
+  const trash = readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email));
   trash.setAttribute("aria-keyshortcuts", "Delete Backspace");
   const move = readerButton("move", "Move", () => openMessageMovePicker(email, "imap"));
   move.setAttribute("aria-label", "Move to folder");
@@ -7403,7 +7458,7 @@ function renderActions(pane, email) {
 }
 
 function summarySource(email) {
-  return [email.subject, email.from, email.date, email.textBody, email.htmlBody, email.bodyComplete, email.bodyWarning];
+  return [email.subject, email.from, email.date, email.textBody, email.htmlBody, email.bodyComplete, email.bodyWarning, email.encodingWarning];
 }
 
 function summaryMatches(email, view = messageSummary) {
@@ -7415,8 +7470,8 @@ function summaryMatches(email, view = messageSummary) {
 
 function clearMessageSummary() {
   const view = messageSummary;
-  messageSummary = null; // Retire ownership before the asynchronous cancellation reply.
-  if (view?.pending) call("mail:cancelSummary", { reqId: view.reqId }).catch(() => {});
+  messageSummary = null;
+  if (view?.pending || view?.plan) call("mail:cancelSummary", { reqId: view.reqId }).catch(() => {});
 }
 
 function stopMessageSummary() {
@@ -7424,40 +7479,79 @@ function stopMessageSummary() {
   if (!view) return;
   clearMessageSummary();
   if (summaryMatches(state.email, view)) {
-    messageSummary = { ...view, pending: false, text: "", error: "", notice: "Summary cancelled. Choose Summary to try again." };
+    messageSummary = { ...view, pending: false, review: null, summary: null, error: "", notice: "Summary cancelled. Choose Summary to try again." };
     paintMessageSummary(state.email);
     $("reader").querySelector('[data-action="summary"]')?.focus();
   }
+}
+
+function summaryReplyMatches(data, view, identity) {
+  return data && data.reqId === view.reqId && data.accountId === identity.accountId
+    && data.emailId === identity.id && data.bodyEpoch === identity.bodyEpoch;
+}
+
+function messageSummaryError(view, error) {
+  if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+  view.error = error instanceof Error ? error.message : String(error);
+  view.settings = ["ai-unconfigured", "ai-consent-required"].includes(error.code)
+    || /AI Setup|AI data permission|API key|ChatGPT/i.test(view.error);
+}
+
+function finishMessageSummary(view) {
+  if (messageSummary !== view) return;
+  view.pending = false;
+  if (summaryMatches(state.email, view)) paintMessageSummary(state.email);
+  else clearMessageSummary();
 }
 
 async function requestMessageSummary(email) {
   if (!email || state.email !== email || (pendingOpenId && pendingOpenId !== email.id) || messageSummary?.pending) return;
   const identity = bodyIdentity(email);
   if (!identity) { showStatus("The mailbox connection changed. Reopen the message.", true); return; }
+  clearMessageSummary();
   const view = { key: identity.key, source: summarySource(email), reqId: "summary-" + Date.now() + "-" + (++summarySeq),
-    pending: true, text: "", error: "", warnings: [], notice: "" };
+    pending: true, preparing: true, summary: null, error: "", warnings: [], notice: "", review: null, detailsOpen: false };
   messageSummary = view;
   paintMessageSummary(email);
   try {
-    const data = await call("mail:summarizeEmail", { reqId: view.reqId, accountId: identity.accountId,
+    const plan = await call("mail:prepareSummary", { reqId: view.reqId, accountId: identity.accountId,
       emailId: identity.id, bodyEpoch: identity.bodyEpoch });
     if (messageSummary !== view || !summaryMatches(state.email, view)) return;
-    if (!data || data.reqId !== view.reqId || data.accountId !== identity.accountId || data.emailId !== identity.id
-        || data.bodyEpoch !== identity.bodyEpoch || typeof data.text !== "string" || !data.text.trim()) throw new Error("The summary response did not match this message. Choose Summary to try again.");
-    view.text = data.text;
-    view.warnings = Array.isArray(data.warnings) ? data.warnings.map(String) : [];
-  } catch (error) {
-    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
-    view.error = error instanceof Error ? error.message : String(error);
-    view.settings = ["ai-unconfigured", "ai-consent-required"].includes(error.code)
-      || /AI Setup|AI data permission|API key|ChatGPT/i.test(view.error);
-  } finally {
-    if (messageSummary === view) {
-      view.pending = false;
-      if (summaryMatches(state.email, view)) paintMessageSummary(state.email);
-      else clearMessageSummary();
+    if (!summaryReplyMatches(plan, view, identity) || typeof plan.planId !== "string" || !plan.full || !plan.excerpt) {
+      throw new Error("The summary review did not match this message. Choose Summary to try again.");
     }
+    view.plan = plan;
+    view.warnings = Array.isArray(plan.warnings) ? plan.warnings.map(String) : [];
+    if (plan.needsReview) view.review = plan;
+    else { view.pending = false; await generateMessageSummary(view, "full", false); }
+  } catch (error) { messageSummaryError(view, error); }
+  finally { finishMessageSummary(view); }
+  if (messageSummary === view && view.review) {
+    $("reader").querySelector(view.review.full.available ? '[data-role="summary-full"]' : '[data-role="summary-excerpt"]')?.focus();
   }
+}
+
+async function generateMessageSummary(view, scope, accepted = true) {
+  if (!view || messageSummary !== view || view.pending || !summaryMatches(state.email, view) || !view.plan) return;
+  const identity = bodyIdentity(state.email);
+  view.pending = true; view.preparing = false; view.review = null; view.error = ""; view.notice = "";
+  paintMessageSummary(state.email);
+  try {
+    const data = await call("mail:summarizeEmail", { reqId: view.reqId, accountId: identity.accountId,
+      emailId: identity.id, bodyEpoch: identity.bodyEpoch, planId: view.plan.planId, scope, accepted });
+    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+    const summary = data?.summary;
+    if (!summaryReplyMatches(data, view, identity) || !summary || typeof summary.mainPoint !== "string" || !summary.mainPoint.trim()
+        || !Array.isArray(summary.bullets) || summary.bullets.length > 6
+        || [summary.mainPoint, ...summary.bullets].some(text => typeof text !== "string" || !text.trim() || Array.from(text).length > 360)) {
+      throw new Error("The summary response did not match this message. Choose Summary to try again.");
+    }
+    view.summary = summary;
+    view.warnings = Array.isArray(data.warnings) ? data.warnings.map(String) : [];
+    view.coverage = data.coverage;
+  } catch (error) { messageSummaryError(view, error); }
+  finally { finishMessageSummary(view); }
+  if (accepted && messageSummary === view) $("reader").querySelector('[data-action="summary"]')?.focus();
 }
 
 function renderMessageSummary(pane, email) {
@@ -7470,45 +7564,71 @@ function renderMessageSummary(pane, email) {
   const title = document.createElement("h3");
   title.id = "message-summary-title";
   title.textContent = "Summary";
+  const ai = document.createElement("span");
+  ai.className = "hint message-summary-ai";
+  ai.textContent = "AI";
+  ai.setAttribute("aria-label", "AI-generated summary");
   const close = document.createElement("button");
   close.type = "button";
-  close.className = "ghost";
-  close.textContent = "Dismiss summary";
+  close.className = "ghost message-summary-close";
+  close.setAttribute("aria-label", "Dismiss summary");
+  close.title = "Close summary";
+  close.append(strokeIcon(["M18 6L6 18", "M6 6l12 12"]));
   close.onclick = () => { clearMessageSummary(); paintMessageSummary(state.email); pane.querySelector('[data-action="summary"]')?.focus(); };
-  top.append(title, close);
+  top.append(title, ai, close);
+  const status = document.createElement("p");
+  status.dataset.role = "summary-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const warnings = document.createElement("p");
+  warnings.className = "hint message-summary-warning";
+  warnings.dataset.role = "summary-warnings";
+  const body = document.createElement("div");
+  body.className = "message-summary-text";
+  body.dataset.role = "summary-text";
+  const review = document.createElement("div");
+  review.dataset.role = "summary-review";
+  const reviewText = document.createElement("p");
+  reviewText.dataset.role = "summary-review-text";
+  const reviewActions = document.createElement("div");
+  reviewActions.className = "message-summary-controls";
+  const full = document.createElement("button");
+  full.type = "button"; full.className = "primary"; full.dataset.role = "summary-full";
+  full.textContent = "Summarize all downloaded text";
+  full.onclick = () => { generateMessageSummary(messageSummary, "full"); };
+  const excerpt = document.createElement("button");
+  excerpt.type = "button"; excerpt.className = "ghost"; excerpt.dataset.role = "summary-excerpt";
+  excerpt.onclick = () => { generateMessageSummary(messageSummary, "excerpt"); };
+  reviewActions.append(full, excerpt); review.append(reviewText, reviewActions);
+  const actions = document.createElement("div");
+  actions.className = "message-summary-controls";
+  const cancel = document.createElement("button");
+  cancel.type = "button"; cancel.className = "ghost"; cancel.dataset.role = "summary-cancel";
+  cancel.textContent = "Cancel summary"; cancel.onclick = stopMessageSummary;
+  const settings = document.createElement("button");
+  settings.type = "button"; settings.className = "ghost"; settings.dataset.role = "summary-settings";
+  settings.textContent = "Review AI settings";
+  settings.onclick = () => { openSettings(); revealSettingsFold("ai"); };
+  actions.append(cancel, settings);
+  const details = document.createElement("details");
+  details.dataset.role = "summary-details";
+  const detailsTitle = document.createElement("summary");
+  detailsTitle.textContent = "Details";
   const context = document.createElement("p");
   context.className = "hint message-summary-context";
   const mailbox = state.accounts.find(account => account.id === email.accountId);
   context.textContent = [email.subject || "(no subject)", email.from, mailbox?.email].filter(Boolean).join(" · ");
   const scope = document.createElement("p");
   scope.className = "hint";
-  scope.textContent = "Uses your configured AI and AI data permission. Up to 24,000 characters of downloaded text, including quoted history; attachment files are excluded.";
-  const status = document.createElement("p");
-  status.dataset.role = "summary-status";
-  status.setAttribute("role", "status");
-  status.setAttribute("aria-live", "polite");
-  const warnings = document.createElement("p");
-  warnings.className = "hint";
-  warnings.dataset.role = "summary-warnings";
-  const body = document.createElement("div");
-  body.className = "message-summary-text";
-  body.dataset.role = "summary-text";
-  const actions = document.createElement("div");
-  actions.className = "message-summary-controls";
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "ghost";
-  cancel.dataset.role = "summary-cancel";
-  cancel.textContent = "Cancel summary";
-  cancel.onclick = stopMessageSummary;
-  const settings = document.createElement("button");
-  settings.type = "button";
-  settings.className = "ghost";
-  settings.dataset.role = "summary-settings";
-  settings.textContent = "Review AI settings";
-  settings.onclick = () => { openSettings(); revealSettingsFold("ai"); };
-  actions.append(cancel, settings);
-  box.append(top, context, scope, status, warnings, body, actions);
+  scope.textContent = "Check important details against the message. Uses your saved AI connection and AI data permission. Only this message's downloaded text and quoted history are included. Attachment files, linked pages and other messages are excluded. English summaries follow ASD-STE100-inspired plain-language principles; formal compliance is not verified. Cancellation cannot recall data already sent.";
+  const coverage = document.createElement("p");
+  coverage.className = "hint"; coverage.dataset.role = "summary-coverage";
+  const limits = document.createElement("p");
+  limits.className = "hint";
+  limits.textContent = "Run limits: 128,000 source bytes, 31 AI requests, 16,000 input bytes per request and 512,000 input bytes per run. Each request asks for at most 1,200 output tokens and accepts at most 6,000 output bytes. One request has a two-minute timeout; a run with several requests has a ten-minute timeout. These are app budgets. Your selected model may have a lower limit. Nothing runs in the background.";
+  details.append(detailsTitle, context, coverage, scope, limits);
+  details.ontoggle = () => { if (details.isConnected && summaryMatches(email)) messageSummary.detailsOpen = details.open; };
+  box.append(top, status, warnings, review, body, actions, details);
   pane.appendChild(box);
   paintMessageSummary(email);
 }
@@ -7529,12 +7649,43 @@ function paintMessageSummary(email) {
   if (!view) return;
   const status = box.querySelector('[data-role="summary-status"]');
   status.className = view.error ? "hint error" : "hint";
-  status.textContent = view.pending ? "Summarizing this message…" : view.error || view.notice || "AI-generated summary. Check details against the message.";
-  box.querySelector('[data-role="summary-text"]').textContent = view.text;
-  box.querySelector('[data-role="summary-warnings"]').textContent = view.pending && (email.bodyComplete !== true || email.bodyWarning)
-    ? "The downloaded message may be incomplete. Missing content is not included." : view.warnings.join(" ");
+  status.textContent = view.pending ? (view.preparing ? "Checking downloaded text…" : "Summarizing this message…")
+    : view.error || view.notice || (view.review ? "Review text coverage" : "");
+  const body = box.querySelector('[data-role="summary-text"]');
+  body.replaceChildren();
+  if (view.summary) {
+    const main = document.createElement("p");
+    main.className = "message-summary-main"; main.textContent = view.summary.mainPoint;
+    body.append(main);
+    if (view.summary.bullets.length) {
+      const list = document.createElement("ul");
+      for (const text of view.summary.bullets) { const item = document.createElement("li"); item.textContent = text; list.append(item); }
+      body.append(list);
+    }
+  }
+  const warnings = box.querySelector('[data-role="summary-warnings"]');
+  warnings.textContent = view.warnings.join(" "); warnings.hidden = !warnings.textContent;
+  const review = box.querySelector('[data-role="summary-review"]');
+  review.hidden = !view.review;
+  if (view.review) {
+    const plan = view.review;
+    const count = plan.characters.toLocaleString("en-US");
+    box.querySelector('[data-role="summary-review-text"]').textContent = plan.full.available
+      ? "Send all " + count + " downloaded characters, including quoted history, to " + plan.destination + " (" + plan.model + ")? This needs " + plan.full.calls + (plan.full.calls === 1 ? " AI request." : " AI requests.") + " Attachment files are excluded. No text has been sent."
+      : plan.full.reason + " You can send an excerpt to " + plan.destination + " (" + plan.model + "). Later text will be excluded. No text has been sent.";
+    box.querySelector('[data-role="summary-full"]').disabled = !plan.full.available;
+    const excerpt = box.querySelector('[data-role="summary-excerpt"]');
+    excerpt.hidden = !plan.excerpt.omitted;
+    excerpt.textContent = "Summarize first " + plan.excerpt.characters.toLocaleString("en-US") + " characters only";
+  }
   box.querySelector('[data-role="summary-cancel"]').hidden = !view.pending;
   box.querySelector('[data-role="summary-settings"]').hidden = !view.settings;
+  const details = box.querySelector('[data-role="summary-details"]');
+  if (details.open !== view.detailsOpen) details.open = !!view.detailsOpen;
+  const coverage = box.querySelector('[data-role="summary-coverage"]');
+  coverage.textContent = view.coverage ? view.coverage.included.toLocaleString("en-US") + " of "
+    + view.coverage.downloaded.toLocaleString("en-US") + " downloaded characters; " + view.coverage.parts + (view.coverage.parts === 1 ? " part, " : " parts, ")
+    + view.coverage.calls + (view.coverage.calls === 1 ? " AI request." : " AI requests.") + " Destination: " + view.plan.destination + "." : "";
 }
 
 function indentedName(folder) {
@@ -7759,10 +7910,16 @@ function renderOutboxReader(pane, email, focus) {
     line.textContent = label + ": " + text;
     pane.appendChild(line);
   }
-  // shortcut: outbox preview is plain text, upgrade if a safe HTML reader is required
-  const body = document.createElement("pre");
+  const files = previewFilesText(email.attachments);
+  if (files) {
+    const line = document.createElement("p");
+    line.className = "meta outbox-files";
+    line.textContent = "Files: " + files;
+    pane.appendChild(line);
+  }
+  const body = document.createElement("div");
   body.className = "outbox-body";
-  body.textContent = email.textBody || "";
+  appendSendPreviewBody(body, email);
   pane.appendChild(body);
   if (focus !== false) undo.focus();
 }
@@ -7797,7 +7954,7 @@ function renderReader(focus, onlyChanged = false) {
   }
   const pane = $("reader");
   const emailView = state.email;
-  const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.bodyError,
+  const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.encodingWarning, emailView?.bodyError,
     emailView?.unread, emailView?.isStarred, emailView?.outboxStatus, emailView?.subject, emailView?.from, emailView?.date,
     state.thread, state.translate, state.prefs.images, state.prefs.snooze,
     state.remoteAllowed?.[emailView?.id], snoozedUntilOf(emailView), state.accounts.length, state.providerFolders];
@@ -7915,6 +8072,27 @@ function appendMessageBody(parent, email, imagesOn) {
   return wrap;
 }
 
+function previewFilesText(files) {
+  return (Array.isArray(files) ? files : []).filter((file) => file && typeof file === "object").map((file) => {
+    const size = fileSize(file.size);
+    const name = file.filename || "attachment";
+    return size ? `${name} (${size})` : name;
+  }).join(", ");
+}
+
+function appendSendPreviewBody(parent, email) {
+  if (remoteImageSrcs(email && email.htmlBody).length) {
+    const note = document.createElement("p");
+    note.className = "hint preview-remote-note";
+    note.textContent = "Remote images are blocked in this preview.";
+    parent.appendChild(note);
+  }
+  // Local send previews never inherit received-mail image permission. Rendering
+  // a frozen payload must not contact its sender or change the saved message.
+  const content = email && (email.htmlBody || email.textBody) ? email : { textBody: "(empty message)" };
+  return appendMessageBody(parent, content, false);
+}
+
 function bodyRetryButton(email, refresh) {
   const retry = document.createElement("button");
   retry.type = "button";
@@ -7932,15 +8110,32 @@ function bodyRetryButton(email, refresh) {
   return retry;
 }
 
+const plainBodyViews = new WeakMap();
 function renderBody(pane, email, refresh) {
-  if (email?.bodyWarning) {
+  if (email?.bodyWarning || email?.encodingWarning) {
     const warning = document.createElement("p");
-    warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = email.bodyWarning;
+    warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = [email.bodyWarning, email.encodingWarning].filter(Boolean).join(" ");
     pane.appendChild(warning);
     pane.appendChild(bodyRetryButton(email, refresh));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
-  appendMessageBody(pane, email, remoteVisible(state.prefs.images, allowed));
+  const key = JSON.stringify([email?.accountId, email?.id]);
+  let choice = plainBodyViews.get(pane);
+  if (!choice || choice.key !== key) { choice = { key, plain: false }; plainBodyViews.set(pane, choice); }
+  const body = document.createElement("div");
+  const paint = () => {
+    body.replaceChildren();
+    appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+  };
+  if (email?.htmlBody && email?.textBody?.trim()) {
+    const toggle = document.createElement("button");
+    toggle.type = "button"; toggle.className = "ghost"; toggle.dataset.action = "plain-body";
+    const label = () => { toggle.textContent = choice.plain ? "Show HTML version" : "Show plain-text version"; toggle.setAttribute("aria-pressed", String(choice.plain)); };
+    toggle.addEventListener("click", () => { choice.plain = !choice.plain; label(); paint(); });
+    label(); pane.appendChild(toggle);
+  }
+  pane.appendChild(body);
+  paint();
 }
 
 function renderRemoteGate(pane, email, repaint) {
@@ -8530,6 +8725,8 @@ function attachmentIcon(kind) {
     add("path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" });
     add("polyline", { points: "7 10 12 15 17 10" });
     add("line", { x1: "12", y1: "15", x2: "12", y2: "3" });
+  } else if (kind === "chevron") {
+    add("polyline", { points: "6 9 12 15 18 9" });
   } else {
     add("path", { d: "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" });
   }
@@ -8785,7 +8982,18 @@ async function saveAttachmentsZip(email, files) {
   showStatus("Saved all attachments.");
 }
 
+// Keep only the current message's disclosure choice on each reading surface.
+// Repainting a downloaded body must not close the attachment list again.
+const attachmentDisclosures = new WeakMap();
+let attachmentDisclosureId = 0;
+
 function renderAttachments(pane, email) {
+  const key = JSON.stringify([email.accountId || "", email.id || ""]);
+  let disclosure = attachmentDisclosures.get(pane);
+  if (!disclosure || disclosure.key !== key) {
+    disclosure = { key, expanded: false };
+    attachmentDisclosures.set(pane, disclosure);
+  }
   const files = (email.attachments || []).filter((item) => item && (item.filename || item.id));
   if (!files.length && !email.hasAttachments) return;
   const card = document.createElement("section");
@@ -8794,15 +9002,35 @@ function renderAttachments(pane, email) {
   const head = document.createElement("div");
   head.className = "attachment-card-head";
   const title = document.createElement("h3");
-  title.appendChild(attachmentIcon("paperclip"));
+  const toggle = files.length ? document.createElement("button") : title;
+  toggle.appendChild(attachmentIcon("paperclip"));
   const titleText = document.createElement("span");
   titleText.textContent = "Attachments";
-  title.appendChild(titleText);
+  toggle.appendChild(titleText);
+  let list;
   if (files.length) {
     const count = document.createElement("span");
     count.className = "count";
     count.textContent = String(files.length);
-    title.appendChild(count);
+    toggle.appendChild(count);
+    const chevron = attachmentIcon("chevron");
+    chevron.classList.add("attachment-chevron");
+    toggle.appendChild(chevron);
+    toggle.type = "button";
+    toggle.className = "attachment-toggle";
+    toggle.setAttribute("aria-label", `Attachments (${files.length})`);
+    toggle.setAttribute("aria-expanded", String(disclosure.expanded));
+    list = document.createElement("ul");
+    list.className = "attachments";
+    list.id = `attachment-files-${++attachmentDisclosureId}`;
+    list.hidden = !disclosure.expanded;
+    toggle.setAttribute("aria-controls", list.id);
+    toggle.addEventListener("click", () => {
+      disclosure.expanded = !disclosure.expanded;
+      toggle.setAttribute("aria-expanded", String(disclosure.expanded));
+      list.hidden = !disclosure.expanded;
+    });
+    title.appendChild(toggle);
   }
   head.appendChild(title);
   if (files.some((file) => file.id)) {
@@ -8826,14 +9054,18 @@ function renderAttachments(pane, email) {
     pane.appendChild(card);
     return;
   }
-  const list = document.createElement("ul");
-  list.className = "attachments";
+  const nameCounts = new Map();
   for (const file of files) {
+    const label = file.filename || "attachment";
+    nameCounts.set(label, (nameCounts.get(label) || 0) + 1);
+  }
+  for (const [index, file] of files.entries()) {
     const item = document.createElement("li");
     const main = document.createElement("div");
     main.className = "attachment-main";
     const size = fileSize(file.size);
     const label = file.filename || "attachment";
+    const actionLabel = nameCounts.get(label) > 1 ? `${label}, attachment ${index + 1} of ${files.length}` : label;
     const kind = file.id ? attachmentPreviewKind(file) : "";
     const name = document.createElement(kind ? "button" : "span");
     name.className = "attachment-name";
@@ -8841,7 +9073,7 @@ function renderAttachments(pane, email) {
     name.title = label;
     if (kind) {
       name.type = "button";
-      name.setAttribute("aria-label", "Preview " + label);
+      name.setAttribute("aria-label", "Preview " + actionLabel);
       name.addEventListener("click", () => attachmentAction(() => previewAttachment(email, file)));
     }
     main.appendChild(name);
@@ -8855,9 +9087,9 @@ function renderAttachments(pane, email) {
     if (file.id) {
       const actions = document.createElement("div");
       actions.className = "attachment-actions";
-      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + label, () => attachmentAction(() => previewAttachment(email, file))));
-      actions.appendChild(attachmentGhost("Save", "Save " + label, () => attachmentAction(() => useAttachment("mail:downloadAttachment", email, file))));
-      actions.appendChild(attachmentGhost("Open", "Open " + label, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
+      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, () => attachmentAction(() => previewAttachment(email, file))));
+      actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(() => useAttachment("mail:downloadAttachment", email, file))));
+      actions.appendChild(attachmentGhost("Open", "Open " + actionLabel, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
       item.appendChild(actions);
     }
     list.appendChild(item);
@@ -9675,6 +9907,13 @@ async function trashOpen(email) {
   await removeOpen(email, threaded ? "mail:threadTrash" : "mail:delete", "Moved to Trash.");
 }
 
+function deleteFromReader(email) {
+  const selection = shellDeleteSelection();
+  if (selection === null) return trashOpen(email);
+  if (!selection.length) throw new Error("The selected messages are no longer available. Refresh and select them again.");
+  return bulkTrash(selection);
+}
+
 function folderTitle(folders, id) {
   const rows = Array.isArray(folders) ? folders : [];
   const found = rows.find((folder) => folder && String(folder.id) === String(id));
@@ -10113,7 +10352,7 @@ function noteMailListLoaded(gen) {
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   noteUnreadScope();
-  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
+  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId, state.toMeOnly]);
   const scopeChanged = state.listScope !== scope;
   if (scopeChanged) {
     state.listScope = scope;
@@ -10140,7 +10379,7 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     if (state.query) {
-      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...state.listSort, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
+      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...state.listSort, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}), ...(state.toMeOnly ? { filterToMe: true } : {}) });
       if (gen !== listGen) return null;
       state.emails = takeEmails(Array.isArray(data) ? data : []);
       renderList();
@@ -10159,6 +10398,7 @@ async function loadList(fromNetwork, requestedOffset) {
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
       listSort: state.listSort,
+      toMeOnly: state.toMeOnly,
       allInbox: state.allInbox,
       aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
       unreadOnly: state.allInbox && state.allInboxUnreadOnly,
@@ -10178,6 +10418,7 @@ async function loadList(fromNetwork, requestedOffset) {
       offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
       const again = mailListRequest({
         listSort: state.listSort,
+        toMeOnly: state.toMeOnly,
         allInbox: state.allInbox,
         aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
         unreadOnly: state.allInbox && state.allInboxUnreadOnly,
@@ -11284,8 +11525,8 @@ async function bulkArchive() {
   queueBulkRemoval("Archive", gated, review.rows, "archive");
 }
 
-async function bulkTrash() {
-  const messages = selectedMessages().map(withSelectionMembers);
+async function bulkTrash(selected = selectedMessages()) {
+  const messages = selected.map(withSelectionMembers);
   if (!messages.length || refusePaused(messages)) return;
   const review = await reviewedRemoval(messages, "trash");
   const answer = await askConfirm(bulkConfirmCopy("trash", review.rows.length, review.detail));
@@ -11467,6 +11708,7 @@ function selectionButton(id, label, paths, run) {
 
 function wireSelection() {
   $("filter-chip").addEventListener("click", () => { $("list-filter").value = ""; renderList(); });
+  $("list-to-me").addEventListener("click", () => guard(toggleToMeFilter));
   $("search-account").addEventListener("change", () => { state.searchAccountId = $("search-account").value; guard(applySearch); });
   const bar = $("selection-actions");
   if (!bar || bar.childElementCount) return;
@@ -12061,7 +12303,8 @@ function bodyFields(email, identity) {
     bodyVersion: Number.isSafeInteger(email.bodyVersion) ? email.bodyVersion : 0,
     htmlBody: typeof email.htmlBody === "string" ? email.htmlBody : null,
     textBody: typeof email.textBody === "string" ? email.textBody : null,
-    bodyComplete: email.bodyComplete === true, hasBody: listedHasBody(email), bodyWarning: typeof email.bodyWarning === "string" ? email.bodyWarning : "" };
+    bodyComplete: email.bodyComplete === true, hasBody: listedHasBody(email), bodyWarning: typeof email.bodyWarning === "string" ? email.bodyWarning : "",
+    encodingWarning: typeof email.encodingWarning === "string" ? email.encodingWarning : "" };
 }
 
 function dropBody(key) {
@@ -12082,7 +12325,7 @@ function noteBody(email, explicit = true) {
   const body = bodyFields(email, identity), previous = latestBodies.get(identity.key);
   if (previous && previous.body.bodyVersion > body.bodyVersion) return;
   dropBody(identity.key);
-  const bytes = 2 * (identity.key.length + (body.htmlBody || "").length + (body.textBody || "").length + body.bodyWarning.length);
+  const bytes = 2 * (identity.key.length + (body.htmlBody || "").length + (body.textBody || "").length + body.bodyWarning.length + body.encodingWarning.length);
   if (bytes > BODY_CACHE_LIMITS.entryBytes) return; // Open views still own their full body.
   while (latestBodies.size && (latestBodies.size >= BODY_CACHE_LIMITS.entries || latestBodyBytes + bytes > BODY_CACHE_LIMITS.bytes)) dropBody(latestBodies.keys().next().value);
   latestBodies.set(identity.key, { body, bytes }); latestBodyBytes += bytes;
@@ -12121,7 +12364,7 @@ function applyCachedBody(email) {
     if (target.pending || target.identity.key !== identity.key) continue;
     if ((target.email.bodyEpoch ?? 0) === identity.bodyEpoch && (target.email.bodyVersion || 0) > body.bodyVersion) continue;
     let changed = target.email.htmlBody !== body.htmlBody || target.email.textBody !== body.textBody
-      || target.email.bodyWarning !== body.bodyWarning || target.email.bodyComplete !== body.bodyComplete;
+      || target.email.bodyWarning !== body.bodyWarning || target.email.encodingWarning !== body.encodingWarning || target.email.bodyComplete !== body.bodyComplete;
     const metadata = {};
     for (const field of ["attachments", "hasAttachments", "draftRevision", "draftPending", "from", "fromAddress", "fromDisplayName", "recipientHeaders", "replyTo",
       "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft"]) {
@@ -12203,6 +12446,7 @@ function applyBodyUpdate(payload) {
       known.bodyComplete = incoming.bodyComplete === true;
       known.hasBody = full ? listedHasBody(full) : incoming.hasBody === true;
       known.bodyWarning = incoming.bodyWarning || "";
+      known.encodingWarning = incoming.encodingWarning || "";
     }
   }
   if (pendingPeekId === identity.id && !pendingPeekAccountId) pendingPeekAccountId = identity.accountId;
@@ -12263,7 +12507,7 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true, retry: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -15778,6 +16022,7 @@ function pendingScheduleWhen() {
 
 function paintPreview(draft) {
   const schedule = draft && draft.kind === "schedule";
+  const payload = draft.payload || draft;
   $("compose-preview-title").textContent = schedule ? "Preview scheduled send" : "Preview send";
   const when = $("compose-preview-when");
   const date = schedule && draft.sendAt ? new Date(draft.sendAt) : null;
@@ -15788,27 +16033,25 @@ function paintPreview(draft) {
     when.hidden = true;
     when.textContent = "";
   }
-  $("compose-preview-to").textContent = draft.to || "";
-  $("compose-preview-from").textContent = window.morrowComposePolicy.senderPreview(draft.fromAddress || "", draft.fromDisplayName || "");
+  $("compose-preview-to").textContent = payload.to || "";
+  $("compose-preview-from").textContent = window.morrowComposePolicy.senderPreview(payload.fromAddress || "", payload.fromDisplayName || "");
   const ccRow = $("compose-preview-cc-row");
   const bccRow = $("compose-preview-bcc-row");
-  if (ccRow) ccRow.hidden = !draft.cc;
-  if (bccRow) bccRow.hidden = !draft.bcc;
-  $("compose-preview-cc").textContent = draft.cc || "";
-  $("compose-preview-bcc").textContent = draft.bcc || "";
-  $("compose-preview-subject").textContent = draft.subject || "(no subject)";
+  if (ccRow) ccRow.hidden = !payload.cc;
+  if (bccRow) bccRow.hidden = !payload.bcc;
+  $("compose-preview-cc").textContent = payload.cc || "";
+  $("compose-preview-bcc").textContent = payload.bcc || "";
+  $("compose-preview-subject").textContent = payload.subject || "(no subject)";
   const fileRow = $("compose-preview-files-row");
   const fileText = $("compose-preview-files");
-  const files = Array.isArray(draft.attachments) ? draft.attachments : [];
+  const files = Array.isArray(payload.attachments) ? payload.attachments : [];
   if (fileRow && fileText) {
     fileRow.hidden = !files.length;
-    fileText.textContent = files.map((file) => {
-      const size = fileSize(file.size);
-      const name = file.filename || "attachment";
-      return size ? `${name} (${size})` : name;
-    }).join(", ");
+    fileText.textContent = previewFilesText(files);
   }
-  $("compose-preview-body").textContent = draft.body ? draft.body : "(empty message)";
+  const body = $("compose-preview-body");
+  body.replaceChildren();
+  appendSendPreviewBody(body, draft.payload ? { htmlBody: payload.body || "" } : { textBody: draft.body || "" });
   $("compose-preview-confirm").textContent = schedule ? "Confirm schedule" : "Confirm send";
 }
 
@@ -15817,7 +16060,7 @@ function openComposePreview(when) {
   const draft = previewDraft(composeFields(), state.composeQuote && state.composeQuote.text, when, state.composeAttachments);
   previewDraftState = { ...draft, payload: JSON.parse(JSON.stringify(composePayload(composeAccount()))),
     session: state.composeSession, snapshot: composeSnapshot() };
-  paintPreview(draft);
+  paintPreview(previewDraftState);
   openDialog("compose-preview");
   const confirm = $("compose-preview-confirm");
   if (confirm && typeof confirm.focus === "function") confirm.focus();
@@ -16173,13 +16416,13 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. In Separate window, select exactly one visible message for Delete, Backspace, R, A or F; these act on that message, never the hidden preview. Preview shortcuts wait until loading succeeds. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace in the main Mail window review the selected messages for Trash, including selected rows hidden by a filter. The reader Delete button shows the selected count. With no selection, Delete acts on the open preview; Separate window requires a selection. R, A and F in Separate window require exactly one visible message. Independent readers keep their own message target. Preview reply shortcuts and Delete without a selection wait until loading succeeds. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
   const chord = (key) => shortcutChord(platform, key);
   return [
-    { group: "Reading", keys: "Delete or Backspace", action: "Move the open message to Trash" },
+    { group: "Reading", keys: "Delete or Backspace", action: "Move selected messages, or the open preview, to Trash after review" },
     { group: "Reading", keys: "R", action: "Reply to the open message" },
     { group: "Reading", keys: "A", action: "Reply all" },
     { group: "Reading", keys: "F", action: "Forward the open message" },
@@ -16225,7 +16468,7 @@ function cliCatalog() {
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "Call the loopback bridge while Morrow is open and bot access is on. params.json is {}. Replace placeholders; use --token-file, never --token." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "After the Tailscale steps, use the exact paired HTTPS endpoint. TLS is verified; redirects and non-loopback plain HTTP are rejected." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.list_cached --params-file ./list.json", action: "List the granted account's cached inbox with the list.json example above. This does not fetch new mail or mark it read." },
-    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Mail-provider submission cannot be recalled once it begins." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Mail-provider submission cannot be recalled once it begins. A complete IMAP reply records its indicator and attempts a server flag; flag failure never resends mail." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.archive --request-id '<uuid>' --params-file ./message.json", action: "Archive one explicit cached message with mail.archive permission. Repeat this exact UUID and payload to observe pending results without resubmitting." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.mark_read --request-id '<uuid>' --params-file ./read.json", action: "Set one message read with mail.read_state.write permission. Use isRead false for unread. Pending is not provider confirmation." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.trash --request-id '<uuid>' --params-file ./message.json", action: "Move one message to Trash with mail.trash permission. Never permanently deletes; an unknown outcome requires review rather than a new UUID." },
@@ -16282,12 +16525,14 @@ function mailShortcutContext(event) {
     const selection = window.getSelection();
     textSelected = !!(selection && selection.isCollapsed === false && String(selection));
   }
+  const selection = shellDeleteSelection();
   return {
     typing: !!editableField(event && event.target),
     dialog: !!top || undoPopoverOpen() || !!event?.target?.closest?.("#body-sync"),
     menu: !!(menu && menu.hidden === false) || $("mail-view-menu")?.hidden === false,
     topDialog: top && top.id ? top.id : "",
     mailOpen: !!mailShortcutTarget(),
+    deleteAvailable: selection === null ? !!mailShortcutTarget() : selection.length > 0,
     view: state.view,
     textSelected: textSelected,
   };
@@ -16307,6 +16552,7 @@ function mailShortcut(event, context) {
   const menu = ctx.menu === true;
   const view = ctx.view == null ? "mail" : ctx.view;
   const mailOpen = ctx.mailOpen === true && view === "mail";
+  const deleteAvailable = (ctx.deleteAvailable ?? ctx.mailOpen) === true && view === "mail";
   const top = ctx.topDialog || "";
   if (command && !alt && !shift && key === "Enter") {
     if (top === "compose-preview") return "send-confirm";
@@ -16329,7 +16575,7 @@ function mailShortcut(event, context) {
     return "search";
   }
   if (typing || dialog || menu) return "";
-  if ((key === "Delete" || key === "Backspace") && mailOpen && ctx.textSelected !== true) return "delete";
+  if ((key === "Delete" || key === "Backspace") && deleteAvailable && ctx.textSelected !== true) return "delete";
   if (!mailOpen) return "";
   if (lower === "r") return "reply";
   if (lower === "a") return "reply-all";
@@ -16357,9 +16603,10 @@ let mailShortcutAction = "";
 let mailShortcutStamp = 0;
 
 function runMailShortcut(action) {
-  const target = readerWindowShortcut(action) ? mailShortcutTarget() : null;
-  if (readerWindowShortcut(action) && !target) return;
-  const key = JSON.stringify([action, target?.accountId, target?.id]);
+  const selection = action === "delete" ? shellDeleteSelection() : null;
+  const target = readerWindowShortcut(action) && selection === null ? mailShortcutTarget() : null;
+  if (readerWindowShortcut(action) && (selection === null ? !target : !selection.length)) return;
+  const key = JSON.stringify([action, selection ? selection.map((email) => [email.accountId, email.id]) : [target?.accountId, target?.id]]);
   const now = Date.now();
   if (action && key === mailShortcutAction && now - mailShortcutStamp < 50) return;
   mailShortcutAction = key;
@@ -16379,8 +16626,7 @@ function runMailShortcut(action) {
     return;
   }
   if (action === "delete") {
-    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
-      ? deleteFromList(target) : trashOpen(target));
+    guard(() => selection !== null ? bulkTrash(selection) : trashOpen(target));
     return;
   }
   if (action === "reply" || action === "reply-all" || action === "forward") {
@@ -17004,6 +17250,7 @@ async function installUpdate() {
 
 // No implicit saves or sends: the user must resolve editing before restart.
 function updateRestartBlocked() {
+  if (brainCadenceSave) return true;
   if (attachmentTasks.size) return true;
   if (Array.from(document.querySelectorAll("dialog[open]")).some(node => node.id !== "about-dialog")) return true;
   if (state.composePending || state.composeQueued || state.composeInitializing || state.oauthPending || state.connectPending || state.busy || sendTimer) return true;
@@ -17503,6 +17750,58 @@ async function saveScheduleDelay() {
   return pending;
 }
 
+let brainSettingsVersion = 0;
+let brainCadenceSave = null;
+
+async function loadBrainSettings() {
+  const version = ++brainSettingsVersion;
+  if (brainCadenceSave) await brainCadenceSave.catch(() => {});
+  const status = await call("emailBrain:getRefreshStatus");
+  if (version !== brainSettingsVersion || !$("settings").open) return;
+  $("pref-brain-refresh").value = status.cadence;
+  $("brain-refresh-permission").textContent = status.cadence === "manual"
+    ? "Manual only keeps automatic refresh off. Explicit AI actions still need AI data permission in Settings → AI."
+    : status.backgroundAllowed
+    ? "Background AI permission is allowed for the saved connection. Changing frequency never grants permission."
+    : "Automatic refresh is paused until background AI data permission is allowed in Settings → AI. Changing frequency never grants permission.";
+  $("brain-refresh-last").textContent = status.lastSuccessAt
+    ? "Last successful refresh: " + formatBrainTime(status.lastSuccessAt) : "No successful profile refresh yet.";
+  $("brain-refresh-next").textContent = status.running
+    ? "Profile analysis is running. Changes to frequency apply to future attempts."
+    : status.cadence === "manual"
+    ? "Automatic profile refresh is off. Refresh and Rebuild on Brain → Profile remain available."
+    : "Next eligible check: " + formatBrainTime(status.nextEligibleAt) + ". Runs while Morrow Mail is open and background AI permission is allowed.";
+}
+
+async function saveBrainCadence() {
+  if (brainCadenceSave) return;
+  ++brainSettingsVersion;
+  const control = $("pref-brain-refresh");
+  const value = control.value;
+  control.disabled = true;
+  settingsInlineStatus($("brain-refresh-setting-status"), "Saving…", false);
+  const pending = api.invoke("morrow:configSetBrainRefreshCadence", value);
+  brainCadenceSave = pending;
+  let error = "";
+  try {
+    const saved = await pending;
+    if (saved !== value) throw new Error("The refresh frequency was not saved. Try again.");
+  } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+  finally {
+    if (brainCadenceSave === pending) brainCadenceSave = null;
+    control.disabled = false;
+  }
+  try { await loadBrainSettings(); }
+  catch (cause) { error = error || (cause instanceof Error ? cause.message : String(cause)); }
+  settingsInlineStatus($("brain-refresh-setting-status"), error || "Refresh frequency saved.", !!error);
+}
+
+function refreshVisibleBrainSettings() {
+  if ($("settings")?.open && $("settings-brain") && !$("settings-brain").hidden) {
+    loadBrainSettings().catch(error => settingsInlineStatus($("brain-refresh-setting-status"), error.message || String(error), true));
+  }
+}
+
 const settingsFoldPending = new Map();
 const settingsFoldLoaded = new Set();
 const settingsFoldLoadingLabels = {
@@ -17511,6 +17810,7 @@ const settingsFoldLoadingLabels = {
   mailbox: "Loading mailbox tools…",
   ai: "Loading AI settings…",
   compose: "Loading compose defaults…",
+  brain: "Loading Brain settings…",
   ooo: "Checking Out of Office status…",
   bot: "Loading Bot access…",
 };
@@ -17553,6 +17853,7 @@ function loadSettingsFold(name) {
   if (name === "support") return Promise.resolve();
   const key = settingsFoldKey(name);
   if (settingsFoldLoaded.has(key)) {
+    if (name === "brain") return loadBrainSettings();
     if (name === "compose") return loadComposeSettings();
     if (name === "mail") return refreshMailNotificationStatus();
     return Promise.resolve();
@@ -17579,6 +17880,7 @@ function loadSettingsFold(name) {
     }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); await loadGoogleOauthClient(); }
     else if (name === "compose") await loadComposeSettings();
+    else if (name === "brain") await loadBrainSettings();
     else if (name === "ooo" && !oooDirty()) {
       if (await loadVacation() !== true) return;
     }
@@ -20254,18 +20556,20 @@ async function requestBrainJob(channels, mode, params) {
   try {
     let accepted = false;
     let cached = false;
+    let runningMode = mode;
     const list = Array.isArray(channels) && channels.length ? channels : [];
     for (const channel of list) {
       const result = await call(channel, params || {});
       accepted = !!(result && result.accepted);
       cached = !!(result && result.cached);
+      if (result && result.mode) runningMode = result.mode;
       if (accepted) break;
     }
     brainView = {
       ...brainView,
       accepted,
-      refreshing: accepted && !cached && mode !== "rebuild",
-      rebuilding: accepted && mode === "rebuild",
+      refreshing: accepted && !cached && runningMode !== "rebuild",
+      rebuilding: accepted && !cached && runningMode === "rebuild",
       percent: accepted && !cached ? 15 : null,
       error: "",
     };
@@ -20334,6 +20638,7 @@ async function forgetBrainItem(row) {
 }
 
 function onBrainRefreshState(payload) {
+  refreshVisibleBrainSettings();
   const data = payload && typeof payload === "object" ? payload : {};
   brainView = {
     ...brainView,
@@ -20344,6 +20649,7 @@ function onBrainRefreshState(payload) {
 }
 
 function onBrainRebuildState(payload) {
+  refreshVisibleBrainSettings();
   const data = payload && typeof payload === "object" ? payload : {};
   brainView = {
     ...brainView,
@@ -20356,6 +20662,7 @@ function onBrainRebuildState(payload) {
 }
 
 function onBrainUpdated() {
+  refreshVisibleBrainSettings();
   if (!brainIsOpen()) return;
   loadBrain().catch((error) => {
     brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
@@ -21998,7 +22305,7 @@ async function peekMessage(messageId, full) {
   const accountId = pendingPeekAccountId;
   let data;
   try {
-    data = await call("mail:openEmail", { emailId: messageId, includeThread: false, ...(accountId ? { accountId } : {}), ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId: messageId, includeThread: false, ...(accountId ? { accountId } : {}), ...(full ? { full: true, retry: true } : {}) });
   } catch (error) {
     if (gen !== peekGen) return;
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
@@ -25910,6 +26217,8 @@ function wire() {
   wireMailColumnEditor();
   wireMailView();
   wireSettingsFolds();
+  $("pref-brain-refresh").addEventListener("change", saveBrainCadence);
+  $("brain-refresh-ai-settings").addEventListener("click", () => revealSettingsFold("ai"));
   wireAgentTabs();
   wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {

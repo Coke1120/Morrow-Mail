@@ -82,7 +82,7 @@ function providerFixture(provider = "google", overrides = {}) {
     throw new Error("Unexpected synthetic provider read: " + url);
   };
   const api = load("host/mail/provider-api.js", { "./provider-http": { ...http, apiJson: (url, token, options) => http.apiJson(url, token, { ...options, fetchImpl: fetcher }) } });
-  const ready = { account: { ...account }, provider, token: { accessToken: "synthetic-token" } };
+  const ready = { account: { ...account }, provider, token: { accessToken: "synthetic-token", authorization: async () => "synthetic-token" } };
   const oauthConfig = {
     providerKey(profile) {
       const raw = String(profile || "").toLowerCase();
@@ -348,6 +348,7 @@ function projectionFixture() {
   const projected = functions("host/mail/engine.js", ["listRow", "listRows", "detailOf"], { db, publicAttachment: value => value,
     composePolicy: require("../shared/compose-policy"), composeIdentity: { savedAddress: () => "sender@fixture.invalid" },
     actions: { generationOf: () => 0 }, textEncoding: { repairMojibake: value => value, presentMessage: value => value },
+    decoding: require("../host/mail/mime-decoding"),
     usableStoredBody: () => false, accountEpochs: new Map(), bodyVersion: 1 });
   const row = { id: "selected", account_id: "a", folder_path: "Inbox", gmail_id: "provider-selected", from_addr: "sender@fixture.invalid" };
   return { ...projected, memberships, batches, gmailLabelMemberships, row, singles: () => singles };
@@ -606,5 +607,5 @@ test("Features: wave3 catalog, rendered Features/Shortcuts/CLI tabs and identity
   const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
   assert.match(html, /id="agent-learned-help"[^<]*After a temporary loading error, a successful read restores the list and Delete/);
   assert.match(html, /id="cli-folder-labels"[^]*ambiguous legacy Message-ID matches are refused/);
-  assert.equal(require("../package.json").version, "0.4.1");
+  assert.equal(require("../package.json").version, "0.4.2");
 });

@@ -24,6 +24,7 @@ const DEFAULTS = {
   sidebarAccountFoldersExpanded: {},
   composeQuoteWidth: 420,
   brainCompose: { ccByDomain: {}, bccByDomain: {}, accounts: {} },
+  brainRefreshCadence: "daily",
   syncHorizonDays: 0, // 0 means all available history. Fresh installs use All.
   compactMessageList: true,
   mailNotificationsEnabled: true,
@@ -56,6 +57,7 @@ const GET = {
   "morrow:configGetSidebarAccountFoldersExpanded": "sidebarAccountFoldersExpanded",
   "morrow:configGetComposeQuoteWidth": "composeQuoteWidth",
   "emailBrain:getComposeSettings": "brainCompose",
+  "morrow:configGetBrainRefreshCadence": "brainRefreshCadence",
   "morrow:configGetSyncHorizonDays": "syncHorizonDays",
   "morrow:configGetCompactMessageList": "compactMessageList",
   "morrow:configGetMailNotificationsEnabled": "mailNotificationsEnabled",
@@ -88,6 +90,7 @@ const SET = {
   "morrow:configSetSidebarAccountFoldersExpanded": "sidebarAccountFoldersExpanded",
   "morrow:configSetComposeQuoteWidth": "composeQuoteWidth",
   "emailBrain:saveComposeSettings": "brainCompose",
+  "morrow:configSetBrainRefreshCadence": "brainRefreshCadence",
   "morrow:configSetSyncHorizonDays": "syncHorizonDays",
   "morrow:configSetCompactMessageList": "compactMessageList",
   "morrow:configSetMailNotificationsEnabled": "mailNotificationsEnabled",
@@ -158,6 +161,7 @@ function castChangelogSeen(value, loose) {
 }
 
 function cast(key, value, loose) {
+  if (key === "brainRefreshCadence") return require("./brain-refresh-policy").cadence(value, loose);
   if (key === "mailView") {
     if (value && typeof value === "object" && !Array.isArray(value)
       && ["right", "bottom", "window"].includes(value.layout)
@@ -228,11 +232,12 @@ function readStore() {
   try {
     parsed = JSON.parse(fs.readFileSync(storePath(), "utf8"));
   } catch (error) {
-    if (error && (error.code === "ENOENT" || error instanceof SyntaxError)) return { ...DEFAULTS };
+    if (error && error.code === "ENOENT") return { ...DEFAULTS };
+    if (error instanceof SyntaxError) return { ...DEFAULTS, brainRefreshCadence: "manual" };
     throw error;
   }
   const store = { ...DEFAULTS };
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return store;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...store, brainRefreshCadence: "manual" };
   for (const key of Object.keys(store)) store[key] = cast(key, parsed[key], true);
   if (store.accent === "#7C3AED") store.accent = DEFAULTS.accent;
   return store;

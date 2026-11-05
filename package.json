@@ -1,6 +1,6 @@
 {
   "name": "morrow-mail",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Morrow Mail. Open-source Electron mail client for Windows and macOS. Connect your own accounts, read and send mail, and install from GitHub Releases.",
   "main": "host/main.js",
   "private": true,
@@ -22,6 +22,7 @@
     "publish:github": "electron-builder --publish always"
   },
   "dependencies": {
+    "@zone-eu/mailsplit": "5.4.21",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "better-sqlite3": "^12.11.1",
@@ -29,6 +30,7 @@
     "iconv-lite": "^0.7.3",
     "imapflow": "^2.5.0",
     "jose": "^6.2.13",
+    "libmime": "5.4.8",
     "mailparser": "^3.9.39",
     "motion": "^14.3.0",
     "nodemailer": "^10.1.1",

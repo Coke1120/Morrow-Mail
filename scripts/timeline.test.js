@@ -8,9 +8,9 @@ const vm = require("node:vm");
 const { pathToFileURL } = require("node:url");
 const { JSDOM } = require("jsdom");
 const { schema, MAX_BYTES, parseJson, validateDocument, validateCandidates } = require("../host/timeline/validate");
-const { planChunks, splitText, mergeParts, extract, LIMITS } = require("../host/timeline/extract");
+const { buildRequest, preparePlan, planChunks, splitText, mergeParts, extract, LIMITS } = require("../host/timeline/extract");
 const { freezeSources, assertSources, dedupeRows, fingerprint } = require("../host/timeline/sources");
-const { createService, trustedSender } = require("../host/timeline/service");
+const { CHANNELS, createService, trustedSender, publicError } = require("../host/timeline/service");
 const exporters = require("../host/timeline/export");
 const { createConsent, VERSION } = require("../host/ai-consent");
 
@@ -714,6 +714,7 @@ test("empty focus adds no keyword or contact restriction and invalid contacts ne
   assert.equal(fixture.calls.some(value => value.channel === "timeline:generate"), false);
   assert.match(document.getElementById("timeline-status").textContent, /email addresses/);
   document.getElementById("timeline-contacts").value = "";
+  document.getElementById("timeline-contacts").dispatchEvent(new window.Event("input"));
   document.getElementById("timeline-form").dispatchEvent(new window.Event("submit", { cancelable: true })); await pause();
   const input = fixture.calls.filter(value => value.channel === "timeline:prepare").at(-1).input.options;
   assert.equal(input.keywords, ""); assert.deepEqual(copy(input.contactEmails), []);
@@ -859,6 +860,12 @@ test("Features catalog, CLI tab, format asset and reduced-motion claims stay ali
   const fixture = rendererFixture();
   const catalog = require("../renderer/features-catalog").items.find(item => item.id === "thread-timeline");
   assert.match(catalog.blurb, /No URL\/webhook export/);
+  for (const text of [catalog.blurb, fixture.document.getElementById("cli-timeline").textContent]) {
+    assert.match(text, /Preflight includes the complete request and optional focus/);
+    assert.match(text, /attempted AI request counts/);
+    assert.match(text, /explicit retry revalidates the same source/);
+  }
+  assert.match(fixture.document.getElementById("timeline-limits-help").textContent, /failed run may have sent earlier parts/);
   assert.match(fixture.document.getElementById("cli-timeline").textContent, /not bot operations, CLI commands or scheduled skills/);
   assert.match(fixture.document.getElementById("cli-timeline").textContent, /npm run test:timeline/);
   assert.match(read("renderer/timeline.css"), /prefers-reduced-motion: reduce/);
@@ -869,7 +876,7 @@ test("Features catalog, CLI tab, format asset and reduced-motion claims stay ali
   fixture.window.motionApi = () => null;
   fixture.window.eval(read("renderer/features-catalog.js"));
   fixture.window.eval(app.slice(app.indexOf("function normalizeFeatureCatalog("), app.indexOf("function wireFeaturesTabs(")) + '\npaintFeatureCatalog(); showFeaturesTab("cli");');
-  assert.ok([...fixture.document.querySelectorAll(".feature-card")].some(card => /Selected-mail timeline/.test(card.textContent) && /No URL\/webhook export/.test(card.textContent)));
+  assert.ok([...fixture.document.querySelectorAll(".feature-card")].some(card => /Selected-mail timeline/.test(card.textContent) && /No URL\/webhook export/.test(card.textContent) && /Preflight includes the complete request/.test(card.textContent)));
   assert.equal(fixture.document.getElementById("features-tab-cli").getAttribute("aria-selected"), "true");
   assert.equal(fixture.document.getElementById("features-pane-cli").hidden, false);
   fixture.dom.window.close();
@@ -1075,4 +1082,241 @@ test("routine account notification during generation startup does not cancel the
   assert.equal(fixture.calls.some(value => value.channel === "timeline:cancel"), false);
   assert.equal(fixture.document.getElementById("timeline-cancel").hidden, false);
   fixture.dom.window.close();
+});
+
+function integratedTimeline(context, overrides = {}, email = {}) {
+  const fixture = memory(context, overrides), hostCalls = [], progress = [];
+  let ui;
+  const replies = Object.fromEntries([...CHANNELS].map(channel => [channel, async input => {
+    const call = { channel, input }; hostCalls.push(call);
+    try {
+      const data = await fixture.service.invoke(1, channel, input, value => {
+        progress.push(value); return ui.events.get("timeline:progress")(value);
+      });
+      call.data = data;
+      return { success: true, data };
+    } catch (error) {
+      call.error = publicError(error);
+      return { success: false, error: { ...call.error, calls: 0 } };
+    }
+  }]));
+  ui = rendererFixture(replies);
+  ui.email = { ...ui.email, ...email };
+  context.after(() => ui.dom.window.close());
+  return { ...fixture, ui, hostCalls, progress, node: id => ui.document.getElementById(id) };
+}
+async function settleTimeline() { for (let i = 0; i < 20; i++) await pause(); }
+const lastTerminal = fixture => fixture.progress.filter(value => ["completed", "failed", "cancelled"].includes(value.phase)).at(-1);
+
+test("actual Generate clicks budget default contacts and CJK focus with exact request escaping", async context => {
+  for (const keywords of ["", "界".repeat(1000)]) {
+    const contacts = Array.from({ length: 99 }, (_, i) => `participant-${i}@example.org`);
+    const fixture = integratedTimeline(context, { rows: [row("mail-1", { text_body: 'Synthetic "quoted" evidence. \\ '.repeat(145) })] }, keywords ? {} : { to: contacts, cc: [], replyTo: [] });
+    await fixture.ui.mounted.open(fixture.ui.email);
+    fixture.node("timeline-keywords").value = keywords;
+    fixture.node("timeline-keywords").dispatchEvent(new fixture.ui.window.Event("input"));
+    assert.equal(fixture.node("timeline-form").checkValidity(), true);
+    fixture.node("timeline-generate").click(); await settleTimeline();
+    assert.equal(lastTerminal(fixture).phase, "completed");
+    const prepared = fixture.hostCalls.filter(value => value.channel === "timeline:prepare").at(-1).data;
+    assert.ok(prepared.chunks > 1);
+    assert.equal(prepared.estimatedInputTokens, fixture.calls.reduce((total, call) => total + Buffer.byteLength(JSON.stringify(call.messages)), 0));
+    assert.ok(fixture.calls.every(call => Buffer.byteLength(JSON.stringify(call.messages)) <= LIMITS.requestTokens));
+    assert.equal(fixture.calls.flatMap(call => JSON.parse(call.messages[1].content)).map(value => value.text).join(""), fixture.rows.get("mail-1").text_body);
+    assert.equal(fixture.consent.status().background, false);
+  }
+});
+test("request planning reserves the fixed validation retry and preserves all Unicode", async () => {
+  const source = { ...metadata(), subject: "\\quoted\"", text: '繁體🙂\\"\n'.repeat(600) };
+  const focus = { keywords: "界".repeat(1000), contact_emails: [] };
+  const plan = preparePlan([source], { language: "zh-Hant", focus });
+  let count = 0;
+  const calls = [];
+  await extract({ sources: [source], envelope: envelopeFor([source]), language: "zh-Hant", focus,
+    complete: async messages => { calls.push(messages); return ++count === 1 ? { text: "invalid", finishReason: "stop", usage: { outputTokens: 10 } } : modelResponse(messages); } });
+  assert.ok(calls.every(messages => Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestTokens));
+  assert.equal(calls.length, plan.chunks.length + 1);
+  assert.equal(plan.chunks.flat().map(value => value.text).join(""), source.text);
+  assert.ok(plan.chunks.every(chunk => Buffer.byteLength(JSON.stringify(buildRequest(chunk, { language: "zh-Hant", focus, retry: true }))) <= LIMITS.requestTokens));
+});
+test("a whole emoji fits at the request boundary even when its UTF-16 half does not", () => {
+  const source = { ...metadata({ from: { address: "ada@example.org" }, occurred_at: null, date_source: "unknown", source_message_id: "00000000-0000-4000-8000-000000000001", attachments: [] }), subject: "Subject", text: "😀😀😀" };
+  let remaining = 3882;
+  const contact_emails = Array.from({ length: 99 }, (_, i) => {
+    const length = Math.min(40, remaining); remaining -= length;
+    return `${"x".repeat(length)}p${i}@example.org`;
+  });
+  const focus = { keywords: "", contact_emails };
+  const part = { from: source.from, mail_timestamp: null, date_source: "unknown", source_token: `${source.source_message_id}:0`, subject: source.subject, attachment_names: [], text: "" };
+  const size = text => Buffer.byteLength(JSON.stringify(buildRequest([{ ...part, text }], { focus, retry: true })));
+  assert.ok(size("😀") <= LIMITS.requestTokens);
+  assert.ok(size("\ud83d") > LIMITS.requestTokens);
+  const chunks = planChunks([source], { focus });
+  assert.equal(chunks.flat().map(value => value.text).join(""), source.text);
+  assert.equal(chunks.length, 3);
+  assert.ok(chunks.every(chunk => Buffer.byteLength(JSON.stringify(buildRequest(chunk, { focus, retry: true }))) <= LIMITS.requestTokens));
+});
+test("oversized optional focus stays source-bound, disables Generate and can be corrected", async context => {
+  const contacts = Array.from({ length: 99 }, (_, i) => `participant-${i}-${"x".repeat(50)}@example.org`);
+  const fixture = integratedTimeline(context, {}, { to: contacts, cc: [], replyTo: [] });
+  await fixture.ui.mounted.open(fixture.ui.email);
+  const blocked = fixture.hostCalls.find(value => value.channel === "timeline:prepare").data;
+  assert.equal(blocked.budget.kind, "focus-bytes");
+  assert.equal(fixture.node("timeline-generate").disabled, true);
+  assert.match(fixture.node("timeline-status").textContent, /Shorten optional keywords and contacts/);
+  assert.match(fixture.node("timeline-status").textContent, /No AI request was started/);
+  await assert.rejects(fixture.service.invoke(1, "timeline:generate", { manifestToken: blocked.manifestToken, optionsDigest: blocked.optionsDigest, acceptPartial: true }), { code: "timeline-budget" });
+  fixture.node("timeline-contacts").value = "";
+  fixture.node("timeline-contacts").dispatchEvent(new fixture.ui.window.Event("input"));
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  assert.equal(fixture.hostCalls.filter(value => value.channel === "timeline:prepare").at(-1).input.manifestToken, blocked.manifestToken);
+});
+test("oversized source and planned input never leave Generate apparently ready", async context => {
+  for (const size of [90000, 128001]) {
+    const fixture = integratedTimeline(context, { rows: [row("mail-1", { text_body: "x".repeat(size) })] });
+    await fixture.ui.mounted.open(fixture.ui.email);
+    assert.equal(fixture.node("timeline-generate").disabled, true);
+    fixture.node("timeline-generate").click(); await settleTimeline();
+    assert.equal(fixture.calls.length, 0);
+    assert.equal(fixture.hostCalls.filter(value => value.channel === "timeline:generate").length, 0);
+    assert.match(fixture.node("timeline-status").textContent, /No AI request was started for this attempt/);
+    assert.match(fixture.node("timeline-status").textContent, /limit/);
+  }
+});
+test("failure retry re-prepares the same source without replaying a consumed authorization", async context => {
+  let fail = true;
+  const fixture = integratedTimeline(context, { complete: messages => {
+    if (fail) { fail = false; throw new Error("Synthetic provider failure with private details"); }
+    return modelResponse(messages);
+  } });
+  await fixture.ui.mounted.open(fixture.ui.email);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  const first = fixture.hostCalls.filter(value => value.channel === "timeline:prepare").at(-1).data;
+  assert.equal(lastTerminal(fixture).phase, "failed");
+  assert.equal(lastTerminal(fixture).calls, 1);
+  assert.match(fixture.node("timeline-status").textContent, /Data may already have reached/);
+  assert.doesNotMatch(fixture.node("timeline-status").textContent, /private details/);
+  assert.equal((await fixture.service.invoke(1, "timeline:check", { manifestToken: first.manifestToken })).valid, true);
+  await assert.rejects(fixture.service.invoke(1, "timeline:generate", { manifestToken: first.manifestToken, optionsDigest: first.optionsDigest, acceptPartial: true }), { code: "timeline-manifest" });
+  fixture.ui.events.get("mail:accountsUpdated")(); await settleTimeline();
+  assert.equal(fixture.node("timeline-generate").disabled, false);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  assert.equal(fixture.calls.length, 2);
+  assert.equal(fixture.artifacts.size, 1);
+});
+test("budget stops report attempted requests and can be retried explicitly", async context => {
+  let fail = true;
+  const fixture = integratedTimeline(context, { complete: messages => {
+    const value = modelResponse(messages);
+    if (fail) { fail = false; value.usage.outputTokens = 40000; }
+    return value;
+  } });
+  await fixture.ui.mounted.open(fixture.ui.email);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).budget.kind, "output-tokens");
+  assert.equal(lastTerminal(fixture).calls, 1);
+  assert.match(fixture.node("timeline-status").textContent, /1 AI request was attempted/);
+  assert.doesNotMatch(fixture.node("timeline-status").textContent, /Nothing was sent|No AI request was started/);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  assert.equal(fixture.calls.length, 2);
+});
+test("cancel then retry and success then delete can generate again in the same sheet", async context => {
+  let first = true;
+  const fixture = integratedTimeline(context, { complete: (messages, request) => {
+    if (!first) return modelResponse(messages);
+    first = false;
+    return new Promise((resolve, reject) => request.signal.addEventListener("abort", () => reject(new Error("Synthetic cancellation")), { once: true }));
+  } });
+  await fixture.ui.mounted.open(fixture.ui.email);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  fixture.node("timeline-cancel").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "cancelled");
+  assert.equal(lastTerminal(fixture).calls, 1);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  fixture.node("timeline-delete").click(); await settleTimeline();
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  assert.equal(fixture.calls.length, 3);
+  assert.equal(fixture.artifacts.size, 1);
+});
+test("failed and blocked runs retain owner, source and renewed-consent guards for retry", async context => {
+  for (const change of ["account", "body", "permission", "owner"]) {
+    const fixture = memory(context, { complete: () => { throw new Error("Synthetic failure"); } });
+    const prepared = await fixture.prepare();
+    const running = await generation(fixture, prepared); await running.terminal;
+    if (change === "account") fixture.changeAccount();
+    if (change === "body") fixture.rows.get("mail-1").text_body = "Changed synthetic evidence";
+    if (change === "permission") { fixture.consent.revoke(); fixture.approve(); }
+    const input = { selection: fixture.selection, options, manifestToken: prepared.manifestToken };
+    if (change === "permission") {
+      await assert.rejects(fixture.service.invoke(1, "timeline:generate", { manifestToken: prepared.manifestToken, optionsDigest: prepared.optionsDigest, acceptPartial: true }), { code: "timeline-manifest" });
+      const next = await fixture.service.invoke(1, "timeline:prepare", input);
+      assert.notEqual(next.optionsDigest, prepared.optionsDigest);
+    } else await assert.rejects(fixture.service.invoke(change === "owner" ? 2 : 1, "timeline:prepare", input), { code: change === "owner" ? "timeline-manifest" : "timeline-source-changed" });
+    assert.equal(fixture.calls.length, 1);
+  }
+});
+test("failed option validation keeps the previous source proof for a correction", async context => {
+  const fixture = memory(context), prepared = await fixture.prepare();
+  await assert.rejects(fixture.service.invoke(1, "timeline:prepare", { selection: fixture.selection, manifestToken: prepared.manifestToken, options: { ...options, language: "invalid" } }), { code: "timeline-language" });
+  assert.equal((await fixture.service.invoke(1, "timeline:check", { manifestToken: prepared.manifestToken })).valid, true);
+  const next = await fixture.service.invoke(1, "timeline:prepare", { selection: fixture.selection, manifestToken: prepared.manifestToken, options });
+  assert.equal(next.allowed, true);
+  assert.equal(fixture.calls.length, 0);
+});
+test("long-message reductions bound every request and include all validated semantic items", async context => {
+  const seen = new Set(); let part = 0, reductions = 0;
+  const fixture = integratedTimeline(context, { rows: [row("mail-1", { text_body: "Synthetic planning evidence. ".repeat(320) })], complete: messages => {
+    if (messages[0].content.includes("Consolidation.")) {
+      reductions++;
+      assert.doesNotMatch(messages[1].content, /Synthetic planning evidence/);
+      for (const match of messages[1].content.matchAll(/Part \d+ action \d+/g)) seen.add(match[0]);
+      return modelResponse(messages);
+    }
+    const i = part++;
+    return modelResponse(messages, { summary: `Part ${i}: `.padEnd(490, "s"), open_actions: Array.from({ length: 5 }, (_, j) => `Part ${i} action ${j}: `.padEnd(460, "a")), unclear: [] });
+  } });
+  await fixture.ui.mounted.open(fixture.ui.email);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  assert.ok(reductions > 1);
+  assert.equal(seen.size, part * 5);
+  assert.ok(fixture.calls.every(call => Buffer.byteLength(JSON.stringify(call.messages)) <= LIMITS.requestTokens));
+  assert.equal(fixture.artifacts.size, 1);
+});
+test("large validated action arrays are divided without truncation, and non-compacting reductions stop", async () => {
+  const source = { ...metadata(), text: "Synthetic evidence. ".repeat(400), subject: "Planning" };
+  for (const compact of [true, false]) {
+    let calls = 0; const seen = new Set();
+    const work = extract({ sources: [source], envelope: envelopeFor([source]), complete: async messages => {
+      calls++;
+      assert.ok(Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestTokens);
+      if (messages[0].content.includes("Consolidation.")) {
+        for (const match of messages[1].content.matchAll(/Evidence \d+ action \d+/g)) seen.add(match[0]);
+        if (compact) return modelResponse(messages);
+      }
+      return modelResponse(messages, { summary: `Evidence ${calls}`.padEnd(490, "s"), open_actions: Array.from({ length: 25 }, (_, j) => `Evidence ${calls} action ${j}`.padEnd(300, "a")), unclear: [] });
+    } });
+    if (compact) { assert.equal((await work).document.events.length, 1); assert.ok(seen.size >= 50); }
+    else await assert.rejects(work, { code: "timeline-consolidation" });
+    assert.ok(calls <= LIMITS.calls);
+  }
+});
+test("input and output budgets remain bounded with incomplete usage reporting", async () => {
+  const source = { ...metadata(), text: "Synthetic evidence. ".repeat(2100), subject: "Planning" };
+  let count = 0;
+  await assert.rejects(extract({ sources: [source], envelope: envelopeFor([source]), complete: async messages => {
+    count++; return { ...modelResponse(messages), usage: {} };
+  } }), { code: "timeline-budget" });
+  assert.ok(count <= Math.ceil(LIMITS.outputTokens / LIMITS.outputPerCall));
+});
+test("budget IPC diagnostics contain only known labels and nonnegative numeric counts", () => {
+  const privateText = "sender@example.org API_KEY PRIVATE_BODY";
+  assert.deepEqual(publicError(Object.assign(new Error(privateText), { code: "timeline-budget", paths: [privateText], budget: { kind: privateText, actual: 1, limit: 0 } })), { code: "timeline-budget" });
+  assert.deepEqual(publicError({ code: "timeline-budget", budget: { kind: "request-bytes", actual: privateText, limit: 8000 } }), { code: "timeline-budget" });
+  assert.deepEqual(publicError({ code: "timeline-budget", budget: { kind: "request-bytes", actual: 9000, limit: 8000, body: privateText } }), { code: "timeline-budget", budget: { kind: "request-bytes", actual: 9000, limit: 8000 } });
 });
