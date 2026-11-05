@@ -160,7 +160,7 @@ async function run() {
       { cwd: path.join(__dirname, ".."), encoding: "utf8" });
     assert.equal(reloaded.status, 0, reloaded.stderr);
     assert.deepEqual(JSON.parse(reloaded.stdout), {days:0,compact:true}, "All and compact mode survive a new process");
-    db.close();
+    await db.close();
     await engine.init();
     assert.equal(list().total, count - 1);
     assert.equal(db.folderByPath("horizon", "Notes").sync_horizon_days, 0, "completed horizon survives restart");
@@ -171,11 +171,16 @@ async function run() {
     assert.equal(db.folderByPath("horizon", "Notes").window_done, 0);
     engine.syncGates.delete("horizon");
     console.log("settings-horizon-ok (180/365/All, catch-up, restart, race, UID reset, 2105-row paging)");
+  } catch (error) {
+    // Preserve the primary assertion in CI even if a later teardown error also
+    // occurs. Temporary-store cleanup must await the owned checkpoint below.
+    console.error("settings-horizon-primary-failure", error);
+    throw error;
   } finally {
     Object.assign(remote, saved);
     secrets.deletePassword("horizon");
     engine.syncGates.delete("horizon");
-    db.close();
+    await db.close();
     for (const [key, value] of Object.entries(env)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
