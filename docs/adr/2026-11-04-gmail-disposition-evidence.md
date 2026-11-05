@@ -43,9 +43,11 @@ Incremental Gmail history does not revisit unchanged pre-feature caches, and
 opening an already-complete body can return locally. Ordinary Sent sync therefore
 rechecks at most two cached, provider-bound Sent rows with an In-Reply-To and no
 inspection marker per pass. These full MIME reads count toward the existing
-twenty-read limit, pacing, deadline and foreground-open yield. There is no provider
-mailbox listing, attachment-content download or separate startup network job for
-repair. Already-downloaded mail is eligible even outside a shorter download horizon.
+twenty-read limit, pacing, deadline and foreground-open yield. There is no broad
+provider mailbox listing, attachment-content download or separate startup network
+job for repair. Existing exact RFC identity lookups still protect adoption of
+unbound label copies. Already-downloaded mail is eligible even outside a shorter
+download horizon.
 
 The existing persisted MIME eligibility field is the durable work checkpoint:
 adoption commits inspection, refreshed headers and inferred flags atomically.
