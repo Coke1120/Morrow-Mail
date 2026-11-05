@@ -2580,7 +2580,9 @@ function enableGmail(accountId) {
     do { generation = crypto.randomInt(1, 2147483647); }
     while (get("SELECT 1 FROM messages WHERE account_id = ? AND uid_validity = ? LIMIT 1", [accountId, generation]));
     run("UPDATE accounts SET mail_transport = 'gmail_api', gmail_generation = ? WHERE id = ?", [generation, accountId]);
-    run("UPDATE messages SET replied = NULL, forwarded = NULL WHERE account_id = ?", [accountId]);
+    run("DELETE FROM imap_dispositions WHERE account_id = ?", [accountId]);
+    run(`UPDATE messages SET replied = NULL, forwarded = NULL,
+      disposition_provider_replied = NULL, disposition_provider_forwarded = NULL WHERE account_id = ?`, [accountId]);
     // Unuploaded edits have a newer RFC id than their old server copy. Keep their
     // content/revision, but never guess which old server draft may be replaced.
     const pending = get("SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND draft_pending = 1 AND uid > 0", [accountId]).n;

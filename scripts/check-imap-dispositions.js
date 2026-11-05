@@ -282,6 +282,23 @@ test("IMAP confirmed sends retain scoped local evidence and never replay SMTP fo
     assert.equal(db.confirmDisposition("custom", proof), false);
     assert.equal(db.messageById("new-incarnation").replied, 0);
   });
+  await t.test("reviewed Gmail migration retires IMAP evidence and raw provider flags", () => {
+    db.insertAccount({ ...fixture.account, id: "legacy", profile: "gmail", authKind: "oauth2" });
+    db.replaceFolders("legacy", folders);
+    db.applyFolderSync("legacy", "INBOX", fixture.report([fixture.message(1, { id: "legacy-original", replied: true, forwarded: true })]));
+    const row = db.messageById("legacy-original"), proof = db.captureDisposition("legacy", fields(row));
+    assert.equal(db.confirmDisposition("legacy", proof), true);
+    db.enableGmail("legacy");
+    const migrated = db.messageById(row.id);
+    assert.deepEqual([migrated.replied, migrated.forwarded, migrated.disposition_provider_replied, migrated.disposition_provider_forwarded], [null, null, null, null]);
+    assert.equal(db.confirmDisposition("legacy", proof), false);
+    // Even transport compensation cannot resurrect already-retired IMAP proof.
+    db.setMailTransport("legacy", "imap");
+    db.updateMessage(row.id, { snippet: "Synthetic refreshed metadata" }, { disposition: { replied: false, forwarded: false } });
+    assert.equal(db.messageById(row.id).replied, 0);
+    assert.deepEqual(db.imapDispositions.pending("legacy", "INBOX"), []);
+    db.removeAccount("legacy");
+  });
 });
 
 test("real ImapFlow exercises UID STORE, permissions, ignored flags and unsolicited FETCH rows", async t => {
