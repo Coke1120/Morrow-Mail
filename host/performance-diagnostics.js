@@ -7,7 +7,7 @@ const STAGES = new Set([
   "startup.mail", "startup.db", "startup.copy", "startup.journal", "startup.migrate", "startup.initialize",
   "startup.body-backfill", "startup.summaries", "startup.index", "startup.admit",
   "db.transaction", "db.index", "db.list.headers", "db.list.full",
-  "db.sync.reconcile", "db.list.merged", "db.list.summary",
+  "db.sync.reconcile", "db.sync.ingest", "db.search", "db.body.pending", "db.list.merged", "db.list.summary",
   "db.thread.headers", "db.thread.full", "storage.journal", "storage.replay",
   "storage.checkpoint", "storage.checkpoint.copy", "storage.checkpoint.replay", "storage.checkpoint.publish",
   "keychain.wait", "ipc.mail.list", "ipc.mail.open", "ipc.mail.thread",
