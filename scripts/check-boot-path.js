@@ -189,7 +189,7 @@ const featureOauthRecovery = spawnSync(process.execPath, [path.join(__dirname, "
 assert.ifError(featureOauthRecovery.error);
 assert.strictEqual(featureOauthRecovery.status, 0, "Feature OAuth recovery failed");
 
-const gmailAuthRetry = spawnSync(process.execPath, [path.join(__dirname, "check-gmail-auth-retry.js")], { stdio: "inherit", timeout: 30000 });
+const gmailAuthRetry = spawnSync(process.execPath, [path.join(__dirname, "check-gmail-auth-retry.js")], { stdio: "inherit", timeout: process.platform === "win32" ? 90000 : 30000 });
 assert.ifError(gmailAuthRetry.error);
 assert.strictEqual(gmailAuthRetry.status, 0, "Gmail read authentication recovery failed");
 
