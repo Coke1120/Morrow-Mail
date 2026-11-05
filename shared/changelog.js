@@ -7,6 +7,16 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.2": [
+      "Summary presents one main point and up to six plain-language bullets. Longer or incomplete downloaded text gets an explicit coverage choice; Timeline shows request limits and supports reviewed retries.",
+      "To Me filters downloaded mail by the owning mailbox’s primary address in To. Attachments start collapsed with the file count and Save as ZIP still visible; All Mail folder chips align with Inbox and Sent.",
+      "Delete and Backspace act on the reviewed selected messages, including selected rows hidden by a filter. Independent readers keep their own target.",
+      "Preview Send and Outbox display safe readable HTML while keeping recipient, subject and sending review intact. Fresh Reply/Forward subjects normalize recognized language prefixes; edited and saved subjects stay unchanged.",
+      "Gmail repairs eligible historical Reply indicators during bounded normal sync. IMAP replies and forwards retain confirmed local evidence and attempt supported server flags after every intended recipient is accepted.",
+      "Settings → Brain offers Daily, Weekly and Manual only refresh. Automatic attempts share one job and wait the configured interval after failure or restart; background AI data permission stays a separate opt-in.",
+      "Mail handles quoted and continued charset parameters, discloses decoding uncertainty and offers safe text alternatives. Explicit Retry download can replace a complete server copy without silently discarding pending edits.",
+      "Feature reads recover from expired authorization and temporary Google-client configuration errors while preserving separate mail, Calendar and Graph permissions.",
+    ],
     "0.4.1": [
       "Compose settings add question-mark help for mailbox defaults and Preferred From. Refresh From addresses now sits beside Sender identities; AI privacy details open in a separate dialog.",
       "Timeline stays usable during routine account refreshes, shows correspondence in date order with source evidence, and exports a readable HTML file after review.",
