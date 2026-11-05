@@ -560,6 +560,7 @@ async function openDatabase(target, operation) {
   try {
     ownedDb = await ownedStorage.open();
     assertOpening(operation);
+    ownedDb.raw.function("morrow_to_me", { deterministic: true }, require("./to-me").matches);
     db = ownedDb;
     storage = ownedStorage;
     await startupPhase(operation, "migrate", "startup.migrate", () => internal(() => transaction(migrate)));
@@ -1250,11 +1251,13 @@ function searchMessages(options, { headersOnly = false, timelineLimit = false } 
     params.push(token, upper);
   });
   const rank = tokens.map((_token, index) => `t${index}.weight`).join(" + ");
-  let where = "";
+  const clauses = [];
   if (query.accountId) {
-    where = " WHERE m.account_id = ?";
+    clauses.push("m.account_id = ?");
     params.push(query.accountId);
   }
+  if (query.filterToMe === true) clauses.push(toMeClause());
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   params.push(timelineLimit ? 1001 : searchResultLimit(query.limit));
   return all(
     `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m JOIN accounts connected ON connected.id = m.account_id
@@ -1697,6 +1700,13 @@ const WELL_TO_KEY = {
   junkemail: "spam",
 };
 
+function toMeClause() {
+  // Resolve the owning account in the host. Another connected account's email
+  // and renderer-supplied addresses must not broaden this message's match.
+  return `EXISTS (SELECT 1 FROM accounts to_me_account WHERE to_me_account.id = m.account_id
+    AND morrow_to_me(m.to_json, to_me_account.email) = 1)`;
+}
+
 function whereFor(query, now = Date.now()) {
   const clauses = [];
   const params = [];
@@ -1741,6 +1751,7 @@ function whereFor(query, now = Date.now()) {
   if (query.filterFlagged) {
     clauses.push("m.starred = 1");
   }
+  if (query.filterToMe === true) clauses.push(toMeClause());
   if (query.filterAttachments === true) clauses.push("m.has_attachments = 1");
   if (query.filterAttachments === false) clauses.push("m.has_attachments = 0");
   if (query.needsBody) {
@@ -1943,6 +1954,12 @@ function summaryVersion(scope, includeOldest) {
     const accounts = summaryAccounts(scope);
     versions.push(...all(`SELECT account_id, snoozed FROM mail_summary_revision
       WHERE folder_path = '' ${accounts.clauses.length ? `AND ${accounts.clauses.join(" AND ")}` : ""} ORDER BY account_id`, accounts.params));
+  }
+  if (scope.filterToMe === true) {
+    // The existing list revision includes To edits, including local drafts.
+    // Account identity edits also retire counts and keyset cursors.
+    versions.push({ toMeRevision: get("SELECT value FROM mail_list_revision WHERE id = 1").value,
+      toMeAccounts: all("SELECT id, email FROM accounts ORDER BY id") });
   }
   return versions;
 }

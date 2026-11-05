@@ -43,14 +43,15 @@ test('Separate window keys follow the single clicked message across accounts, no
   assert.equal(f.ui.run('calls[0].payload.accountId'), 'beta');
   assert.equal(f.ui.run('state.email.id'), 'one');
   f.ui.run(`globalThis.removed=[]; askConfirm=async()=>({ok:true}); beginRemovalRequest=()=>1; finishRemoval=async()=>{};
-    call=async(channel,payload)=>{removed.push({channel,payload});return {};}`);
+    call=async(channel,payload)=>{removed.push({channel,payload});return {};};
+    queueBulkRemoval=(_label,specs)=>{for(const spec of specs)call(spec.channel,spec.params)};`);
   f.press('Delete'); await f.finish();
   assert.equal(f.ui.run('removed[0].channel'), 'mail:delete');
   assert.equal(f.ui.run('removed[0].payload.emailId'), 'two');
   assert.equal(f.ui.run('removed[0].payload.accountId'), 'beta');
   f.select(0); f.press('Delete'); await f.finish();
   assert.equal(f.ui.run('removed[1].payload.emailId'), 'one', 'different targets are not swallowed by debounce');
-  for (const setup of ["state.selectedIds=[]", "state.selectedIds=['one','two']", "state.selectedIds=['missing']", "state.selectedIds=['two'];state.accounts=[state.accounts[0]]"]) {
+  for (const setup of ["state.selectedIds=[]", "state.selectedIds=['missing']", "state.selectedIds=['two'];state.accounts=[state.accounts[0]]"]) {
     f.ui.run(setup); f.reset(); f.press('Delete'); f.press('r'); await f.finish();
     assert.equal(f.ui.run('removed.length'), 2); assert.equal(f.ui.run('composes.length'), 3);
   }
@@ -119,8 +120,8 @@ test('help describes selection scope and blocked previews in the rendered Featur
   assert.match(f.ui.run(`shortcutNote('win')`), /exactly one visible message/);
   f.window.morrowFeaturesCatalog = require('../renderer/features-catalog');
   f.ui.run('paintFeatureCatalog();paintShortcuts()');
-  assert.match(f.window.document.getElementById('features-catalog').textContent, /no selection or multiple selections disable these shortcuts/);
-  assert.match(f.window.document.getElementById('shortcuts-note').textContent, /Preview shortcuts wait until loading succeeds/);
+  assert.match(f.window.document.getElementById('features-catalog').textContent, /Delete and Backspace.*selected messages to Trash/);
+  assert.match(f.window.document.getElementById('shortcuts-note').textContent, /Delete without a selection wait until loading succeeds/);
 });
 
 

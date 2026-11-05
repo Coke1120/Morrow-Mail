@@ -1,5 +1,7 @@
 # Explicit summaries belong to one message and renderer
 
+Presentation and input coverage were updated by [simple reviewed summaries](2026-11-05-simple-reviewed-message-summary.md). The ownership and selected-message scope below remain; the old fixed-prefix/plain-text choices are historical.
+
 Summary is an explicit answer about the selected downloaded email. Existing
 Agent/Brain summaries are derived from triage samples and cannot represent an
 arbitrary opened message. Use the existing `openai-client.complete` transport,

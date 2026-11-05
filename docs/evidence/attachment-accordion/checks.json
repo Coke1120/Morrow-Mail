@@ -1,0 +1,57 @@
+{
+  "checks": "keyboard, visibility, ZIP/Preview/Save/Open identity, transfer cancellation, refresh, themes/layout, motion and rendered Features",
+  "accessibility": [
+    {
+      "theme": "light",
+      "layout": "right",
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "layout": "bottom",
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "layout": "reader",
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "layout": "narrow",
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "layout": "narrow320",
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "layout": "right",
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "layout": "bottom",
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "layout": "reader",
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "layout": "narrow",
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "layout": "narrow320",
+      "violations": []
+    }
+  ],
+  "errors": [],
+  "externalRequests": []
+}
