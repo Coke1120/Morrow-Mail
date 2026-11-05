@@ -67,6 +67,12 @@ download was skipped and plain-Node checks used
 was launched; browser validation used installed Chromium. The PR's Linux/Windows
 CI runs the repository's normal install and full checks on the pushed head.
 
+The first Windows CI run exposed a fixture cleanup omission: reader-window boot
+now opens the separate archive, and that fixture closed only the account cache.
+Windows correctly refused to unlink the still-open archive. Its teardown now
+closes both independently owned stores before removing synthetic files; the
+read/download assertions and the archive's persistence guarantees are unchanged.
+
 ## Limits
 
 No real mail, live providers, credentials, AI, native dialogs or user profile were
