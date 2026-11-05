@@ -10672,7 +10672,7 @@ async function loadAccounts(preferredId, supplied) {
   const gen = ++accountGen;
   const previous = selectedAccount();
   const data = supplied || await call("mail:listAccounts");
-  if (!supplied || !state.localAccount) {
+  if (!supplied) {
     try { await loadLocalFolders(); } catch (error) { showStatus("Local Folders could not be opened. " + error.message, true); }
   }
   if (gen !== accountGen) return;

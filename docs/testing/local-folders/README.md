@@ -38,8 +38,9 @@ with a real temporary archive and synthetic IPC. It checks the Local Folders roo
 account expansion, nested hierarchy, keyboard context menu, frozen source IDs,
 changed Copy/Move disclosures, cancellation, stop-after-current-message behavior,
 offline reading/attachments/flags, the EML reader button and rendered Features/help.
-A stale native close event cannot discard a reopened transfer review. Local IDs
-are excluded from connected account/sending choices. These cases are included in
+A stale native close event cannot discard a reopened transfer review. Supplied
+background account notifications never open/retry the independent archive.
+Local IDs are excluded from connected account/sending choices. These cases are included in
 `npm run check`; the complete suite passed (`ui-path-ok`) during implementation.
 
 For browser rendering:
@@ -72,6 +73,19 @@ now opens the separate archive, and that fixture closed only the account cache.
 Windows correctly refused to unlink the still-open archive. Its teardown now
 closes both independently owned stores before removing synthetic files; the
 read/download assertions and the archive's persistence guarantees are unchanged.
+
+Additional performance checks preserve the supplied-account notification path:
+
+```sh
+node --test --test-name-pattern='hidden mail notifications|account snapshots do not swallow' scripts/check-performance-followups.js
+```
+
+Both cases pass: background account snapshots do not initialize/retry local
+storage or add an IPC read. The complete optional helper (not in `npm run check`)
+also has three failures reproduced unchanged in a detached `70477e4` dev checkout:
+the failed-refresh-store expectation, the VM missing `withSyncClient`, and its
+source-limited-body fixture. They remain outside this feature's runtime changes;
+no credential/read safety rule was weakened to satisfy those older expectations.
 
 ## Limits
 

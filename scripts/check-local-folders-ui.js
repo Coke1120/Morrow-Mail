@@ -48,6 +48,10 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
     Event: window.Event, Node: window.Node, morrowFolderCollapse: window.morrowFolderCollapse,
     morrowFeaturesCatalog: window.morrowFeaturesCatalog, fixtureSource: source, fixtureRemote: remote });
   ui.run("renderSettingsAccounts=refreshMailVacation=applyLayoutPanes=()=>{}; state.accounts=[fixtureRemote]; state.accountId='connected'; state.folderId='INBOX';");
+  ui.run("state.view='features'");
+  await ui.run("loadAccounts('connected',state.accounts)");
+  assert.equal(calls.filter(row => row.channel === "mail:localFolders").length, 0, "supplied background account snapshots must not open or retry the independent archive");
+  ui.run("state.view='mail'");
   await ui.run("loadLocalFolders()"); ui.run("renderAccounts()");
   assert.match(window.document.getElementById("folders").textContent, /Local Folders/);
   const localButtons = window.document.querySelectorAll(`[data-account-id="${L.ACCOUNT_ID}"]`);
