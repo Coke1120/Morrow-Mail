@@ -6961,6 +6961,32 @@ function selectedMessages() {
   return state.selectedIds.map((id) => byId.get(id)).filter(Boolean);
 }
 
+// null means there is no shell selection; [] means it is stale and must not
+// fall back to an unrelated open preview. Filter-hidden selections stay included.
+function shellDeleteSelection() {
+  if (isReaderWindow() || state.view !== "mail" || state.outbox || !state.selectedIds.length) return null;
+  const messages = selectedMessages();
+  if (messages.length !== state.selectedIds.length || messages.some((email) =>
+    !email.accountId || email.outbox || optimisticRemovals.has(email.id)
+    || !state.accounts.some((account) => account.id === email.accountId))) return [];
+  return messages;
+}
+
+function readerDeleteLabel() {
+  const n = !isReaderWindow() && state.view === "mail" && !state.outbox ? state.selectedIds.length : 0;
+  return n ? `Delete ${n} selected ${n === 1 ? "message" : "messages"}` : "Delete";
+}
+
+function paintReaderDelete() {
+  const button = $("reader")?.querySelector?.('[data-action="trash"]');
+  if (!button) return;
+  const label = readerDeleteLabel();
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  const text = button.querySelector("span");
+  if (text) text.textContent = label;
+}
+
 function selectionMoveMessages() {
   const rows = selectedMessages();
   if (!rows.length) return [];
@@ -6997,6 +7023,7 @@ function setSelectionLabel(id, label) {
 }
 
 function paintSelectionBar(shown) {
+  paintReaderDelete();
   const bar = $("selection-bar");
   const count = $("selection-count");
   const selectAll = $("select-visible");
@@ -7340,7 +7367,7 @@ function renderActions(pane, email) {
     showStatus("Still finishing the last change.", true);
   }, true);
   const archive = readerButton("archive", "Archive", () => archiveOpen(email));
-  const trash = readerButton("trash", "Delete", () => trashOpen(email));
+  const trash = readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email));
   trash.setAttribute("aria-keyshortcuts", "Delete Backspace");
   const move = readerButton("move", "Move", () => openMessageMovePicker(email, "imap"));
   move.setAttribute("aria-label", "Move to folder");
@@ -9675,6 +9702,13 @@ async function trashOpen(email) {
   await removeOpen(email, threaded ? "mail:threadTrash" : "mail:delete", "Moved to Trash.");
 }
 
+function deleteFromReader(email) {
+  const selection = shellDeleteSelection();
+  if (selection === null) return trashOpen(email);
+  if (!selection.length) throw new Error("The selected messages are no longer available. Refresh and select them again.");
+  return bulkTrash(selection);
+}
+
 function folderTitle(folders, id) {
   const rows = Array.isArray(folders) ? folders : [];
   const found = rows.find((folder) => folder && String(folder.id) === String(id));
@@ -11284,8 +11318,8 @@ async function bulkArchive() {
   queueBulkRemoval("Archive", gated, review.rows, "archive");
 }
 
-async function bulkTrash() {
-  const messages = selectedMessages().map(withSelectionMembers);
+async function bulkTrash(selected = selectedMessages()) {
+  const messages = selected.map(withSelectionMembers);
   if (!messages.length || refusePaused(messages)) return;
   const review = await reviewedRemoval(messages, "trash");
   const answer = await askConfirm(bulkConfirmCopy("trash", review.rows.length, review.detail));
@@ -16173,13 +16207,13 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. In Separate window, select exactly one visible message for Delete, Backspace, R, A or F; these act on that message, never the hidden preview. Preview shortcuts wait until loading succeeds. Delete and Backspace use the same Trash action as the Delete button. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace in the main Mail window review the selected messages for Trash, including selected rows hidden by a filter. The reader Delete button shows the selected count. With no selection, Delete acts on the open preview; Separate window requires a selection. R, A and F in Separate window require exactly one visible message. Independent readers keep their own message target. Preview reply shortcuts and Delete without a selection wait until loading succeeds. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
   const chord = (key) => shortcutChord(platform, key);
   return [
-    { group: "Reading", keys: "Delete or Backspace", action: "Move the open message to Trash" },
+    { group: "Reading", keys: "Delete or Backspace", action: "Move selected messages, or the open preview, to Trash after review" },
     { group: "Reading", keys: "R", action: "Reply to the open message" },
     { group: "Reading", keys: "A", action: "Reply all" },
     { group: "Reading", keys: "F", action: "Forward the open message" },
@@ -16282,12 +16316,14 @@ function mailShortcutContext(event) {
     const selection = window.getSelection();
     textSelected = !!(selection && selection.isCollapsed === false && String(selection));
   }
+  const selection = shellDeleteSelection();
   return {
     typing: !!editableField(event && event.target),
     dialog: !!top || undoPopoverOpen() || !!event?.target?.closest?.("#body-sync"),
     menu: !!(menu && menu.hidden === false) || $("mail-view-menu")?.hidden === false,
     topDialog: top && top.id ? top.id : "",
     mailOpen: !!mailShortcutTarget(),
+    deleteAvailable: selection === null ? !!mailShortcutTarget() : selection.length > 0,
     view: state.view,
     textSelected: textSelected,
   };
@@ -16307,6 +16343,7 @@ function mailShortcut(event, context) {
   const menu = ctx.menu === true;
   const view = ctx.view == null ? "mail" : ctx.view;
   const mailOpen = ctx.mailOpen === true && view === "mail";
+  const deleteAvailable = (ctx.deleteAvailable ?? ctx.mailOpen) === true && view === "mail";
   const top = ctx.topDialog || "";
   if (command && !alt && !shift && key === "Enter") {
     if (top === "compose-preview") return "send-confirm";
@@ -16329,7 +16366,7 @@ function mailShortcut(event, context) {
     return "search";
   }
   if (typing || dialog || menu) return "";
-  if ((key === "Delete" || key === "Backspace") && mailOpen && ctx.textSelected !== true) return "delete";
+  if ((key === "Delete" || key === "Backspace") && deleteAvailable && ctx.textSelected !== true) return "delete";
   if (!mailOpen) return "";
   if (lower === "r") return "reply";
   if (lower === "a") return "reply-all";
@@ -16357,9 +16394,10 @@ let mailShortcutAction = "";
 let mailShortcutStamp = 0;
 
 function runMailShortcut(action) {
-  const target = readerWindowShortcut(action) ? mailShortcutTarget() : null;
-  if (readerWindowShortcut(action) && !target) return;
-  const key = JSON.stringify([action, target?.accountId, target?.id]);
+  const selection = action === "delete" ? shellDeleteSelection() : null;
+  const target = readerWindowShortcut(action) && selection === null ? mailShortcutTarget() : null;
+  if (readerWindowShortcut(action) && (selection === null ? !target : !selection.length)) return;
+  const key = JSON.stringify([action, selection ? selection.map((email) => [email.accountId, email.id]) : [target?.accountId, target?.id]]);
   const now = Date.now();
   if (action && key === mailShortcutAction && now - mailShortcutStamp < 50) return;
   mailShortcutAction = key;
@@ -16379,8 +16417,7 @@ function runMailShortcut(action) {
     return;
   }
   if (action === "delete") {
-    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
-      ? deleteFromList(target) : trashOpen(target));
+    guard(() => selection !== null ? bulkTrash(selection) : trashOpen(target));
     return;
   }
   if (action === "reply" || action === "reply-all" || action === "forward") {
