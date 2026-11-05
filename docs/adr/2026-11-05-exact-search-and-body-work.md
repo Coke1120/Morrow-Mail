@@ -50,7 +50,7 @@ schema migration keep their existing order and durability rules.
 ## Runtime ingestion and durability
 
 The asynchronous IMAP ingestion path retains the 24-message maximum, adds an
-8 ms elapsed-work check between messages, and admits at most 256 KiB of incoming
+32 ms elapsed-work check between messages, and admits at most 256 KiB of incoming
 normalized UTF-8 text plus HTML per batch. One oversized message proceeds alone.
 Each transaction finishes its existing index writes, journal append/hash/fsync
 and SQL commit before `setImmediate`. No transaction spans an await. Final folder
@@ -59,7 +59,7 @@ account incarnation/transport, folder validity and caller checks run after every
 yield. Flag/deletion bounds and single-message Gmail commits remain unchanged.
 
 These are cooperative budgets, not strict per-turn deadlines. One body, body
-normalization, SQL/index call, serialization or fsync can exceed 8 ms or 256 KiB;
+normalization, SQL/index call, serialization or fsync can exceed 32 ms or 256 KiB;
 the final journal/commit cost follows the elapsed check. Smaller batches may
 increase total fsync cost and journal frames. No reduced flush, altered recovery,
 content truncation, acknowledgement before journaling or parallel live writer is
@@ -93,3 +93,22 @@ gap throughout each pass, index storage and sampled RSS with synthetic profiles.
 Wall-clock measurements are diagnostic, never CI thresholds. Native Electron
 frames, packaged SQLite, live accounts and Mac/Windows storage remain separate
 validation gaps. See the paired report linked from `docs/PERFORMANCE.md`.
+
+## Ingestion tuning after paired measurements
+
+The initial 8 ms slice traded substantial throughput for callback opportunities:
+its original 100k diagnostic pass was about 71% slower overall. Independent
+10k/100k runs and an opposite-order repeat recorded far more small SQLite
+transactions, higher commit cost and ordinary checkpoint overlap. Use 32 ms for
+runtime IMAP ingestion, retaining the 24-message and 256 KiB caps. It reduces
+transaction amplification while keeping observed maximum callback gaps near
+51 ms in the primary 100k pairs, versus 261 ms for the baseline. Body metadata
+preparation and search rebuild retain their separate 8 ms budgets.
+
+This is an explicit responsiveness/throughput tradeoff. The selected 10k pass
+was about 14% slower; 100k passes ranged from about 9% slower in exploration to
+8–9% faster in the primary/reverse-order pairs. Broad queries, individual
+messages and disk calls remain synchronous. No native frame timing, fresh
+provider ingestion, first sync or giant checkpoint replay guarantee follows from
+these warm synthetic update passes. See the [paired tuning report](../performance/2026-11-05-issue-520-tuning.md)
+and complete raw data for scope, setup and variability.

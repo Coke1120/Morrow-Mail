@@ -156,7 +156,7 @@ async function run() {
     };
     let logicalTime = 0;
     Object.defineProperty(performance, "now", { configurable: true, value: () => logicalTime });
-    perf.sync = (stage, work) => { const value = original.sync(stage, work); if (stage === "db.index") logicalTime += 9; return value; };
+    perf.sync = (stage, work) => { const value = original.sync(stage, work); if (stage === "db.index") logicalTime += 33; return value; };
     let observed = 0;
     await db.applyFolderSyncAsync("ingest", "INBOX", { messages: Array.from({ length: 5 }, (_, n) => message(n + 1, { id: `time-${n}` })),
       validity: 7, keepOthers: true, uidCursor: 5, windowDone: true }, () => {

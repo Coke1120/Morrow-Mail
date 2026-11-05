@@ -109,7 +109,7 @@ Both use synthetic stores/state only. See the
   checkpoints and provider/account identity guards are retained. All normal
   database transactions still run on the main thread, but sync commits at most
   24 messages, 128 flags or 64 deletions per batch and yields outside transactions.
-  Runtime IMAP message batches additionally check 8 ms of work between messages
+  Runtime IMAP message batches additionally check 32 ms of work between messages
   and 256 KiB of incoming normalized UTF-8 text/HTML; an oversized message is
   admitted alone. Commit/index/fsync and any single operation may exceed those
   targets. Smaller batches can increase total elapsed time and disk work.
@@ -238,23 +238,37 @@ SQL, mail text and identities are never diagnostic labels or fields.
 Run paired probes serially with other tests stopped:
 
 ```sh
-node --expose-gc scripts/benchmark-residual-mail-work.js --source-root /path/to/immutable-baseline --source-sha e0ca1151e8fbf08929266463afbda6a382583786 --messages 100000 --fixture-file /tmp/morrow-synthetic-100k.sqlite --output /tmp/baseline.json
-node --expose-gc scripts/benchmark-residual-mail-work.js --messages 100000 --fixture-file /tmp/morrow-synthetic-100k.sqlite --output /tmp/candidate.json
+node scripts/benchmark-residual-mail-work.js --source-root /path/to/immutable-baseline --messages 100000 --prepare-only --fixture-file /tmp/morrow-synthetic-100k.sqlite
+node scripts/benchmark-residual-mail-work.js --source-root /path/to/immutable-baseline --source-sha e0ca1151e8fbf08929266463afbda6a382583786 --messages 100000 --fixture-file /tmp/morrow-synthetic-100k.sqlite --output /tmp/baseline.json
+node scripts/benchmark-residual-mail-work.js --messages 100000 --fixture-file /tmp/morrow-synthetic-100k.sqlite --output /tmp/candidate.json
 ```
 
-Use baseline-compatible dependencies for its archive. The optional fixture is a
-fresh synthetic checkpoint plus a tagged count/hash manifest; subsequent runs
-validate and copy it into their own temporary profiles, never mutate the source.
-Without a fixture path each run constructs identical synthetic inputs. Repeat
-with `--messages 10000`. Raw records include source/harness SHA, runtime versions,
-fixture distribution, full production query plans, every elapsed/maximum-callback
-gap sample throughout each pass, sampled RSS, optional dbstat index bytes and
-200-row eligibility-maintenance cost. Restored-template opening is reported
-separately and includes migration/index preparation; it is not native startup.
-No wall-clock threshold gates CI. See [the decision and ownership
-limits](adr/2026-11-05-exact-search-and-body-work.md) and the [paired 10k/100k report](performance/2026-11-05-issue-520.md)
-with [raw samples and plans](performance/2026-11-05-issue-520.json) for observations
-and validation gaps. The synthetic 100k run reduced the 96-message pass
-maximum callback gap from 195 to 47 ms while increasing total elapsed from
-626 to 1,070 ms; broad global ranking remained near 417 ms. These are measured
-tradeoffs on this Linux host, not native latency guarantees.
+Use baseline-compatible dependencies for its archive. Prepare the fixture first;
+that opt-in setup seeds through the production adapter, restores synthetic RFC
+IDs with the production updater and takes a native SQLite backup of the
+quiescent committed working copy. This avoids an artificial bulk-seed checkpoint
+timeout without changing application deadlines or timed operations. The tagged
+count/hash manifest is verified before each independent temporary copy. Repeat
+with `--messages 10000`; stop other local tests and fixture construction during
+timing, and counterbalance run order.
+
+The current harness records two read warmups, three ingestion warmups and one
+other-write warmup, then five samples by default. It includes complete production
+query plans, whole-pass elapsed/maximum-callback gaps, journal frame counts/time,
+SQLite commit and synchronous stage timings, ordinary background checkpoint
+activity, sampled RSS and eligibility-index maintenance. Stage times can overlap
+and sampled RSS is not peak memory. Opening/migration/checkpoint work finishes
+before timing; native startup is not measured. Ordinary automatic checkpoints
+remain enabled and contribute to variability.
+
+The [initial 8 ms report](performance/2026-11-05-issue-520.md) records the original
+100k throughput penalty of about 71%. The [32 ms tuning decision and paired
+repeats](performance/2026-11-05-issue-520-tuning.md), with [all raw data and
+plans](performance/2026-11-05-issue-520-tuning.json), supersede that setting.
+The 24-message and 256 KiB caps, complete results, journal/fsync acknowledgement,
+freshness checks and recovery remain unchanged. The primary 10k update pass was
+about 14% slower than baseline; two 100k comparisons were about 8–9% faster, while
+an exploratory 100k pass was about 9% slower. Maximum 100k callback gaps were
+near 51 ms versus 261 ms in the primary pairs. These synthetic Linux observations
+support the batching choice, not a throughput or native frame-time guarantee.
+Broad global ranking remains synchronous, around 403 ms in the selected 100k run.

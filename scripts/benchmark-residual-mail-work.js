@@ -7,17 +7,19 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const { execFileSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 const crypto = require("node:crypto");
-const Database = require("better-sqlite3");
 const { account, message } = require("./mail-performance-fixture");
 const args = process.argv.slice(2);
 const option = (name, fallback) => args.includes(name) ? args[args.indexOf(name) + 1] : fallback;
 const root = path.resolve(option("--source-root", path.join(__dirname, "..")));
+const Database = require(require.resolve("better-sqlite3", { paths: [root] }));
 const count = Number(option("--messages", 10000)), rounds = Number(option("--rounds", 5));
 assert.ok(Number.isSafeInteger(count) && count >= 1000 && count <= 200000);
 assert.ok(Number.isSafeInteger(rounds) && rounds >= 3 && rounds <= 20);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const round = value => Math.round(value * 1000) / 1000;
 const samples = [], plans = {};
+let journal = { frames: 0, milliseconds: 0, commands: 0 };
+let stages = {}, currentStorage = null;
 const fixtureFile = option("--fixture-file", null);
 if (args.includes("--prepare-only")) assert.ok(fixtureFile, "--prepare-only requires --fixture-file");
 const fixtureDigest = file => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -26,6 +28,16 @@ const prepare = Database.prototype.prepare;
 let capture = null;
 Database.prototype.prepare = function(sql) {
   const stmt = prepare.call(this, sql), all = stmt.all;
+  if (sql === "COMMIT") {
+    const run = stmt.run;
+    stmt.run = function(...params) {
+      const began = performance.now();
+      try { return run.apply(this, params); } finally {
+        const value = stages["sqlite.commit"] ||= { calls: 0, milliseconds: 0 };
+        value.calls++; value.milliseconds += performance.now() - began;
+      }
+    };
+  }
   stmt.all = function(...params) {
     if (capture && /SELECT/.test(sql) && !/^PRAGMA/.test(sql)) capture.push({ sql, params: params[0] || [] });
     return all.apply(this, params);
@@ -35,7 +47,8 @@ Database.prototype.prepare = function(sql) {
 let maxSampledRss = 0;
 async function measure(label, work) {
   process.stderr.write(label + "\n");
-  await work(); await tick();
+  const warmups = label.startsWith("ingest.") ? 3 : 1;
+  for (let n = 0; n < warmups; n++) { await work(); await tick(); }
   const raw = [];
   for (let n = 0; n < rounds; n++) {
     // A continuous immediate heartbeat covers *every* yield and the final
@@ -46,19 +59,46 @@ async function measure(label, work) {
       if (!stopped) setImmediate(heartbeat);
     }
     setImmediate(heartbeat);
+    journal = { frames: 0, milliseconds: 0, commands: 0 }; stages = {};
+    const checkpointInFlightAtStart = !!currentStorage?.running;
     const began = performance.now();
     await work();
     const duration = performance.now() - began;
     await tick(); stopped = true; await tick();
     const rss = process.memoryUsage().rss; maxSampledRss = Math.max(maxSampledRss, rss);
-    raw.push({ elapsedMs: round(duration), maxCallbackGapMs: round(maxGap), callbacks, sampledRssBytes: rss });
+    raw.push({ elapsedMs: round(duration), maxCallbackGapMs: round(maxGap), callbacks, journalFrames: journal.frames, journalMs: round(journal.milliseconds), journalCommands: journal.commands, checkpointInFlightAtStart, checkpointInFlightAtEnd: !!currentStorage?.running, stages: Object.fromEntries(Object.entries(stages).map(([name,value]) => [name, { calls: value.calls, milliseconds: round(value.milliseconds) }])), sampledRssBytes: rss });
   }
   samples.push({ label, medianMs: [...raw.map(x => x.elapsedMs)].sort((a,b) => a-b)[Math.floor(rounds/2)], raw });
 }
 
 async function run() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-residual-bench-"));
+  assert.strictEqual(require(require.resolve("better-sqlite3", { paths: [root] })), Database, "paired source roots must use the same instrumented SQLite constructor");
   const db = require(path.join(root, "host/mail/db"));
+  const perf = require(path.join(root, "host/performance-diagnostics"));
+  const record = perf.record;
+  perf.record = function(name, milliseconds) {
+    if (/^storage\.checkpoint\./.test(name) && Number.isFinite(milliseconds)) {
+      const value = stages[name] ||= { calls: 0, milliseconds: 0 };
+      value.calls++; value.milliseconds += milliseconds;
+    }
+    return record.apply(this, arguments);
+  };
+  const sync = perf.sync;
+  perf.sync = function(name, work) {
+    const began = performance.now();
+    try { return sync.call(this, name, work); } finally {
+      const value = stages[name] ||= { calls: 0, milliseconds: 0 };
+      value.calls++; value.milliseconds += performance.now() - began;
+    }
+  };
+  const { Persistence } = require(path.join(root, "host/mail/persistence"));
+  const append = Persistence.prototype.append;
+  Persistence.prototype.append = function(commands) {
+    currentStorage = this;
+    journal.frames++; journal.commands += commands.length; const began = performance.now();
+    try { return append.call(this, commands); } finally { journal.milliseconds += performance.now() - began; }
+  };
   const file = path.join(directory, "mail.sqlite");
   global.fetch = async () => { throw new Error("Live access forbidden"); };
   let raw;
@@ -79,16 +119,37 @@ async function run() {
         db.replaceFolders(id, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }]);
       }
       for (const [owner, first, end] of [["a", 0, Math.floor(count * .95)], ["b", Math.floor(count * .95), count]]) {
-        for (let start = first; start < end; start += 100) {
+        for (let group = first; group < end; group += 10000) db.transaction(() => {
+        for (let start = group; start < Math.min(end, group + 10000); start += 100) {
           const messages = Array.from({ length: Math.min(100, end - start) }, (_, n) => {
             const uid = start + n + 1;
             return message(uid, { subject: `Common alpha ${uid % 97 === 0 ? "ζήτα rareterm" : "apple"} ${uid === count - 13 ? "uniqueonly" : ""}`,
-              listSortTs: 1700000000000 + Math.floor(uid / 3),
+              listSortTs: 1700000000000 + Math.floor(uid / 3), rfcMessageId: null,
               textBody: "common alpha apple searchable synthetic body ".repeat(6), htmlBody: null });
           });
           db.applyFolderSync(owner, "INBOX", { messages, validity: 7, keepOthers: true });
           if (start % 10000 === 0) process.stderr.write(`seed ${start}\n`);
         }
+        });
+      }
+      // Setup only: avoid repeatedly scanning history for local-copy RFC ID
+      // adoption on every synthetic insert. Restore identical RFC IDs with the
+      // production updater before checkpointing; timed upserts are unchanged.
+      for (let first = 1; first <= count; first += 10000) db.transaction(() => {
+        for (let uid = first; uid < Math.min(count + 1, first + 10000); uid++)
+          db.updateMessage(`performance-${uid}`, { rfc_message_id: `<performance-${uid}@fixture.invalid>` });
+      });
+      if (args.includes("--prepare-only") && fixtureFile) {
+        // Synthetic setup only. Snapshot the quiescent, committed working copy
+        // through SQLite's backup API; do not exercise or relax the application
+        // checkpoint worker's existing deadline on this large artificial seed.
+        const source = new Database(file + ".live", { readonly: true });
+        try { await source.backup(fixtureFile); } finally { source.close(); }
+        const fd = fs.openSync(fixtureFile, "r+");
+        try { fs.fchmodSync(fd, 0o600); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        fs.writeFileSync(fixtureFile + ".json", JSON.stringify({ kind: "morrow-residual-synthetic-v1", count,
+          construction: "production-adapter-quiescent-sqlite-backup", sha256: fixtureDigest(fixtureFile) }));
+        return;
       }
       await db.checkpoint();
       if (fixtureFile) {
@@ -148,7 +209,7 @@ async function run() {
         subject: `Changed content ${++revision}`, textBody: row.textBody + revision })), validity: 7, keepOthers: true }));
     }
     const sourceSha = option("--source-sha", null) || execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-    const output = { sourceSha, harnessSha256, fixtureSha256: fixtureFile ? fixtureDigest(fixtureFile) : null,
+    const output = { warmups: { tracedReads: 2, ingest: 3, otherWrites: 1 }, sourceSha, runtimeSha256: fixtureDigest(path.join(root, "host/mail/db.js")), harnessSha256, fixtureSha256: fixtureFile ? fixtureDigest(fixtureFile) : null,
       node: process.version, electronPackageVersion: require("electron/package.json").version, sqlite: prepare.call(raw, "SELECT sqlite_version() AS v").get().v,
       platform: process.platform, arch: process.arch, fixture: { count, split: "95/5 percent, two accounts, one folder each", bodyBytes: 270,
         terms: "common/alpha all rows; rareterm 1/97; uniqueonly one small-account row; uniquelarge one large-account row added before timing; tied dates every three rows", pending: [0, 1, 200] },
