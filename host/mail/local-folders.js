@@ -9,6 +9,7 @@ const Database = require("better-sqlite3");
 const { simpleParser } = require("mailparser");
 const { recipientHeaders } = require("./recipient-headers");
 const composePolicy = require("../../shared/compose-policy");
+const decoding = require("./mime-decoding");
 
 const ACCOUNT_ID = "__morrow_local__";
 const ARCHIVE_ID = "local-folder:archive";
@@ -26,6 +27,8 @@ function addresses(header) {
 async function parseArchive(raw, source = {}) {
   if (!Buffer.isBuffer(raw) || !raw.length || raw.length > RAW_LIMIT) throw problem("A complete message within the 64 MiB local-copy limit is required.");
   const parsed = await simpleParser(raw);
+  const quality = await decoding.inspectSource(raw);
+  decoding.noteHeaders(quality, parsed);
   const files = parsed.attachments.map(file => ({ id: `local-attachment:${crypto.randomUUID()}`,
     filename: file.filename || "attachment", mimeType: file.contentType || "application/octet-stream",
     contentId: file.contentId || null, isInlineFromApi: !!file.contentId && file.contentDisposition === "inline",
@@ -45,12 +48,15 @@ async function parseArchive(raw, source = {}) {
     replied: source.replied ?? null, forwarded: source.forwarded ?? null,
     originalAccountEmail: source.accountEmail || "", originalFolder: source.folderId || "",
     toMe: addresses(parsed.to).some(value => composePolicy.addresses(value).includes(String(source.accountEmail || "").toLowerCase())),
+    decoding: quality,
   };
   return { raw, files, body, info };
 }
 
 function createLocalStore(file, { database = Database } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const existed = fs.existsSync(file);
+  if (existed && fs.statSync(file).size === 0) throw problem("The local archive file is incomplete. Its file was retained; restore a backup before continuing.");
   const sql = new database(file);
   try {
     fs.chmodSync(file, 0o600);
@@ -61,6 +67,8 @@ function createLocalStore(file, { database = Database } = {}) {
     sql.pragma("fullfsync = ON");
     const version = sql.pragma("user_version", { simple: true });
     if (version > 1) throw problem("This local archive needs a newer version of Morrow Mail. Its files were retained.");
+    if (existed && version !== 1) throw problem("This local archive format could not be recognized. Its files were retained; restore a backup before continuing.");
+    if (version === 1 && sql.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name IN ('folders','messages','attachments','transfers')").get().n !== 4) throw problem("The local archive schema is incomplete. Its files were retained; restore a backup before continuing.");
     sql.transaction(() => {
       sql.exec(`CREATE TABLE IF NOT EXISTS folders (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT REFERENCES folders(id), system INTEGER NOT NULL DEFAULT 0
@@ -110,7 +118,11 @@ function createLocalStore(file, { database = Database } = {}) {
   function message(id, full = true) {
     const row = sql.prepare(`SELECT id,folder_id,info,unread,starred${full ? ",body" : ""} FROM messages WHERE id=?`).get(id);
     if (!row) throw problem("That local message is no longer available.");
-    return { ...JSON.parse(row.info), ...(full ? JSON.parse(row.body) : {}), id: row.id, accountId: ACCOUNT_ID,
+    const info = JSON.parse(row.info);
+    const body = full ? JSON.parse(row.body) : {};
+    const presented = full ? decoding.presentation({ uid: 1, decoding_json: info.decoding, subject: info.subject, from_addr: info.from }, body) : {};
+    return { ...info, ...body, ...(full ? { htmlBody: presented.htmlBody, textBody: presented.textBody,
+      encodingWarning: presented.warning ? presented.warning + " Original bytes are retained in Save EML." : "" } : {}), id: row.id, accountId: ACCOUNT_ID,
       folderId: row.folder_id, folders: [row.folder_id], threadId: row.id, conversationId: row.id,
       unread: !!row.unread, isRead: !row.unread, isStarred: !!row.starred, bodyEpoch: 0, bodyVersion: 0 };
   }
@@ -179,13 +191,11 @@ function createLocalStore(file, { database = Database } = {}) {
     if (params.filterFlagged) rules.push("starred=1");
     if (params.filterToMe) rules.push("json_extract(info,'$.toMe')=1");
     if (typeof params.filterAttachments === "boolean") { rules.push("json_extract(info,'$.hasAttachments')=@attachments"); args.attachments = params.filterAttachments ? 1 : 0; }
-    const order = { date: "sort_ts", subject: "json_extract(info,'$.subject') COLLATE NOCASE", sender: "json_extract(info,'$.from') COLLATE NOCASE", recipient: "COALESCE(json_extract(info,'$.to[0]'),'') COLLATE NOCASE" }[params.sortBy] || "sort_ts";
-    const direction = params.sortDirection === "asc" ? "ASC" : "DESC";
     const where = rules.join(" AND ");
     const total = sql.prepare(`SELECT COUNT(*) n FROM messages WHERE ${where}`).get(args).n;
     const limit = Math.max(1, Math.min(2000, Math.floor(Number(params.limit) || 200)));
     const offset = Number.isSafeInteger(Number(params.offset)) ? Math.max(0, Number(params.offset)) : 0;
-    const ids = sql.prepare(`SELECT id FROM messages WHERE ${where} ORDER BY ${order} ${direction},id ${direction} LIMIT @limit OFFSET @offset`).all({ ...args, limit, offset });
+    const ids = sql.prepare(`SELECT id FROM messages WHERE ${where} ORDER BY ${ordering(params)} LIMIT @limit OFFSET @offset`).all({ ...args, limit, offset });
     const more = offset + ids.length < total;
     return { emails: ids.map(row => message(row.id, false)), threads: {}, total, hasMore: more, hasMoreInCache: more, hasMoreBelow: more, initialSyncDone: true };
   }
@@ -208,16 +218,32 @@ function createLocalStore(file, { database = Database } = {}) {
   function search(params = {}) {
     const query = String(params.query || "").trim().toLowerCase();
     if (!query) return [];
-    const rows = sql.prepare(`SELECT id FROM messages WHERE instr(lower(info),?)>0 OR instr(lower(body),?)>0 ORDER BY sort_ts DESC,id DESC LIMIT 100`).all(query, query);
+    const rows = sql.prepare(`SELECT id FROM messages WHERE
+      (instr(lower(json_extract(info,'$.subject')),@query)>0 OR instr(lower(json_extract(info,'$.from')),@query)>0
+      OR instr(lower(json_extract(info,'$.to')),@query)>0 OR instr(lower(json_extract(body,'$.textBody')),@query)>0)
+      ${params.filterToMe ? "AND json_extract(info,'$.toMe')=1" : ""}
+      ORDER BY ${ordering(params)} LIMIT 100`).all({ query });
     return rows.map(row => message(row.id, false));
   }
+  function ordering(params) {
+    const field = { date: "sort_ts", subject: "json_extract(info,'$.subject') COLLATE NOCASE", sender: "json_extract(info,'$.from') COLLATE NOCASE", recipient: "COALESCE(json_extract(info,'$.to[0]'),'') COLLATE NOCASE" }[params.sortBy] || "sort_ts";
+    const direction = params.sortDirection === "asc" ? "ASC" : "DESC";
+    return `${field} ${direction},id ${direction}`;
+  }
   return { file, folder, folders, account, message, verify, receipt, sourceReceipt, save, setReceipt, manageFolder, list, search, update, copy,
+    transaction(work) { return sql.transaction(work)(); },
     attachment(id, attachmentId) {
-      verify(id);
-      const part = sql.prepare("SELECT data FROM attachments WHERE message_id=? AND id=?").get(id, attachmentId);
-      if (!part) throw problem("That local attachment is unavailable.");
+      const owner = sql.prepare("SELECT info,info_sha FROM messages WHERE id=?").get(id);
+      if (!owner || digest(owner.info) !== owner.info_sha) throw problem("Local message metadata verification failed.");
+      const expected = JSON.parse(owner.info).attachments.find(part => part.id === attachmentId);
+      const part = sql.prepare("SELECT data,sha FROM attachments WHERE message_id=? AND id=?").get(id, attachmentId);
+      if (!part || !expected || expected.size !== part.data.length || digest(part.data) !== part.sha) throw problem("Local attachment verification failed. Its bytes were retained for recovery.");
       return Buffer.from(part.data);
-    }, raw(id) { verify(id); return Buffer.from(sql.prepare("SELECT raw FROM messages WHERE id=?").get(id).raw); },
+    }, raw(id) {
+      const row = sql.prepare("SELECT raw,raw_sha,raw_size FROM messages WHERE id=?").get(id);
+      if (!row || row.raw.length !== row.raw_size || digest(row.raw) !== row.raw_sha) throw problem("Original MIME verification failed. Its bytes were retained for recovery.");
+      return Buffer.from(row.raw);
+    },
     close() { sql.close(); } };
 }
 
@@ -245,14 +271,24 @@ async function transferToLocal({ store, destination, sourceKey, download, source
     // A crash from here through acknowledgement is deliberately uncertain.
     // Restart/repeated requests retain the archive and never replay Trash.
     store.setReceipt(sourceKey, destination, "remote_unknown", "Local copy saved. Server Trash outcome is unconfirmed; check the server before another move.");
+  } catch {
+    return { localId: saved.message_id, status: "remote_failed", detail: "Local copy saved and verified. The source changed or the move intent could not be saved. No server move was submitted by this operation." };
+  }
+  let trashFinished = false;
+  try {
     await trash();
+    trashFinished = true;
     assertCurrent();
     saved = store.setReceipt(sourceKey, destination, "moved", "Local copy verified; the server original is in Trash.");
   } catch (error) {
-    const status = error.operationIssued === false ? "remote_failed" : "remote_unknown";
-    saved = store.setReceipt(sourceKey, destination, status, status === "remote_failed"
-      ? "Local copy saved. The server original could not be moved to Trash; check the account and retry explicitly."
-      : "Local copy saved. Server Trash outcome is unconfirmed; check the server before another move.");
+    const status = !trashFinished && error.operationIssued === false ? "remote_failed" : "remote_unknown";
+    try {
+      saved = store.setReceipt(sourceKey, destination, status, status === "remote_failed"
+        ? "Local copy saved. The server original could not be moved to Trash; check the account and retry explicitly."
+        : "Local copy saved. Server Trash outcome is unconfirmed; check the server before another move.");
+    } catch {
+      return { localId: saved.message_id, status: "remote_unknown", detail: "Local copy saved. The server result could not be recorded; its durable receipt remains unconfirmed. Check the server before another move." };
+    }
   }
   return { localId: saved.message_id, status: saved.status, detail: saved.detail };
 }

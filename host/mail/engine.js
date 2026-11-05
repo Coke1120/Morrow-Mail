@@ -218,7 +218,7 @@ function localAnswer(channel, params, event) {
     }
     if (channel === "mail:exportLocalMessage") return (async () => {
       try {
-        const email = store.message(params.emailId), raw = store.raw(email.id);
+        const raw = store.raw(params.emailId);
         const { dialog, BrowserWindow } = require("electron");
         const win = event?.sender && BrowserWindow.fromWebContents?.(event.sender);
         const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: "message.eml", filters: [{ name: "Email message", extensions: ["eml"] }] });
@@ -242,7 +242,7 @@ function localAnswer(channel, params, event) {
       if (!ids.length || ids.length > 200 || ids.some(value => !localFolders.isMessage(value))) return fail("invalid", "Choose up to 200 local messages.");
       store.folder(params.folderId);
       for (const messageId of ids) store.verify(messageId);
-      const result = ids.map(messageId => params.mode === "copy" ? store.copy(messageId, params.folderId) : store.update(messageId, { folderId: params.folderId }));
+      const result = store.transaction(() => ids.map(messageId => params.mode === "copy" ? store.copy(messageId, params.folderId) : store.update(messageId, { folderId: params.folderId })));
       emitLocalFolders(); return ok(result);
     }
     if (["mail:markRead", "mail:markReadBatch", "mail:toggleStar", "mail:toggleStarBatch"].includes(channel)) {
@@ -250,7 +250,7 @@ function localAnswer(channel, params, event) {
       if (items.length > 200 || items.some(item => !localFolders.isMessage(item.emailId || item.id) || (item.accountId && item.accountId !== localFolders.ACCOUNT_ID))) return fail("invalid", "Choose messages from Local Folders only.");
       if ((channel.startsWith("mail:markRead") && typeof params.isRead !== "boolean") || (channel.startsWith("mail:toggleStar") && typeof params.isStarred !== "boolean")) return fail("invalid", "Choose a read or star state.");
       for (const item of items) store.message(item.emailId || item.id, false);
-      const outcomes = items.map(item => { const messageId = item.emailId || item.id; return { id: messageId, status: "completed", projection: store.update(messageId, channel.startsWith("mail:markRead") ? { isRead: params.isRead } : { isStarred: params.isStarred }) }; });
+      const outcomes = store.transaction(() => items.map(item => { const messageId = item.emailId || item.id; return { id: messageId, status: "completed", projection: store.update(messageId, channel.startsWith("mail:markRead") ? { isRead: params.isRead } : { isStarred: params.isStarred }) }; }));
       emitLocalFolders(); return ok({ outcomes, pending: [], opIds: [], isStarred: params.isStarred });
     }
     if (channel === "mail:listSnoozed") return ok({ records: [] });
@@ -3197,7 +3197,7 @@ function saveUpload(params) {
 
 function attachmentSelection(params, all = false) {
   const id = params && (params.messageId || params.emailId);
-  const local = localFolders.isMessage(id) ? localArchive().message(id) : null;
+  const local = localFolders.isMessage(id) ? localArchive().message(id, false) : null;
   const row = local ? { id: local.id, account_id: localFolders.ACCOUNT_ID, folder_path: local.folderId, subject: local.subject,
     attachments_json: JSON.stringify(local.attachments), local: true } : db.messageById(id);
   if (!row) return null;

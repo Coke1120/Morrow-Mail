@@ -482,7 +482,7 @@ function openLocalMessageMenu(messages, x, y) {
   appendMenuAction(menu, "Copy to local folder…", () => openLocalTransfer(messages, "copy"));
   appendMenuAction(menu, "Move to local folder…", () => openLocalTransfer(messages, "move"));
   appendMenuAction(menu, "Move to local Trash", () => guard(() => trashLocalMessages(messages)));
-  if (messages.length === 1) appendMenuAction(menu, "Save original EML…", () => guard(() => call("mail:exportLocalMessage", { accountId: LOCAL_ACCOUNT_ID, emailId: messages[0].id })));
+  if (messages.length === 1) appendMenuAction(menu, "Save original EML…", () => guard(() => exportLocalMessage(messages[0])));
   placeMenu(menu, x, y);
 }
 
@@ -501,8 +501,9 @@ async function openLocalTransfer(messages, mode) {
   }
   try { await loadLocalFolders(); }
   catch (error) { showStatus("Local Folders could not be opened. " + error.message, true); return; }
-  localTransfer = { messages: rows, mode, running: false, stop: false, trigger: document.activeElement };
   const dialog = $("local-transfer");
+  if (dialog.open && dialog.dataset.closing === "1") releaseClosingDialog(dialog);
+  localTransfer = { messages: rows, mode, running: false, stop: false, trigger: document.activeElement };
   if (!dialog.dataset.wired) {
     dialog.dataset.wired = "1";
     $("local-transfer-form").addEventListener("submit", event => { event.preventDefault(); commitLocalTransfer(); });
@@ -516,6 +517,9 @@ async function openLocalTransfer(messages, mode) {
       if (localTransfer?.running) { event.preventDefault(); localTransfer.stop = true; $("local-transfer-status").textContent = "Stopping after the current message."; }
     });
     dialog.addEventListener("close", () => {
+      // A native close event can arrive after this dialog has reopened.
+      // It belongs to the older session and cannot retire the new review.
+      if (dialog.open) return;
       const trigger = localTransfer?.trigger;
       if (!localTransfer?.running) localTransfer = null;
       trigger?.focus?.();
@@ -594,6 +598,11 @@ async function trashLocalMessages(messages) {
   if (messages.every(email => email.folderId === "local-folder:trash")) { showStatus("These messages are already in local Trash. Move them to another local folder to restore them."); return; }
   const answer = await askConfirm({ title: "Move to local Trash?", body: `${messages.length} local messages will move to Trash on this computer. Restore them with Move locally. Server mail is unchanged.`, confirm: "Move to local Trash", cancel: "Cancel" });
   if (answer.ok) await fileLocalMessages(messages, "local-folder:trash");
+}
+
+async function exportLocalMessage(email) {
+  const result = await call("mail:exportLocalMessage", { accountId: LOCAL_ACCOUNT_ID, emailId: email.id });
+  if (result?.saved) showStatus("Original message saved as EML.");
 }
 
 function composeAccount() {
@@ -5413,7 +5422,7 @@ function renderAccounts() {
     nav.appendChild(heading);
     if (account.isLocal) {
       const create = document.createElement("button");
-      create.type = "button"; create.className = "ghost"; create.textContent = "New local folder…";
+      create.type = "button"; create.className = "ghost local-folder-create"; create.textContent = "New local folder…";
       create.addEventListener("click", () => guard(() => manageLocalFolder("create")));
       nav.appendChild(create);
     }
@@ -7174,6 +7183,7 @@ function shellDeleteSelection() {
 
 function readerDeleteLabel() {
   const n = !isReaderWindow() && state.view === "mail" && !state.outbox ? state.selectedIds.length : 0;
+  if (isLocalMail(state.email) || (n && selectedMessages().every(isLocalMail))) return n ? `Move ${n} selected ${n === 1 ? "message" : "messages"} to local Trash` : "Move to local Trash";
   return n ? `Delete ${n} selected ${n === 1 ? "message" : "messages"}` : "Delete";
 }
 
@@ -7563,10 +7573,10 @@ function renderActions(pane, email) {
     bar.append(readerButton("star", email.isStarred ? "Unstar" : "Star", () => toggleStar(email), starIcon(!!email.isStarred)),
       readerButton("move", "Move locally", () => openLocalTransfer([email], "move")),
       readerButton("copy-local", "Copy locally", () => openLocalTransfer([email], "copy"), strokeIcon(["M9 9h12v12H9z", "M5 15H3V3h12v2"])),
-      readerButton("export-local", "Save EML", () => guard(() => call("mail:exportLocalMessage", { accountId: LOCAL_ACCOUNT_ID, emailId: email.id })), strokeIcon(["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"])),
+      readerButton("export-local", "Save EML", () => exportLocalMessage(email), strokeIcon(["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"])),
       readerButton("trash", "Move to local Trash", () => trashLocalMessages([email])));
     pane.appendChild(bar);
-    const note = document.createElement("p"); note.className = "hint";
+    const note = document.createElement("p"); note.className = "hint local-reader-note";
     note.textContent = "Stored on this computer · Available offline. Reply, AI actions and restoring to a server mailbox are unavailable for local copies.";
     pane.appendChild(note); return;
   }
@@ -15376,8 +15386,9 @@ let composeWindowClosing = false;
 let composeCloseQueued = false;
 
 function newMailSeed() {
-  const account = selectedAccount();
-  return { title: "New message", kind: "new", accountId: (account && account.id) || state.accountId || "" };
+  const selected = selectedAccount();
+  const account = selected?.isLocal ? state.accounts.find(isLive) : selected;
+  return { title: "New message", kind: "new", accountId: (account && account.id) || "" };
 }
 
 function cloneComposeSeed(seed) {
@@ -17730,7 +17741,7 @@ function repaintClockSurfaces() {
 }
 
 async function toggleAccountFolders(accountId) {
-  const account = state.accounts.find(row => row.id === accountId);
+  const account = mailAccounts().find(row => row.id === accountId);
   const collapse = folderCollapse();
   if (!account || !collapse) return;
   const generation = (accountExpansionGenerations.get(accountId) || 0) + 1;
@@ -17805,7 +17816,7 @@ async function collapseAllFolders() {
   folderNavRestore = false;
   const gen = ++folderCollapseGen;
   let next = collapse.normalize(state.prefs.collapsedFolders);
-  for (const account of state.accounts) {
+  for (const account of mailAccounts()) {
     const parents = [];
     const seen = new Set();
     for (const folder of folderTree(foldersOf(account), accountDelimiter(account))) {

@@ -2,7 +2,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), vm = require("node:vm");
-const { Readable } = require("node:stream");
+const { Readable, Duplex } = require("node:stream");
 const { spawnSync } = require("node:child_process");
 const Database = require("better-sqlite3");
 const L = require("../host/mail/local-folders");
@@ -55,6 +55,24 @@ test("folder management preserves stable identities, rejects duplicate names, sy
   assert.throws(() => f.store.manageFolder({ action: "delete", folderId: L.ARCHIVE_ID }), /permanent/);
   f.store.manageFolder({ action: "delete", folderId: child }); f.store.manageFolder({ action: "delete", folderId: parent });
   assert.equal(f.reopen().folders().length, 2);
+});
+
+test("local reading preserves current MIME decoding warnings and original bytes, including a checked plain-text alternative", async t => {
+  const f = fixture(t);
+  const raw = Buffer.concat([Buffer.from('From: sender@fixture.invalid\r\nTo: owner@fixture.invalid\r\nSubject: Original encoding\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary="alt"\r\n\r\n--alt\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nReadable plain text\r\n--alt\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n'),
+    Buffer.from(Buffer.from([60, 112, 62, 255, 60, 47, 112, 62]).toString('base64')), Buffer.from('\r\n--alt--\r\n')]);
+  const saved = await transfer(f.store, raw), email = f.store.verify(saved.localId);
+  assert.match(email.encodingWarning, /could not be decoded/); assert.match(email.encodingWarning, /Original bytes are retained in Save EML/);
+  assert.match(email.textBody, /Readable plain text/); assert.equal(email.htmlBody, null);
+  assert.deepEqual(f.reopen().raw(saved.localId), raw);
+});
+
+test("incomplete and damaged archive schemas fail open without resetting saved files", t => {
+  const f = fixture(t), broken = path.join(f.dir, "broken.sqlite"), empty = path.join(f.dir, "empty.sqlite");
+  fs.writeFileSync(empty, Buffer.alloc(0)); assert.throws(() => L.createLocalStore(empty), /incomplete/); assert.equal(fs.statSync(empty).size, 0);
+  const native = new Database(broken); native.pragma("user_version=1"); native.exec("CREATE TABLE retained(value TEXT)"); native.prepare("INSERT INTO retained VALUES(?)").run("synthetic retained evidence"); native.close();
+  assert.throws(() => L.createLocalStore(broken), /schema is incomplete/);
+  const reader = new Database(broken, { readonly: true }); assert.equal(reader.prepare("SELECT value FROM retained").get().value, "synthetic retained evidence"); reader.close();
 });
 
 test("local flags, copy, move, Trash and restore work without a provider; receipts prevent duplicate archives", async t => {
@@ -111,6 +129,25 @@ test("offline/incomplete downloads and source replacement create no archive and 
   assert.equal(f.store.list({ folderId: L.ARCHIVE_ID }).total, 0);
 });
 
+test("receipt-write failure blocks submission, and post-Trash identity/storage failures keep an uncertain durable receipt", async t => {
+  const f = fixture(t), raw = await mime();
+  await transfer(f.store, raw);
+  const set = f.store.setReceipt;
+  f.store.setReceipt = () => { throw new Error("Synthetic receipt fsync failure"); };
+  const blocked = await transfer(f.store, raw, { move: true }); assert.equal(blocked.status, "remote_failed");
+  assert.match(blocked.detail, /No server move was submitted/); assert.equal(f.store.receipt("source-identity", L.ARCHIVE_ID).status, "copied");
+  f.store.setReceipt = (...args) => { if (args[2] === "remote_unknown") return set(...args); throw new Error("Synthetic acknowledgement storage failure"); };
+  const unrecorded = await transfer(f.store, raw, { move: true, trash: async () => {} });
+  assert.equal(unrecorded.status, "remote_unknown"); assert.equal(f.store.receipt("source-identity", L.ARCHIVE_ID).status, "remote_unknown");
+  f.store.setReceipt = set;
+  await transfer(f.store, raw, { sourceKey: "different-source" });
+  let done = false;
+  const changed = await transfer(f.store, raw, { sourceKey: "different-source", move: true, assertCurrent() {
+    if (done) throw Object.assign(new Error("Account removed after submission"), { operationIssued: false });
+  }, trash: async () => { done = true; } });
+  assert.equal(changed.status, "remote_unknown");
+});
+
 test("real SQLITE_FULL rolls back the complete copy before any provider write", async t => {
   let native;
   const f = fixture(t, { database: class { constructor(file) { native = new Database(file); return native; } } });
@@ -127,6 +164,7 @@ test("corrupt raw or attachment bytes fail verification and block remote cleanup
   other.prepare("UPDATE attachments SET data=? WHERE message_id=?").run(Buffer.from("corrupt"), saved.localId); other.close();
   await assert.rejects(() => transfer(f.store, raw, { move: true }), /attachment verification failed/);
   assert.equal(f.store.receipt("source-identity", L.ARCHIVE_ID).status, "copied");
+  assert.deepEqual(f.store.raw(saved.localId), raw, "independently verified original MIME remains exportable for recovery");
 });
 
 test("abrupt process exit during Trash retains an uncertain receipt and all bytes without replay", async t => {
@@ -175,6 +213,53 @@ test("Gmail raw-reader uses resolved provider identity and refuses unrelated or 
   await assert.rejects(() => remote.fetchArchiveSource({ gmail }, ROW, { maxBytes: 10 }), /complete message/);
 });
 
+test("real ImapFlow over synthetic Duplex preserves original MIME and issues UID MOVE without expunge", { timeout: 10000 }, async t => {
+  const raw = await mime(), commands = [];
+  class Socket extends Duplex {
+    constructor() { super(); this.authorized = true; this.input = ""; }
+    _read() {}
+    setKeepAlive() { return this; }
+    setTimeout() { return this; }
+    getCipher() { return { name: "SYNTHETIC", version: "fixture" }; }
+    reply(value) { setImmediate(() => { if (!this.destroyed) this.push(value); }); }
+    _write(bytes, _encoding, callback) {
+      this.input += bytes.toString();
+      let end;
+      while ((end = this.input.indexOf("\r\n")) >= 0) {
+        const line = this.input.slice(0, end); this.input = this.input.slice(end + 2); commands.push(line);
+        const [, tag, command] = /^(\S+)\s+(.+)$/.exec(line) || [];
+        if (/^CAPABILITY/.test(command)) this.reply(`* CAPABILITY IMAP4rev1 UIDPLUS MOVE\r\n${tag} OK CAPABILITY\r\n`);
+        else if (/^LIST/.test(command)) this.reply(`* LIST (\\HasNoChildren) "/" "INBOX"\r\n${tag} OK LIST\r\n`);
+        else if (/^LSUB/.test(command)) this.reply(`${tag} OK LSUB\r\n`);
+        else if (/^SELECT/.test(command)) this.reply(`* FLAGS (\\Seen)\r\n* 1 EXISTS\r\n* OK [UIDVALIDITY 100] generation\r\n* OK [UIDNEXT 8] next\r\n${tag} OK [READ-WRITE] SELECT\r\n`);
+        else if (/^UID FETCH/.test(command)) {
+          if (/BODY\.PEEK\[\]/.test(command)) {
+            const range = /<([0-9]+)\.([0-9]+)>/.exec(command);
+            const start = Number(range?.[1] || 0), size = Number(range?.[2] || raw.length), part = raw.subarray(start, start + size);
+            this.reply(Buffer.concat([Buffer.from(`* 1 FETCH (UID 7 RFC822.SIZE ${raw.length} BODY[]<${start}> {${part.length}}\r\n`), part, Buffer.from(`)\r\n${tag} OK FETCH\r\n`)]));
+          } else this.reply(`* 2 FETCH (UID 999 RFC822.SIZE 1)\r\n* 1 FETCH (UID 7 RFC822.SIZE ${raw.length})\r\n${tag} OK FETCH\r\n`);
+        } else if (/^UID MOVE/.test(command)) this.reply(`${tag} OK [COPYUID 101 7 77] moved\r\n`);
+        else if (/^LOGOUT/.test(command)) this.reply(`* BYE fixture logout\r\n${tag} OK LOGOUT\r\n`);
+        else this.reply(`${tag} BAD unexpected synthetic command\r\n`);
+      }
+      callback();
+    }
+  }
+  const { ImapFlow } = require("imapflow");
+  const client = new ImapFlow({ host: "imap.fixture.invalid", port: 993, secure: true, logger: false, disableAutoIdle: true,
+    auth: { user: "owner@fixture.invalid", pass: "synthetic-only" }, transport: { connect(_options, ready) {
+      const socket = new Socket(); setImmediate(() => { ready(); socket.reply("* PREAUTH synthetic local archive fixture\r\n"); }); return socket;
+    } } });
+  client.on("error", () => {}); t.after(() => client.close());
+  await client.connect();
+  assert.deepEqual(await remote.fetchArchiveSource(client, ROW), raw);
+  const moved = await remote.moveUid(client, "INBOX", 7, "Trash", 100, ROW.id);
+  assert.deepEqual(moved, { uid: 77, uidValidity: 101 });
+  assert(commands.some(command => /UID FETCH.*BODY\.PEEK\[\]/.test(command)));
+  assert(commands.some(command => /UID MOVE 7/.test(command))); assert(!commands.some(command => /EXPUNGE|\\Deleted|UID COPY/.test(command)));
+  await client.logout();
+});
+
 test("host/preload use local ownership after account removal; no credentials or provider calls for offline reads and files", async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-local-engine-")), previous = { ...process.env };
   const env = { MORROW_MAIL_DIR: dir, MORROW_USER_DATA: dir, MORROW_MAIL_SECRETS: "memory" }; Object.assign(process.env, env);
@@ -221,6 +306,17 @@ test("host/preload use local ownership after account removal; no credentials or 
   assert.equal((await preload.invoke("mail:toggleStar", { emailId: localId, accountId: L.ACCOUNT_ID, isStarred: true })).success, true);
   assert.equal((await preload.invoke("mail:listFromCache", { accountId: L.ACCOUNT_ID, folderId: L.ARCHIVE_ID })).data.emails[0].isStarred, true);
   assert.equal((await preload.invoke("mail:listProviderFolders", { accountId: L.ACCOUNT_ID })).success, false);
+  const Module = require("node:module"), load = Module._load, exportedPath = path.join(dir, "synthetic-export.eml"); let cancel = false;
+  Module._load = function (name, ...args) {
+    if (name === "electron") return { BrowserWindow: {}, dialog: { showSaveDialog: async () => ({ canceled: cancel, filePath: exportedPath }) } };
+    return load.call(this, name, ...args);
+  };
+  try {
+    assert.equal((await preload.invoke("mail:exportLocalMessage", { accountId: L.ACCOUNT_ID, emailId: localId })).data.saved, true);
+    assert.deepEqual(fs.readFileSync(exportedPath), raw);
+    cancel = true;
+    assert.equal((await preload.invoke("mail:exportLocalMessage", { accountId: L.ACCOUNT_ID, emailId: localId })).data.cancelled, true);
+  } finally { Module._load = load; }
   assert.deepEqual([credentialReads, providerCalls], before, "local operations must never obtain credentials or open a provider connection");
   await assert.rejects(() => preload.invoke("mail:notARealLocalChannel", {}), /Unsupported channel/);
 });
@@ -290,4 +386,58 @@ test("engine guards actual Trash/MOVE submission, unsupported IMAP, lost replies
   const first = await gmailRequest("gmail-inbox"), second = await gmailRequest("gmail-label");
   assert.equal(first.success, true, JSON.stringify(first)); assert.equal(second.success, true, JSON.stringify(second));
   assert.equal(first.data.localId, second.data.localId); assert.equal(downloads, 1);
+});
+
+test("actual Gmail API/session/engine archives raw MIME and confirms TRASH membership; an ignored Trash stays uncertain", async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-local-gmail-")), previous = { ...process.env }, oldFetch = global.fetch;
+  const env = { MORROW_MAIL_DIR: dir, MORROW_USER_DATA: dir, MORROW_MAIL_SECRETS: "memory", MORROW_GMAIL_PACE: "0",
+    MORROW_GOOGLE_OAUTH_JSON: JSON.stringify({ installed: { client_id: "local-folders-fixture.apps.googleusercontent.com", client_secret: "synthetic-only" } }) };
+  Object.assign(process.env, env); delete process.env.MORROW_GOOGLE_OAUTH_FILE;
+  const engine = require("../host/mail/engine"), db = require("../host/mail/db"), secrets = require("../host/mail/secrets");
+  const { server, message } = require("./gmail-fixture"), { createSession } = require("../host/mail/gmail-session");
+  const initial = [message("local-gmail-one", ["INBOX", "Label_work"], "<archive@fixture.invalid>"), message("local-gmail-two", ["INBOX"], "<archive@fixture.invalid>")];
+  const service = server(initial), raw = await mime(); let rawReads = 0, trashWrites = 0, ignoreTrash = false;
+  global.fetch = async (input, options = {}) => {
+    const url = new URL(input);
+    assert.equal(url.origin, "https://gmail.googleapis.com", "all provider calls are synthetic");
+    if (url.searchParams.get("format") === "raw") {
+      rawReads++;
+      const id = decodeURIComponent(url.pathname.split("/").at(-1)), value = service.messages.get(id);
+      return new Response(JSON.stringify({ id, threadId: value.threadId, labelIds: value.labelIds, raw: raw.toString("base64url") }));
+    }
+    if (options.method === "POST" && url.pathname.endsWith("/trash")) {
+      trashWrites++;
+      if (ignoreTrash) return new Response(JSON.stringify(service.messages.get(decodeURIComponent(url.pathname.split("/").at(-2)))));
+    }
+    return service.fetcher(input, options);
+  };
+  t.after(async () => {
+    await engine.answer("mail:removeAccount", [{ accountId: "local-gmail" }]);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    engine.closeLocalArchiveForTest(); await db.close(); global.fetch = oldFetch;
+    for (const key of [...Object.keys(env), "MORROW_GOOGLE_OAUTH_FILE"]) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  await engine.init();
+  db.insertAccount({ id: "local-gmail", email: SOURCE.accountEmail, username: SOURCE.accountEmail, profile: "gmail", authKind: "oauth2", createdAt: 1,
+    imapHost: "imap.gmail.com", imapPort: 993, imapTls: true, smtpHost: "smtp.gmail.com", smtpPort: 465, smtpTls: true });
+  db.enableGmail("local-gmail");
+  secrets.setPassword("local-gmail", JSON.stringify({ provider: "google", purpose: "imap", googleClientId: "local-folders-fixture.apps.googleusercontent.com",
+    accessToken: "synthetic-access", refreshToken: "synthetic-refresh", expiresAt: Date.now() + 3600000, grantedScopes: require("../host/mail/gmail-mail-api").MAIL_SCOPES }));
+  const session = createSession(db.accountById("local-gmail"), "synthetic-access", { api: service.api() });
+  const folders = await session.folders(); db.replaceFolders("local-gmail", folders.folders);
+  for (const item of initial) await session.adopt(item, { full: true });
+  const one = db.gmailCopies("local-gmail", initial[0].id).find(row => row.folder_path === "INBOX");
+  const request = row => engine.answer("mail:transferToLocal", [{ emailId: row.id, accountId: "local-gmail", folderId: L.ARCHIVE_ID, mode: "move" }]);
+  const confirmed = await request(one);
+  assert.equal(confirmed.success, true, JSON.stringify(confirmed)); assert.equal(confirmed.data.status, "moved", JSON.stringify(confirmed));
+  assert(service.messages.get(initial[0].id).labelIds.includes("TRASH"));
+  const two = db.gmailCopies("local-gmail", initial[1].id).find(row => row.folder_path === "INBOX");
+  ignoreTrash = true; const unknown = await request(two);
+  assert.equal(unknown.success, true, JSON.stringify(unknown)); assert.equal(unknown.data.status, "remote_unknown");
+  const repeated = await request(two); assert.equal(repeated.data.status, "remote_unknown");
+  assert.equal(trashWrites, 2); assert.equal(rawReads, 2);
+  const disk = L.createLocalStore(path.join(dir, "local-folders.sqlite"));
+  try { assert.deepEqual(disk.raw(confirmed.data.localId), raw); assert.deepEqual(disk.raw(unknown.data.localId), raw); }
+  finally { disk.close(); }
 });
