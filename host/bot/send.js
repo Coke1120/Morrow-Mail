@@ -303,6 +303,9 @@ async function finishSend(prepared, receipt) {
   let persisted;
   const smtp = await engine.submitSmtp({
     account: prepared.account,
+    disposition: prepared.inReplyToMessageId ? db.captureDisposition(prepared.accountId, {
+      kind: "reply", sourceMessageId: prepared.inReplyToMessageId, inReplyTo: prepared.inReplyToHeader,
+    }) : null,
     options: prepared.options,
     messageId: receipt.messageId,
     threadId: null,
