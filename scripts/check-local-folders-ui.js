@@ -1,0 +1,112 @@
+const { test } = require("node:test"), assert = require("node:assert/strict");
+const fs = require("node:fs"), path = require("node:path"), os = require("node:os");
+const { JSDOM } = require("jsdom");
+const { renderer } = require("./check-ux-workflows");
+const L = require("../host/mail/local-folders");
+
+test("rendered Local Folders supports frozen Copy/Move review, local navigation, offline reading, management and Features help", async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-local-ui-"));
+  const store = L.createLocalStore(path.join(dir, "local.sqlite"));
+  const window = new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"), "utf8"), { url: "https://fixture.invalid" }).window;
+  const calls = [];
+  t.after(() => { window.close(); store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+  window.HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); this.dispatchEvent(new window.Event("close")); };
+  window.HTMLElement.prototype.scrollIntoView = function () {};
+  const raw = await require("../host/mail/remote").buildRaw({ from: "sender@fixture.invalid", to: "owner@fixture.invalid", subject: "Synthetic local archive", text: "Offline body", attachments: [{ filename: "owned.txt", content: "Saved bytes" }] });
+  const remote = { id: "connected", email: "owner@fixture.invalid", platform: "imap", imapSmtpProfile: "custom",
+    folders: { primary: [{ id: "INBOX", name: "Inbox", wellKnownName: "inbox" }], more: [] } };
+  const source = { id: "source", accountId: remote.id, folderId: "INBOX", subject: "Synthetic local archive", date: "2026-11-01T12:00:00Z", unread: true };
+  let connected = true, serverTrashes = 0, releaseHeld;
+  const held = new Promise(resolve => { releaseHeld = resolve; });
+  const envelope = data => ({ success: true, data });
+  window.morrow = { on() {}, invoke: async (channel, params = {}) => {
+    calls.push({ channel, params });
+    switch (channel) {
+      case "mail:listAccounts": return envelope(connected ? [remote] : []);
+      case "mail:localFolders": return envelope(store.account());
+      case "mail:listFromCache": return envelope(params.accountId === L.ACCOUNT_ID ? store.list(params) : { emails: [source], total: 1, initialSyncDone: true });
+      case "mail:openEmail": return envelope({ email: store.verify(params.emailId), isThread: false, threadMessages: [] });
+      case "mail:markRead": store.update(params.emailId, { isRead: params.isRead }); return envelope({ outcomes: [], pending: [] });
+      case "mail:toggleStar": store.update(params.emailId, { isStarred: params.isStarred }); return envelope({ outcomes: [], pending: [] });
+      case "mail:transferToLocal":
+        if (params.emailId === "held-source") await held;
+        return envelope(await L.transferToLocal({ store, sourceKey: "ui-" + params.emailId, destination: params.folderId,
+          source: {}, assertCurrent() {}, download: async () => raw, move: params.mode === "move", trash: async () => { serverTrashes++; } }));
+      case "mail:moveLocalMessage": return envelope(params.mode === "copy" ? store.copy(params.emailId, params.folderId) : store.update(params.emailId, { folderId: params.folderId }));
+      case "mail:manageLocalFolder": return envelope(store.manageFolder(params));
+      case "mail:exportLocalMessage": return envelope({ saved: true });
+      case "mail:listSnoozed": return envelope({ records: [] });
+      case "mail:listProviderFolders": return envelope({ folders: [], api: false });
+      case "morrow:configSetSidebarAccountFoldersExpanded": return { [params.accountId]: params.expanded };
+      default: throw new Error("Unexpected synthetic UI invoke: " + channel);
+    }
+  } };
+  window.morrowFeaturesCatalog = require("../renderer/features-catalog");
+  window.morrowFolderCollapse = require("../shared/folder-collapse");
+  const ui = renderer({ window, document: window.document, localStorage: window.localStorage,
+    Event: window.Event, Node: window.Node, morrowFolderCollapse: window.morrowFolderCollapse,
+    morrowFeaturesCatalog: window.morrowFeaturesCatalog, fixtureSource: source, fixtureRemote: remote });
+  ui.run("renderSettingsAccounts=refreshMailVacation=applyLayoutPanes=()=>{}; state.accounts=[fixtureRemote]; state.accountId='connected'; state.folderId='INBOX';");
+  ui.run("state.view='features'");
+  await ui.run("loadAccounts('connected',state.accounts)");
+  assert.equal(calls.filter(row => row.channel === "mail:localFolders").length, 0, "supplied background account snapshots must not open or retry the independent archive");
+  ui.run("state.view='mail'");
+  await ui.run("loadLocalFolders()"); ui.run("renderAccounts()");
+  assert.match(window.document.getElementById("folders").textContent, /Local Folders/);
+  const localButtons = window.document.querySelectorAll(`[data-account-id="${L.ACCOUNT_ID}"]`);
+  assert.equal(localButtons.length, 2);
+  assert.equal(window.document.querySelector(`[data-account-id="${L.ACCOUNT_ID}"][data-nest-kind]`), null, "local folders never become IMAP drag destinations");
+  await ui.run(`toggleAccountFolders('${L.ACCOUNT_ID}')`);
+  assert.equal(window.document.querySelector(`[data-nav-key="account:${L.ACCOUNT_ID}"]`).getAttribute("aria-expanded"), "false");
+  await ui.run(`toggleAccountFolders('${L.ACCOUNT_ID}')`);
+  await ui.run("openLocalTransfer([fixtureSource], 'copy')");
+  assert.equal(window.document.getElementById("local-transfer").open, true);
+  assert.match(window.document.getElementById("local-transfer-help").textContent, /Server messages stay in place/);
+  const mode = window.document.getElementById("local-transfer-mode"); mode.value = "move"; mode.dispatchEvent(new window.Event("change"));
+  assert.match(window.document.getElementById("local-transfer-help").textContent, /Gmail moves the message across all labels/);
+  assert.equal(window.document.getElementById("local-transfer-ok").textContent, "Move");
+  window.document.getElementById("local-transfer-cancel").click(); assert.equal(serverTrashes, 0);
+  assert.equal(calls.filter(row => row.channel === "mail:transferToLocal").length, 0);
+  await ui.run("openLocalTransfer([fixtureSource], 'copy')");
+  window.document.getElementById("local-transfer").dispatchEvent(new window.Event("close"));
+  assert.equal(ui.run("localTransfer !== null"), true, "a queued close from an older session cannot retire a reopened review");
+  ui.run("state.emails=[]; state.selectedIds=[]; state.accountId='other-new-selection';");
+  await ui.run("commitLocalTransfer()");
+  const invoked = calls.find(row => row.channel === "mail:transferToLocal");
+  assert.equal(invoked.params.emailId, source.id); assert.equal(invoked.params.accountId, remote.id); assert.equal(invoked.params.mode, "copy");
+  assert.equal(serverTrashes, 0); assert.equal(store.list({ folderId: L.ARCHIVE_ID }).total, 1);
+  await ui.run("openLocalTransfer([{...fixtureSource,id:'held-source'},{...fixtureSource,id:'unattempted-source'}], 'copy')");
+  const committing = ui.run("commitLocalTransfer()");
+  assert.equal(ui.run("localTransfer.running"), true);
+  window.document.getElementById("local-transfer-cancel").click(); releaseHeld(); await committing;
+  assert.equal(calls.filter(row => row.channel === "mail:transferToLocal" && row.params.emailId === "held-source").length, 1);
+  assert.equal(calls.filter(row => row.channel === "mail:transferToLocal" && row.params.emailId === "unattempted-source").length, 0);
+  connected = false;
+  ui.run("state.accounts=[];"); await ui.run(`selectFolder('${L.ACCOUNT_ID}', '${L.ARCHIVE_ID}')`);
+  const localId = store.list({ folderId: L.ARCHIVE_ID }).emails[0].id;
+  await ui.run(`openMessage(${JSON.stringify(localId)})`);
+  assert.match(window.document.getElementById("reader").textContent, /Stored on this computer/);
+  assert.match(window.document.getElementById("reader").textContent, /owned.txt/);
+  assert.equal(window.document.querySelector('#reader [data-action="reply"]'), null);
+  assert.equal(window.document.querySelector('.message-row [data-action="reply"]'), null);
+  assert.equal(store.message(localId).isRead, true);
+  window.document.querySelector('#reader [data-action="export-local"]').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(row => row.channel === "mail:exportLocalMessage").length, 1, "the real reader button must reach export exactly once");
+  const before = calls.length; await ui.run("refresh()");
+  assert(!calls.slice(before).some(row => ["mail:listFromNetwork", "mail:listProviderFolders"].includes(row.channel)), "local Refresh never enters a provider API");
+  assert.equal(ui.run("newMailSeed().accountId"), "", "local root is never a sender");
+  const parent = store.manageFolder({ action: "create", name: "Projects" }).id;
+  const child = store.manageFolder({ action: "create", name: "2026", parentId: parent }).id;
+  await ui.run("loadLocalFolders()"); ui.run("renderAccounts()");
+  const tree = JSON.parse(ui.run("JSON.stringify(folderTree(foldersOf(state.localAccount), '/'))"));
+  assert.equal(tree.find(row => row.id === child).parentId, parent); assert.equal(tree.find(row => row.id === child).depth, 1);
+  const button = window.document.querySelector(`[data-account-id="${L.ACCOUNT_ID}"][data-folder-id="${parent}"]`);
+  button.focus(); button.dispatchEvent(new window.KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true }));
+  assert.match(window.document.getElementById("organize-menu").textContent, /Rename local folder/);
+  ui.run("closeOrganizeMenu(); showFeatures()");
+  const card = [...window.document.querySelectorAll(".feature-card")].find(node => node.textContent.includes("Local Folders appears"));
+  assert(card); assert.match(card.textContent, /64 MiB/); assert.match(card.textContent, /Gmail retains its existing 35 MiB/);
+  assert.match(card.textContent, /Restart never replays server Trash/); assert.match(card.textContent, /import MBOX/);
+  assert.match(window.document.getElementById("local-folders-help").textContent, /after disconnecting an account/);
+});

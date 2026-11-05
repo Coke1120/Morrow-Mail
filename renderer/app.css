@@ -6178,3 +6178,14 @@ html[data-window="translate"] #reader .translate-column h2 {
 #setup-guide-mail .schedule-delay-cell { display: grid; gap: 6px; min-width: 0; }
 #setup-guide-mail .schedule-delay-cell input { width: 100%; min-width: 0; }
 #setup-guide-mail button { margin-top: 6px; }
+#local-transfer { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; }
+#local-transfer form { display: grid; gap: 12px; min-width: 0; }
+#local-transfer p { margin: 0; overflow-wrap: anywhere; }
+#local-transfer label { margin: 0; }
+#local-transfer select { width: 100%; min-width: 0; max-width: 100%; }
+#local-transfer .row { flex-wrap: wrap; }
+#local-transfer :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 3px; }
+#folders .local-folder-create { margin: 4px 12px 8px; padding: 7px 10px; color: #fff; background: transparent; border: 1px solid rgba(255,255,255,.35); border-radius: 8px; text-align: left; }
+#folders .local-folder-create:hover, #folders .local-folder-create:focus-visible { background: rgba(255,255,255,.12); }
+#folders .local-folder-create:focus-visible { outline: 2px solid #b9d5ad; outline-offset: 2px; }
+#reader .local-reader-note { margin: 12px 20px; }

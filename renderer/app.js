@@ -1,8 +1,10 @@
 const api = window.morrow;
 let timelineView = null;
+const LOCAL_ACCOUNT_ID = "__morrow_local__";
 
 const state = {
   accounts: [],
+  localAccount: null,
   accountId: null,
   allInbox: false,
   allInboxUnreadOnly: false,
@@ -442,7 +444,165 @@ function wireStatusNotice() {
 }
 
 function selectedAccount() {
-  return state.accounts.find((account) => account.id === state.accountId) || null;
+  return mailAccounts().find((account) => account.id === state.accountId) || null;
+}
+
+function mailAccounts() { return state.localAccount ? [...state.accounts, state.localAccount] : state.accounts; }
+function isLocalMail(email) { return email?.accountId === LOCAL_ACCOUNT_ID; }
+
+async function loadLocalFolders() {
+  state.localAccount = await call("mail:localFolders");
+  return state.localAccount;
+}
+
+function openLocalFolderMenu(folder, x, y) {
+  const menu = ensureOrganizeMenu(); menu.replaceChildren(); menu.setAttribute("aria-label", "Local folder");
+  appendMenuAction(menu, folder ? "New subfolder…" : "New local folder…", () => guard(() => manageLocalFolder("create", folder)));
+  if (folder && !folder.system) {
+    appendMenuAction(menu, "Rename local folder…", () => guard(() => manageLocalFolder("rename", folder)));
+    appendMenuAction(menu, "Delete empty local folder…", () => guard(() => manageLocalFolder("delete", folder)));
+  }
+  placeMenu(menu, x, y);
+}
+
+async function manageLocalFolder(action, folder) {
+  const answer = await askConfirm({ title: action === "create" ? "New local folder" : action === "rename" ? "Rename local folder" : "Delete empty local folder?",
+    body: action === "delete" ? "Only an empty folder without subfolders can be deleted. Move messages and subfolders out first."
+      : "This folder and its messages are stored on this computer, independently of your connected accounts.",
+    needsName: action !== "delete", name: action === "rename" ? folder.name : "", placeholder: "Folder name",
+    confirm: action === "delete" ? "Delete empty folder" : "Save", cancel: "Cancel" });
+  if (!answer.ok) return;
+  await call("mail:manageLocalFolder", { action, name: answer.name, folderId: folder?.id, ...(action === "create" && folder ? { parentId: folder.id } : {}) });
+  await loadLocalFolders(); rememberSelection(); renderAccounts(); await loadList();
+  showStatus(action === "delete" ? "Empty local folder deleted." : "Local folder saved.");
+}
+
+function openLocalMessageMenu(messages, x, y) {
+  const menu = ensureOrganizeMenu(); menu.replaceChildren(); menu.setAttribute("aria-label", "Local messages");
+  appendMenuAction(menu, "Copy to local folder…", () => openLocalTransfer(messages, "copy"));
+  appendMenuAction(menu, "Move to local folder…", () => openLocalTransfer(messages, "move"));
+  appendMenuAction(menu, "Move to local Trash", () => guard(() => trashLocalMessages(messages)));
+  if (messages.length === 1) appendMenuAction(menu, "Save original EML…", () => guard(() => exportLocalMessage(messages[0])));
+  placeMenu(menu, x, y);
+}
+
+let localTransfer = null;
+function localFolderPath(folder, folders, visited = new Set()) {
+  if (!folder || visited.has(folder.id)) return "";
+  visited.add(folder.id);
+  const parent = folders.find(row => row.id === folder.parentId);
+  return (parent ? localFolderPath(parent, folders, visited) + " / " : "") + folder.name;
+}
+
+async function openLocalTransfer(messages, mode) {
+  const rows = messages.map(email => ({ id: email.id, accountId: email.accountId, subject: email.subject || "(no subject)", folderId: email.folderId, isDraft: !!email.isDraft }));
+  if (!rows.length || rows.length > 200 || rows.some(email => email.isDraft) || localTransfer?.running) {
+    showStatus("Choose up to 200 saved messages and finish any current local transfer first.", true); return;
+  }
+  try { await loadLocalFolders(); }
+  catch (error) { showStatus("Local Folders could not be opened. " + error.message, true); return; }
+  const dialog = $("local-transfer");
+  if (dialog.open && dialog.dataset.closing === "1") releaseClosingDialog(dialog);
+  localTransfer = { messages: rows, mode, running: false, stop: false, trigger: document.activeElement };
+  if (!dialog.dataset.wired) {
+    dialog.dataset.wired = "1";
+    $("local-transfer-form").addEventListener("submit", event => { event.preventDefault(); commitLocalTransfer(); });
+    $("local-transfer-mode").addEventListener("change", paintLocalTransferMode);
+    $("local-transfer-cancel").addEventListener("click", () => {
+      if (localTransfer?.running) {
+        localTransfer.stop = true; $("local-transfer-status").textContent = "Stopping after the current message. A started server move cannot be recalled.";
+      } else closeDialog("local-transfer");
+    });
+    dialog.addEventListener("cancel", event => {
+      if (localTransfer?.running) { event.preventDefault(); localTransfer.stop = true; $("local-transfer-status").textContent = "Stopping after the current message."; }
+    });
+    dialog.addEventListener("close", () => {
+      // A native close event can arrive after this dialog has reopened.
+      // It belongs to the older session and cannot retire the new review.
+      if (dialog.open) return;
+      const trigger = localTransfer?.trigger;
+      if (!localTransfer?.running) localTransfer = null;
+      trigger?.focus?.();
+    });
+  }
+  $("local-transfer-source").textContent = rows.length === 1 ? rows[0].subject : `${rows.length} selected messages. Hidden selections are included.`;
+  const local = rows.every(isLocalMail);
+  const folders = foldersOf(state.localAccount);
+  $("local-transfer-folder").replaceChildren(...folders.filter(folder => !local || mode === "copy" || !rows.every(row => row.folderId === folder.id))
+    .map(folder => option(folder.id, localFolderPath(folder, folders))));
+  $("local-transfer-mode").value = mode;
+  $("local-transfer-mode").querySelector('[value="move"]').textContent = local ? "Move between local folders" : "Move · Trash server original after copying";
+  $("local-transfer-status").textContent = "";
+  paintLocalTransferMode();
+  $("local-transfer-ok").disabled = false;
+  $("local-transfer-cancel").textContent = "Cancel";
+  $("local-transfer-folder").disabled = false;
+  $("local-transfer-mode").disabled = false;
+  openDialog("local-transfer"); $("local-transfer-folder").focus();
+}
+
+function paintLocalTransferMode() {
+  const mode = $("local-transfer-mode").value;
+  const local = localTransfer?.messages.every(isLocalMail);
+  $("local-transfer-title").textContent = (mode === "move" ? "Move" : "Copy") + " to Local Folders";
+  $("local-transfer-ok").textContent = mode === "move" ? "Move" : "Copy";
+  $("local-transfer-help").textContent = local ? "Copy or move complete messages and attachments between local folders. No network connection is needed."
+    : mode === "move" ? "Download and verify a complete local copy first, then move the server original to its Trash. Gmail moves the message across all labels. Server Trash may be auto-deleted by your provider. Failed or unconfirmed moves keep the local copy; check the server before retrying. IMAP needs MOVE support. Maximum 64 MiB per original message."
+      : "Download the complete original message, headers and all attachments to this computer. Server messages stay in place. An internet connection and free disk space are needed. Maximum 64 MiB per original message.";
+}
+
+async function commitLocalTransfer() {
+  const session = localTransfer;
+  if (!session || session.running) return;
+  const folderId = $("local-transfer-folder").value;
+  if (!folderId) return;
+  const mode = $("local-transfer-mode").value;
+  session.running = true;
+  $("local-transfer-ok").disabled = true;
+  $("local-transfer-folder").disabled = true;
+  $("local-transfer-mode").disabled = true;
+  $("local-transfer-cancel").textContent = "Stop after this message";
+  const results = []; let error = "";
+  for (const message of session.messages) {
+    if (session.stop) break;
+    $("local-transfer-status").textContent = `${mode === "move" ? "Moving" : "Copying"} ${results.length + 1} of ${session.messages.length}…`;
+    try {
+      const result = await call(isLocalMail(message) ? "mail:moveLocalMessage" : "mail:transferToLocal", {
+        emailId: message.id, accountId: message.accountId, folderId, mode,
+      });
+      results.push(result);
+      if (result?.status === "remote_failed" || result?.status === "remote_unknown") { error = result.detail; break; }
+    } catch (failure) { error = failure.message; break; }
+  }
+  session.running = false;
+  const details = error || `${results.length} of ${session.messages.length} messages saved in Local Folders.`;
+  $("local-transfer-status").textContent = details;
+  $("local-transfer-cancel").textContent = "Close";
+  // A failed or uncertain move is never automatically replayed by this dialog.
+  try { await loadLocalFolders(); renderAccounts(); await loadList(); } catch (failure) { error ||= "Saved results received; refresh could not complete. " + failure.message; }
+  if (mode === "move" && session.messages.some(message => message.id === state.email?.id)) {
+    state.email = null; state.thread = []; renderReader(false);
+  }
+  showStatus(error || details, !!error);
+  if (!error) closeDialog("local-transfer");
+}
+
+async function fileLocalMessages(messages, folderId) {
+  await call("mail:moveLocalMessage", { accountId: LOCAL_ACCOUNT_ID, items: messages.map(email => ({ emailId: email.id })), folderId, mode: "move" });
+  if (messages.some(email => email.id === state.email?.id)) { state.email = null; state.thread = []; renderReader(false); }
+  state.selectedIds = [];
+  await loadLocalFolders(); renderAccounts(); await loadList(); showStatus("Messages moved locally.");
+}
+
+async function trashLocalMessages(messages) {
+  if (messages.every(email => email.folderId === "local-folder:trash")) { showStatus("These messages are already in local Trash. Move them to another local folder to restore them."); return; }
+  const answer = await askConfirm({ title: "Move to local Trash?", body: `${messages.length} local messages will move to Trash on this computer. Restore them with Move locally. Server mail is unchanged.`, confirm: "Move to local Trash", cancel: "Cancel" });
+  if (answer.ok) await fileLocalMessages(messages, "local-folder:trash");
+}
+
+async function exportLocalMessage(email) {
+  const result = await call("mail:exportLocalMessage", { accountId: LOCAL_ACCOUNT_ID, emailId: email.id });
+  if (result?.saved) showStatus("Original message saved as EML.");
 }
 
 function composeAccount() {
@@ -1157,6 +1317,7 @@ function folderCollapse() {
 }
 
 function imapParent(folder, byId, sep) {
+  if (folder.type === "local") return byId.get(folder.parentId) || null;
   if (isAllMailFolder(folder)) return null;
   let id = String(folder.id);
   let cut = id.lastIndexOf(sep);
@@ -5155,7 +5316,7 @@ function renderAccounts() {
   const folderQuery = String(folderFilterQuery() || "").trim().toLowerCase();
   // Sync status and folder selection do not change the folder tree.
   const key = JSON.stringify([
-    state.accounts.map(account => [account.id, account.email, account.label, account.senderName, account.imapSmtpProfile,
+    mailAccounts().map(account => [account.id, account.email, account.label, account.senderName, account.imapSmtpProfile,
       account.needsReauth, account.reauthReason, account.delimiter,
       foldersOf(account).map(folder => [folder.id, folder.name, folder.wellKnownName, folder.wellKnown, folder.type])]),
     state.accountId,
@@ -5167,7 +5328,7 @@ function renderAccounts() {
   ]);
   if (key === folderRenderKey) {
     const foldersByAccount = new Map();
-    for (const account of state.accounts) {
+    for (const account of mailAccounts()) {
       const folders = new Map();
       for (const folder of foldersOf(account)) if (!folders.has(folder.id)) folders.set(folder.id, folder);
       if (!foldersByAccount.has(account.id)) foldersByAccount.set(account.id, folders);
@@ -5192,7 +5353,7 @@ function renderAccounts() {
   }
   folderRenderKey = key;
   nav.replaceChildren();
-  if (!state.accounts.length) {
+  if (!mailAccounts().length) {
     const empty = document.createElement("p");
     empty.className = "empty";
     empty.textContent = "No accounts.";
@@ -5217,7 +5378,7 @@ function renderAccounts() {
     if (sectionOpen && starredMatch) nav.appendChild(allAccountFlagRow("starred"));
     if (sectionOpen && unreadMatch) nav.appendChild(allAccountFlagRow("unread"));
   }
-  for (const account of state.accounts) {
+  for (const account of mailAccounts()) {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
     const expanded = filtering || accountFoldersExpanded(account);
@@ -5254,7 +5415,17 @@ function renderAccounts() {
       event.stopPropagation();
       openAccountLabelMenu(account, event.clientX, event.clientY);
     });
+    if (account.isLocal) heading.addEventListener("keydown", event => {
+      if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+      event.preventDefault(); const rect = heading.getBoundingClientRect(); openLocalFolderMenu(null, rect.left, rect.bottom);
+    });
     nav.appendChild(heading);
+    if (account.isLocal) {
+      const create = document.createElement("button");
+      create.type = "button"; create.className = "ghost local-folder-create"; create.textContent = "New local folder…";
+      create.addEventListener("click", () => guard(() => manageLocalFolder("create")));
+      nav.appendChild(create);
+    }
     if (account.needsReauth && account.reauthReason) {
       const note = document.createElement("p");
       note.className = "reauth";
@@ -5267,7 +5438,7 @@ function renderAccounts() {
       nav.append(note, reconnect);
     }
     if (expanded) {
-    nav.appendChild(folderRootDrop("imap", account.id));
+    if (!account.isLocal) nav.appendChild(folderRootDrop("imap", account.id));
     for (const folder of rows) {
       const line = document.createElement("div");
       line.className = "folder-line";
@@ -5287,7 +5458,7 @@ function renderAccounts() {
         button.dataset.dropId = folder.id;
         button.dataset.dropAccount = account.id;
         button.dataset.dropCopy = folder.dropCopy || "";
-      } else {
+      } else if (!account.isLocal) {
         button.dataset.dropKind = "imap";
         button.dataset.dropId = folder.id;
         button.dataset.dropAccount = account.id;
@@ -5322,6 +5493,9 @@ function renderAccounts() {
       if (virtual) {
         button.title = folder.title || labelText;
         button.setAttribute("aria-label", (folder.ariaLabel || labelText) + unread);
+      } else if (account.isLocal) {
+        button.title = baseTitle + ". Stored on this computer. Right-click to manage.";
+        button.setAttribute("aria-label", labelText + unread + ". Local folder");
       } else {
         applyNestDrag(button, "imap", folder, account.id, baseTitle, baseLabel);
       }
@@ -5339,6 +5513,10 @@ function renderAccounts() {
         folderNavKey = button.dataset.navKey || "";
         selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
       });
+      if (account.isLocal) button.addEventListener("keydown", event => {
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+        event.preventDefault(); const rect = button.getBoundingClientRect(); openLocalFolderMenu(folder, rect.left, rect.bottom);
+      });
       if (folder.hasChild) {
         line.appendChild(folder.filtering ? folderTwistMark(folder.expanded !== false) : folderTwist(folder, account.id, labelText));
       }
@@ -5353,7 +5531,8 @@ function renderAccounts() {
       if (!virtual) line.addEventListener("contextmenu", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        openImapFolderMenu(folder, account, event.clientX, event.clientY);
+        if (account.isLocal) openLocalFolderMenu(folder, event.clientX, event.clientY);
+        else openImapFolderMenu(folder, account, event.clientX, event.clientY);
       });
       nav.appendChild(line);
     }
@@ -6527,11 +6706,13 @@ function paintSyncControl() {
   const detail = $("sync-detail");
   const sync = currentFolderSync();
   const mail = state.view === "mail";
+  const local = mail && !state.allInbox && !state.outbox && selectedAccount()?.isLocal;
   const control = $("sync-control");
   const slot = $(mail ? "list-refresh-slot" : "page-refresh-slot");
   if (control && slot && control.parentElement !== slot) slot.appendChild(control);
-  const word = !mail || state.outbox ? "Refresh" : syncButtonLabel(sync);
-  const text = !mail ? "Refresh this page" : !state.accounts.length ? "No account connected"
+  const word = !mail || state.outbox || local ? "Refresh" : syncButtonLabel(sync);
+  const text = local ? "Local Folders are stored on this computer and available offline. Refresh reloads local files."
+    : !mail ? "Refresh this page" : !state.accounts.length ? "No account connected"
     : state.outbox ? "Outbox is on this computer. It is not a mailbox folder."
     : (state.allInbox && !(sync && ["syncing", "error", "paused"].includes(sync.state)))
       ? allAccountMailSyncCopy()
@@ -6539,8 +6720,8 @@ function paintSyncControl() {
   if (label) label.textContent = word;
   if (button) {
     const busy = mail && !state.outbox && !!(sync && sync.state === "syncing");
-    const nativeTip = !state.accounts.length && mail ? "Connect an account to sync mail." : text;
-    button.disabled = mail && (!state.accounts.length || busy);
+    const nativeTip = !state.accounts.length && mail && !local ? "Connect an account to sync mail." : text;
+    button.disabled = mail && !local && (!state.accounts.length || busy);
     button.classList.toggle("is-syncing", busy);
     button.setAttribute("aria-busy", busy ? "true" : "false");
     button.setAttribute("aria-label", `${word}. ${text}`);
@@ -6912,6 +7093,7 @@ function messageRow(email) {
     rowAction("forward", "Forward", () => replyFromList(row.mailMessage, "forward")),
     rowAction("delete", "Delete", () => deleteFromList(row.mailMessage)),
   );
+  if (isLocalMail(email)) for (const action of actions.querySelectorAll('[data-action="reply"], [data-action="reply-all"], [data-action="forward"]')) action.remove();
   if (email.outbox) {
     const undo = rowAction("undo-outbox", "Undo send", () => undoOutboxItem(row.mailMessage));
     if (email.outboxStatus === "sending") undo.disabled = true;
@@ -6995,12 +7177,13 @@ function shellDeleteSelection() {
   const messages = selectedMessages();
   if (messages.length !== state.selectedIds.length || messages.some((email) =>
     !email.accountId || email.outbox || optimisticRemovals.has(email.id)
-    || !state.accounts.some((account) => account.id === email.accountId))) return [];
+    || !mailAccounts().some((account) => account.id === email.accountId))) return [];
   return messages;
 }
 
 function readerDeleteLabel() {
   const n = !isReaderWindow() && state.view === "mail" && !state.outbox ? state.selectedIds.length : 0;
+  if (isLocalMail(state.email) || (n && selectedMessages().every(isLocalMail))) return n ? `Move ${n} selected ${n === 1 ? "message" : "messages"} to local Trash` : "Move to local Trash";
   return n ? `Delete ${n} selected ${n === 1 ? "message" : "messages"}` : "Delete";
 }
 
@@ -7109,14 +7292,14 @@ function paintSearchCoverage(shown) {
   const scope = $("search-scope");
   scope.hidden = !state.query;
   const picker = $("search-account");
-  const key = JSON.stringify(state.accounts.map(account => [account.id, accountLabel(account)]));
+  const key = JSON.stringify(mailAccounts().map(account => [account.id, accountLabel(account)]));
   if (key !== searchAccountKey) {
     searchAccountKey = key;
     picker.replaceChildren(option("", "All connected accounts"));
-    for (const account of state.accounts) picker.appendChild(option(account.id, accountLabel(account)));
+    for (const account of mailAccounts()) picker.appendChild(option(account.id, accountLabel(account)));
   }
   picker.value = state.searchAccountId;
-  const account = state.accounts.find((row) => row.id === state.searchAccountId);
+  const account = mailAccounts().find((row) => row.id === state.searchAccountId);
   $("list-coverage").textContent = state.query
     ? `Search downloaded mail · ${account ? accountLabel(account) : "All connected accounts"} · ${state.emails.length} returned (up to 100) · ${shown.length} shown`
     : `${shown.length} shown of ${state.emails.length} on this page`;
@@ -7203,7 +7386,7 @@ function renderList() {
     const empty = document.createElement("p");
     empty.className = "empty";
     const listQuery = $("list-filter") && String($("list-filter").value || "").trim();
-    if (!state.accounts.length && !state.query) {
+    if (!state.accounts.length && !selectedAccount()?.isLocal && !state.query) {
       empty.textContent = "Connect a mailbox to download messages here.";
     } else if (state.query && !state.emails.length) {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
@@ -7213,6 +7396,8 @@ function renderList() {
       empty.textContent = allAccountMailEmptyCopy(state.allInboxUnreadOnly, state.allInboxStarredOnly);
     } else if (!listQuery && folder && folder.emptyCopy) {
       empty.textContent = folder.emptyCopy;
+    } else if (!state.emails.length && account?.isLocal) {
+      empty.textContent = "No messages in this local folder. Copy or move server messages here using their message menu.";
     } else if (!state.emails.length) {
       empty.textContent = currentFolderSync()?.lastSuccessAt
         ? "No downloaded messages in this folder. Sync checks recent mail; older mail may be outside the download window."
@@ -7383,6 +7568,18 @@ function readerButton(action, label, run, iconNode) {
 }
 
 function renderActions(pane, email) {
+  if (isLocalMail(email)) {
+    const bar = document.createElement("div"); bar.className = "reader-actions";
+    bar.append(readerButton("star", email.isStarred ? "Unstar" : "Star", () => toggleStar(email), starIcon(!!email.isStarred)),
+      readerButton("move", "Move locally", () => openLocalTransfer([email], "move")),
+      readerButton("copy-local", "Copy locally", () => openLocalTransfer([email], "copy"), strokeIcon(["M9 9h12v12H9z", "M5 15H3V3h12v2"])),
+      readerButton("export-local", "Save EML", () => exportLocalMessage(email), strokeIcon(["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"])),
+      readerButton("trash", "Move to local Trash", () => trashLocalMessages([email])));
+    pane.appendChild(bar);
+    const note = document.createElement("p"); note.className = "hint local-reader-note";
+    note.textContent = "Stored on this computer · Available offline. Reply, AI actions and restoring to a server mailbox are unavailable for local copies.";
+    pane.appendChild(note); return;
+  }
   const bar = document.createElement("div");
   bar.className = "reader-actions";
   const starredOn = !!email.isStarred;
@@ -7439,6 +7636,10 @@ function renderActions(pane, email) {
   const menus = document.createElement("div");
   menus.className = "reader-menus";
   menus.append(move, organizeButton(email));
+  const localCopy = document.createElement("button"); localCopy.type = "button"; localCopy.className = "ghost";
+  localCopy.textContent = "Local Folders…"; localCopy.addEventListener("click", () => openLocalTransfer([email], "copy"));
+  localCopy.disabled = !!email.isDraft;
+  menus.appendChild(localCopy);
   if (snooze) menus.append(snooze);
   if (email.isDraft) {
     const resume = document.createElement("button");
@@ -9845,6 +10046,7 @@ async function setRead(email, isRead) {
 }
 
 async function deleteFromList(email) {
+  if (isLocalMail(email)) return trashLocalMessages([email]);
   const answer = await askConfirm(bulkConfirmCopy("trash", 1, { scope: selectionScopeCopy([email], [email]) }));
   if (!answer || !answer.ok) return;
   const epoch = beginRemovalRequest([email], "trash");
@@ -9897,12 +10099,14 @@ async function removeOpen(email, channel, label) {
 }
 
 async function archiveOpen(email) {
+  if (isLocalMail(email)) return fileLocalMessages([email], "local-folder:archive");
   const threaded = usesThread(email, state.thread);
   await removeOpen(email, threaded ? "mail:threadArchive" : "mail:archive", "Archived.");
 }
 
 async function trashOpen(email) {
   if (email && email.outbox) return;
+  if (isLocalMail(email)) return trashLocalMessages([email]);
   const threaded = usesThread(email, state.thread);
   await removeOpen(email, threaded ? "mail:threadTrash" : "mail:delete", "Moved to Trash.");
 }
@@ -10213,6 +10417,7 @@ async function loadSnoozed() {
 }
 
 function rememberSelection(preferredId) {
+  const accounts = mailAccounts();
   if (!state.accounts.length) {
     state.allInbox = false;
     state.allInboxUnreadOnly = false;
@@ -10221,7 +10426,7 @@ function rememberSelection(preferredId) {
     state.outboxRows = [];
     state.outboxCount = 0;
   }
-  if (preferredId && state.accounts.some((account) => account.id === preferredId)) {
+  if (preferredId && accounts.some((account) => account.id === preferredId)) {
     if (state.accountId !== preferredId) {
       state.allInbox = false;
       state.allInboxUnreadOnly = false;
@@ -10229,8 +10434,8 @@ function rememberSelection(preferredId) {
     }
     state.accountId = preferredId;
   }
-  if (!state.accounts.some((account) => account.id === state.accountId)) {
-    const first = state.accounts[0];
+  if (!accounts.some((account) => account.id === state.accountId)) {
+    const first = accounts[0];
     state.accountId = first ? first.id : null;
     const inbox = first ? inboxOf(first) : null;
     state.folderId = inbox ? inbox.id : null;
@@ -10467,6 +10672,9 @@ async function loadAccounts(preferredId, supplied) {
   const gen = ++accountGen;
   const previous = selectedAccount();
   const data = supplied || await call("mail:listAccounts");
+  if (!supplied) {
+    try { await loadLocalFolders(); } catch (error) { showStatus("Local Folders could not be opened. " + error.message, true); }
+  }
   if (gen !== accountGen) return;
   acceptBodyAccounts(Array.isArray(data) ? data : []);
   rememberSelection(preferredId);
@@ -11264,6 +11472,7 @@ function openImapFolderMenu(folder, account, x, y) {
 
 function openAccountLabelMenu(account, x, y) {
   if (!account || !account.id) return;
+  if (account.isLocal) { openLocalFolderMenu(null, x, y); return; }
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", "Account");
   menu.replaceChildren();
@@ -11304,6 +11513,7 @@ function appendMenuAction(menu, label, run) {
 
 function openOrganizeMenu(email, x, y) {
   if (!email) return;
+  if (isLocalMail(email)) { openLocalMessageMenu([email], x, y); return; }
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
   const provider = folderProvider(account);
   const listed = account ? providerPayloadFor(account) : null;
@@ -11311,6 +11521,10 @@ function openOrganizeMenu(email, x, y) {
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", "Move and labels");
   menu.replaceChildren();
+  if (!email.isDraft) {
+    appendMenuAction(menu, "Copy to Local Folders…", () => openLocalTransfer([email], "copy"));
+    appendMenuAction(menu, "Move to Local Folders…", () => openLocalTransfer([email], "move"));
+  }
   if (model.move.length) appendMenuAction(menu, "Move to folder…", () => openMessageMovePicker(email, "imap"));
   if (provider === "gmail" && model.add.length) appendMenuAction(menu, "Labels…", () => openLabelPicker([email], false));
   if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", () => openMessageMovePicker(email, "outlook"));
@@ -11516,6 +11730,7 @@ function queueBulkRemoval(label, calls, messages, action) {
 }
 
 async function bulkArchive() {
+  if (selectedMessages().every(isLocalMail) && selectedMessages().length) return fileLocalMessages(selectedMessages(), "local-folder:archive");
   const messages = selectedMessages().map(withSelectionMembers);
   if (!messages.length || refusePaused(messages)) return;
   const review = await reviewedRemoval(messages, "archive");
@@ -11526,6 +11741,7 @@ async function bulkArchive() {
 }
 
 async function bulkTrash(selected = selectedMessages()) {
+  if (selected.length && selected.every(isLocalMail)) return trashLocalMessages(selected);
   const messages = selected.map(withSelectionMembers);
   if (!messages.length || refusePaused(messages)) return;
   const review = await reviewedRemoval(messages, "trash");
@@ -11649,6 +11865,7 @@ async function applyPickedMove(messages, kind, destinationId, name) {
 function openSelectionMove(kind) {
   const messages = selectionMoveMessages();
   if (!messages.length) return;
+  if (messages.every(isLocalMail)) return openLocalTransfer(messages, "move");
   openMessageMovePicker(messages[0], kind);
   if (!moveSession) return;
   moveSession.bulk = true;
@@ -11662,6 +11879,7 @@ function openSelectionMove(kind) {
 function openSelectionMenu(x, y) {
   const messages = selectedMessages();
   if (!messages.length) return;
+  if (messages.every(isLocalMail)) { openLocalMessageMenu(messages, x, y); return; }
   const email = messages[0];
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
   const provider = folderProvider(account);
@@ -11670,6 +11888,10 @@ function openSelectionMenu(x, y) {
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", "Selected messages");
   menu.replaceChildren();
+  if (messages.every(email => !email.isDraft)) {
+    appendMenuAction(menu, "Copy to Local Folders…", () => openLocalTransfer(messages, "copy"));
+    appendMenuAction(menu, "Move to Local Folders…", () => openLocalTransfer(messages, "move"));
+  }
   const starred = messages.every((row) => row.isStarred);
   appendMenuAction(menu, "Mark read", () => guard(() => bulkSetRead(true)));
   appendMenuAction(menu, "Mark unread", () => guard(() => bulkSetRead(false)));
@@ -12216,6 +12438,7 @@ async function selectFolder(accountId, folderId) {
   state.allInboxStarredOnly = false;
   state.listScope = "";
   state.accountId = accountId;
+  if (accountId !== LOCAL_ACCOUNT_ID && state.searchAccountId === LOCAL_ACCOUNT_ID) state.searchAccountId = "";
   state.folderId = folderId;
   state.query = "";
   $("search-query").value = "";
@@ -12290,7 +12513,7 @@ function listedHasBody(email) {
 
 function bodyIdentity(email, current = false) {
   if (!email || email.id == null || !email.accountId) return null;
-  const account = state.accounts.find(row => row.id === email.accountId);
+  const account = mailAccounts().find(row => row.id === email.accountId);
   if (!account) return null;
   const epoch = Number.isSafeInteger(account.bodyEpoch) ? account.bodyEpoch : 0;
   if (!current && email.bodyEpoch != null && email.bodyEpoch !== epoch) return null;
@@ -12424,7 +12647,8 @@ function acceptBodyAccounts(accounts) {
   }
   pruneBodyNotices();
   for (const target of activeBodyTargets()) {
-    const account = state.accounts.find(row => row.id === target.identity.accountId);
+    const account = mailAccounts().find(row => row.id === target.identity.accountId);
+    if (!account) continue;
     if ((previous.has(account.id) && previous.get(account.id) !== (account.bodyEpoch || 0))
         || (target.email.bodyEpoch != null && target.email.bodyEpoch !== (account.bodyEpoch || 0))) bodyNotices.set(target.identity.key,
       { ...target.identity, bodyVersion: account.bodyVersion || 0, attempted: -1 });
@@ -12566,6 +12790,7 @@ async function applySearch() {
   ++mailboxNavigationGen;
   invalidateReaderOpen();
   const query = $("search-query").value.trim();
+  if (selectedAccount()?.isLocal && !state.searchAccountId) state.searchAccountId = LOCAL_ACCOUNT_ID;
   if (query) state.outbox = false;
   state.query = query;
   state.email = null;
@@ -15161,8 +15386,9 @@ let composeWindowClosing = false;
 let composeCloseQueued = false;
 
 function newMailSeed() {
-  const account = selectedAccount();
-  return { title: "New message", kind: "new", accountId: (account && account.id) || state.accountId || "" };
+  const selected = selectedAccount();
+  const account = selected?.isLocal ? state.accounts.find(isLive) : selected;
+  return { title: "New message", kind: "new", accountId: (account && account.id) || "" };
 }
 
 function cloneComposeSeed(seed) {
@@ -15351,10 +15577,12 @@ async function bootReaderWindow() {
   if (typeof api.on === "function") api.on("mail:accountsUpdated", payload => {
     if (Array.isArray(payload?.accounts)) acceptBodyAccounts(payload.accounts);
   });
+  if (typeof api.on === "function") api.on("mail:localFoldersUpdated", payload => { if (payload?.account) state.localAccount = payload.account; });
   await loadLook();
   await loadShellPrefs();
   try {
     const data = await call("mail:listAccounts");
+    await loadLocalFolders();
     acceptBodyAccounts(Array.isArray(data) ? data : []);
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
@@ -16344,6 +16572,7 @@ async function refresh() {
   }
   const account = selectedAccount();
   if (!account || !state.folderId) return;
+  if (account.isLocal) { await loadLocalFolders(); renderAccounts(); await loadList(); showStatus("Local Folders refreshed from this computer."); return; }
   beginSync({
     phase: "fetching",
     accountId: account.id,
@@ -16513,7 +16742,7 @@ function mailShortcutTarget() {
     email = state.email;
   }
   if (!email || !email.id || !email.accountId || email.outbox || email.bodyError) return null;
-  if (!state.accounts.some(account => account.id === email.accountId)) return null;
+  if (!mailAccounts().some(account => account.id === email.accountId)) return null;
   return email;
 }
 
@@ -17512,7 +17741,7 @@ function repaintClockSurfaces() {
 }
 
 async function toggleAccountFolders(accountId) {
-  const account = state.accounts.find(row => row.id === accountId);
+  const account = mailAccounts().find(row => row.id === accountId);
   const collapse = folderCollapse();
   if (!account || !collapse) return;
   const generation = (accountExpansionGenerations.get(accountId) || 0) + 1;
@@ -17587,7 +17816,7 @@ async function collapseAllFolders() {
   folderNavRestore = false;
   const gen = ++folderCollapseGen;
   let next = collapse.normalize(state.prefs.collapsedFolders);
-  for (const account of state.accounts) {
+  for (const account of mailAccounts()) {
     const parents = [];
     const seen = new Set();
     for (const folder of folderTree(foldersOf(account), accountDelimiter(account))) {
@@ -27068,6 +27297,10 @@ async function boot() {
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
+  api.on("mail:localFoldersUpdated", payload => {
+    if (!payload?.account) return;
+    state.localAccount = payload.account; rememberSelection(); renderAccounts();
+  });
   api.on("mail:accountsUpdated", () => setTimeout(() => { if ($("setup-guide").open) paintSetupGuide(); }, 0));
   api.on("nativeAgent:homeUpdated", (payload) => {
     if (!payload || typeof payload !== "object") return;

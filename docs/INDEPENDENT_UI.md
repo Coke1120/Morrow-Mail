@@ -27,6 +27,18 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Mail's account list includes Local Folders on this computer. Create/rename nested
+local folders and delete empty leaves from its folder menu (Shift + F10 works
+with keyboard focus). Server message menus and the reader's Local Folders button
+open reviewed Copy/Move destinations. Complete original MIME and all attachments
+are saved independently; Move verifies the durable copy before provider Trash.
+Failed/uncertain server moves retain local mail and never replay after restart.
+Offline reading, attachment actions, flags, local copy/move, Trash/restore and EML
+export remain available after disconnect. Local search is separate from All
+connected accounts and All Account Mail. See Features → Local Folders and the
+[ownership decision](adr/2026-11-05-local-folders.md) for size/provider limits,
+stop behavior, backup and unavailable operations. MBOX import is separate (#521).
+
 Folder chips stay left aligned in All Mail, Inbox and Sent. When a title remains
 visible, it has its own row above the chips. Chips wrap inside narrow lists;
 Sync remains after them in the keyboard order. Hiding folder chips keeps the
