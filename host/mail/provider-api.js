@@ -440,7 +440,9 @@ function graphFolderListUrl(path) {
 // Scope the short-lived cache to the exact grant without retaining its bearer token.
 const graphSystemCache = new Map();
 async function graphSystemFolders(accessToken, fetchImpl) {
-  const key = crypto.createHash("sha256").update(accessToken).digest("hex");
+  const credential = typeof accessToken === "function" ? await accessToken({ method: "GET" }) : accessToken;
+  if (typeof accessToken === "function") accessToken.check?.();
+  const key = crypto.createHash("sha256").update(credential).digest("hex");
   const cached = graphSystemCache.get(key);
   if (cached && cached.expires > Date.now()) return cached.ids;
   const ids = new Map();

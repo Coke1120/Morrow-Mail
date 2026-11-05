@@ -4149,10 +4149,41 @@ button.thread-item[aria-current="true"]:hover { background: var(--selected); }
   margin: 0;
   font-size: 13px;
   font-weight: 650;
+  flex: 1 1 160px;
+  min-width: 0;
 }
 
 .attachment-card-head h3 svg,
 button.attachment-zip svg { display: block; flex: none; }
+
+button.attachment-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+
+button.attachment-toggle:hover { background: var(--hover); }
+
+.attachment-toggle .attachment-chevron {
+  margin-left: auto;
+  transform: rotate(-90deg);
+  transition: transform 120ms ease;
+}
+
+.attachment-toggle[aria-expanded="true"] .attachment-chevron { transform: rotate(0); }
+
+@media (prefers-reduced-motion: reduce) {
+  .attachment-toggle .attachment-chevron { transition: none; }
+}
 
 button.attachment-zip {
   display: inline-flex;
@@ -4166,6 +4197,8 @@ button.attachment-zip {
   color: var(--ink);
   font-size: 12px;
   font-weight: 600;
+  flex: none;
+  margin-left: auto;
 }
 
 button.attachment-zip:hover { background: var(--selected); }
@@ -4202,9 +4235,7 @@ button.attachment-zip:hover { background: var(--selected); }
 
 .attachment-name {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 button.attachment-name {
@@ -4496,11 +4527,23 @@ button.attachment-name:hover { text-decoration: underline; }
 }
 .message-summary-heading { justify-content: space-between; }
 .message-summary h3 { margin: 0; font-size: 14px; }
+.message-summary-close { margin-left: auto; min-width: 30px; min-height: 30px; padding: 5px; }
+.message-summary-close svg { display: block; width: 16px; height: 16px; }
+.message-summary-ai { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
 .message-summary .hint { margin: 6px 0; }
+.message-summary [data-role="summary-status"]:empty { margin: 0; }
 .message-summary .hint:not(.error) { color: var(--ink); }
 .message-summary .hint.error { color: var(--ink); font-weight: 600; }
-.message-summary-text { white-space: pre-wrap; line-height: 1.5; }
+.message-summary-text { line-height: 1.5; }
+.message-summary-text p { margin: 8px 0; }
+.message-summary-main { font-weight: 600; }
+.message-summary-text ul { margin: 8px 0; padding-left: 22px; }
+.message-summary-text li + li { margin-top: 5px; }
+.message-summary-warning { font-weight: 600; }
+.message-summary details { margin-top: 8px; }
+.message-summary details > summary { cursor: pointer; width: fit-content; }
 .message-summary-controls { margin-top: 6px; }
+.message-summary-controls:not(:has(> button:not([hidden]))) { display: none; }
 
 .sr {
   position: absolute;

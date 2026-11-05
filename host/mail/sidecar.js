@@ -10,10 +10,12 @@ const sieve = require("./sieve-vacation");
 const crypto = require("node:crypto");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const grantRequests = new AsyncLocalStorage();
+// Retry pressure is metadata only; credentials remain in the operation snapshot.
+const featureReadPauses = new Map();
 
 function connectionKey(account) {
   return JSON.stringify([account.id, account.created_at, account.email, account.username, account.profile,
-    account.auth_kind, account.mail_transport, account.imap_host, account.smtp_host]);
+    account.auth_kind, account.mail_transport, account.gmail_generation, account.imap_host, account.smtp_host]);
 }
 
 async function withGrantSnapshot(accounts, work) {
@@ -112,9 +114,11 @@ function publicError(error) {
 function failFrom(error) {
   const code = error && error.code;
   const storage = /^secure_storage_/.test(code || "");
-  if (storage || ["oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration", "rate_limit"].includes(code)) {
-    const result = fail(storage ? code : "provider", publicError(error));
+  if (storage || ["oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration", "oauth_not_ready", "rate_limit"].includes(code)) {
+    const result = fail(storage || code === "oauth_not_ready" || code === "rate_limit" ? code : "provider", publicError(error));
     result.error.retryable = storage || error.retryable === true;
+    result.error.status = Number(error.status) || 0;
+    if (code === "rate_limit") result.error.retryAfterMs = error.retryAfterMs;
     return result;
   }
   if (code === "provider_network") return fail("provider", publicError(error));
@@ -293,8 +297,7 @@ async function gmailSendAsToken(account) {
   return tokenFor(account, "vacation");
 }
 
-async function tokenFor(account, purpose) {
-  if (!grantRequests.getStore()) return withGrantSnapshot(account, () => tokenFor(account, purpose));
+async function readTokenFor(account, purpose, { forceRefresh = false } = {}) {
   const key = secretKey(account, purpose);
   const raw = readRaw(key);
   const parsed = readJson(key);
@@ -310,7 +313,7 @@ async function tokenFor(account, purpose) {
     throw error;
   }
   let result;
-  try { result = await oauth.accessTokenFor(account, raw, purpose); } catch (error) {
+  try { result = await oauth.accessTokenFor(account, raw, purpose, { forceRefresh }); } catch (error) {
     grantRequests.getStore().assertCurrent();
     throw error;
   }
@@ -340,6 +343,45 @@ async function tokenFor(account, purpose) {
   const error = new Error("Could not refresh OAuth access token.");
   error.code = "oauth";
   throw error;
+}
+
+async function tokenFor(account, purpose) {
+  if (!grantRequests.getStore()) return withGrantSnapshot(account, () => tokenFor(account, purpose));
+  const request = grantRequests.getStore();
+  const key = secretKey(account, purpose);
+  let current = await readTokenFor(account, purpose);
+  let renewedVacationIdentity = current.vacationIdentity;
+  let tail = Promise.resolve();
+  const authorization = (options = {}) => {
+    const work = tail.then(() => grantRequests.run(request, async () => {
+      request.assertCurrent();
+      if (options.method === "GET") {
+        const pause = featureReadPauses.get(key);
+        if (pause && pause.until > Date.now() && pause.revision === secrets.revision(key)) {
+          throw Object.assign(new Error("The provider is rate limiting requests. Try again shortly."), {
+            code: "rate_limit", status: 429, retryable: true, retryAfterMs: pause.until - Date.now(),
+          });
+        }
+      }
+      current = await readTokenFor(account, purpose);
+      // Concurrent/late 401s in a paginated operation reuse its durable renewal.
+      if (options.forceRefresh && current.accessToken === options.rejectedToken) {
+        current = await readTokenFor(account, purpose, { forceRefresh: true });
+      }
+      if (current.vacationIdentity) renewedVacationIdentity = current.vacationIdentity;
+      request.assertCurrent();
+      return current.accessToken;
+    }));
+    tail = work.then(() => {}, () => {});
+    return work;
+  };
+  authorization.check = () => request.assertCurrent();
+  authorization.vacationIdentity = () => renewedVacationIdentity;
+  authorization.rateLimited = delay => {
+    for (const [name, pause] of featureReadPauses) if (pause.until <= Date.now() || !db.accountById(pause.accountId)) featureReadPauses.delete(name);
+    featureReadPauses.set(key, { accountId: account.id, revision: secrets.revision(key), until: Date.now() + delay });
+  };
+  return { ...current, authorization, get grantedScopes() { return current.grantedScopes || ""; } };
 }
 
 function accountGrants() {
@@ -560,8 +602,8 @@ async function listProviderFolders(params) {
   try {
     const token = await tokenFor(account, "organize");
     const folders = gate.provider === "google"
-      ? await gmail.listLabels(token.accessToken)
-      : await gmail.listMailFolders(token.accessToken);
+      ? await gmail.listLabels(token.authorization)
+      : await gmail.listMailFolders(token.authorization);
     return ok({
       api: true,
       reason: "",
@@ -581,8 +623,8 @@ async function createProviderFolder(params) {
   if (ready.error) return ready.error;
   try {
     const created = ready.provider === "google"
-      ? await gmail.createLabel(ready.token.accessToken, params && params.name)
-      : await gmail.createMailFolder(ready.token.accessToken, params && params.name, params && params.parentId);
+      ? await gmail.createLabel(ready.token.authorization, params && params.name)
+      : await gmail.createMailFolder(ready.token.authorization, params && params.name, params && params.parentId);
     return ok(created);
   } catch (error) {
     return failFrom(error);
@@ -594,8 +636,8 @@ async function renameProviderFolder(params) {
   if (ready.error) return ready.error;
   try {
     const renamed = ready.provider === "google"
-      ? await gmail.renameLabel(ready.token.accessToken, params && params.folderId, params && params.name)
-      : await gmail.renameMailFolder(ready.token.accessToken, params && params.folderId, params && params.name);
+      ? await gmail.renameLabel(ready.token.authorization, params && params.folderId, params && params.name)
+      : await gmail.renameMailFolder(ready.token.authorization, params && params.folderId, params && params.name);
     return ok(renamed);
   } catch (error) {
     return failFrom(error);
@@ -607,8 +649,8 @@ async function moveProviderFolder(params) {
   if (ready.error) return ready.error;
   try {
     const moved = ready.provider === "google"
-      ? await gmail.moveLabel(ready.token.accessToken, params && params.folderId, params && params.destinationId)
-      : await gmail.moveMailFolder(ready.token.accessToken, params && params.folderId, params && params.destinationId);
+      ? await gmail.moveLabel(ready.token.authorization, params && params.folderId, params && params.destinationId)
+      : await gmail.moveMailFolder(ready.token.authorization, params && params.folderId, params && params.destinationId);
     return ok(moved);
   } catch (error) {
     return failFrom(error);
@@ -620,8 +662,8 @@ async function deleteProviderFolder(params) {
   if (ready.error) return ready.error;
   try {
     const removed = ready.provider === "google"
-      ? await gmail.deleteLabel(ready.token.accessToken, params && params.folderId)
-      : await gmail.deleteMailFolder(ready.token.accessToken, params && params.folderId);
+      ? await gmail.deleteLabel(ready.token.authorization, params && params.folderId)
+      : await gmail.deleteMailFolder(ready.token.authorization, params && params.folderId);
     return ok(removed);
   } catch (error) {
     return failFrom(error);
@@ -672,9 +714,9 @@ async function modifyMessageLabels(params) {
     const removed = Array.isArray(params.removeLabelIds) ? params.removeLabelIds : [];
     const folders = db.foldersFor(opened.row.account_id);
     const labels = removed.length && folders.some(folder => !folder.provider_id)
-      ? await gmail.listLabels(ready.token.accessToken) : [];
+      ? await gmail.listLabels(ready.token.authorization) : [];
     const result = await gmail.modifyLabels(
-      ready.token.accessToken,
+      ready.token.authorization,
       identity,
       params && params.addLabelIds,
       params && params.removeLabelIds
@@ -706,7 +748,7 @@ async function moveProviderMessage(params) {
   if (!opened.rfc) return fail("invalid", "This message has no RFC Message-ID, so Outlook cannot move it.");
   try {
     const result = await gmail.moveMessage(
-      ready.token.accessToken,
+      ready.token.authorization,
       providerMessageIdentity(opened.row, ready),
       params && params.destinationId
     );
@@ -739,7 +781,7 @@ async function listCalendar(params) {
   if (!range) return fail("invalid", "Choose a month range.");
   try {
     const token = await tokenFor(account, "calendar");
-    const calendars = await calendar.listCalendars(gate.provider, token.accessToken);
+    const calendars = await calendar.listCalendars(gate.provider, token.authorization);
     const calendarIds = calendar.selectedCalendarIds(calendars, params);
     if (!calendarIds.length) {
       return ok({
@@ -757,7 +799,7 @@ async function listCalendar(params) {
         truncated: false,
       });
     }
-    const listed = await calendar.listEventsForIds(gate.provider, token.accessToken, calendarIds, range);
+    const listed = await calendar.listEventsForIds(gate.provider, token.authorization, calendarIds, range);
     return ok({
       api: true,
       reason: "",
@@ -990,9 +1032,9 @@ async function providerVacation(account, body) {
   }
   try {
     const described = body
-      ? await vacationApi.apply(gate.provider, token.accessToken, body)
-      : await vacationApi.read(gate.provider, token.accessToken);
-    if (vacationIdentity(account) !== before) {
+      ? await vacationApi.apply(gate.provider, token.authorization, body)
+      : await vacationApi.read(gate.provider, token.authorization);
+    if (vacationIdentity(account) !== (token.authorization.vacationIdentity() || before)) {
       return fail("conflict", "This mailbox connection changed. Refresh provider settings to check the result.");
     }
     return ok(vacationView(account, {
@@ -1143,7 +1185,7 @@ async function createCalendarEvent(params) {
   try {
     const event = await calendar.createEvent(
       ready.provider,
-      ready.token.accessToken,
+      ready.token.authorization,
       params && params.calendarId,
       params
     );
@@ -1159,7 +1201,7 @@ async function updateCalendarEvent(params) {
   try {
     const event = await calendar.updateEvent(
       ready.provider,
-      ready.token.accessToken,
+      ready.token.authorization,
       params && params.calendarId,
       params && params.eventId,
       params
@@ -1176,7 +1218,7 @@ async function deleteCalendarEvent(params) {
   try {
     const event = await calendar.deleteEvent(
       ready.provider,
-      ready.token.accessToken,
+      ready.token.authorization,
       params && params.calendarId,
       params && params.eventId
     );
@@ -1260,8 +1302,8 @@ async function listInboxRules(params) {
   try {
     const token = await tokenFor(account, "rules");
     if (backend === "gmail") {
-      const labels = await gmail.listLabels(token.accessToken);
-      const rules = await inboxRules.listGmail(token.accessToken);
+      const labels = await gmail.listLabels(token.authorization);
+      const rules = await inboxRules.listGmail(token.authorization);
       return ok({
         api: true,
         backend,
@@ -1273,8 +1315,8 @@ async function listInboxRules(params) {
         grantedScopes: token.grantedScopes || gate.scopes,
       });
     }
-    const folders = await gmail.listMailFolders(token.accessToken);
-    const rules = await inboxRules.listGraph(token.accessToken, archiveFolderId(folders));
+    const folders = await gmail.listMailFolders(token.authorization);
+    const rules = await inboxRules.listGraph(token.authorization, archiveFolderId(folders));
     return ok({
       api: true,
       backend,
@@ -1316,9 +1358,9 @@ async function saveInboxRule(params) {
   const ready = await withPurpose({ accountId: account.id }, "rules");
   if (ready.error) return ready.error;
   try {
-    if (backend === "gmail") return ok(await inboxRules.saveGmail(ready.token.accessToken, normalized));
-    const folders = await gmail.listMailFolders(ready.token.accessToken);
-    return ok(await inboxRules.saveGraph(ready.token.accessToken, normalized, archiveFolderId(folders)));
+    if (backend === "gmail") return ok(await inboxRules.saveGmail(ready.token.authorization, normalized));
+    const folders = await gmail.listMailFolders(ready.token.authorization);
+    return ok(await inboxRules.saveGraph(ready.token.authorization, normalized, archiveFolderId(folders)));
   } catch (error) {
     return failFrom(error);
   }
@@ -1337,8 +1379,8 @@ async function deleteInboxRule(params) {
   const ready = await withPurpose({ accountId: account.id }, "rules");
   if (ready.error) return ready.error;
   try {
-    if (backend === "gmail") await inboxRules.deleteGmail(ready.token.accessToken, id);
-    else await inboxRules.deleteGraph(ready.token.accessToken, id);
+    if (backend === "gmail") await inboxRules.deleteGmail(ready.token.authorization, id);
+    else await inboxRules.deleteGraph(ready.token.authorization, id);
     return ok({ id, deleted: true });
   } catch (error) {
     return failFrom(error);
