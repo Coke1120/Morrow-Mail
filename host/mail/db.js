@@ -1510,7 +1510,7 @@ function missingFolderRows(accountId, folderPath, report, after = "", limit = -1
 
 // Budgets apply to normalized provider text/HTML, not encoded MIME source.
 // One message and the final durable commit can exceed either target.
-const SYNC_SLICE_MS = 8;
+const SYNC_SLICE_MS = 32;
 const SYNC_BODY_BYTES = 256 * 1024;
 
 function visitedFolderRows(accountId, folderPath, cursor) {
