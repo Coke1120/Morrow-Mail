@@ -8530,6 +8530,8 @@ function attachmentIcon(kind) {
     add("path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" });
     add("polyline", { points: "7 10 12 15 17 10" });
     add("line", { x1: "12", y1: "15", x2: "12", y2: "3" });
+  } else if (kind === "chevron") {
+    add("polyline", { points: "6 9 12 15 18 9" });
   } else {
     add("path", { d: "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" });
   }
@@ -8785,7 +8787,18 @@ async function saveAttachmentsZip(email, files) {
   showStatus("Saved all attachments.");
 }
 
+// Keep only the current message's disclosure choice on each reading surface.
+// Repainting a downloaded body must not close the attachment list again.
+const attachmentDisclosures = new WeakMap();
+let attachmentDisclosureId = 0;
+
 function renderAttachments(pane, email) {
+  const key = JSON.stringify([email.accountId || "", email.id || ""]);
+  let disclosure = attachmentDisclosures.get(pane);
+  if (!disclosure || disclosure.key !== key) {
+    disclosure = { key, expanded: false };
+    attachmentDisclosures.set(pane, disclosure);
+  }
   const files = (email.attachments || []).filter((item) => item && (item.filename || item.id));
   if (!files.length && !email.hasAttachments) return;
   const card = document.createElement("section");
@@ -8794,15 +8807,35 @@ function renderAttachments(pane, email) {
   const head = document.createElement("div");
   head.className = "attachment-card-head";
   const title = document.createElement("h3");
-  title.appendChild(attachmentIcon("paperclip"));
+  const toggle = files.length ? document.createElement("button") : title;
+  toggle.appendChild(attachmentIcon("paperclip"));
   const titleText = document.createElement("span");
   titleText.textContent = "Attachments";
-  title.appendChild(titleText);
+  toggle.appendChild(titleText);
+  let list;
   if (files.length) {
     const count = document.createElement("span");
     count.className = "count";
     count.textContent = String(files.length);
-    title.appendChild(count);
+    toggle.appendChild(count);
+    const chevron = attachmentIcon("chevron");
+    chevron.classList.add("attachment-chevron");
+    toggle.appendChild(chevron);
+    toggle.type = "button";
+    toggle.className = "attachment-toggle";
+    toggle.setAttribute("aria-label", `Attachments (${files.length})`);
+    toggle.setAttribute("aria-expanded", String(disclosure.expanded));
+    list = document.createElement("ul");
+    list.className = "attachments";
+    list.id = `attachment-files-${++attachmentDisclosureId}`;
+    list.hidden = !disclosure.expanded;
+    toggle.setAttribute("aria-controls", list.id);
+    toggle.addEventListener("click", () => {
+      disclosure.expanded = !disclosure.expanded;
+      toggle.setAttribute("aria-expanded", String(disclosure.expanded));
+      list.hidden = !disclosure.expanded;
+    });
+    title.appendChild(toggle);
   }
   head.appendChild(title);
   if (files.some((file) => file.id)) {
@@ -8826,14 +8859,18 @@ function renderAttachments(pane, email) {
     pane.appendChild(card);
     return;
   }
-  const list = document.createElement("ul");
-  list.className = "attachments";
+  const nameCounts = new Map();
   for (const file of files) {
+    const label = file.filename || "attachment";
+    nameCounts.set(label, (nameCounts.get(label) || 0) + 1);
+  }
+  for (const [index, file] of files.entries()) {
     const item = document.createElement("li");
     const main = document.createElement("div");
     main.className = "attachment-main";
     const size = fileSize(file.size);
     const label = file.filename || "attachment";
+    const actionLabel = nameCounts.get(label) > 1 ? `${label}, attachment ${index + 1} of ${files.length}` : label;
     const kind = file.id ? attachmentPreviewKind(file) : "";
     const name = document.createElement(kind ? "button" : "span");
     name.className = "attachment-name";
@@ -8841,7 +8878,7 @@ function renderAttachments(pane, email) {
     name.title = label;
     if (kind) {
       name.type = "button";
-      name.setAttribute("aria-label", "Preview " + label);
+      name.setAttribute("aria-label", "Preview " + actionLabel);
       name.addEventListener("click", () => attachmentAction(() => previewAttachment(email, file)));
     }
     main.appendChild(name);
@@ -8855,9 +8892,9 @@ function renderAttachments(pane, email) {
     if (file.id) {
       const actions = document.createElement("div");
       actions.className = "attachment-actions";
-      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + label, () => attachmentAction(() => previewAttachment(email, file))));
-      actions.appendChild(attachmentGhost("Save", "Save " + label, () => attachmentAction(() => useAttachment("mail:downloadAttachment", email, file))));
-      actions.appendChild(attachmentGhost("Open", "Open " + label, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
+      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, () => attachmentAction(() => previewAttachment(email, file))));
+      actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(() => useAttachment("mail:downloadAttachment", email, file))));
+      actions.appendChild(attachmentGhost("Open", "Open " + actionLabel, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
       item.appendChild(actions);
     }
     list.appendChild(item);
