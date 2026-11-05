@@ -3,10 +3,16 @@ const path = require("node:path");
 const { fileURLToPath } = require("node:url");
 const { failure } = require("./validate");
 const { freezeSources, assertSources, hash, fingerprint } = require("./sources");
-const { LIMITS, LANGUAGES, PROMPT_VERSION, planChunks, extract } = require("./extract");
+const { LIMITS, LANGUAGES, PROMPT_VERSION, preparePlan, extract } = require("./extract");
+const { budget, budgetDetails } = require("./budget");
 
 const CHANNELS = new Set(["timeline:check", "timeline:prepare", "timeline:download", "timeline:generate", "timeline:cancel", "timeline:list", "timeline:get", "timeline:delete", "timeline:export"]);
-const codes = new Set(["timeline-validation", "timeline-version", "timeline-size", "timeline-depth", "timeline-selection-limit", "timeline-empty", "timeline-source-changed", "timeline-query", "timeline-budget", "timeline-not-found", "timeline-manifest", "timeline-partial", "timeline-busy", "timeline-cancelled", "ai-consent-required", "timeline-language", "timeline-timezone", "timeline-input", "timeline-revision"]);
+const codes = new Set(["timeline-validation", "timeline-consolidation", "timeline-version", "timeline-size", "timeline-depth", "timeline-selection-limit", "timeline-empty", "timeline-source-changed", "timeline-query", "timeline-budget", "timeline-not-found", "timeline-manifest", "timeline-partial", "timeline-busy", "timeline-cancelled", "ai-consent-required", "timeline-language", "timeline-timezone", "timeline-input", "timeline-revision"]);
+
+function publicError(error) {
+  const details = budgetDetails(error);
+  return { code: codes.has(error?.code) ? error.code : "timeline-failed", ...(details ? { budget: details } : {}) };
+}
 
 function shape(value, keys, required = []) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key)) || required.some(key => !Object.hasOwn(value, key))) throw failure("timeline-input");
@@ -64,21 +70,26 @@ function createService(dependencies) {
     // Re-preparing edited focus must not silently switch account incarnations.
     if (input.manifestToken !== undefined) manifest(owner, token(input.manifestToken));
     selectionInput(input.selection); optionsInput(input.options);
+    const snapshot = db.transaction(() => freezeSources(sourceDependencies, input.selection));
+    let plan, blocked;
+    try { plan = preparePlan(snapshot.sources, { language: input.options.language, focus: { keywords: input.options.keywords || "", contact_emails: input.options.contactEmails || [] } }); }
+    catch (error) {
+      if (!budgetDetails(error)) throw error;
+      blocked = budgetDetails(error);
+    }
+    // Keep the old source proof if options or source capture fail. A valid
+    // capture can also retain its proof while focus exceeds a planning limit.
     for (const [id, entry] of manifests) if (entry.owner === owner || entry.expires < now()) manifests.delete(id);
     if (manifests.size >= 8) throw failure("timeline-busy");
-    const snapshot = db.transaction(() => freezeSources(sourceDependencies, input.selection));
-    const chunks = snapshot.sources.length ? planChunks(snapshot.sources) : [];
-    const estimatedInputTokens = chunks.reduce((total, chunk) => total + Buffer.byteLength(JSON.stringify(chunk)) + 1500, 0);
-    if (estimatedInputTokens > LIMITS.inputTokens) throw failure("timeline-budget");
     const status = consent.status();
     const id = crypto.randomUUID();
-    const entry = { owner, snapshot, options: { ...input.options, ...(input.options.contactEmails ? { contactEmails: [...input.options.contactEmails] } : {}) }, expires: now() + 300000, consentToken: status.token, closed };
+    const entry = { owner, snapshot, options: { ...input.options, ...(input.options.contactEmails ? { contactEmails: [...input.options.contactEmails] } : {}) }, expires: now() + 300000, consentToken: status.token, closed, blocked, consumed: false };
     entry.optionsDigest = hash([snapshot.digest, entry.options, status.token]);
     manifests.set(id, entry);
     return { manifestToken: id, optionsDigest: entry.optionsDigest, expiresAt: entry.expires,
       accounts: snapshot.accounts.map(account => account.email), threads: snapshot.sourceThreads.length,
       coverage: snapshot.coverage, missingBodies: snapshot.missingBodies, invalidMetadata: snapshot.invalidMetadata, search: snapshot.search,
-      chunks: chunks.length, estimatedInputTokens,
+      chunks: plan?.chunks.length || 0, estimatedInputTokens: plan?.estimatedInputTokens || 0, ...(blocked ? { budget: blocked } : {}),
       limits: LIMITS, destination: status.destination, provider: status.label, model: status.model, allowed: status.manual,
       locality: status.locality, providerTerms: status.providerTerms };
   }
@@ -92,7 +103,8 @@ function createService(dependencies) {
     shape(input, ["manifestToken", "optionsDigest", "acceptPartial"], ["manifestToken", "optionsDigest", "acceptPartial"]);
     if (typeof input.acceptPartial !== "boolean") throw failure("timeline-input");
     const entry = manifest(owner, token(input.manifestToken));
-    if (input.optionsDigest !== entry.optionsDigest) throw failure("timeline-manifest");
+    if (entry.consumed || input.optionsDigest !== entry.optionsDigest) throw failure("timeline-manifest");
+    if (entry.blocked) throw budget(entry.blocked.kind, entry.blocked.actual, entry.blocked.limit);
     if (!entry.snapshot.sources.length || (entry.snapshot.coverage.omitted_message_count && !input.acceptPartial)) throw failure("timeline-partial");
     if (jobs.size) throw failure("timeline-busy");
     const controller = new AbortController();
@@ -102,10 +114,13 @@ function createService(dependencies) {
     try { db.timeline.startJob(jobId, owner); }
     catch (error) { lease.release(); throw error; }
     jobs.set(jobId, job);
-    manifests.delete(input.manifestToken);
+    // One-use generation authorization, but a retained owner-bound source proof
+    // for checks and explicit re-preparation after failure/cancel/completion.
+    entry.consumed = true;
+    entry.expires = now() + LIMITS.jobMs + 300000;
     const send = value => { if (!entry.closed()) publish({ jobId, ...value }); };
     setImmediate(async () => {
-      let state = "failed", calls = 0;
+      let state = "failed", calls = 0, terminal;
       const check = () => { controller.signal.throwIfAborted(); lease.check(); live(entry); };
       try {
         check();
@@ -120,15 +135,18 @@ function createService(dependencies) {
         db.timeline.save(result.document, entry.snapshot.records, { digest: entry.snapshot.digest, promptVersion: PROMPT_VERSION, usage: result.usage });
         state = "completed";
         calls = result.usage.calls;
-        send({ phase: state, timelineId: result.document.timeline_id, revision: 1, calls });
+        terminal = { phase: state, timelineId: result.document.timeline_id, revision: 1, calls };
       } catch (error) {
         state = controller.signal.aborted || lease.signal.aborted ? "cancelled" : "failed";
-        send({ phase: state, code: codes.has(error.code) ? error.code : state === "cancelled" ? "timeline-cancelled" : "timeline-failed" });
+        terminal = { ...publicError(error), phase: state, calls };
+        if (state === "cancelled") terminal.code = "timeline-cancelled";
       } finally {
         jobs.delete(jobId);
         lease.release();
         try { db.timeline.finishJob(jobId, state, calls); } catch {}
+        entry.expires = now() + 300000;
       }
+      send(terminal);
     });
     return { jobId };
   }
@@ -216,7 +234,7 @@ function answer(channel, args, event) {
     event.sender.on("will-navigate", () => service.close(owner));
   }
   return service.invoke(owner, channel, args?.[0], value => { if (!event.sender.isDestroyed()) event.sender.send("timeline:progress", value); }, () => event.sender.isDestroyed())
-    .then(data => ({ success: true, data }), error => ({ success: false, error: { code: codes.has(error.code) ? error.code : "timeline-failed" } }));
+    .then(data => ({ success: true, data }), error => ({ success: false, error: { ...publicError(error), ...(["timeline:prepare", "timeline:generate"].includes(channel) ? { calls: 0 } : {}) } }));
 }
 
-module.exports = { CHANNELS, createService, trustedSender, answer, invalidateAccount: id => instance?.invalidateAccount(id) };
+module.exports = { CHANNELS, createService, trustedSender, publicError, answer, invalidateAccount: id => instance?.invalidateAccount(id) };
