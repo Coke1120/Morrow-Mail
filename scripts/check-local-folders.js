@@ -285,7 +285,7 @@ test("host/preload use local ownership after account removal; no credentials or 
   let preload;
   vm.runInNewContext(fs.readFileSync(require.resolve("../renderer/preload"), "utf8"), {
     require: name => { assert.equal(name, "electron"); return { contextBridge: { exposeInMainWorld(_name, api) { preload = api; } },
-      ipcRenderer: { invoke: (channel, params) => engine.answer(channel, [params]), on() {} } }; },
+      ipcRenderer: { invoke: (channel, params) => engine.answer(channel, [params]) ?? require("../host/settings").answer(channel, [params]), on() {} } }; },
   });
   const saved = await preload.invoke("mail:transferToLocal", { emailId: ROW.id, accountId: "remote", folderId: L.ARCHIVE_ID, mode: "copy" });
   assert.equal(saved.success, true, JSON.stringify(saved)); assert.equal(saved.data.status, "copied");
@@ -296,6 +296,9 @@ test("host/preload use local ownership after account removal; no credentials or 
   const before = [credentialReads, providerCalls];
   engine.closeLocalArchiveForTest();
   const local = await preload.invoke("mail:localFolders"); assert.equal(local.data.isLocal, true);
+  const expanded = await preload.invoke("morrow:configSetSidebarAccountFoldersExpanded", { accountId: L.ACCOUNT_ID, expanded: false });
+  assert.equal(expanded[L.ACCOUNT_ID], false, "local mail routing must preserve the actual settings/preload contract for sidebar preferences");
+  assert.equal((await preload.invoke("morrow:configGetSidebarAccountFoldersExpanded"))[L.ACCOUNT_ID], false);
   assert.equal(engine.answer("mail:listAccounts", []).data.length, 0, "local identity never becomes an authenticated account");
   const opened = await preload.invoke("mail:openEmail", { emailId: localId, accountId: L.ACCOUNT_ID });
   assert.equal(opened.success, true); assert.match(opened.data.email.textBody, /Complete plain text/);

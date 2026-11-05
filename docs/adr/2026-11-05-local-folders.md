@@ -16,6 +16,8 @@ management IPC dispatches before provider handlers and rejects cross-account
 hints. Archive and Trash always exist. User folders can nest and rename without
 changing identity; only empty leaf folders can be deleted. Messages move to local
 Trash and can be restored locally; this version has no permanent-delete action.
+Only `mail:` entity calls use local dispatch; sidebar preference invokes continue
+through the existing Settings facade and its raw saved-value contract.
 
 Store original MIME bytes, parsed text/HTML and metadata, and independently owned
 binary attachment rows. The raw source retains headers that do not have visible

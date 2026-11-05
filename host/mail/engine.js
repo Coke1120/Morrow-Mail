@@ -4292,8 +4292,8 @@ function answer(channel, args, event) {
   if (!ready) return undefined;
   const params = args && args.length ? args[0] : undefined;
   if (channel === "mail:transferToLocal") return transferToLocal(params || {});
-  const localTarget = params?.accountId === localFolders.ACCOUNT_ID || localFolders.isMessage(params?.emailId || params?.messageId)
-    || (Array.isArray(params?.items) && params.items.some(item => localFolders.isMessage(item.emailId || item.id)));
+  const localTarget = channel.startsWith("mail:") && (params?.accountId === localFolders.ACCOUNT_ID || localFolders.isMessage(params?.emailId || params?.messageId)
+    || (Array.isArray(params?.items) && params.items.some(item => localFolders.isMessage(item.emailId || item.id))));
   if (["mail:localFolders", "mail:manageLocalFolder", "mail:moveLocalMessage", "mail:exportLocalMessage"].includes(channel) || localTarget) return localAnswer(channel, params || {}, event);
   if (sidecar.handles(channel)) return sidecar.answer(channel, args);
   if (channel === "mail:cancelAttachmentRequest") return ok(attachmentRequests.cancel(params?.requestId, event?.sender));

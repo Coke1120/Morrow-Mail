@@ -30,6 +30,8 @@ production MIME parsing, full host/preload handlers and synthetic providers:
 - After disconnect, actual preload/host local reads, attachment bytes, flags,
   folder listing and native-dialog-mocked EML Save/cancel obtain no credentials
   and make no provider calls. Unknown preload channels remain rejected.
+  Local account expansion saves/readbacks still reach the actual Settings facade;
+  local mail dispatch does not intercept unrelated preference channels.
 - Charset decoding diagnostics preserve the recently integrated dev behavior,
   including a checked plain-text fallback and original bytes for export.
 
