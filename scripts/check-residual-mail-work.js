@@ -13,6 +13,18 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const ids = rows => rows.map(row => row.id);
 
 async function run() {
+  // Keep this clock independent of the injected budget clock below. Stage/CPU
+  // evidence distinguishes slow durable Windows I/O from an ownership hang.
+  const wallNow = performance.now.bind(performance), began = wallNow(), cpu = process.cpuUsage();
+  let phase = "opening", completed = 0, heartbeats = 0;
+  const progress = () => {
+    const used = process.cpuUsage(cpu);
+    console.log("residual-check-progress", JSON.stringify({ phase, completed, heartbeats,
+      elapsedMs: Math.round(wallNow() - began), cpuUserMs: Math.round(used.user / 1000), cpuSystemMs: Math.round(used.system / 1000) }));
+  };
+  const stage = next => { phase = next; completed = 0; progress(); };
+  const heartbeat = setInterval(() => { heartbeats++; progress(); }, 5000); heartbeat.unref();
+  progress();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-residual-check-"));
   const file = path.join(directory, "mail.sqlite");
   const original = { prepare: Database.prototype.prepare, append: Persistence.prototype.append, sync: perf.sync,
@@ -27,6 +39,7 @@ async function run() {
   try {
     await db.open(file);
     for (const [owner, count] of [["a", 2500], ["b", 83]]) {
+      stage(owner === "a" ? "seed-large" : "seed-small");
       db.insertAccount({ ...account, id: owner, email: `${owner}@fixture.invalid` });
       db.replaceFolders(owner, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" },
         { path: "Trash", name: "Trash", wellKnown: "deleteditems" }, { path: "Spam", name: "Spam", wellKnown: "junkemail" }]);
@@ -38,8 +51,16 @@ async function run() {
           to: n % 5 ? [owner + "@fixture.invalid"] : ["elsewhere@fixture.invalid"],
           textBody: "common alpha apple body " + Array.from({ length: 12 }, (_, n) => `bodyterm${n}`).join(" "), htmlBody: null,
         })) });
+      completed = count; progress();
     }
+    // The large seed exists to exercise search plans, not to benchmark recovery
+    // repeatedly. Checkpoint it once; pending/body changes below still have to
+    // survive journal replay. Replaying all 2.5k seed rows/terms on both reopens
+    // needlessly dominated the Windows fixture's original 30-second deadline.
+    stage("seed-checkpoint");
+    await db.checkpoint();
     raw = new Database(file + ".live");
+    stage("exact-search");
     function reference(tokens, owner, toMe = false, limit = 100) {
       const params = [], joins = tokens.map((token, n) => {
         const chars = Array.from(token); chars[chars.length - 1] = String.fromCodePoint(chars.at(-1).codePointAt(0) + 1);
@@ -59,6 +80,7 @@ async function run() {
         const rows = db.searchMessages({ query, accountId: owner, filterToMe }, { headersOnly: true });
         assert.deepEqual(ids(rows), ids(reference(tokens, owner, filterToMe)), "complete weighted AND/prefix/Unicode/date/id ranking");
         assert.ok(rows.every(row => !Object.hasOwn(row, "text_body") && !Object.hasOwn(row, "html_body")));
+        completed++;
       }
     }
     assert.deepEqual(db.searchMessages({ accountRequired: true, query: "common" }), []);
@@ -79,6 +101,7 @@ async function run() {
     const broadScope = statements.find(x => x.sql.includes("WITH search_seed"));
     assert.match(broadScope.sql, /FROM messages scoped CROSS JOIN message_fts f/);
     assert.match(broadScope.sql, /search_seed s CROSS JOIN message_fts f/);
+    progress(); stage("pending-eligibility");
 
     // All-complete idle poll, sparse eligibility, scopes/exclusions, retry
     // deadline, equal-date ties and deep keysets use the actual production SQL.
@@ -115,11 +138,14 @@ async function run() {
     assert.throws(() => db.updateMessage("a-6", { body_complete: 1 }), /Synthetic full disk/);
     Persistence.prototype.append = original.append;
     assert.deepEqual(ids(pending()), beforeFailure, "pending index rolls back with the message and journal");
+    assert.ok(fs.statSync(file + ".journal").size > 0, "eligibility deltas still require journal recovery");
+    stage("pending-reopen");
     raw.close(); raw = null;
     await db.close(); await db.open(file);
     raw = new Database(file + ".live");
     assert.deepEqual(ids(pending()), beforeFailure, "index eligibility survives journal replay");
 
+    stage("elapsed-budget");
     db.insertAccount({ ...account, id: "ingest" }); db.replaceFolders("ingest", [{ path: "INBOX", name: "Inbox" }]);
     const commits = [];
     Persistence.prototype.append = function(commands) {
@@ -139,6 +165,7 @@ async function run() {
     });
     assert.deepEqual(commits, [1, 1, 1, 1, 1], "elapsed work, independently of row/byte limits, ends each batch");
     assert.ok(observed >= 6);
+    completed = commits.length; progress(); stage("byte-budget");
     // Frozen clock isolates byte admission from CPU speed. Two 160 KiB UTF-8
     // rows do not share a 256 KiB batch; oversized rows still make progress.
     perf.sync = original.sync; commits.length = 0;
@@ -150,17 +177,21 @@ async function run() {
     const nowRows = db.selectMessages({ accountId: "ingest" });
     assert.equal(nowRows.length, 9);
     assert.equal(db.searchMessages({ query: "synthetic", accountId: "ingest" }).length, 9);
+    completed = commits.length; progress(); stage("oversized-reopen");
     if (original.clock) Object.defineProperty(performance, "now", original.clock); else delete performance.now;
     Persistence.prototype.append = original.append;
     raw.close(); raw = null;
     await db.close(); await db.open(file);
     assert.equal(db.messageById("bytes-2").text_body.length, 3 * 1024 * 1024, "oversized normalized body remains durable");
     assert.equal(db.searchMessages({ query: "synthetic", accountId: "ingest" }).length, 9);
+    stage("verified");
     console.log("residual-mail-work-ok: exact search, candidate plans, pending eligibility/replay and independent time/byte budgets");
   } finally {
+    stage("closing");
     Database.prototype.prepare = original.prepare; Persistence.prototype.append = original.append; perf.sync = original.sync;
     if (original.clock) Object.defineProperty(performance, "now", original.clock); else delete performance.now;
-    raw?.close(); await db.close(); fs.rmSync(directory, { recursive: true, force: true });
+    try { raw?.close(); await db.close(); fs.rmSync(directory, { recursive: true, force: true }); }
+    finally { clearInterval(heartbeat); stage("closed"); }
   }
 }
 module.exports = { run };

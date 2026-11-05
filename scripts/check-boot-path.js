@@ -225,6 +225,10 @@ for (const name of ["check-mail-shortcut-target.js", "check-mail-delete-selectio
   // fixture to distinguish progress from a hang. Storage worker limits stay.
   const timeout =
     ["check-reviewed-mail-flows.js", "check-bot-mail-actions.js"].includes(name) ? 90000 :
+    // This real-SQLite fixture now checkpoints its 2.5k-row search seed once,
+    // then replays pending/body deltas. Keep finite Windows I/O headroom for
+    // all reference/6 MiB/recovery assertions plus phase/CPU/heartbeat evidence.
+    name === "check-residual-mail-work.js" ? (process.platform === "win32" ? 90000 : 60000) :
     name === "check-startup-upgrade.js" ? (process.platform === "win32" ? 300000 : 180000) :
     30000;
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout });
