@@ -12,7 +12,7 @@
   function isStickyAuthSyncError(message, error) {
     // Typed renewal/storage failures take precedence over HTTP status and the
     // legacy message heuristic. An invalid OAuth client can itself return 401.
-    if (error && (["oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration"].includes(error.code)
+    if (error && (["oauth_refresh_unavailable", "oauth_refresh_response", "oauth_configuration", "oauth_not_ready"].includes(error.code)
         || /^secure_storage_/.test(error.code || ""))) return false;
     if (error && (error.code === "auth" || error.code === "needs_auth" || error.authenticationFailed === true)) return true;
     const status = error && Number(error.status || error.statusCode);

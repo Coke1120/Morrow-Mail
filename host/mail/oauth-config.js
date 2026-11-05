@@ -184,7 +184,14 @@ function googleGrantMatches(grant) {
 }
 
 function requireGoogleGrantClient(grant) {
-  if (googleGrantMatches(grant)) return;
+  let client;
+  try { client = loadGoogleClient(); } catch { /* unavailable is not a different issuer */ }
+  if (!client) {
+    throw Object.assign(new Error("Google Desktop OAuth configuration is unavailable. Check the configured Desktop client and retry. Saved connections are retained."), {
+      code: "oauth_not_ready", retryable: true,
+    });
+  }
+  if (grant && grant.googleClientId === client.clientId) return;
   const error = new Error("Google Desktop client changed or the saved grant has no client identity. Sign in again in Settings → Accounts; reauthorize Gmail and Google Calendar separately. Cached work is retained.");
   error.code = "google_client_changed";
   throw error;

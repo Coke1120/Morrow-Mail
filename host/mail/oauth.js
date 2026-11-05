@@ -594,6 +594,7 @@ async function accessTokenFor(account, secretBlob, expectedPurpose, { forceRefre
     if (!oauthReady().google) {
       const error = new Error("Google Desktop OAuth is not configured. Import a Desktop client JSON in Settings → Accounts.");
       error.code = "oauth_not_ready";
+      error.retryable = true;
       throw error;
     }
     // Cached access must respect the same binding as refreshes. Legacy records

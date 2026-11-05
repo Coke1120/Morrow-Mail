@@ -4526,11 +4526,23 @@ button.attachment-name:hover { text-decoration: underline; }
 }
 .message-summary-heading { justify-content: space-between; }
 .message-summary h3 { margin: 0; font-size: 14px; }
+.message-summary-close { margin-left: auto; min-width: 30px; min-height: 30px; padding: 5px; }
+.message-summary-close svg { display: block; width: 16px; height: 16px; }
+.message-summary-ai { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
 .message-summary .hint { margin: 6px 0; }
+.message-summary [data-role="summary-status"]:empty { margin: 0; }
 .message-summary .hint:not(.error) { color: var(--ink); }
 .message-summary .hint.error { color: var(--ink); font-weight: 600; }
-.message-summary-text { white-space: pre-wrap; line-height: 1.5; }
+.message-summary-text { line-height: 1.5; }
+.message-summary-text p { margin: 8px 0; }
+.message-summary-main { font-weight: 600; }
+.message-summary-text ul { margin: 8px 0; padding-left: 22px; }
+.message-summary-text li + li { margin-top: 5px; }
+.message-summary-warning { font-weight: 600; }
+.message-summary details { margin-top: 8px; }
+.message-summary details > summary { cursor: pointer; width: fit-content; }
 .message-summary-controls { margin-top: 6px; }
+.message-summary-controls:not(:has(> button:not([hidden]))) { display: none; }
 
 .sr {
   position: absolute;
