@@ -16,7 +16,8 @@ again. Raw IMAP MIME retains MailParser's transfer/charset decoding.
 
 `messages.decoding_json` is nullable. Version 1 stores fixed booleans only: loss,
 unsupported charset, uncertainty in already-decoded headers, loss in HTML/plain
-parts, and the presence of a checked readable plain part. It stores no text,
+parts, the presence of a checked readable plain part, and ambiguous multiple body
+alternatives. It stores no text,
 charset labels, addresses, raw bytes or telemetry. Existing caches are not
 scanned or invalidated at startup. No credential, provider-write or OAuth path is
 added. A future version must treat unknown diagnostic versions as unverified.
@@ -45,7 +46,8 @@ the old whole-string mojibake repair, preserving literal `Ã©` when its declare
 charset produces that text; the byte-decoding path does not guess a second charset.
 
 If HTML decoding provably lost characters and an independently checked plain
-alternative is intact, the host presents plain text. Original HTML stays in the
+alternative is intact, the host presents plain text. Multiple body sections keep
+the existing presentation and require an explicit view choice. Original HTML stays in the
 cache. When both versions are available, a per-reading-surface button switches
 between sanitized HTML and text nodes. Switching never changes the cached mail
 or permits remote images. Unverified old content is not automatically switched

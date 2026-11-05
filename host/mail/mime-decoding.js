@@ -5,7 +5,10 @@ const { Splitter, Streamer } = require("@zone-eu/mailsplit");
 const { pipeline } = require("node:stream/promises");
 const { Readable } = require("node:stream");
 
-function quality() { return { version: 1, lossy: false, unsupported: false, uncertain: false, htmlLossy: false, textLossy: false, textGood: false }; }
+function quality() {
+  return { version: 1, lossy: false, unsupported: false, uncertain: false, htmlLossy: false, textLossy: false,
+    textGood: false, hasText: false, hasHtml: false, ambiguousAlternatives: false };
+}
 
 function charsetOf(contentType) {
   try { return libmime.parseHeaderValue(String(contentType || "")).params.charset || "utf-8"; }
@@ -46,6 +49,9 @@ function decode(bytes, charset = "utf-8") {
 }
 
 function note(target, decoded, type) {
+  const seen = type === "text/html" ? "hasHtml" : "hasText";
+  target.ambiguousAlternatives ||= target[seen];
+  target[seen] = true;
   target.lossy ||= decoded.lossy;
   target.unsupported ||= decoded.unsupported;
   target.uncertain ||= decoded.uncertain;
@@ -98,7 +104,7 @@ function parse(value) {
     const item = typeof value === "string" ? JSON.parse(value) : value;
     if (item?.version !== 1) return null;
     const result = quality();
-    for (const key of ["lossy", "unsupported", "uncertain", "htmlLossy", "textLossy", "textGood"]) result[key] = item[key] === true;
+    for (const key of ["lossy", "unsupported", "uncertain", "htmlLossy", "textLossy", "textGood", "hasText", "hasHtml", "ambiguousAlternatives"]) result[key] = item[key] === true;
     return result;
   } catch { return null; }
 }
@@ -109,7 +115,7 @@ function presentation(row, presented) {
   if (row.draft_pending || row.uid === 0) return { ...presented, warning: "" };
   const info = parse(row.decoding_json);
   let warning = "";
-  const plainFallback = info?.htmlLossy && !info.textLossy && info.textGood;
+  const plainFallback = info?.htmlLossy && !info.textLossy && info.textGood && !info.ambiguousAlternatives;
   if (info?.lossy) warning = "Some message text could not be decoded without losing characters. The available text is shown; missing characters cannot be recovered from this cached copy.";
   else if (info?.unsupported) warning = "This message uses an unrecognized text encoding. The available text may differ from the original.";
   else if (info?.uncertain) {

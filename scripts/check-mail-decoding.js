@@ -144,6 +144,8 @@ async function run() {
     assert.ok(htmlCache.html_body, "original HTML remains cached");
     const loadedHtml = await read(htmlCache.id); assert.equal(loadedHtml.htmlBody, null); assert.equal(loadedHtml.textBody, goodPlain.toString());
     const pane = render(loadedHtml); assert.equal(pane.querySelector(".body").textContent, goodPlain.toString()); assert.match(pane.textContent, /losing characters/);
+    const several = await gmail({mimeType:"multipart/mixed",headers:[],parts:[part(goodPlain),part(badHtml,"utf-8","text/html"),part(Buffer.from("<p>Another HTML section</p>"),"utf-8","text/html")]});
+    assert.equal(several.decoding.ambiguousAlternatives,true); assert.ok(presented(several).htmlBody,"multiple body sections need an explicit view choice");
     const manualPane = render({ id: "legacy-alternative", accountId: "gmail", htmlBody: '<p>�49�15</p><script>window.leaked=true</script><img src="https://fixture.invalid/track">', textBody: goodPlain.toString() });
     const toggle = manualPane.querySelector('[data-action="plain-body"]');
     assert.ok(toggle); assert.equal(toggle.getAttribute("aria-pressed"), "false");
@@ -156,6 +158,16 @@ async function run() {
     assert.match(old.encodingWarning, /may already be/); assert.equal(old.bodyWarning, ""); assert.equal(fetches.length, before);
     const body = await engine.answer("mail:readCachedBody", [{ emailId: legacy.id, accountId: "gmail", bodyEpoch: old.bodyEpoch }]);
     assert.equal(body.data.email.encodingWarning, old.encodingWarning);
+    // Exercise the real reader retry button and openMessage request construction.
+    ui.context.retryMail = old;
+    ui.run(`state.accounts=[{id:'gmail',email:'owner@fixture.invalid',bodyEpoch:retryMail.bodyEpoch}];state.emails=[retryMail];state.email=retryMail;
+      state.accountId='gmail';state.folderId='INBOX';state.view='mail';state.prefs.conversation=false;
+      renderList=()=>{};renderReader=()=>{};globalThis.readerCalls=[];
+      call=async(channel,params)=>{readerCalls.push({channel,params});return channel==='mail:openEmail'?{email:retryMail,threadMessages:[]}:{};};`);
+    const retryPane = render(old); retryPane.querySelector('[data-action="retry-body"]').click();
+    for(let n=0;n<4;n++) await new Promise(setImmediate);
+    const readerRetry=ui.run("readerCalls.find(row=>row.channel==='mail:openEmail').params");
+    assert.equal(readerRetry.full,true);assert.equal(readerRetry.retry,true);
     // Explicit retry of a complete body must retrieve full parts, replace cached
     // loss and persist the newly checked diagnostics. Ordinary opens remain local.
     const fixed = message("broken-html"); fixed.payload = { ...part(big5, "big5"), headers: [...fixed.payload.headers, ...part(big5, "big5").headers] };
