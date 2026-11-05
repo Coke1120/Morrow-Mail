@@ -526,7 +526,9 @@ async function openMboxImport(folderId) {
     dialog.addEventListener("close", () => {
       if (dialog.open) return;
       const current = mboxReview; if (!current) return;
-      clearTimeout(current.timer); mboxReview = null; current.trigger?.focus?.();
+      clearTimeout(current.timer); mboxReview = null;
+      const trigger = current.trigger?.isConnected ? current.trigger : document.querySelector("#folders .local-mbox-open");
+      trigger?.focus?.();
     });
   }
   const jobs = await call("mail:mboxJobs");
@@ -5547,7 +5549,7 @@ function renderAccounts() {
       create.addEventListener("click", () => guard(() => manageLocalFolder("create")));
       nav.appendChild(create);
       const importer = document.createElement("button");
-      importer.type = "button"; importer.className = "ghost local-folder-create"; importer.textContent = "Import MBOX…";
+      importer.type = "button"; importer.className = "ghost local-folder-create local-mbox-open"; importer.textContent = "Import MBOX…";
       importer.addEventListener("click", () => guard(() => openMboxImport())); nav.appendChild(importer);
     }
     if (account.needsReauth && account.reauthReason) {

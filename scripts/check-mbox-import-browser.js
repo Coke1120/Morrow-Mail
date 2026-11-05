@@ -82,6 +82,7 @@ const root = path.join(__dirname, ".."), output = process.env.MORROW_UI_OUTPUT |
     assert.match(await page.locator("#mbox-status").textContent(), /1 imported/);
     await page.locator("#mbox-status").scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(output, "import-result-390-dark.png") });
     await page.locator("#mbox-close").click();
+    assert.equal(await trigger.evaluate(node => node === document.activeElement), true, "focus returns to the refreshed sidebar trigger after completion");
     await page.locator("button.message").first().click();
     await page.waitForFunction(() => state.email?.isLocal === true);
     assert.equal(await page.locator("#reader script").count(), 0); assert.equal(await page.evaluate(() => window.fixtureExecuted), undefined);

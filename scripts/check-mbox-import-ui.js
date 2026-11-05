@@ -37,7 +37,8 @@ async function fixture(t, options = {}) {
 }
 
 test("actual renderer reviews explicit files/destination/format, creates a local folder, renders counters and synchronizes Features/CLI help", async t => {
-  const f = await fixture(t); const trigger = f.$("refresh"); trigger.focus();
+  const f = await fixture(t); const trigger = f.window.document.createElement("button");
+  trigger.className = "local-mbox-open"; trigger.textContent = "Import MBOX…"; f.$("folders").appendChild(trigger); trigger.focus();
   await f.ui.run("openMboxImport()"); assert.equal(f.$("mbox-import").open, true); assert.equal(f.$("mbox-start").disabled, true);
   assert.equal(f.calls.filter(call => call.channel === "mail:mboxPick").length, 0);
   await f.ui.run("pickMboxFiles()"); assert.match(f.$("mbox-files").textContent, /Exported-Inbox/); assert.equal(f.$("mbox-start").disabled, false);
@@ -55,7 +56,8 @@ test("actual renderer reviews explicit files/destination/format, creates a local
   assert.equal(f.calls.filter(call => /Network|Provider|:send|^ai|^emailBrain|^nativeAgent/.test(call.channel)).length, 0);
   f.ui.run("paintFeatureCatalog()"); assert.match(f.$("features-catalog").textContent, /MBOX import/); assert.match(f.$("features-catalog").textContent, /Content-Length mboxcl/);
   assert.match(f.$("cli-mbox-help").textContent, /no CLI command or bot operation/);
-  await f.ui.run("closeMboxImport()"); assert.equal(f.$("mbox-import").open, false); assert.equal(f.window.document.activeElement, trigger);
+  const replacement = trigger.cloneNode(true); trigger.replaceWith(replacement);
+  await f.ui.run("closeMboxImport()"); assert.equal(f.$("mbox-import").open, false); assert.equal(f.window.document.activeElement, replacement, "completion refresh may rebuild the original sidebar trigger");
 });
 
 test("Stop/Escape cancels a held real job, preserves partial state, restores focus and ignores an old close event after reopening", async t => {
