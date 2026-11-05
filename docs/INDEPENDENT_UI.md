@@ -66,15 +66,17 @@ other filters and sorting, returns to page one and clears selection. It remains
 available when folder chips are hidden and lasts in this window until disabled
 or restarted. See [recipient matching](adr/2026-11-05-to-me-filter.md).
 
-The reader action bar has one **Timeline** button, beside Summary. Its sheet offers
-optional keywords and editable contact emails from the opened message's From, To,
-Cc and Reply-To, never the list selection or search. Generate uses that message
-and its downloaded thread; no older mail is fetched. Focus guides summaries, not
-which thread messages are sent. Title follows the subject; language and timezone
-follow the system. Explicit-action AI permission and conditional partial-coverage
-acceptance still apply. Results, saved history and reviewed JSON, Markdown and
-isolated PDF exports stay local. No Timeline tab, scheduled generation or URL
-delivery is available. See [the public format and privacy boundaries](TIMELINE_FORMAT.md).
+The reader action bar has one **Timeline** button beside Summary. Its sheet keeps
+**This downloaded thread** and adds **Case / client across threads** for reviewed
+current-account local search and explicit Main / Background message selection.
+Case Generate requires a fresh source/destination review; only Generate uses AI.
+Keywords/contacts guide summaries rather than source selection. Independent To/Cc
+remain local evidence. Case status, follow-ups, gaps and mentioned dates cite source
+mail; cached source reading never downloads or marks read. Mail-date chronology,
+coverage, uncertainty, bounded calls/cancellation and reviewed local HTML/Markdown/
+PDF/JSON exports remain. Thread schema 1.0.0 and Case schema 1.1.0 are both supported.
+Disclosure version 4 requires renewed manual AI permission. No scheduled generation
+or URL delivery is available. See [scope and privacy](TIMELINE_FORMAT.md).
 
 Settings → Mail & Sync controls new-email system notifications on Windows/macOS.
 They default on with sender/content hidden, and run only while the app is running,

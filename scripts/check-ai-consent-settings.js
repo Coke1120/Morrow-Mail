@@ -544,7 +544,7 @@ test("saved v2 consent renders the expanded Timeline disclosure with no implicit
   f.seedConsent(legacy);
   await f.load();
   const review = f.consent.status();
-  assert.equal(review.version, 3); assert.equal(review.manual, false); assert.equal(review.background, false);
+  assert.equal(review.version, 4); assert.equal(review.manual, false); assert.equal(review.background, false);
   for (const id of ["ai-consent-data", "ai-consent-full-data"]) {
     assert.match(f.get(id).textContent, /sender names and addresses, mail timestamps and date provenance/);
     assert.match(f.get(id).textContent, /optional keywords and contact emails/);

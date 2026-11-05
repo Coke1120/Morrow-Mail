@@ -2,63 +2,86 @@
 
 ## Desktop workflow
 
-Open a message and choose **Timeline** beside Summary in the reader action bar.
-One sheet offers optional free-text **Keywords** and editable **Contact emails**,
-prefilled from that message's From, To, Cc and Reply-To (not Bcc). Both fields guide
-the summaries; neither excludes thread messages from the AI request. Empty fields
-add no extra focus. The title comes from the subject, output language from the
-supported system locale (otherwise English), and display timezone from the system.
-There is no Timeline tab, selection/search entry point or mandatory settings wall.
+Open a message and choose **Timeline** beside Summary. The default **This downloaded
+thread** mode preserves the lightweight chronology of that message and its locally
+stored thread. The reader, list selection and current Mail search are unchanged.
 
-The source is always that opened message's account and ID, plus its already-local
-thread, never current list selection or unrelated search results. Opening the sheet
-checks downloaded coverage and saved AI permission and prepares a five-minute,
-window-owned source manifest without making an AI request. Only **Generate**
-re-prepares with the edited focus and starts extraction through the saved AI destination after explicit
-action permission. Sources remain frozen for that run. Limits of 1,000 messages /
-200 threads are enforced without silent truncation. Expansion means **downloaded**
-thread members, not complete mailbox history; no older-mail fetch runs automatically.
+**Case / client across threads** starts with those downloaded sources in the same
+account. Search local mail, add relevant messages over several search rounds, remove
+unneeded sources and choose **Main** or **Background** for each. Every local query
+word must match a token prefix in subject, sender or indexed body (first 200,000
+characters per message). There is no Gmail query syntax, recipient-header search,
+server search or automatic download. Up to 100 results are shown per query, with
+limited queries flagged; the underlying query stops after 1,001 rows, before
+provider-copy deduplication. Refine broad queries and search variants separately.
+Neither successful search nor the selected messages establish exhaustive coverage.
+Undownloaded mail, other accounts, calls and attachment contents remain outside scope.
 
-Missing, incomplete or warned bodies and unsupported metadata are excluded, with
-counts and a conditional explicit partial-coverage checkbox. A run without usable
-complete bodies cannot start. Download mail separately in Mail if needed; the sheet
-does not download it. Timeline operations never change mail flags, labels or folders
-and never send mail. Closing the sheet requests cancellation, including a job still
-starting; data already delivered cannot be recalled.
+Case mode uses exactly the checked messages, without automatic thread expansion.
+Choose **Review selected mail**, inspect the selected/included/omitted counts and AI
+destination, accept any omissions and affirm the separate review checkbox. Only
+**Generate** transmits data. Changing selection, roles, focus or running another
+search clears case review. The host requires an owner-bound existing account proof,
+explicit phases, the current account only and a reviewed frozen source manifest.
+There is no automatic regeneration after a source change or failure.
 
-Preparation uses the same complete request builder as extraction, including the
-prompt, output language, JSON escaping, optional focus and room for a fixed validation
-retry. Focus can reduce the available space for message fragments. The displayed
-input estimate covers the first extraction pass only; dynamic validation retries
-and summary reductions still spend the same total run budgets. A preparation error
-disables Generate until the focus changes or the sheet is reopened; the host also
-rejects a blocked plan independently. Oversized input names the exhausted limit.
-Shorten optional focus when requested, or open a smaller downloaded thread. Changing
-focus or opening a different message in the same thread does not filter the source.
+Optional keywords and contact emails (prefilled from the opened message's From,
+To, Cc and Reply-To, never Bcc) guide extraction without filtering or discovering
+sources. AI receives reviewed body text/quoted history, subject, sender, mail dates
+and provenance, attachment names, optional focus and case Main/Background choices.
+Independent To/Cc and alias headers remain local evidence; body and focus can still
+contain these addresses. The report cannot independently establish routing identities
+that were not supplied to the model. Title, supported language and display timezone
+follow the opened subject/system; Case title can be edited. No fixed mailbox, Canvas service or timezone is used.
 
-After failure, cancellation or local result deletion, an explicit Generate click
-can re-prepare the same source. The consumed authorization cannot start a second
-job, but its owner-bound source proof remains valid for checks and re-preparation
-for five minutes after the job ends. Real source/account changes or expired proofs
-require reopening; changing AI permission still requires a newly prepared consent
-binding. There is no automatic retry of an entire job. Retrying may send the same
-reviewed mail again.
+Case results add cited **Current status**, **Follow-ups for review**, **Unresolved
+gaps** and **Mentioned events and deadlines**. All generated points require selected
+source references and explicit uncertainty. No task is automatically checked off;
+unread, missing replies and silence do not establish incomplete or completed work.
+The report is a bounded AI synthesis of validated per-message summaries, not an
+independent audit of raw mail or a completeness guarantee. Each overview section has
+at most 12 points. Human review remains necessary for claims and contradictions.
 
-Completed artifacts show a compact result with secondary reviewed export/delete
-actions. **Saved timelines** is collapsed history in the sheet, not a permanent
-picker or reader panel. Readable HTML, JSON 1.0.0, Markdown and isolated PDF exports require fresh
-personal-information, coverage and uncertainty review each time. There is no bot
-operation, CLI command, scheduled generation, automatic rerun or URL/webhook export.
+The full per-message correspondence chronology remains available under All / Main /
+Background filters. Its dates are mail timestamps, not mentioned event/deadline dates.
+Mentioned dates remain attributed text with uncertainty, never normalized calendar
+entries. During generation a reported date must occur verbatim in at least one cited
+original body; that check establishes provenance, not the meaning or correctness of
+the date. Missing dates stay missing rather than using today's date.
 
-Supported output languages remain English, Traditional/Simplified Chinese, Japanese,
-Korean, French, German and Spanish. Dates use `Intl.DateTimeFormat` with the system
-IANA timezone and locale. Output language and extraction focus do not change public
-field names or metadata; focus remains outside the public export schema.
+**Read cached source** opens text-only local mail with recorded From/To/Cc and date
+provenance. It makes no provider request, model call, attachment read or mark-read.
+For saved results the host verifies membership, opaque identity and the captured
+fingerprint. Changed/deleted sources show unavailable rather than silently replacing
+historical evidence. HTML and remote content are not rendered.
+
+Opening/preparing the sheet creates a five-minute window-owned source proof without
+using AI. Sources/accounts are revalidated before calls and before saving. Missing,
+incomplete, warned or unsupported messages are omitted with explicit acceptance;
+no usable complete bodies means no generation. Limits of 1,000 messages / 200 threads
+are ceilings, and lower input/call/output/time budgets can reject smaller selections.
+The estimate covers initial extraction only. Case synthesis, bounded reductions and
+one validation retry per step share the same total budgets. No report is saved after
+a failed/cancelled run. Attempted call counts disclose possible prior transmission.
+Retry is explicit and may send reviewed mail again. Closing requests cancellation,
+including a still-starting job; already delivered data cannot be recalled.
+
+Saved history remains local in the sheet. Every HTML, Markdown, isolated PDF and
+public JSON export requires fresh personal-information, coverage and uncertainty
+review. Thread results retain schema 1.0.0; Case results use 1.1.0. Existing results
+remain readable/exportable. Account removal still deletes every related local
+artifact; exports, backups and historical journal bytes remain. There is no bot or
+CLI operation, scheduled generation, automatic send or URL/webhook export.
+
+Supported output languages are English, Traditional/Simplified Chinese, Japanese,
+Korean, French, German and Spanish. Dates use the system IANA timezone and locale.
 
 ## Public contract
 
-`shared/timeline-schema/1.0.0.schema.json` is the bundled Draft 2020-12 contract.
-Its identifier is `urn:morrow-mail:timeline:1.0.0`; it requires no network resolver.
+`shared/timeline-schema/1.0.0.schema.json` is the immutable original Draft 2020-12 contract.
+Case capability is bundled separately in `shared/timeline-schema/1.1.0.schema.json`.
+Their identifiers are `urn:morrow-mail:timeline:1.0.0` and `urn:morrow-mail:timeline:1.1.0`;
+the exact local registry never uses a network resolver.
 JSON exports contain exactly the validated public document, never a local wrapper.
 Consumers must select an exact supported `schema_version` from their own bundled
 registry, not resolve the input's `$schema` over the network.
@@ -87,8 +110,9 @@ Each source message has exactly one correspondence event:
 | `open_actions` | Up to 25 requests/unresolved items for human review, not tasks |
 | `unclear` | Up to 25 uncertainties; no inferred resolution from later silence |
 
-The host supplies all dates, addresses, aliases, file names and identifiers. The
-model may return only source tokens, summaries, requests and uncertainties.
+The host supplies all chronology dates, addresses, aliases, file names and identifiers.
+Per-message extraction returns only source tokens, summaries, requests and uncertainties.
+Case synthesis separately produces only the validated cited report fields described below.
 Mentioned past/future dates remain in semantic text; they never replace mail time.
 New IMAP and Gmail reads save header/received/unknown provenance. Older cached
 timestamps are explicitly `cached_unknown`; synthetic or invalid dates are `null`
@@ -110,6 +134,17 @@ All objects reject unknown fields. JSON is limited to 2 MiB UTF-8, 16 nesting
 levels, valid UTF-8 and unique object keys. No body, HTML or open-ended extension
 bag is permitted. Unsupported attachment metadata causes a visible omission rather
 than silently rewriting its evidence.
+
+Schema 1.1.0 retains the original envelope and event fields. It adds optional event
+`phase: "main" | "background"` and paired `case_report` / `case_scope` capabilities.
+This producer requires phases on all case events. Case scope records `local_only`,
+`account_count: 1`, `search_count`, `limited_search_count`, `mailbox_complete: false`
+and `search_is_exhaustive: false`. No raw search queries or local account IDs are
+exported. A report contains `current_status`, `follow_ups`, `gaps` and `dates` arrays;
+each point has bounded `text`, mandatory `uncertainty` and 1–25 unique, validated
+`source_message_ids`. Date points also have `kind: "event" | "deadline"` and
+`date_text`. No completion boolean or executable task is accepted. References must
+belong to included source messages; arbitrary model links and extra fields fail.
 
 ## Version policy
 
@@ -168,14 +203,14 @@ AI automatically. No raw prompt/body copies are saved with jobs.
 
 ## Privacy, retention and exports
 
-Disclosure version 3 requires renewed explicit-action AI permission for prior
-grants, including version 2. Reading permission status does not migrate or approve
+Disclosure version 4 requires renewed explicit-action AI permission for prior
+grants, including versions 2 and 3. Reading permission status does not migrate or approve
 an old grant; manual and background use stay off until a fresh affirmative choice.
 Manual approval does not enable background use. Preparation and exports need no
 model request. Generation uses only reviewed text, subjects, sender/date evidence,
-attachment names and optional keyword/contact focus through the existing saved provider plumbing, without Brain,
+attachment names, optional keyword/contact focus and Main/Background selections through the existing saved provider plumbing, without Brain,
 Agent notes, chat history, tools or automatic provider/billing fallback.
-Prompt version `mail-chronology-4` asks for a chronology of the user's
+Prompt version `mail-chronology-5-case-1` asks for a chronology of the user's
 currently selected mail in the current mailbox account (no named person or fixed
 inbox), treating focus as topics rather than instructions or additional evidence;
 the host still owns dates, addresses and opaque IDs. Generated
@@ -222,3 +257,14 @@ resources or forms. The same HTML layout is used for isolated PDF printing.
 Routine account refresh notifications revalidate the window-owned host manifest,
 rather than invalidating the renderer source. Host incarnation, credential and
 source-fingerprint checks still reject real changes before AI calls and saving.
+
+Case synthesis receives validated semantic rows, sender/date evidence and selected
+phases, without independent recipient headers. Large overviews are reduced at
+semantic-item boundaries, with source references and mail-date/phase context
+preserved. Every source summary/request/uncertainty is admitted; no input row is
+silently dropped to fit a request. Non-compacting reductions stop. Repeated summaries
+can still omit important nuance, so the full source-linked chronology stays available.
+Synthetic checks cover case review, account isolation, capped search, forged citations,
+revocation, exports and stale UI responses. Native Windows/macOS layout, live model
+quality, actual PDF pagination and real-provider behavior remain manual validation
+limits; development never uses actual user mail or live model calls.

@@ -109,6 +109,10 @@ Both use synthetic stores/state only. See the
   checkpoints and provider/account identity guards are retained. All normal
   database transactions still run on the main thread, but sync commits at most
   24 messages, 128 flags or 64 deletions per batch and yields outside transactions.
+  Runtime IMAP message batches additionally check 8 ms of work between messages
+  and 256 KiB of incoming normalized UTF-8 text/HTML; an oversized message is
+  admitted alone. Commit/index/fsync and any single operation may exceed those
+  targets. Smaller batches can increase total elapsed time and disk work.
   Startup journal replay and initial checkpoint publication run in workers; mail
   admission stays closed until recovery and search verification finish.
 - Header-specific revisions and paged deltas drive worker-owned recipient aggregates.
@@ -209,3 +213,48 @@ profiled. Tiny-journal age/cost gates are conservative synthetic policy choices,
 not native tuning. Broad ranking, warm negative search verification and
 conversation-enabled full header enumeration remain expensive. See
 [the residual decisions and deferrals](adr/2026-11-01-residual-mail-performance.md).
+
+## Exact search and pending-body follow-up (#520)
+
+Local search now materializes a complete candidate seed chosen by bounded
+selectivity probes and looks up outer messages by primary key. Small seeds also
+constrain subsequent term grouping. All matching candidates retain their full
+weighted AND/prefix ranking before the result limit; Unicode, account, To Me,
+explicit sorts and deterministic date/ID ordering retain their prior behavior.
+Broad ranking remains synchronous and can still delay host callbacks.
+
+Pending-body selection explicitly uses a partial date/ID index of incomplete,
+non-draft provider messages whose retries are not blocked. Completed history is
+absent from that index. Retry deadlines, exclusions, horizons and the engine's
+two-page/unfinished-cursor policy remain query/engine rules. Large future-retry
+or excluded backlogs can still require work. SQLite maintains membership in the
+same durable transaction; initial index creation scans existing mail and remains
+synchronous. No body layout or storage-owner change is introduced.
+
+Opt-in fixed stages `db.search`, `db.body.pending` and `db.sync.ingest` separate
+these operations in the existing bounded numeric diagnostics. Search values,
+SQL, mail text and identities are never diagnostic labels or fields.
+
+Run paired probes serially with other tests stopped:
+
+```sh
+node --expose-gc scripts/benchmark-residual-mail-work.js --source-root /path/to/immutable-baseline --source-sha e0ca1151e8fbf08929266463afbda6a382583786 --messages 100000 --fixture-file /tmp/morrow-synthetic-100k.sqlite --output /tmp/baseline.json
+node --expose-gc scripts/benchmark-residual-mail-work.js --messages 100000 --fixture-file /tmp/morrow-synthetic-100k.sqlite --output /tmp/candidate.json
+```
+
+Use baseline-compatible dependencies for its archive. The optional fixture is a
+fresh synthetic checkpoint plus a tagged count/hash manifest; subsequent runs
+validate and copy it into their own temporary profiles, never mutate the source.
+Without a fixture path each run constructs identical synthetic inputs. Repeat
+with `--messages 10000`. Raw records include source/harness SHA, runtime versions,
+fixture distribution, full production query plans, every elapsed/maximum-callback
+gap sample throughout each pass, sampled RSS, optional dbstat index bytes and
+200-row eligibility-maintenance cost. Restored-template opening is reported
+separately and includes migration/index preparation; it is not native startup.
+No wall-clock threshold gates CI. See [the decision and ownership
+limits](adr/2026-11-05-exact-search-and-body-work.md) and the [paired 10k/100k report](performance/2026-11-05-issue-520.md)
+with [raw samples and plans](performance/2026-11-05-issue-520.json) for observations
+and validation gaps. The synthetic 100k run reduced the 96-message pass
+maximum callback gap from 195 to 47 ms while increasing total elapsed from
+626 to 1,070 ms; broad global ranking remained near 417 ms. These are measured
+tradeoffs on this Linux host, not native latency guarantees.

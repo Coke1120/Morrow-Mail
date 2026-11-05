@@ -2,11 +2,12 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");
 const { failure } = require("./validate");
-const { freezeSources, assertSources, hash, fingerprint } = require("./sources");
+const { freezeSources, assertSources, hash, fingerprint, dedupeRows, messagePreview, messageIdentity } = require("./sources");
+const { htmlToPlain } = require("../mail/text-encoding");
 const { LIMITS, LANGUAGES, PROMPT_VERSION, preparePlan, extract } = require("./extract");
 const { budget, budgetDetails } = require("./budget");
 
-const CHANNELS = new Set(["timeline:check", "timeline:prepare", "timeline:download", "timeline:generate", "timeline:cancel", "timeline:list", "timeline:get", "timeline:delete", "timeline:export"]);
+const CHANNELS = new Set(["timeline:search", "timeline:source", "timeline:check", "timeline:prepare", "timeline:download", "timeline:generate", "timeline:cancel", "timeline:list", "timeline:get", "timeline:delete", "timeline:export"]);
 const codes = new Set(["timeline-validation", "timeline-consolidation", "timeline-version", "timeline-size", "timeline-depth", "timeline-selection-limit", "timeline-empty", "timeline-source-changed", "timeline-query", "timeline-budget", "timeline-not-found", "timeline-manifest", "timeline-partial", "timeline-busy", "timeline-cancelled", "ai-consent-required", "timeline-language", "timeline-timezone", "timeline-input", "timeline-revision"]);
 
 function publicError(error) {
@@ -27,8 +28,9 @@ function selectionInput(value) {
   if (value.messages !== undefined) {
     if (!Array.isArray(value.messages) || value.messages.length > LIMITS.messages) throw failure("timeline-input");
     for (const reference of value.messages) {
-      shape(reference, ["accountId", "messageId"], ["accountId", "messageId"]);
+      shape(reference, ["accountId", "messageId", "phase"], ["accountId", "messageId"]);
       token(reference.accountId); token(reference.messageId);
+      if (reference.phase !== undefined && !["main", "background"].includes(reference.phase)) throw failure("timeline-input");
     }
   }
   if (value.search) {
@@ -41,7 +43,8 @@ function selectionInput(value) {
   }
 }
 function optionsInput(value) {
-  shape(value, ["title", "language", "displayTimezone", "keywords", "contactEmails"], ["title", "language", "displayTimezone"]);
+  shape(value, ["title", "language", "displayTimezone", "keywords", "contactEmails", "mode"], ["title", "language", "displayTimezone"]);
+  if (value.mode !== undefined && !["thread", "case"].includes(value.mode)) throw failure("timeline-input");
   if (typeof value.title !== "string" || !value.title.trim() || value.title.length > 500 || /[\x00-\x1f\x7f\u2028\u2029]/.test(value.title)) throw failure("timeline-input");
   if (!Object.hasOwn(LANGUAGES, value.language)) throw failure("timeline-language");
   if (typeof value.displayTimezone !== "string" || value.displayTimezone.length > 64) throw failure("timeline-timezone");
@@ -57,6 +60,7 @@ function createService(dependencies) {
   const sourceDependencies = { db, stamp, identities };
   function live(entry) {
     if (entry.closed?.()) throw failure("timeline-cancelled");
+    if (entry.rootAccountId && stamp(entry.rootAccountId) !== entry.rootAccountStamp) throw failure("timeline-source-changed");
     assertSources(sourceDependencies, entry.snapshot);
   }
   function manifest(owner, id) {
@@ -66,11 +70,21 @@ function createService(dependencies) {
     return entry;
   }
   function prepare(owner, input, closed = () => false) {
-    shape(input, ["selection", "options", "manifestToken"], ["selection", "options"]);
+    shape(input, ["selection", "options", "manifestToken", "contextOnly"], ["selection", "options"]);
     // Re-preparing edited focus must not silently switch account incarnations.
-    if (input.manifestToken !== undefined) manifest(owner, token(input.manifestToken));
+    const previous = input.manifestToken !== undefined ? manifest(owner, token(input.manifestToken)) : null;
     selectionInput(input.selection); optionsInput(input.options);
-    const snapshot = db.transaction(() => freezeSources(sourceDependencies, input.selection));
+    // A Case search context proves the opened message/account without capturing
+    // its whole thread or treating any body as reviewed generation input.
+    if (input.contextOnly !== undefined && (input.contextOnly !== true || input.manifestToken !== undefined
+        || input.options.mode === "case" || input.selection.search || input.selection.expandThreads
+        || input.selection.messages?.length !== 1)) throw failure("timeline-input");
+    if (input.options.mode === "case" && (!previous?.rootAccountId || input.selection.search || input.selection.expandThreads
+        || input.selection.messages.some(reference => reference.accountId !== previous.rootAccountId || !reference.phase)
+        || new Set(input.selection.messages.map(reference => reference.messageId)).size !== input.selection.messages.length)) throw failure("timeline-input");
+    const snapshot = db.transaction(() => freezeSources(sourceDependencies, input.selection, input.contextOnly ? "context" : input.options.mode));
+    if (input.options.mode === "case") snapshot.caseScope = { local_only: true, account_count: 1,
+      search_count: previous.searchStats.count, limited_search_count: previous.searchStats.limited, mailbox_complete: false, search_is_exhaustive: false };
     let plan, blocked;
     try { plan = preparePlan(snapshot.sources, { language: input.options.language, focus: { keywords: input.options.keywords || "", contact_emails: input.options.contactEmails || [] } }); }
     catch (error) {
@@ -83,12 +97,16 @@ function createService(dependencies) {
     if (manifests.size >= 8) throw failure("timeline-busy");
     const status = consent.status();
     const id = crypto.randomUUID();
-    const entry = { owner, snapshot, options: { ...input.options, ...(input.options.contactEmails ? { contactEmails: [...input.options.contactEmails] } : {}) }, expires: now() + 300000, consentToken: status.token, closed, blocked, consumed: false };
-    entry.optionsDigest = hash([snapshot.digest, entry.options, status.token]);
+    const entry = { owner, snapshot, contextOnly: input.contextOnly === true, options: { ...input.options, ...(input.options.contactEmails ? { contactEmails: [...input.options.contactEmails] } : {}) }, expires: now() + 300000, consentToken: status.token, closed, blocked, consumed: false };
+    entry.rootAccountId = previous?.rootAccountId || (snapshot.accounts.length === 1 ? snapshot.accounts[0].id : null);
+    entry.rootAccountStamp = previous?.rootAccountStamp || snapshot.accounts.find(account => account.id === entry.rootAccountId)?.stamp;
+    entry.searchStats = previous?.searchStats || { count: 0, limited: 0 };
+    entry.optionsDigest = hash([snapshot.digest, snapshot.caseScope, entry.options, status.token]);
     manifests.set(id, entry);
     return { manifestToken: id, optionsDigest: entry.optionsDigest, expiresAt: entry.expires,
       accounts: snapshot.accounts.map(account => account.email), threads: snapshot.sourceThreads.length,
       coverage: snapshot.coverage, missingBodies: snapshot.missingBodies, invalidMetadata: snapshot.invalidMetadata, search: snapshot.search,
+      messages: snapshot.records.map(record => ({ ...messagePreview(db.timelineMessage(record.id)), phase: record.phase || "main" })), caseScope: snapshot.caseScope,
       chunks: plan?.chunks.length || 0, estimatedInputTokens: plan?.estimatedInputTokens || 0, ...(blocked ? { budget: blocked } : {}),
       limits: LIMITS, destination: status.destination, provider: status.label, model: status.model, allowed: status.manual,
       locality: status.locality, providerTerms: status.providerTerms };
@@ -100,10 +118,12 @@ function createService(dependencies) {
     return { cancelled: true };
   }
   async function generate(owner, input, publish) {
-    shape(input, ["manifestToken", "optionsDigest", "acceptPartial"], ["manifestToken", "optionsDigest", "acceptPartial"]);
+    shape(input, ["manifestToken", "optionsDigest", "acceptPartial", "reviewed"], ["manifestToken", "optionsDigest", "acceptPartial"]);
     if (typeof input.acceptPartial !== "boolean") throw failure("timeline-input");
     const entry = manifest(owner, token(input.manifestToken));
+    if (entry.contextOnly) throw failure("timeline-input");
     if (entry.consumed || input.optionsDigest !== entry.optionsDigest) throw failure("timeline-manifest");
+    if (entry.options.mode === "case" && input.reviewed !== true) throw failure("timeline-input");
     if (entry.blocked) throw budget(entry.blocked.kind, entry.blocked.actual, entry.blocked.limit);
     if (!entry.snapshot.sources.length || (entry.snapshot.coverage.omitted_message_count && !input.acceptPartial)) throw failure("timeline-partial");
     if (jobs.size) throw failure("timeline-busy");
@@ -124,10 +144,12 @@ function createService(dependencies) {
       const check = () => { controller.signal.throwIfAborted(); lease.check(); live(entry); };
       try {
         check();
+        const schemaVersion = entry.options.mode === "case" ? "1.1.0" : "1.0.0";
         const result = await extract({ sources: entry.snapshot.sources, envelope: {
-          $schema: "urn:morrow-mail:timeline:1.0.0", schema_version: "1.0.0", timeline_id: crypto.randomUUID(), source_namespace: db.timeline.namespace(),
+          $schema: `urn:morrow-mail:timeline:${schemaVersion}`, schema_version: schemaVersion, timeline_id: crypto.randomUUID(), source_namespace: db.timeline.namespace(),
           generator: { name: "Morrow Mail", version }, generated_at: new Date(now()).toISOString(), title: entry.options.title,
           display_timezone: entry.options.displayTimezone, time_basis: "mail_timestamp", coverage: entry.snapshot.coverage, source_threads: entry.snapshot.sourceThreads,
+          ...(entry.snapshot.caseScope ? { case_scope: entry.snapshot.caseScope } : {}),
         }, language: entry.options.language, focus: { keywords: entry.options.keywords || "", contact_emails: entry.options.contactEmails || [] }, signal: lease.signal, check,
         complete: (messages, options) => complete(messages, { ...options, config: config(), background: false }),
         progress: value => { calls = value.calls; send(value); } });
@@ -152,6 +174,46 @@ function createService(dependencies) {
   }
   async function invoke(owner, channel, input = {}, publish = () => {}, closed = () => false) {
     if (Buffer.byteLength(JSON.stringify(input)) > 128000) throw failure("timeline-input");
+    if (channel === "timeline:search") {
+      shape(input, ["manifestToken", "query"], ["manifestToken", "query"]);
+      const entry = manifest(owner, token(input.manifestToken));
+      if (!entry.rootAccountId || typeof input.query !== "string" || !input.query.trim() || input.query.length > 1000) throw failure("timeline-query");
+      const inspected = db.inspectSearchTokens(input.query);
+      if (!inspected.tokens.length || inspected.tokens.length > 16 || inspected.overlong) throw failure("timeline-query");
+      const found = db.timelineSearch({ query: input.query, accountId: entry.rootAccountId });
+      // Retain the database query cap before provider-copy deduplication. Copies
+      // can otherwise hide the fact that later results were never examined.
+      const limited = found.length > 100;
+      const rows = dedupeRows(found.filter(row => row.account_id === entry.rootAccountId));
+      entry.searchStats.count++;
+      if (limited) entry.searchStats.limited++;
+      return { messages: rows.slice(0, 100).map(messagePreview), matched: found.length, limited,
+        queryCapped: found.length > LIMITS.messages, localOnly: true, exhaustive: false };
+    }
+    if (channel === "timeline:source") {
+      shape(input, ["id", "sourceMessageId", "manifestToken", "messageId"]);
+      let row;
+      if (input.manifestToken !== undefined) {
+        if (input.id !== undefined || input.sourceMessageId !== undefined) throw failure("timeline-input");
+        const entry = manifest(owner, token(input.manifestToken));
+        row = db.messageById(token(input.messageId));
+        if (!row || row.account_id !== entry.rootAccountId) throw failure("timeline-source-changed");
+      } else {
+        if (input.messageId !== undefined) throw failure("timeline-input");
+        const stored = db.timeline.get(token(input.id)), sourceId = token(input.sourceMessageId);
+        if (!stored.document.events.some(event => event.source_message_id === sourceId)) throw failure("timeline-not-found");
+        for (const record of db.timeline.sourceRecords(input.id)) {
+          const candidate = db.messageById(record.id), account = db.accountById(record.account_id);
+          if (!candidate || !account || candidate.account_id !== record.account_id || fingerprint(candidate) !== record.fingerprint) continue;
+          if (messageIdentity(candidate, account, db.timeline) === sourceId) { row = candidate; break; }
+        }
+        if (!row) throw failure("timeline-source-changed");
+      }
+      // Plain cached text only: no engine open, provider read, mark-read, remote
+      // content, attachment bytes or model invocation belongs on this path.
+      return { ...messagePreview(row), to: JSON.parse(row.to_json || "[]"), cc: JSON.parse(row.cc_json || "[]"),
+        text: row.text_body || htmlToPlain(row.html_body || "") };
+    }
     if (channel === "timeline:check") {
       shape(input, ["manifestToken"], ["manifestToken"]);
       manifest(owner, token(input.manifestToken));
@@ -162,6 +224,7 @@ function createService(dependencies) {
     if (channel === "timeline:download") {
       shape(input, ["manifestToken"], ["manifestToken"]);
       const entry = manifest(owner, token(input.manifestToken));
+      if (entry.contextOnly) throw failure("timeline-input");
       for (const reference of entry.snapshot.omitted) {
         live(entry);
         await download(reference.messageId, reference.accountId);
@@ -171,8 +234,8 @@ function createService(dependencies) {
         if (!row || row.account_id !== reference.accountId) throw failure("timeline-source-changed");
         entry.snapshot.records.find(record => record.id === row.id).fingerprint = fingerprint(row);
       }
-      const frozenSelection = { messages: entry.snapshot.records.map(row => ({ accountId: row.account_id, messageId: row.id })), expandThreads: false };
-      return { ...prepare(owner, { selection: frozenSelection, options: entry.options }, closed), frozenSelection };
+      const frozenSelection = { messages: entry.snapshot.records.map(row => ({ accountId: row.account_id, messageId: row.id, ...(row.phase ? { phase: row.phase } : {}) })), expandThreads: false };
+      return { ...prepare(owner, { selection: frozenSelection, options: entry.options, manifestToken: input.manifestToken }, closed), frozenSelection };
     }
     if (channel === "timeline:cancel") { shape(input, ["jobId"], ["jobId"]); return cancel(owner, token(input.jobId)); }
     if (channel === "timeline:list") { shape(input, []); return db.timeline.list(); }

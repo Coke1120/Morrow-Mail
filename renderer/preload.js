@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 const INVOKE = [
   "timeline:check",
+  "timeline:search",
+  "timeline:source",
   "timeline:prepare",
   "timeline:download",
   "timeline:generate",
