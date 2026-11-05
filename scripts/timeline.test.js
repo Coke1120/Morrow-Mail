@@ -72,6 +72,7 @@ function memory(context, overrides = {}) {
       save(document, records, details) { validateDocument(document); artifacts.set(document.timeline_id, { document: copy(document), revision: 1, records: copy(records), details }); },
       get(id) { const artifact = artifacts.get(id); if (!artifact) throw Object.assign(new Error("Missing"), { code: "timeline-not-found" }); return artifact; },
       list: () => [...artifacts].map(([id, value]) => ({ id, revision: 1, generated_at: value.document.generated_at })),
+      sourceRecords: id => artifacts.get(id)?.records || [],
       delete: id => artifacts.delete(id), startJob: (id, owner) => savedJobs.set(id, { owner, state: "running" }),
       finishJob: (id, state) => { savedJobs.get(id).state = state; },
     },
@@ -322,7 +323,7 @@ test("a valid saved v2 grant cannot transmit sender/date evidence before renewed
   // Recreate a valid prior-version grant using the production module's v2
   // version-bound persistence/target logic, not a record with missing metadata.
   const priorModule = { exports: {} };
-  vm.runInNewContext(read("host/ai-consent.js").replace("const VERSION = 3;", "const VERSION = 2;"), {
+  vm.runInNewContext(read("host/ai-consent.js").replace("const VERSION = 4;", "const VERSION = 2;"), {
     module: priorModule, exports: priorModule.exports, URL, AbortController, AbortSignal,
     require: require("node:module").createRequire(path.join(__dirname, "../host/ai-consent.js")),
   });
@@ -332,7 +333,7 @@ test("a valid saved v2 grant cannot transmit sender/date evidence before renewed
   const filename = path.join(fixture.directory, "ai-consent.json");
   const legacy = JSON.parse(fs.readFileSync(filename));
   assert.equal(legacy.version, 2);
-  assert.equal(VERSION, 3);
+  assert.equal(VERSION, 4);
   const review = fixture.consent.status();
   assert.equal(review.manual, false); assert.equal(review.background, false);
   for (const text of [review.disclosure, review.dataSummary, review.purposes]) {
@@ -349,7 +350,7 @@ test("a valid saved v2 grant cannot transmit sender/date evidence before renewed
   assert.throws(() => fixture.consent.grant({ token: review.token, manual: false, background: false }), { code: "ai-consent-required" });
   fixture.consent.grant({ token: review.token, manual: true, background: false });
   assert.equal(fixture.consent.status().manual, true); assert.equal(fixture.consent.status().background, false);
-  assert.equal(JSON.parse(fs.readFileSync(filename)).version, 3);
+  assert.equal(JSON.parse(fs.readFileSync(filename)).version, 4);
   assert.equal(fixture.calls.length, 0, "Allow is permission, not a Generate action");
   await assert.rejects(fixture.service.invoke(1, "timeline:generate", input), { code: "ai-consent-required" });
   const renewed = await fixture.prepare();
@@ -1141,14 +1142,15 @@ test("request planning reserves the fixed validation retry and preserves all Uni
 });
 test("a whole emoji fits at the request boundary even when its UTF-16 half does not", () => {
   const source = { ...metadata({ from: { address: "ada@example.org" }, occurred_at: null, date_source: "unknown", source_message_id: "00000000-0000-4000-8000-000000000001", attachments: [] }), subject: "Subject", text: "😀😀😀" };
-  let remaining = 3882;
-  const contact_emails = Array.from({ length: 99 }, (_, i) => {
-    const length = Math.min(40, remaining); remaining -= length;
-    return `${"x".repeat(length)}p${i}@example.org`;
-  });
+  const contact_emails = Array.from({ length: 99 }, (_, i) => `p${i}@example.org`);
   const focus = { keywords: "", contact_emails };
   const part = { from: source.from, mail_timestamp: null, date_source: "unknown", source_token: `${source.source_message_id}:0`, subject: source.subject, attachment_names: [], text: "" };
   const size = text => Buffer.byteLength(JSON.stringify(buildRequest([{ ...part, text }], { focus, retry: true })));
+  let padding = LIMITS.requestTokens - size("😀");
+  for (let i = 0; padding > 0 && i < contact_emails.length; i++) {
+    const length = Math.min(200, padding); contact_emails[i] = "x".repeat(length) + contact_emails[i]; padding -= length;
+  }
+  assert.equal(padding, 0);
   assert.ok(size("😀") <= LIMITS.requestTokens);
   assert.ok(size("\ud83d") > LIMITS.requestTokens);
   const chunks = planChunks([source], { focus });
@@ -1319,4 +1321,315 @@ test("budget IPC diagnostics contain only known labels and nonnegative numeric c
   assert.deepEqual(publicError(Object.assign(new Error(privateText), { code: "timeline-budget", paths: [privateText], budget: { kind: privateText, actual: 1, limit: 0 } })), { code: "timeline-budget" });
   assert.deepEqual(publicError({ code: "timeline-budget", budget: { kind: "request-bytes", actual: privateText, limit: 8000 } }), { code: "timeline-budget" });
   assert.deepEqual(publicError({ code: "timeline-budget", budget: { kind: "request-bytes", actual: 9000, limit: 8000, body: privateText } }), { code: "timeline-budget", budget: { kind: "request-bytes", actual: 9000, limit: 8000 } });
+});
+
+// All case-mode fixtures below use fictional local mail and stub completions.
+function caseResponse(messages) {
+  if (!messages[0].content.startsWith("Prepare a case overview")) return modelResponse(messages);
+  const rows = JSON.parse(messages[1].content);
+  const ids = [...new Set(rows.flatMap(value => value.source_message_ids))].slice(0, 2);
+  const point = { text: "The selected correspondence requests a review.", source_message_ids: ids, uncertainty: "Other correspondence and telephone calls are outside this selection." };
+  return { text: JSON.stringify({ current_status: [point], follow_ups: [{ ...point, text: "Review the recorded request." }], gaps: [{ ...point, text: "No decision is evidenced in the selected mail." }],
+    dates: [] }), finishReason: "stop", usage: { outputTokens: 100 } };
+}
+async function casePreparation(fixture, messages = [...fixture.rows.values()].map(value => ({ accountId: value.account_id, messageId: value.id, phase: "main" }))) {
+  const initial = await fixture.prepare();
+  return fixture.service.invoke(1, "timeline:prepare", { manifestToken: initial.manifestToken, options: { ...options, mode: "case" }, selection: { messages, expandThreads: false } });
+}
+async function caseGeneration(fixture, prepared, reviewed = true) {
+  let finish;
+  const terminal = new Promise(resolve => { finish = resolve; });
+  const start = await fixture.service.invoke(1, "timeline:generate", { manifestToken: prepared.manifestToken, optionsDigest: prepared.optionsDigest, acceptPartial: true, reviewed },
+    value => { if (["completed", "failed", "cancelled"].includes(value.phase)) finish(value); });
+  return { start, terminal };
+}
+function chooseCase(fixture) { fixture.node("timeline-mode").value = "case"; fixture.node("timeline-mode").dispatchEvent(new fixture.ui.window.Event("change")); }
+
+test("case selection is explicit, current-account only and cannot expand unseen threads", async context => {
+  const f = memory(context, { complete: caseResponse, rows: [row(), row("mail-2", { thread_id: "other-thread" })] });
+  const initial = await f.prepare();
+  const prepare = selection => f.service.invoke(1, "timeline:prepare", { manifestToken: initial.manifestToken, options: { ...options, mode: "case" }, selection });
+  for (const selection of [
+    { messages: [{ accountId: "mailbox-2", messageId: "mail-2", phase: "main" }], expandThreads: false },
+    { messages: [{ accountId: "mailbox-1", messageId: "mail-1", phase: "main" }], expandThreads: true },
+    { messages: [{ accountId: "mailbox-1", messageId: "mail-1" }], expandThreads: false },
+    { search: { query: "Planning" }, expandThreads: false },
+    { messages: [1, 2].map(() => ({ accountId: "mailbox-1", messageId: "mail-1", phase: "main" })), expandThreads: false },
+  ]) await assert.rejects(prepare(selection), { code: "timeline-input" });
+  const prepared = await prepare({ messages: [{ accountId: "mailbox-1", messageId: "mail-2", phase: "background" }], expandThreads: false });
+  assert.equal(prepared.coverage.selected_message_count, 1);
+  await assert.rejects(caseGeneration(f, prepared, false), { code: "timeline-input" });
+  const result = await caseGeneration(f, prepared);
+  assert.equal((await result.terminal).phase, "completed");
+  const document = [...f.artifacts.values()][0].document;
+  assert.equal(document.schema_version, "1.1.0");
+  assert.equal(document.events.length, 1);
+  assert.equal(document.events[0].phase, "background");
+  assert.equal(document.case_scope.mailbox_complete, false);
+  assert.equal(document.case_scope.search_is_exhaustive, false);
+  assert.deepEqual(validateDocument(parseJson(exporters.json(document))), document);
+});
+
+test("case local search is owner-bound, capped, metadata-only and remembers limited rounds", async context => {
+  const rows = Array.from({ length: 1001 }, (_, i) => row(`candidate-${i}`, { thread_id: `search-thread-${i}` }));
+  const f = memory(context, { rows });
+  const prepared = await f.prepare();
+  let query;
+  f.db.timelineSearch = value => { query = value; return [...rows, row("foreign", { account_id: "mailbox-2" })]; };
+  const input = { manifestToken: prepared.manifestToken, query: "Planning" };
+  await assert.rejects(f.service.invoke(2, "timeline:search", input), { code: "timeline-manifest" });
+  const found = await f.service.invoke(1, "timeline:search", input);
+  assert.equal(query.accountId, "mailbox-1");
+  assert.equal(found.messages.length, 100);
+  assert.equal(found.limited, true); assert.equal(found.queryCapped, true); assert.equal(found.exhaustive, false);
+  assert.ok(found.messages.every(value => value.accountId === "mailbox-1"));
+  for (const key of ["text_body", "html_body", "text", "snippet", "to_json", "unread"]) assert.equal(found.messages[0][key], undefined);
+  const reviewed = await f.service.invoke(1, "timeline:prepare", { manifestToken: prepared.manifestToken, options: { ...options, mode: "case" },
+    selection: { messages: [{ accountId: "mailbox-1", messageId: rows[0].id, phase: "main" }], expandThreads: false } });
+  assert.equal(reviewed.caseScope.search_count, 1); assert.equal(reviewed.caseScope.limited_search_count, 1);
+  f.changeAccount();
+  await assert.rejects(f.service.invoke(1, "timeline:search", { ...input, manifestToken: reviewed.manifestToken }), { code: "timeline-source-changed" });
+  assert.equal(f.calls.length, 0); assert.equal(f.downloads.length, 0);
+});
+
+test("case synthesis uses only reviewed evidence, excludes independent recipients and validates citations", async context => {
+  const f = memory(context, { complete: caseResponse, rows: [row(), row("mail-2", { thread_id: "different", to_json: '["private-recipient@example.org"]' }), row("unselected", { thread_id: "unselected", text_body: "UNSELECTED-MAIL-BODY" })] });
+  const prepared = await casePreparation(f, [{ accountId: "mailbox-1", messageId: "mail-1", phase: "main" }, { accountId: "mailbox-1", messageId: "mail-2", phase: "background" }]);
+  assert.equal(prepared.threads, 2);
+  const result = await caseGeneration(f, prepared);
+  assert.equal((await result.terminal).phase, "completed");
+  const artifact = [...f.artifacts.values()][0], body = JSON.stringify(f.calls.map(value => value.messages));
+  assert.doesNotMatch(body, /private-recipient@example.org|UNSELECTED-MAIL-BODY|mailbox-1|to_json/);
+  const overview = f.calls.filter(value => value.messages[0].content.startsWith("Prepare a case overview"));
+  assert.ok(overview.length > 0);
+  assert.match(overview[0].messages[1].content, /background/);
+  assert.ok(f.calls.every(value => Buffer.byteLength(JSON.stringify(value.messages)) <= LIMITS.requestTokens));
+  assert.equal(artifact.details.usage.calls, f.calls.length);
+  assert.equal(artifact.document.events.length, 2);
+  const forged = copy(artifact.document); forged.case_report.current_status[0].source_message_ids = [uuid()];
+  assert.throws(() => validateDocument(forged), { code: "timeline-references" });
+  const unknown = copy(artifact.document); unknown.case_report.follow_ups[0].done = true;
+  assert.throws(() => validateDocument(unknown));
+  const missingRole = copy(artifact.document); delete missingRole.events[0].phase;
+  assert.throws(() => validateDocument(missingRole));
+  assert.equal(f.rows.get("mail-1").unread, 1);
+});
+
+test("forged case citations get one bounded retry, save no report and disclose call counts", async context => {
+  const f = memory(context, { complete: messages => {
+    const response = caseResponse(messages);
+    if (messages[0].content.startsWith("Prepare a case overview")) {
+      const report = JSON.parse(response.text); report.current_status[0].source_message_ids = [uuid()]; response.text = JSON.stringify(report);
+    }
+    return response;
+  } });
+  const result = await caseGeneration(f, await casePreparation(f));
+  const terminal = await result.terminal;
+  assert.equal(terminal.code, "timeline-validation"); assert.equal(terminal.calls, 3);
+  assert.equal(f.artifacts.size, 0);
+  assert.equal(f.calls.length, 3);
+});
+
+test("revocation during cross-thread case synthesis rejects late output and persists nothing", async context => {
+  let reached, resolve;
+  const waiting = new Promise(done => { reached = done; });
+  const f = memory(context, { complete: messages => {
+    if (messages[0].content.startsWith("Prepare a case overview")) { reached(); return new Promise(done => { resolve = () => done(caseResponse(messages)); }); }
+    return caseResponse(messages);
+  } });
+  const result = await caseGeneration(f, await casePreparation(f));
+  await waiting; f.consent.revoke(); resolve();
+  assert.equal((await result.terminal).phase, "cancelled");
+  assert.equal(f.artifacts.size, 0);
+});
+
+test("case evidence reader is cached, inert, fingerprint-checked and never marks mail read", async context => {
+  const f = memory(context, { complete: caseResponse });
+  const prepared = await f.prepare();
+  const peek = await f.service.invoke(1, "timeline:source", { manifestToken: prepared.manifestToken, messageId: "mail-1" });
+  assert.equal(peek.text, f.rows.get("mail-1").text_body);
+  await assert.rejects(f.service.invoke(2, "timeline:source", { manifestToken: prepared.manifestToken, messageId: "mail-1" }), { code: "timeline-manifest" });
+  const result = await caseGeneration(f, await casePreparation(f)); await result.terminal;
+  const document = [...f.artifacts.values()][0].document;
+  const input = { id: document.timeline_id, sourceMessageId: document.events[0].source_message_id };
+  const calls = f.calls.length;
+  assert.equal((await f.service.invoke(1, "timeline:source", input)).text, peek.text);
+  assert.equal(f.rows.get("mail-1").unread, 1); assert.equal(f.downloads.length, 0); assert.equal(f.calls.length, calls);
+  await assert.rejects(f.service.invoke(1, "timeline:source", { ...input, sourceMessageId: uuid() }), { code: "timeline-not-found" });
+  f.rows.get("mail-1").text_body = "Changed content";
+  await assert.rejects(f.service.invoke(1, "timeline:source", input), { code: "timeline-source-changed" });
+});
+
+test("rendered case workflow accumulates cross-thread selections and requires a fresh review", async context => {
+  const f = integratedTimeline(context, { complete: caseResponse, rows: [row(), row("mail-2", { thread_id: "other-thread", subject: "Other decision" })] });
+  await f.ui.mounted.open(f.ui.email); chooseCase(f);
+  assert.equal(f.node("timeline-case").hidden, false);
+  assert.equal(f.node("timeline-generate").disabled, true);
+  f.node("timeline-search").value = "Other"; f.node("timeline-search-button").click(); await settleTimeline();
+  f.node("timeline-candidates").querySelector('input[type="checkbox"]').click();
+  const phase = [...f.node("timeline-selection").querySelectorAll("select")].at(-1);
+  phase.value = "background"; phase.dispatchEvent(new f.ui.window.Event("change"));
+  f.node("timeline-review-case").click(); await settleTimeline();
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.node("timeline-generate").disabled, true);
+  f.node("timeline-case-confirm").click();
+  assert.equal(f.node("timeline-generate").disabled, false);
+  f.node("timeline-keywords").value = "Decision"; f.node("timeline-keywords").dispatchEvent(new f.ui.window.Event("input"));
+  assert.equal(f.node("timeline-case-confirm").checked, false);
+  assert.equal(f.node("timeline-generate").disabled, true);
+  f.node("timeline-review-case").click(); await settleTimeline(); f.node("timeline-case-confirm").click(); f.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(f).phase, "completed");
+  const document = [...f.artifacts.values()][0].document;
+  assert.deepEqual(document.events.map(value => value.phase).sort(), ["background", "main"]);
+  assert.match(f.node("timeline-result").textContent, /Current status|Unresolved gaps|Mentioned events and deadlines/);
+  assert.equal(f.ui.document.querySelectorAll('.timeline-case-item .timeline-source-button').length > 0, true);
+  const main = [...f.ui.document.querySelectorAll('.timeline-filters button')].find(value => value.textContent === "Main"); main.click();
+  assert.equal(f.ui.document.querySelector('.timeline-event[data-phase="background"]').hidden, true);
+  const read = f.ui.document.querySelector('.timeline-case-item .timeline-source-button'); read.click(); await settleTimeline();
+  assert.match(f.node("timeline-source-content").textContent, /fictional planning notes/);
+  f.node("timeline-source-close").click(); assert.equal(f.ui.document.activeElement, read);
+  assert.ok([...f.rows.values()].every(value => value.unread === 1));
+  assert.equal(f.node("timeline-export").disabled, true);
+});
+
+test("case exports preserve scope, uncertainty, roles and date meaning with inert model text", async context => {
+  const f = memory(context, { complete: caseResponse });
+  const result = await caseGeneration(f, await casePreparation(f)); await result.terminal;
+  const document = [...f.artifacts.values()][0].document;
+  document.case_report.current_status[0].text = '<img src="https://example.org/tracker" onerror="attack()">';
+  const dom = new JSDOM(exporters.printHtml(document));
+  assert.equal(dom.window.document.querySelectorAll('script,a,img,iframe,form,object,[src],[href],[onerror]').length, 0);
+  assert.match(dom.window.document.body.textContent, /Mentioned events and deadlines · separate from mail dates/);
+  assert.match(dom.window.document.body.textContent, /Neither search nor mailbox is complete/);
+  assert.match(dom.window.document.body.textContent, /Phase: Main/);
+  assert.match(exporters.markdown(document), /&lt;img/);
+  assert.equal(parseJson(exporters.json(document)).schema_version, "1.1.0");
+  dom.window.close();
+});
+
+test("stale local search cannot populate a dismissed sheet or a different reader source", async () => {
+  let finish;
+  const ui = rendererFixture({ "timeline:search": () => new Promise(resolve => { finish = resolve; }) });
+  await ui.mounted.open(ui.email);
+  ui.document.getElementById("timeline-mode").value = "case"; ui.document.getElementById("timeline-mode").dispatchEvent(new ui.window.Event("change"));
+  ui.document.getElementById("timeline-search").value = "Planning"; ui.document.getElementById("timeline-search-button").click(); await pause();
+  ui.document.getElementById("timeline-close").click(); await ui.mounted.open({ ...ui.email, id: "different" });
+  finish({ success: true, data: { messages: [{ messageId: "stale", subject: "STALE SEARCH" }], matched: 1 } }); await pause();
+  assert.doesNotMatch(ui.document.getElementById("timeline-candidates").textContent, /STALE SEARCH/);
+  assert.equal(ui.document.getElementById("timeline-mode").value, "thread");
+  assert.equal(ui.calls.some(value => value.channel === "timeline:generate"), false);
+  ui.dom.window.close();
+});
+
+test("case mentioned dates must quote a cited original body, not a mail timestamp or invented deadline", async context => {
+  for (const mentioned of ["6 November", "2026-11-01T10:00:00.000Z", "7 November"]) {
+    const f = memory(context, { rows: [row("mail-1", { text_body: "Please review by 6 November." })], complete: messages => {
+      const response = caseResponse(messages);
+      if (messages[0].content.startsWith("Prepare a case overview")) {
+        const value = JSON.parse(response.text);
+        value.dates = [{ ...value.current_status[0], kind: "deadline", date_text: mentioned }]; response.text = JSON.stringify(value);
+      }
+      return response;
+    } });
+    const result = await caseGeneration(f, await casePreparation(f)); const terminal = await result.terminal;
+    assert.equal(terminal.phase, mentioned === "6 November" ? "completed" : "failed");
+    assert.equal(f.artifacts.size, mentioned === "6 November" ? 1 : 0);
+    if (f.artifacts.size) assert.match(exporters.printHtml([...f.artifacts.values()][0].document), /deadline: 6 November/);
+  }
+});
+
+test("case reduction admits every semantic item and retains citation mail-date and phase context", async () => {
+  const { synthesizeCase } = require("../host/timeline/case");
+  const events = Array.from({ length: 12 }, (_, index) => ({ ...metadata(), phase: index % 2 ? "background" : "main", summary: `Summary-${index}`, open_actions: Array.from({ length: 8 }, (_, item) => `Action-${index}-${item}-${"x".repeat(180)}`), unclear: [] }));
+  const seen = new Set(), calls = [];
+  const report = await synthesizeCase(events, async rows => {
+    calls.push(rows);
+    for (const row of rows) if (row.request_for_review) seen.add(row.request_for_review);
+    return JSON.parse(caseResponse([{ content: "Prepare a case overview" }, { content: JSON.stringify(rows) }]).text);
+  }, { language: "English" });
+  assert.equal(seen.size, 96);
+  assert.ok(calls.length > 2);
+  const reduced = calls.flat().filter(row => row.section);
+  assert.ok(reduced.length > 0);
+  assert.ok(reduced.every(row => row.evidence.length && row.evidence.every(item => item.mail_timestamp && item.phase)));
+  assert.ok(report.current_status.length > 0);
+});
+
+test("current v3 consent requires renewed case disclosure without restoring background permission", async context => {
+  const f = memory(context, { noPermission: true });
+  const priorModule = { exports: {} };
+  vm.runInNewContext(read("host/ai-consent.js").replace("const VERSION = 4;", "const VERSION = 3;"), {
+    module: priorModule, exports: priorModule.exports, URL, AbortController, AbortSignal,
+    require: require("node:module").createRequire(path.join(__dirname, "../host/ai-consent.js")),
+  });
+  const prior = priorModule.exports.createConsent({ directory: () => f.directory, config: f.dependencies.config });
+  prior.grant({ token: prior.status().token, manual: true, background: true });
+  const status = f.consent.status();
+  assert.equal(status.version, 4); assert.equal(status.manual, false); assert.equal(status.background, false);
+  assert.match(status.disclosure, /cross-thread case synthesis/);
+  assert.match(status.dataSummary, /Main\/Background selections/);
+  f.consent.grant({ token: status.token, manual: true, background: false });
+  assert.equal(f.consent.status().manual, true); assert.equal(f.consent.status().background, false);
+});
+
+test("Case sheet close cancels synthesis and rejects a late completion", async context => {
+  let reached, release;
+  const started = new Promise(resolve => { reached = resolve; });
+  const f = integratedTimeline(context, { complete: messages => {
+    if (!messages[0].content.startsWith("Prepare a case overview")) return caseResponse(messages);
+    reached(); return new Promise(resolve => { release = () => resolve(caseResponse(messages)); });
+  } });
+  await f.ui.mounted.open(f.ui.email); chooseCase(f);
+  f.node("timeline-review-case").click(); await settleTimeline(); f.node("timeline-case-confirm").click(); f.node("timeline-generate").click();
+  await started; f.node("timeline-close").click(); await settleTimeline(); release(); await settleTimeline();
+  assert.equal(lastTerminal(f).phase, "cancelled"); assert.equal(f.artifacts.size, 0);
+  assert.equal(f.node("timeline-dialog").open, false);
+  assert.ok(f.hostCalls.some(value => value.channel === "timeline:cancel"));
+});
+
+test("SQLite reopens old and Case schema artifacts without rewriting their versions", async context => {
+  const f = memory(context, { complete: caseResponse });
+  const generated = await caseGeneration(f, await casePreparation(f)); await generated.terminal;
+  const current = copy([...f.artifacts.values()][0].document), legacy = documentFixture();
+  const db = require("../host/mail/db"), directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-case-storage-")), filename = path.join(directory, "mail.sqlite");
+  context.after(async () => { await db.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  await db.open(filename);
+  const links = [{ id: "synthetic-source", account_id: "synthetic-account", thread_id: "synthetic-thread", fingerprint: "synthetic-fingerprint" }];
+  const detail = { digest: "synthetic", promptVersion: "synthetic", usage: {} };
+  db.timeline.save(legacy, links, detail); db.timeline.save(current, links, detail);
+  await db.close(); await db.open(filename);
+  assert.deepEqual(db.timeline.get(legacy.timeline_id).document, legacy);
+  assert.deepEqual(db.timeline.get(current.timeline_id).document, current);
+  assert.equal(db.timeline.list().length, 2);
+});
+
+test("exact schema registry rejects inherited object names and preload exposes new local reads", async () => {
+  for (const version of ["constructor", "__proto__", "toString", "1.2.0"]) assert.throws(() => validateDocument({ ...documentFixture(), schema_version: version }), { code: "timeline-version" });
+  const ui = rendererFixture();
+  await ui.bridge.invoke("timeline:search", {}); await ui.bridge.invoke("timeline:source", {});
+  assert.deepEqual(ui.calls.map(value => value.channel), ["timeline:search", "timeline:source"]);
+  ui.dom.window.close();
+});
+
+test("unsupported omitted headers cannot prevent reading another included source", async context => {
+  const f = memory(context, { complete: caseResponse, rows: [row("bad", { cc_json: 'not-json' }), row("good")] });
+  const prepared = await casePreparation(f);
+  assert.equal(prepared.coverage.omitted_message_count, 1);
+  const result = await caseGeneration(f, prepared); await result.terminal;
+  const document = [...f.artifacts.values()][0].document;
+  const value = await f.service.invoke(1, "timeline:source", { id: document.timeline_id, sourceMessageId: document.events[0].source_message_id });
+  assert.equal(value.messageId, "good");
+  assert.equal(f.rows.get("good").unread, 1);
+});
+
+test("the opened account incarnation proof survives re-preparing different thread sources", async context => {
+  const f = memory(context);
+  const initial = await f.prepare();
+  f.accounts.set("mailbox-2", { ...f.accounts.get("mailbox-1"), id: "mailbox-2" });
+  f.rows.set("different-account", row("different-account", { account_id: "mailbox-2" }));
+  const next = await f.service.invoke(1, "timeline:prepare", { manifestToken: initial.manifestToken, options,
+    selection: { messages: [{ accountId: "mailbox-2", messageId: "different-account" }], expandThreads: false } });
+  f.accounts.get("mailbox-1").created_at++;
+  await assert.rejects(f.service.invoke(1, "timeline:search", { manifestToken: next.manifestToken, query: "Planning" }), { code: "timeline-source-changed" });
+  assert.equal(f.calls.length, 0);
 });

@@ -54,6 +54,7 @@ function createStore({ run, get, all, transaction }) {
       });
     },
     list: () => all("SELECT id, generated_at, revision FROM timelines ORDER BY generated_at DESC, id DESC LIMIT 100"),
+    sourceRecords: id => all("SELECT message_id AS id, account_id, thread_id, fingerprint FROM timeline_sources WHERE timeline_id = ?", [id]),
     get(id) {
       const row = get("SELECT document_json, revision FROM timelines WHERE id = ?", [id]);
       if (!row) throw failure("timeline-not-found");

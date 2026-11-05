@@ -7,6 +7,20 @@ const htmlEscape = value => String(value).replace(/[&<>"']/g, character => ({ "&
 const markdownEscape = value => String(value).replace(/[&<>]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character]).replace(/[\\`*_\[\]{}()#+.!|:@~\/-]/g, "\\$&");
 const mailbox = value => value ? `${value.name ? `${value.name} ` : ""}<${value.address}>` : "Unknown sender";
 const when = (event, timezone) => event.occurred_at === null ? "Unknown date" : new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: "medium", timeStyle: "short" }).format(new Date(event.occurred_at));
+const caseSections = [["current_status", "Current status · as of selected correspondence"], ["follow_ups", "Follow-ups for review"], ["gaps", "Unresolved gaps and contradictions"], ["dates", "Mentioned events and deadlines · separate from mail dates"]];
+
+function caseLines(document) {
+  if (!document.case_report) return [];
+  const scope = document.case_scope;
+  const result = [`Case coverage: one account; ${scope.search_count} local searches; ${scope.limited_search_count} limited queries. Neither search nor mailbox is complete. To/Cc are local evidence, not independently supplied to AI.`,
+    "Calls, attachment contents and other mailboxes may be missing. Follow-ups are suggestions for review; no task is automatically checked off."];
+  for (const [key, title] of caseSections) {
+    result.push("", title);
+    if (!document.case_report[key].length) result.push("No specific item identified in selected evidence; completeness and completion remain unproven.");
+    for (const item of document.case_report[key]) result.push(`${item.kind ? `${item.kind}: ${item.date_text} · ` : ""}${item.text}`, `Uncertainty: ${item.uncertainty}`, `Sources: ${item.source_message_ids.join(", ")}`);
+  }
+  return result;
+}
 
 function json(document) {
   validateDocument(document);
@@ -22,10 +36,12 @@ function lines(document) {
     `Mail-timestamp chronology · ${coverage.included_message_count} included / ${coverage.selected_message_count} selected / ${coverage.omitted_message_count} omitted`,
     `Selection truncated: ${coverage.selection_truncated ? "yes" : "no"}. Downloaded mail only; not proof of a complete mailbox.`,
     "AI-generated. Verify summaries, requests and uncertainty against the source mail. This file contains personal information."];
+  result.push(...caseLines(document));
   for (const event of document.events) {
     result.push("", `${when(event, document.display_timezone)} · ${event.date_source}`, `From: ${mailbox(event.from)}`,
       `To: ${event.to.map(mailbox).join(", ") || "None recorded"}`, `Cc: ${event.cc.map(mailbox).join(", ") || "None recorded"}`);
     if (event.via_alias) result.push(`Via alias: ${event.via_alias}`);
+    if (event.phase) result.push(`Phase: ${event.phase === "main" ? "Main" : "Background"}`);
     result.push(event.summary);
     if (event.attachments.length) result.push(`Attachment names: ${event.attachments.join(", ")}`);
     for (const action of event.open_actions) result.push(`For review: ${action}`);
@@ -53,6 +69,7 @@ function printHtml(document) {
     const list = (title, items) => items.length ? `<h3>${title}</h3><ul>${items.map(text => `<li>${escape(text)}</li>`).join("")}</ul>` : "";
     return [
       `<li class="event">${heading}`,
+      event.phase ? `<p>Phase: ${event.phase === "main" ? "Main" : "Background"}</p>` : "",
       `<p class="date"><time${event.occurred_at ? ` datetime="${escape(event.occurred_at)}"` : ""}>${index + 1}. ${escape(when(event, document.display_timezone))}</time> · ${escape(event.date_source)}</p>`,
       `<p class="summary">${escape(event.summary)}</p><p>From: ${escape(mailbox(event.from))}</p>`,
       list("For review", event.open_actions), list("Uncertainty", event.unclear),
@@ -76,7 +93,7 @@ function printHtml(document) {
     `<p>${coverage.included_message_count} included / ${coverage.selected_message_count} selected / ${coverage.omitted_message_count} omitted. Selection truncated: ${coverage.selection_truncated ? "yes" : "no"}. Downloaded mail only; not proof of a complete mailbox.</p>`,
     `<p>AI-generated; verify against source mail. Dates are mail timestamps, not dates of events mentioned in the text. Unknown and older cached timestamps are not reliable date evidence. This file contains personal information.</p>`,
     `</header>`,
-    `<main><ol class="sequence" aria-label="Correspondence, oldest first; undated mail last">${content}</ol></main></body></html>`,
+    `<main>${document.case_report ? `<section class="case-report">${caseLines(document).map(line => `<p>${escape(line)}</p>`).join("")}</section><h2>Correspondence · Main / Background</h2>` : ""}<ol class="sequence" aria-label="Correspondence, oldest first; undated mail last">${content}</ol></main></body></html>`,
   ].join("");
 }
 
