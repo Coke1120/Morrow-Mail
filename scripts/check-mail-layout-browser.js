@@ -60,6 +60,8 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   await page.evaluate(()=>changeMailColumnVisibility('recipient',true));
   assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','recipient','sender','subject']);
   const outerCorners=await verifyOuterMailCardCorners(page);
+  const folderChips=await verifyFolderChipAlignment(page);
+  console.log(JSON.stringify({folderChips}));
   await page.reload();await initialize();
   await page.locator('[data-sort-key="date"] button').dragTo(page.locator('[data-sort-key="subject"]'),{targetPosition:{x:150,y:12}});
   await page.waitForFunction(()=>mailColumnOrder()[0]!=='date');
@@ -103,6 +105,83 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   assert.deepEqual(errors,[]);console.log(JSON.stringify({result:'passed',url,title:await page.title(),checks:'drag, sort, reload persistence, keyboard/dialog/reset, aligned cells, aggregate flags and live counts, Inbox chip removal, whole All Mail card top corners with negative control, right/bottom/window layouts, splitter keyboard and pointer, selection/search/scroll retention, double-click and keyboard popout, narrow/mobile/light/dark/reduced-motion, rendered Features, status flags, visibility menu/restart, Sync stacking with negative control, hidden-column keyboard order, visible notification popout, axe',outerCorners,columns,output}));
  }finally{await browser.close();server.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});
+
+async function verifyFolderChipAlignment(page) {
+ const geometry=[];
+ await page.evaluate(()=>{
+  state.query='';state.searchAccountId='';state.allInbox=false;state.outbox=false;
+  state.allInboxUnreadOnly=false;state.allInboxStarredOnly=false;state.accountId='a';
+  state.prefs.chips=true;state.email=null;state.thread=[];state.selectedIds=[];state.selectionAnchor='';
+  state.emails=fixtureRows.filter(row=>row.accountId==='a').slice(0,20);state.listTotal=20;
+  globalThis.chipFixtureFolders=[
+   {id:'All Mail',name:'All Mail',wellKnownName:'all',chip:false},
+   {id:'INBOX',name:'Inbox',wellKnownName:'inbox',chip:true},
+   {id:'Sent',name:'Sent',wellKnownName:'sentitems',chip:true},
+   {id:'Drafts',name:'Drafts',wellKnownName:'drafts',chip:true},
+   {id:'Unread',name:'Unread',wellKnownName:'unread',chip:true,view:{unread:true},type:'virtual'},
+  ];
+  state.accounts[0].folders={primary:chipFixtureFolders,more:[]};
+ });
+ fs.mkdirSync(output,{recursive:true});
+ await page.mouse.move(0,0);
+ for(const theme of ['light','dark'])for(const width of [1440,900,440]){
+  await page.setViewportSize({width,height:960});
+  await page.emulateMedia({reducedMotion:'reduce'});
+  let firstLeft;
+  for(const folderId of ['INBOX','Sent','All Mail']){
+   await page.evaluate(({theme,folderId})=>{applyShellTheme(document.documentElement,theme,'#193C34');state.folderId=folderId;renderAccounts();renderList();},{theme,folderId});
+   const row=await folderChipBounds(page);
+   geometry.push({theme,width,folderId,...row});
+   await page.screenshot({path:path.join(output,`folder-chips-${theme}-${width}-${folderId.replace(/\W+/g,'-').toLowerCase()}.png`)});
+   if(firstLeft===undefined)firstLeft=row.buttons[0].left;
+   assert.ok(Math.abs(row.buttons[0].left-firstLeft)<1,`${theme}/${width}/${folderId}: first chip must align with Inbox (${JSON.stringify(row)})`);
+   assert.ok(row.buttons.every(button=>button.left>=row.hostLeft&&button.right<=row.hostRight),`${theme}/${width}/${folderId}: chips stay inside the list`);
+   if(folderId==='All Mail')assert.ok(row.buttons[0].top>=row.titleBottom, 'a visible All Mail title gets its own row');
+  }
+ }
+ await page.setViewportSize({width:900,height:960});
+ await page.evaluate(()=>{
+  state.accounts[0].folders.primary=[...chipFixtureFolders,
+   ...[['Starred','starred'],['Trash','deleteditems'],['Junk','junkemail'],['Archived','archive'],['Important','important']].map(([id,wellKnownName])=>({id,name:id,wellKnownName,chip:true}))];
+  renderList();
+ });
+ const wrapped=await folderChipBounds(page);
+ assert.ok(new Set(wrapped.buttons.map(button=>button.top)).size>1,'long chip lists wrap');
+ assert.ok(wrapped.buttons.every(button=>button.left>=wrapped.hostLeft&&button.right<=wrapped.hostRight),'wrapped chips stay inside the list');
+ assert.ok(wrapped.buttons.every(button=>button.right<=wrapped.syncLeft),'wrapped chips do not overlap Sync');
+ await page.locator('#list-chips button').first().focus();
+ for(let index=0;index<wrapped.buttons.length;index++){
+  assert.equal(await page.locator('#list-chips button').nth(index).evaluate(node=>node===document.activeElement),true,'Tab follows the visible chip order');
+  await page.keyboard.press('Tab');
+ }
+ assert.equal(await page.evaluate(()=>document.activeElement.id),'refresh','Tab reaches Sync after the chips');
+ await page.evaluate(()=>{
+  globalThis.chipChoices=[];
+  selectFolder=async(accountId,folderId)=>{chipChoices.push({accountId,folderId});state.folderId=folderId;renderList()};
+  document.addEventListener('keydown',onShellKey);
+ });
+ await page.locator('#list-chips button').filter({hasText:/^Sent$/}).focus();await page.keyboard.press('Enter');
+ await page.locator('#list-chips button').filter({hasText:/^Drafts$/}).focus();await page.keyboard.press('Space');
+ assert.deepEqual(await page.evaluate(()=>chipChoices),[{accountId:'a',folderId:'Sent'},{accountId:'a',folderId:'Drafts'}]);
+ await page.evaluate(()=>{state.prefs.chips=false;renderList()});
+ assert.equal(await page.locator('#list-chips').isVisible(),false);
+ const noChips=await page.evaluate(()=>{const title=document.getElementById('list-title').getBoundingClientRect(),sync=document.getElementById('refresh').getBoundingClientRect();return Math.abs((title.top+title.bottom)-(sync.top+sync.bottom))/2});
+ assert.ok(noChips<2,'hiding chips keeps the title and Sync on one row');
+ await page.evaluate(()=>showFeatures());
+ assert.match(await page.locator('#features-catalog').textContent(),/Folder chips stay left aligned below a visible title/);
+ fs.writeFileSync(path.join(output,'folder-chip-geometry.json'),JSON.stringify({geometry,wrapped},null,2));
+ await page.setViewportSize({width:1440,height:960});
+ await page.emulateMedia({reducedMotion:'no-preference'});
+ return {comparisons:geometry.length,wrappedRows:new Set(wrapped.buttons.map(button=>button.top)).size,keyboard:'Tab, Enter, Space and Sync passed',output};
+}
+
+async function folderChipBounds(page) {
+ return page.evaluate(()=>{
+  const host=document.getElementById('messages').getBoundingClientRect(),title=document.getElementById('list-title').getBoundingClientRect(),sync=document.getElementById('refresh').getBoundingClientRect();
+  return {hostLeft:host.left,hostRight:host.right,titleBottom:title.bottom,syncLeft:sync.left,
+   buttons:[...document.querySelectorAll('#list-chips button')].map(node=>{const r=node.getBoundingClientRect();return {text:node.textContent,left:r.left,right:r.right,top:r.top}})};
+ });
+}
 
 async function verifyOuterMailCardCorners(page) {
  await page.setViewportSize({width:1440,height:960});

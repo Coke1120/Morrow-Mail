@@ -43,6 +43,7 @@ of 2.99ms. This is one synthetic measurement, not native-app or large-mailbox
 profiling. The first filtered count still scans cached To headers synchronously;
 no additional recipient index or schema migration is introduced.
 
-The supplied original screenshot could not be materialized. The All Mail folder
-chip alignment fix remains pending; these screenshots verify the new To Me
-control using synthetic data and do not establish a match to the supplied image.
+The supplied original screenshot could not be materialized in this run. These
+screenshots verify To Me using synthetic data and do not establish a match to the
+supplied image. The separate [folder chip alignment checks](../mail-chip-alignment/README.md)
+cover the layout fix using rendered synthetic fixtures.

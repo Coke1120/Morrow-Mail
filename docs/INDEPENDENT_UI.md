@@ -27,6 +27,11 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Folder chips stay left aligned in All Mail, Inbox and Sent. When a title remains
+visible, it has its own row above the chips. Chips wrap inside narrow lists;
+Sync remains after them in the keyboard order. Hiding folder chips keeps the
+title and Sync on one row.
+
 Readers disclose detected text-decoding loss separately from download completeness.
 Checked plain text is used when HTML decoding lost characters; available HTML/plain
 versions can also be switched in the reader. Older cached replacement characters
