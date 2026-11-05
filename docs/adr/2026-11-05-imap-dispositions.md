@@ -37,6 +37,13 @@ scheduled receipt/evidence write, which stays unchanged.
 Local evidence is keyed by the exact IMAP identity and a hash of non-secret
 account identity fields. It overlays an absent server flag, including after
 full/body/flag-only refresh and restart. Raw provider flags remain separate.
+When the IMAP evidence table is first created, the same migration transaction
+copies known legacy IMAP flags into missing raw-provider columns. Before this
+table existed those visible flags could not contain IMAP local-send evidence.
+Gmail rows are excluded. Table creation and initialization roll back together;
+later opens skip the initialization so local-only indicators never become
+provider evidence. Identity-only projections and login changes consequently
+retain the upgraded provider observations while still retiring local proofs.
 Endpoint/login changes and account removal retire local evidence; UIDVALIDITY
 reset clears that folder's evidence. Evidence does not follow unverified moves,
 copies, account recreation or RFC Message-ID matches. Existing provider flags

@@ -281,7 +281,6 @@ function migrate() {
     account_id TEXT NOT NULL, provider_id TEXT NOT NULL, replied INTEGER NOT NULL DEFAULT 0,
     forwarded INTEGER NOT NULL DEFAULT 0, inferred INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(account_id, provider_id))`);
-  imapDispositions.schema();
   run("CREATE INDEX IF NOT EXISTS messages_rfc_identity ON messages(account_id, rfc_message_id)");
   run("CREATE INDEX IF NOT EXISTS messages_reply_parent ON messages(account_id, in_reply_to)");
   run("CREATE INDEX IF NOT EXISTS messages_reply_candidates ON messages(account_id, folder_path, in_reply_to) WHERE reply_inference_eligible = 1 AND is_draft = 0");
@@ -309,6 +308,7 @@ function migrate() {
     ["accounts", "gmail_generation", "INTEGER"], ["folders", "provider_id", "TEXT"], ["messages", "gmail_id", "TEXT"]]) {
     if (!all(`PRAGMA table_info(${table})`).some(row => row.name === column)) run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
+  imapDispositions.schema();
   run(`CREATE TABLE IF NOT EXISTS gmail_messages (
     account_id TEXT NOT NULL, provider_id TEXT NOT NULL, local_uid INTEGER NOT NULL,
     thread_id TEXT, draft_id TEXT, labels_json TEXT NOT NULL DEFAULT '[]',

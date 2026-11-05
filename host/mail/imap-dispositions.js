@@ -16,11 +16,21 @@ const positive = value => Number.isSafeInteger(value) && value > 0 && value <= 0
 
 function createStore({ run, get, all, transaction, accountById, messageById, folderByPath, updateChanged }) {
   function schema() {
+    const legacyProviderFlags = !get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'imap_dispositions'");
     run(`CREATE TABLE IF NOT EXISTS imap_dispositions (
       account_id TEXT NOT NULL, account_key TEXT NOT NULL, folder_path TEXT NOT NULL,
       uid_validity INTEGER NOT NULL, uid INTEGER NOT NULL, kind TEXT NOT NULL,
       server_state TEXT NOT NULL DEFAULT 'pending', retry_after INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(account_id, account_key, folder_path, uid_validity, uid, kind))`);
+    // Before this table existed, IMAP's visible flags could only be provider
+    // observations. Import them once in the same migration transaction. Later
+    // opens must never reinterpret a local-only indicator as provider evidence.
+    if (legacyProviderFlags) run(`UPDATE messages SET
+      disposition_provider_replied = COALESCE(disposition_provider_replied, replied),
+      disposition_provider_forwarded = COALESCE(disposition_provider_forwarded, forwarded)
+      WHERE account_id IN (SELECT id FROM accounts WHERE COALESCE(mail_transport, 'imap') != 'gmail_api')
+        AND ((disposition_provider_replied IS NULL AND replied IS NOT NULL)
+          OR (disposition_provider_forwarded IS NULL AND forwarded IS NOT NULL))`);
   }
 
   function target(proof) {

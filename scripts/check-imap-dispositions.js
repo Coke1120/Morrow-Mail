@@ -5,6 +5,53 @@ const { test } = require("node:test");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const fixture = require("./mail-performance-fixture");
 
+test("legacy IMAP cache upgrades preserve provider flags without promoting local evidence", async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-imap-flags-upgrade-"));
+  const file = path.join(directory, "legacy.sqlite");
+  const db = require("../host/mail/db"), Database = require("better-sqlite3");
+  t.after(async () => { await db.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  await db.open(file);
+  for (const id of ["legacy-imap", "legacy-gmail"]) {
+    db.insertAccount({ ...fixture.account, id });
+    db.replaceFolders(id, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }]);
+    db.applyFolderSync(id, "INBOX", fixture.report([
+      fixture.message(1, { id: id + "-provider" }),
+      fixture.message(2, { id: id + "-local" }),
+    ]));
+  }
+  await db.checkpoint(); await db.close();
+  // The released parent stored IMAP flags in these two visible fields only.
+  // Use a real checkpoint with the pre-feature schema and nullable raw fields.
+  const raw = new Database(file);
+  try {
+    raw.exec("DROP TABLE imap_dispositions");
+    raw.prepare("UPDATE accounts SET mail_transport = 'gmail_api' WHERE id = ?").run("legacy-gmail");
+    raw.exec(`UPDATE messages SET replied = 1, forwarded = 1,
+      disposition_provider_replied = NULL, disposition_provider_forwarded = NULL WHERE uid = 1`);
+    raw.exec(`UPDATE messages SET replied = NULL, forwarded = NULL,
+      disposition_provider_replied = NULL, disposition_provider_forwarded = NULL WHERE uid = 2`);
+  } finally { raw.close(); }
+  await db.open(file);
+  const flags = id => {
+    const row = db.messageById(id);
+    return [row.replied, row.forwarded, row.disposition_provider_replied, row.disposition_provider_forwarded];
+  };
+  assert.deepEqual(flags("legacy-imap-provider"), [1, 1, 1, 1]);
+  assert.deepEqual(flags("legacy-gmail-provider"), [1, 1, null, null], "Gmail evidence is not imported as IMAP provider flags");
+  db.updateMessage("legacy-imap-provider", { uid: 101 });
+  assert.deepEqual(flags("legacy-imap-provider"), [1, 1, 1, 1], "identity-only projections retain legacy provider flags");
+  db.updateAccountLogin("legacy-imap", { ...fixture.account, username: "changed-login" });
+  assert.deepEqual(flags("legacy-imap-provider"), [1, 1, 1, 1], "login changes retire local proof without erasing provider flags");
+  const row = db.messageById("legacy-imap-local");
+  const proof = db.captureDisposition("legacy-imap", { kind: "reply", sourceMessageId: row.id, inReplyTo: row.rfc_message_id });
+  assert.ok(proof); assert.equal(db.confirmDisposition("legacy-imap", proof), true);
+  assert.deepEqual(flags(row.id), [1, null, null, null]);
+  await db.checkpoint(); await db.close(); await db.open(file);
+  assert.deepEqual(flags(row.id), [1, null, null, null], "later opens cannot promote a local-only indicator to provider evidence");
+  db.updateAccountLogin("legacy-imap", { ...fixture.account, username: "another-login" });
+  assert.deepEqual(flags(row.id), [null, null, null, null]);
+});
+
 test("IMAP confirmed sends retain scoped local evidence and never replay SMTP for flags", async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-imap-dispositions-"));
   const previous = { ...process.env };
