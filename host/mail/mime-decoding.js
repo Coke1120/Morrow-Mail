@@ -15,6 +15,12 @@ function charsetOf(contentType) {
   catch { return "x-morrow-invalid-charset"; }
 }
 
+function replacementCount(text) {
+  let count = 0;
+  for (let index = 0; index < text.length; index++) if (text.charCodeAt(index) === 0xFFFD) count++;
+  return count;
+}
+
 function decode(bytes, charset = "utf-8") {
   const name = libmime.normalizeCharset(charset);
   let text, lossy = false, unsupported = false, uncertain = false;
@@ -28,7 +34,7 @@ function decode(bytes, charset = "utf-8") {
       if (validator) {
         try {
           const checked = validator.decode(bytes);
-          lossy = text.split("\uFFFD").length > checked.split("\uFFFD").length;
+          lossy = replacementCount(text) > replacementCount(checked);
         } catch { lossy = true; }
       } else if (iconv.decode(iconv.encode("\uFFFD", name), name) !== "\uFFFD") lossy = true;
       else uncertain = !iconv.encode(text, name).equals(bytes) && !iconv.encode(text, name, { addBOM: true }).equals(bytes);
