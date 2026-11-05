@@ -143,6 +143,11 @@ async function run() {
   assert.match(dom.window.document.getElementById("features-catalog").textContent, /Reply \/ forward icons appear inline before Subject/);
   const dispositionHelp = dom.window.document.getElementById("mail-columns-provider-help").textContent;
   assert.match(dispositionHelp, /confirmed successful Morrow sends/);
+  assert.match(dispositionHelp, /Outlook OAuth, Yahoo app-password and other IMAP accounts/);
+  assert.match(dispositionHelp, /flag errors never resend mail/);
+  assert.match(dispositionHelp, /Cross-device IMAP icons require server and client support/);
+  assert.match(dom.window.document.getElementById("features-catalog").textContent, /at most two identities per ordinary folder sync after five minutes/);
+  assert.match(dom.window.document.getElementById("cli-operations").textContent, /flag failure never resubmits the message/);
   assert.match(dispositionHelp, /emoji reactions are excluded/);
   assert.match(dispositionHelp, /without a Message-ID/);
   assert.match(dispositionHelp, /at most two per pass/);

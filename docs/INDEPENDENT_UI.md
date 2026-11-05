@@ -4,6 +4,8 @@ Fresh Reply/Reply All and Forward subjects keep Re:/Fwd:. Consecutive matching p
 
 Gmail reply / forward subject icons use confirmed local sends and conservative cached Sent header evidence. Confirmed local replies use verified provider identity even without an RFC Message-ID. Sent sync gradually inspects already-cached legacy reply candidates, at most two per pass within its normal read budget, resuming from durable MIME checks after restart or connection recovery. See [Gmail disposition evidence](adr/2026-11-04-gmail-disposition-evidence.md) for identity rules and limits.
 
+Outlook OAuth, Yahoo app-password and other IMAP accounts also record confirmed complete sends and attempt original-message server flags; unsupported or failed flag writes keep device-local evidence without resending. See [IMAP identity, retry and cross-device limits](adr/2026-11-05-imap-dispositions.md).
+
 Notification clicks use an independent reader in Separate window mode, without opening or marking read through the hidden shell preview. Keyboard header moves use visible neighbors while retaining hidden columns in the complete saved order.
 
 The open View menu blocks message and selection shortcuts until it closes.

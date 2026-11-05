@@ -1,5 +1,5 @@
-// IMAP remains provider-authoritative. Gmail enriches unsupported states in db.js
-// using confirmed local sends or a unique cached Sent In-Reply-To relationship.
+// IMAP adds confirmed local-send evidence in imap-dispositions.js. Gmail also
+// supports a unique cached Sent In-Reply-To relationship in db.js.
 function fromFlags(flags) {
   if (!(flags instanceof Set)) return { replied: null, forwarded: null };
   const values = new Set([...flags].map(value => String(value).toLowerCase()));
