@@ -10335,7 +10335,12 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
   const startupCredentialQuit = spawnSync(process.execPath, [path.join(root, "scripts/check-startup-credential-quit.js")], { stdio: "inherit", timeout: 120000 });
   assert.strictEqual(startupCredentialQuit.status, 0, "Combined startup/credential quit fixture failed");
   for (const name of ["check-bot-proactive.js", "check-bot-proactive-ui.js", "check-hermes-webhook.js", "check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js", "check-ai-consent-settings.js", "check-gmail-mail-api.js", "check-gmail-dispositions.js", "check-gmail-reply-backfill.js", "check-sender-names.js", "check-wave4-ux.js"]) {
-    const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
+    // Eight repair cases took 25.5s on Windows before the held-work case hit
+    // the shared 30s process deadline. Keep every durable commit/restart and
+    // assertion; give this fixture the same filesystem headroom as reviewed flows.
+    const timeout = name === "check-gmail-reply-backfill.js" && process.platform === "win32" ? 90000 : 30000;
+    const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout });
+    assert.ifError(fixture.error);
     assert.strictEqual(fixture.status, 0, name + " failed");
   }
 }).then(() => checkTranslateBatches()).then(() => {
