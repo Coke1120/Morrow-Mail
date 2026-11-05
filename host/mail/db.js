@@ -444,6 +444,10 @@ function migrate() {
   }
   run("CREATE INDEX IF NOT EXISTS messages_folder_page ON messages(account_id, folder_path, list_sort_ts DESC, id DESC)");
   run("CREATE INDEX IF NOT EXISTS messages_global_page ON messages(list_sort_ts DESC, id DESC)");
+  // Eligibility belongs in the index; completed history must not be visited on
+  // each idle body poll. Retry time and folder exclusions remain query filters.
+  run(`CREATE INDEX IF NOT EXISTS messages_pending_body_page ON messages(list_sort_ts DESC, id DESC)
+    WHERE uid > 0 AND body_complete != 1 AND is_draft = 0 AND body_retry_blocked = 0`);
   run("CREATE INDEX IF NOT EXISTS messages_unread_page ON messages(account_id, list_sort_ts DESC, id DESC, folder_path, thread_id) WHERE unread = 1");
   run("CREATE INDEX IF NOT EXISTS messages_starred_page ON messages(account_id, list_sort_ts DESC, id DESC, folder_path, thread_id) WHERE starred = 1");
   run("CREATE INDEX IF NOT EXISTS snooze_expiry ON snooze(until_iso)");
@@ -967,6 +971,8 @@ const SEARCH_TERM_CAP = 4000;
 const SEARCH_QUERY_CAP = 16;
 const SEARCH_RESULT_CAP = 100;
 const SEARCH_SCOPE_PROBE = 2048;
+const SEARCH_ACCOUNT_PROBE = 8192;
+const SEARCH_ACCOUNT_TERM_PROBE = 65536;
 const INDEXED_PATCH = new Set(["subject", "from_addr", "text_body", "html_body", "snippet"]);
 
 function safePoint(code) {
@@ -1227,6 +1233,10 @@ function inspectSearchTokens(value) {
 }
 
 function searchMessages(options, { headersOnly = false, timelineLimit = false } = {}) {
+  return perf.sync("db.search", () => searchMessageRows(options, { headersOnly, timelineLimit }));
+}
+
+function searchMessageRows(options, { headersOnly = false, timelineLimit = false } = {}) {
   if (!db) return [];
   const query = options || {};
   if (query.accountRequired && !query.accountId) return [];
@@ -1242,23 +1252,51 @@ function searchMessages(options, { headersOnly = false, timelineLimit = false } 
     tokens = tokenize(query.query).slice(0, SEARCH_QUERY_CAP);
   }
   if (!tokens.length) return [];
-  const joins = [];
-  const params = [];
-  tokens.forEach((token, index) => {
+  // Bounded probes choose access paths, never truncate matching candidates.
+  // Put a selective term first even when it appears last in the user's query.
+  const terms = tokens.map((token, index) => {
     const upper = termUpper(token);
-    const selective = query.accountId && get(`SELECT COUNT(*) AS n FROM
-      (SELECT 1 FROM message_fts WHERE term >= ? AND term < ? LIMIT ?)`, [token, upper, SEARCH_SCOPE_PROBE + 1]).n <= SEARCH_SCOPE_PROBE;
-    const scopeJoin = query.accountId ? `${selective ? "CROSS JOIN" : "JOIN"} messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?` : "";
-    joins.push(
-      `JOIN (
-        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight
-        FROM message_fts f ${scopeJoin}
-        WHERE f.term >= ? AND f.term < ?
-        GROUP BY f.message_id
-      ) t${index} ON t${index}.message_id = m.id`
-    );
-    if (query.accountId) params.push(query.accountId);
-    params.push(token, upper);
+    const size = get(`SELECT COUNT(*) AS n FROM
+      (SELECT 1 FROM message_fts WHERE term >= ? AND term < ? LIMIT ?)`, [token, upper, SEARCH_SCOPE_PROBE + 1]).n;
+    return { token, upper, size, index };
+  }).sort((a, b) => a.size - b.size || a.index - b.index);
+  const accountSize = query.accountId ? get(`SELECT COUNT(*) AS n FROM
+    (SELECT 1 FROM messages WHERE account_id = ? LIMIT ?)`, [query.accountId, SEARCH_ACCOUNT_PROBE + 1]).n : Infinity;
+  const params = [];
+  const weight = "MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END)";
+  const seed = terms[0];
+  let accountFirst = accountSize < seed.size;
+  if (!accountFirst && accountSize <= SEARCH_ACCOUNT_PROBE && seed.size > SEARCH_SCOPE_PROBE) {
+    // A saturated probe is an unknown cardinality, not a count of 2,049.
+    // Refine only for a bounded small account: avoid global common-term work
+    // for a 5k account, without forcing a 95k account through message postings.
+    // Eight covering postings per account row is a conservative access heuristic,
+    // not a result cap or a native-device latency threshold.
+    const threshold = Math.min(SEARCH_ACCOUNT_TERM_PROBE, accountSize * 8);
+    const postings = get(`SELECT COUNT(*) AS n FROM
+      (SELECT 1 FROM message_fts WHERE term >= ? AND term < ? LIMIT ?)`, [seed.token, seed.upper, threshold + 1]).n;
+    accountFirst = postings > threshold;
+  }
+  const seedFrom = !query.accountId ? "message_fts f" : accountFirst
+    ? "messages scoped CROSS JOIN message_fts f ON f.message_id = scoped.id"
+    : "message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id";
+  params.push(seed.token, seed.upper);
+  if (query.accountId) params.push(query.accountId);
+  const ctes = [`search_seed AS MATERIALIZED (SELECT f.message_id, ${weight} AS weight
+    FROM ${seedFrom} WHERE f.term >= ? AND f.term < ? ${query.accountId ? "AND scoped.account_id = ?" : ""}
+    GROUP BY f.message_id)`];
+  const joins = [];
+  terms.slice(1).forEach((term, index) => {
+    // Small seeds constrain the other terms before grouping. Broad terms keep
+    // their covering term-range access rather than walking every account row.
+    const candidateFirst = accountFirst || seed.size <= SEARCH_SCOPE_PROBE;
+    const from = candidateFirst
+      ? "search_seed s CROSS JOIN message_fts f ON f.message_id = s.message_id"
+      : "message_fts f";
+    ctes.push(`search_term_${index + 1} AS MATERIALIZED (SELECT f.message_id, ${weight} AS weight
+      FROM ${from} WHERE f.term >= ? AND f.term < ? GROUP BY f.message_id)`);
+    params.push(term.token, term.upper);
+    joins.push(`CROSS JOIN search_term_${index + 1} t${index + 1} ON t${index + 1}.message_id = t0.message_id`);
   });
   const rank = tokens.map((_token, index) => `t${index}.weight`).join(" + ");
   const clauses = [];
@@ -1270,8 +1308,11 @@ function searchMessages(options, { headersOnly = false, timelineLimit = false } 
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   params.push(timelineLimit ? 1001 : searchResultLimit(query.limit));
   return all(
-    `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m JOIN accounts connected ON connected.id = m.account_id
+    `WITH ${ctes.join(",\n")}
+     SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM search_seed t0
      ${joins.join("\n")}
+     CROSS JOIN messages m ON m.id = t0.message_id
+     CROSS JOIN accounts connected ON connected.id = m.account_id
      ${where}
      ORDER BY ${query.sortBy ? messageOrder(query) : `(${rank}) DESC, m.list_sort_ts DESC, m.id DESC`}
      LIMIT ?`,
@@ -1287,7 +1328,7 @@ function localOutgoingAttachments(json) {
   return local.length ? local : null;
 }
 
-function applyFolderSync(accountId, folderPath, report) {
+function applyFolderSync(accountId, folderPath, report, budget = null) {
   if (report.gmail) {
     for (const message of report.messages) applyGmailMessage(accountId, [folderPath], message);
     return true;
@@ -1319,7 +1360,14 @@ function applyFolderSync(accountId, folderPath, report) {
         run("DELETE FROM messages WHERE id = ?", [row.id]);
       }
     }
+    const began = performance.now();
     for (let message of report.messages) {
+      if (budget) {
+        if (budget.processed && performance.now() - began >= SYNC_SLICE_MS) break;
+        const bytes = Buffer.byteLength(message.textBody || "") + Buffer.byteLength(message.htmlBody || "");
+        if (budget.processed && budget.bytes + bytes > SYNC_BODY_BYTES) break;
+        budget.processed++; budget.bytes += bytes;
+      }
       let found = get(
         `SELECT id, draft_pending FROM messages
          WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?`,
@@ -1460,6 +1508,11 @@ function missingFolderRows(accountId, folderPath, report, after = "", limit = -1
   [accountId, folderPath, after, ...(report.retainOlderThan ? [report.retainOlderThan] : []), JSON.stringify(report.uids), limit]));
 }
 
+// Budgets apply to normalized provider text/HTML, not encoded MIME source.
+// One message and the final durable commit can exceed either target.
+const SYNC_SLICE_MS = 8;
+const SYNC_BODY_BYTES = 256 * 1024;
+
 function visitedFolderRows(accountId, folderPath, cursor) {
   return perf.sync("db.sync.reconcile", () => all(`SELECT id, uid, uid_validity, draft_pending, list_sort_ts, rowid AS position
     FROM messages INDEXED BY messages_uid WHERE account_id = ? AND folder_path = ?
@@ -1506,8 +1559,11 @@ async function applyFolderSyncAsync(accountId, folderPath, report, validate = ()
       await yieldTurn();
     }
   }
-  for (let offset = 0; offset < report.messages.length; offset += 24) {
-    applyFolderSync(accountId, folderPath, { messages: report.messages.slice(offset, offset + 24), validity: report.validity, keepOthers: true });
+  for (let offset = 0; offset < report.messages.length;) {
+    const budget = { processed: 0, bytes: 0 };
+    perf.sync("db.sync.ingest", () => applyFolderSync(accountId, folderPath,
+      { messages: report.messages.slice(offset, offset + 24), validity: report.validity, keepOthers: true }, budget));
+    offset += budget.processed;
     changed = true;
     await yieldTurn();
   }
@@ -1887,6 +1943,9 @@ function messageOrder(query, table = "m") {
 
 function selectMessages(query, { headersOnly = false, now = Date.now() } = {}) {
   const scope = resolveScope(query);
+  // SQLite otherwise prefers is_draft/account indexes without statistics and
+  // scans complete history. whereFor(needsBody) implies this partial predicate.
+  const source = scope.needsBody ? "messages m INDEXED BY messages_pending_body_page" : "messages m";
   const { clauses, params } = whereFor(scope, now);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const limit = Math.min(Math.max(Math.floor(Number(query.limit)) || 2000, 1), 2000);
@@ -1907,14 +1966,14 @@ function selectMessages(query, { headersOnly = false, now = Date.now() } = {}) {
       const filtered = whereFor(branch, now);
       if (retainId && branch.retainOnly) filtered.clauses.push("m.unread != 1");
       bindings.push(...filtered.params, limit + offset);
-      return `SELECT * FROM (SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join}
+      return `SELECT * FROM (SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM ${source} ${join}
         WHERE ${filtered.clauses.join(" AND ")} ORDER BY ${messageOrder(query)} LIMIT ?)`;
     });
-    return perf.sync("db.list.merged", () => all(`SELECT * FROM (${parts.join(" UNION ALL ")})
+    return perf.sync(scope.needsBody ? "db.body.pending" : "db.list.merged", () => all(`SELECT * FROM (${parts.join(" UNION ALL ")})
       ORDER BY ${messageOrder(query, "")} LIMIT ? OFFSET ?`, [...bindings, limit, offset]));
   }
-  return perf.sync(headersOnly ? "db.list.headers" : "db.list.full", () => all(
-    `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM messages m ${join} ${where} ORDER BY ${messageOrder(query)} LIMIT ? OFFSET ?`,
+  return perf.sync(scope.needsBody ? "db.body.pending" : headersOnly ? "db.list.headers" : "db.list.full", () => all(
+    `SELECT ${headersOnly ? metadataColumns("m") : "m.*"} FROM ${source} ${join} ${where} ORDER BY ${messageOrder(query)} LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   ));
 }
