@@ -161,6 +161,7 @@ async function run() {
     module, setImmediate,
     require(name) {
       if (name === "./persistence") return { Persistence };
+      if (name === "./imap-dispositions") return require("../host/mail/imap-dispositions");
       if (name === "crypto" || name === "node:perf_hooks") return require(name);
       if (name === "../../shared/primary-mailboxes" || name === "./sender-header") return {};
       if (name === "../timeline/storage") return require("../host/timeline/storage");

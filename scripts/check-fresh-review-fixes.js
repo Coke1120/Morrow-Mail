@@ -153,10 +153,12 @@ async function hostChecks() {
     for (const [charset,,expected] of encodedCases) {
       const cached=db.gmailCopies("gmail","encoding-"+charset)[0];
       assert.equal(cached.text_body,expected,"Gmail parser: "+charset);
-      assert.equal(cached.body_complete,charset==="x-unknown"?0:1);
-      assert.equal(!!cached.body_warning,charset==="x-unknown");
+      assert.equal(cached.body_complete,1);
+      assert.equal(!!cached.body_warning,false);
+      assert.equal(require("../host/mail/mime-decoding").parse(cached.decoding_json).unsupported,charset==="x-unknown");
     }
-    assert.ok(db.gmailCopies("gmail","encoding-x-unknown")[0].body_warning);
+    const unknown = db.gmailCopies("gmail","encoding-x-unknown")[0];
+    assert.match((await ask("mail:readEmail",{emailId:unknown.id})).encodingWarning,/unrecognized text encoding/);
     assert.equal(db.gmailCopies("gmail","malformed")[0].body_complete, 0);
     assert.ok(db.gmailCopies("gmail","healthy")[0]);
     service.history([{id:"101",messagesAdded:[{message:{id:"malformed"}},{message:{id:"healthy"}}]}]);

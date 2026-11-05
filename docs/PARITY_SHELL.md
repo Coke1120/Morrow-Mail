@@ -1,5 +1,13 @@
 # Shell parity
 
+Message readers disclose checked decoding loss and unsupported charsets without
+repeatedly fetching complete bodies. They prefer verified plain text over lossy
+HTML and offer an HTML/plain-text view switch when both are available. The safe
+HTML renderer and remote-image policy apply after every switch. Legacy cached
+replacement characters are disclosed as uncertain; an explicit retry rechecks
+the full server copy without claiming to recover already lost bytes. See
+[mail text decoding](adr/2026-11-05-mail-text-decoding.md).
+
 Preview Send, scheduled-send previews and Outbox show safe HTML through the received-mail body renderer. The compose preview uses its frozen send payload; Outbox uses the saved queued payload. Remote images, including CSS and table backgrounds, stay blocked in these previews even when received-mail images are enabled. Raster data images can display; unsupported active content and unresolved CID images remain filtered. Both previews list included attachment names and sizes. Outbox attachment download/open/preview actions are unavailable. Confirm still rejects changed compositions, and opening Outbox does not change its send time or Undo boundary. See [safe send previews](adr/2026-11-05-safe-send-previews.md).
 
 Timeline is a single reader action beside Summary, opening a modal sheet without
@@ -127,3 +135,5 @@ performance.
 Bot access additionally supports separately reviewed archive, read/unread and Trash capabilities for one explicit cached message per UUID request. Existing grants gain no new capabilities; read-only grants stay read-only. Pending receipts are not provider confirmation; unknown outcomes require review. Trash never permanently deletes, and arbitrary folder moves remain unavailable. Confirmed moves reuse existing Mail Undo where available. See [Bot bridge mail changes](BOT_BRIDGE.md#archive-readunread-and-trash).
 
 Summary shows a main point and flat bullets for the selected downloaded email in both readers. Metadata and data-use details are collapsed under Details. English uses ASD-STE100-inspired plain language without a formal-compliance claim. Longer or incomplete text requires an explicit full-downloaded-text or excerpt choice; coverage warnings stay visible. Full runs are bounded, Unicode-safe and use the saved provider and explicit AI data permission. Results stay in window memory. No drafts, mail changes, CLI command or bot permission are added. See [reviewed long-message summaries](adr/2026-11-05-simple-reviewed-message-summary.md).
+
+Settings → Brain offers Daily (default), Weekly, and Manual only for automatic profile refresh. Brain open and running-app checks share the selected interval; attempts persist across restart, require separate background AI permission, and share one in-flight profile job. Explicit Refresh/Rebuild can retry. Fresh Reply/Reply All and Forward normalize recognized duplicate/localized/counter prefixes; edited/resumed subjects retain their text.

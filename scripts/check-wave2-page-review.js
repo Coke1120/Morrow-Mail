@@ -89,7 +89,7 @@ function brainFixture(initial = {}) {
     generated: persona.buildGenerated(null, { writing: ["Keep replies concise."], voiceQuotes: ["Old quotation."], sections: [] }, { messages: [{}] }, "rebuild", []), ...initial });
   const calls = [], events = [];
   const brain = load("host/brain.js", {
-    fs: { readFileSync: () => stored, mkdirSync() {}, writeFileSync: (_file, value) => { stored = value; } },
+    fs: { readFileSync: () => stored, mkdirSync() {}, writeFileSync: (_file, value) => { stored = value; }, renameSync() {} },
     electron: { BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false, webContents: { send: (channel, payload) => events.push({ channel, payload }) } }] } },
     "./ai-config": { userDataDir: () => "/synthetic", loadConfig: () => ({ apiKey: "synthetic-only" }) },
     "./openai-client": { complete: () => { const task = deferred(); calls.push(task); return task.promise; }, extractJson: JSON.parse },

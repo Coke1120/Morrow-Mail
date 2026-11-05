@@ -4223,8 +4223,16 @@ function replyParties(email, self, all) {
 function prefixedSubject(subject, prefix) {
   const text = String(subject || "").trim();
   if (!text) return prefix;
-  if (prefix === "Re:" && /^re\s*:/i.test(text)) return text;
-  if (prefix === "Fwd:" && /^(?:fwd|fw)\s*:/i.test(text)) return text;
+  // Only fresh reply/forward seeds use this helper. Saved/edited subjects stay
+  // verbatim. Collapse consecutive prefixes of the same action, preserving a
+  // different action (for example Fwd: Re: Topic) and the original Unicode text.
+  const pattern = prefix === "Re:"
+    ? /^(?:re|aw|回覆|回复|回復|答覆|答复|返信)(?:\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\)))?\s*[:：]\s*/i
+    : /^(?:fwd|fw|wg|轉寄|转寄|轉發|转发|転送)(?:\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\)))?\s*[:：]\s*/i;
+  let rest = text, count = 0, match;
+  while ((match = rest.match(pattern))) { rest = rest.slice(match[0].length); count++; }
+  if (count === 1 && (prefix === "Re:" ? /^re\s*:/i : /^(?:fwd|fw)\s*:/i).test(text)) return text;
+  if (count) return rest ? `${prefix} ${rest}` : prefix;
   return `${prefix} ${text}`;
 }
 
@@ -7450,7 +7458,7 @@ function renderActions(pane, email) {
 }
 
 function summarySource(email) {
-  return [email.subject, email.from, email.date, email.textBody, email.htmlBody, email.bodyComplete, email.bodyWarning];
+  return [email.subject, email.from, email.date, email.textBody, email.htmlBody, email.bodyComplete, email.bodyWarning, email.encodingWarning];
 }
 
 function summaryMatches(email, view = messageSummary) {
@@ -7946,7 +7954,7 @@ function renderReader(focus, onlyChanged = false) {
   }
   const pane = $("reader");
   const emailView = state.email;
-  const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.bodyError,
+  const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.encodingWarning, emailView?.bodyError,
     emailView?.unread, emailView?.isStarred, emailView?.outboxStatus, emailView?.subject, emailView?.from, emailView?.date,
     state.thread, state.translate, state.prefs.images, state.prefs.snooze,
     state.remoteAllowed?.[emailView?.id], snoozedUntilOf(emailView), state.accounts.length, state.providerFolders];
@@ -8102,15 +8110,32 @@ function bodyRetryButton(email, refresh) {
   return retry;
 }
 
+const plainBodyViews = new WeakMap();
 function renderBody(pane, email, refresh) {
-  if (email?.bodyWarning) {
+  if (email?.bodyWarning || email?.encodingWarning) {
     const warning = document.createElement("p");
-    warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = email.bodyWarning;
+    warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = [email.bodyWarning, email.encodingWarning].filter(Boolean).join(" ");
     pane.appendChild(warning);
     pane.appendChild(bodyRetryButton(email, refresh));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
-  appendMessageBody(pane, email, remoteVisible(state.prefs.images, allowed));
+  const key = JSON.stringify([email?.accountId, email?.id]);
+  let choice = plainBodyViews.get(pane);
+  if (!choice || choice.key !== key) { choice = { key, plain: false }; plainBodyViews.set(pane, choice); }
+  const body = document.createElement("div");
+  const paint = () => {
+    body.replaceChildren();
+    appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+  };
+  if (email?.htmlBody && email?.textBody?.trim()) {
+    const toggle = document.createElement("button");
+    toggle.type = "button"; toggle.className = "ghost"; toggle.dataset.action = "plain-body";
+    const label = () => { toggle.textContent = choice.plain ? "Show HTML version" : "Show plain-text version"; toggle.setAttribute("aria-pressed", String(choice.plain)); };
+    toggle.addEventListener("click", () => { choice.plain = !choice.plain; label(); paint(); });
+    label(); pane.appendChild(toggle);
+  }
+  pane.appendChild(body);
+  paint();
 }
 
 function renderRemoteGate(pane, email, repaint) {
@@ -12278,7 +12303,8 @@ function bodyFields(email, identity) {
     bodyVersion: Number.isSafeInteger(email.bodyVersion) ? email.bodyVersion : 0,
     htmlBody: typeof email.htmlBody === "string" ? email.htmlBody : null,
     textBody: typeof email.textBody === "string" ? email.textBody : null,
-    bodyComplete: email.bodyComplete === true, hasBody: listedHasBody(email), bodyWarning: typeof email.bodyWarning === "string" ? email.bodyWarning : "" };
+    bodyComplete: email.bodyComplete === true, hasBody: listedHasBody(email), bodyWarning: typeof email.bodyWarning === "string" ? email.bodyWarning : "",
+    encodingWarning: typeof email.encodingWarning === "string" ? email.encodingWarning : "" };
 }
 
 function dropBody(key) {
@@ -12299,7 +12325,7 @@ function noteBody(email, explicit = true) {
   const body = bodyFields(email, identity), previous = latestBodies.get(identity.key);
   if (previous && previous.body.bodyVersion > body.bodyVersion) return;
   dropBody(identity.key);
-  const bytes = 2 * (identity.key.length + (body.htmlBody || "").length + (body.textBody || "").length + body.bodyWarning.length);
+  const bytes = 2 * (identity.key.length + (body.htmlBody || "").length + (body.textBody || "").length + body.bodyWarning.length + body.encodingWarning.length);
   if (bytes > BODY_CACHE_LIMITS.entryBytes) return; // Open views still own their full body.
   while (latestBodies.size && (latestBodies.size >= BODY_CACHE_LIMITS.entries || latestBodyBytes + bytes > BODY_CACHE_LIMITS.bytes)) dropBody(latestBodies.keys().next().value);
   latestBodies.set(identity.key, { body, bytes }); latestBodyBytes += bytes;
@@ -12338,7 +12364,7 @@ function applyCachedBody(email) {
     if (target.pending || target.identity.key !== identity.key) continue;
     if ((target.email.bodyEpoch ?? 0) === identity.bodyEpoch && (target.email.bodyVersion || 0) > body.bodyVersion) continue;
     let changed = target.email.htmlBody !== body.htmlBody || target.email.textBody !== body.textBody
-      || target.email.bodyWarning !== body.bodyWarning || target.email.bodyComplete !== body.bodyComplete;
+      || target.email.bodyWarning !== body.bodyWarning || target.email.encodingWarning !== body.encodingWarning || target.email.bodyComplete !== body.bodyComplete;
     const metadata = {};
     for (const field of ["attachments", "hasAttachments", "draftRevision", "draftPending", "from", "fromAddress", "fromDisplayName", "recipientHeaders", "replyTo",
       "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft"]) {
@@ -12420,6 +12446,7 @@ function applyBodyUpdate(payload) {
       known.bodyComplete = incoming.bodyComplete === true;
       known.hasBody = full ? listedHasBody(full) : incoming.hasBody === true;
       known.bodyWarning = incoming.bodyWarning || "";
+      known.encodingWarning = incoming.encodingWarning || "";
     }
   }
   if (pendingPeekId === identity.id && !pendingPeekAccountId) pendingPeekAccountId = identity.accountId;
@@ -12480,7 +12507,7 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true, retry: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -16441,7 +16468,7 @@ function cliCatalog() {
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "Call the loopback bridge while Morrow is open and bot access is on. params.json is {}. Replace placeholders; use --token-file, never --token." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "After the Tailscale steps, use the exact paired HTTPS endpoint. TLS is verified; redirects and non-loopback plain HTTP are rejected." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.list_cached --params-file ./list.json", action: "List the granted account's cached inbox with the list.json example above. This does not fetch new mail or mark it read." },
-    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Mail-provider submission cannot be recalled once it begins." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Mail-provider submission cannot be recalled once it begins. A complete IMAP reply records its indicator and attempts a server flag; flag failure never resends mail." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.archive --request-id '<uuid>' --params-file ./message.json", action: "Archive one explicit cached message with mail.archive permission. Repeat this exact UUID and payload to observe pending results without resubmitting." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.mark_read --request-id '<uuid>' --params-file ./read.json", action: "Set one message read with mail.read_state.write permission. Use isRead false for unread. Pending is not provider confirmation." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.trash --request-id '<uuid>' --params-file ./message.json", action: "Move one message to Trash with mail.trash permission. Never permanently deletes; an unknown outcome requires review rather than a new UUID." },
@@ -17223,6 +17250,7 @@ async function installUpdate() {
 
 // No implicit saves or sends: the user must resolve editing before restart.
 function updateRestartBlocked() {
+  if (brainCadenceSave) return true;
   if (attachmentTasks.size) return true;
   if (Array.from(document.querySelectorAll("dialog[open]")).some(node => node.id !== "about-dialog")) return true;
   if (state.composePending || state.composeQueued || state.composeInitializing || state.oauthPending || state.connectPending || state.busy || sendTimer) return true;
@@ -17722,6 +17750,58 @@ async function saveScheduleDelay() {
   return pending;
 }
 
+let brainSettingsVersion = 0;
+let brainCadenceSave = null;
+
+async function loadBrainSettings() {
+  const version = ++brainSettingsVersion;
+  if (brainCadenceSave) await brainCadenceSave.catch(() => {});
+  const status = await call("emailBrain:getRefreshStatus");
+  if (version !== brainSettingsVersion || !$("settings").open) return;
+  $("pref-brain-refresh").value = status.cadence;
+  $("brain-refresh-permission").textContent = status.cadence === "manual"
+    ? "Manual only keeps automatic refresh off. Explicit AI actions still need AI data permission in Settings → AI."
+    : status.backgroundAllowed
+    ? "Background AI permission is allowed for the saved connection. Changing frequency never grants permission."
+    : "Automatic refresh is paused until background AI data permission is allowed in Settings → AI. Changing frequency never grants permission.";
+  $("brain-refresh-last").textContent = status.lastSuccessAt
+    ? "Last successful refresh: " + formatBrainTime(status.lastSuccessAt) : "No successful profile refresh yet.";
+  $("brain-refresh-next").textContent = status.running
+    ? "Profile analysis is running. Changes to frequency apply to future attempts."
+    : status.cadence === "manual"
+    ? "Automatic profile refresh is off. Refresh and Rebuild on Brain → Profile remain available."
+    : "Next eligible check: " + formatBrainTime(status.nextEligibleAt) + ". Runs while Morrow Mail is open and background AI permission is allowed.";
+}
+
+async function saveBrainCadence() {
+  if (brainCadenceSave) return;
+  ++brainSettingsVersion;
+  const control = $("pref-brain-refresh");
+  const value = control.value;
+  control.disabled = true;
+  settingsInlineStatus($("brain-refresh-setting-status"), "Saving…", false);
+  const pending = api.invoke("morrow:configSetBrainRefreshCadence", value);
+  brainCadenceSave = pending;
+  let error = "";
+  try {
+    const saved = await pending;
+    if (saved !== value) throw new Error("The refresh frequency was not saved. Try again.");
+  } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+  finally {
+    if (brainCadenceSave === pending) brainCadenceSave = null;
+    control.disabled = false;
+  }
+  try { await loadBrainSettings(); }
+  catch (cause) { error = error || (cause instanceof Error ? cause.message : String(cause)); }
+  settingsInlineStatus($("brain-refresh-setting-status"), error || "Refresh frequency saved.", !!error);
+}
+
+function refreshVisibleBrainSettings() {
+  if ($("settings")?.open && $("settings-brain") && !$("settings-brain").hidden) {
+    loadBrainSettings().catch(error => settingsInlineStatus($("brain-refresh-setting-status"), error.message || String(error), true));
+  }
+}
+
 const settingsFoldPending = new Map();
 const settingsFoldLoaded = new Set();
 const settingsFoldLoadingLabels = {
@@ -17730,6 +17810,7 @@ const settingsFoldLoadingLabels = {
   mailbox: "Loading mailbox tools…",
   ai: "Loading AI settings…",
   compose: "Loading compose defaults…",
+  brain: "Loading Brain settings…",
   ooo: "Checking Out of Office status…",
   bot: "Loading Bot access…",
 };
@@ -17772,6 +17853,7 @@ function loadSettingsFold(name) {
   if (name === "support") return Promise.resolve();
   const key = settingsFoldKey(name);
   if (settingsFoldLoaded.has(key)) {
+    if (name === "brain") return loadBrainSettings();
     if (name === "compose") return loadComposeSettings();
     if (name === "mail") return refreshMailNotificationStatus();
     return Promise.resolve();
@@ -17798,6 +17880,7 @@ function loadSettingsFold(name) {
     }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); await loadGoogleOauthClient(); }
     else if (name === "compose") await loadComposeSettings();
+    else if (name === "brain") await loadBrainSettings();
     else if (name === "ooo" && !oooDirty()) {
       if (await loadVacation() !== true) return;
     }
@@ -20473,18 +20556,20 @@ async function requestBrainJob(channels, mode, params) {
   try {
     let accepted = false;
     let cached = false;
+    let runningMode = mode;
     const list = Array.isArray(channels) && channels.length ? channels : [];
     for (const channel of list) {
       const result = await call(channel, params || {});
       accepted = !!(result && result.accepted);
       cached = !!(result && result.cached);
+      if (result && result.mode) runningMode = result.mode;
       if (accepted) break;
     }
     brainView = {
       ...brainView,
       accepted,
-      refreshing: accepted && !cached && mode !== "rebuild",
-      rebuilding: accepted && mode === "rebuild",
+      refreshing: accepted && !cached && runningMode !== "rebuild",
+      rebuilding: accepted && !cached && runningMode === "rebuild",
       percent: accepted && !cached ? 15 : null,
       error: "",
     };
@@ -20553,6 +20638,7 @@ async function forgetBrainItem(row) {
 }
 
 function onBrainRefreshState(payload) {
+  refreshVisibleBrainSettings();
   const data = payload && typeof payload === "object" ? payload : {};
   brainView = {
     ...brainView,
@@ -20563,6 +20649,7 @@ function onBrainRefreshState(payload) {
 }
 
 function onBrainRebuildState(payload) {
+  refreshVisibleBrainSettings();
   const data = payload && typeof payload === "object" ? payload : {};
   brainView = {
     ...brainView,
@@ -20575,6 +20662,7 @@ function onBrainRebuildState(payload) {
 }
 
 function onBrainUpdated() {
+  refreshVisibleBrainSettings();
   if (!brainIsOpen()) return;
   loadBrain().catch((error) => {
     brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
@@ -22217,7 +22305,7 @@ async function peekMessage(messageId, full) {
   const accountId = pendingPeekAccountId;
   let data;
   try {
-    data = await call("mail:openEmail", { emailId: messageId, includeThread: false, ...(accountId ? { accountId } : {}), ...(full ? { full: true } : {}) });
+    data = await call("mail:openEmail", { emailId: messageId, includeThread: false, ...(accountId ? { accountId } : {}), ...(full ? { full: true, retry: true } : {}) });
   } catch (error) {
     if (gen !== peekGen) return;
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
@@ -26129,6 +26217,8 @@ function wire() {
   wireMailColumnEditor();
   wireMailView();
   wireSettingsFolds();
+  $("pref-brain-refresh").addEventListener("change", saveBrainCadence);
+  $("brain-refresh-ai-settings").addEventListener("click", () => revealSettingsFold("ai"));
   wireAgentTabs();
   wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {

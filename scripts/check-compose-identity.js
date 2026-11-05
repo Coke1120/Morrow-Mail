@@ -616,5 +616,5 @@ async function crossAccountFrom() {
 }
 
 async function run() { decisions(); brainLines(); await advancedDisclosure(); await hostRoundTrips(); await rendererFlows(); await crossAccountFrom(); console.log("compose-identity-ok"); }
-module.exports = { run, rendererFlows };
+module.exports = { run, rendererFlows, composeUi };
 if (require.main === module) run().catch((error) => { console.error(error); process.exitCode = 1; });

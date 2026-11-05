@@ -348,6 +348,7 @@ function projectionFixture() {
   const projected = functions("host/mail/engine.js", ["listRow", "listRows", "detailOf"], { db, publicAttachment: value => value,
     composePolicy: require("../shared/compose-policy"), composeIdentity: { savedAddress: () => "sender@fixture.invalid" },
     actions: { generationOf: () => 0 }, textEncoding: { repairMojibake: value => value, presentMessage: value => value },
+    decoding: require("../host/mail/mime-decoding"),
     usableStoredBody: () => false, accountEpochs: new Map(), bodyVersion: 1 });
   const row = { id: "selected", account_id: "a", folder_path: "Inbox", gmail_id: "provider-selected", from_addr: "sender@fixture.invalid" };
   return { ...projected, memberships, batches, gmailLabelMemberships, row, singles: () => singles };
