@@ -1,10 +1,10 @@
 const { simpleParser } = require("mailparser");
-const { createGmailMailApi } = require("./gmail-mail-api");
+const { createGmailMailApi, decodePartData } = require("./gmail-mail-api");
 const db = require("./db");
 const { isGmail } = require("./gmail-policy");
 const { recipientHeaders } = require("./recipient-headers");
 const textEncoding = require("./text-encoding");
-const iconv = require("iconv-lite");
+const decoding = require("./mime-decoding");
 const ALL = "__gmail_all__";
 const SYSTEM = { INBOX: ["INBOX", "Inbox", "inbox"], SENT: ["[Gmail]/Sent Mail", "Sent", "sentitems"],
   DRAFT: ["[Gmail]/Drafts", "Drafts", "drafts"], TRASH: ["[Gmail]/Trash", "Trash", "deleteditems"], SPAM: ["[Gmail]/Spam", "Spam", "junkemail"] };
@@ -87,6 +87,8 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
     try { parsed = await simpleParser(headerBytes); }
     catch { parsed = {}; warn(); }
     const body = { text: [], html: [] }, attachments = [];
+    const decodedQuality = decoding.quality();
+    decoding.noteHeaders(decodedQuality, parsed);
     for (const part of list) {
       if (Array.isArray(part.parts) && part.parts.length) continue;
       const type = String(part.mimeType || "application/octet-stream").toLowerCase();
@@ -94,25 +96,16 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       const file = !!part.filename || /attachment/i.test(disposition) || !["text/plain", "text/html"].includes(type);
       let bytes;
       if (part.body?.data != null) {
-        if (typeof part.body.data !== "string" || !/^[A-Za-z0-9_-]*={0,2}$/.test(part.body.data)) { warn(); continue; }
-        bytes = Buffer.from(part.body.data, "base64url");
+        try { bytes = decodePartData(part.body.data); }
+        catch { warn(); continue; }
+        if (Number.isSafeInteger(part.body.size) && part.body.size !== bytes.length) warn();
       }
       if (!file) {
         if (!bytes && part.body?.attachmentId && full) bytes = await api.attachment(data.id, part.body.attachmentId);
         if (!bytes && (part.body?.attachmentId || Number(part.body?.size) > 0)) { complete = false; continue; }
-        const charset = /charset\s*=\s*["']?([^;\s"']+)/i.exec(header(part, "content-type"))?.[1] || "utf-8";
-        let text;
-        try {
-          // Mail aliases use iconv; retain ICU/TextDecoder-only encodings such
-          // as ISO-2022-JP before considering an incomplete UTF-8 fallback.
-          if (!iconv.encodingExists(charset)) throw new Error("Unknown mail charset");
-          text = iconv.decode(bytes || Buffer.alloc(0), charset);
-        } catch {
-          try {
-            text = new TextDecoder(charset).decode(bytes || Buffer.alloc(0));
-          } catch { warn(); text = new TextDecoder("utf-8").decode(bytes || Buffer.alloc(0)); }
-        }
-        body[type === "text/html" ? "html" : "text"].push(text);
+        const value = decoding.decode(bytes || Buffer.alloc(0), decoding.charsetOf(header(part, "content-type")));
+        decoding.note(decodedQuality, value, type);
+        body[type === "text/html" ? "html" : "text"].push(value.text);
       } else {
         const contentId = header(part, "content-id").replace(/^<|>$/g, "");
         attachments.push({ id: `gmail:${part.partId || "0"}`, filename: part.filename || `attachment-${part.partId || "0"}`, mimeType: type,
@@ -124,12 +117,16 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
     for (const attachment of attachments.filter(row => row.isInlineFromApi && row.mimeType.startsWith("image/"))) {
       if (!full) { complete = false; continue; }
       const part = list.find(row => `gmail:${row.partId || "0"}` === attachment.id);
-      let bytes = typeof part?.body?.data === "string" ? Buffer.from(part.body.data, "base64url") : null;
+      let bytes = null;
+      if (part?.body?.data != null) {
+        try { bytes = decodePartData(part.body.data); }
+        catch { warn(); continue; }
+      }
       if (!bytes && part?.body?.attachmentId) bytes = await api.attachment(data.id, part.body.attachmentId);
       if (bytes && html) html = html.split(`cid:${attachment.contentId}`).join(`data:${attachment.mimeType};base64,${bytes.toString("base64")}`);
     }
     alive();
-    const presented = textEncoding.presentMessage({ subject: parsed.subject || "", htmlBody: html, textBody: body.text.join("\n") || null });
+    const presented = textEncoding.presentMessage({ subject: parsed.subject || "", htmlBody: html, textBody: body.text.join("\n") || null }, { preserveDecoded: true });
     const headerDate = parsed.date instanceof Date && Number.isFinite(parsed.date.getTime());
     const receivedDate = Number(data.internalDate) > 0 && Number.isFinite(new Date(Number(data.internalDate)).getTime());
     let date = headerDate ? parsed.date : new Date(receivedDate ? Number(data.internalDate) : 0);
@@ -144,12 +141,12 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       fromDisplayName: parsed.from?.value?.[0]?.name || "",
       to: stringAddresses(parsed.to), cc: stringAddresses(parsed.cc), bcc: stringAddresses(parsed.bcc), recipientHeaders: recipientHeaders(headerBytes, parsed.replyTo),
       date: date.toISOString(), dateSource: headerDate ? "header" : receivedDate ? "received" : "unknown",
-      listSortTs: date.getTime(), snippet: data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ").slice(0, 180),
+      listSortTs: date.getTime(), snippet: decoding.snippet(data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ")),
       unread: labels.includes("UNREAD"), starred: labels.includes("STARRED"), isDraft: labels.includes("DRAFT"),
       replyInferenceEligible: !bodyWarning && !list.some(part => String(part.mimeType || "").split(";")[0].trim().toLowerCase() === "text/vnd.google.email-reaction+json"),
       replied: null, forwarded: null, // Gmail labels expose neither state.
       hasAttachments: attachments.some(row => !row.isInlineFromApi || !row.mimeType.startsWith("image/")), attachments,
-      htmlBody: presented.htmlBody, textBody: presented.textBody, bodyComplete: complete, bodyWarning };
+      htmlBody: presented.htmlBody, textBody: presented.textBody, decoding: decodedQuality, bodyComplete: complete, bodyWarning };
   }
   async function adopt(data, { full = false, after = null, cache = true, committed } = {}) {
     const value = await normalize(data, full);

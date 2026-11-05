@@ -260,6 +260,9 @@ function migrate() {
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "body_warning")) {
     run("ALTER TABLE messages ADD COLUMN body_warning TEXT");
   }
+  if (!all("PRAGMA table_info(messages)").some((row) => row.name === "decoding_json")) {
+    run("ALTER TABLE messages ADD COLUMN decoding_json TEXT");
+  }
   if (!all("PRAGMA table_info(messages)").some(row => row.name === "date_source")) {
     run("ALTER TABLE messages ADD COLUMN date_source TEXT");
   }
@@ -1308,7 +1311,7 @@ function applyFolderSync(accountId, folderPath, report) {
         run("DELETE FROM messages WHERE id = ?", [row.id]);
       }
     }
-    for (const message of report.messages) {
+    for (let message of report.messages) {
       let found = get(
         `SELECT id, draft_pending FROM messages
          WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?`,
@@ -1324,6 +1327,11 @@ function applyFolderSync(accountId, folderPath, report) {
       }
       // An old server revision cannot overwrite an unuploaded local edit.
       if (found?.draft_pending) continue;
+      if (found && !message.bodyComplete) {
+        const priorBody = get("SELECT body_complete, html_body, text_body, snippet, body_warning, decoding_json FROM messages WHERE id = ?", [found.id]);
+        if (priorBody?.body_complete === 1) message = { ...message, htmlBody: priorBody.html_body, textBody: priorBody.text_body,
+          snippet: priorBody.snippet, bodyComplete: true, bodyWarning: priorBody.body_warning, decoding: require("./mime-decoding").parse(priorBody.decoding_json) };
+      }
       const id = found ? found.id : (message.id || newMessageId());
       let unreadBit = message.unread ? 1 : 0;
       let starredBit = message.starred ? 1 : 0;
@@ -1385,6 +1393,7 @@ function applyFolderSync(accountId, folderPath, report) {
       if (reindex) indexText(id);
       updateChanged("messages", require("./reply-forward-state").patch(message), "id = ?", [id]);
       updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
+      updateChanged("messages", { decoding_json: require("./mime-decoding").serialize(message.decoding) }, "id = ?", [id]);
       updateChanged("messages", { date_source: message.dateSource || null }, "id = ?", [id]);
     }
     for (const flags of Array.isArray(report.flags) ? report.flags : []) {
@@ -1589,6 +1598,7 @@ function insertMessageRecord(row) {
     );
     if (row.disposition) run("UPDATE messages SET disposition_json = ? WHERE id = ?", [JSON.stringify(row.disposition), row.id]);
     if (row.bodyWarning) run("UPDATE messages SET body_warning = ? WHERE id = ?", [row.bodyWarning, row.id]);
+    if (row.decoding) run("UPDATE messages SET decoding_json = ? WHERE id = ?", [require("./mime-decoding").serialize(row.decoding), row.id]);
     if (row.dateSource) run("UPDATE messages SET date_source = ? WHERE id = ?", [row.dateSource, row.id]);
     updateChanged("messages", require("./reply-forward-state").patch(row), "id = ?", [row.id]);
     indexText(row.id);
@@ -1845,7 +1855,7 @@ function resolveScope(query) {
 const BODY_SPACE = "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)";
 const METADATA_COLUMNS = ["id", "account_id", "folder_path", "uid", "uid_validity", "thread_id", "rfc_message_id", "in_reply_to", "subject", "snippet",
   "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "date_source", "list_sort_ts", "unread", "starred", "is_draft",
-  "has_attachments", "attachments_json", "body_complete", "body_warning", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id", "replied", "forwarded", "disposition_json", "disposition_provider_replied", "disposition_provider_forwarded", "reply_inference_eligible"];
+  "has_attachments", "attachments_json", "body_complete", "body_warning", "decoding_json", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id", "replied", "forwarded", "disposition_json", "disposition_provider_replied", "disposition_provider_forwarded", "reply_inference_eligible"];
 function metadataColumns(table) {
   return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
 }
@@ -2682,7 +2692,8 @@ function applyGmailMessage(accountId, folderPaths, message) {
       const attachments = found?.is_draft && localOutgoingAttachments(found.attachments_json);
       const input = { ...message, id: found?.id || newMessageId(), accountId, folderPath, uid: mapping.local_uid,
         uidValidity: account.gmail_generation, threadId: found?.thread_id || message.threadId,
-        ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true, bodyWarning: message.bodyWarning || found.body_warning } : {}),
+        ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true, bodyWarning: message.bodyWarning || found.body_warning,
+          decoding: require("./mime-decoding").parse(found.decoding_json) } : {}),
         ...(attachments ? { attachments, hasAttachments: true } : {}) };
       if (!found) insertMessageRecord(input);
       else {
@@ -2695,6 +2706,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
           is_draft: input.isDraft ? 1 : 0, html_body: input.htmlBody || null, text_body: input.textBody || null,
           has_attachments: input.hasAttachments ? 1 : 0, attachments_json: JSON.stringify(input.attachments || []),
           body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}),
+          decoding_json: require("./mime-decoding").serialize(input.decoding),
           ...require("./reply-forward-state").patch(input) };
         if (flagHeld(found.id, "read")) delete patch.unread;
         if (flagHeld(found.id, "star")) delete patch.starred;

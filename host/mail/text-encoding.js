@@ -168,15 +168,18 @@ function htmlToPlain(html) {
     .trim();
 }
 
-function presentMessage(input) {
+function presentMessage(input, { preserveDecoded = false } = {}) {
   const source = input || {};
-  const subject = repairMojibake(source.subject == null ? "" : String(source.subject));
-  const htmlBody = source.htmlBody == null ? null : repairMojibake(String(source.htmlBody));
-  let textBody = source.textBody == null ? null : repairMojibake(String(source.textBody));
+  // Provider bytes have already been interpreted using their MIME charset.
+  // Do not silently reinterpret valid literal text through the legacy repair.
+  const repair = preserveDecoded ? value => value : repairMojibake;
+  const subject = repair(source.subject == null ? "" : String(source.subject));
+  const htmlBody = source.htmlBody == null ? null : repair(String(source.htmlBody));
+  let textBody = source.textBody == null ? null : repair(String(source.textBody));
   const plain = htmlBody ? htmlToPlain(htmlBody) : "";
   const missing = textBody == null || textBody === "";
   const broken = textBody != null && textBody.includes("\uFFFD");
-  if (plain && !plain.includes("\uFFFD") && (broken || (missing && hasNonAscii(plain)))) {
+  if (plain && !plain.includes("\uFFFD") && ((broken && !preserveDecoded) || (missing && hasNonAscii(plain)))) {
     textBody = plain;
   }
   return { subject, htmlBody, textBody };

@@ -21,6 +21,13 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Readers disclose detected text-decoding loss separately from download completeness.
+Checked plain text is used when HTML decoding lost characters; available HTML/plain
+versions can also be switched in the reader. Older cached replacement characters
+get an uncertainty notice. Explicit Retry download can recheck a complete server
+copy, but cannot recreate original bytes already lost. See
+[mail text decoding and cached recovery](adr/2026-11-05-mail-text-decoding.md).
+
 The **To Me** chip filters downloaded mail before paging, and local search before
 its 100-result limit. It checks only To against the owning mailbox's primary
 address, without regard to letter case. Cc, Bcc, aliases, plus variants and delivery
