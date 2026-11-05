@@ -707,6 +707,7 @@ const quitController = quitScheduled.createQuitController({
   quitApp: () => app.quit(),
   cleanup: async () => {
     mailNotifications.stop();
+    try { await require("./mail/engine").stopLocalImports(); } catch { /* durable import receipts recover after restart */ }
     if (!bootFinished && !bootFailed) bootCancelled = true;
     try { require("./bot/proactive").stop(); } catch { /* no scheduler */ }
     try { await require("./bot/server").stop(); } catch { /* the bridge is already stopped */ }

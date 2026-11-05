@@ -230,7 +230,28 @@ function createLocalStore(file, { database = Database } = {}) {
     const direction = params.sortDirection === "asc" ? "ASC" : "DESC";
     return `${field} ${direction},id ${direction}`;
   }
-  return { file, folder, folders, account, message, verify, receipt, sourceReceipt, save, setReceipt, manageFolder, list, search, update, copy,
+  // Import progress shares this connection/transaction with complete mail writes.
+  // An optional extension table preserves compatibility with archive format 1.
+  function importJobs() {
+    sql.exec(`CREATE TABLE IF NOT EXISTS mbox_import_jobs (
+      id TEXT PRIMARY KEY, state TEXT NOT NULL, sha TEXT NOT NULL, updated_at INTEGER NOT NULL
+    )`);
+    return {
+      read(id) {
+        const row = sql.prepare("SELECT state,sha FROM mbox_import_jobs WHERE id=?").get(id);
+        if (!row) throw problem("That import is no longer available.");
+        if (digest(row.state) !== row.sha) throw problem("Import progress verification failed. Archive and source files were retained.");
+        return JSON.parse(row.state);
+      },
+      list() { return sql.prepare("SELECT id FROM mbox_import_jobs ORDER BY updated_at DESC LIMIT 100").all().map(row => this.read(row.id)); },
+      write(job) {
+        const state = JSON.stringify(job);
+        sql.prepare("INSERT INTO mbox_import_jobs VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,sha=excluded.sha,updated_at=excluded.updated_at")
+          .run(job.id, state, digest(state), Date.now());
+      },
+    };
+  }
+  return { file, folder, folders, account, message, verify, receipt, sourceReceipt, save, setReceipt, manageFolder, list, search, update, copy, importJobs,
     transaction(work) { return sql.transaction(work)(); },
     attachment(id, attachmentId) {
       const owner = sql.prepare("SELECT info,info_sha FROM messages WHERE id=?").get(id);

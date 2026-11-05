@@ -6189,3 +6189,11 @@ html[data-window="translate"] #reader .translate-column h2 {
 #folders .local-folder-create:hover, #folders .local-folder-create:focus-visible { background: rgba(255,255,255,.12); }
 #folders .local-folder-create:focus-visible { outline: 2px solid #b9d5ad; outline-offset: 2px; }
 #reader .local-reader-note { margin: 12px 20px; }
+#mbox-import { width: min(680px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; }
+#mbox-import form { display: grid; gap: 12px; min-width: 0; max-height: calc(100dvh - 32px); overflow: auto; }
+#mbox-import p, #mbox-import li { margin: 0; overflow-wrap: anywhere; }
+#mbox-import label { margin: 0; }
+#mbox-import select, #mbox-import input, #mbox-import progress { width: 100%; min-width: 0; max-width: 100%; }
+#mbox-import .row { flex-wrap: wrap; }
+#mbox-import details > :not(summary) { margin-top: 10px; }
+#mbox-import :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 3px; }

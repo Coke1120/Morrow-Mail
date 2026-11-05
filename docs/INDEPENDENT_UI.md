@@ -27,6 +27,12 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Local Folders → Import MBOX reviews explicitly selected mailbox files, destination
+and mboxrd/mboxo format. Private snapshots, atomic per-message progress and
+explicit Continue make cancellation and restart recoverable without changing the
+source. See [supported formats, limits and backup](MBOX_IMPORT.md). This feature
+is proposed by draft #521 implementation work and has not been released.
+
 Mail's account list includes Local Folders on this computer. Create/rename nested
 local folders and delete empty leaves from its folder menu (Shift + F10 works
 with keyboard focus). Server message menus and the reader's Local Folders button

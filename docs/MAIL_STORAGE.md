@@ -1,5 +1,12 @@
 # Mail storage
 
+MBOX jobs use an optional `mbox_import_jobs` extension table in the independent
+`local-folders.sqlite` archive. A message, MIME/attachment bytes, duplicate receipt
+and its job's counts/input offset share one native SQLite EXTRA transaction.
+Input snapshots live in `mbox-imports/<job UUID>/`. Back up that directory with the
+stopped-app archive if retaining failed-input recovery; saved local mail does not
+depend on snapshots. See [MBOX import](MBOX_IMPORT.md).
+
 Local Folders uses independently owned `local-folders.sqlite` alongside the
 account cache described below. Complete original MIME, parsed bodies/headers,
 inline/file attachment blobs and transfer receipts commit together in native
