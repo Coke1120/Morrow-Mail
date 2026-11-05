@@ -26,6 +26,7 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
       case "mail:listAccounts": return envelope(connected ? [remote] : []);
       case "mail:localFolders": return envelope(store.account());
       case "mail:listFromCache": return envelope(params.accountId === L.ACCOUNT_ID ? store.list(params) : { emails: [source], total: 1, initialSyncDone: true });
+      case "mail:searchLocal": return envelope(params.accountId === L.ACCOUNT_ID ? store.search(params) : [source]);
       case "mail:openEmail": return envelope({ email: store.verify(params.emailId), isThread: false, threadMessages: [] });
       case "mail:markRead": store.update(params.emailId, { isRead: params.isRead }); return envelope({ outcomes: [], pending: [] });
       case "mail:toggleStar": store.update(params.emailId, { isStarred: params.isStarred }); return envelope({ outcomes: [], pending: [] });
@@ -33,7 +34,7 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
         if (params.emailId === "held-source") await held;
         return envelope(await L.transferToLocal({ store, sourceKey: "ui-" + params.emailId, destination: params.folderId,
           source: {}, assertCurrent() {}, download: async () => raw, move: params.mode === "move", trash: async () => { serverTrashes++; } }));
-      case "mail:moveLocalMessage": return envelope(params.mode === "copy" ? store.copy(params.emailId, params.folderId) : store.update(params.emailId, { folderId: params.folderId }));
+      case "mail:moveLocalMessage": return envelope((params.items || [{ emailId: params.emailId }]).map(item => params.mode === "copy" ? store.copy(item.emailId, params.folderId) : store.update(item.emailId, { folderId: params.folderId })));
       case "mail:manageLocalFolder": return envelope(store.manageFolder(params));
       case "mail:exportLocalMessage": return envelope({ saved: true });
       case "mail:listSnoozed": return envelope({ records: [] });
@@ -47,7 +48,7 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   const ui = renderer({ window, document: window.document, localStorage: window.localStorage,
     Event: window.Event, Node: window.Node, morrowFolderCollapse: window.morrowFolderCollapse,
     morrowFeaturesCatalog: window.morrowFeaturesCatalog, fixtureSource: source, fixtureRemote: remote });
-  ui.run("renderSettingsAccounts=refreshMailVacation=applyLayoutPanes=()=>{}; state.accounts=[fixtureRemote]; state.accountId='connected'; state.folderId='INBOX';");
+  ui.run("renderSettingsAccounts=refreshMailVacation=applyLayoutPanes=()=>{}; state.accounts=[fixtureRemote]; state.accountId='connected'; state.folderId='INBOX'; wire();");
   ui.run("state.view='features'");
   await ui.run("loadAccounts('connected',state.accounts)");
   assert.equal(calls.filter(row => row.channel === "mail:localFolders").length, 0, "supplied background account snapshots must not open or retry the independent archive");
@@ -82,6 +83,24 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   window.document.getElementById("local-transfer-cancel").click(); releaseHeld(); await committing;
   assert.equal(calls.filter(row => row.channel === "mail:transferToLocal" && row.params.emailId === "held-source").length, 1);
   assert.equal(calls.filter(row => row.channel === "mail:transferToLocal" && row.params.emailId === "unattempted-source").length, 0);
+  await ui.run(`selectFolder('${L.ACCOUNT_ID}', '${L.ARCHIVE_ID}')`);
+  ui.run("$('search-query').value='Synthetic';"); await ui.run("applySearch()");
+  assert.equal(calls.filter(row => row.channel === "mail:searchLocal").at(-1).params.accountId, L.ACCOUNT_ID, "entering a local folder defaults a new search to the local archive");
+  ui.run("state.searchAccountId='';"); await ui.run("applySearch()");
+  assert.equal(calls.filter(row => row.channel === "mail:searchLocal").at(-1).params.accountId, undefined, "an explicit All connected accounts choice must reach connected search");
+  assert.equal(window.document.getElementById("search-account").value, "");
+  assert.equal(ui.run("state.emails[0].accountId"), remote.id);
+  ui.run("rememberSelection(); $('search-query').value='another query';"); await ui.run("applySearch()");
+  assert.equal(calls.filter(row => row.channel === "mail:searchLocal").at(-1).params.accountId, undefined, "refreshing account metadata or submitting again preserves explicit scope");
+  ui.run("state.searchAccountId=fixtureRemote.id;"); await ui.run("applySearch()");
+  assert.equal(calls.filter(row => row.channel === "mail:searchLocal").at(-1).params.accountId, remote.id);
+  await ui.run(`selectFolder('${L.ACCOUNT_ID}', '${L.ARCHIVE_ID}')`);
+  ui.run("$('search-query').value='Synthetic';"); await ui.run("applySearch()");
+  assert.equal(calls.filter(row => row.channel === "mail:searchLocal").at(-1).params.accountId, L.ACCOUNT_ID, "entering a local folder starts a new local search scope");
+  await ui.run("selectAllInbox(false)");
+  assert.equal(ui.run("state.searchAccountId"), "", "connected aggregate navigation clears the local-only default");
+  ui.run("$('search-query').value='Synthetic';"); await ui.run("applySearch()");
+  assert.equal(calls.filter(row => row.channel === "mail:searchLocal").at(-1).params.accountId, undefined);
   connected = false;
   ui.run("state.accounts=[];"); await ui.run(`selectFolder('${L.ACCOUNT_ID}', '${L.ARCHIVE_ID}')`);
   const localId = store.list({ folderId: L.ARCHIVE_ID }).emails[0].id;
@@ -96,6 +115,28 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   const before = calls.length; await ui.run("refresh()");
   assert(!calls.slice(before).some(row => ["mail:listFromNetwork", "mail:listProviderFolders"].includes(row.channel)), "local Refresh never enters a provider API");
   assert.equal(ui.run("newMailSeed().accountId"), "", "local root is never a sender");
+  let copySeed = localId;
+  for (const layout of ["right", "bottom"]) {
+    const first = store.copy(copySeed, L.ARCHIVE_ID).message_id;
+    const selected = [first, store.copy(first, L.ARCHIVE_ID).message_id]; copySeed = selected[1];
+    await ui.run(`selectFolder('${L.ACCOUNT_ID}', '${L.ARCHIVE_ID}')`);
+    await ui.run(`openMessage(${JSON.stringify(localId)})`);
+    ui.run(`state.prefs.mailView={layout:${JSON.stringify(layout)}}; state.selectedIds=${JSON.stringify(selected)};
+      state.emails.find(row=>row.id===state.selectedIds[0]).subject='Visible selection';
+      state.emails.find(row=>row.id===state.selectedIds[1]).subject='Hidden selection';
+      $('list-filter').value='Visible'; renderList(); renderReader(false); paintReaderDelete();`);
+    const trash = window.document.querySelector('#reader [data-action="trash"]');
+    assert.match(trash.getAttribute("aria-label"), /2 selected messages/);
+    assert.match(window.document.getElementById("selection-count").textContent, /1 hidden by this filter/);
+    trash.click(); await new Promise(resolve => setImmediate(resolve));
+    assert.match(window.document.getElementById("confirm-body").textContent, /2 local messages/, "local reader Trash reviews the complete selection, including filter-hidden rows");
+    window.document.getElementById("confirm-ok").click();
+    for (let i = 0; i < 20 && selected.some(id => store.message(id).folderId !== 'local-folder:trash'); i++) await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(selected.map(id => store.message(id).folderId), ['local-folder:trash', 'local-folder:trash']);
+    assert.equal(store.message(localId).folderId, L.ARCHIVE_ID, "an unrelated open preview stays in place");
+    assert.deepEqual(Array.from(calls.filter(row => row.channel === "mail:moveLocalMessage").at(-1).params.items, item => item.emailId), selected);
+    ui.run("$('list-filter').value='';");
+  }
   const parent = store.manageFolder({ action: "create", name: "Projects" }).id;
   const child = store.manageFolder({ action: "create", name: "2026", parentId: parent }).id;
   await ui.run("loadLocalFolders()"); ui.run("renderAccounts()");
