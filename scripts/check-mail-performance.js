@@ -47,7 +47,7 @@ async function diagnosticChecks() {
   assert.match(document.body.textContent,/Body metadata preparation checks an 8 ms budget after each message/);
   assert.match(document.body.textContent,/Exact local search chooses candidate access without dropping matches/);
   assert.match(document.body.textContent,/Pending-body polls use an eligible-backlog index/);
-  assert.match(document.body.textContent,/24-message limit, check an 8 ms elapsed budget and a 256 KiB normalized text\/HTML budget/);
+  assert.match(document.body.textContent,/24-message limit, check a 32 ms elapsed budget and a 256 KiB normalized text\/HTML budget/);
   assert.match(document.body.textContent,/single oversized message or disk call can exceed these targets/);
   const shell = new JSDOM(fs.readFileSync(path.join(__dirname, "../renderer/index.html"), "utf8")).window.document;
   assert.match(shell.querySelector("#search-scope").textContent, /Search ranks all matching candidates before its result limit/);
