@@ -13,7 +13,7 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
   window.HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); this.dispatchEvent(new window.Event("close")); };
   window.HTMLElement.prototype.scrollIntoView = function () {};
-  const raw = await require("../host/mail/remote").buildRaw({ from: "sender@fixture.invalid", to: "owner@fixture.invalid", subject: "Synthetic local archive", text: "Offline body", attachments: [{ filename: "owned.txt", content: "Saved bytes" }] });
+  const raw = await require("../host/mail/remote").buildRaw({ from: "sender@fixture.invalid", to: "owner@fixture.invalid", subject: "Synthetic local archive ÉLODIE ПРОЕКТ", text: "Offline body", attachments: [{ filename: "owned.txt", content: "Saved bytes" }] });
   const remote = { id: "connected", email: "owner@fixture.invalid", platform: "imap", imapSmtpProfile: "custom",
     folders: { primary: [{ id: "INBOX", name: "Inbox", wellKnownName: "inbox" }], more: [] } };
   const source = { id: "source", accountId: remote.id, folderId: "INBOX", subject: "Synthetic local archive", date: "2026-11-01T12:00:00Z", unread: true };
@@ -86,7 +86,11 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   await ui.run(`selectFolder('${L.ACCOUNT_ID}', '${L.ARCHIVE_ID}')`);
   ui.run("$('search-query').value='Synthetic';"); await ui.run("applySearch()");
   assert.equal(calls.filter(row => row.channel === "mail:searchLocal").at(-1).params.accountId, L.ACCOUNT_ID, "entering a local folder defaults a new search to the local archive");
-  ui.run("state.searchAccountId='';"); await ui.run("applySearch()");
+  ui.run("$('search-query').value='élodie';"); await ui.run("applySearch()");
+  assert(ui.run("state.emails.length") > 0, "the actual local search UI returns archived uppercase Unicode text");
+  assert.equal(ui.run("state.emails.every(mail => mail.subject.includes(\"ÉLODIE\"))"), true);
+  assert.equal(ui.run("state.emails[0].accountId"), L.ACCOUNT_ID);
+  ui.run("$('search-query').value='Synthetic'; state.searchAccountId='';"); await ui.run("applySearch()");
   assert.equal(calls.filter(row => row.channel === "mail:searchLocal").at(-1).params.accountId, undefined, "an explicit All connected accounts choice must reach connected search");
   assert.equal(window.document.getElementById("search-account").value, "");
   assert.equal(ui.run("state.emails[0].accountId"), remote.id);
@@ -148,6 +152,7 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   ui.run("closeOrganizeMenu(); showFeatures()");
   const card = [...window.document.querySelectorAll(".feature-card")].find(node => node.textContent.includes("Local Folders appears"));
   assert(card); assert.match(card.textContent, /64 MiB/); assert.match(card.textContent, /Gmail retains its existing 35 MiB/);
+  assert.match(card.textContent, /Unicode normalization and lowercasing/);
   assert.match(card.textContent, /Restart never replays server Trash/); assert.match(card.textContent, /Use Import MBOX for supported mailbox exports/);
   assert.match(window.document.getElementById("local-folders-help").textContent, /after disconnecting an account/);
 });
