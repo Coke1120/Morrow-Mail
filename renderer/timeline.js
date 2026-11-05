@@ -7,16 +7,17 @@
     if (!dialog || !api) return null;
     let sourceToken = null;
     let source = null, defaults = null, prepared = null, jobId = null, stored = null, serial = 0, listSerial = 0;
-    let working = false, starting = false, earlyProgress = null, cancelRequested = false, cancelling = false;
+    let working = false, starting = false, earlyProgress = null, cancelRequested = false, cancelling = false, preparationFailed = false;
     const errorText = {
       "timeline-selection-limit": "This downloaded thread exceeds 1,000 messages or 200 threads. Nothing was silently truncated.",
-      "timeline-budget": "This downloaded thread exceeds a run limit. Nothing was sent automatically.",
+      "timeline-budget": "Timeline reached a run limit. Shorten optional keywords and contacts, or open a smaller downloaded thread.",
       "timeline-empty": "Open a downloaded message before creating a timeline.",
       "timeline-source-changed": "Source mail or its account changed. Reopen Timeline from the message.",
       "timeline-manifest": "The source snapshot expired or changed. Reopen Timeline from the message.",
       "timeline-partial": "No usable complete bodies, or partial coverage was not accepted. Download missing mail in Mail, or accept the shown omissions.",
       "timeline-busy": "Another timeline operation is active. Wait or cancel it first.",
       "timeline-validation": "AI output failed validation after one retry. Earlier saved timelines remain unchanged.",
+      "timeline-consolidation": "AI could not compact the long-message summaries within the run limits. Earlier saved timelines remain unchanged.",
       "timeline-cancelled": "Generation cancelled. Data already delivered to the provider cannot be recalled.",
       "timeline-not-found": "This saved timeline is no longer available. Account removal also deletes related timelines.",
       "ai-consent-required": "Allow explicit AI actions for the saved destination in Settings → AI → AI data permission, then reopen Timeline.",
@@ -27,10 +28,23 @@
     const status = text => { node("timeline-status").textContent = text; };
     async function invoke(channel, payload = {}) {
       const result = await api.invoke(channel, payload);
-      if (!result?.success) throw Object.assign(new Error("Timeline operation failed"), { code: result?.error?.code });
+      if (!result?.success) throw Object.assign(new Error("Timeline operation failed"), { code: result?.error?.code, budget: result?.error?.budget, calls: result?.error?.calls });
       return result.data;
     }
-    function report(error) { status(errorText[error?.code] || "Timeline operation failed. Check the AI connection and retry explicitly. No alternate provider is used."); }
+    function report(error) {
+      let text = errorText[error?.code] || "Timeline operation failed. Check the AI connection and retry explicitly. No alternate provider is used.";
+      const labels = { "source-bytes": "Downloaded mail size", "metadata-bytes": "Message header and attachment-name size", "focus-bytes": "Optional focus size",
+        "request-bytes": "Request input size", "planned-input-bytes": "Planned extraction input size", "chunk-count": "Planned extraction requests",
+        "call-count": "AI requests", "input-bytes": "Run input size", "output-tokens": "AI output tokens", "duration-ms": "Run time in milliseconds", "consolidation-bytes": "Summary consolidation input size" };
+      const detail = error?.budget;
+      if (error?.code === "timeline-budget" && labels[detail?.kind] && Number.isSafeInteger(detail.actual) && Number.isSafeInteger(detail.limit)) {
+        text = `${labels[detail.kind]}: ${detail.actual.toLocaleString()} / ${detail.limit.toLocaleString()} limit. ${["focus-bytes", "request-bytes"].includes(detail.kind) ? "Shorten optional keywords and contacts." : "Open a smaller downloaded thread; focus does not filter messages."}`;
+      }
+      if (Number.isSafeInteger(error?.calls) && error.calls >= 0) text += error.calls
+        ? ` ${error.calls} AI request${error.calls === 1 ? " was" : "s were"} attempted. Data may already have reached the saved provider and cannot be recalled. Retrying sends the reviewed mail again.`
+        : " No AI request was started for this attempt.";
+      status(text);
+    }
     function element(tag, text, className) {
       const value = document.createElement(tag);
       value.textContent = text;
@@ -40,7 +54,7 @@
     function buttons() {
       const busy = working || starting || !!jobId;
       for (const id of ["timeline-keywords", "timeline-contacts", "timeline-partial", "timeline-format", "timeline-export-confirm"]) node(id).disabled = busy;
-      node("timeline-generate").disabled = busy || !source || !dialog.open || !!(prepared && (!prepared.allowed || !prepared.coverage.included_message_count
+      node("timeline-generate").disabled = busy || preparationFailed || !source || !dialog.open || !!(prepared && (prepared.budget || !prepared.allowed || !prepared.coverage.included_message_count
         || (prepared.coverage.omitted_message_count > 0 && !node("timeline-partial").checked)));
       node("timeline-cancel").hidden = !jobId;
       node("timeline-cancel").disabled = cancelling;
@@ -73,17 +87,20 @@
       if (!previous || previous.selected_message_count !== coverage.selected_message_count || previous.omitted_message_count !== coverage.omitted_message_count) node("timeline-partial").checked = false;
       node("timeline-preview").textContent = `${coverage.included_message_count} downloaded messages · ${coverage.omitted_message_count} omitted (missing, incomplete or unsupported). AI: ${value.provider} · ${value.destination} · ${value.model}.`;
       node("timeline-partial-choice").hidden = !coverage.omitted_message_count;
-      if (!value.allowed) report({ code: "ai-consent-required" });
+      if (value.budget) report({ code: "timeline-budget", budget: value.budget, calls: 0 });
+      else if (!value.allowed) report({ code: "ai-consent-required" });
       else if (!coverage.included_message_count) report({ code: "timeline-partial" });
     }
     async function prepare(current) {
       let value;
       try { value = await invoke("timeline:prepare", { selection: source, options: options(), ...(sourceToken ? { manifestToken: sourceToken } : {}) }); }
       catch (error) {
+        if (serial === current) preparationFailed = true;
         if (serial === current && ["timeline-source-changed", "timeline-manifest"].includes(error.code)) source = null;
         throw error;
       }
       if (serial !== current) return null;
+      preparationFailed = false;
       sourceToken = value.manifestToken;
       try { await invoke("timeline:check", { manifestToken: sourceToken }); }
       catch (error) { if (serial === current) source = null; throw error; }
@@ -113,7 +130,7 @@
       source = { messages: [{ accountId: email.accountId, messageId: email.id }], expandThreads: true };
       defaults = { title: String(email.subject || "").replace(/[\x00-\x1f\x7f\u2028\u2029]/g, " ").trim().slice(0, 500) || "Email timeline",
         language: language(), displayTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" };
-      prepared = null;
+      prepared = null; preparationFailed = false;
       node("timeline-keywords").value = "";
       node("timeline-contacts").value = contacts(email).join("\n");
       node("timeline-partial").checked = false;
@@ -123,8 +140,8 @@
       working = true; buttons(); status("Checking downloaded mail and AI permission. No AI request is made.");
       try {
         const value = await prepare(current);
-        if (value?.allowed && value.coverage.included_message_count) status("Choose Generate to send these downloaded messages and your focus to the saved AI destination.");
-      } catch (error) { if (serial === current) report(error); }
+        if (value?.allowed && !value.budget && value.coverage.included_message_count) status("Choose Generate to send these downloaded messages and your focus to the saved AI destination.");
+      } catch (error) { if (serial === current) report({ ...error, calls: 0 }); }
       finally { if (serial === current) { working = false; buttons(); if (dialog.open) node("timeline-keywords").focus(); } }
       if (serial === current) await savedList().catch(report);
     }
@@ -200,14 +217,14 @@
         jobId = null; prepared = null; cancelRequested = false; cancelling = false; buttons();
         if (value.phase === "completed") {
           if (dialog.open) { await load(value.timelineId); await savedList(); }
-        } else report({ code: value.code || "timeline-cancelled" });
+        } else report({ code: value.code || "timeline-cancelled", budget: value.budget, calls: value.calls });
       } else status(`${value.phase === "merging" ? "Consolidating validated summaries" : "Extracting downloaded messages"}: ${value.completed} / ${value.total} · ${value.calls} calls. Cancel stops later calls, not data already delivered.`);
     }
     dialog.addEventListener("keydown", event => event.stopPropagation());
     dialog.addEventListener("cancel", event => { event.preventDefault(); dismiss(); });
     dialog.addEventListener("close", dismissed);
     node("timeline-close").addEventListener("click", dismiss);
-    for (const id of ["timeline-keywords", "timeline-contacts"]) node(id).addEventListener("input", () => { prepared = null; node("timeline-partial").checked = false; buttons(); });
+    for (const id of ["timeline-keywords", "timeline-contacts"]) node(id).addEventListener("input", () => { prepared = null; preparationFailed = false; node("timeline-partial").checked = false; buttons(); });
     node("timeline-partial").addEventListener("change", buttons);
     node("timeline-export-confirm").addEventListener("change", buttons);
     node("timeline-form").addEventListener("submit", async event => {
@@ -218,13 +235,13 @@
       working = true; buttons(); status("Preparing downloaded messages…");
       try {
         const value = await prepare(current);
-        if (!value || !value.allowed || !value.coverage.included_message_count) return;
+        if (!value || value.budget || !value.allowed || !value.coverage.included_message_count) return;
         if (value.coverage.omitted_message_count && !node("timeline-partial").checked) { status("Some messages cannot be included. Accept the shown omissions before generating."); return; }
         submitted = true; starting = true; earlyProgress = null; cancelRequested = false; buttons();
         const result = await invoke("timeline:generate", { manifestToken: value.manifestToken, optionsDigest: value.optionsDigest, acceptPartial: node("timeline-partial").checked });
         jobId = result.jobId;
         status("Starting timeline extraction…");
-      } catch (error) { if (serial === current) report(error); }
+      } catch (error) { if (serial === current) report({ ...error, calls: 0 }); }
       finally { if (serial === current || submitted) { working = false; starting = false; buttons(); } }
       if (earlyProgress) await progress(earlyProgress).catch(report);
       if (cancelRequested && jobId) await cancel().catch(report);

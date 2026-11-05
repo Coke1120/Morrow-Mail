@@ -4,6 +4,7 @@ const sender = require("../mail/sender-header");
 const { htmlToPlain } = require("../mail/text-encoding");
 const { validateMetadata, failure } = require("./validate");
 const { LIMITS } = require("./extract");
+const { budget } = require("./budget");
 
 const hash = value => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function fingerprint(row) {
@@ -81,7 +82,7 @@ function freezeSources({ db, stamp, identities }, selection) {
       continue;
     }
     bodyBytes += Buffer.byteLength(text);
-    if (bodyBytes > LIMITS.inputTokens) throw failure("timeline-budget");
+    if (bodyBytes > LIMITS.inputTokens) throw budget("source-bytes", bodyBytes, LIMITS.inputTokens);
     try {
       const metadata = metadataOf(row, account, db.timeline, threadId);
       validateMetadata(metadata);

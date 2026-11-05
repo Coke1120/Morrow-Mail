@@ -467,6 +467,7 @@ function queryFrom(params) {
     filterUnread: query.filterUnread === true,
     retainIds: oneRetainId(query.retainIds),
     filterFlagged: query.filterFlagged === true,
+    filterToMe: query.filterToMe === true,
     filterAttachments: query.filterAttachments,
     limit: query.limit,
     offset: query.offset,
@@ -2709,6 +2710,7 @@ function searchLocal(params) {
     sortDirection: query.sortDirection,
     accountId: query.accountId || null,
     limit: query.limit,
+    filterToMe: query.filterToMe === true,
   }, { headersOnly: true }));
 }
 
@@ -4285,6 +4287,8 @@ function answer(channel, args, event) {
           threadMessages: members,
         });
       })();
+    case "mail:prepareSummary":
+      return messageSummaries.prepare(params, event?.sender);
     case "mail:summarizeEmail":
       return messageSummaries.summarize(params, event?.sender);
     case "mail:cancelSummary":
