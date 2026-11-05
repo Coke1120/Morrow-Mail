@@ -7,6 +7,7 @@ const state = {
   allInbox: false,
   allInboxUnreadOnly: false,
   allInboxStarredOnly: false,
+  toMeOnly: false,
   mailColumnOrder: ["date", "recipient", "sender", "subject"],
   mailHiddenColumns: [],
   outbox: false,
@@ -989,17 +990,20 @@ function mailListRequest(view) {
   if (source.query) {
     const params = { query: source.query, limit: 100, ...(source.listSort || {}) };
     if (source.searchAccountId) params.accountId = source.searchAccountId;
+    if (source.toMeOnly) params.filterToMe = true;
     return { channel: "mail:searchLocal", params };
   }
   const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
   if (source.allInbox && (source.aggregateView === "starred" || source.aggregateView === "unread")) {
     const params = { aggregateView: source.aggregateView, limit, offset, ...(source.listSort || {}) };
+    if (source.toMeOnly) params.filterToMe = true;
     if (retainId && source.aggregateView === "unread") params.retainIds = [retainId];
     return { channel: "mail:listFromCache", params };
   }
   if (source.allInbox) {
     const params = { folderKey: "primary", limit, offset, ...(source.listSort || {}) };
+    if (source.toMeOnly) params.filterToMe = true;
     if (source.pageCursor) params.pageCursor = source.pageCursor;
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
     if (helper && typeof helper.primaryMailboxes === "function") {
@@ -1011,6 +1015,7 @@ function mailListRequest(view) {
     return { channel: "mail:listFromCache", params };
   }
   const params = { accountId: source.accountId, folderId: source.folderId, limit, offset, ...(source.listSort || {}) };
+  if (source.toMeOnly) params.filterToMe = true;
   if (source.pageCursor) params.pageCursor = source.pageCursor;
   if (retainId) params.retainIds = [retainId];
   return {
@@ -3078,7 +3083,7 @@ function applyMailView() {
   if (!shell || typeof shell.getBoundingClientRect !== "function" || isReaderWindow()) return;
   const pref = mailViewPref(state.prefs.mailView);
   const layout = effectiveMailViewLayout();
-  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox]);
+  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.toMeOnly]);
   if (mailViewScrollScope !== scope) { mailViewScroll.clear(); mailViewScrollScope = scope; }
   const previous = shell.dataset.mailLayout, list = $("message-list");
   const moving = previous && previous !== layout && list;
@@ -5786,6 +5791,20 @@ function renderChips(account) {
   }
 }
 
+function paintToMeFilter() {
+  const button = $("list-to-me");
+  if (!button) return;
+  button.hidden = !state.accounts.length || (state.outbox && !state.query);
+  button.setAttribute("aria-pressed", String(state.toMeOnly));
+}
+
+async function toggleToMeFilter() {
+  state.toMeOnly = !state.toMeOnly;
+  state.selectedIds = [];
+  state.selectionAnchor = "";
+  await loadList(false, 0);
+}
+
 // Filter stays on messages already loaded: subject, from, and snippet.
 // It does not call mail:search or mail:searchLocal. Toolbar search does.
 function filteredEmails(emails, query) {
@@ -7148,6 +7167,7 @@ function renderList() {
     title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly, state.allInboxStarredOnly) : (chipLabel(folder) || "Messages")));
   }
   renderChips(state.allInbox || state.outbox ? null : account);
+  paintToMeFilter();
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account, state.folderId).some(item => item.id === state.folderId));
   const shown = shownEmails();
   paintSelectionBar(shown);
@@ -7442,8 +7462,8 @@ function summaryMatches(email, view = messageSummary) {
 
 function clearMessageSummary() {
   const view = messageSummary;
-  messageSummary = null; // Retire ownership before the asynchronous cancellation reply.
-  if (view?.pending) call("mail:cancelSummary", { reqId: view.reqId }).catch(() => {});
+  messageSummary = null;
+  if (view?.pending || view?.plan) call("mail:cancelSummary", { reqId: view.reqId }).catch(() => {});
 }
 
 function stopMessageSummary() {
@@ -7451,40 +7471,79 @@ function stopMessageSummary() {
   if (!view) return;
   clearMessageSummary();
   if (summaryMatches(state.email, view)) {
-    messageSummary = { ...view, pending: false, text: "", error: "", notice: "Summary cancelled. Choose Summary to try again." };
+    messageSummary = { ...view, pending: false, review: null, summary: null, error: "", notice: "Summary cancelled. Choose Summary to try again." };
     paintMessageSummary(state.email);
     $("reader").querySelector('[data-action="summary"]')?.focus();
   }
+}
+
+function summaryReplyMatches(data, view, identity) {
+  return data && data.reqId === view.reqId && data.accountId === identity.accountId
+    && data.emailId === identity.id && data.bodyEpoch === identity.bodyEpoch;
+}
+
+function messageSummaryError(view, error) {
+  if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+  view.error = error instanceof Error ? error.message : String(error);
+  view.settings = ["ai-unconfigured", "ai-consent-required"].includes(error.code)
+    || /AI Setup|AI data permission|API key|ChatGPT/i.test(view.error);
+}
+
+function finishMessageSummary(view) {
+  if (messageSummary !== view) return;
+  view.pending = false;
+  if (summaryMatches(state.email, view)) paintMessageSummary(state.email);
+  else clearMessageSummary();
 }
 
 async function requestMessageSummary(email) {
   if (!email || state.email !== email || (pendingOpenId && pendingOpenId !== email.id) || messageSummary?.pending) return;
   const identity = bodyIdentity(email);
   if (!identity) { showStatus("The mailbox connection changed. Reopen the message.", true); return; }
+  clearMessageSummary();
   const view = { key: identity.key, source: summarySource(email), reqId: "summary-" + Date.now() + "-" + (++summarySeq),
-    pending: true, text: "", error: "", warnings: [], notice: "" };
+    pending: true, preparing: true, summary: null, error: "", warnings: [], notice: "", review: null, detailsOpen: false };
   messageSummary = view;
   paintMessageSummary(email);
   try {
-    const data = await call("mail:summarizeEmail", { reqId: view.reqId, accountId: identity.accountId,
+    const plan = await call("mail:prepareSummary", { reqId: view.reqId, accountId: identity.accountId,
       emailId: identity.id, bodyEpoch: identity.bodyEpoch });
     if (messageSummary !== view || !summaryMatches(state.email, view)) return;
-    if (!data || data.reqId !== view.reqId || data.accountId !== identity.accountId || data.emailId !== identity.id
-        || data.bodyEpoch !== identity.bodyEpoch || typeof data.text !== "string" || !data.text.trim()) throw new Error("The summary response did not match this message. Choose Summary to try again.");
-    view.text = data.text;
-    view.warnings = Array.isArray(data.warnings) ? data.warnings.map(String) : [];
-  } catch (error) {
-    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
-    view.error = error instanceof Error ? error.message : String(error);
-    view.settings = ["ai-unconfigured", "ai-consent-required"].includes(error.code)
-      || /AI Setup|AI data permission|API key|ChatGPT/i.test(view.error);
-  } finally {
-    if (messageSummary === view) {
-      view.pending = false;
-      if (summaryMatches(state.email, view)) paintMessageSummary(state.email);
-      else clearMessageSummary();
+    if (!summaryReplyMatches(plan, view, identity) || typeof plan.planId !== "string" || !plan.full || !plan.excerpt) {
+      throw new Error("The summary review did not match this message. Choose Summary to try again.");
     }
+    view.plan = plan;
+    view.warnings = Array.isArray(plan.warnings) ? plan.warnings.map(String) : [];
+    if (plan.needsReview) view.review = plan;
+    else { view.pending = false; await generateMessageSummary(view, "full", false); }
+  } catch (error) { messageSummaryError(view, error); }
+  finally { finishMessageSummary(view); }
+  if (messageSummary === view && view.review) {
+    $("reader").querySelector(view.review.full.available ? '[data-role="summary-full"]' : '[data-role="summary-excerpt"]')?.focus();
   }
+}
+
+async function generateMessageSummary(view, scope, accepted = true) {
+  if (!view || messageSummary !== view || view.pending || !summaryMatches(state.email, view) || !view.plan) return;
+  const identity = bodyIdentity(state.email);
+  view.pending = true; view.preparing = false; view.review = null; view.error = ""; view.notice = "";
+  paintMessageSummary(state.email);
+  try {
+    const data = await call("mail:summarizeEmail", { reqId: view.reqId, accountId: identity.accountId,
+      emailId: identity.id, bodyEpoch: identity.bodyEpoch, planId: view.plan.planId, scope, accepted });
+    if (messageSummary !== view || !summaryMatches(state.email, view)) return;
+    const summary = data?.summary;
+    if (!summaryReplyMatches(data, view, identity) || !summary || typeof summary.mainPoint !== "string" || !summary.mainPoint.trim()
+        || !Array.isArray(summary.bullets) || summary.bullets.length > 6
+        || [summary.mainPoint, ...summary.bullets].some(text => typeof text !== "string" || !text.trim() || Array.from(text).length > 360)) {
+      throw new Error("The summary response did not match this message. Choose Summary to try again.");
+    }
+    view.summary = summary;
+    view.warnings = Array.isArray(data.warnings) ? data.warnings.map(String) : [];
+    view.coverage = data.coverage;
+  } catch (error) { messageSummaryError(view, error); }
+  finally { finishMessageSummary(view); }
+  if (accepted && messageSummary === view) $("reader").querySelector('[data-action="summary"]')?.focus();
 }
 
 function renderMessageSummary(pane, email) {
@@ -7497,45 +7556,71 @@ function renderMessageSummary(pane, email) {
   const title = document.createElement("h3");
   title.id = "message-summary-title";
   title.textContent = "Summary";
+  const ai = document.createElement("span");
+  ai.className = "hint message-summary-ai";
+  ai.textContent = "AI";
+  ai.setAttribute("aria-label", "AI-generated summary");
   const close = document.createElement("button");
   close.type = "button";
-  close.className = "ghost";
-  close.textContent = "Dismiss summary";
+  close.className = "ghost message-summary-close";
+  close.setAttribute("aria-label", "Dismiss summary");
+  close.title = "Close summary";
+  close.append(strokeIcon(["M18 6L6 18", "M6 6l12 12"]));
   close.onclick = () => { clearMessageSummary(); paintMessageSummary(state.email); pane.querySelector('[data-action="summary"]')?.focus(); };
-  top.append(title, close);
+  top.append(title, ai, close);
+  const status = document.createElement("p");
+  status.dataset.role = "summary-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const warnings = document.createElement("p");
+  warnings.className = "hint message-summary-warning";
+  warnings.dataset.role = "summary-warnings";
+  const body = document.createElement("div");
+  body.className = "message-summary-text";
+  body.dataset.role = "summary-text";
+  const review = document.createElement("div");
+  review.dataset.role = "summary-review";
+  const reviewText = document.createElement("p");
+  reviewText.dataset.role = "summary-review-text";
+  const reviewActions = document.createElement("div");
+  reviewActions.className = "message-summary-controls";
+  const full = document.createElement("button");
+  full.type = "button"; full.className = "primary"; full.dataset.role = "summary-full";
+  full.textContent = "Summarize all downloaded text";
+  full.onclick = () => { generateMessageSummary(messageSummary, "full"); };
+  const excerpt = document.createElement("button");
+  excerpt.type = "button"; excerpt.className = "ghost"; excerpt.dataset.role = "summary-excerpt";
+  excerpt.onclick = () => { generateMessageSummary(messageSummary, "excerpt"); };
+  reviewActions.append(full, excerpt); review.append(reviewText, reviewActions);
+  const actions = document.createElement("div");
+  actions.className = "message-summary-controls";
+  const cancel = document.createElement("button");
+  cancel.type = "button"; cancel.className = "ghost"; cancel.dataset.role = "summary-cancel";
+  cancel.textContent = "Cancel summary"; cancel.onclick = stopMessageSummary;
+  const settings = document.createElement("button");
+  settings.type = "button"; settings.className = "ghost"; settings.dataset.role = "summary-settings";
+  settings.textContent = "Review AI settings";
+  settings.onclick = () => { openSettings(); revealSettingsFold("ai"); };
+  actions.append(cancel, settings);
+  const details = document.createElement("details");
+  details.dataset.role = "summary-details";
+  const detailsTitle = document.createElement("summary");
+  detailsTitle.textContent = "Details";
   const context = document.createElement("p");
   context.className = "hint message-summary-context";
   const mailbox = state.accounts.find(account => account.id === email.accountId);
   context.textContent = [email.subject || "(no subject)", email.from, mailbox?.email].filter(Boolean).join(" · ");
   const scope = document.createElement("p");
   scope.className = "hint";
-  scope.textContent = "Uses your configured AI and AI data permission. Up to 24,000 characters of downloaded text, including quoted history; attachment files are excluded.";
-  const status = document.createElement("p");
-  status.dataset.role = "summary-status";
-  status.setAttribute("role", "status");
-  status.setAttribute("aria-live", "polite");
-  const warnings = document.createElement("p");
-  warnings.className = "hint";
-  warnings.dataset.role = "summary-warnings";
-  const body = document.createElement("div");
-  body.className = "message-summary-text";
-  body.dataset.role = "summary-text";
-  const actions = document.createElement("div");
-  actions.className = "message-summary-controls";
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "ghost";
-  cancel.dataset.role = "summary-cancel";
-  cancel.textContent = "Cancel summary";
-  cancel.onclick = stopMessageSummary;
-  const settings = document.createElement("button");
-  settings.type = "button";
-  settings.className = "ghost";
-  settings.dataset.role = "summary-settings";
-  settings.textContent = "Review AI settings";
-  settings.onclick = () => { openSettings(); revealSettingsFold("ai"); };
-  actions.append(cancel, settings);
-  box.append(top, context, scope, status, warnings, body, actions);
+  scope.textContent = "Check important details against the message. Uses your saved AI connection and AI data permission. Only this message's downloaded text and quoted history are included. Attachment files, linked pages and other messages are excluded. English summaries follow ASD-STE100-inspired plain-language principles; formal compliance is not verified. Cancellation cannot recall data already sent.";
+  const coverage = document.createElement("p");
+  coverage.className = "hint"; coverage.dataset.role = "summary-coverage";
+  const limits = document.createElement("p");
+  limits.className = "hint";
+  limits.textContent = "Run limits: 128,000 source bytes, 31 AI requests, 16,000 input bytes per request and 512,000 input bytes per run. Each request asks for at most 1,200 output tokens and accepts at most 6,000 output bytes. One request has a two-minute timeout; a run with several requests has a ten-minute timeout. These are app budgets. Your selected model may have a lower limit. Nothing runs in the background.";
+  details.append(detailsTitle, context, coverage, scope, limits);
+  details.ontoggle = () => { if (details.isConnected && summaryMatches(email)) messageSummary.detailsOpen = details.open; };
+  box.append(top, status, warnings, review, body, actions, details);
   pane.appendChild(box);
   paintMessageSummary(email);
 }
@@ -7556,12 +7641,43 @@ function paintMessageSummary(email) {
   if (!view) return;
   const status = box.querySelector('[data-role="summary-status"]');
   status.className = view.error ? "hint error" : "hint";
-  status.textContent = view.pending ? "Summarizing this message…" : view.error || view.notice || "AI-generated summary. Check details against the message.";
-  box.querySelector('[data-role="summary-text"]').textContent = view.text;
-  box.querySelector('[data-role="summary-warnings"]').textContent = view.pending && (email.bodyComplete !== true || email.bodyWarning)
-    ? "The downloaded message may be incomplete. Missing content is not included." : view.warnings.join(" ");
+  status.textContent = view.pending ? (view.preparing ? "Checking downloaded text…" : "Summarizing this message…")
+    : view.error || view.notice || (view.review ? "Review text coverage" : "");
+  const body = box.querySelector('[data-role="summary-text"]');
+  body.replaceChildren();
+  if (view.summary) {
+    const main = document.createElement("p");
+    main.className = "message-summary-main"; main.textContent = view.summary.mainPoint;
+    body.append(main);
+    if (view.summary.bullets.length) {
+      const list = document.createElement("ul");
+      for (const text of view.summary.bullets) { const item = document.createElement("li"); item.textContent = text; list.append(item); }
+      body.append(list);
+    }
+  }
+  const warnings = box.querySelector('[data-role="summary-warnings"]');
+  warnings.textContent = view.warnings.join(" "); warnings.hidden = !warnings.textContent;
+  const review = box.querySelector('[data-role="summary-review"]');
+  review.hidden = !view.review;
+  if (view.review) {
+    const plan = view.review;
+    const count = plan.characters.toLocaleString("en-US");
+    box.querySelector('[data-role="summary-review-text"]').textContent = plan.full.available
+      ? "Send all " + count + " downloaded characters, including quoted history, to " + plan.destination + " (" + plan.model + ")? This needs " + plan.full.calls + (plan.full.calls === 1 ? " AI request." : " AI requests.") + " Attachment files are excluded. No text has been sent."
+      : plan.full.reason + " You can send an excerpt to " + plan.destination + " (" + plan.model + "). Later text will be excluded. No text has been sent.";
+    box.querySelector('[data-role="summary-full"]').disabled = !plan.full.available;
+    const excerpt = box.querySelector('[data-role="summary-excerpt"]');
+    excerpt.hidden = !plan.excerpt.omitted;
+    excerpt.textContent = "Summarize first " + plan.excerpt.characters.toLocaleString("en-US") + " characters only";
+  }
   box.querySelector('[data-role="summary-cancel"]').hidden = !view.pending;
   box.querySelector('[data-role="summary-settings"]').hidden = !view.settings;
+  const details = box.querySelector('[data-role="summary-details"]');
+  if (details.open !== view.detailsOpen) details.open = !!view.detailsOpen;
+  const coverage = box.querySelector('[data-role="summary-coverage"]');
+  coverage.textContent = view.coverage ? view.coverage.included.toLocaleString("en-US") + " of "
+    + view.coverage.downloaded.toLocaleString("en-US") + " downloaded characters; " + view.coverage.parts + (view.coverage.parts === 1 ? " part, " : " parts, ")
+    + view.coverage.calls + (view.coverage.calls === 1 ? " AI request." : " AI requests.") + " Destination: " + view.plan.destination + "." : "";
 }
 
 function indentedName(folder) {
@@ -8557,6 +8673,8 @@ function attachmentIcon(kind) {
     add("path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" });
     add("polyline", { points: "7 10 12 15 17 10" });
     add("line", { x1: "12", y1: "15", x2: "12", y2: "3" });
+  } else if (kind === "chevron") {
+    add("polyline", { points: "6 9 12 15 18 9" });
   } else {
     add("path", { d: "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" });
   }
@@ -8812,7 +8930,18 @@ async function saveAttachmentsZip(email, files) {
   showStatus("Saved all attachments.");
 }
 
+// Keep only the current message's disclosure choice on each reading surface.
+// Repainting a downloaded body must not close the attachment list again.
+const attachmentDisclosures = new WeakMap();
+let attachmentDisclosureId = 0;
+
 function renderAttachments(pane, email) {
+  const key = JSON.stringify([email.accountId || "", email.id || ""]);
+  let disclosure = attachmentDisclosures.get(pane);
+  if (!disclosure || disclosure.key !== key) {
+    disclosure = { key, expanded: false };
+    attachmentDisclosures.set(pane, disclosure);
+  }
   const files = (email.attachments || []).filter((item) => item && (item.filename || item.id));
   if (!files.length && !email.hasAttachments) return;
   const card = document.createElement("section");
@@ -8821,15 +8950,35 @@ function renderAttachments(pane, email) {
   const head = document.createElement("div");
   head.className = "attachment-card-head";
   const title = document.createElement("h3");
-  title.appendChild(attachmentIcon("paperclip"));
+  const toggle = files.length ? document.createElement("button") : title;
+  toggle.appendChild(attachmentIcon("paperclip"));
   const titleText = document.createElement("span");
   titleText.textContent = "Attachments";
-  title.appendChild(titleText);
+  toggle.appendChild(titleText);
+  let list;
   if (files.length) {
     const count = document.createElement("span");
     count.className = "count";
     count.textContent = String(files.length);
-    title.appendChild(count);
+    toggle.appendChild(count);
+    const chevron = attachmentIcon("chevron");
+    chevron.classList.add("attachment-chevron");
+    toggle.appendChild(chevron);
+    toggle.type = "button";
+    toggle.className = "attachment-toggle";
+    toggle.setAttribute("aria-label", `Attachments (${files.length})`);
+    toggle.setAttribute("aria-expanded", String(disclosure.expanded));
+    list = document.createElement("ul");
+    list.className = "attachments";
+    list.id = `attachment-files-${++attachmentDisclosureId}`;
+    list.hidden = !disclosure.expanded;
+    toggle.setAttribute("aria-controls", list.id);
+    toggle.addEventListener("click", () => {
+      disclosure.expanded = !disclosure.expanded;
+      toggle.setAttribute("aria-expanded", String(disclosure.expanded));
+      list.hidden = !disclosure.expanded;
+    });
+    title.appendChild(toggle);
   }
   head.appendChild(title);
   if (files.some((file) => file.id)) {
@@ -8853,14 +9002,18 @@ function renderAttachments(pane, email) {
     pane.appendChild(card);
     return;
   }
-  const list = document.createElement("ul");
-  list.className = "attachments";
+  const nameCounts = new Map();
   for (const file of files) {
+    const label = file.filename || "attachment";
+    nameCounts.set(label, (nameCounts.get(label) || 0) + 1);
+  }
+  for (const [index, file] of files.entries()) {
     const item = document.createElement("li");
     const main = document.createElement("div");
     main.className = "attachment-main";
     const size = fileSize(file.size);
     const label = file.filename || "attachment";
+    const actionLabel = nameCounts.get(label) > 1 ? `${label}, attachment ${index + 1} of ${files.length}` : label;
     const kind = file.id ? attachmentPreviewKind(file) : "";
     const name = document.createElement(kind ? "button" : "span");
     name.className = "attachment-name";
@@ -8868,7 +9021,7 @@ function renderAttachments(pane, email) {
     name.title = label;
     if (kind) {
       name.type = "button";
-      name.setAttribute("aria-label", "Preview " + label);
+      name.setAttribute("aria-label", "Preview " + actionLabel);
       name.addEventListener("click", () => attachmentAction(() => previewAttachment(email, file)));
     }
     main.appendChild(name);
@@ -8882,9 +9035,9 @@ function renderAttachments(pane, email) {
     if (file.id) {
       const actions = document.createElement("div");
       actions.className = "attachment-actions";
-      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + label, () => attachmentAction(() => previewAttachment(email, file))));
-      actions.appendChild(attachmentGhost("Save", "Save " + label, () => attachmentAction(() => useAttachment("mail:downloadAttachment", email, file))));
-      actions.appendChild(attachmentGhost("Open", "Open " + label, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
+      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, () => attachmentAction(() => previewAttachment(email, file))));
+      actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(() => useAttachment("mail:downloadAttachment", email, file))));
+      actions.appendChild(attachmentGhost("Open", "Open " + actionLabel, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
       item.appendChild(actions);
     }
     list.appendChild(item);
@@ -10147,7 +10300,7 @@ function noteMailListLoaded(gen) {
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   noteUnreadScope();
-  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
+  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId, state.toMeOnly]);
   const scopeChanged = state.listScope !== scope;
   if (scopeChanged) {
     state.listScope = scope;
@@ -10174,7 +10327,7 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     if (state.query) {
-      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...state.listSort, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
+      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...state.listSort, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}), ...(state.toMeOnly ? { filterToMe: true } : {}) });
       if (gen !== listGen) return null;
       state.emails = takeEmails(Array.isArray(data) ? data : []);
       renderList();
@@ -10193,6 +10346,7 @@ async function loadList(fromNetwork, requestedOffset) {
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
       listSort: state.listSort,
+      toMeOnly: state.toMeOnly,
       allInbox: state.allInbox,
       aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
       unreadOnly: state.allInbox && state.allInboxUnreadOnly,
@@ -10212,6 +10366,7 @@ async function loadList(fromNetwork, requestedOffset) {
       offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
       const again = mailListRequest({
         listSort: state.listSort,
+        toMeOnly: state.toMeOnly,
         allInbox: state.allInbox,
         aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
         unreadOnly: state.allInbox && state.allInboxUnreadOnly,
@@ -11501,6 +11656,7 @@ function selectionButton(id, label, paths, run) {
 
 function wireSelection() {
   $("filter-chip").addEventListener("click", () => { $("list-filter").value = ""; renderList(); });
+  $("list-to-me").addEventListener("click", () => guard(toggleToMeFilter));
   $("search-account").addEventListener("change", () => { state.searchAccountId = $("search-account").value; guard(applySearch); });
   const bar = $("selection-actions");
   if (!bar || bar.childElementCount) return;

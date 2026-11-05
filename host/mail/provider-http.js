@@ -1,10 +1,12 @@
 const RATE_LIMIT_PAUSE_MS = 30 * 1000;
 const RATE_LIMIT_CAP_MS = 15 * 60 * 1000;
+const { errorJson } = require("./provider-error-body");
+const CALENDAR_QUOTA_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "dailyLimitExceeded"]);
 
 function providerFailure(status) {
   if (status === 400) return "The provider rejected the request format (HTTP 400). Check for an app update.";
   if (status === 401) return "Authorization expired. Grant access again.";
-  if (status === 403) return "The provider refused this scope. Grant access again.";
+  if (status === 403) return "The provider refused this request. Review provider access or organization policy.";
   if (status === 429) return "The provider is rate limiting requests. Try again shortly.";
   return "The provider rejected the request.";
 }
@@ -96,51 +98,93 @@ async function apiJson(url, accessToken, options = {}) {
     throw error;
   }
   const fetcher = options.fetchImpl || fetch;
-  let response;
-  try {
-    response = await fetcher(url, {
-      method: options.method || "GET",
-      redirect: options.redirect || "follow",
-      headers: {
-        accept: "application/json",
-        ...(options.headers || {}),
-        authorization: `Bearer ${accessToken}`,
-        ...(options.body ? { "content-type": "application/json" } : {}),
-      },
-      body: options.body ? JSON.stringify(options.body) : undefined,
-    });
-  } catch {
-    const error = new Error("The provider request could not be confirmed. Check your connection.");
-    error.code = "provider_network";
-    throw error;
-  }
-  const text = typeof response.text === "function" ? await response.text() : "";
-  if (options.maxBytes && Buffer.byteLength(text) > options.maxBytes) {
-    const error = new Error("The provider returned an oversized response.");
-    error.code = "provider";
-    throw error;
-  }
-  let json = {};
-  if (text) {
-    try {
-      json = JSON.parse(text);
-    } catch {
-      json = {};
+  const method = options.method || "GET";
+  const supplier = typeof accessToken === "function" ? accessToken : null;
+  const check = response => {
+    try { supplier?.check?.(); }
+    catch (error) {
+      // Retain submission evidence if a reconnect arrived while awaiting HTTP.
+      error.operationIssued = method !== "GET" && !!response && (response.ok || response.status >= 500 || response.status === 408);
+      // Read callers may legitimately ignore a provider 404. A logical
+      // ownership conflict is not that HTTP rejection and must not be swallowed.
+      if (response && method !== "GET") error.status = response.status;
+      throw error;
     }
-  }
-  if (!response.ok) {
-    const error = new Error(providerFailure(response.status));
-    error.code = response.status === 429 ? "rate_limit" : (response.status === 401 || response.status === 403 ? "scope_missing" : "provider");
-    error.status = response.status;
-    error.retryable = response.status === 429;
-    const detail = json && json.error && typeof json.error === "object" ? json.error : null;
-    if (detail && detail.code) error.providerCode = String(detail.code);
-    if (detail && detail.message) error.providerDetail = String(detail.message);
-    const wait = response.status === 429 ? retryAfterMs(response) : null;
-    if (wait != null) error.retryAfterMs = wait;
+  };
+  const token = async extra => {
+    try {
+      const value = supplier ? await supplier({ method, ...extra }) : accessToken;
+      // Legacy adapters (including Gmail's guarded HTTP transport) supply their
+      // own header through fetchImpl. Validate credentials owned by this path.
+      if (supplier && (typeof value !== "string" || !value)) throw Object.assign(new Error("Provider authorization is unavailable."), { code: "oauth" });
+      check();
+      return value;
+    } catch (error) { error.operationIssued = false; throw error; }
+  };
+  let credential = await token();
+  // One rejected GET, not its caller/compound operation, may be replayed.
+  for (let attempt = 0; ; attempt++) {
+    check();
+    const timeout = AbortSignal.timeout(30000);
+    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+    let response;
+    try {
+      response = await fetcher(url, {
+        method,
+        redirect: options.redirect || "follow",
+        signal,
+        headers: {
+          accept: "application/json",
+          ...(options.headers || {}),
+          authorization: `Bearer ${credential}`,
+          ...(options.body ? { "content-type": "application/json" } : {}),
+        },
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      });
+    } catch {
+      throw Object.assign(new Error("The provider request could not be confirmed. Check your connection."), {
+        code: "provider_network", operationIssued: method !== "GET",
+      });
+    }
+    check(response);
+    if (response.ok) {
+      let text;
+      try { text = typeof response.text === "function" ? await response.text() : ""; }
+      catch { throw Object.assign(new Error("The provider response could not be confirmed. Check your connection."), { code: "provider_network", operationIssued: method !== "GET" }); }
+      check(response);
+      if (options.maxBytes && Buffer.byteLength(text) > options.maxBytes) {
+        throw Object.assign(new Error("The provider returned an oversized response."), { code: "provider", operationIssued: method !== "GET" });
+      }
+      try { return text ? JSON.parse(text) : {}; } catch { return {}; }
+    }
+    const json = await errorJson(response, signal);
+    check(response);
+    if (supplier && method === "GET" && response.status === 401 && attempt === 0) {
+      credential = await token({ forceRefresh: true, rejectedToken: credential });
+      continue;
+    }
+    const calendar = /^https:\/\/www\.googleapis\.com\/calendar\/v3\//.test(url);
+    const reasons = new Set(calendar && Array.isArray(json?.error?.errors) ? json.error.errors.map(item => item?.reason) : []);
+    const quota = response.status === 429 || response.status === 403 && calendar
+      && reasons.size > 0 && [...reasons].every(reason => CALENDAR_QUOTA_REASONS.has(reason));
+    const permission = response.status === 403 && reasons.size === 1 && reasons.has("insufficientPermissions");
+    const error = Object.assign(new Error(quota ? providerFailure(429) : permission ? "Calendar permission is missing. Review Calendar access." : providerFailure(response.status)), {
+      code: quota ? "rate_limit" : response.status === 401 || permission ? "scope_missing" : "provider",
+      status: response.status, retryable: quota,
+      operationIssued: method !== "GET" && (response.status >= 500 || response.status === 408),
+    });
+    if (quota) {
+      error.retryAfterMs = retryAfterMs(response) ?? RATE_LIMIT_PAUSE_MS;
+      if (method === "GET") supplier?.rateLimited?.(error.retryAfterMs);
+    }
+    // Keep the existing Graph-search fallback without retaining arbitrary
+    // provider descriptions/codes on errors exposed to callers.
+    if (response.status === 400 && url.startsWith("https://graph.microsoft.com/")
+        && /unsupported|InefficientFilter|ErrorInvalidUrl|too complex|not support/i.test(`${json?.error?.code || ""} ${json?.error?.message || ""}`)) {
+      error.providerCode = "Request_UnsupportedQuery";
+    }
     throw error;
   }
-  return json;
 }
 
 module.exports = {

@@ -37,8 +37,8 @@ async function run() {
         { id: "two", accountId: "alpha", folderId: "INBOX", bodyEpoch: 0, bodyComplete: true, subject: "Team lunch", from: "Ben <ben@fixture.invalid>", date: "2026-11-02T08:00:00Z", snippet: "Lunch next week", textBody: "Would Tuesday work for lunch?" },
       ];
       state.email = state.emails[0]; state.thread = [];
-      window.requests = []; window.replies = [];
-      call = async (channel, input) => { requests.push({ channel, input }); if (channel === "mail:summarizeEmail") return new Promise((resolve, reject) => replies.push({ input, resolve, reject }));
+      window.requests = []; window.replies = []; window.reviewMode = false;
+      call = async (channel, input) => { requests.push({ channel, input }); if (channel === "mail:prepareSummary") return { ...input, planId: "fixture-review", needsReview: window.reviewMode || state.email.bodyComplete !== true, characters: 40000, destination: "https://summary-fixture.invalid/v1/chat/completions", model: "fixture", full: { available: true, calls: 5, reason: "" }, excerpt: { characters: 12000, omitted: 28000 }, warnings: state.email.bodyComplete !== true ? ["The download may be incomplete. This summary covers downloaded text only."] : [] }; if (channel === "mail:summarizeEmail") return new Promise((resolve, reject) => replies.push({ input, resolve, reject }));
         if (channel === "mail:openEmail") return { email: state.emails.find(row => row.id === input.emailId), threadMessages: [] }; return {}; };
       renderAccounts(); renderList(); renderReader(false); $("mail-ooo").hidden = true;
     });
@@ -52,9 +52,11 @@ async function run() {
     await page.getByRole("button", { name: "Cancel summary", exact: true }).click();
     await page.getByText("Summary cancelled. Choose Summary to try again.", { exact: true }).waitFor();
     await summary().click();
-    await page.evaluate(() => { replies[0].resolve({ ...replies[0].input, text: "OLD CANCELLED", warnings: [] }); replies[1].resolve({ ...replies[1].input,
-      text: "The launch is planned for November 12, subject to the operations team's delivery-date check.\n\n• Review the final checklist.\n• Send approval by Friday at 3 pm.\n• Revisit the launch date if delivery dates change.", warnings: [] }); });
-    await page.getByText("AI-generated summary. Check details against the message.", { exact: true }).waitFor();
+    await page.evaluate(() => { replies[0].resolve({ ...replies[0].input, summary: { mainPoint: "OLD CANCELLED", bullets: [] }, warnings: [] }); replies[1].resolve({ ...replies[1].input,
+      summary: { mainPoint: "The launch is planned for November 12.", bullets: ["Ada asks for approval by Friday at 3 pm.", "Operations is checking delivery dates.", "The team will review the launch date if delivery dates change."] }, warnings: [], coverage: { included: 430, downloaded: 430, parts: 1, calls: 1 } }); });
+    await page.getByText("The launch is planned for November 12.", { exact: true }).waitFor();
+    assert.equal(await page.locator(".message-summary-text li").count(), 3);
+    assert.equal(await page.locator(".message-summary details").getAttribute("open"), null);
     assert.equal(await page.getByText("OLD CANCELLED", { exact: true }).count(), 0);
     await page.screenshot({ path: path.join(output, "summary-main.png") });
     await page.addScriptTag({ url: "/axe.js" });
@@ -87,14 +89,27 @@ async function run() {
     assert.deepEqual(await audit(), []);
     await page.evaluate(() => { state.email.bodyComplete = false; renderReader(false); });
     await summary().click();
-    await page.getByText("The downloaded message may be incomplete. Missing content is not included.", { exact: true }).waitFor();
-    await page.evaluate(() => replies.at(-1).resolve({ ...replies.at(-1).input, text: "Summary of the available text only.",
-      warnings: ["The downloaded message may be incomplete. Missing content is not included.", "Only the first 24,000 characters of message text are included."] }));
+    await page.getByText("The download may be incomplete. This summary covers downloaded text only.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Summarize first 12,000 characters only", exact: true }).click();
+    await page.evaluate(() => replies.at(-1).resolve({ ...replies.at(-1).input, summary: { mainPoint: "Summary of the available text only.", bullets: [] },
+      warnings: ["The downloaded message may be incomplete. Missing content is not included.", "Excerpt only: 12,000 of 40,000 downloaded characters. Later text is not included."] }));
     await page.getByText("Summary of the available text only.", { exact: true }).waitFor();
     await page.screenshot({ path: path.join(output, "summary-partial.png") });
+    await page.evaluate(() => { state.email.bodyComplete = true; window.reviewMode = true; renderReader(false); });
+    const beforeReview = await page.evaluate(() => replies.length);
+    await summary().click();
+    await page.getByRole("button", { name: "Summarize all downloaded text", exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => replies.length), beforeReview, "review sends no text");
+    await page.screenshot({ path: path.join(output, "summary-long-review.png") });
+    assert.deepEqual(await audit(), []);
+    await page.getByRole("button", { name: "Summarize all downloaded text", exact: true }).click();
+    assert.equal(await page.evaluate(() => replies.at(-1).input.accepted), true);
+    await page.evaluate(() => replies.at(-1).resolve({ ...replies.at(-1).input, summary: { mainPoint: "All reviewed parts were included.", bullets: ["Ada requests USD 125.40 by December 18; payment is unconfirmed."] }, warnings: [], coverage: { included: 40000, downloaded: 40000, parts: 3, calls: 5 } }));
+    await page.getByText("All reviewed parts were included.", { exact: true }).waitFor();
+    await page.evaluate(() => { window.reviewMode = false; });
     // Reuse the actual navigation handler with a delayed summary in flight.
     await summary().click();
-    await page.evaluate(async () => { const old = replies.at(-1); await openMessage("two", false); old.resolve({ ...old.input, text: "WRONG MESSAGE", warnings: [] }); });
+    await page.evaluate(async () => { const old = replies.at(-1); await openMessage("two", false); old.resolve({ ...old.input, summary: { mainPoint: "WRONG MESSAGE", bullets: [] }, warnings: [] }); });
     assert.equal(await page.locator(".message-summary").isVisible(), false);
     assert.equal(await page.getByText("WRONG MESSAGE", { exact: true }).count(), 0);
     await page.setViewportSize({ width: 1440, height: 960 });

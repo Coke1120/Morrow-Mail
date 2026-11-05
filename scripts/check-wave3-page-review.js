@@ -82,7 +82,7 @@ function providerFixture(provider = "google", overrides = {}) {
     throw new Error("Unexpected synthetic provider read: " + url);
   };
   const api = load("host/mail/provider-api.js", { "./provider-http": { ...http, apiJson: (url, token, options) => http.apiJson(url, token, { ...options, fetchImpl: fetcher }) } });
-  const ready = { account: { ...account }, provider, token: { accessToken: "synthetic-token" } };
+  const ready = { account: { ...account }, provider, token: { accessToken: "synthetic-token", authorization: async () => "synthetic-token" } };
   const oauthConfig = {
     providerKey(profile) {
       const raw = String(profile || "").toLowerCase();
