@@ -463,6 +463,7 @@ async function loadLocalFolders() {
 function openLocalFolderMenu(folder, x, y) {
   const menu = ensureOrganizeMenu(); menu.replaceChildren(); menu.setAttribute("aria-label", "Local folder");
   appendMenuAction(menu, folder ? "New subfolder…" : "New local folder…", () => guard(() => manageLocalFolder("create", folder)));
+  appendMenuAction(menu, "Import MBOX…", () => guard(() => openMboxImport(folder?.id)));
   if (folder && !folder.system) {
     appendMenuAction(menu, "Rename local folder…", () => guard(() => manageLocalFolder("rename", folder)));
     appendMenuAction(menu, "Delete empty local folder…", () => guard(() => manageLocalFolder("delete", folder)));
@@ -489,6 +490,128 @@ function openLocalMessageMenu(messages, x, y) {
   appendMenuAction(menu, "Move to local Trash", () => guard(() => trashLocalMessages(messages)));
   if (messages.length === 1) appendMenuAction(menu, "Save original EML…", () => guard(() => exportLocalMessage(messages[0])));
   placeMenu(menu, x, y);
+}
+
+let mboxReview = null;
+async function openMboxImport(folderId) {
+  await loadLocalFolders();
+  const session = { trigger: document.activeElement, folderId: folderId || "local-folder:archive", job: null, timer: null };
+  mboxReview = session;
+  const dialog = $("mbox-import");
+  if (dialog.open && dialog.dataset.closing === "1") releaseClosingDialog(dialog);
+  if (!dialog.dataset.wired) {
+    dialog.dataset.wired = "1";
+    $("mbox-pick").addEventListener("click", () => guard(pickMboxFiles));
+    $("mbox-form").addEventListener("submit", event => { event.preventDefault(); guard(startMboxImport); });
+    $("mbox-history").addEventListener("change", () => guard(async () => {
+      const current = mboxReview;
+      const job = $("mbox-history").value ? await call("mail:mboxStatus", { jobId: $("mbox-history").value }) : null;
+      if (mboxReview === current) { current.job = job; paintMboxImport(); scheduleMboxPoll(current); }
+    }));
+    $("mbox-new-folder").addEventListener("click", () => guard(async () => {
+      const name = $("mbox-folder-name").value.trim(); if (!name) return;
+      const current = mboxReview;
+      const created = await call("mail:manageLocalFolder", { action: "create", name });
+      await loadLocalFolders();
+      if (mboxReview !== current) return;
+      current.folderId = created.id; $("mbox-folder-name").value = ""; paintMboxImport(); renderAccounts();
+    }));
+    $("mbox-folder").addEventListener("change", () => { if (mboxReview) mboxReview.folderId = $("mbox-folder").value; });
+    $("mbox-close").addEventListener("click", () => guard(closeMboxImport));
+    $("mbox-discard").addEventListener("click", () => guard(async () => {
+      const current = mboxReview;
+      if (!current?.job || current.job.running) return;
+      const reviewed = await askConfirm({ title: "Remove private import snapshots?", body: "This removes this job's private source copies and ends recovery for failed entries. Your original files and all saved Local Folders messages stay in place.", confirm: "Remove snapshots", cancel: "Keep snapshots" });
+      if (!reviewed.ok || mboxReview !== current) return;
+      current.job = await call("mail:mboxDiscard", { jobId: current.job.id, confirmed: true }); paintMboxImport();
+    }));
+    dialog.addEventListener("cancel", event => {
+      if (mboxReview?.job?.running) { event.preventDefault(); guard(closeMboxImport); }
+    });
+    dialog.addEventListener("close", () => {
+      if (dialog.open) return;
+      const current = mboxReview; if (!current) return;
+      clearTimeout(current.timer); mboxReview = null;
+      const trigger = current.trigger?.isConnected ? current.trigger : document.querySelector("#folders .local-mbox-open");
+      trigger?.focus?.();
+    });
+  }
+  const jobs = await call("mail:mboxJobs");
+  if (mboxReview !== session) return;
+  $("mbox-history").replaceChildren(option("", "Choose files to start a new import"), ...jobs.map(job => option(job.id, `${job.files.map(file => file.name).join(", ")} · ${job.status}`)));
+  session.job = jobs.find(job => job.running) || jobs.find(job => job.status !== "discarded") || null;
+  $("mbox-history").value = session.job?.id || "";
+  paintMboxImport(); openDialog("mbox-import"); $("mbox-pick").focus(); scheduleMboxPoll(session);
+}
+
+function paintMboxImport() {
+  const session = mboxReview; if (!session) return;
+  const job = session.job, running = !!job?.running, review = !job || job.status === "review";
+  const folders = foldersOf(state.localAccount);
+  $("mbox-folder").replaceChildren(...folders.map(folder => option(folder.id, localFolderPath(folder, folders))));
+  $("mbox-folder").value = job?.destination || session.folderId;
+  for (const id of ["mbox-folder", "mbox-variant", "mbox-folder-name", "mbox-new-folder"]) $(id).disabled = !review;
+  $("mbox-pick").disabled = running; $("mbox-history").disabled = running;
+  if (job?.variant) $("mbox-variant").value = job.variant;
+  $("mbox-files").replaceChildren(...(job?.files || []).map(file => {
+    const row = document.createElement("li"); row.textContent = `${file.name} · ${fileSize(file.size)}`; return row;
+  }));
+  const counts = job ? `${job.imported} imported · ${job.skipped} skipped (${job.expunged} Thunderbird deleted) · ${job.failed} failed.` : "";
+  $("mbox-status").textContent = job ? `${job.status}. ${counts} ${job.detail}` : "Choose exported mailbox files, then review the destination and format.";
+  $("mbox-bytes").textContent = job ? `${fileSize(job.consumedBytes)} of ${fileSize(job.totalBytes)} input committed. ${running ? `${fileSize(job.phaseBytes)} examined in this file / phase.` : ""}` : "";
+  const progress = $("mbox-progress"); progress.hidden = !job;
+  if (running && ["staging", "verifying"].includes(job.status)) progress.removeAttribute("value");
+  else { progress.max = job?.totalBytes || 1; progress.value = job?.consumedBytes || 0; }
+  $("mbox-errors").replaceChildren(...(job?.errors || []).map(item => {
+    const row = document.createElement("li"); row.textContent = `${item.file}, bytes ${item.start}–${item.end}: ${item.detail}`; return row;
+  }));
+  $("mbox-start").disabled = !job || running || (!review && !job.canContinue);
+  $("mbox-start").textContent = job?.status === "review" ? "Import" : "Continue";
+  $("mbox-close").textContent = running ? "Stop import" : "Close";
+  $("mbox-discard").hidden = !job || running || job.status === "review" || job.status === "discarded";
+}
+
+async function pickMboxFiles() {
+  const session = mboxReview; if (!session) return;
+  const job = await call("mail:mboxPick");
+  if (job.cancelled || mboxReview !== session) return;
+  session.job = job;
+  $("mbox-history").appendChild(option(job.id, job.files.map(file => file.name).join(", ") + " · review"));
+  $("mbox-history").value = job.id; paintMboxImport();
+}
+
+async function startMboxImport() {
+  const session = mboxReview; if (!session?.job || session.job.running || session.starting) return;
+  session.starting = true; $("mbox-start").disabled = true;
+  try {
+    const job = await call("mail:mboxStart", { jobId: session.job.id, folderId: $("mbox-folder").value, variant: $("mbox-variant").value });
+    if (mboxReview !== session) return;
+    session.job = job; paintMboxImport(); scheduleMboxPoll(session);
+  } finally { session.starting = false; if (mboxReview === session) paintMboxImport(); }
+}
+
+function scheduleMboxPoll(session) {
+  clearTimeout(session.timer);
+  if (mboxReview !== session || !session.job?.running) return;
+  session.timer = setTimeout(() => guard(async () => {
+    try {
+      const job = await call("mail:mboxStatus", { jobId: session.job.id });
+      if (mboxReview !== session) return;
+      session.job = job; paintMboxImport();
+      if (!job.running) { await loadLocalFolders(); renderAccounts(); if (state.accountId === LOCAL_ACCOUNT_ID) await loadList(); }
+      scheduleMboxPoll(session);
+    } catch (failure) {
+      if (mboxReview === session) { $("mbox-status").textContent = "Progress could not be read. Close and reopen Import MBOX to check the saved job. " + failure.message; scheduleMboxPoll(session); }
+    }
+  }), 400);
+}
+
+async function closeMboxImport() {
+  const session = mboxReview; if (!session) return;
+  if (session.job?.running) {
+    await call("mail:mboxCancel", { jobId: session.job.id });
+    if (mboxReview === session) { $("mbox-status").textContent = "Stopping at a safe checkpoint. Previously committed messages stay saved."; scheduleMboxPoll(session); }
+  } else closeDialog("mbox-import");
 }
 
 let localTransfer = null;
@@ -5430,6 +5553,9 @@ function renderAccounts() {
       create.type = "button"; create.className = "ghost local-folder-create"; create.textContent = "New local folder…";
       create.addEventListener("click", () => guard(() => manageLocalFolder("create")));
       nav.appendChild(create);
+      const importer = document.createElement("button");
+      importer.type = "button"; importer.className = "ghost local-folder-create local-mbox-open"; importer.textContent = "Import MBOX…";
+      importer.addEventListener("click", () => guard(() => openMboxImport())); nav.appendChild(importer);
     }
     if (account.needsReauth && account.reauthReason) {
       const note = document.createElement("p");

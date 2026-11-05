@@ -153,6 +153,6 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   const card = [...window.document.querySelectorAll(".feature-card")].find(node => node.textContent.includes("Local Folders appears"));
   assert(card); assert.match(card.textContent, /64 MiB/); assert.match(card.textContent, /Gmail retains its existing 35 MiB/);
   assert.match(card.textContent, /Unicode normalization and lowercasing/);
-  assert.match(card.textContent, /Restart never replays server Trash/); assert.match(card.textContent, /import MBOX/);
+  assert.match(card.textContent, /Restart never replays server Trash/); assert.match(card.textContent, /Use Import MBOX for supported mailbox exports/);
   assert.match(window.document.getElementById("local-folders-help").textContent, /after disconnecting an account/);
 });

@@ -18,6 +18,7 @@ const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
 const localFolders = require("./local-folders");
+const { createImporter } = require("./mbox-import");
 const messageSummaries = require("../message-summary").createSummaryService({ readMessage: summaryMessage });
 
 const secrets = require("./secrets");
@@ -133,13 +134,47 @@ function dataFile() {
 }
 
 let localStore = null;
+let mboxImporter = null;
 function localArchive() {
   const file = path.join(path.dirname(dataFile()), "local-folders.sqlite");
   if (localStore?.file !== file) {
+    if (mboxImporter) throw new Error("Stop local imports before changing the archive profile.");
     localStore?.close();
     localStore = localFolders.createLocalStore(file);
   }
   return localStore;
+}
+
+function localImporter() {
+  if (!mboxImporter) mboxImporter = createImporter({ store: localArchive() });
+  return mboxImporter;
+}
+
+async function mboxAnswer(channel, params, event) {
+  try {
+    const importer = localImporter();
+    if (channel === "mail:mboxPick") {
+      const { dialog, BrowserWindow } = require("electron");
+      const win = event?.sender && BrowserWindow.fromWebContents?.(event.sender);
+      const chosen = await dialog.showOpenDialog(win || undefined, { title: "Choose MBOX or Thunderbird mailbox exports",
+        properties: ["openFile", "multiSelections"], filters: [{ name: "Mailbox / extensionless files", extensions: ["*"] }] });
+      if (chosen.canceled || !chosen.filePaths?.length) return ok({ cancelled: true });
+      return ok(await importer.select(chosen.filePaths));
+    }
+    if (channel === "mail:mboxJobs") return ok(importer.list());
+    if (channel === "mail:mboxStatus") return ok(importer.status(params.jobId));
+    if (channel === "mail:mboxStart") {
+      const started = importer.start(params.jobId, { destination: params.folderId, variant: params.variant }, work => updateGate.run(work));
+      importer.idle().then(() => emitLocalFolders()).catch(() => {});
+      return ok(started);
+    }
+    if (channel === "mail:mboxCancel") return ok(importer.cancel(params.jobId));
+    if (channel === "mail:mboxDiscard") {
+      if (params.confirmed !== true) return fail("confirmation_required", "Review removal of private import snapshots first. Local messages and original sources are retained.");
+      return ok(await importer.discard(params.jobId));
+    }
+    return fail("invalid", "Unknown MBOX import operation.");
+  } catch (error) { return fail(error.code || "mbox_import", error.message); }
 }
 
 function emitLocalFolders() {
@@ -4291,6 +4326,7 @@ async function importGoogleOauthClientAdmitted(event) {
 function answer(channel, args, event) {
   if (!ready) return undefined;
   const params = args && args.length ? args[0] : undefined;
+  if (["mail:mboxPick", "mail:mboxJobs", "mail:mboxStatus", "mail:mboxStart", "mail:mboxCancel", "mail:mboxDiscard"].includes(channel)) return mboxAnswer(channel, params || {}, event);
   if (channel === "mail:transferToLocal") return transferToLocal(params || {});
   const localTarget = channel.startsWith("mail:") && (params?.accountId === localFolders.ACCOUNT_ID || localFolders.isMessage(params?.emailId || params?.messageId)
     || (Array.isArray(params?.items) && params.items.some(item => localFolders.isMessage(item.emailId || item.id))));
@@ -4938,7 +4974,8 @@ function noteBotSent(receipt) {
 actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast });
 
 module.exports = {
-  closeLocalArchiveForTest() { localStore?.close(); localStore = null; },
+  async stopLocalImports() { await mboxImporter?.stop(); mboxImporter = null; },
+  closeLocalArchiveForTest() { if (mboxImporter) throw new Error("Stop imports before closing the local archive."); localStore?.close(); localStore = null; },
   timelineAccountStamp(id) {
     const account = db.accountById(id);
     if (!account) throw removedAccountError();
