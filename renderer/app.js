@@ -447,6 +447,11 @@ function selectedAccount() {
   return mailAccounts().find((account) => account.id === state.accountId) || null;
 }
 
+function defaultMailSearchScope(accountId) {
+  if (accountId === LOCAL_ACCOUNT_ID) state.searchAccountId = LOCAL_ACCOUNT_ID;
+  else if (state.searchAccountId === LOCAL_ACCOUNT_ID) state.searchAccountId = "";
+}
+
 function mailAccounts() { return state.localAccount ? [...state.accounts, state.localAccount] : state.accounts; }
 function isLocalMail(email) { return email?.accountId === LOCAL_ACCOUNT_ID; }
 
@@ -7700,7 +7705,7 @@ function renderActions(pane, email) {
       readerButton("move", "Move locally", () => openLocalTransfer([email], "move")),
       readerButton("copy-local", "Copy locally", () => openLocalTransfer([email], "copy"), strokeIcon(["M9 9h12v12H9z", "M5 15H3V3h12v2"])),
       readerButton("export-local", "Save EML", () => exportLocalMessage(email), strokeIcon(["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"])),
-      readerButton("trash", "Move to local Trash", () => trashLocalMessages([email])));
+      readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email)));
     pane.appendChild(bar);
     const note = document.createElement("p"); note.className = "hint local-reader-note";
     note.textContent = "Stored on this computer · Available offline. Reply, AI actions and restoring to a server mailbox are unavailable for local copies.";
@@ -10543,6 +10548,7 @@ async function loadSnoozed() {
 }
 
 function rememberSelection(preferredId) {
+  const previous = state.accountId;
   const accounts = mailAccounts();
   if (!state.accounts.length) {
     state.allInbox = false;
@@ -10567,6 +10573,7 @@ function rememberSelection(preferredId) {
     state.folderId = inbox ? inbox.id : null;
     state.email = null;
     state.thread = [];
+    if (state.accountId !== previous) defaultMailSearchScope(state.accountId);
     return;
   }
   if (!foldersOf(selectedAccount()).some((folder) => folder.id === state.folderId)) {
@@ -10575,6 +10582,7 @@ function rememberSelection(preferredId) {
     state.email = null;
     state.thread = [];
   }
+  if (state.accountId !== previous) defaultMailSearchScope(state.accountId);
 }
 
 function paintListPaging() {
@@ -12492,6 +12500,7 @@ function wireOrganize() {
 
 async function selectOutbox() {
   if (!state.accounts.length) return;
+  defaultMailSearchScope(null);
   ++mailboxNavigationGen;
   ++listGen;
   state.listLoading = false;
@@ -12524,6 +12533,7 @@ async function selectOutbox() {
 
 async function selectAllInbox(unreadOnly, starredOnly = false) {
   if (!state.accounts.length) return;
+  defaultMailSearchScope(null);
   ++mailboxNavigationGen;
   const nextUnread = unreadOnly === true;
   const staying = state.allInbox && !state.query && state.allInboxStarredOnly === starredOnly;
@@ -12564,7 +12574,7 @@ async function selectFolder(accountId, folderId) {
   state.allInboxStarredOnly = false;
   state.listScope = "";
   state.accountId = accountId;
-  if (accountId !== LOCAL_ACCOUNT_ID && state.searchAccountId === LOCAL_ACCOUNT_ID) state.searchAccountId = "";
+  defaultMailSearchScope(accountId);
   state.folderId = folderId;
   state.query = "";
   $("search-query").value = "";
@@ -12916,7 +12926,6 @@ async function applySearch() {
   ++mailboxNavigationGen;
   invalidateReaderOpen();
   const query = $("search-query").value.trim();
-  if (selectedAccount()?.isLocal && !state.searchAccountId) state.searchAccountId = LOCAL_ACCOUNT_ID;
   if (query) state.outbox = false;
   state.query = query;
   state.email = null;
