@@ -87,7 +87,8 @@ async function foldersTest() {
   await api.listMailFolders('folder-fixture', fetchImpl);
   assert.equal(calls.length - firstCount, 2, 'system identities are cached for this exact grant');
   await assert.rejects(api.listMailFolders('bad-format-fixture', async () => json({ error: { message: 'Bearer secret-fixture' } }, 400)), (error) => /HTTP 400/.test(error.message) && !/secret-fixture/.test(error.message));
-  await assert.rejects(api.listMailFolders('denied-fixture', async () => json({}, 403)), /Grant access again/);
+  await assert.rejects(api.listMailFolders('denied-fixture', async () => json({}, 403)), error =>
+    error.code === 'provider' && /organization policy/.test(error.message) && !/Grant access again/.test(error.message));
 }
 async function run() {
   await callbackTest(true);
