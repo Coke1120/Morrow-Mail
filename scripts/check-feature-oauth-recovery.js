@@ -146,7 +146,7 @@ async function features() {
   // cache, without hashing or globally retaining an authorization closure.
   const folders = reset("microsoft");
   api = (url, init) => init.headers.authorization === "Bearer old" ? reply({}, 401)
-    : new URL(url).searchParams.get("$select") === "id" ? reply({}, 404) : reply({ value: [] });
+    : new URL(url).searchParams.get("$select") === "id" ? reply({}, 404) : reply({ value: [{ id: "user-folder", displayName: "Synthetic" }] });
   assert.equal((await sidecar.answer("mail:listProviderFolders", [{ accountId: folders.account.id }])).success, true);
   const discovered = requests.length;
   assert.equal((await sidecar.answer("mail:listProviderFolders", [{ accountId: folders.account.id }])).success, true);
@@ -332,6 +332,22 @@ async function races() {
   const read = list(next.account); await entered.promise;
   secrets.setPassword(next.key, grant("google", "calendar", "replacement")); release.resolve();
   assert.equal((await read).error.code, "conflict"); assert.equal(renewals.length, 0);
+
+  // Optional-folder 404 handling must not swallow a connection conflict when
+  // the final parallel discovery responses arrive after a reconnect.
+  const folders = reset("microsoft");
+  secrets.setPassword(folders.key, grant("microsoft", "bundle", "discovery"));
+  api = async url => {
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith("/mailFolders")) return reply({ value: [{ id: "user-folder", displayName: "Synthetic" }] });
+    if (pathname.endsWith("/syncissues")) {
+      secrets.setPassword(folders.key, grant("microsoft", "bundle", "replacement"));
+    }
+    return reply({}, 404);
+  };
+  const discovered = await sidecar.answer("mail:listProviderFolders", [{ accountId: folders.account.id }]);
+  assert.ok(requests.some(item => item.url.includes("/syncissues")), "the race must reach actual system-folder discovery");
+  assert.equal(discovered.error?.code, "conflict", "a logical connection change cannot become an optional missing folder");
 }
 
 async function help() {

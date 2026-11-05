@@ -23,6 +23,8 @@ after HTTP and error parsing retain known rejection/unknown submission evidence
 when a reconnect arrives. Vacation's identity check follows only its operation's
 own durable rotation. Existing scopes, separate Google Calendar and Microsoft
 Outlook/Graph resources, credential storage and consent gates remain unchanged.
+Read conflicts do not borrow the retired response's HTTP status: optional-folder
+404 handling must not swallow a connection change during parallel discovery.
 
 Separate operations still use the existing revision conflicts; they do not adopt
 arbitrary changed credentials or share a global token cache. Two concurrent

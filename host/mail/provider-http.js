@@ -105,7 +105,9 @@ async function apiJson(url, accessToken, options = {}) {
     catch (error) {
       // Retain submission evidence if a reconnect arrived while awaiting HTTP.
       error.operationIssued = method !== "GET" && !!response && (response.ok || response.status >= 500 || response.status === 408);
-      if (response) error.status = response.status;
+      // Read callers may legitimately ignore a provider 404. A logical
+      // ownership conflict is not that HTTP rejection and must not be swallowed.
+      if (response && method !== "GET") error.status = response.status;
       throw error;
     }
   };
