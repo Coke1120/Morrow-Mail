@@ -455,7 +455,7 @@
             <button type="button" class="ghost" id="brain-refresh">Refresh</button>
             <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
           </div>
-          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay, including saved edits made during analysis. A conflicting learned-profile change requires another refresh.</p>
+          <p class="hint" id="brain-persona-hint">Refresh distills the living profile. Rebuild replaces the generated persona. Your writing rules stay, including saved edits made during analysis. A conflicting learned-profile change requires another refresh. Choose automatic frequency in Settings → Brain.</p>
         </section>
         <div id="brain-sections"></div>
         <p class="hint" id="brain-compose-pointer">Compose defaults live in <button type="button" class="inline-link" id="brain-open-compose-settings">Settings → Compose</button>.</p>
@@ -624,7 +624,7 @@
             <div><dt>Cached mail</dt><dd><code data-bot-operation>mail.list_cached</code>, <code data-bot-operation>mail.search_cached</code>, <code data-bot-operation>mail.get_cached</code> — local cache only. Missing bodies stay missing; reads do not mark mail read.</dd></div>
             <div><dt>Attachment metadata</dt><dd><code data-bot-operation>mail.attachment.get</code> — names and metadata with permission; no file bytes or download.</dd></div>
             <div><dt>Proposals</dt><dd><code data-bot-operation>agent.proposals.list</code>, <code data-bot-operation>draft.proposals.submit</code>, <code data-bot-operation>draft.proposals.list</code> — inert local proposals for review. Draft lists omit the body; proposals do not send or create mailbox drafts.</dd></div>
-            <div><dt>Send plain text</dt><dd><code data-bot-operation>mail.send</code> — separate permission; sends immediately. Optional <code>inReplyToMessageId</code> links a same-account reply; you supply recipients and text.</dd></div>
+            <div><dt>Send plain text</dt><dd><code data-bot-operation>mail.send</code> — separate permission; sends immediately. Optional <code>inReplyToMessageId</code> links a same-account reply; you supply recipients and text. A confirmed complete IMAP reply records its original-message indicator and attempts a server flag; flag failure never resubmits the message. Cross-device icons require server support.</dd></div>
             <div><dt>Mail changes</dt><dd><code data-bot-operation>mail.archive</code>, <code data-bot-operation>mail.mark_read</code>, <code data-bot-operation>mail.trash</code> — separate default-off permissions for selected mailboxes. Each request targets one cached message ID; Trash never permanently deletes. Read/unread requires an explicit <code>isRead</code> boolean.</dd></div>
           </dl>
           <p id="cli-gmail-transport" class="hint">Google sign-in stays OAuth. New or explicitly migrated Gmail accounts use Gmail API; other providers retain their transports. Gmail desktop Delete moves to Trash, including repeated Delete. Migration and separate Calendar reauthorization are reviewed in desktop Settings → Accounts; they are not bot commands. Requested scopes do not revoke older grants. Importing a Google Desktop OAuth client is a Settings → Accounts action. It is not a bot command, and the client secret is not shown or sent to the bot bridge.</p>
@@ -723,7 +723,7 @@
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="mail-columns-title">Mail columns</h2><button type="button" class="ghost" id="mail-columns-close">Close</button></div>
         <p id="mail-columns-help">Choose which columns to show. Subject stays visible. Right-click any header, or focus it and press Shift + F10, for the same visibility choices. Drag a column header to reorder it, or use these buttons. You can also focus a header and press Alt + Left or Right. Click Date, Recipient, Sender or Subject to sort, even if the sorted column is later hidden. The same layout is used across mailboxes, search and Outbox.</p>
-        <p class="hint" id="mail-columns-provider-help">Reply / forward icons sit before Subject. IMAP uses cached provider flags. Gmail uses confirmed successful Morrow sends or a unique matching In-Reply-To in downloaded Sent mail; emoji reactions are excluded. Confirmed local replies keep the original Gmail identity even without a Message-ID. Sent sync gradually checks already cached, uninspected reply candidates, at most two per pass within its normal read budget, and resumes after restart or connection recovery. Failed, canceled, partial and uncertain sends add no local indicator. Local evidence stays on this device and survives ordinary sync and restart; cross-device forwards cannot be inferred. No icon means no positive evidence. Drafts and Outbox show no indicators. Both icons can appear; explicit provider evidence takes priority.</p>
+        <p class="hint" id="mail-columns-provider-help">Reply / forward icons sit before Subject. Outlook OAuth, Yahoo app-password and other IMAP accounts use cached provider flags and confirmed successful Morrow sends. After complete SMTP acceptance, Morrow adds the server flag where permitted. Read-only folders, unsupported keywords or flag errors keep a local indicator; flag errors never resend mail. Transient flag failures retry during ordinary sync after five minutes. Cross-device IMAP icons require server and client support. Gmail uses confirmed successful Morrow sends or a unique matching In-Reply-To in downloaded Sent mail; emoji reactions are excluded. Confirmed local replies keep the original Gmail identity even without a Message-ID. Sent sync gradually checks already cached, uninspected reply candidates, at most two per pass within its normal read budget, and resumes after restart or connection recovery. Failed, canceled, partial and uncertain sends add no local indicator. Local evidence stays on this device and survives ordinary sync and restart; cross-device forwards cannot be inferred. No icon means no positive evidence. Drafts and Outbox show no indicators. Both icons can appear; explicit Gmail provider evidence takes priority.</p>
         <ol id="mail-columns-order"></ol>
         <button type="button" class="ghost" id="mail-columns-reset">Reset column order</button>
         <button type="button" class="ghost" id="mail-columns-show-all">Show all columns</button>
@@ -1151,6 +1151,7 @@
         <button type="button" id="settings-tab-mail" data-fold="mail" role="tab" aria-controls="settings-mail" aria-selected="false" aria-current="false" tabindex="-1">Mail &amp; Sync</button>
         <button type="button" id="settings-tab-mailbox" data-fold="mailbox" role="tab" aria-controls="settings-mailbox" aria-selected="false" aria-current="false" tabindex="-1">Accounts</button>
         <button type="button" id="settings-tab-compose" data-fold="compose" role="tab" aria-controls="settings-compose" aria-selected="false" aria-current="false" tabindex="-1">Compose</button>
+        <button type="button" id="settings-tab-brain" data-fold="brain" role="tab" aria-controls="settings-brain" aria-selected="false" aria-current="false" tabindex="-1">Brain</button>
         <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" aria-current="false" tabindex="-1">AI</button>
         <button type="button" id="settings-tab-ooo" data-fold="ooo" role="tab" aria-controls="settings-ooo" aria-selected="false" aria-current="false" tabindex="-1">Out of Office</button>
         <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
@@ -1305,6 +1306,24 @@
               </div>
             </div>
             <p class="hint settings-save-note">Changes save automatically. Saved or error messages appear beside each setting.</p>
+          </div>
+        </section>
+        <section class="fold" id="settings-brain" data-fold="brain" role="tabpanel" aria-labelledby="settings-tab-brain" tabindex="0" hidden>
+          <div class="fold-panel">
+            <h3>Automatic profile refresh</h3>
+            <label for="pref-brain-refresh">Refresh frequency</label>
+            <select id="pref-brain-refresh" aria-describedby="brain-refresh-help brain-refresh-permission">
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="manual">Manual only</option>
+            </select>
+            <p class="hint" id="brain-refresh-help">Daily is the default. Daily and Weekly wait at least 24 hours or 7 days between automatic attempts, including when you open Brain. Missed runs combine into one check while Morrow Mail is running. A failed attempt waits for the next interval; use Refresh on Brain → Profile to retry immediately. Manual only stops future automatic profile refresh. A run already processing can finish; revoke AI data permission to cancel requests.</p>
+            <p class="hint">The profile uses downloaded Sent and Inbox snippets across all connected mailboxes and the previous generated profile. It sends that context to your saved AI connection and may use API or plan usage. Attachment files are excluded. Skill schedules and Agent triage have their own controls.</p>
+            <p class="hint" id="brain-refresh-permission"></p>
+            <p class="hint" id="brain-refresh-last"></p>
+            <p class="hint" id="brain-refresh-next"></p>
+            <button type="button" class="ghost" id="brain-refresh-ai-settings">Review AI data permission</button>
+            <p class="hint" id="brain-refresh-setting-status" role="status" aria-live="polite"></p>
           </div>
         </section>
         <section class="fold" id="settings-ai" data-fold="ai" role="tabpanel" aria-labelledby="settings-tab-ai" tabindex="0" hidden>

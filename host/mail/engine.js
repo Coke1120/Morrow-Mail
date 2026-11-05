@@ -1255,6 +1255,11 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
     const result = folder && windowOpen(folder, days)
       ? await warmFolder(client, account, folder, started, days, bounds)
       : await bootstrapFolder(client, account, folderPath, started, days, bounds);
+    if (!result.paused && Date.now() < bounds.deadline && !priorityWaiting(account.id)) {
+      await flushImapDispositions(account, client, db.imapDispositions.pending(account.id, folderPath), {
+        shouldYield: () => Date.now() >= bounds.deadline || priorityWaiting(account.id),
+      });
+    }
     if (!result.paused) clearStrikes(account.id);
     if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
@@ -2538,8 +2543,8 @@ async function ensureBody(row, options) {
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
       from_address: fetched.fromAddress || row.from_address || null,
       ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
-      ...require("./reply-forward-state").patch(fetched),
-    }, account.mail_transport === "gmail_api" ? { disposition: fetched } : undefined);
+      ...(account.mail_transport === "gmail_api" ? require("./reply-forward-state").patch(fetched) : {}),
+    }, { disposition: fetched });
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
     return db.messageById(row.id);
     }, background ? { background: true } : undefined);
@@ -3780,6 +3785,7 @@ async function submitSmtp(input) {
   let accepted = false;
   let receipt;
   let authorizationError;
+  const dispositionOwner = { ...account, [ACCOUNT_EPOCH]: accountEpochs.get(account.id) || 0 };
   try {
     const sentResult = await exclusive(account.id, async () => {
       let info;
@@ -3795,12 +3801,31 @@ async function submitSmtp(input) {
         try { input.beforeSubmit(); } catch (error) { authorizationError = error; throw error; }
       }
       if (credentialError) throw credentialError;
+      const submissionRevision = secrets.revision(account.id);
       if (smtpSenderForTest) info = await smtpSenderForTest({ account, options, messageId });
       else info = await remote.sendSmtp(account, password, { ...options, messageId });
       accepted = true;
       receipt = deliveryReceipt.fromSmtp(info, messageId);
       // Persist acceptance before any best-effort Sent filing can await I/O.
       if (input.onAccepted) await input.onAccepted(receipt);
+      // Never turn a verified send into a retryable send failure because an
+      // optional local indicator, IMAP flag or subsequent refresh failed.
+      if (input.disposition?.transport === "imap" && completeSubmission(options, receipt)) {
+        try {
+          assertAccountCurrent(dispositionOwner);
+          if (db.confirmDisposition(account.id, input.disposition) && password) {
+            const check = () => {
+              assertAccountCurrent(dispositionOwner);
+              if (secrets.revision(account.id) !== submissionRevision) throw removedAccountError();
+            };
+            check();
+            await withMailClient(dispositionOwner, password, client =>
+              flushImapDispositions(dispositionOwner, client, [input.disposition], { check }));
+          }
+        } catch {
+          try { db.imapDispositions.settle(input.disposition, "pending"); } catch { /* the send receipt stands */ }
+        }
+      }
       try {
         return await fileSentMessage(account, password, options, info, messageId, input);
       } catch {
@@ -3813,6 +3838,38 @@ async function submitSmtp(input) {
     const refusal = accepted ? "" : provedRefusal(error);
     if (refusal) return { kind: "rejected", refusal };
     return { kind: "unknown", detail: remote.explain(error, ""), receipt };
+  }
+}
+
+function completeSubmission(options, receipt) {
+  const intended = deliveryReceipt.addresses([].concat(options.to || [], options.cc || [], options.bcc || []));
+  const accepted = new Set(receipt.accepted.map(address => address.toLowerCase()));
+  return intended.length > 0 && !receipt.rejected.length && intended.every(address => accepted.has(address.toLowerCase()));
+}
+
+async function flushImapDispositions(account, client, proofs, {
+  check = () => assertAccountCurrent(account), shouldYield = () => false,
+} = {}) {
+  for (const proof of proofs) {
+    if (shouldYield()) return;
+    try {
+      const beforeSubmit = () => {
+        check();
+        const row = db.imapDispositions.target(proof);
+        if (!row) throw removedAccountError();
+        actions.assertIdentityReady(row.id);
+      };
+      beforeSubmit();
+      const state = await remote.setDisposition(client, proof, { beforeSubmit });
+      beforeSubmit();
+      db.imapDispositions.settle(proof, state);
+    } catch (error) {
+      // Permission/unsupported responses stay local. Transient failures are
+      // retried in bounded folder-sync passes after five minutes, never SMTP.
+      const state = ["NO", "BAD"].includes(error?.responseStatus) ? "unsupported" : "pending";
+      try { db.imapDispositions.settle(proof, state); } catch { /* a send receipt still stands */ }
+      return;
+    }
   }
 }
 
@@ -3880,15 +3937,15 @@ async function deliver(params, lifecycle) {
   try {
     const submitted = await submitSmtp({
       account,
+      disposition,
       options,
       messageId: lifecycle?.messageId || rfcMessageId(account.email),
       onAccepted(next) {
         receipt = next;
-        const intended = deliveryReceipt.addresses([...options.to, ...options.cc, ...options.bcc]).map(address => address.toLowerCase());
-        const accepted = new Set(next.accepted.map(address => address.toLowerCase()));
-        const confirmed = intended.length && !next.rejected.length && intended.every(address => accepted.has(address));
-        if (lifecycle?.onAccepted) lifecycle.onAccepted(next, confirmed ? disposition : null);
-        else if (confirmed) db.confirmDisposition(account.id, disposition);
+        const confirmed = completeSubmission(options, next);
+        const gmailDisposition = disposition?.transport === "imap" ? null : disposition;
+        if (lifecycle?.onAccepted) lifecycle.onAccepted(next, confirmed ? gmailDisposition : null);
+        else if (confirmed && gmailDisposition) db.confirmDisposition(account.id, gmailDisposition);
         if (lifecycle) return;
         if (!next.rejected.length) return;
         db.insertScheduled({ id: candidateId, accountId: account.id, status: "partial", sendAt: Date.now(), createdAt: Date.now(),

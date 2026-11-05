@@ -688,6 +688,54 @@ async function changeFlags(client, folderPath, uid, add, remove, expectedValidit
   }
 }
 
+// A disposition write is best effort after SMTP acceptance. Verify the exact
+// UID under a mailbox lock and add one flag without replacing any other flags.
+async function setDisposition(client, proof, { beforeSubmit } = {}) {
+  if (client.gmail) return "unsupported";
+  const lock = await client.getMailboxLock(proof.folderPath);
+  try {
+    assertUidValidity(client, proof.uidValidity);
+    beforeSubmit?.();
+    const box = client.mailbox;
+    if (!box || box.path !== proof.folderPath || box.uidNotSticky || box.readOnly) return "unsupported";
+    const flag = proof.kind === "replied" ? "\\Answered" : proof.kind === "forwarded" ? "$Forwarded" : null;
+    if (!flag) return "unsupported";
+    const permanent = box.permanentFlags instanceof Set
+      ? new Set([...box.permanentFlags].map(value => String(value).toLowerCase())) : null;
+    // The wildcard permits new keywords, not unlisted system flags. Missing
+    // permission information is deliberately kept local rather than guessed.
+    if (!permanent || !permanent.has(flag.toLowerCase()) && !(flag[0] !== "\\" && permanent.has("\\*"))) return "unsupported";
+    // ImapFlow checks keyword spelling against its Set before issuing STORE.
+    const advertised = [...box.permanentFlags].find(value => String(value).toLowerCase() === flag.toLowerCase()) || flag;
+    async function readFlags() {
+      let matched;
+      for await (const message of client.fetch(String(proof.uid), { uid: true, flags: true }, { uid: true })) {
+        if (Number(message.uid) === proof.uid) matched = message;
+      }
+      return matched;
+    }
+    const current = await readFlags();
+    assertUidValidity(client, proof.uidValidity);
+    beforeSubmit?.();
+    if (!current) return "missing";
+    if (client.mailbox.readOnly) return "unsupported";
+    const hasFlag = message => message?.flags instanceof Set
+      && [...message.flags].some(value => String(value).toLowerCase() === flag.toLowerCase());
+    if (hasFlag(current)) return "stored";
+    const changed = await client.messageFlagsAdd(String(proof.uid), [advertised], { uid: true });
+    assertUidValidity(client, proof.uidValidity);
+    beforeSubmit?.();
+    if (!changed) return client.usable === false ? "pending" : "unsupported";
+    // Some servers acknowledge STORE while ignoring an unsupported keyword.
+    const after = await readFlags();
+    assertUidValidity(client, proof.uidValidity);
+    beforeSubmit?.();
+    return !after ? "missing" : hasFlag(after) ? "stored" : "unsupported";
+  } finally {
+    lock.release();
+  }
+}
+
 async function removeUid(client, folderPath, uid, expectedValidity) {
   if (client.gmail) return client.gmail.remove(folderPath, uid, expectedValidity);
   if (isGmail(clientAccounts.get(client))) {
@@ -916,6 +964,7 @@ module.exports = {
   readPart,
   moveUid,
   changeFlags,
+  setDisposition,
   removeUid,
   checkUidValidity,
   createBox,

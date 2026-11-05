@@ -4,6 +4,7 @@ const path = require("path");
 const { BrowserWindow } = require("electron");
 const { loadConfig, userDataDir } = require("./ai-config");
 const { complete, extractJson } = require("./openai-client");
+const refreshPolicy = require("./brain-refresh-policy");
 const {
   personaSystemPrompt,
   applyGenerated,
@@ -28,7 +29,7 @@ function storePath() {
 }
 
 function emptyStore() {
-  return { userRules: [], generated: null, categories: DEFAULT_CATEGORIES.map((row) => ({ ...row })), activity: [] };
+  return { userRules: [], generated: null, refreshAttemptAt: null, categories: DEFAULT_CATEGORIES.map((row) => ({ ...row })), activity: [] };
 }
 
 function legacyCategories(categories) {
@@ -43,6 +44,7 @@ function readStore() {
     return {
       userRules: Array.isArray(parsed.userRules) ? parsed.userRules : [],
       generated: parsed.generated && typeof parsed.generated === "object" ? parsed.generated : null,
+      refreshAttemptAt: typeof parsed.refreshAttemptAt === "string" ? parsed.refreshAttemptAt : null,
       categories: stored.length && !legacyCategories(stored)
         ? stored
         : DEFAULT_CATEGORIES.map((row) => ({ ...row })),
@@ -56,7 +58,9 @@ function readStore() {
 function writeStore(store) {
   const dest = storePath();
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, JSON.stringify(store, null, 2));
+  const temporary = `${dest}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(store, null, 2), { mode: 0o600 });
+  fs.renameSync(temporary, dest);
 }
 
 function emit(channel, payload) {
@@ -232,8 +236,8 @@ function fail(error) {
   return { success: false, error: { message: error instanceof Error ? error.message : String(error), code: error.code || "ai-error" } };
 }
 
-const FRESH_MS = 30 * 60 * 1000;
 let livingTimer = null;
+let personaJob = null;
 
 function pushActivity(store, kind, detail) {
   const list = Array.isArray(store.activity) ? store.activity : [];
@@ -254,9 +258,30 @@ function failJob(mode, message) {
   emit("emailBrain:rebuildState", { rebuilding: false, phase: "failed", percent: null, error: message });
 }
 
-function generatedIsFresh(store) {
-  const at = store.generated && Date.parse(store.generated.updatedAt);
-  return Number.isFinite(at) && Date.now() - at < FRESH_MS;
+function refreshCadence() {
+  return refreshPolicy.cadence(require("./settings").answer("morrow:configGetBrainRefreshCadence", []), true);
+}
+
+function automaticRefreshDue(store) {
+  const next = refreshPolicy.nextDueAt(store, refreshCadence());
+  return next !== null && Date.now() >= next;
+}
+
+function refreshStatus() {
+  const store = readStore();
+  const cadence = refreshCadence();
+  const next = refreshPolicy.nextDueAt(store, cadence);
+  let backgroundAllowed = false;
+  try {
+    backgroundAllowed = require("./ai-consent").getConsent().status().background === true;
+    if (backgroundAllowed && loadConfig().authMode === "chatgpt") {
+      backgroundAllowed = require("./chatgpt-auth").getAuth().backgroundAllowed();
+    }
+  } catch { /* unconfigured AI cannot run automatically */ }
+  return { cadence, backgroundAllowed, running: !!personaJob,
+    lastSuccessAt: store.generated && store.generated.updatedAt || null,
+    lastAttemptAt: store.refreshAttemptAt,
+    nextEligibleAt: next === null ? null : new Date(next || Date.now()).toISOString() };
 }
 
 async function runPersona(mode, sample, prior) {
@@ -330,21 +355,65 @@ async function analyzeMailAdmitted(mode) {
   }
 }
 
+function startPersonaJob(mode, automatic, queued = false) {
+  // Claim before setImmediate so timer, page opens, Refresh and Rebuild share it.
+  if (personaJob) return personaJob.promise;
+  const job = { mode };
+  personaJob = job;
+  const context = require("./ai-context");
+  const execute = async () => {
+    if (automatic) {
+      // Recheck after queueing: settings or permission may have changed.
+      if (!automaticRefreshDue(readStore())) {
+        emit("emailBrain:refreshState", { refreshing: false, error: null });
+        return;
+      }
+      const cfg = loadConfig();
+      const lease = require("./ai-consent").getConsent().acquire(cfg, { background: true, stamp: context.stamp() });
+      try { lease.check(); } finally { lease.release(); }
+      if (cfg.authMode === "chatgpt" && !require("./chatgpt-auth").getAuth().backgroundAllowed()) {
+        throw new Error("ChatGPT background AI is off. Review background permission in Settings → AI.");
+      }
+      // Persist before model work. Failure/crash/restart waits a full cadence;
+      // an explicit Refresh can retry immediately. Failed writes send no data.
+      const store = readStore();
+      store.refreshAttemptAt = new Date().toISOString();
+      writeStore(store);
+    }
+    return analyzeMail(mode);
+  };
+  const run = () => updateGate.run(() => queued
+    ? new Promise((resolve, reject) => setImmediate(() => execute().then(resolve, reject)))
+    : execute());
+  try {
+    const work = () => context.operation(run);
+    job.promise = Promise.resolve(automatic ? context.background(work) : work())
+      .catch(error => failJob(mode, error instanceof Error ? error.message : String(error)))
+      .finally(() => { if (personaJob === job) personaJob = null; });
+    return job.promise;
+  } catch (error) {
+    personaJob = null;
+    throw error;
+  }
+}
+
 function refreshFromMail(background = true) {
-  return background ? require("./ai-context").background(() => analyzeMail("refresh")) : analyzeMail("refresh");
+  return startPersonaJob("refresh", background);
 }
 
 function rebuildFromMail() {
-  return analyzeMail("rebuild");
+  return startPersonaJob("rebuild", false);
 }
 
 function scheduleLivingRefresh() {
   if (livingTimer) return;
   livingTimer = setInterval(() => {
-    const cfg = loadConfig();
-    if (cfg.authMode === "chatgpt" ? !require("./chatgpt-auth").getAuth().backgroundAllowed() : !cfg.apiKey) return;
-    if (generatedIsFresh(readStore())) return;
-    refreshFromMail().catch(() => {});
+    try {
+      const cfg = loadConfig();
+      if (cfg.authMode === "chatgpt" ? !require("./chatgpt-auth").getAuth().backgroundAllowed() : !cfg.apiKey) return;
+      if (personaJob || !automaticRefreshDue(readStore())) return;
+      refreshFromMail().catch(() => {});
+    } catch { /* unavailable settings or an update admission gate pauses this check */ }
   }, 60 * 60 * 1000);
   if (livingTimer.unref) livingTimer.unref();
 }
@@ -375,27 +444,27 @@ function answer(channel, args) {
       catch (error) { return fail(error); }
     case "emailBrain:getCached":
       return ok(snapshot());
+    case "emailBrain:getRefreshStatus":
+      return ok(refreshStatus());
     case "emailBrain:refresh":
       if (loadConfig().authMode !== "chatgpt" && !loadConfig().apiKey) {
         emit("emailBrain:refreshState", { refreshing: false, error: null });
         return ok({ accepted: false, mode: "refresh" });
       }
-      if ((params && params.source) !== "manual" && generatedIsFresh(readStore())) {
+      if (personaJob) return ok({ accepted: true, mode: personaJob.mode, running: true });
+      if ((params && params.source) !== "manual" && !automaticRefreshDue(readStore())) {
         emit("emailBrain:refreshState", { refreshing: false, error: null });
         return ok({ accepted: true, mode: "refresh", cached: true });
       }
-      updateGate.run(() => new Promise(resolve => {
-        setImmediate(() => { refreshFromMail((params && params.source) !== "manual").catch(() => {}).finally(resolve); });
-      })).catch(() => {});
+      startPersonaJob("refresh", (params && params.source) !== "manual", true).catch(() => {});
       return ok({ accepted: true, mode: "refresh" });
     case "emailBrain:rebuild":
       if (loadConfig().authMode !== "chatgpt" && !loadConfig().apiKey) {
         emit("emailBrain:rebuildState", { rebuilding: false, phase: "ready", percent: null, error: null });
         return ok({ accepted: false, mode: "rebuild" });
       }
-      updateGate.run(() => new Promise(resolve => {
-        setImmediate(() => { rebuildFromMail().catch(() => {}).finally(resolve); });
-      })).catch(() => {});
+      if (personaJob) return ok({ accepted: true, mode: personaJob.mode, running: true });
+      startPersonaJob("rebuild", false, true).catch(() => {});
       return ok({ accepted: true, mode: "rebuild" });
     case "emailBrain:addWritingRule": {
       const text = params && typeof params.text === "string" ? params.text.trim() : "";

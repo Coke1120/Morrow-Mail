@@ -4,6 +4,9 @@ const primaryFolderLib = require("../../shared/primary-mailboxes");
 const senderHeader = require("./sender-header");
 const perf = require("../performance-diagnostics");
 const { performance } = require("node:perf_hooks");
+const imapDispositions = require("./imap-dispositions").createStore({
+  run, get, all, transaction, accountById, messageById, folderByPath, updateChanged,
+});
 
 let db = null;
 let filePath = "";
@@ -308,6 +311,7 @@ function migrate() {
     ["accounts", "gmail_generation", "INTEGER"], ["folders", "provider_id", "TEXT"], ["messages", "gmail_id", "TEXT"]]) {
     if (!all(`PRAGMA table_info(${table})`).some(row => row.name === column)) run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
+  imapDispositions.schema();
   run(`CREATE TABLE IF NOT EXISTS gmail_messages (
     account_id TEXT NOT NULL, provider_id TEXT NOT NULL, local_uid INTEGER NOT NULL,
     thread_id TEXT, draft_id TEXT, labels_json TEXT NOT NULL DEFAULT '[]',
@@ -676,6 +680,7 @@ function insertAccount(row) {
 
 function updateAccountLogin(id, row) {
   transaction(() => {
+    const priorKey = require("./imap-dispositions").accountKey(accountById(id));
     run(
       `UPDATE accounts SET
         username = ?, profile = ?, imap_host = ?, imap_port = ?, imap_tls = ?,
@@ -691,6 +696,7 @@ function updateAccountLogin(id, row) {
         id,
       ]
     );
+    if (priorKey !== require("./imap-dispositions").accountKey(accountById(id))) imapDispositions.resetAccount(id);
   });
 }
 
@@ -718,7 +724,7 @@ function removeAccount(id) {
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
     run("DELETE FROM mail_actions WHERE account_id = ?", [id]);
-    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state", "gmail_dispositions"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
+    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state", "gmail_dispositions", "imap_dispositions"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
@@ -1295,6 +1301,7 @@ function applyFolderSync(accountId, folderPath, report) {
       [accountId, folderPath]
     );
     if (previous && previous.uid_validity && report.validity && previous.uid_validity !== report.validity) {
+      run("DELETE FROM imap_dispositions WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]);
       forgetIds(all("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0 AND draft_pending = 0", [accountId, folderPath]));
       run("DELETE FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0 AND draft_pending = 0", [accountId, folderPath]);
       run("UPDATE messages SET uid = 0, uid_validity = 0 WHERE account_id = ? AND folder_path = ? AND draft_pending = 1", [accountId, folderPath]);
@@ -1392,7 +1399,7 @@ function applyFolderSync(accountId, folderPath, report) {
         );
       }
       if (reindex) indexText(id);
-      updateChanged("messages", require("./reply-forward-state").patch(message), "id = ?", [id]);
+      imapDispositions.refresh(id, message);
       updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
       updateChanged("messages", { decoding_json: require("./mime-decoding").serialize(message.decoding) }, "id = ?", [id]);
       updateChanged("messages", { date_source: message.dateSource || null }, "id = ?", [id]);
@@ -1401,10 +1408,11 @@ function applyFolderSync(accountId, folderPath, report) {
       const row = get("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
         [accountId, folderPath, Number(flags.uid), report.validity]);
       if (!row || messageHeld(row.id)) continue;
-      const patch = require("./reply-forward-state").patch(flags);
+      const patch = {};
       if (typeof flags.unread === "boolean" && !flagHeld(row.id, "read")) patch.unread = flags.unread ? 1 : 0;
       if (typeof flags.starred === "boolean" && !flagHeld(row.id, "star")) patch.starred = flags.starred ? 1 : 0;
       if (updateChanged("messages", patch, "id = ?", [row.id])) flagsChanged = true;
+      if (imapDispositions.refresh(row.id, flags)) flagsChanged = true;
     }
     const cursor = report.uidCursor == null ? null : Number(report.uidCursor);
     const done = report.windowDone === true ? 1 : (report.windowDone === false ? 0 : null);
@@ -1602,6 +1610,7 @@ function insertMessageRecord(row) {
     if (row.decoding) run("UPDATE messages SET decoding_json = ? WHERE id = ?", [require("./mime-decoding").serialize(row.decoding), row.id]);
     if (row.dateSource) run("UPDATE messages SET date_source = ? WHERE id = ?", [row.dateSource, row.id]);
     updateChanged("messages", require("./reply-forward-state").patch(row), "id = ?", [row.id]);
+    imapDispositions.refresh(row.id, row);
     indexText(row.id);
 }
 
@@ -1681,6 +1690,7 @@ function updateMessage(id, patch, options) {
   const reindex = Object.keys(patch).some((key) => INDEXED_PATCH.has(key));
   transaction(() => {
     if (updateChanged("messages", patch, "id = ?", [id]) && reindex) indexText(id);
+    if (["uid", "uid_validity", "folder_path", "account_id"].some(key => key in patch)) imapDispositions.refresh(id);
     // Body flags and saved evidence must publish in the same durable commit.
     if (options?.disposition) module.exports.refreshDisposition(id, options.disposition);
   });
@@ -2580,7 +2590,9 @@ function enableGmail(accountId) {
     do { generation = crypto.randomInt(1, 2147483647); }
     while (get("SELECT 1 FROM messages WHERE account_id = ? AND uid_validity = ? LIMIT 1", [accountId, generation]));
     run("UPDATE accounts SET mail_transport = 'gmail_api', gmail_generation = ? WHERE id = ?", [generation, accountId]);
-    run("UPDATE messages SET replied = NULL, forwarded = NULL WHERE account_id = ?", [accountId]);
+    run("DELETE FROM imap_dispositions WHERE account_id = ?", [accountId]);
+    run(`UPDATE messages SET replied = NULL, forwarded = NULL,
+      disposition_provider_replied = NULL, disposition_provider_forwarded = NULL WHERE account_id = ?`, [accountId]);
     // Unuploaded edits have a newer RFC id than their old server copy. Keep their
     // content/revision, but never guess which old server draft may be replaced.
     const pending = get("SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND draft_pending = 1 AND uid > 0", [accountId]).n;
@@ -2733,6 +2745,7 @@ function singleMessageId(value) {
 }
 
 function captureDisposition(accountId, input) {
+  if (accountById(accountId)?.mail_transport !== "gmail_api") return imapDispositions.capture(accountId, input);
   const kind = input?.kind === "forward" ? "forwarded" : ["reply", "all"].includes(input?.kind) ? "replied" : null;
   const row = kind && messageById(input.sourceMessageId);
   const account = accountById(accountId);
@@ -2746,6 +2759,7 @@ function captureDisposition(accountId, input) {
 }
 
 function confirmDisposition(accountId, proof) {
+  if (proof?.transport === "imap") return imapDispositions.confirm(accountId, proof);
   if (!proof || proof.accountId !== accountId || !["replied", "forwarded"].includes(proof.kind)
       || accountById(accountId)?.mail_transport !== "gmail_api"
       || proof.generation !== accountById(accountId).gmail_generation) return;
@@ -2896,10 +2910,12 @@ function gmailReplyBackfillPage(accountId, folderPath) {
 }
 
 module.exports = {
+  imapDispositions,
   captureDisposition, confirmDisposition, refreshDisposition(messageId, provider) {
     transaction(() => {
       const row = messageById(messageId);
-      if (!row || accountById(row.account_id)?.mail_transport !== "gmail_api") return;
+      if (!row) return;
+      if (accountById(row.account_id)?.mail_transport !== "gmail_api") return imapDispositions.refresh(messageId, provider);
       if (provider) updateChanged("messages", { disposition_provider_replied: typeof provider.replied === "boolean" ? Number(provider.replied) : null,
         disposition_provider_forwarded: typeof provider.forwarded === "boolean" ? Number(provider.forwarded) : null }, "id = ?", [messageId]);
       refreshGmailDisposition(row.account_id, row.rfc_message_id, row.gmail_id);
