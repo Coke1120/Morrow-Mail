@@ -11,7 +11,8 @@ by its IMAP identity. Do not infer IMAP state from subjects, threads, RFC ID
 matches in other folders, opening compose, saving drafts or creating a queue.
 Keep that proof with drafts, Undo Send and scheduled snapshots across restart.
 
-After the existing acceptance callback saves its delivery receipt, require all
+After the existing acceptance callback records submission (including durable
+receipts for queued and bot delivery), require all
 intended To/Cc/Bcc recipients to appear in the SMTP accepted list with none
 rejected. Only then persist local evidence and attempt the IMAP update. Partial,
 incomplete, refused and uncertain submissions add no evidence. Bot `mail.send`
@@ -29,7 +30,7 @@ boundaries follow [IMAP permanent flag semantics](https://www.rfc-editor.org/rfc
 
 Flag/evidence/filing failures cannot change a confirmed send into a failed send
 or trigger another SMTP submission. Local evidence commits separately after the
-receipt: a crash or storage failure in that gap can omit an indicator, but must
+acceptance callback: a crash or storage failure in that gap can omit an indicator, but must
 not cause a duplicate delivery. This differs from Gmail's existing transactional
 scheduled receipt/evidence write, which stays unchanged.
 

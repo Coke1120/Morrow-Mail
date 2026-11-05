@@ -291,6 +291,8 @@ async function submissionContracts() {
   let authorized = true, submissions = 0, checks = 0;
   const context = {
     exclusive: async (_id, work) => work(), smtpSenderForTest: null,
+    ACCOUNT_EPOCH: Symbol("synthetic-account-epoch"), accountEpochs: new Map(),
+    secrets: { revision: () => 0 },
     secretFor: () => credential.promise,
     remote: { sendSmtp() { submissions++; throw new Error("No submission expected"); }, explain: () => "synthetic refusal" },
     provedRefusal: () => "not issued",

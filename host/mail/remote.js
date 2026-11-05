@@ -709,16 +709,20 @@ async function setDisposition(client, proof, { beforeSubmit } = {}) {
       return matched;
     }
     const current = await readFlags();
+    assertUidValidity(client, proof.uidValidity);
     beforeSubmit?.();
     if (!current) return "missing";
+    if (client.mailbox.readOnly) return "unsupported";
     const hasFlag = message => message?.flags instanceof Set
       && [...message.flags].some(value => String(value).toLowerCase() === flag.toLowerCase());
     if (hasFlag(current)) return "stored";
     const changed = await client.messageFlagsAdd(String(proof.uid), [advertised], { uid: true });
+    assertUidValidity(client, proof.uidValidity);
     beforeSubmit?.();
     if (!changed) return client.usable === false ? "pending" : "unsupported";
     // Some servers acknowledge STORE while ignoring an unsupported keyword.
     const after = await readFlags();
+    assertUidValidity(client, proof.uidValidity);
     beforeSubmit?.();
     return !after ? "missing" : hasFlag(after) ? "stored" : "unsupported";
   } finally {

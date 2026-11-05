@@ -68,7 +68,7 @@ test("IMAP confirmed sends retain scoped local evidence and never replay SMTP fo
         assert.deepEqual(fields, { uid: true, flags: true }); assert.equal(options.uid, true);
         yield { uid: 0xffffffff, flags: new Set(["\\Answered", "$Forwarded"]) };
         const flags = server.messages.get(key(this.mailbox.path, Number(range)));
-        if (duringFetch) { const hook = duringFetch; duringFetch = null; hook(); }
+        if (duringFetch) { const hook = duringFetch; duringFetch = null; hook(this); }
         if (flags) yield { uid: Number(range), flags: new Set(flags) };
       },
       async messageFlagsAdd(range, flags, options) {
@@ -208,6 +208,10 @@ test("IMAP confirmed sends retain scoped local evidence and never replay SMTP fo
     assert.equal((await send(row)).success, true); assert.equal(db.messageById(row.id).replied, 0);
     const moved = admit(); duringFetch = () => db.updateMessage(moved.id, { folder_path: "Work" });
     const before = stores.length; assert.equal((await send(moved)).success, true); assert.equal(stores.length, before);
+    const reset = admit(); duringFetch = connection => { connection.mailbox.uidValidity = 8n; };
+    assert.equal((await send(reset)).success, true); assert.equal(stores.length, before, "UIDVALIDITY is rechecked after FETCH and before STORE");
+    const readOnly = admit(); duringFetch = connection => { connection.mailbox.readOnly = true; };
+    assert.equal((await send(readOnly)).success, true); assert.equal(stores.length, before, "new read-only selection cannot issue STORE");
     const changed = admit("outlook"); duringLock = () => db.updateAccountLogin("outlook", { ...fixture.account, username: "different-login", profile: "outlook", authKind: "oauth2" });
     assert.equal((await send(changed)).success, true); assert.equal(stores.length, before);
     assert.equal(db.messageById(changed.id).replied, 0);
