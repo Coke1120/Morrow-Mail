@@ -649,7 +649,7 @@ assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app pa
 assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
 assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.4.1");
+assert.strictEqual(pkg.version, "0.4.2");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -903,7 +903,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.4.1");
+assert.strictEqual(pkg.version, "0.4.2");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
@@ -10347,10 +10347,10 @@ checkFetchedModelChooser().then(() => require("./check-bot-probe").run()).then((
   const startupCredentialQuit = spawnSync(process.execPath, [path.join(root, "scripts/check-startup-credential-quit.js")], { stdio: "inherit", timeout: 120000 });
   assert.strictEqual(startupCredentialQuit.status, 0, "Combined startup/credential quit fixture failed");
   for (const name of ["check-bot-proactive.js", "check-bot-proactive-ui.js", "check-hermes-webhook.js", "check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js", "check-ai-consent-settings.js", "check-brain-refresh.js", "check-subject-prefixes.js", "check-gmail-mail-api.js", "check-gmail-dispositions.js", "check-gmail-reply-backfill.js", "check-imap-dispositions.js", "check-sender-names.js", "check-wave4-ux.js", "check-mail-decoding.js"]) {
-    // Eight repair cases took 25.5s on Windows before the held-work case hit
-    // the shared 30s process deadline. Keep every durable commit/restart and
-    // assertion; give durable cache fixtures the same filesystem headroom as reviewed flows.
-    const durableCache = ["check-gmail-reply-backfill.js", "check-mail-decoding.js"].includes(name);
+    // Durable cache fixtures use real SQLite commits, checkpoints and reopen.
+    // Windows filesystem latency needs bounded headroom for the complete suite;
+    // keep every case, assertion and application/protocol deadline unchanged.
+    const durableCache = ["check-gmail-reply-backfill.js", "check-imap-dispositions.js", "check-mail-decoding.js"].includes(name);
     const timeout = durableCache && process.platform === "win32" ? 90000 : 30000;
     const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout });
     assert.ifError(fixture.error);
