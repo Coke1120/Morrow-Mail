@@ -284,6 +284,7 @@ function migrate() {
   run("CREATE INDEX IF NOT EXISTS messages_rfc_identity ON messages(account_id, rfc_message_id)");
   run("CREATE INDEX IF NOT EXISTS messages_reply_parent ON messages(account_id, in_reply_to)");
   run("CREATE INDEX IF NOT EXISTS messages_reply_candidates ON messages(account_id, folder_path, in_reply_to) WHERE reply_inference_eligible = 1 AND is_draft = 0");
+  run("CREATE INDEX IF NOT EXISTS messages_reply_uninspected ON messages(account_id, folder_path, uid) WHERE reply_inference_eligible IS NULL AND is_draft = 0 AND in_reply_to IS NOT NULL");
   run(`CREATE TRIGGER IF NOT EXISTS body_retry_identity AFTER UPDATE OF account_id, folder_path, uid, uid_validity, gmail_id ON messages
     WHEN OLD.account_id IS NOT NEW.account_id OR OLD.folder_path IS NOT NEW.folder_path OR OLD.uid IS NOT NEW.uid
       OR OLD.uid_validity IS NOT NEW.uid_validity OR OLD.gmail_id IS NOT NEW.gmail_id
@@ -2734,10 +2735,14 @@ function singleMessageId(value) {
 function captureDisposition(accountId, input) {
   const kind = input?.kind === "forward" ? "forwarded" : ["reply", "all"].includes(input?.kind) ? "replied" : null;
   const row = kind && messageById(input.sourceMessageId);
-  if (!row || row.account_id !== accountId || row.is_draft || accountById(accountId)?.mail_transport !== "gmail_api") return null;
-  // A stable provider identity is required. Unbound legacy rows stay unknown.
-  if (!row.gmail_id || (kind === "replied" && input.inReplyTo !== row.rfc_message_id)) return null;
-  return { accountId, generation: accountById(accountId).gmail_generation, providerId: row.gmail_id, kind };
+  const account = accountById(accountId);
+  if (!row || row.account_id !== accountId || row.is_draft || account?.mail_transport !== "gmail_api") return null;
+  // The explicit source, not thread membership or an RFC guess, proves which
+  // provider message was answered. Reject stale/unbound cache identities.
+  if (!row.gmail_id || row.uid_validity !== account.gmail_generation || gmailMap(accountId, row.gmail_id)?.local_uid !== row.uid) return null;
+  const parent = input.inReplyTo == null || input.inReplyTo === "" ? null : input.inReplyTo;
+  if (kind === "replied" && parent !== (row.rfc_message_id || null)) return null;
+  return { accountId, generation: account.gmail_generation, providerId: row.gmail_id, kind };
 }
 
 function confirmDisposition(accountId, proof) {
@@ -2874,6 +2879,22 @@ function gmailVerifyPage(accountId, folderPath, beforeUid = 0) {
   [accountId, folderPath, ...(beforeUid > 0 ? [beforeUid] : [])]);
 }
 
+function gmailReplyBackfillPage(accountId, folderPath) {
+  // The committed MIME inspection marker is the durable queue position. A
+  // failure leaves the candidate eligible for retry; inspected reactions and
+  // malformed MIME leave the queue without ever implying a reply.
+  return all(`SELECT m.id, m.gmail_id FROM messages m
+    JOIN accounts a ON a.id = m.account_id AND a.mail_transport = 'gmail_api' AND a.gmail_generation = m.uid_validity
+    JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder_path AND f.provider_id = 'SENT'
+    JOIN gmail_messages g ON g.account_id = m.account_id AND g.provider_id = m.gmail_id AND g.local_uid = m.uid
+    WHERE m.account_id = ? AND m.folder_path = ? AND m.reply_inference_eligible IS NULL
+      AND m.is_draft = 0 AND m.in_reply_to IS NOT NULL AND m.draft_pending = 0 AND m.uid > 0
+      AND NOT EXISTS (SELECT 1 FROM mail_actions h WHERE h.message_id = m.id
+        AND (h.phase IN ('accepted', 'publishing') OR (h.phase = 'closed' AND h.receipt = 'unknown'))
+        AND CASE WHEN json_valid(h.intent_json) THEN json_extract(h.intent_json, '$.kind') END = 'remove')
+    ORDER BY m.uid DESC LIMIT 20`, [accountId, folderPath]);
+}
+
 module.exports = {
   captureDisposition, confirmDisposition, refreshDisposition(messageId, provider) {
     transaction(() => {
@@ -2890,7 +2911,7 @@ module.exports = {
   timelineThread: (accountId, threadId) => all(`SELECT ${metadataColumns("messages")} FROM messages WHERE account_id = ? AND thread_id = ? ORDER BY list_sort_ts ASC, id ASC LIMIT 1001`, [accountId, threadId]),
   notificationState,
   enableGmail, setMailTransport, gmailMigrationBlockers, gmailMap, gmailLabelMemberships, rememberGmail, gmailAlias, bindGmailAlias,
-  gmailLegacy, applyGmailMessage, gmailCopies, pruneGmailCopies, gmailSyncState, gmailVerifyPage,
+  gmailLegacy, applyGmailMessage, gmailCopies, pruneGmailCopies, gmailSyncState, gmailVerifyPage, gmailReplyBackfillPage,
   open,
   close,
   indexProgress: () => ({ ...indexState }),
