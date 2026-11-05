@@ -188,17 +188,22 @@ test('repair excludes reaction and malformed MIME, duplicate identities, drafts,
     else Object.assign(child.payload, part);
     await f.legacy(child.id, `<${name}@fixture.invalid>`, child);
   }
-  await f.original('malformed'); const malformed = message('sent-malformed', ['SENT']); malformed.payload.body.data = 'invalid!';
-  await f.legacy(malformed.id, '<malformed@fixture.invalid>', malformed);
+  for (const kind of ['malformed', 'missing-type', 'empty-multipart']) {
+    await f.original(kind); const child = message('sent-' + kind, ['SENT']);
+    if (kind === 'malformed') child.payload.body.data = 'invalid!';
+    else if (kind === 'missing-type') delete child.payload.mimeType;
+    else child.payload.mimeType = 'multipart/mixed';
+    await f.legacy(child.id, `<${kind}@fixture.invalid>`, child);
+  }
   await f.original('duplicate'); await f.original('other-delivery', '<duplicate@fixture.invalid>'); await f.legacy('sent-duplicate', '<duplicate@fixture.invalid>');
   await f.original('references'); const refs = message('sent-references', ['SENT']); refs.payload.headers.push({ name: 'References', value: '<references@fixture.invalid>' });
   await f.session().adopt(refs);
   await f.original('draft-parent'); const draft = message('draft-child', ['SENT', 'DRAFT']); await f.legacy(draft.id, '<draft-parent@fixture.invalid>', draft);
   await f.original('incoming-parent'); const incoming = message('incoming-child', ['INBOX']);
   incoming.payload.headers.push({ name: 'In-Reply-To', value: '<incoming-parent@fixture.invalid>' }); await f.session().adopt(incoming);
-  await f.session().sync(f.sent); await f.session().sync(f.sent);
-  for (const name of ['reaction-false', 'reaction-true', 'malformed', 'duplicate', 'other-delivery', 'references', 'draft-parent', 'incoming-parent']) assert.equal(f.row(name).replied, null, name);
-  for (const name of ['reaction-false', 'reaction-true', 'malformed']) assert.equal(f.row('sent-' + name).reply_inference_eligible, 0);
+  for (let pass = 0; pass < 3; pass++) await f.session().sync(f.sent);
+  for (const name of ['reaction-false', 'reaction-true', 'malformed', 'missing-type', 'empty-multipart', 'duplicate', 'other-delivery', 'references', 'draft-parent', 'incoming-parent']) assert.equal(f.row(name).replied, null, name);
+  for (const name of ['reaction-false', 'reaction-true', 'malformed', 'missing-type', 'empty-multipart']) assert.equal(f.row('sent-' + name).reply_inference_eligible, 0);
   assert.equal(f.db.gmailReplyBackfillPage('a', f.sent).length, 0);
   const count = f.reads().length; await f.session().sync(f.sent); assert.equal(f.reads().length, count, 'excluded MIME is durably inspected');
 });
