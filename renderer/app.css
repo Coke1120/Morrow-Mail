@@ -3522,7 +3522,8 @@ button.chip {
   font-weight: 500;
 }
 
-button.chip[aria-current="true"] {
+button.chip[aria-current="true"],
+button.chip[aria-pressed="true"] {
   border-color: transparent;
   background: var(--chip-on);
   color: var(--chip-ink);
@@ -4448,7 +4449,7 @@ button.attachment-name:hover { text-decoration: underline; }
 :root[data-theme="dark"] button.folder:not([aria-current="true"]),
 :root[data-theme="dark"] button.message:not([aria-current="true"]),
 :root[data-theme="dark"] button.thread-item:not([aria-current="true"]),
-:root[data-theme="dark"] button.chip:not([aria-current="true"]) {
+:root[data-theme="dark"] button.chip:not([aria-current="true"]):not([aria-pressed="true"]) {
   background-color: transparent;
   color: inherit;
 }
