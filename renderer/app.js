@@ -4223,8 +4223,16 @@ function replyParties(email, self, all) {
 function prefixedSubject(subject, prefix) {
   const text = String(subject || "").trim();
   if (!text) return prefix;
-  if (prefix === "Re:" && /^re\s*:/i.test(text)) return text;
-  if (prefix === "Fwd:" && /^(?:fwd|fw)\s*:/i.test(text)) return text;
+  // Only fresh reply/forward seeds use this helper. Saved/edited subjects stay
+  // verbatim. Collapse consecutive prefixes of the same action, preserving a
+  // different action (for example Fwd: Re: Topic) and the original Unicode text.
+  const pattern = prefix === "Re:"
+    ? /^(?:re|aw|回覆|回复|回復|答覆|答复|返信)\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\))?\s*[:：]\s*/i
+    : /^(?:fwd|fw|wg|轉寄|转寄|轉發|转发|転送)\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\))?\s*[:：]\s*/i;
+  let rest = text, count = 0, match;
+  while ((match = rest.match(pattern))) { rest = rest.slice(match[0].length); count++; }
+  if (count === 1 && (prefix === "Re:" ? /^re\s*:/i : /^(?:fwd|fw)\s*:/i).test(text)) return text;
+  if (count) return rest ? `${prefix} ${rest}` : prefix;
   return `${prefix} ${text}`;
 }
 
@@ -17223,6 +17231,7 @@ async function installUpdate() {
 
 // No implicit saves or sends: the user must resolve editing before restart.
 function updateRestartBlocked() {
+  if (brainCadenceSave) return true;
   if (attachmentTasks.size) return true;
   if (Array.from(document.querySelectorAll("dialog[open]")).some(node => node.id !== "about-dialog")) return true;
   if (state.composePending || state.composeQueued || state.composeInitializing || state.oauthPending || state.connectPending || state.busy || sendTimer) return true;
@@ -17722,6 +17731,58 @@ async function saveScheduleDelay() {
   return pending;
 }
 
+let brainSettingsVersion = 0;
+let brainCadenceSave = null;
+
+async function loadBrainSettings() {
+  const version = ++brainSettingsVersion;
+  if (brainCadenceSave) await brainCadenceSave.catch(() => {});
+  const status = await call("emailBrain:getRefreshStatus");
+  if (version !== brainSettingsVersion || !$("settings").open) return;
+  $("pref-brain-refresh").value = status.cadence;
+  $("brain-refresh-permission").textContent = status.cadence === "manual"
+    ? "Manual only keeps automatic refresh off. Explicit AI actions still need AI data permission in Settings → AI."
+    : status.backgroundAllowed
+    ? "Background AI permission is allowed for the saved connection. Changing frequency never grants permission."
+    : "Automatic refresh is paused until background AI data permission is allowed in Settings → AI. Changing frequency never grants permission.";
+  $("brain-refresh-last").textContent = status.lastSuccessAt
+    ? "Last successful refresh: " + formatBrainTime(status.lastSuccessAt) : "No successful profile refresh yet.";
+  $("brain-refresh-next").textContent = status.running
+    ? "Profile analysis is running. Changes to frequency apply to future attempts."
+    : status.cadence === "manual"
+    ? "Automatic profile refresh is off. Refresh and Rebuild on Brain → Profile remain available."
+    : "Next eligible check: " + formatBrainTime(status.nextEligibleAt) + ". Runs while Morrow Mail is open and background AI permission is allowed.";
+}
+
+async function saveBrainCadence() {
+  if (brainCadenceSave) return;
+  ++brainSettingsVersion;
+  const control = $("pref-brain-refresh");
+  const value = control.value;
+  control.disabled = true;
+  settingsInlineStatus($("brain-refresh-setting-status"), "Saving…", false);
+  const pending = api.invoke("morrow:configSetBrainRefreshCadence", value);
+  brainCadenceSave = pending;
+  let error = "";
+  try {
+    const saved = await pending;
+    if (saved !== value) throw new Error("The refresh frequency was not saved. Try again.");
+  } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+  finally {
+    if (brainCadenceSave === pending) brainCadenceSave = null;
+    control.disabled = false;
+  }
+  try { await loadBrainSettings(); }
+  catch (cause) { error = error || (cause instanceof Error ? cause.message : String(cause)); }
+  settingsInlineStatus($("brain-refresh-setting-status"), error || "Refresh frequency saved.", !!error);
+}
+
+function refreshVisibleBrainSettings() {
+  if ($("settings")?.open && $("settings-brain") && !$("settings-brain").hidden) {
+    loadBrainSettings().catch(error => settingsInlineStatus($("brain-refresh-setting-status"), error.message || String(error), true));
+  }
+}
+
 const settingsFoldPending = new Map();
 const settingsFoldLoaded = new Set();
 const settingsFoldLoadingLabels = {
@@ -17730,6 +17791,7 @@ const settingsFoldLoadingLabels = {
   mailbox: "Loading mailbox tools…",
   ai: "Loading AI settings…",
   compose: "Loading compose defaults…",
+  brain: "Loading Brain settings…",
   ooo: "Checking Out of Office status…",
   bot: "Loading Bot access…",
 };
@@ -17772,6 +17834,7 @@ function loadSettingsFold(name) {
   if (name === "support") return Promise.resolve();
   const key = settingsFoldKey(name);
   if (settingsFoldLoaded.has(key)) {
+    if (name === "brain") return loadBrainSettings();
     if (name === "compose") return loadComposeSettings();
     if (name === "mail") return refreshMailNotificationStatus();
     return Promise.resolve();
@@ -17798,6 +17861,7 @@ function loadSettingsFold(name) {
     }
     else if (name === "mailbox") { renderSettingsAccounts(); await loadSettingsCapabilities(); await loadGoogleOauthClient(); }
     else if (name === "compose") await loadComposeSettings();
+    else if (name === "brain") await loadBrainSettings();
     else if (name === "ooo" && !oooDirty()) {
       if (await loadVacation() !== true) return;
     }
@@ -20473,18 +20537,20 @@ async function requestBrainJob(channels, mode, params) {
   try {
     let accepted = false;
     let cached = false;
+    let runningMode = mode;
     const list = Array.isArray(channels) && channels.length ? channels : [];
     for (const channel of list) {
       const result = await call(channel, params || {});
       accepted = !!(result && result.accepted);
       cached = !!(result && result.cached);
+      if (result && result.mode) runningMode = result.mode;
       if (accepted) break;
     }
     brainView = {
       ...brainView,
       accepted,
-      refreshing: accepted && !cached && mode !== "rebuild",
-      rebuilding: accepted && mode === "rebuild",
+      refreshing: accepted && !cached && runningMode !== "rebuild",
+      rebuilding: accepted && !cached && runningMode === "rebuild",
       percent: accepted && !cached ? 15 : null,
       error: "",
     };
@@ -20553,6 +20619,7 @@ async function forgetBrainItem(row) {
 }
 
 function onBrainRefreshState(payload) {
+  refreshVisibleBrainSettings();
   const data = payload && typeof payload === "object" ? payload : {};
   brainView = {
     ...brainView,
@@ -20563,6 +20630,7 @@ function onBrainRefreshState(payload) {
 }
 
 function onBrainRebuildState(payload) {
+  refreshVisibleBrainSettings();
   const data = payload && typeof payload === "object" ? payload : {};
   brainView = {
     ...brainView,
@@ -20575,6 +20643,7 @@ function onBrainRebuildState(payload) {
 }
 
 function onBrainUpdated() {
+  refreshVisibleBrainSettings();
   if (!brainIsOpen()) return;
   loadBrain().catch((error) => {
     brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
@@ -26129,6 +26198,8 @@ function wire() {
   wireMailColumnEditor();
   wireMailView();
   wireSettingsFolds();
+  $("pref-brain-refresh").addEventListener("change", saveBrainCadence);
+  $("brain-refresh-ai-settings").addEventListener("click", () => revealSettingsFold("ai"));
   wireAgentTabs();
   wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {

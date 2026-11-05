@@ -553,10 +553,15 @@ test("host background classification survives async work and cannot be removed b
   const scheduled = [];
   const module = { exports: {} };
   const sandbox = vm.createContext({ module, exports: module.exports, __dirname: path.dirname(sourcePath),
+    process: { pid: 1 },
     require(name) {
       if (name === "electron") return { BrowserWindow: { getAllWindows: () => [] } };
       if (name === "./ai-config") return { loadConfig: () => ({ authMode: "chatgpt", apiKey: "" }), userDataDir: () => "/tmp/morrow-nonexistent-synthetic-profile" };
       if (name === "./chatgpt-auth") return { getAuth: () => ({ backgroundAllowed: () => consent }) };
+      if (name === "./settings") return { answer: () => "daily" };
+      if (name === "./ai-consent") return { getConsent: () => ({ acquire: () => ({ check() {}, release() {} }) }) };
+      if (name === "./ai-context") return { ...context, operation: work => work(), stamp: () => undefined };
+      if (name === "fs") return { readFileSync() { throw Error("No synthetic profile yet"); }, mkdirSync() {}, writeFileSync() {}, renameSync() {} };
       if (name === "./update-quiescence") return { gate: { run: work => work() } };
       return load(name);
     },
@@ -567,15 +572,19 @@ test("host background classification survives async work and cannot be removed b
   vm.runInContext(fs.readFileSync(sourcePath, "utf8"), sandbox);
   sandbox.record = () => { recorded.push(context.isBackground()); return Promise.resolve(); };
   vm.runInContext("analyzeMail = record;", sandbox);
+  async function settleProfile() { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)); }
   module.exports.answer("emailBrain:refresh", [{ source: "open" }]);
   scheduled.shift()();
+  await settleProfile();
+  assert.deepEqual(recorded, [], "page-open refresh also requires the account background opt-in");
   module.exports.answer("emailBrain:refresh", [{ source: "manual" }]);
   scheduled.shift()();
+  await settleProfile();
   module.exports.scheduleLivingRefresh();
   hourly();
-  assert.deepEqual(recorded, [true, false], "hourly refresh cannot start without account opt-in");
+  assert.deepEqual(recorded, [false], "hourly eligibility checks cannot start AI without account opt-in");
   consent = true; hourly();
-  assert.deepEqual(recorded, [true, false, true]);
+  assert.deepEqual(recorded, [false, true]);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-chatgpt-background-"));
   const previousDir = process.env.MORROW_AI_CONFIG_DIR;
   const responses = require("../host/chatgpt-responses");
