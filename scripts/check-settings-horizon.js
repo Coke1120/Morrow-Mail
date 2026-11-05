@@ -8,7 +8,7 @@ const { renderer } = require("./check-ux-workflows");
 
 async function run() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-horizon-"));
-  const env = Object.fromEntries(["MORROW_USER_DATA", "MORROW_MAIL_DIR", "MORROW_MAIL_SECRETS", "MORROW_PAGE_DELAY_MS"]
+  const env = Object.fromEntries(["MORROW_USER_DATA", "MORROW_MAIL_DIR", "MORROW_MAIL_SECRETS", "MORROW_PAGE_DELAY_MS", "MORROW_SYNC_TICK_MS"]
     .map(key => [key, process.env[key]]));
   Object.assign(process.env, { MORROW_USER_DATA: dir, MORROW_MAIL_DIR: dir, MORROW_MAIL_SECRETS: "memory", MORROW_PAGE_DELAY_MS: "0" });
   const settings = require("../host/settings");
@@ -17,6 +17,17 @@ async function run() {
   const remote = require("../host/mail/remote");
   const secrets = require("../host/mail/secrets");
   const saved = { withClient: remote.withClient, searchUids: remote.searchUids, fetchMessages: remote.fetchMessages };
+  async function drainBodyFixture() {
+    engine.resetOvernightForTest();
+    // Keep fake transport ownership until any already-started fill settles.
+    // No wall-clock sleeps or live provider work belong in fixture cleanup.
+    for (let turn = 0; turn < 100; turn++) {
+      await new Promise(resolve => setImmediate(resolve));
+      const lane = engine.mailQueueForTest("horizon");
+      if (!lane.active && !lane.user && !lane.background) return;
+    }
+    assert.fail("The horizon fixture left mailbox work active during cleanup.");
+  }
   try {
     assert.equal(settings.syncHorizonDays(), 0);
     assert.equal(settings.answer("morrow:configGetCompactMessageList", []), true);
@@ -45,7 +56,7 @@ async function run() {
     let changeDuringFetch = false, deletedOldest = false, validity = 1;
     remote.withClient = async (_account, _secret, work) => work({});
     remote.searchUids = async (_client, folder, query) => {
-      searches.push({ folder, query });
+      searches.push({ folder, query, observedAt: Date.now() });
       const all = folder === "Empty" ? [] : folder === "Notes" ? [1, 501, 1101]
         : Array.from({ length: count }, (_, i) => i + 1).filter(uid => !deletedOldest || uid !== 1);
       const uids = all.filter(uid => (!query.since || header(uid).listSortTs >= query.since.getTime())
@@ -66,6 +77,18 @@ async function run() {
       assert.equal(result.success, true);
       return result.data;
     };
+    const syncComplete = async (folderId = "INBOX") => {
+      // A healthy pass may stop at the production deadline on slow durable I/O.
+      // Drive the same Sync more operation, with a fixture-sized work bound,
+      // rather than requiring 1,005+ rows to finish in one 25-second pass.
+      for (let pass = 0; pass < 30; pass++) {
+        const result = await sync(folderId);
+        if (result.initialSyncDone) return result;
+      }
+      assert.fail("The bounded horizon fixture did not finish after 30 passes.");
+    };
+    const sinceMatches = days => searches.every(({ query, observedAt }) => query.since instanceof Date
+      && query.since.getTime() >= syncAt - days * day && query.since.getTime() <= observedAt - days * day);
     const ui = renderer({ hostCall: async (channel, params) => {
       const result = await engine.answer(channel, [params]);
       if (!result.success) throw new Error(result.error.message);
@@ -87,25 +110,33 @@ async function run() {
     }
 
     await choose(180);
-    // windowStart uses Date.now() at sync start; refresh so a slow first sync cannot stale the assert.
+    // Verify an unfinished deadline pass independently of machine speed, then
+    // resume it. Horizon assertions use observed call intervals, not a latency
+    // threshold that would fail when a later pass starts over 10 seconds later.
     let syncAt = Date.now();
-    await sync();
+    process.env.MORROW_SYNC_TICK_MS = "1";
+    const partial = await sync();
+    assert.equal(partial.total, 100);
+    assert.equal(partial.initialSyncDone, false);
+    delete process.env.MORROW_SYNC_TICK_MS;
+    await syncComplete();
     assert.equal(list().total, 1005);
     assert.equal(db.folderByPath("horizon", "INBOX").sync_horizon_days, 180);
-    assert.ok(searches.every(({ query }) => Math.abs(syncAt - query.since.getTime() - 180 * day) < 10000));
+    assert.ok(sinceMatches(180));
     assert.ok(fetched.every(({ uids }) => uids.length <= 100), "header downloads stay bounded");
     await choose(365);
     assert.equal(list().initialSyncDone, false, "a completed shorter horizon must catch up");
     searches.length = 0;
     syncAt = Date.now();
-    await sync();
+    await syncComplete();
     assert.equal(list().total, 1605);
     assert.equal(db.folderByPath("horizon", "INBOX").sync_horizon_days, 365);
-    assert.ok(searches.every(({ query }) => !query.uid && Math.abs(syncAt - query.since.getTime() - 365 * day) < 10000));
+    assert.ok(searches.every(({ query }) => !query.uid));
+    assert.ok(sinceMatches(365));
     await choose(0);
     assert.equal(list().initialSyncDone, false);
     searches.length = 0;
-    await sync();
+    await syncComplete();
     assert.equal(list().total, count);
     assert.equal(list().initialSyncDone, true);
     assert.equal(db.folderByPath("horizon", "INBOX").sync_horizon_days, 0);
@@ -160,6 +191,7 @@ async function run() {
       { cwd: path.join(__dirname, ".."), encoding: "utf8" });
     assert.equal(reloaded.status, 0, reloaded.stderr);
     assert.deepEqual(JSON.parse(reloaded.stdout), {days:0,compact:true}, "All and compact mode survive a new process");
+    await drainBodyFixture();
     await db.close();
     await engine.init();
     assert.equal(list().total, count - 1);
@@ -177,6 +209,7 @@ async function run() {
     console.error("settings-horizon-primary-failure", error);
     throw error;
   } finally {
+    await drainBodyFixture();
     Object.assign(remote, saved);
     secrets.deletePassword("horizon");
     engine.syncGates.delete("horizon");
