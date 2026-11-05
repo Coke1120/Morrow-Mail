@@ -63,8 +63,13 @@ messages after the current operation, not an already submitted provider move.
 Local storage and partial/unknown results survive closing a window. The local
 root stays outside sending/account-settings pickers. New mail selects an actual
 connected sender. Local reading and attachments work after disconnect, without
-credential access. Local search has its own scope; All Account Mail and global
-connected-account search keep their established scope.
+credential access. Entering Local Folders defaults search to its own scope. An explicit connected-
+account scope survives repeated submissions and account metadata refreshes.
+Entering a local folder again restores the local default; connected aggregate
+views clear that local default. All Account Mail and global connected-account
+search keep their established scope. The reader Trash button follows the shell selection,
+including selected rows hidden by the list filter; independent readers retain
+their single-message scope. Local Trash confirmation names the full count.
 
 No MBOX import, upload/restore to a provider, local reply/AI actions, bot/CLI
 extension, local permanent deletion or drag/drop is included. Provider Trash can
