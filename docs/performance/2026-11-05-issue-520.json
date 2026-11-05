@@ -1,0 +1,3199 @@
+{
+  "description": "Paired serial synthetic host/SQLite observations for issue #520; no live accounts or native frames.",
+  "baselineSource": "e0ca1151e8fbf08929266463afbda6a382583786",
+  "candidateCodeSource": "1a2a26059e0a26cced8f4da8b4dab90c8bfcece7",
+  "trials": {
+    "baseline-10k": {
+      "sourceSha": "e0ca1151e8fbf08929266463afbda6a382583786",
+      "harnessSha256": "47285390fad7e9538d53e8badb379b891c280d3540e9576116667a6d425a1c6f",
+      "fixtureSha256": "feafa31bb7856769b36f8e78d875a896bfe13cdae7663d04b0d579b38fa84121",
+      "node": "v24.19.0",
+      "electronPackageVersion": "33.4.11",
+      "sqlite": "3.53.2",
+      "platform": "linux",
+      "arch": "x64",
+      "fixture": {
+        "count": 10000,
+        "split": "95/5 percent, two accounts, one folder each",
+        "bodyBytes": 270,
+        "terms": "common/alpha all rows; rareterm 1/97; uniqueonly one small-account row; uniquelarge one large-account row added before timing; tied dates every three rows",
+        "pending": [
+          0,
+          1,
+          200
+        ]
+      },
+      "rounds": 5,
+      "samples": [
+        {
+          "label": "search.common.global",
+          "medianMs": 36.99,
+          "raw": [
+            {
+              "elapsedMs": 37.379,
+              "maxCallbackGapMs": 37.525,
+              "callbacks": 2,
+              "sampledRssBytes": 94277632
+            },
+            {
+              "elapsedMs": 36.99,
+              "maxCallbackGapMs": 37.053,
+              "callbacks": 2,
+              "sampledRssBytes": 94408704
+            },
+            {
+              "elapsedMs": 36.676,
+              "maxCallbackGapMs": 37.084,
+              "callbacks": 2,
+              "sampledRssBytes": 94408704
+            },
+            {
+              "elapsedMs": 37.209,
+              "maxCallbackGapMs": 37.259,
+              "callbacks": 2,
+              "sampledRssBytes": 94408704
+            },
+            {
+              "elapsedMs": 36.262,
+              "maxCallbackGapMs": 36.318,
+              "callbacks": 2,
+              "sampledRssBytes": 94408704
+            }
+          ]
+        },
+        {
+          "label": "search.common.large-account",
+          "medianMs": 63.795,
+          "raw": [
+            {
+              "elapsedMs": 65.332,
+              "maxCallbackGapMs": 65.81,
+              "callbacks": 2,
+              "sampledRssBytes": 101224448
+            },
+            {
+              "elapsedMs": 67.423,
+              "maxCallbackGapMs": 67.494,
+              "callbacks": 2,
+              "sampledRssBytes": 101224448
+            },
+            {
+              "elapsedMs": 63.109,
+              "maxCallbackGapMs": 63.18,
+              "callbacks": 2,
+              "sampledRssBytes": 101355520
+            },
+            {
+              "elapsedMs": 63.795,
+              "maxCallbackGapMs": 63.877,
+              "callbacks": 2,
+              "sampledRssBytes": 101748736
+            },
+            {
+              "elapsedMs": 63.058,
+              "maxCallbackGapMs": 63.112,
+              "callbacks": 2,
+              "sampledRssBytes": 101748736
+            }
+          ]
+        },
+        {
+          "label": "search.common.small-account",
+          "medianMs": 3.85,
+          "raw": [
+            {
+              "elapsedMs": 3.82,
+              "maxCallbackGapMs": 3.836,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 3.85,
+              "maxCallbackGapMs": 3.866,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 3.681,
+              "maxCallbackGapMs": 3.695,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 3.894,
+              "maxCallbackGapMs": 3.909,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 4.1,
+              "maxCallbackGapMs": 4.412,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            }
+          ]
+        },
+        {
+          "label": "search.rare.scoped",
+          "medianMs": 0.309,
+          "raw": [
+            {
+              "elapsedMs": 0.318,
+              "maxCallbackGapMs": 0.333,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 0.327,
+              "maxCallbackGapMs": 0.34,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 0.293,
+              "maxCallbackGapMs": 0.337,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 0.303,
+              "maxCallbackGapMs": 0.313,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 0.309,
+              "maxCallbackGapMs": 0.321,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            }
+          ]
+        },
+        {
+          "label": "search.rare.large-account",
+          "medianMs": 1.524,
+          "raw": [
+            {
+              "elapsedMs": 1.579,
+              "maxCallbackGapMs": 1.594,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 1.471,
+              "maxCallbackGapMs": 1.485,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 1.524,
+              "maxCallbackGapMs": 1.539,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 1.439,
+              "maxCallbackGapMs": 1.451,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 1.58,
+              "maxCallbackGapMs": 1.592,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            }
+          ]
+        },
+        {
+          "label": "search.rare-and-common",
+          "medianMs": 1.5,
+          "raw": [
+            {
+              "elapsedMs": 1.5,
+              "maxCallbackGapMs": 1.514,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 1.347,
+              "maxCallbackGapMs": 1.359,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 1.39,
+              "maxCallbackGapMs": 1.402,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 1.559,
+              "maxCallbackGapMs": 1.572,
+              "callbacks": 2,
+              "sampledRssBytes": 102010880
+            },
+            {
+              "elapsedMs": 1.65,
+              "maxCallbackGapMs": 1.665,
+              "callbacks": 2,
+              "sampledRssBytes": 102141952
+            }
+          ]
+        },
+        {
+          "label": "search.prefix",
+          "medianMs": 44.454,
+          "raw": [
+            {
+              "elapsedMs": 45.624,
+              "maxCallbackGapMs": 45.676,
+              "callbacks": 2,
+              "sampledRssBytes": 102273024
+            },
+            {
+              "elapsedMs": 45.068,
+              "maxCallbackGapMs": 45.12,
+              "callbacks": 2,
+              "sampledRssBytes": 102273024
+            },
+            {
+              "elapsedMs": 43.574,
+              "maxCallbackGapMs": 44.619,
+              "callbacks": 2,
+              "sampledRssBytes": 102404096
+            },
+            {
+              "elapsedMs": 43.465,
+              "maxCallbackGapMs": 43.514,
+              "callbacks": 2,
+              "sampledRssBytes": 102404096
+            },
+            {
+              "elapsedMs": 44.454,
+              "maxCallbackGapMs": 44.506,
+              "callbacks": 2,
+              "sampledRssBytes": 102404096
+            }
+          ]
+        },
+        {
+          "label": "pending.0",
+          "medianMs": 1.442,
+          "raw": [
+            {
+              "elapsedMs": 1.442,
+              "maxCallbackGapMs": 1.457,
+              "callbacks": 2,
+              "sampledRssBytes": 102404096
+            },
+            {
+              "elapsedMs": 1.362,
+              "maxCallbackGapMs": 1.375,
+              "callbacks": 2,
+              "sampledRssBytes": 102404096
+            },
+            {
+              "elapsedMs": 1.548,
+              "maxCallbackGapMs": 1.563,
+              "callbacks": 2,
+              "sampledRssBytes": 102404096
+            },
+            {
+              "elapsedMs": 1.569,
+              "maxCallbackGapMs": 1.583,
+              "callbacks": 2,
+              "sampledRssBytes": 102404096
+            },
+            {
+              "elapsedMs": 1.424,
+              "maxCallbackGapMs": 1.436,
+              "callbacks": 2,
+              "sampledRssBytes": 102404096
+            }
+          ]
+        },
+        {
+          "label": "pending.0.deep",
+          "medianMs": 1.493,
+          "raw": [
+            {
+              "elapsedMs": 1.426,
+              "maxCallbackGapMs": 1.439,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.792,
+              "maxCallbackGapMs": 1.807,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.503,
+              "maxCallbackGapMs": 1.533,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.488,
+              "maxCallbackGapMs": 1.502,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.493,
+              "maxCallbackGapMs": 1.506,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            }
+          ]
+        },
+        {
+          "label": "pending.1",
+          "medianMs": 1.477,
+          "raw": [
+            {
+              "elapsedMs": 1.466,
+              "maxCallbackGapMs": 1.479,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.477,
+              "maxCallbackGapMs": 1.491,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.622,
+              "maxCallbackGapMs": 1.809,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.476,
+              "maxCallbackGapMs": 1.489,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.491,
+              "maxCallbackGapMs": 1.504,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            }
+          ]
+        },
+        {
+          "label": "pending.1.deep",
+          "medianMs": 1.321,
+          "raw": [
+            {
+              "elapsedMs": 1.335,
+              "maxCallbackGapMs": 1.348,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.393,
+              "maxCallbackGapMs": 1.407,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.304,
+              "maxCallbackGapMs": 1.317,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.321,
+              "maxCallbackGapMs": 1.333,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            },
+            {
+              "elapsedMs": 1.313,
+              "maxCallbackGapMs": 1.323,
+              "callbacks": 2,
+              "sampledRssBytes": 102535168
+            }
+          ]
+        },
+        {
+          "label": "pending.200",
+          "medianMs": 3.896,
+          "raw": [
+            {
+              "elapsedMs": 5.47,
+              "maxCallbackGapMs": 5.501,
+              "callbacks": 2,
+              "sampledRssBytes": 109481984
+            },
+            {
+              "elapsedMs": 3.896,
+              "maxCallbackGapMs": 3.923,
+              "callbacks": 2,
+              "sampledRssBytes": 109481984
+            },
+            {
+              "elapsedMs": 3.683,
+              "maxCallbackGapMs": 3.712,
+              "callbacks": 2,
+              "sampledRssBytes": 109481984
+            },
+            {
+              "elapsedMs": 4.289,
+              "maxCallbackGapMs": 4.314,
+              "callbacks": 2,
+              "sampledRssBytes": 109613056
+            },
+            {
+              "elapsedMs": 3.099,
+              "maxCallbackGapMs": 3.116,
+              "callbacks": 2,
+              "sampledRssBytes": 109613056
+            }
+          ]
+        },
+        {
+          "label": "pending.200.deep",
+          "medianMs": 1.347,
+          "raw": [
+            {
+              "elapsedMs": 1.316,
+              "maxCallbackGapMs": 1.328,
+              "callbacks": 2,
+              "sampledRssBytes": 109613056
+            },
+            {
+              "elapsedMs": 1.347,
+              "maxCallbackGapMs": 1.357,
+              "callbacks": 2,
+              "sampledRssBytes": 109613056
+            },
+            {
+              "elapsedMs": 1.295,
+              "maxCallbackGapMs": 1.306,
+              "callbacks": 2,
+              "sampledRssBytes": 109613056
+            },
+            {
+              "elapsedMs": 1.442,
+              "maxCallbackGapMs": 1.456,
+              "callbacks": 2,
+              "sampledRssBytes": 109613056
+            },
+            {
+              "elapsedMs": 1.562,
+              "maxCallbackGapMs": 1.576,
+              "callbacks": 2,
+              "sampledRssBytes": 109613056
+            }
+          ]
+        },
+        {
+          "label": "pending.maintenance-200",
+          "medianMs": 46.41,
+          "raw": [
+            {
+              "elapsedMs": 50.642,
+              "maxCallbackGapMs": 50.678,
+              "callbacks": 2,
+              "sampledRssBytes": 143560704
+            },
+            {
+              "elapsedMs": 46.41,
+              "maxCallbackGapMs": 46.448,
+              "callbacks": 2,
+              "sampledRssBytes": 161255424
+            },
+            {
+              "elapsedMs": 47.992,
+              "maxCallbackGapMs": 79.589,
+              "callbacks": 2,
+              "sampledRssBytes": 179736576
+            },
+            {
+              "elapsedMs": 40.246,
+              "maxCallbackGapMs": 40.285,
+              "callbacks": 2,
+              "sampledRssBytes": 179736576
+            },
+            {
+              "elapsedMs": 36.747,
+              "maxCallbackGapMs": 36.781,
+              "callbacks": 2,
+              "sampledRssBytes": 179736576
+            }
+          ]
+        },
+        {
+          "label": "ingest.96-indexed",
+          "medianMs": 567.548,
+          "raw": [
+            {
+              "elapsedMs": 571.935,
+              "maxCallbackGapMs": 155.18,
+              "callbacks": 6,
+              "sampledRssBytes": 219127808
+            },
+            {
+              "elapsedMs": 567.548,
+              "maxCallbackGapMs": 153.864,
+              "callbacks": 6,
+              "sampledRssBytes": 249876480
+            },
+            {
+              "elapsedMs": 616.622,
+              "maxCallbackGapMs": 159.234,
+              "callbacks": 6,
+              "sampledRssBytes": 322183168
+            },
+            {
+              "elapsedMs": 516.313,
+              "maxCallbackGapMs": 132.748,
+              "callbacks": 6,
+              "sampledRssBytes": 350261248
+            },
+            {
+              "elapsedMs": 564.035,
+              "maxCallbackGapMs": 161.521,
+              "callbacks": 6,
+              "sampledRssBytes": 392273920
+            }
+          ]
+        },
+        {
+          "label": "ingest.oversized-late",
+          "medianMs": 223.631,
+          "raw": [
+            {
+              "elapsedMs": 220.509,
+              "maxCallbackGapMs": 126.751,
+              "callbacks": 4,
+              "sampledRssBytes": 435163136
+            },
+            {
+              "elapsedMs": 227.154,
+              "maxCallbackGapMs": 145.752,
+              "callbacks": 4,
+              "sampledRssBytes": 460066816
+            },
+            {
+              "elapsedMs": 262.009,
+              "maxCallbackGapMs": 174.573,
+              "callbacks": 4,
+              "sampledRssBytes": 447864832
+            },
+            {
+              "elapsedMs": 223.631,
+              "maxCallbackGapMs": 144.304,
+              "callbacks": 4,
+              "sampledRssBytes": 452984832
+            },
+            {
+              "elapsedMs": 223.374,
+              "maxCallbackGapMs": 146.338,
+              "callbacks": 4,
+              "sampledRssBytes": 471597056
+            }
+          ]
+        }
+      ],
+      "plans": {
+        "search.common.global": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f \n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\nJOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f \n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t1 ON t1.message_id = m.id\n     \n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE t1",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.common.large-account": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\nJOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t1 ON t1.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE t1",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.common.small-account": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\nJOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t1 ON t1.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE t1",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare.scoped": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SEARCH m USING INDEX messages_thread (account_id=?)",
+              "SEARCH t0 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare.large-account": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SEARCH m USING INDEX messages_thread (account_id=?)",
+              "SEARCH t0 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare-and-common": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\nJOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t1 ON t1.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE t1",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.prefix": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SEARCH m USING INDEX messages_thread (account_id=?)",
+              "SEARCH t0 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.0": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.0.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.1": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.1.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.200": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.200.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ]
+      },
+      "indexBytes": [],
+      "maxSampledRssBytes": 471597056,
+      "setup": {
+        "templateRestored": true,
+        "openMs": 128.616,
+        "checkpointBytes": 42835968
+      },
+      "limits": "Synthetic Linux host-only, warm cache, no Electron/native frames/provider/credentials; sampled RSS is not peak memory. Gaps cover entire passes. Individual SQL/index/journal/fsync remain synchronous."
+    },
+    "candidate-10k": {
+      "sourceSha": "1a2a26059e0a26cced8f4da8b4dab90c8bfcece7",
+      "harnessSha256": "47285390fad7e9538d53e8badb379b891c280d3540e9576116667a6d425a1c6f",
+      "fixtureSha256": "feafa31bb7856769b36f8e78d875a896bfe13cdae7663d04b0d579b38fa84121",
+      "node": "v24.19.0",
+      "electronPackageVersion": "33.4.11",
+      "sqlite": "3.53.2",
+      "platform": "linux",
+      "arch": "x64",
+      "fixture": {
+        "count": 10000,
+        "split": "95/5 percent, two accounts, one folder each",
+        "bodyBytes": 270,
+        "terms": "common/alpha all rows; rareterm 1/97; uniqueonly one small-account row; uniquelarge one large-account row added before timing; tied dates every three rows",
+        "pending": [
+          0,
+          1,
+          200
+        ]
+      },
+      "rounds": 5,
+      "samples": [
+        {
+          "label": "search.common.global",
+          "medianMs": 36.872,
+          "raw": [
+            {
+              "elapsedMs": 36.872,
+              "maxCallbackGapMs": 37.017,
+              "callbacks": 2,
+              "sampledRssBytes": 101785600
+            },
+            {
+              "elapsedMs": 39.89,
+              "maxCallbackGapMs": 39.949,
+              "callbacks": 2,
+              "sampledRssBytes": 101785600
+            },
+            {
+              "elapsedMs": 36.443,
+              "maxCallbackGapMs": 36.859,
+              "callbacks": 2,
+              "sampledRssBytes": 101785600
+            },
+            {
+              "elapsedMs": 37.461,
+              "maxCallbackGapMs": 37.511,
+              "callbacks": 2,
+              "sampledRssBytes": 101785600
+            },
+            {
+              "elapsedMs": 36.067,
+              "maxCallbackGapMs": 36.119,
+              "callbacks": 2,
+              "sampledRssBytes": 101785600
+            }
+          ]
+        },
+        {
+          "label": "search.common.large-account",
+          "medianMs": 41.874,
+          "raw": [
+            {
+              "elapsedMs": 40.48,
+              "maxCallbackGapMs": 41.004,
+              "callbacks": 2,
+              "sampledRssBytes": 102440960
+            },
+            {
+              "elapsedMs": 44.293,
+              "maxCallbackGapMs": 44.344,
+              "callbacks": 2,
+              "sampledRssBytes": 102440960
+            },
+            {
+              "elapsedMs": 41.874,
+              "maxCallbackGapMs": 41.925,
+              "callbacks": 2,
+              "sampledRssBytes": 102440960
+            },
+            {
+              "elapsedMs": 43.465,
+              "maxCallbackGapMs": 43.52,
+              "callbacks": 2,
+              "sampledRssBytes": 102440960
+            },
+            {
+              "elapsedMs": 40.792,
+              "maxCallbackGapMs": 40.844,
+              "callbacks": 2,
+              "sampledRssBytes": 102440960
+            }
+          ]
+        },
+        {
+          "label": "search.common.small-account",
+          "medianMs": 4.16,
+          "raw": [
+            {
+              "elapsedMs": 4.21,
+              "maxCallbackGapMs": 4.233,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 4.16,
+              "maxCallbackGapMs": 4.182,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 4.24,
+              "maxCallbackGapMs": 4.261,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 4.045,
+              "maxCallbackGapMs": 4.412,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 3.868,
+              "maxCallbackGapMs": 3.885,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            }
+          ]
+        },
+        {
+          "label": "search.rare.scoped",
+          "medianMs": 0.289,
+          "raw": [
+            {
+              "elapsedMs": 0.31,
+              "maxCallbackGapMs": 0.321,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 0.276,
+              "maxCallbackGapMs": 0.286,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 0.271,
+              "maxCallbackGapMs": 0.28,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 0.476,
+              "maxCallbackGapMs": 0.489,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 0.289,
+              "maxCallbackGapMs": 0.299,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            }
+          ]
+        },
+        {
+          "label": "search.rare.large-account",
+          "medianMs": 0.54,
+          "raw": [
+            {
+              "elapsedMs": 0.533,
+              "maxCallbackGapMs": 0.544,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 0.569,
+              "maxCallbackGapMs": 0.579,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 0.54,
+              "maxCallbackGapMs": 0.55,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 0.534,
+              "maxCallbackGapMs": 0.569,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            },
+            {
+              "elapsedMs": 0.558,
+              "maxCallbackGapMs": 0.569,
+              "callbacks": 2,
+              "sampledRssBytes": 102834176
+            }
+          ]
+        },
+        {
+          "label": "search.rare-and-common",
+          "medianMs": 0.575,
+          "raw": [
+            {
+              "elapsedMs": 0.575,
+              "maxCallbackGapMs": 0.589,
+              "callbacks": 2,
+              "sampledRssBytes": 102965248
+            },
+            {
+              "elapsedMs": 0.666,
+              "maxCallbackGapMs": 0.71,
+              "callbacks": 2,
+              "sampledRssBytes": 102965248
+            },
+            {
+              "elapsedMs": 0.666,
+              "maxCallbackGapMs": 0.68,
+              "callbacks": 2,
+              "sampledRssBytes": 102965248
+            },
+            {
+              "elapsedMs": 0.444,
+              "maxCallbackGapMs": 0.454,
+              "callbacks": 2,
+              "sampledRssBytes": 102965248
+            },
+            {
+              "elapsedMs": 0.461,
+              "maxCallbackGapMs": 0.473,
+              "callbacks": 2,
+              "sampledRssBytes": 102965248
+            }
+          ]
+        },
+        {
+          "label": "search.prefix",
+          "medianMs": 39.564,
+          "raw": [
+            {
+              "elapsedMs": 39.564,
+              "maxCallbackGapMs": 39.615,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 41.963,
+              "maxCallbackGapMs": 43.07,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 41.382,
+              "maxCallbackGapMs": 41.434,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 38.598,
+              "maxCallbackGapMs": 38.652,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 38.387,
+              "maxCallbackGapMs": 38.439,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            }
+          ]
+        },
+        {
+          "label": "pending.0",
+          "medianMs": 0.178,
+          "raw": [
+            {
+              "elapsedMs": 0.221,
+              "maxCallbackGapMs": 0.233,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.345,
+              "maxCallbackGapMs": 0.359,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.151,
+              "maxCallbackGapMs": 0.159,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.178,
+              "maxCallbackGapMs": 0.188,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.134,
+              "maxCallbackGapMs": 0.141,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            }
+          ]
+        },
+        {
+          "label": "pending.0.deep",
+          "medianMs": 0.134,
+          "raw": [
+            {
+              "elapsedMs": 0.21,
+              "maxCallbackGapMs": 0.22,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.152,
+              "maxCallbackGapMs": 0.16,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.134,
+              "maxCallbackGapMs": 0.141,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.127,
+              "maxCallbackGapMs": 0.134,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.123,
+              "maxCallbackGapMs": 0.13,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            }
+          ]
+        },
+        {
+          "label": "pending.1",
+          "medianMs": 0.202,
+          "raw": [
+            {
+              "elapsedMs": 0.198,
+              "maxCallbackGapMs": 0.207,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.141,
+              "maxCallbackGapMs": 0.149,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.227,
+              "maxCallbackGapMs": 0.238,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.21,
+              "maxCallbackGapMs": 0.22,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.202,
+              "maxCallbackGapMs": 0.212,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            }
+          ]
+        },
+        {
+          "label": "pending.1.deep",
+          "medianMs": 0.125,
+          "raw": [
+            {
+              "elapsedMs": 0.125,
+              "maxCallbackGapMs": 0.132,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.125,
+              "maxCallbackGapMs": 0.132,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.121,
+              "maxCallbackGapMs": 0.127,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.154,
+              "maxCallbackGapMs": 0.162,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            },
+            {
+              "elapsedMs": 0.118,
+              "maxCallbackGapMs": 0.124,
+              "callbacks": 2,
+              "sampledRssBytes": 104013824
+            }
+          ]
+        },
+        {
+          "label": "pending.200",
+          "medianMs": 1.424,
+          "raw": [
+            {
+              "elapsedMs": 1.399,
+              "maxCallbackGapMs": 1.423,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            },
+            {
+              "elapsedMs": 1.748,
+              "maxCallbackGapMs": 1.766,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            },
+            {
+              "elapsedMs": 1.424,
+              "maxCallbackGapMs": 1.691,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            },
+            {
+              "elapsedMs": 1.434,
+              "maxCallbackGapMs": 1.448,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            },
+            {
+              "elapsedMs": 1.281,
+              "maxCallbackGapMs": 1.294,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            }
+          ]
+        },
+        {
+          "label": "pending.200.deep",
+          "medianMs": 0.156,
+          "raw": [
+            {
+              "elapsedMs": 0.156,
+              "maxCallbackGapMs": 0.164,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            },
+            {
+              "elapsedMs": 0.133,
+              "maxCallbackGapMs": 0.139,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            },
+            {
+              "elapsedMs": 0.265,
+              "maxCallbackGapMs": 0.277,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            },
+            {
+              "elapsedMs": 0.142,
+              "maxCallbackGapMs": 0.149,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            },
+            {
+              "elapsedMs": 0.452,
+              "maxCallbackGapMs": 0.465,
+              "callbacks": 2,
+              "sampledRssBytes": 109125632
+            }
+          ]
+        },
+        {
+          "label": "pending.maintenance-200",
+          "medianMs": 47.299,
+          "raw": [
+            {
+              "elapsedMs": 47.299,
+              "maxCallbackGapMs": 47.393,
+              "callbacks": 2,
+              "sampledRssBytes": 128262144
+            },
+            {
+              "elapsedMs": 54.498,
+              "maxCallbackGapMs": 54.535,
+              "callbacks": 2,
+              "sampledRssBytes": 145432576
+            },
+            {
+              "elapsedMs": 48.702,
+              "maxCallbackGapMs": 72.298,
+              "callbacks": 2,
+              "sampledRssBytes": 163127296
+            },
+            {
+              "elapsedMs": 43.482,
+              "maxCallbackGapMs": 43.518,
+              "callbacks": 2,
+              "sampledRssBytes": 163127296
+            },
+            {
+              "elapsedMs": 40.762,
+              "maxCallbackGapMs": 40.797,
+              "callbacks": 2,
+              "sampledRssBytes": 163127296
+            }
+          ]
+        },
+        {
+          "label": "ingest.96-indexed",
+          "medianMs": 771.092,
+          "raw": [
+            {
+              "elapsedMs": 736.853,
+              "maxCallbackGapMs": 20.518,
+              "callbacks": 52,
+              "sampledRssBytes": 185495552
+            },
+            {
+              "elapsedMs": 808.485,
+              "maxCallbackGapMs": 18.403,
+              "callbacks": 57,
+              "sampledRssBytes": 207560704
+            },
+            {
+              "elapsedMs": 907.882,
+              "maxCallbackGapMs": 21.399,
+              "callbacks": 69,
+              "sampledRssBytes": 220078080
+            },
+            {
+              "elapsedMs": 771.092,
+              "maxCallbackGapMs": 19.67,
+              "callbacks": 55,
+              "sampledRssBytes": 220475392
+            },
+            {
+              "elapsedMs": 689.6,
+              "maxCallbackGapMs": 17.132,
+              "callbacks": 50,
+              "sampledRssBytes": 220397568
+            }
+          ]
+        },
+        {
+          "label": "ingest.oversized-late",
+          "medianMs": 340.041,
+          "raw": [
+            {
+              "elapsedMs": 279.575,
+              "maxCallbackGapMs": 39.252,
+              "callbacks": 19,
+              "sampledRssBytes": 288043008
+            },
+            {
+              "elapsedMs": 361.933,
+              "maxCallbackGapMs": 43.368,
+              "callbacks": 25,
+              "sampledRssBytes": 295776256
+            },
+            {
+              "elapsedMs": 413.619,
+              "maxCallbackGapMs": 37.508,
+              "callbacks": 32,
+              "sampledRssBytes": 299778048
+            },
+            {
+              "elapsedMs": 340.041,
+              "maxCallbackGapMs": 35.385,
+              "callbacks": 26,
+              "sampledRssBytes": 302964736
+            },
+            {
+              "elapsedMs": 324.666,
+              "maxCallbackGapMs": 34.771,
+              "callbacks": 24,
+              "sampledRssBytes": 308506624
+            }
+          ]
+        }
+      ],
+      "plans": {
+        "search.common.global": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f WHERE f.term >= ? AND f.term < ? \n    GROUP BY f.message_id),\nsearch_term_1 AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n      FROM message_fts f WHERE f.term >= ? AND f.term < ? GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     CROSS JOIN search_term_1 t1 ON t1.message_id = t0.message_id\n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     \n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE search_term_1",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.common.large-account": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id),\nsearch_term_1 AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n      FROM message_fts f WHERE f.term >= ? AND f.term < ? GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     CROSS JOIN search_term_1 t1 ON t1.message_id = t0.message_id\n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE search_term_1",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.common.small-account": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM messages scoped CROSS JOIN message_fts f ON f.message_id = scoped.id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id),\nsearch_term_1 AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n      FROM search_seed s CROSS JOIN message_fts f ON f.message_id = s.message_id WHERE f.term >= ? AND f.term < ? GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     CROSS JOIN search_term_1 t1 ON t1.message_id = t0.message_id\n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE search_term_1",
+              "SCAN s",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare.scoped": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     \n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare.large-account": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     \n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare-and-common": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id),\nsearch_term_1 AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n      FROM search_seed s CROSS JOIN message_fts f ON f.message_id = s.message_id WHERE f.term >= ? AND f.term < ? GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     CROSS JOIN search_term_1 t1 ON t1.message_id = t0.message_id\n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE search_term_1",
+              "SCAN s",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.prefix": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     \n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.0": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SCAN m USING INDEX messages_pending_body_page",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.0.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX messages_pending_body_page ((list_sort_ts,id)<(?,?))",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.1": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SCAN m USING INDEX messages_pending_body_page",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.1.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX messages_pending_body_page ((list_sort_ts,id)<(?,?))",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.200": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SCAN m USING INDEX messages_pending_body_page",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.200.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX messages_pending_body_page ((list_sort_ts,id)<(?,?))",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ]
+      },
+      "indexBytes": [
+        {
+          "name": "messages_pending_body_page",
+          "bytes": 12288
+        }
+      ],
+      "maxSampledRssBytes": 308506624,
+      "setup": {
+        "templateRestored": true,
+        "openMs": 123.608,
+        "checkpointBytes": 42831872
+      },
+      "limits": "Synthetic Linux host-only, warm cache, no Electron/native frames/provider/credentials; sampled RSS is not peak memory. Gaps cover entire passes. Individual SQL/index/journal/fsync remain synchronous."
+    },
+    "baseline-100k": {
+      "sourceSha": "e0ca1151e8fbf08929266463afbda6a382583786",
+      "harnessSha256": "47285390fad7e9538d53e8badb379b891c280d3540e9576116667a6d425a1c6f",
+      "fixtureSha256": "7120cb7408dc5d015e196452c232ed55f19826b774b95ef6e37cd30995ffd977",
+      "node": "v24.19.0",
+      "electronPackageVersion": "33.4.11",
+      "sqlite": "3.53.2",
+      "platform": "linux",
+      "arch": "x64",
+      "fixture": {
+        "count": 100000,
+        "split": "95/5 percent, two accounts, one folder each",
+        "bodyBytes": 270,
+        "terms": "common/alpha all rows; rareterm 1/97; uniqueonly one small-account row; uniquelarge one large-account row added before timing; tied dates every three rows",
+        "pending": [
+          0,
+          1,
+          200
+        ]
+      },
+      "rounds": 5,
+      "samples": [
+        {
+          "label": "search.common.global",
+          "medianMs": 427.309,
+          "raw": [
+            {
+              "elapsedMs": 427.309,
+              "maxCallbackGapMs": 427.532,
+              "callbacks": 2,
+              "sampledRssBytes": 112316416
+            },
+            {
+              "elapsedMs": 453.225,
+              "maxCallbackGapMs": 453.298,
+              "callbacks": 2,
+              "sampledRssBytes": 131977216
+            },
+            {
+              "elapsedMs": 418.98,
+              "maxCallbackGapMs": 419.627,
+              "callbacks": 2,
+              "sampledRssBytes": 132108288
+            },
+            {
+              "elapsedMs": 420.47,
+              "maxCallbackGapMs": 420.606,
+              "callbacks": 2,
+              "sampledRssBytes": 132108288
+            },
+            {
+              "elapsedMs": 436.597,
+              "maxCallbackGapMs": 436.658,
+              "callbacks": 2,
+              "sampledRssBytes": 112386048
+            }
+          ]
+        },
+        {
+          "label": "search.common.large-account",
+          "medianMs": 721.605,
+          "raw": [
+            {
+              "elapsedMs": 724.16,
+              "maxCallbackGapMs": 724.615,
+              "callbacks": 2,
+              "sampledRssBytes": 130998272
+            },
+            {
+              "elapsedMs": 721.605,
+              "maxCallbackGapMs": 721.666,
+              "callbacks": 2,
+              "sampledRssBytes": 130998272
+            },
+            {
+              "elapsedMs": 780.665,
+              "maxCallbackGapMs": 780.725,
+              "callbacks": 2,
+              "sampledRssBytes": 130998272
+            },
+            {
+              "elapsedMs": 711.221,
+              "maxCallbackGapMs": 711.275,
+              "callbacks": 2,
+              "sampledRssBytes": 130998272
+            },
+            {
+              "elapsedMs": 717.66,
+              "maxCallbackGapMs": 717.737,
+              "callbacks": 2,
+              "sampledRssBytes": 130998272
+            }
+          ]
+        },
+        {
+          "label": "search.common.small-account",
+          "medianMs": 38.864,
+          "raw": [
+            {
+              "elapsedMs": 40.736,
+              "maxCallbackGapMs": 40.792,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 38.864,
+              "maxCallbackGapMs": 38.92,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 40.268,
+              "maxCallbackGapMs": 40.322,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 38.283,
+              "maxCallbackGapMs": 38.602,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 37.59,
+              "maxCallbackGapMs": 38.217,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "search.rare.scoped",
+          "medianMs": 1.014,
+          "raw": [
+            {
+              "elapsedMs": 1.178,
+              "maxCallbackGapMs": 1.193,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 1.014,
+              "maxCallbackGapMs": 1.029,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 1.016,
+              "maxCallbackGapMs": 1.031,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 0.932,
+              "maxCallbackGapMs": 0.946,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 0.901,
+              "maxCallbackGapMs": 0.914,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "search.rare.large-account",
+          "medianMs": 38.712,
+          "raw": [
+            {
+              "elapsedMs": 44.07,
+              "maxCallbackGapMs": 44.124,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 41.083,
+              "maxCallbackGapMs": 41.14,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 35.921,
+              "maxCallbackGapMs": 35.981,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 35.997,
+              "maxCallbackGapMs": 36.064,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 38.712,
+              "maxCallbackGapMs": 38.831,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "search.rare-and-common",
+          "medianMs": 14.785,
+          "raw": [
+            {
+              "elapsedMs": 15.097,
+              "maxCallbackGapMs": 15.137,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 14.785,
+              "maxCallbackGapMs": 14.821,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 13.354,
+              "maxCallbackGapMs": 13.387,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 13.612,
+              "maxCallbackGapMs": 13.642,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 15.297,
+              "maxCallbackGapMs": 15.337,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "search.prefix",
+          "medianMs": 534.106,
+          "raw": [
+            {
+              "elapsedMs": 534.106,
+              "maxCallbackGapMs": 534.165,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 572.18,
+              "maxCallbackGapMs": 572.311,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 509.173,
+              "maxCallbackGapMs": 510.043,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 587.079,
+              "maxCallbackGapMs": 587.137,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 525.581,
+              "maxCallbackGapMs": 525.636,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "pending.0",
+          "medianMs": 34.576,
+          "raw": [
+            {
+              "elapsedMs": 34.993,
+              "maxCallbackGapMs": 35.048,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 34.681,
+              "maxCallbackGapMs": 34.739,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 34.561,
+              "maxCallbackGapMs": 34.619,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 34.576,
+              "maxCallbackGapMs": 34.634,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 34.371,
+              "maxCallbackGapMs": 34.427,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "pending.0.deep",
+          "medianMs": 37.938,
+          "raw": [
+            {
+              "elapsedMs": 43.184,
+              "maxCallbackGapMs": 43.243,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 33.045,
+              "maxCallbackGapMs": 33.104,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 34.548,
+              "maxCallbackGapMs": 34.628,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 41.669,
+              "maxCallbackGapMs": 41.727,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 37.938,
+              "maxCallbackGapMs": 37.998,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "pending.1",
+          "medianMs": 32.717,
+          "raw": [
+            {
+              "elapsedMs": 34.298,
+              "maxCallbackGapMs": 34.349,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 33.216,
+              "maxCallbackGapMs": 33.279,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 31.98,
+              "maxCallbackGapMs": 32.031,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 32.303,
+              "maxCallbackGapMs": 32.354,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 32.717,
+              "maxCallbackGapMs": 32.784,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "pending.1.deep",
+          "medianMs": 37.052,
+          "raw": [
+            {
+              "elapsedMs": 31.189,
+              "maxCallbackGapMs": 31.248,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 33.635,
+              "maxCallbackGapMs": 33.694,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 37.838,
+              "maxCallbackGapMs": 37.998,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 39.305,
+              "maxCallbackGapMs": 39.361,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 37.052,
+              "maxCallbackGapMs": 37.11,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "pending.200",
+          "medianMs": 45.657,
+          "raw": [
+            {
+              "elapsedMs": 50.107,
+              "maxCallbackGapMs": 50.162,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 45.829,
+              "maxCallbackGapMs": 45.885,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 45.657,
+              "maxCallbackGapMs": 46.167,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 39.147,
+              "maxCallbackGapMs": 39.205,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 39.091,
+              "maxCallbackGapMs": 39.148,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "pending.200.deep",
+          "medianMs": 34.322,
+          "raw": [
+            {
+              "elapsedMs": 34.975,
+              "maxCallbackGapMs": 35.038,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 35.027,
+              "maxCallbackGapMs": 35.089,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 33.661,
+              "maxCallbackGapMs": 33.722,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 33.87,
+              "maxCallbackGapMs": 33.933,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            },
+            {
+              "elapsedMs": 34.322,
+              "maxCallbackGapMs": 34.383,
+              "callbacks": 2,
+              "sampledRssBytes": 131260416
+            }
+          ]
+        },
+        {
+          "label": "pending.maintenance-200",
+          "medianMs": 51.352,
+          "raw": [
+            {
+              "elapsedMs": 44.227,
+              "maxCallbackGapMs": 44.28,
+              "callbacks": 2,
+              "sampledRssBytes": 131522560
+            },
+            {
+              "elapsedMs": 54.58,
+              "maxCallbackGapMs": 54.619,
+              "callbacks": 2,
+              "sampledRssBytes": 142532608
+            },
+            {
+              "elapsedMs": 52.361,
+              "maxCallbackGapMs": 83.503,
+              "callbacks": 2,
+              "sampledRssBytes": 159834112
+            },
+            {
+              "elapsedMs": 51.352,
+              "maxCallbackGapMs": 51.395,
+              "callbacks": 2,
+              "sampledRssBytes": 159834112
+            },
+            {
+              "elapsedMs": 46.794,
+              "maxCallbackGapMs": 46.836,
+              "callbacks": 2,
+              "sampledRssBytes": 159834112
+            }
+          ]
+        },
+        {
+          "label": "ingest.96-indexed",
+          "medianMs": 625.925,
+          "raw": [
+            {
+              "elapsedMs": 589.257,
+              "maxCallbackGapMs": 148.651,
+              "callbacks": 6,
+              "sampledRssBytes": 199913472
+            },
+            {
+              "elapsedMs": 625.925,
+              "maxCallbackGapMs": 169.942,
+              "callbacks": 6,
+              "sampledRssBytes": 227815424
+            },
+            {
+              "elapsedMs": 592.716,
+              "maxCallbackGapMs": 178.366,
+              "callbacks": 6,
+              "sampledRssBytes": 307499008
+            },
+            {
+              "elapsedMs": 626.84,
+              "maxCallbackGapMs": 195.36,
+              "callbacks": 6,
+              "sampledRssBytes": 329502720
+            },
+            {
+              "elapsedMs": 641.865,
+              "maxCallbackGapMs": 190.914,
+              "callbacks": 6,
+              "sampledRssBytes": 409014272
+            }
+          ]
+        },
+        {
+          "label": "ingest.oversized-late",
+          "medianMs": 218.754,
+          "raw": [
+            {
+              "elapsedMs": 235.123,
+              "maxCallbackGapMs": 134.225,
+              "callbacks": 4,
+              "sampledRssBytes": 452075520
+            },
+            {
+              "elapsedMs": 225.572,
+              "maxCallbackGapMs": 138.29,
+              "callbacks": 4,
+              "sampledRssBytes": 457011200
+            },
+            {
+              "elapsedMs": 218.754,
+              "maxCallbackGapMs": 123.012,
+              "callbacks": 4,
+              "sampledRssBytes": 451899392
+            },
+            {
+              "elapsedMs": 211.659,
+              "maxCallbackGapMs": 132.696,
+              "callbacks": 4,
+              "sampledRssBytes": 457285632
+            },
+            {
+              "elapsedMs": 217.758,
+              "maxCallbackGapMs": 125.002,
+              "callbacks": 4,
+              "sampledRssBytes": 484978688
+            }
+          ]
+        }
+      ],
+      "plans": {
+        "search.common.global": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f \n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\nJOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f \n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t1 ON t1.message_id = m.id\n     \n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE t1",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.common.large-account": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\nJOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t1 ON t1.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE t1",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.common.small-account": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\nJOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t1 ON t1.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE t1",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare.scoped": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SEARCH m USING INDEX messages_thread (account_id=?)",
+              "SEARCH t0 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare.large-account": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SEARCH m USING INDEX messages_thread (account_id=?)",
+              "SEARCH t0 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare-and-common": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\nJOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t1 ON t1.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE t1",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.prefix": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m JOIN accounts connected ON connected.id = m.account_id\n     JOIN (\n        SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n        FROM message_fts f JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = ?\n        WHERE f.term >= ? AND f.term < ?\n        GROUP BY f.message_id\n      ) t0 ON t0.message_id = m.id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "CO-ROUTINE t0",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "SEARCH m USING INDEX messages_thread (account_id=?)",
+              "SEARCH t0 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.0": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.0.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.1": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.1.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.200": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.200.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX recipient_headers_page (is_draft=?)",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ]
+      },
+      "indexBytes": [],
+      "maxSampledRssBytes": 484978688,
+      "setup": {
+        "templateRestored": true,
+        "openMs": 447.123,
+        "checkpointBytes": 297631744
+      },
+      "limits": "Synthetic Linux host-only, warm cache, no Electron/native frames/provider/credentials; sampled RSS is not peak memory. Gaps cover entire passes. Individual SQL/index/journal/fsync remain synchronous."
+    },
+    "candidate-100k": {
+      "sourceSha": "1a2a26059e0a26cced8f4da8b4dab90c8bfcece7",
+      "harnessSha256": "47285390fad7e9538d53e8badb379b891c280d3540e9576116667a6d425a1c6f",
+      "fixtureSha256": "7120cb7408dc5d015e196452c232ed55f19826b774b95ef6e37cd30995ffd977",
+      "node": "v24.19.0",
+      "electronPackageVersion": "33.4.11",
+      "sqlite": "3.53.2",
+      "platform": "linux",
+      "arch": "x64",
+      "fixture": {
+        "count": 100000,
+        "split": "95/5 percent, two accounts, one folder each",
+        "bodyBytes": 270,
+        "terms": "common/alpha all rows; rareterm 1/97; uniqueonly one small-account row; uniquelarge one large-account row added before timing; tied dates every three rows",
+        "pending": [
+          0,
+          1,
+          200
+        ]
+      },
+      "rounds": 5,
+      "samples": [
+        {
+          "label": "search.common.global",
+          "medianMs": 416.939,
+          "raw": [
+            {
+              "elapsedMs": 408.714,
+              "maxCallbackGapMs": 408.889,
+              "callbacks": 2,
+              "sampledRssBytes": 151986176
+            },
+            {
+              "elapsedMs": 472.209,
+              "maxCallbackGapMs": 472.284,
+              "callbacks": 2,
+              "sampledRssBytes": 152125440
+            },
+            {
+              "elapsedMs": 441.491,
+              "maxCallbackGapMs": 441.929,
+              "callbacks": 2,
+              "sampledRssBytes": 152125440
+            },
+            {
+              "elapsedMs": 416.939,
+              "maxCallbackGapMs": 417.001,
+              "callbacks": 2,
+              "sampledRssBytes": 152256512
+            },
+            {
+              "elapsedMs": 403.862,
+              "maxCallbackGapMs": 403.925,
+              "callbacks": 2,
+              "sampledRssBytes": 152256512
+            }
+          ]
+        },
+        {
+          "label": "search.common.large-account",
+          "medianMs": 485.025,
+          "raw": [
+            {
+              "elapsedMs": 463.066,
+              "maxCallbackGapMs": 463.582,
+              "callbacks": 2,
+              "sampledRssBytes": 165625856
+            },
+            {
+              "elapsedMs": 501.195,
+              "maxCallbackGapMs": 501.251,
+              "callbacks": 2,
+              "sampledRssBytes": 165625856
+            },
+            {
+              "elapsedMs": 503.274,
+              "maxCallbackGapMs": 503.329,
+              "callbacks": 2,
+              "sampledRssBytes": 167198720
+            },
+            {
+              "elapsedMs": 485.025,
+              "maxCallbackGapMs": 485.099,
+              "callbacks": 2,
+              "sampledRssBytes": 167198720
+            },
+            {
+              "elapsedMs": 470.049,
+              "maxCallbackGapMs": 470.103,
+              "callbacks": 2,
+              "sampledRssBytes": 167198720
+            }
+          ]
+        },
+        {
+          "label": "search.common.small-account",
+          "medianMs": 40.92,
+          "raw": [
+            {
+              "elapsedMs": 42.536,
+              "maxCallbackGapMs": 42.66,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 43.224,
+              "maxCallbackGapMs": 43.278,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 40.92,
+              "maxCallbackGapMs": 40.973,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 38.678,
+              "maxCallbackGapMs": 38.729,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 40.897,
+              "maxCallbackGapMs": 41.392,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            }
+          ]
+        },
+        {
+          "label": "search.rare.scoped",
+          "medianMs": 0.551,
+          "raw": [
+            {
+              "elapsedMs": 0.438,
+              "maxCallbackGapMs": 0.449,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.608,
+              "maxCallbackGapMs": 0.62,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.551,
+              "maxCallbackGapMs": 0.568,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.449,
+              "maxCallbackGapMs": 0.46,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.594,
+              "maxCallbackGapMs": 0.607,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            }
+          ]
+        },
+        {
+          "label": "search.rare.large-account",
+          "medianMs": 0.615,
+          "raw": [
+            {
+              "elapsedMs": 0.583,
+              "maxCallbackGapMs": 0.595,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.548,
+              "maxCallbackGapMs": 0.56,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.633,
+              "maxCallbackGapMs": 0.646,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.615,
+              "maxCallbackGapMs": 0.627,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.693,
+              "maxCallbackGapMs": 0.705,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            }
+          ]
+        },
+        {
+          "label": "search.rare-and-common",
+          "medianMs": 0.72,
+          "raw": [
+            {
+              "elapsedMs": 0.966,
+              "maxCallbackGapMs": 0.979,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.873,
+              "maxCallbackGapMs": 0.931,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.687,
+              "maxCallbackGapMs": 0.698,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.72,
+              "maxCallbackGapMs": 0.732,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.632,
+              "maxCallbackGapMs": 0.643,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            }
+          ]
+        },
+        {
+          "label": "search.prefix",
+          "medianMs": 469.649,
+          "raw": [
+            {
+              "elapsedMs": 473.645,
+              "maxCallbackGapMs": 473.701,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 470.555,
+              "maxCallbackGapMs": 470.607,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 469.649,
+              "maxCallbackGapMs": 470.534,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 463.203,
+              "maxCallbackGapMs": 463.255,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 464.272,
+              "maxCallbackGapMs": 464.326,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            }
+          ]
+        },
+        {
+          "label": "pending.0",
+          "medianMs": 0.132,
+          "raw": [
+            {
+              "elapsedMs": 0.132,
+              "maxCallbackGapMs": 0.141,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.132,
+              "maxCallbackGapMs": 0.14,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.127,
+              "maxCallbackGapMs": 0.133,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.154,
+              "maxCallbackGapMs": 0.163,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.315,
+              "maxCallbackGapMs": 0.327,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            }
+          ]
+        },
+        {
+          "label": "pending.0.deep",
+          "medianMs": 0.146,
+          "raw": [
+            {
+              "elapsedMs": 0.273,
+              "maxCallbackGapMs": 0.289,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.146,
+              "maxCallbackGapMs": 0.154,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.128,
+              "maxCallbackGapMs": 0.136,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.121,
+              "maxCallbackGapMs": 0.128,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.301,
+              "maxCallbackGapMs": 0.312,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            }
+          ]
+        },
+        {
+          "label": "pending.1",
+          "medianMs": 0.141,
+          "raw": [
+            {
+              "elapsedMs": 0.135,
+              "maxCallbackGapMs": 0.143,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.139,
+              "maxCallbackGapMs": 0.147,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.184,
+              "maxCallbackGapMs": 0.201,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.15,
+              "maxCallbackGapMs": 0.174,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.141,
+              "maxCallbackGapMs": 0.149,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            }
+          ]
+        },
+        {
+          "label": "pending.1.deep",
+          "medianMs": 0.124,
+          "raw": [
+            {
+              "elapsedMs": 0.16,
+              "maxCallbackGapMs": 0.169,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.124,
+              "maxCallbackGapMs": 0.131,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.116,
+              "maxCallbackGapMs": 0.123,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.113,
+              "maxCallbackGapMs": 0.119,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            },
+            {
+              "elapsedMs": 0.383,
+              "maxCallbackGapMs": 0.394,
+              "callbacks": 2,
+              "sampledRssBytes": 167460864
+            }
+          ]
+        },
+        {
+          "label": "pending.200",
+          "medianMs": 1.349,
+          "raw": [
+            {
+              "elapsedMs": 3.557,
+              "maxCallbackGapMs": 3.588,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            },
+            {
+              "elapsedMs": 1.349,
+              "maxCallbackGapMs": 1.365,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            },
+            {
+              "elapsedMs": 1.298,
+              "maxCallbackGapMs": 1.544,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            },
+            {
+              "elapsedMs": 1.351,
+              "maxCallbackGapMs": 1.366,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            },
+            {
+              "elapsedMs": 1.25,
+              "maxCallbackGapMs": 1.261,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            }
+          ]
+        },
+        {
+          "label": "pending.200.deep",
+          "medianMs": 0.125,
+          "raw": [
+            {
+              "elapsedMs": 0.127,
+              "maxCallbackGapMs": 0.134,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            },
+            {
+              "elapsedMs": 0.125,
+              "maxCallbackGapMs": 0.132,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            },
+            {
+              "elapsedMs": 0.142,
+              "maxCallbackGapMs": 0.15,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            },
+            {
+              "elapsedMs": 0.122,
+              "maxCallbackGapMs": 0.129,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            },
+            {
+              "elapsedMs": 0.116,
+              "maxCallbackGapMs": 0.122,
+              "callbacks": 2,
+              "sampledRssBytes": 135589888
+            }
+          ]
+        },
+        {
+          "label": "pending.maintenance-200",
+          "medianMs": 51.597,
+          "raw": [
+            {
+              "elapsedMs": 54.419,
+              "maxCallbackGapMs": 54.467,
+              "callbacks": 2,
+              "sampledRssBytes": 142929920
+            },
+            {
+              "elapsedMs": 51.597,
+              "maxCallbackGapMs": 51.646,
+              "callbacks": 2,
+              "sampledRssBytes": 160100352
+            },
+            {
+              "elapsedMs": 57.575,
+              "maxCallbackGapMs": 82.524,
+              "callbacks": 2,
+              "sampledRssBytes": 177795072
+            },
+            {
+              "elapsedMs": 46.392,
+              "maxCallbackGapMs": 46.431,
+              "callbacks": 2,
+              "sampledRssBytes": 177795072
+            },
+            {
+              "elapsedMs": 42.904,
+              "maxCallbackGapMs": 42.944,
+              "callbacks": 2,
+              "sampledRssBytes": 177795072
+            }
+          ]
+        },
+        {
+          "label": "ingest.96-indexed",
+          "medianMs": 1069.654,
+          "raw": [
+            {
+              "elapsedMs": 1069.654,
+              "maxCallbackGapMs": 47.001,
+              "callbacks": 75,
+              "sampledRssBytes": 203948032
+            },
+            {
+              "elapsedMs": 960.913,
+              "maxCallbackGapMs": 20.695,
+              "callbacks": 69,
+              "sampledRssBytes": 205152256
+            },
+            {
+              "elapsedMs": 1451.968,
+              "maxCallbackGapMs": 22.026,
+              "callbacks": 96,
+              "sampledRssBytes": 211804160
+            },
+            {
+              "elapsedMs": 1082.91,
+              "maxCallbackGapMs": 19.469,
+              "callbacks": 81,
+              "sampledRssBytes": 223768576
+            },
+            {
+              "elapsedMs": 940.56,
+              "maxCallbackGapMs": 19.325,
+              "callbacks": 71,
+              "sampledRssBytes": 237645824
+            }
+          ]
+        },
+        {
+          "label": "ingest.oversized-late",
+          "medianMs": 375.639,
+          "raw": [
+            {
+              "elapsedMs": 375.639,
+              "maxCallbackGapMs": 47.757,
+              "callbacks": 25,
+              "sampledRssBytes": 285093888
+            },
+            {
+              "elapsedMs": 474.677,
+              "maxCallbackGapMs": 38.15,
+              "callbacks": 33,
+              "sampledRssBytes": 288243712
+            },
+            {
+              "elapsedMs": 456.027,
+              "maxCallbackGapMs": 38.378,
+              "callbacks": 33,
+              "sampledRssBytes": 291393536
+            },
+            {
+              "elapsedMs": 370.018,
+              "maxCallbackGapMs": 32.94,
+              "callbacks": 26,
+              "sampledRssBytes": 285880320
+            },
+            {
+              "elapsedMs": 361.119,
+              "maxCallbackGapMs": 41.421,
+              "callbacks": 28,
+              "sampledRssBytes": 285356032
+            }
+          ]
+        }
+      ],
+      "plans": {
+        "search.common.global": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f WHERE f.term >= ? AND f.term < ? \n    GROUP BY f.message_id),\nsearch_term_1 AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n      FROM message_fts f WHERE f.term >= ? AND f.term < ? GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     CROSS JOIN search_term_1 t1 ON t1.message_id = t0.message_id\n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     \n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE search_term_1",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.common.large-account": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id),\nsearch_term_1 AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n      FROM message_fts f WHERE f.term >= ? AND f.term < ? GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     CROSS JOIN search_term_1 t1 ON t1.message_id = t0.message_id\n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE search_term_1",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.common.small-account": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM messages scoped CROSS JOIN message_fts f ON f.message_id = scoped.id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id),\nsearch_term_1 AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n      FROM search_seed s CROSS JOIN message_fts f ON f.message_id = s.message_id WHERE f.term >= ? AND f.term < ? GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     CROSS JOIN search_term_1 t1 ON t1.message_id = t0.message_id\n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH scoped USING COVERING INDEX messages_folder_page (account_id=?)",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE search_term_1",
+              "SCAN s",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare.scoped": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     \n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare.large-account": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     \n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.rare-and-common": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id),\nsearch_term_1 AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n      FROM search_seed s CROSS JOIN message_fts f ON f.message_id = s.message_id WHERE f.term >= ? AND f.term < ? GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     CROSS JOIN search_term_1 t1 ON t1.message_id = t0.message_id\n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight + t1.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "MATERIALIZE search_term_1",
+              "SCAN s",
+              "SEARCH f USING INDEX message_fts_message (message_id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH t1 USING AUTOMATIC COVERING INDEX (message_id=?)",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "search.prefix": [
+          {
+            "sql": "WITH search_seed AS MATERIALIZED (SELECT f.message_id, MAX(CASE f.field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight\n    FROM message_fts f CROSS JOIN messages scoped ON scoped.id = f.message_id WHERE f.term >= ? AND f.term < ? AND scoped.account_id = ?\n    GROUP BY f.message_id)\n     SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM search_seed t0\n     \n     CROSS JOIN messages m ON m.id = t0.message_id\n     CROSS JOIN accounts connected ON connected.id = m.account_id\n     WHERE m.account_id = ?\n     ORDER BY (t0.weight) DESC, m.list_sort_ts DESC, m.id DESC\n     LIMIT ?",
+            "plan": [
+              "MATERIALIZE search_seed",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_message_fts_1 (term>? AND term<?)",
+              "SEARCH scoped USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "USE TEMP B-TREE FOR GROUP BY",
+              "SCAN t0",
+              "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)",
+              "SEARCH connected USING COVERING INDEX sqlite_autoindex_accounts_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "pending.0": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SCAN m USING INDEX messages_pending_body_page",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.0.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX messages_pending_body_page ((list_sort_ts,id)<(?,?))",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.1": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SCAN m USING INDEX messages_pending_body_page",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.1.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX messages_pending_body_page ((list_sort_ts,id)<(?,?))",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.200": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SCAN m USING INDEX messages_pending_body_page",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ],
+        "pending.200.deep": [
+          {
+            "sql": "SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.thread_id, m.rfc_message_id, m.in_reply_to, m.subject, m.snippet, m.from_addr, m.from_display_name, m.from_address, m.to_json, m.cc_json, m.bcc_json, m.date_iso, m.date_source, m.list_sort_ts, m.unread, m.starred, m.is_draft, m.has_attachments, m.attachments_json, m.body_complete, m.body_warning, m.decoding_json, m.body_retry_blocked, m.body_retry_after, m.recipient_headers_json, m.draft_pending, m.gmail_id, m.replied, m.forwarded, m.disposition_json, m.disposition_provider_replied, m.disposition_provider_forwarded, m.reply_inference_eligible, m.has_body FROM messages m INDEXED BY messages_pending_body_page  WHERE m.uid > 0 AND m.body_complete != 1 AND m.is_draft = 0 AND m.body_retry_blocked = 0 AND m.body_retry_after <= ? AND NOT EXISTS (\n      SELECT 1 FROM folders f\n      WHERE f.account_id = m.account_id AND f.path = m.folder_path\n        AND f.well_known IN ('deleteditems', 'junkemail')\n    ) AND (m.list_sort_ts, m.id) < (?, ?) ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?",
+            "plan": [
+              "SEARCH m USING INDEX messages_pending_body_page ((list_sort_ts,id)<(?,?))",
+              "CORRELATED SCALAR SUBQUERY 1",
+              "SEARCH f USING INDEX sqlite_autoindex_folders_1 (account_id=? AND path=?)"
+            ]
+          }
+        ]
+      },
+      "indexBytes": [
+        {
+          "name": "messages_pending_body_page",
+          "bytes": 12288
+        }
+      ],
+      "maxSampledRssBytes": 291393536,
+      "setup": {
+        "templateRestored": true,
+        "openMs": 332.988,
+        "checkpointBytes": 297644032
+      },
+      "limits": "Synthetic Linux host-only, warm cache, no Electron/native frames/provider/credentials; sampled RSS is not peak memory. Gaps cover entire passes. Individual SQL/index/journal/fsync remain synchronous."
+    }
+  }
+}

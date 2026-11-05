@@ -86,23 +86,24 @@ async function run() {
       assert.deepEqual(ids(headers), ids(referenceSearch(tokens, owner)), "AND/prefix/weight/date/id ranking remains exact");
     }
     const scopedSearch = await trace(() => db.searchMessages({ query: "common a", accountId: "b" }, { headersOnly: true }));
-    const searchStatement = scopedSearch.statements.find(entry => entry.sql.includes("FROM message_fts f"));
-    assert.equal(searchStatement.sql.match(/JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = \?/g).length, 2);
+    const searchStatement = scopedSearch.statements.find(entry => entry.sql.includes("WITH search_seed"));
+    assert.match(searchStatement.sql, /FROM messages scoped CROSS JOIN message_fts f/);
+    assert.match(searchStatement.sql, /search_seed s CROSS JOIN message_fts f/);
+    assert.match(plan(searchStatement), /SEARCH m USING INDEX sqlite_autoindex_messages_1 \(id=\?\)/);
     console.log("scoped-search-plan", plan(searchStatement));
     for (const [query, owner] of [["common", "b"], ["rareterm", "a"]]) {
       const sample = await trace(() => db.searchMessages({ query, accountId: owner }, { headersOnly: true }));
-      const current = sample.statements.find(entry => entry.sql.includes("FROM message_fts f"));
-      const baseline = { sql: current.sql.replace(/(?:CROSS )?JOIN messages scoped ON scoped.id = f.message_id AND scoped.account_id = \?/g, ""), params: current.params.slice(1) };
+      const current = sample.statements.find(entry => entry.sql.includes("WITH search_seed"));
       if (query === "rareterm") {
-        assert.match(current.sql, /CROSS JOIN messages scoped/);
+        assert.match(current.sql, /message_fts f CROSS JOIN messages scoped/);
         assert.match(plan(current), /SEARCH f USING COVERING INDEX .*\(term>\? AND term<\?\)/);
       }
       const timings = {};
-      for (const [label, entry] of [["scoped", current], ["global", baseline]]) {
-        const statement = originals.prepare.call(raw, entry.sql);
-        statement.all(entry.params);
+      for (const [label, work] of [["scoped", () => originals.prepare.call(raw, current.sql).all(current.params)],
+        ["reference", () => referenceSearch([query], owner)]]) {
+        work();
         const started = performance.now();
-        for (let repeat = 0; repeat < 3; repeat++) statement.all(entry.params);
+        for (let repeat = 0; repeat < 3; repeat++) work();
         timings[label] = Math.round((performance.now() - started) * 1000 / 3) / 1000;
       }
       console.log("search-query-warm-ms", JSON.stringify({ query, owner, ...timings }));
@@ -396,7 +397,7 @@ async function run() {
     });
     Persistence.prototype.append = originals.append;
     assert.equal(acknowledgements, 20, "each content/resume pair retains its own durable acknowledgement");
-    assert.equal(contentCommits.statements.filter(entry => /SELECT COUNT.*FROM messages/s.test(entry.sql)).length, 0);
+    assert.equal(contentCommits.statements.filter(entry => /SELECT COUNT\(\*\).*FROM messages/s.test(entry.sql)).length, 0);
     for (const path of ["INBOX", "Archive"]) exactFolder(path);
     const unreadCommits = await trace(() => {
       for (let cursor = 0; cursor < 20; cursor++) db.transaction(() => {
@@ -404,7 +405,7 @@ async function run() {
         for (const path of ["INBOX", "Archive"]) db.gmailSyncState("a", path, { cursor: cursor + 41, complete: true });
       });
     });
-    assert.equal(unreadCommits.statements.filter(entry => /SELECT COUNT.*FROM messages/s.test(entry.sql)).length, 0);
+    assert.equal(unreadCommits.statements.filter(entry => /SELECT COUNT\(\*\).*FROM messages/s.test(entry.sql)).length, 0);
     for (const path of ["INBOX", "Archive"]) exactFolder(path);
     const pendingCopy = db.gmailCopies("a", "perf-delta-0").find(row => row.folder_path === "INBOX");
     db.updateMessage(pendingCopy.id, { draft_pending: 1 });
@@ -449,7 +450,7 @@ async function run() {
         for (const path of ["INBOX", "Archive", "Trash"]) db.gmailSyncState("a", path, { cursor: 20, complete: true });
       });
     });
-    assert.equal(deletions.statements.filter(entry => /SELECT COUNT.*FROM messages/s.test(entry.sql)).length, 0);
+    assert.equal(deletions.statements.filter(entry => /SELECT COUNT\(\*\).*FROM messages/s.test(entry.sql)).length, 0);
     for (const path of ["INBOX", "Archive", "Trash"]) exactFolder(path);
     console.log("gmail-content-counts", JSON.stringify({ messages: 20, acknowledgements, insertScans: 0, unreadScans: 0, deletionScans: 0 }));
 

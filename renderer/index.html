@@ -209,7 +209,8 @@
           <div id="search-scope" hidden>
             <label class="sr" for="search-account">Search account</label>
             <select id="search-account" aria-label="Search account"></select>
-            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Sync history is set in Settings → Mail &amp; Sync (180 days, 365 days, or All); older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched.</p><p id="search-rebuild-help" class="list-filter-note">Opening names local copy, journal recovery, schema, body metadata, search and final preparation phases, not an overall startup percentage. Body metadata work checks an 8 ms budget after each message, commits at most 64 rows before yielding and resumes remaining metadata on reopen. If the local index needs repair, the opening window shows preparation progress. Mail and search wait for verification; quitting keeps saved batches for the next open. Rebuilding uses downloaded mail and does not fetch mail. Work yields between batches, while a large message or disk call can still cause a pause.</p></details>
+            <p id="local-search-help" class="list-filter-note">Entering Local Folders defaults to its separate search scope for saved subject, sender, To and plain text. An explicit connected-account scope stays selected until you enter a local folder again. It matches the entered phrase after Unicode normalization and lowercasing on both sides, preserving accents, and returns up to 100 results. The local reader Trash button follows all selected rows, including filter-hidden selections. All connected accounts and All Account Mail exclude local copies.</p>
+            <details><summary>Search coverage</summary><p class="list-filter-note">Only downloaded mail is searched, across subject, sender, and available text. Older mail or complete bodies may not be downloaded. Sync history is set in Settings → Mail &amp; Sync (180 days, 365 days, or All); older cached mail may remain. All typed words must match word beginnings. Provider search syntax and attachment contents are not searched. Search ranks all matching candidates before its result limit; broad searches may still take time.</p><p id="search-rebuild-help" class="list-filter-note">Opening names local copy, journal recovery, schema, body metadata, search and final preparation phases, not an overall startup percentage. Body metadata work checks an 8 ms budget after each message, commits at most 64 rows before yielding and resumes remaining metadata on reopen. If the local index needs repair, the opening window shows preparation progress. Mail and search wait for verification; quitting keeps saved batches for the next open. Rebuilding uses downloaded mail and does not fetch mail. Work yields between batches, while a large message or disk call can still cause a pause.</p></details>
           </div>
           <button type="button" class="ghost" id="filter-chip" hidden></button>
           <div id="selection-bar" class="selection-bar" hidden>
@@ -246,11 +247,28 @@
         <div class="row between"><h2 id="timeline-heading">Timeline</h2><button type="button" class="ghost" id="timeline-close">Cancel</button></div>
         <p id="timeline-description" class="hint">Use this message and its downloaded thread. No older mail is fetched.</p>
         <form id="timeline-form">
+          <label for="timeline-mode">Timeline mode</label>
+          <select id="timeline-mode"><option value="thread">This downloaded thread</option><option value="case">Case / client across threads</option></select>
+          <div id="timeline-case" hidden>
+            <p id="timeline-case-scope" class="hint"></p>
+            <label for="timeline-case-title">Case title</label>
+            <input id="timeline-case-title" type="text" maxlength="500" autocomplete="off" />
+            <label for="timeline-search">Find related downloaded mail</label>
+            <div class="row"><input id="timeline-search" type="search" maxlength="1000" autocomplete="off" aria-describedby="timeline-search-help" /><button type="button" class="ghost" id="timeline-search-button">Search locally</button></div>
+            <p id="timeline-search-help" class="hint">Every word must match a token prefix in subject, sender or indexed body. Up to 16 words. No Gmail query syntax or To/Cc search. The body index covers at most 200,000 characters per message. Search variants separately and select from each round. No server search or download. Results are limited to 100 per query; refine broad queries. Search is never proof of complete coverage.</p>
+            <p id="timeline-search-status" role="status" aria-live="polite"></p>
+            <div id="timeline-candidates"></div>
+            <h3>Selected messages</h3>
+            <p class="hint">Only checked messages are included, without automatic thread expansion. Choose Main or Background for each. Reading cached evidence below does not mark mail read.</p>
+            <div id="timeline-selection"></div>
+            <button type="button" class="ghost" id="timeline-review-case">Review selected mail</button>
+            <label class="timeline-choice"><input type="checkbox" id="timeline-case-confirm" disabled />I reviewed the selected sources, Main / Background choices, coverage and AI destination below.</label>
+          </div>
           <label for="timeline-keywords">Keywords <span class="hint">(optional)</span></label>
           <input id="timeline-keywords" type="text" maxlength="1000" autocomplete="off" aria-describedby="timeline-focus-help" />
           <label for="timeline-contacts">Contact emails</label>
           <textarea id="timeline-contacts" rows="3" maxlength="8192" spellcheck="false" aria-describedby="timeline-focus-help"></textarea>
-          <p id="timeline-focus-help" class="hint">Add or remove emails, separated by commas or new lines. Keywords and contacts guide the summaries; they do not exclude thread messages from the AI request. Leave either empty for no extra focus. Run limits include these fields.</p>
+          <p id="timeline-focus-help" class="hint">Add or remove emails, separated by commas or new lines. Keywords and contacts guide the summaries; they do not filter the included messages from the AI request. Leave either empty for no extra focus. Run limits include these fields.</p>
           <p id="timeline-preview" class="hint"></p>
           <p id="timeline-limits-help" class="hint">Large downloaded threads can exceed run limits; nothing is silently truncated. A failed run may have sent earlier parts to AI. An explicit retry sends the reviewed mail again.</p>
           <label class="timeline-choice" id="timeline-partial-choice" hidden><input type="checkbox" id="timeline-partial" />I accept the omitted messages and partial coverage shown above.</label>
@@ -259,13 +277,14 @@
         <p id="timeline-status" role="status" aria-live="polite"></p>
         <button type="button" class="ghost" id="timeline-cancel" hidden>Cancel generation</button>
         <div id="timeline-result"></div>
+        <section id="timeline-source" hidden aria-labelledby="timeline-source-heading" tabindex="-1"><div class="row between"><h3 id="timeline-source-heading">Cached source mail</h3><button type="button" class="ghost" id="timeline-source-close">Close source</button></div><div id="timeline-source-content"></div></section>
         <div id="timeline-exports" hidden>
           <label class="timeline-choice"><input type="checkbox" id="timeline-export-confirm" />I reviewed the personal information, coverage and uncertainty for this export.</label>
-          <div class="row"><select id="timeline-format" aria-label="Export format"><option value="html">Readable HTML</option><option value="json">Public JSON 1.0.0</option><option value="markdown">Markdown</option><option value="pdf">PDF</option></select><button type="button" class="ghost" id="timeline-export" disabled>Export file…</button><button type="button" class="ghost" id="timeline-delete">Delete local timeline…</button></div>
+          <div class="row"><select id="timeline-format" aria-label="Export format"><option value="html">Readable HTML</option><option value="json">Public JSON (saved schema version)</option><option value="markdown">Markdown</option><option value="pdf">PDF</option></select><button type="button" class="ghost" id="timeline-export" disabled>Export file…</button><button type="button" class="ghost" id="timeline-delete">Delete local timeline…</button></div>
           <p class="hint">Account removal deletes related local timelines. Exports, backups and historical journal bytes remain. No URL or webhook export.</p>
         </div>
         <details id="timeline-history" hidden><summary>Saved timelines</summary><div id="timeline-saved"></div></details>
-        <details><summary>Data use &amp; limits</summary><p class="hint">Only message text, subjects, attachment names and your focus go to the saved AI destination after Generate and explicit-action AI permission. Attachment files, Brain, Agent notes and conversation history are excluded. No mail is marked read, relabeled or sent. Up to 1,000 messages / 200 downloaded threads; 32 calls, one validation retry per step and a ten-minute run limit. Cancel stops later calls, not data already delivered. Review the destination and provider terms in Settings → AI → AI data permission.</p></details>
+        <details><summary>Data use &amp; limits</summary><p class="hint">Reviewed message text/quoted history, subjects, sender names and addresses, mail timestamps and date provenance, attachment names, optional keywords/contact emails and Case Main/Background selections go to the saved AI destination only after Generate and explicit-action AI permission. Independent To/Cc headers stay local; body and focus can still contain recipient addresses. Version 4 disclosure requires renewed consent for older grants. Case synthesis uses validated summaries under the same run budget; overview sections are limited to 12 points, with source evidence and uncertainty for human review. Attachment files, Brain, Agent notes and conversation history are excluded. No mail is marked read, relabeled or sent. Up to 1,000 messages / 200 downloaded threads; 32 calls, one validation retry per step and a ten-minute run limit. Cancel stops later calls, not data already delivered. Review the destination and provider terms in Settings → AI → AI data permission.</p></details>
       </div>
     </dialog>
     <section id="provider-panel" class="primary-space" hidden aria-labelledby="provider-title">
@@ -605,7 +624,8 @@
           </div>
         </div>
         <p class="hint" id="cli-note"></p>
-        <p class="hint" id="cli-timeline">Timelines are explicit desktop actions from Timeline beside Summary in an opened message's action bar, not bot operations, CLI commands or scheduled skills. The sheet has optional keywords and editable From/To/Cc/Reply-To contact emails to guide summaries; all included local thread messages still go to AI, with sender names/addresses, mail timestamps/date provenance, subjects and attachment names. Disclosure version 3 requires renewed manual consent for older grants; background use remains separate. Title, supported language and timezone default from the subject/system. Generate uses only the opened message and its downloaded thread after explicit-action AI permission, with no automatic older-mail download. Omitted messages need conditional partial-coverage acceptance. Run budgets can reject smaller threads without silent truncation. Preflight includes the complete request and optional focus; oversized input names its limit and blocks Generate. Long-message summaries are reduced in bounded stages. Failed runs show attempted AI request counts because data may already have reached the provider. An explicit retry revalidates the same source and sends the reviewed mail again. Opening the sheet, saved history and reviewed exports use no AI. Readable HTML, public JSON 1.0.0, Markdown and isolated PDF file exports require a fresh personal-information review. URL/webhook export is unavailable. Run <code>npm run test:timeline</code> for synthetic schema, source, extraction, export, persistence, consent and rendered-sheet checks; no real mail, credentials, AI requests or Electron GUI are used.</p>
+        <p class="hint" id="cli-mbox-help">MBOX import is available through Local Folders → Import MBOX. It has no CLI command or bot operation; use the file, format and destination review in the app.</p>
+        <p class="hint" id="cli-timeline">Timelines are explicit desktop actions from Timeline beside Summary in an opened message's action bar, not bot operations, CLI commands or scheduled skills. This downloaded thread retains the lightweight mode. Case / client mode searches only the current account's downloaded mail; accumulate selected messages across token-prefix search rounds, classify Main / Background, Review selected mail and confirm before Generate. If the opened thread exceeds its capture limits, Case mode still supports a smaller explicit selection. Every search word must match subject, sender or indexed body (first 200,000 characters); Gmail query syntax and To/Cc search are unavailable. At most 100 results per query; limited queries and all coverage gaps are disclosed. Search never proves completeness. Independent To/Cc stay local evidence; addresses may still occur in body or focus. AI sends reviewed bodies/quoted history, subjects, sender names/addresses, mail timestamps/provenance, attachment names, optional focus and Main/Background selections to the saved destination after disclosure version 4 consent. Background use stays separate. Case overviews cite sources for status, follow-ups, gaps and mentioned dates; mail dates remain distinct. No task is automatically checked off. Cached source reading does not download or mark read. Unsupported/incomplete mail needs explicit omission acceptance. No automatic older-mail download. 1,000 messages / 200 threads are ceilings; lower run budgets apply. Preflight includes the complete request and optional focus. Failed runs show attempted AI request counts. An explicit retry revalidates the same source and sends the reviewed mail again. Case synthesis/retries share existing limits; the estimate covers initial extraction only. Closing cancels later requests; delivered data cannot be recalled. Opening the sheet, local search, source evidence, saved history and exports use no AI. HTML, Markdown, isolated PDF and public JSON require fresh export review. Thread schema 1.0.0 and Case schema 1.1.0 are both readable. No URL/webhook export. Run <code>npm run test:timeline</code> for synthetic privacy, selection, schema, source, extraction, export, persistence, consent and rendered-sheet checks; no real mail, credentials, AI requests or Electron GUI are used.</p>
         <p class="hint" id="cli-page-recovery">Compose attachment preparation, inert Undo recovery and Calendar retry identities are desktop operations; bot capabilities and permissions are unchanged. Calendar reauthorization uses the existing provider grant, separately from Google mail. These fixes do not expose calendar writes through the Node bot client.</p>
         <p class="hint" id="cli-folder-labels">Folders &amp; labels and Open in Mail are desktop actions. Label edits and Outlook moves use the selected message identity; ambiguous legacy Message-ID matches are refused. These fixes add no bot operations, command-line options or provider scopes.</p>
         <p class="hint" id="cli-mail-feedback">Downloaded-primary unread counts, background bulk Archive/Trash, accumulated removal Undo, the per-mailbox Out of Office chooser and cache-first Agent navigation are desktop behaviors. They add no bot commands, permissions, bulk cancellation or automatic retries. Out of Office changes still require review in Settings for one mailbox.</p>
@@ -1298,6 +1318,7 @@
                 <p class="hint settings-inline-status" id="pref-schedule-status" role="status" hidden></p>
               </div>
               <div class="checks">
+                <p id="local-folders-help" class="hint">Local Folders stores complete messages and attachments on this computer. Use the message menu to Copy or Move to Local Folders; Move verifies the copy before putting the server original in Trash. Gmail affects all labels. Offline reading and local folder management remain available after disconnecting an account. Local copies are excluded from All Account Mail and All connected accounts search; choose Local Folders in search scope. Back up local-folders.sqlite with Morrow closed. Import MBOX… reviews mailbox exports, format and destination; stopped Thunderbird extensionless files are supported. .msf indexes and .sbd trees are unsupported. See Features → Local Folders and MBOX import for limits and recovery.</p>
                 <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
                 <p id="conversation-copy-help" class="hint">Gmail label copies appear once per conversation within the same account. The selected folder copy stays selected; folder records remain stored. Different provider messages and messages without a reliable provider ID stay separate. A single message has no Earlier section.</p>
                 <label class="check" for="pref-images"><input id="pref-images" type="checkbox" checked aria-describedby="pref-images-help" /> Load remote images</label>
@@ -1756,6 +1777,37 @@
       </div>
       <p id="settings-status" role="status"></p>
       </div>
+    </dialog>
+    <dialog id="mbox-import" aria-labelledby="mbox-title" aria-describedby="mbox-help">
+      <form id="mbox-form">
+        <h2 id="mbox-title">Import MBOX to Local Folders</h2>
+        <p class="hint" id="mbox-help">Copy exported or stopped Thunderbird mailbox files, including files without extensions. .msf indexes, .sbd trees, profiles and Maildir are unsupported. Source files stay unchanged. No provider upload or automatic mail actions run.</p>
+        <label for="mbox-history">Saved import jobs (latest 100)</label><select id="mbox-history"></select>
+        <button type="button" class="ghost" id="mbox-pick">Choose files…</button><ul id="mbox-files" aria-label="Selected source files"></ul>
+        <label for="mbox-folder">Local destination</label><select id="mbox-folder"></select>
+        <details><summary>Create a destination folder</summary><label for="mbox-folder-name">New destination name</label><input id="mbox-folder-name" maxlength="200" autocomplete="off" /><button type="button" class="ghost" id="mbox-new-folder">Create folder</button></details>
+        <label for="mbox-variant">Source format</label><select id="mbox-variant" aria-describedby="mbox-format-help"><option value="mboxrd">mboxrd · Thunderbird / recursive From quoting</option><option value="mboxo">mboxo · single From quote (lossy legacy convention)</option></select>
+        <p class="hint" id="mbox-format-help">Choose the export's actual format; it cannot be inferred reliably. Ctime-style From separators required. mboxo uses a lossy legacy quoting convention; review the format details if unsure.</p>
+        <p class="hint" id="mbox-duplicate-help">Skip identical de-framed MIME bytes already imported to this destination, including receipts for mail later moved locally. Message-ID alone never merges mail. Other destinations keep independent copies. Line ending or header changes count as different content. Thunderbird read/star/reply/forward flags are mapped; deleted entries are skipped and Partial entries fail as incomplete. Other tags and profile settings are not imported.</p>
+        <p class="hint">A private source copy needs additional disk space. Stop/Escape retains saved mail. Continue resumes interrupted work after verification; restart never starts it automatically.</p>
+        <details><summary>Format details, limits and recovery</summary><p class="hint">mboxrd removes one quote from &gt;From and &gt;&gt;From body lines; mboxo removes one from &gt;From only. Content-Length variants are rejected. Ordinary From text stays intact.</p><p class="hint" id="mbox-limits">Up to 20 files / 100 GiB per job; 32 MiB per original message, 256 KiB per line/header block, 256 attachments. Jobs pause after 512 MiB or 10 minutes per run. Private snapshots remain until Remove snapshots, which ends recovery for failed input while preserving saved mail and your original files. Back up local-folders.sqlite with Morrow closed, plus mbox-imports for recovery. See Features → MBOX import for all limits.</p></details>
+        <progress id="mbox-progress" aria-label="Committed input bytes" hidden></progress><p id="mbox-bytes" class="hint"></p>
+        <p id="mbox-status" role="status" aria-live="polite"></p><ul id="mbox-errors" aria-label="Failed entry offsets"></ul>
+        <div class="row"><button type="submit" class="primary" id="mbox-start" disabled>Import</button><button type="button" class="ghost" id="mbox-close">Close</button><button type="button" class="ghost" id="mbox-discard" hidden>Remove snapshots…</button></div>
+      </form>
+    </dialog>
+    <dialog id="local-transfer" aria-labelledby="local-transfer-title" aria-describedby="local-transfer-help">
+      <form id="local-transfer-form">
+        <h2 id="local-transfer-title">Copy to Local Folders</h2>
+        <p id="local-transfer-source"></p>
+        <p id="local-transfer-help" class="hint"></p>
+        <label for="local-transfer-mode">Action</label>
+        <select id="local-transfer-mode"><option value="copy">Copy · Keep original</option><option value="move">Move · Trash server original after copying</option></select>
+        <label for="local-transfer-folder">Local destination</label>
+        <select id="local-transfer-folder"></select>
+        <p id="local-transfer-status" role="status" aria-live="polite"></p>
+        <div class="row"><button type="submit" class="primary" id="local-transfer-ok">Copy</button><button type="button" class="ghost" id="local-transfer-cancel">Cancel</button></div>
+      </form>
     </dialog>
     <dialog id="move-picker" aria-labelledby="move-picker-title">
       <form id="move-picker-form">

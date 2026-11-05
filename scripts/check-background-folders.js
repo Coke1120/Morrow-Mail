@@ -6,6 +6,10 @@ const path = require("node:path");
 const { planBackgroundFolders } = require("../host/mail/background-jobs");
 
 const root = path.join(__dirname, "..");
+// Complete-order cases need enough fixture time for real durable Windows I/O.
+// Expired-budget rotation is exercised separately with an exact zero budget;
+// no assertion should require six folder batches to fit a 25-second SLA.
+const FULL_WALK_BUDGET_MS = "300000";
 
 function pathsOf(plan) {
   return plan.jobs.map((folder) => folder.path);
@@ -123,7 +127,7 @@ async function checkEngine() {
     MORROW_MAIL_SECRETS: "memory",
     MORROW_PAGE_DELAY_MS: "0",
   });
-  delete process.env.MORROW_SYNC_TICK_MS;
+  process.env.MORROW_SYNC_TICK_MS = FULL_WALK_BUDGET_MS;
   const engine = require("../host/mail/engine");
   const db = require("../host/mail/db");
   const remote = require("../host/mail/remote");
@@ -164,6 +168,7 @@ async function checkEngine() {
     };
     db.insertAccount(accountRow("bg-all", "all@example.test", "gmail"));
     secrets.setPassword("bg-all", "pw");
+    console.log("background-folders-progress", JSON.stringify({ phase: "complete-order", budgetMs: Number(FULL_WALK_BUDGET_MS) }));
     await engine.syncAccountById("bg-all", { background: true });
     assert.deepEqual(searches, pathOrder, "background sync visits every listed folder without opening it");
     assert.deepEqual(fetched.map((row) => row.folder), big);
@@ -218,6 +223,7 @@ async function checkEngine() {
     db.insertAccount(accountRow("bg-budget", "budget@example.test", "custom"));
     secrets.setPassword("bg-budget", "pw");
     engine.noteActive("bg-budget", "Sent");
+    console.log("background-folders-progress", JSON.stringify({ phase: "expired-budget-rotation", budgetMs: 0 }));
     process.env.MORROW_SYNC_TICK_MS = "0";
     searches.length = 0;
     fetched.length = 0;
@@ -232,7 +238,7 @@ async function checkEngine() {
     fetched.length = 0;
     await engine.syncAccountById("bg-budget", { background: true });
     assert.deepEqual(fetched.map((row) => row.folder), ["INBOX"]);
-    delete process.env.MORROW_SYNC_TICK_MS;
+    process.env.MORROW_SYNC_TICK_MS = FULL_WALK_BUDGET_MS;
 
     const removed = await engine.answer("mail:removeAccount", [{ accountId: "bg-budget" }]);
     assert.equal(removed.success, true);
@@ -242,7 +248,7 @@ async function checkEngine() {
     fetched.length = 0;
     await engine.syncAccountById("bg-budget", { background: true });
     assert.deepEqual(fetched.map((row) => row.folder), ["INBOX"], "removing an account forgets its turn");
-    delete process.env.MORROW_SYNC_TICK_MS;
+    process.env.MORROW_SYNC_TICK_MS = FULL_WALK_BUDGET_MS;
 
     remote.listFolderRecords = async () => ({
       folders: [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }],
@@ -304,6 +310,7 @@ async function checkEngine() {
     rateSearches.length = 0;
     await engine.syncAccountById("bg-rate", { background: true });
     assert.deepEqual(rateSearches, ["Notes", "Sent", "INBOX", "INBOX"]);
+    console.log("background-folders-progress", JSON.stringify({ phase: "foreground-priority" }));
     await checkOpenPriority(engine, db, remote, secrets);
     console.log("background-folders-ok");
   } finally {
@@ -427,7 +434,7 @@ async function checkOpenPriority(engine, db, remote, secrets) {
     assert.equal(db.folderByPath("bg-yield", "Sent").uid_cursor, 7);
   } finally {
     releaseYield();
-    delete process.env.MORROW_SYNC_TICK_MS;
+    process.env.MORROW_SYNC_TICK_MS = FULL_WALK_BUDGET_MS;
     await Promise.allSettled([yieldSync, yieldOpen]);
   }
 
@@ -481,7 +488,7 @@ async function checkOpenPriority(engine, db, remote, secrets) {
     assert.equal(db.countInFolder("bg-resume", "INBOX"), 1);
   } finally {
     releaseResume();
-    delete process.env.MORROW_SYNC_TICK_MS;
+    process.env.MORROW_SYNC_TICK_MS = FULL_WALK_BUDGET_MS;
     await Promise.allSettled([resumeSync, resumeOpen]);
   }
 

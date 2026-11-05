@@ -7,6 +7,15 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.3": [
+      "Local Folders keeps complete original mail and attachments on this computer, even after an account is disconnected. Copy verifies saved bytes; Move then uses recoverable server Trash after review.",
+      "Import MBOX reviews exported or stopped Thunderbird mailboxes, destination, format and duplicates. Stop, errors and restart keep committed local mail; continuing is an explicit action and original files stay unchanged.",
+      "Case / client Timeline searches the current account's downloaded mail across threads. Choose Main / Background sources, review coverage and destination, then confirm before Generate. Cited suggestions still need human review.",
+      "Settings → AI requires renewed manual data permission for the Case disclosure. Background permission stays separate. Independent To/Cc headers remain local evidence, while body text and optional focus can contain addresses.",
+      "Selective local search and pending-body work use more efficient access paths. Background IMAP writes yield between durable batches; broad queries, a large message or a disk call can still pause the host.",
+      "Local archive search applies consistent Unicode normalization and lowercasing. An explicit connected-account search scope stays selected, and local reader Trash follows the complete reviewed selection, including filter-hidden rows.",
+      "Case mode can review a smaller selection when the initially opened thread exceeds its limits. MBOX import restores keyboard focus after completion rebuilds the sidebar.",
+    ],
     "0.4.2": [
       "Summary presents one main point and up to six plain-language bullets. Longer or incomplete downloaded text gets an explicit coverage choice; Timeline shows request limits and supports reviewed retries.",
       "To Me filters downloaded mail by the owning mailbox’s primary address in To. Attachments start collapsed with the file count and Save as ZIP still visible; All Mail folder chips align with Inbox and Sent.",

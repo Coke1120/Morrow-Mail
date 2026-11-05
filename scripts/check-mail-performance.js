@@ -29,6 +29,8 @@ async function diagnosticChecks() {
   const text = JSON.stringify(data);
   for (const secret of Object.values(value)) assert.ok(!text.includes(secret));
   on.snapshot(true); assert.deepEqual(on.snapshot().stages,[]);
+  for (const stage of ["db.search", "db.body.pending", "db.sync.ingest"]) on.record(stage, 1);
+  assert.deepEqual(on.snapshot(true).stages.map(row => row.stage), ["db.search", "db.body.pending", "db.sync.ingest"]);
   assert.deepEqual(off.snapshot(),{enabled:false,stages:[]});
   const {JSDOM} = require("jsdom"), {renderer} = require("./check-ux-workflows");
   const document = new JSDOM('<div id="features-catalog"></div><p id="features-empty"></p>').window.document;
@@ -43,6 +45,12 @@ async function diagnosticChecks() {
   assert.match(document.body.textContent,/Durable acknowledgement, journal recovery and fsync are unchanged/);
   assert.match(document.body.textContent,/Opening also names copy, journal recovery, schema, body metadata/);
   assert.match(document.body.textContent,/Body metadata preparation checks an 8 ms budget after each message/);
+  assert.match(document.body.textContent,/Exact local search chooses candidate access without dropping matches/);
+  assert.match(document.body.textContent,/Pending-body polls use an eligible-backlog index/);
+  assert.match(document.body.textContent,/24-message limit, check a 32 ms elapsed budget and a 256 KiB normalized text\/HTML budget/);
+  assert.match(document.body.textContent,/single oversized message or disk call can exceed these targets/);
+  const shell = new JSDOM(fs.readFileSync(path.join(__dirname, "../renderer/index.html"), "utf8")).window.document;
+  assert.match(shell.querySelector("#search-scope").textContent, /Search ranks all matching candidates before its result limit/);
   assert.match(document.body.textContent,/Tiny journals use a mailbox-size\/copy-cost soft age/);
   assert.match(document.body.textContent,/not hard recovery-time limits/);
   assert.match(document.body.textContent,/fixed-label startup phase events/);

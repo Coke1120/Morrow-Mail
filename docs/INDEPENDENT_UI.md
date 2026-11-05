@@ -27,6 +27,24 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Local Folders → Import MBOX reviews explicitly selected mailbox files, destination
+and mboxrd/mboxo format. Private snapshots, atomic per-message progress and
+explicit Continue make cancellation and restart recoverable without changing the
+source. See [supported formats, limits and backup](MBOX_IMPORT.md). This feature
+is proposed by draft #521 implementation work and has not been released.
+
+Mail's account list includes Local Folders on this computer. Create/rename nested
+local folders and delete empty leaves from its folder menu (Shift + F10 works
+with keyboard focus). Server message menus and the reader's Local Folders button
+open reviewed Copy/Move destinations. Complete original MIME and all attachments
+are saved independently; Move verifies the durable copy before provider Trash.
+Failed/uncertain server moves retain local mail and never replay after restart.
+Offline reading, attachment actions, flags, local copy/move, Trash/restore and EML
+export remain available after disconnect. Local search is separate from All
+connected accounts and All Account Mail. See Features → Local Folders and the
+[ownership decision](adr/2026-11-05-local-folders.md) for size/provider limits,
+stop behavior, backup and unavailable operations. MBOX import is separate (#521).
+
 Folder chips stay left aligned in All Mail, Inbox and Sent. When a title remains
 visible, it has its own row above the chips. Chips wrap inside narrow lists;
 Sync remains after them in the keyboard order. Hiding folder chips keeps the
@@ -48,15 +66,17 @@ other filters and sorting, returns to page one and clears selection. It remains
 available when folder chips are hidden and lasts in this window until disabled
 or restarted. See [recipient matching](adr/2026-11-05-to-me-filter.md).
 
-The reader action bar has one **Timeline** button, beside Summary. Its sheet offers
-optional keywords and editable contact emails from the opened message's From, To,
-Cc and Reply-To, never the list selection or search. Generate uses that message
-and its downloaded thread; no older mail is fetched. Focus guides summaries, not
-which thread messages are sent. Title follows the subject; language and timezone
-follow the system. Explicit-action AI permission and conditional partial-coverage
-acceptance still apply. Results, saved history and reviewed JSON, Markdown and
-isolated PDF exports stay local. No Timeline tab, scheduled generation or URL
-delivery is available. See [the public format and privacy boundaries](TIMELINE_FORMAT.md).
+The reader action bar has one **Timeline** button beside Summary. Its sheet keeps
+**This downloaded thread** and adds **Case / client across threads** for reviewed
+current-account local search and explicit Main / Background message selection.
+Case Generate requires a fresh source/destination review; only Generate uses AI.
+Keywords/contacts guide summaries rather than source selection. Independent To/Cc
+remain local evidence. Case status, follow-ups, gaps and mentioned dates cite source
+mail; cached source reading never downloads or marks read. Mail-date chronology,
+coverage, uncertainty, bounded calls/cancellation and reviewed local HTML/Markdown/
+PDF/JSON exports remain. Thread schema 1.0.0 and Case schema 1.1.0 are both supported.
+Disclosure version 4 requires renewed manual AI permission. No scheduled generation
+or URL delivery is available. See [scope and privacy](TIMELINE_FORMAT.md).
 
 Settings → Mail & Sync controls new-email system notifications on Windows/macOS.
 They default on with sender/content hidden, and run only while the app is running,
