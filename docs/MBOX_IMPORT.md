@@ -90,7 +90,9 @@ Prior commits remain saved. Closing the app asks the importer to stop; abrupt
 exit is recovered by SQLite. Restart marks work interrupted and never imports
 automatically. **Continue** verifies the **whole private snapshot** by stat,
 length and SHA-256 before reading a committed byte offset, then checks its stamp
-before every commit. It does not read a changed original file at an old offset:
+before every commit. A byte-identical backup restore may have new filesystem
+identity; only a full matching digest permits adopting that new stable stamp.
+It does not read a changed original file at an old offset:
 the immutable snapshot is the resume source. Editing/removing the original after
 snapshot publication does not change that snapshot. Never edit private snapshots.
 

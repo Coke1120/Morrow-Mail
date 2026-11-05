@@ -136,7 +136,6 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
     const handle = await openRead(snapshotPath(job, index));
     try {
       const before = stamp(await handle.stat());
-      if (before !== source.snapshot.stamp) throw error("mbox_snapshot", "The saved snapshot changed. Its committed offset was not used. Select the original export as a new job.");
       const hash = crypto.createHash("sha256"); let position = 0;
       for (;;) {
         check(token);
@@ -149,6 +148,10 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
       if (position !== source.size || hash.digest("hex") !== source.snapshot.sha || stamp(await handle.stat()) !== before) {
         throw error("mbox_snapshot", "Snapshot verification failed. Progress and local mail were retained; no old offset was trusted.");
       }
+      // A backup restored byte-for-byte can have a new inode/timestamp. Only a
+      // complete matching digest permits adopting its current stable identity;
+      // later per-commit checks still reject a concurrent change.
+      source.snapshot.stamp = before;
       return handle;
     } catch (failure) { await handle.close(); throw failure; }
   }

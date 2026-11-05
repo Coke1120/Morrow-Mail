@@ -24,7 +24,7 @@ The browser check needs local Playwright and Chromium; set
 `MORROW_PLAYWRIGHT_MODULE` or `CHROMIUM_PATH` for other local installations.
 Host, storage and DOM checks are registered in the standard Linux/Windows suite.
 
-The 24 focused storage/parser cases cover explicit mboxrd/mboxo, LF/CRLF and
+The 25 focused storage/parser cases cover explicit mboxrd/mboxo, LF/CRLF and
 one-byte chunk boundaries, no final newline, ordinary/escaped From lines,
 ambiguous separators, extensionless Thunderbird sources, Unicode and legacy or
 unknown charsets, binary/inline MIME attachments and thread/date headers,
@@ -32,7 +32,8 @@ deleted/Partial/queued status handling, duplicate imports after rename/move,
 distinct same-ID and missing-ID content, separate destinations, empty/multiple
 files, unsupported MSF/SBD/EML/Content-Length, malformed/truncated MIME and bounded
 oversized entries/lines/headers. Worker cancellation/deadlines, byte-budget pause,
-source changes/replacement and corrupt snapshots are exercised.
+source changes/replacement, corrupt snapshots and byte-identical snapshot restore
+with a changed filesystem identity are exercised.
 
 Storage fault checks exercise real SQLite FULL, transaction rollback of message
 and progress, corrupt progress checksums, read/fsync/rename faults during snapshot

@@ -188,6 +188,16 @@ if (process.argv[2] === "--crash") {
     assert.equal(f.importer.status(saved.id).status, "failed"); assert.match(f.importer.status(saved.id).detail, /verification failed/); assert.equal(f.store.list().total, 1);
   });
 
+  test("a byte-identical restored snapshot can resume after its filesystem identity changes", async t => {
+    const f = fixture(t, { hooks: { afterCommit({ job }) { f.importer.cancel(job.id); } } });
+    const source = f.source(mbox([raw("Restored one"), raw("Restored two")]));
+    const job = await f.import([source]); assert.equal(job.imported, 1);
+    const saved = path.join(f.importer.root, job.id, "0.mbox"), restored = saved + ".restore";
+    fs.copyFileSync(saved, restored); fs.rmSync(saved); fs.renameSync(restored, saved);
+    await f.reopen({}); f.importer.start(job.id); await f.importer.idle();
+    const result = f.importer.status(job.id); assert.equal(result.status, "completed"); assert.equal(result.imported, 2); assert.equal(f.store.list().total, 2);
+  });
+
   test("storage rollback atomically preserves message, attachments, receipts, offsets and counters", async t => {
     let fail = true;
     const f = fixture(t, { hooks: { insideCommit() { if (fail) throw new Error("synthetic commit failure"); } } });

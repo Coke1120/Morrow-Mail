@@ -129,12 +129,12 @@ function createLocalStore(file, { database = Database } = {}) {
   function verify(id) {
     const row = sql.prepare("SELECT * FROM messages WHERE id=?").get(id);
     if (!row || row.raw.length !== row.raw_size || digest(row.raw) !== row.raw_sha || digest(row.info) !== row.info_sha || digest(row.body) !== row.body_sha) {
-      throw problem("Local copy verification failed. The server message was retained. Check storage and copy again.");
+      throw problem("Local copy verification failed. Its stored bytes were retained. Check storage and restore a known-good backup before continuing.");
     }
     const attachments = sql.prepare("SELECT id,data,sha FROM attachments WHERE message_id=?").all(id);
     const expected = JSON.parse(row.info).attachments;
     if (attachments.length !== expected.length || attachments.some(part => digest(part.data) !== part.sha
-      || !expected.some(item => item.id === part.id && item.size === part.data.length))) throw problem("Local attachment verification failed. The server message was retained.");
+      || !expected.some(item => item.id === part.id && item.size === part.data.length))) throw problem("Local attachment verification failed. Its stored bytes were retained for recovery.");
     return message(id);
   }
   function receipt(sourceKey, destination) {
