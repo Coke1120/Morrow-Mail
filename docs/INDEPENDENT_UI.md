@@ -21,6 +21,15 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+The **To Me** chip filters downloaded mail before paging, and local search before
+its 100-result limit. It checks only To against the owning mailbox's primary
+address, without regard to letter case. Cc, Bcc, aliases, plus variants and delivery
+headers do not match. Multi-account views use each message's own mailbox. Sent
+mail to yourself can match; Outbox is excluded. The filter preserves the folder,
+other filters and sorting, returns to page one and clears selection. It remains
+available when folder chips are hidden and lasts in this window until disabled
+or restarted. See [recipient matching](adr/2026-11-05-to-me-filter.md).
+
 The reader action bar has one **Timeline** button, beside Summary. Its sheet offers
 optional keywords and editable contact emails from the opened message's From, To,
 Cc and Reply-To, never the list selection or search. Generate uses that message

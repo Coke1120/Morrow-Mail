@@ -204,6 +204,7 @@
             <div id="list-chips" class="chips" role="group" aria-label="Primary folders" hidden></div>
             <div id="list-refresh-slot"></div>
           </div>
+          <p class="sr" id="to-me-help">To Me shows downloaded messages whose To field includes the primary email address of that message's mailbox. Cc, Bcc, aliases and delivery headers do not match. It keeps the current folder, other filters and sort. It also applies to search before its 100-result limit. Sent mail to yourself can match. Outbox is excluded.</p>
           <p id="list-coverage" class="list-filter-note" role="status"></p>
           <div id="search-scope" hidden>
             <label class="sr" for="search-account">Search account</label>
@@ -219,6 +220,7 @@
             <label class="page-select" title="Select messages shown on this page"><input type="checkbox" id="select-visible" aria-label="Select messages shown on this page" /></label>
             <label class="sr" for="list-filter">Filter loaded messages</label>
             <input id="list-filter" data-testid="list-filter" type="search" aria-describedby="list-filter-help" placeholder="Filter this page" autocomplete="off" spellcheck="false" />
+            <button type="button" id="list-to-me" class="chip" data-filter="to-me" aria-pressed="false" aria-controls="message-list" aria-describedby="to-me-help" title="To includes this message's mailbox address. Cc, Bcc and aliases do not match." hidden>To Me</button>
             <button type="button" class="ghost" id="mail-columns-open" aria-haspopup="dialog">Columns</button>
             <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>

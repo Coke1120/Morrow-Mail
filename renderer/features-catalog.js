@@ -41,6 +41,12 @@ id: "mail-workflow-feedback",
         blurb: "All Account Mail has Inbox, Outbox, Starred and Unread rows. Inbox keeps its existing primary-folder scope: Gmail All Mail (Inbox until All Mail is available), otherwise Inbox. Starred and Unread aggregate the existing per-account downloaded filters and their counts. Unread excludes Sent, Drafts, Trash, Spam, search-only copies and snoozed messages; Starred uses the saved star flag across folders. Counts exclude a read row held open. The Inbox unread chip is removed; per-account unread counts remain. Provider folder badges can include mail not downloaded here. Local read changes and definitive mailbox receipts refresh the counts. Confirmed bulk Archive and Trash hide the reviewed rows immediately and submit groups of at most four messages between paints; the rest of Mail stays usable. This is not a cancellation window. Accepted writes await mailbox confirmation before joining Undo. Failed, unknown and unattempted rows reconcile with downloaded mail; refresh before retrying an unknown change. Agent reopens with its last payload, refreshes quietly and shows a non-blocking triage notice when stale; first load and explicit Refresh may show Working. Failed refresh keeps saved suggestions visible.",
       },
       {
+        id: "mail-to-me",
+        title: "To Me filter",
+        category: "Mail",
+        blurb: "Use To Me to show downloaded messages with the owning mailbox's primary address in To. Address matching ignores letter case. Cc-only, Bcc-only, aliases, plus variants, delivery headers and display-name mentions do not match. Each account is checked separately. Sent mail to yourself can match; Outbox is excluded. It keeps folder, Unread/Starred, search, page text and sort choices, resets paging and clears selection. Matching happens before paging and before search's 100-result limit. The chip remains when folder chips are hidden. Its choice lasts until changed or restarted. Matching uses cached headers. Normal sync and page body prefetch continue.",
+      },
+      {
         id: "mail-folder-navigation",
         title: "Folder chips and sidebar icons",
         category: "Mail",

@@ -7,6 +7,7 @@ const state = {
   allInbox: false,
   allInboxUnreadOnly: false,
   allInboxStarredOnly: false,
+  toMeOnly: false,
   mailColumnOrder: ["date", "recipient", "sender", "subject"],
   mailHiddenColumns: [],
   outbox: false,
@@ -989,17 +990,20 @@ function mailListRequest(view) {
   if (source.query) {
     const params = { query: source.query, limit: 100, ...(source.listSort || {}) };
     if (source.searchAccountId) params.accountId = source.searchAccountId;
+    if (source.toMeOnly) params.filterToMe = true;
     return { channel: "mail:searchLocal", params };
   }
   const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
   if (source.allInbox && (source.aggregateView === "starred" || source.aggregateView === "unread")) {
     const params = { aggregateView: source.aggregateView, limit, offset, ...(source.listSort || {}) };
+    if (source.toMeOnly) params.filterToMe = true;
     if (retainId && source.aggregateView === "unread") params.retainIds = [retainId];
     return { channel: "mail:listFromCache", params };
   }
   if (source.allInbox) {
     const params = { folderKey: "primary", limit, offset, ...(source.listSort || {}) };
+    if (source.toMeOnly) params.filterToMe = true;
     if (source.pageCursor) params.pageCursor = source.pageCursor;
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
     if (helper && typeof helper.primaryMailboxes === "function") {
@@ -1011,6 +1015,7 @@ function mailListRequest(view) {
     return { channel: "mail:listFromCache", params };
   }
   const params = { accountId: source.accountId, folderId: source.folderId, limit, offset, ...(source.listSort || {}) };
+  if (source.toMeOnly) params.filterToMe = true;
   if (source.pageCursor) params.pageCursor = source.pageCursor;
   if (retainId) params.retainIds = [retainId];
   return {
@@ -3078,7 +3083,7 @@ function applyMailView() {
   if (!shell || typeof shell.getBoundingClientRect !== "function" || isReaderWindow()) return;
   const pref = mailViewPref(state.prefs.mailView);
   const layout = effectiveMailViewLayout();
-  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox]);
+  const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.toMeOnly]);
   if (mailViewScrollScope !== scope) { mailViewScroll.clear(); mailViewScrollScope = scope; }
   const previous = shell.dataset.mailLayout, list = $("message-list");
   const moving = previous && previous !== layout && list;
@@ -5786,6 +5791,20 @@ function renderChips(account) {
   }
 }
 
+function paintToMeFilter() {
+  const button = $("list-to-me");
+  if (!button) return;
+  button.hidden = !state.accounts.length || (state.outbox && !state.query);
+  button.setAttribute("aria-pressed", String(state.toMeOnly));
+}
+
+async function toggleToMeFilter() {
+  state.toMeOnly = !state.toMeOnly;
+  state.selectedIds = [];
+  state.selectionAnchor = "";
+  await loadList(false, 0);
+}
+
 // Filter stays on messages already loaded: subject, from, and snippet.
 // It does not call mail:search or mail:searchLocal. Toolbar search does.
 function filteredEmails(emails, query) {
@@ -7121,6 +7140,7 @@ function renderList() {
     title.textContent = state.query ? `Search: ${state.query}` : (state.outbox ? "Outbox" : (state.allInbox ? allAccountMailTitle(state.allInboxUnreadOnly, state.allInboxStarredOnly) : (chipLabel(folder) || "Messages")));
   }
   renderChips(state.allInbox || state.outbox ? null : account);
+  paintToMeFilter();
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account, state.folderId).some(item => item.id === state.folderId));
   const shown = shownEmails();
   paintSelectionBar(shown);
@@ -10113,7 +10133,7 @@ function noteMailListLoaded(gen) {
 async function loadList(fromNetwork, requestedOffset) {
   const gen = ++listGen;
   noteUnreadScope();
-  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId]);
+  const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId, state.toMeOnly]);
   const scopeChanged = state.listScope !== scope;
   if (scopeChanged) {
     state.listScope = scope;
@@ -10140,7 +10160,7 @@ async function loadList(fromNetwork, requestedOffset) {
       return null;
     }
     if (state.query) {
-      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...state.listSort, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}) });
+      const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...state.listSort, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}), ...(state.toMeOnly ? { filterToMe: true } : {}) });
       if (gen !== listGen) return null;
       state.emails = takeEmails(Array.isArray(data) ? data : []);
       renderList();
@@ -10159,6 +10179,7 @@ async function loadList(fromNetwork, requestedOffset) {
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
       listSort: state.listSort,
+      toMeOnly: state.toMeOnly,
       allInbox: state.allInbox,
       aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
       unreadOnly: state.allInbox && state.allInboxUnreadOnly,
@@ -10178,6 +10199,7 @@ async function loadList(fromNetwork, requestedOffset) {
       offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
       const again = mailListRequest({
         listSort: state.listSort,
+        toMeOnly: state.toMeOnly,
         allInbox: state.allInbox,
         aggregateView: state.allInboxStarredOnly ? "starred" : state.allInboxUnreadOnly ? "unread" : "",
         unreadOnly: state.allInbox && state.allInboxUnreadOnly,
@@ -11467,6 +11489,7 @@ function selectionButton(id, label, paths, run) {
 
 function wireSelection() {
   $("filter-chip").addEventListener("click", () => { $("list-filter").value = ""; renderList(); });
+  $("list-to-me").addEventListener("click", () => guard(toggleToMeFilter));
   $("search-account").addEventListener("change", () => { state.searchAccountId = $("search-account").value; guard(applySearch); });
   const bar = $("selection-actions");
   if (!bar || bar.childElementCount) return;
