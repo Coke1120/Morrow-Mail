@@ -137,6 +137,10 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
     const labels = data.labelIds || [];
     const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
     const root = references[0] || parsed.inReplyTo || parsed.messageId;
+    // Missing types/children cannot prove that a legacy MIME tree has no reaction.
+    const inspectedMime = list.every(part => typeof part.mimeType === "string"
+      && /^[^/\s;]+\/[^/\s;]+(?:\s*;.*)?$/.test(part.mimeType)
+      && (!/^multipart\//i.test(part.mimeType) || Array.isArray(part.parts) && part.parts.length > 0));
     return { providerId: data.id, providerThreadId: data.threadId, labelIds: labels, receivedAt: Number(data.internalDate) || null, rfcMessageId: parsed.messageId || null,
       threadId: root ? `thr:${String(root).replace(/[<>\s]/g, "").slice(0, 180)}` : `gmail:${data.threadId || data.id}`,
       inReplyTo: parsed.inReplyTo || null, subject: presented.subject, from: stringAddresses(parsed.from).join(", "),
@@ -146,7 +150,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       date: date.toISOString(), dateSource: headerDate ? "header" : receivedDate ? "received" : "unknown",
       listSortTs: date.getTime(), snippet: data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ").slice(0, 180),
       unread: labels.includes("UNREAD"), starred: labels.includes("STARRED"), isDraft: labels.includes("DRAFT"),
-      replyInferenceEligible: !bodyWarning && !list.some(part => String(part.mimeType || "").split(";")[0].trim().toLowerCase() === "text/vnd.google.email-reaction+json"),
+      replyInferenceEligible: !bodyWarning && inspectedMime && !list.some(part => String(part.mimeType || "").split(";")[0].trim().toLowerCase() === "text/vnd.google.email-reaction+json"),
       replied: null, forwarded: null, // Gmail labels expose neither state.
       hasAttachments: attachments.some(row => !row.isInlineFromApi || !row.mimeType.startsWith("image/")), attachments,
       htmlBody: presented.htmlBody, textBody: presented.textBody, bodyComplete: complete, bodyWarning };
@@ -211,6 +215,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
         db.transaction(() => { db.pruneGmailCopies(account.id, providerId, []); committed(); });
         return;
       }
+      if (data.id !== providerId) throw ambiguous();
       // Message data and its resume position commit together, with no await in
       // the transaction. A failed checkpoint cannot skip unapplied changes.
       const value = await adopt(data, { after, committed });
@@ -247,7 +252,17 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       delete state.pending;
       save();
     }
-    const result = () => ({ paused: false, arrivals, bootstrapped: !!state.complete && !state.pending && !state.verifyNeeded && !state.historyPageToken });
+    const replyCandidates = () => selected.provider_id === "SENT" ? db.gmailReplyBackfillPage(account.id, path) : [];
+    const result = () => ({ paused: false, arrivals, bootstrapped: !!state.complete && !state.pending && !state.verifyNeeded && !state.historyPageToken && !replyCandidates().length });
+    // Repair only already-cached Sent candidates, at most two full reads per
+    // pass, inside the existing twenty-read/time/foreground budget. Adoption
+    // commits the MIME inspection and any inferred indicators together; there
+    // is no separate cursor that could skip a failed or interrupted read.
+    for (const row of replyCandidates().slice(0, 2)) {
+      if (stop()) break;
+      await read(row.gmail_id, () => {});
+    }
+    if (selected.provider_id === "SENT" && stop()) return result();
     if (state.pending) {
       await drainPage();
       if (!state.pending) await verifyCached();

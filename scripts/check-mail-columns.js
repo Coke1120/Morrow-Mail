@@ -144,6 +144,9 @@ async function run() {
   const dispositionHelp = dom.window.document.getElementById("mail-columns-provider-help").textContent;
   assert.match(dispositionHelp, /confirmed successful Morrow sends/);
   assert.match(dispositionHelp, /emoji reactions are excluded/);
+  assert.match(dispositionHelp, /without a Message-ID/);
+  assert.match(dispositionHelp, /at most two per pass/);
+  assert.match(dom.window.document.getElementById("features-catalog").textContent, /offline or rate-limited work waits for normal sync retry/);
   assert.match(dispositionHelp, /cross-device forwards cannot be inferred/);
   assert.doesNotMatch(dom.window.document.getElementById("features-catalog").textContent, /The Reply \/ forward column shows/);
   assert.match(dom.window.document.getElementById("mail-sort-help").textContent, /first To recipient/);
