@@ -47,3 +47,11 @@ links or account/provider IDs. No Canvas service, fixed mailbox or timezone is c
 This work does not merge, release, change mail flags, extract attachments, create
 provider queries or enable scheduled/automatic generation. Native platform rendering,
 actual PDF pagination and live model quality require separate validation.
+
+Case mode remains available if initial thread capture exceeds source-byte or
+message-count limits. A separate body-free context snapshots only the opened
+message fingerprint and account incarnation, without expanding its thread. It
+authorizes cached search in that account, never generation or download. The
+selection starts empty after failed thread capture; explicit smaller selection,
+review, current source proofs and AI confirmation are still required. Contexts
+retain the same owner, expiry and account/source change checks.

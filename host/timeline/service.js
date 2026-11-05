@@ -70,14 +70,19 @@ function createService(dependencies) {
     return entry;
   }
   function prepare(owner, input, closed = () => false) {
-    shape(input, ["selection", "options", "manifestToken"], ["selection", "options"]);
+    shape(input, ["selection", "options", "manifestToken", "contextOnly"], ["selection", "options"]);
     // Re-preparing edited focus must not silently switch account incarnations.
     const previous = input.manifestToken !== undefined ? manifest(owner, token(input.manifestToken)) : null;
     selectionInput(input.selection); optionsInput(input.options);
+    // A Case search context proves the opened message/account without capturing
+    // its whole thread or treating any body as reviewed generation input.
+    if (input.contextOnly !== undefined && (input.contextOnly !== true || input.manifestToken !== undefined
+        || input.options.mode === "case" || input.selection.search || input.selection.expandThreads
+        || input.selection.messages?.length !== 1)) throw failure("timeline-input");
     if (input.options.mode === "case" && (!previous?.rootAccountId || input.selection.search || input.selection.expandThreads
         || input.selection.messages.some(reference => reference.accountId !== previous.rootAccountId || !reference.phase)
         || new Set(input.selection.messages.map(reference => reference.messageId)).size !== input.selection.messages.length)) throw failure("timeline-input");
-    const snapshot = db.transaction(() => freezeSources(sourceDependencies, input.selection, input.options.mode));
+    const snapshot = db.transaction(() => freezeSources(sourceDependencies, input.selection, input.contextOnly ? "context" : input.options.mode));
     if (input.options.mode === "case") snapshot.caseScope = { local_only: true, account_count: 1,
       search_count: previous.searchStats.count, limited_search_count: previous.searchStats.limited, mailbox_complete: false, search_is_exhaustive: false };
     let plan, blocked;
@@ -92,7 +97,7 @@ function createService(dependencies) {
     if (manifests.size >= 8) throw failure("timeline-busy");
     const status = consent.status();
     const id = crypto.randomUUID();
-    const entry = { owner, snapshot, options: { ...input.options, ...(input.options.contactEmails ? { contactEmails: [...input.options.contactEmails] } : {}) }, expires: now() + 300000, consentToken: status.token, closed, blocked, consumed: false };
+    const entry = { owner, snapshot, contextOnly: input.contextOnly === true, options: { ...input.options, ...(input.options.contactEmails ? { contactEmails: [...input.options.contactEmails] } : {}) }, expires: now() + 300000, consentToken: status.token, closed, blocked, consumed: false };
     entry.rootAccountId = previous?.rootAccountId || (snapshot.accounts.length === 1 ? snapshot.accounts[0].id : null);
     entry.rootAccountStamp = previous?.rootAccountStamp || snapshot.accounts.find(account => account.id === entry.rootAccountId)?.stamp;
     entry.searchStats = previous?.searchStats || { count: 0, limited: 0 };
@@ -116,6 +121,7 @@ function createService(dependencies) {
     shape(input, ["manifestToken", "optionsDigest", "acceptPartial", "reviewed"], ["manifestToken", "optionsDigest", "acceptPartial"]);
     if (typeof input.acceptPartial !== "boolean") throw failure("timeline-input");
     const entry = manifest(owner, token(input.manifestToken));
+    if (entry.contextOnly) throw failure("timeline-input");
     if (entry.consumed || input.optionsDigest !== entry.optionsDigest) throw failure("timeline-manifest");
     if (entry.options.mode === "case" && input.reviewed !== true) throw failure("timeline-input");
     if (entry.blocked) throw budget(entry.blocked.kind, entry.blocked.actual, entry.blocked.limit);
@@ -218,6 +224,7 @@ function createService(dependencies) {
     if (channel === "timeline:download") {
       shape(input, ["manifestToken"], ["manifestToken"]);
       const entry = manifest(owner, token(input.manifestToken));
+      if (entry.contextOnly) throw failure("timeline-input");
       for (const reference of entry.snapshot.omitted) {
         live(entry);
         await download(reference.messageId, reference.accountId);

@@ -76,6 +76,7 @@ function freezeSources({ db, stamp, identities }, selection, mode = "thread") {
     const phase = mode === "case" ? selection.messages.find(reference => reference.messageId === row.id)?.phase || "main" : null;
     const record = { id: row.id, account_id: row.account_id, thread_id: row.thread_id || row.id, fingerprint: fingerprint(row), ...(phase ? { phase } : {}) };
     records.push(record);
+    if (mode === "context") continue;
     const text = row.text_body || htmlToPlain(row.html_body || "");
     if (row.body_complete !== 1 || !text.trim() || row.body_warning) {
       missingBodies++;

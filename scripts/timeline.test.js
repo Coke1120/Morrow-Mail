@@ -1633,3 +1633,59 @@ test("the opened account incarnation proof survives re-preparing different threa
   await assert.rejects(f.service.invoke(1, "timeline:search", { manifestToken: next.manifestToken, query: "Planning" }), { code: "timeline-source-changed" });
   assert.equal(f.calls.length, 0);
 });
+
+test("Case mode recovers from oversized thread capture using an account-bound context and explicit smaller selection", async context => {
+  for (const kind of ["thread-bytes", "opened-message-bytes", "thread-count"]) {
+    const rows = kind === "thread-count" ? Array.from({ length: 1001 }, (_, i) => row(`mail-${i + 1}`))
+      : [row(), row("large", { text_body: "X".repeat(LIMITS.inputTokens + 1) })];
+    if (kind === "opened-message-bytes") rows[0].text_body = "X".repeat(LIMITS.inputTokens + 1);
+    rows.push(row("smaller-case", { thread_id: "other", subject: "Smaller reviewed case" }));
+    const f = integratedTimeline(context, { rows });
+    await f.ui.mounted.open(f.ui.email);
+    assert.equal(f.hostCalls[0].error.code, kind === "thread-count" ? "timeline-selection-limit" : "timeline-budget");
+    f.node("timeline-mode").value = "case"; f.node("timeline-mode").dispatchEvent(new f.ui.window.Event("change")); await settleTimeline();
+    const contextCall = f.hostCalls.find(call => call.channel === "timeline:prepare" && call.input.contextOnly);
+    assert(contextCall?.data, "a body-free context is captured independently of thread limits");
+    await assert.rejects(f.service.invoke(1, "timeline:generate", { manifestToken: contextCall.data.manifestToken,
+      optionsDigest: contextCall.data.optionsDigest, acceptPartial: true, reviewed: true }), { code: "timeline-input" });
+    await assert.rejects(f.service.invoke(1, "timeline:download", { manifestToken: contextCall.data.manifestToken }), { code: "timeline-input" });
+    f.node("timeline-search").value = "Smaller"; f.node("timeline-search-button").click(); await settleTimeline();
+    const search = f.hostCalls.find(call => call.channel === "timeline:search");
+    assert(search?.data, `${kind}: Case search must work after full-thread preparation fails`);
+    assert.equal(search.data.messages.every(mail => mail.accountId === "mailbox-1"), true);
+    assert.equal(f.node("timeline-selection").children.length, 0, "failed thread capture never silently selects mail");
+    // This fixture returns every cached row, so select the final smaller result explicitly.
+    f.db.timelineSearch = () => [f.rows.get("smaller-case")];
+    f.node("timeline-search-button").click(); await settleTimeline();
+    f.node("timeline-candidates").querySelector("input").click();
+    assert.equal(f.node("timeline-review-case").disabled, false);
+    f.node("timeline-review-case").click(); await settleTimeline();
+    assert.match(f.node("timeline-preview").textContent, /1 included \/ 1 selected/);
+    assert.equal(f.node("timeline-generate").disabled, true, "the renewed case still needs explicit review confirmation");
+    assert.equal(f.calls.length, 0); assert.equal(f.downloads.length, 0);
+    const prepared = f.hostCalls.filter(call => call.channel === "timeline:prepare").at(-1).data;
+    await assert.rejects(f.service.invoke(2, "timeline:search", { manifestToken: prepared.manifestToken, query: "Smaller" }), { code: "timeline-manifest" });
+    f.changeAccount();
+    await assert.rejects(f.service.invoke(1, "timeline:search", { manifestToken: prepared.manifestToken, query: "Smaller" }), { code: "timeline-source-changed" });
+  }
+});
+
+test("body-free Case contexts reject broadened input and retain owner/source/account proofs", async context => {
+  const f = memory(context, { rows: [row("mail-1", { text_body: "X".repeat(LIMITS.inputTokens + 1) }), row("mail-2")] });
+  const input = { contextOnly: true, options, selection: { messages: [{ accountId: "mailbox-1", messageId: "mail-1" }], expandThreads: false } };
+  for (const extra of [{ contextOnly: false }, { options: { ...options, mode: "case" } },
+    { selection: { ...input.selection, expandThreads: true } },
+    { selection: { ...input.selection, messages: [...input.selection.messages, { accountId: "mailbox-1", messageId: "mail-2" }] } },
+    { selection: { ...input.selection, search: { query: "Planning" } } }]) {
+    await assert.rejects(f.service.invoke(1, "timeline:prepare", { ...input, ...extra }), { code: "timeline-input" });
+  }
+  const prepared = await f.service.invoke(1, "timeline:prepare", input);
+  const query = { manifestToken: prepared.manifestToken, query: "Planning" };
+  await assert.rejects(f.service.invoke(2, "timeline:search", query), { code: "timeline-manifest" });
+  f.rows.get("mail-1").text_body += "changed";
+  await assert.rejects(f.service.invoke(1, "timeline:search", query), { code: "timeline-source-changed" });
+  const refreshed = await f.service.invoke(1, "timeline:prepare", input);
+  f.changeAccount();
+  await assert.rejects(f.service.invoke(1, "timeline:check", { manifestToken: refreshed.manifestToken }), { code: "timeline-source-changed" });
+  assert.equal(f.calls.length, 0); assert.equal(f.downloads.length, 0);
+});

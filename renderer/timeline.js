@@ -363,7 +363,24 @@
       node("timeline-description").textContent = caseMode() ? "Build a case from selected downloaded messages across threads. Review sources before AI transmission." : "Use this message and its downloaded thread. No older mail is fetched.";
       source = caseMode() ? selectionSource() : origin.source;
       invalidateCase();
-      if (caseMode()) { paintSelection(); status("Search variants and choose Main / Background sources, then review the selected mail. No AI request is made."); return; }
+      if (caseMode()) {
+        working = true; buttons();
+        try {
+          if (!sourceToken) {
+            const value = await invoke("timeline:prepare", { contextOnly: true,
+              selection: { messages: [{ accountId: origin.accountId, messageId: origin.email.id }], expandThreads: false },
+              options: { ...defaults, mode: "thread" } });
+            if (serial !== current) return;
+            sourceToken = value.manifestToken;
+            await invoke("timeline:check", { manifestToken: sourceToken });
+            if (serial !== current) return;
+            node("timeline-case-scope").textContent = `Account: ${value.accounts.join(", ")}. Only local downloaded data from this account. Other mailboxes, calls and undownloaded mail are outside coverage.`;
+          }
+          paintSelection(); status("Search variants and choose Main / Background sources, then review the selected mail. No AI request is made.");
+        } catch (error) { if (serial === current) { sourceToken = null; preparationFailed = true; report({ ...error, calls: 0 }); } }
+        finally { if (serial === current) { working = false; buttons(); } }
+        return;
+      }
       working = true; buttons();
       try { const value = await prepare(current); if (value?.allowed && !value.budget && value.coverage.included_message_count) status("Choose Generate to send this downloaded thread to the saved AI destination."); }
       catch (error) { if (serial === current) report(error); }
