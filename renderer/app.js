@@ -4227,8 +4227,8 @@ function prefixedSubject(subject, prefix) {
   // verbatim. Collapse consecutive prefixes of the same action, preserving a
   // different action (for example Fwd: Re: Topic) and the original Unicode text.
   const pattern = prefix === "Re:"
-    ? /^(?:re|aw|回覆|回复|回復|答覆|答复|返信)\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\))?\s*[:：]\s*/i
-    : /^(?:fwd|fw|wg|轉寄|转寄|轉發|转发|転送)\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\))?\s*[:：]\s*/i;
+    ? /^(?:re|aw|回覆|回复|回復|答覆|答复|返信)(?:\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\)))?\s*[:：]\s*/i
+    : /^(?:fwd|fw|wg|轉寄|转寄|轉發|转发|転送)(?:\s*(?:\[\s*\d{1,6}\s*\]|\(\s*\d{1,6}\s*\)))?\s*[:：]\s*/i;
   let rest = text, count = 0, match;
   while ((match = rest.match(pattern))) { rest = rest.slice(match[0].length); count++; }
   if (count === 1 && (prefix === "Re:" ? /^re\s*:/i : /^(?:fwd|fw)\s*:/i).test(text)) return text;

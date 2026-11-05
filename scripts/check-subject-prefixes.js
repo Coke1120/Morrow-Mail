@@ -27,6 +27,13 @@ test("fresh subjects add Re:/Fwd: and safely deduplicate recognized leading pref
     Object.assign(ui.context, { input, prefix });
     assert.equal(ui.run("prefixedSubject(input,prefix)"), expected, input);
   }
+  // Optional counters must not create adjacent ambiguous whitespace runs when
+  // a very long received subject has no delimiter after the apparent prefix.
+  for (const prefix of ["Re:", "Fwd:"]) {
+    const input = (prefix === "Re:" ? "Re" : "Fw") + " ".repeat(65536) + "X";
+    Object.assign(ui.context, { input, prefix });
+    assert.equal(ui.run("prefixedSubject(input,prefix)"), prefix + " " + input);
+  }
 });
 
 test("reader, list, Agent, draft-review and suggestion entrypoints preserve prefixed seeds across window serialization", async () => {
