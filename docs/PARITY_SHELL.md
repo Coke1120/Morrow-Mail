@@ -1,5 +1,7 @@
 # Shell parity
 
+Preview Send, scheduled-send previews and Outbox show safe HTML through the received-mail body renderer. The compose preview uses its frozen send payload; Outbox uses the saved queued payload. Remote images, including CSS and table backgrounds, stay blocked in these previews even when received-mail images are enabled. Raster data images can display; unsupported active content and unresolved CID images remain filtered. Both previews list included attachment names and sizes. Outbox attachment download/open/preview actions are unavailable. Confirm still rejects changed compositions, and opening Outbox does not change its send time or Undo boundary. See [safe send previews](adr/2026-11-05-safe-send-previews.md).
+
 Timeline is a single reader action beside Summary, opening a modal sheet without
 replacing the message or changing Right, Bottom or Separate window layouts. It
 uses the opened message and its downloaded thread, not list selections or search.

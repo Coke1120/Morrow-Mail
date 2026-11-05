@@ -7759,10 +7759,16 @@ function renderOutboxReader(pane, email, focus) {
     line.textContent = label + ": " + text;
     pane.appendChild(line);
   }
-  // shortcut: outbox preview is plain text, upgrade if a safe HTML reader is required
-  const body = document.createElement("pre");
+  const files = previewFilesText(email.attachments);
+  if (files) {
+    const line = document.createElement("p");
+    line.className = "meta outbox-files";
+    line.textContent = "Files: " + files;
+    pane.appendChild(line);
+  }
+  const body = document.createElement("div");
   body.className = "outbox-body";
-  body.textContent = email.textBody || "";
+  appendSendPreviewBody(body, email);
   pane.appendChild(body);
   if (focus !== false) undo.focus();
 }
@@ -7913,6 +7919,27 @@ function appendMessageBody(parent, email, imagesOn) {
   }
   parent.appendChild(wrap);
   return wrap;
+}
+
+function previewFilesText(files) {
+  return (Array.isArray(files) ? files : []).filter((file) => file && typeof file === "object").map((file) => {
+    const size = fileSize(file.size);
+    const name = file.filename || "attachment";
+    return size ? `${name} (${size})` : name;
+  }).join(", ");
+}
+
+function appendSendPreviewBody(parent, email) {
+  if (remoteImageSrcs(email && email.htmlBody).length) {
+    const note = document.createElement("p");
+    note.className = "hint preview-remote-note";
+    note.textContent = "Remote images are blocked in this preview.";
+    parent.appendChild(note);
+  }
+  // Local send previews never inherit received-mail image permission. Rendering
+  // a frozen payload must not contact its sender or change the saved message.
+  const content = email && (email.htmlBody || email.textBody) ? email : { textBody: "(empty message)" };
+  return appendMessageBody(parent, content, false);
 }
 
 function bodyRetryButton(email, refresh) {
@@ -15778,6 +15805,7 @@ function pendingScheduleWhen() {
 
 function paintPreview(draft) {
   const schedule = draft && draft.kind === "schedule";
+  const payload = draft.payload || draft;
   $("compose-preview-title").textContent = schedule ? "Preview scheduled send" : "Preview send";
   const when = $("compose-preview-when");
   const date = schedule && draft.sendAt ? new Date(draft.sendAt) : null;
@@ -15788,27 +15816,25 @@ function paintPreview(draft) {
     when.hidden = true;
     when.textContent = "";
   }
-  $("compose-preview-to").textContent = draft.to || "";
-  $("compose-preview-from").textContent = window.morrowComposePolicy.senderPreview(draft.fromAddress || "", draft.fromDisplayName || "");
+  $("compose-preview-to").textContent = payload.to || "";
+  $("compose-preview-from").textContent = window.morrowComposePolicy.senderPreview(payload.fromAddress || "", payload.fromDisplayName || "");
   const ccRow = $("compose-preview-cc-row");
   const bccRow = $("compose-preview-bcc-row");
-  if (ccRow) ccRow.hidden = !draft.cc;
-  if (bccRow) bccRow.hidden = !draft.bcc;
-  $("compose-preview-cc").textContent = draft.cc || "";
-  $("compose-preview-bcc").textContent = draft.bcc || "";
-  $("compose-preview-subject").textContent = draft.subject || "(no subject)";
+  if (ccRow) ccRow.hidden = !payload.cc;
+  if (bccRow) bccRow.hidden = !payload.bcc;
+  $("compose-preview-cc").textContent = payload.cc || "";
+  $("compose-preview-bcc").textContent = payload.bcc || "";
+  $("compose-preview-subject").textContent = payload.subject || "(no subject)";
   const fileRow = $("compose-preview-files-row");
   const fileText = $("compose-preview-files");
-  const files = Array.isArray(draft.attachments) ? draft.attachments : [];
+  const files = Array.isArray(payload.attachments) ? payload.attachments : [];
   if (fileRow && fileText) {
     fileRow.hidden = !files.length;
-    fileText.textContent = files.map((file) => {
-      const size = fileSize(file.size);
-      const name = file.filename || "attachment";
-      return size ? `${name} (${size})` : name;
-    }).join(", ");
+    fileText.textContent = previewFilesText(files);
   }
-  $("compose-preview-body").textContent = draft.body ? draft.body : "(empty message)";
+  const body = $("compose-preview-body");
+  body.replaceChildren();
+  appendSendPreviewBody(body, draft.payload ? { htmlBody: payload.body || "" } : { textBody: draft.body || "" });
   $("compose-preview-confirm").textContent = schedule ? "Confirm schedule" : "Confirm send";
 }
 
@@ -15817,7 +15843,7 @@ function openComposePreview(when) {
   const draft = previewDraft(composeFields(), state.composeQuote && state.composeQuote.text, when, state.composeAttachments);
   previewDraftState = { ...draft, payload: JSON.parse(JSON.stringify(composePayload(composeAccount()))),
     session: state.composeSession, snapshot: composeSnapshot() };
-  paintPreview(draft);
+  paintPreview(previewDraftState);
   openDialog("compose-preview");
   const confirm = $("compose-preview-confirm");
   if (confirm && typeof confirm.focus === "function") confirm.focus();

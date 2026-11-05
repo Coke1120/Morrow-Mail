@@ -4795,7 +4795,6 @@ dialog h2 {
 .preview-meta dt { margin: 0; color: var(--muted); font-weight: 600; }
 .preview-meta dd { margin: 0; overflow-wrap: anywhere; }
 #compose-preview-body {
-  white-space: pre-wrap;
   max-height: min(280px, 40vh);
   overflow: auto;
   margin: 12px 0 0;
@@ -4805,6 +4804,8 @@ dialog h2 {
   background: var(--hover);
   font: inherit;
 }
+#compose-preview-body > .body { padding: 0; }
+#compose-preview-body .preview-remote-note { margin: 0 0 8px; }
 #agent-peek { width: min(720px, calc(100vw - 24px)); }
 
 #attachment-preview {
@@ -6011,7 +6012,8 @@ html[data-window="translate"] #reader .translate-column h2 {
 #chatgpt-panel a { color: var(--accent, currentColor); text-decoration: underline; }
 #chatgpt-manual { margin: 12px 0; }
 #chatgpt-welcome { margin: 12px 0; padding: 12px; border: 1px solid currentColor; border-radius: 8px; }
-pre.outbox-body { white-space: pre-wrap; font: inherit; margin: 12px 0 0; }
+.outbox-body { margin-top: 12px; }
+.outbox-files { overflow-wrap: anywhere; }
 
 /* Mail columns share one horizontal scroll surface, including narrow windows. */
 #message-list { --mail-columns: 78px minmax(130px, 1fr) minmax(130px, 1fr) minmax(180px, 1.6fr); }
