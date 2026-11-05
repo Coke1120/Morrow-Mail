@@ -189,7 +189,7 @@ const featureOauthRecovery = spawnSync(process.execPath, [path.join(__dirname, "
 assert.ifError(featureOauthRecovery.error);
 assert.strictEqual(featureOauthRecovery.status, 0, "Feature OAuth recovery failed");
 
-const gmailAuthRetry = spawnSync(process.execPath, [path.join(__dirname, "check-gmail-auth-retry.js")], { stdio: "inherit", timeout: 30000 });
+const gmailAuthRetry = spawnSync(process.execPath, [path.join(__dirname, "check-gmail-auth-retry.js")], { stdio: "inherit", timeout: process.platform === "win32" ? 90000 : 30000 });
 assert.ifError(gmailAuthRetry.error);
 assert.strictEqual(gmailAuthRetry.status, 0, "Gmail read authentication recovery failed");
 
@@ -653,7 +653,7 @@ assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app pa
 assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
 assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "0.4.2");
+assert.strictEqual(pkg.version, "0.4.3");
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -907,7 +907,7 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "0.4.2");
+assert.strictEqual(pkg.version, "0.4.3");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));

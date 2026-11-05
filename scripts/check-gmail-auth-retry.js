@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { performance } = require("node:perf_hooks");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-gmail-auth-"));
 process.env.MORROW_MAIL_DIR = dir;
 process.env.MORROW_MAIL_SECRETS = "memory";
@@ -28,6 +29,14 @@ const retry = require("../shared/sync-retry");
 const originalSet = memory.setPassword;
 const originalFetch = global.fetch;
 const now = Date.now;
+const fixtureBegan = performance.now(), fixtureCpu = process.cpuUsage();
+let fixturePhase = "starting";
+function progress(phase) {
+  fixturePhase = phase;
+  const cpu = process.cpuUsage(fixtureCpu);
+  console.log("gmail-auth-progress", JSON.stringify({ phase, elapsedMs: Math.round(performance.now() - fixtureBegan),
+    cpuUserMs: Math.round(cpu.user / 1000), cpuSystemMs: Math.round(cpu.system / 1000) }));
+}
 const reply = (value, status = 200) => new Response(JSON.stringify(value), { status });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const grant = (token = "old", expiresAt = Date.now() + 3600000) => JSON.stringify({ provider: "google", purpose: "imap",
@@ -55,11 +64,14 @@ async function run() {
     return route(url, init);
   };
   try {
+    progress("open-store");
     await engine.init();
+    progress("sync-read-recovery");
     let account = reset();
     await engine.syncAccountById(account.id, { onlyInbox: true });
     assert.equal(posts.length, 1, "actual sync recovers its rejected folder read");
     assert.equal(db.accountById(account.id).auth_error, null);
+    progress("reuse-and-expiry");
     account = reset();
     await session(account, async api => {
       await api.profile(); await api.getMessage("message"); await api.labels();
@@ -80,6 +92,7 @@ async function run() {
     assert.deepEqual(calls.map(c => c.token), ["Bearer old", "Bearer new"], "expiry during session rereads and durably refreshes");
 
     account = reset();
+    progress("concurrent-and-repeated-401");
     await session(account, async api => { await Promise.all([api.profile(), api.getMessage("message"), api.labels()]); });
     assert.equal(posts.length, 1, "simultaneous 401s share the durable renewal within the session");
     assert.equal(calls.filter(c => c.token === "Bearer new").length, 3);
@@ -91,16 +104,19 @@ async function run() {
 
     for (const [status, payload, code, sticky] of [[503, {}, "oauth_refresh_unavailable", false],
       [400, { error: "invalid_grant" }, "needs_auth", true], [200, {}, "oauth_refresh_response", false]]) {
+      progress("refresh-failure-" + status);
       account = reset(); tokenReply = () => reply(payload, status);
       await assert.rejects(session(account, api => api.profile()), e => e.code === code && e.operationIssued === false && retry.isStickyAuthSyncError(remote.explain(e), e) === sticky);
       assert.equal(calls.length, 1); assert.equal(JSON.parse(secrets.getPassword(account.id)).accessToken, "old");
     }
     account = reset();
+    progress("secure-storage-failure");
     memory.setPassword = () => { throw new Error("synthetic write failure"); };
     await assert.rejects(session(account, api => api.profile()), e => e.code === "secure_storage_write");
     assert.equal(calls.length, 1); assert.equal(JSON.parse(secrets.getPassword(account.id)).accessToken, "old");
 
     for (const change of ["reconnect", "remove", "replace", "transport", "login", "client", "abort"]) {
+      progress("renewal-race-" + change);
       account = reset();
       const entered = deferred(), release = deferred(), controller = new AbortController();
       tokenReply = async () => { entered.resolve(); await release.promise; return reply({ access_token: "stale", refresh_token: "stale-refresh", expires_in: 3600 }); };
@@ -122,6 +138,7 @@ async function run() {
       if (change !== "abort" && secrets.getPassword(account.id)) assert.doesNotMatch(secrets.getPassword(account.id), /stale/);
     }
 
+    progress("late-old-token-response");
     // A response arriving after another read renewed the token must not renew again.
     account = reset();
     const late = deferred(), sawLate = deferred();
@@ -139,6 +156,7 @@ async function run() {
     assert.equal(posts.length, 1, "late old-token 401 uses the newer durable token");
 
     // The retry also rereads durable state after any pacing/renewal yield.
+    progress("durable-token-reread");
     const { createGmailMailApi } = require("../host/mail/gmail-mail-api");
     let latest = "old", submitted = [];
     const racingApi = createGmailMailApi({ accessToken: async () => latest,
@@ -148,6 +166,7 @@ async function run() {
     assert.deepEqual(submitted, ["Bearer old", "Bearer newest"]);
 
     account = reset();
+    progress("account-isolation");
     const other = reset();
     await session(account, async api => {
       await session(other, otherApi => otherApi.profile());
@@ -157,6 +176,7 @@ async function run() {
     assert.equal(JSON.parse(secrets.getPassword(other.id)).accessToken, "new");
     assert.equal(posts.length, 2, "renewal remains scoped to each account");
 
+    progress("refresh-failure-after-reconnect");
     // Refresh failure after a reconnect must not attach old invalid_grant to the new grant.
     account = reset();
     const entered = deferred(), release = deferred();
@@ -166,6 +186,7 @@ async function run() {
     await entered.promise; secrets.setPassword(account.id, grant("replacement")); release.resolve(); await rejected;
     assert.equal(JSON.parse(secrets.getPassword(account.id)).accessToken, "replacement");
 
+    progress("writes-never-replayed");
     // Only rejected HTTP reads are retried, including reads inside label workflows.
     for (const write of [api => api.send({ raw: Buffer.from("synthetic MIME"), confirmed: true }),
       api => api.saveDraft({ raw: Buffer.from("synthetic MIME") }), api => api.saveDraft({ draftId: "draft", raw: Buffer.from("synthetic MIME") }),
@@ -175,6 +196,7 @@ async function run() {
       assert.equal(calls.filter(c => c.method !== "GET").length, 1); assert.equal(posts.length, 0);
     }
     account = reset();
+    progress("read-recovery-after-accepted-write");
     const fallback = route;
     route = (url, init) => init.method === "POST" ? reply({ id: "draft", message: { id: "message" } }) : fallback(url, init);
     let callbacks = 0;
@@ -185,6 +207,7 @@ async function run() {
     assert.equal(posts.length, 1, "read recovery after a successful write never restarts the caller");
 
     account = reset();
+    progress("post-submit-conflict");
     route = (url, init) => {
       if (init.method === "POST") { secrets.setPassword(account.id, grant("replacement")); return reply({ id: "message" }); }
       return reply({ id: "message" });
@@ -193,6 +216,7 @@ async function run() {
     assert.equal(calls.filter(c => c.method === "POST").length, 1, "post-submit conflict retains uncertain write evidence");
 
     for (const acknowledged of [false, true]) {
+      progress("move-settlement-" + acknowledged);
       account = reset();
       db.replaceFolders(account.id, [
         { path: "INBOX", name: "Inbox", wellKnown: "inbox", providerId: "INBOX" },
@@ -222,6 +246,7 @@ async function run() {
     }
 
     for (const status of [503, 408, 400, 401]) {
+      progress("write-error-evidence-" + status);
       account = reset();
       const mapping = db.rememberGmail(account.id, { providerId: "journal-message", labelIds: ["INBOX"] });
       const messageId = `${account.id}-journal`;
@@ -258,19 +283,23 @@ async function run() {
     }
 
     account = reset();
+    progress("pre-submit-cancellation");
     await assert.rejects(session(account, api => api.markRead("message", true, { beforeSubmit() { throw new Error("synthetic cancellation"); } })), e => e.operationIssued === false);
     assert.equal(calls.length, 0, "the final write authorization check runs after token awaits and before submission");
 
     for (const status of [403, 429, 503]) {
+      progress("non-retried-read-" + status);
       account = reset(); route = () => reply({}, status);
       await assert.rejects(session(account, api => api.profile()), e => e.status === status);
       assert.equal(calls.length, 1); assert.equal(posts.length, 0);
     }
     account = reset();
+    progress("network-failure");
     route = () => { throw new Error("synthetic network"); };
     await assert.rejects(session(account, api => api.profile()), e => e.code === "provider_network");
     assert.equal(calls.length, 1); assert.equal(posts.length, 0);
 
+    progress("rendered-help");
     const { documentFor } = require("./check-chatgpt-ui");
     const { renderer } = require("./check-ux-workflows");
     const document = documentFor(fs.readFileSync(path.join(__dirname, "../renderer/index.html"), "utf8"));
@@ -280,12 +309,23 @@ async function run() {
       assert.match(text, /Gmail API mail sessions reread.*rejected read once/);
       assert.match(text, /writes are never replayed automatically/);
     }
+    progress("assertions-passed");
     console.log("gmail-auth-retry-ok: durable renewal, expiry, concurrency, bounded reads, refresh failures, account/client races, no write replay, rendered help");
   } finally {
     Date.now = now; global.fetch = originalFetch; memory.setPassword = originalSet;
-    db.close(); fs.rmSync(dir, { recursive: true, force: true });
+    progress("closing"); await db.close(); progress("closed");
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 // Production read pacing uses unref timers; keep this standalone fixture alive.
-if (require.main === module) { const timer = setTimeout(() => { console.error("Gmail fixture timed out"); process.exit(1); }, 15000); run().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => clearTimeout(timer)); }
+if (require.main === module) {
+  // This exercises real journal/fsync writes. Shared Windows disks can exceed
+  // 15s without a failed assertion; keep a bounded fixture-only allowance.
+  const timeoutMs = process.platform === "win32" ? 60000 : 15000;
+  const timer = setTimeout(() => {
+    console.error("Gmail fixture timed out", JSON.stringify({ phase: fixturePhase, elapsedMs: Math.round(performance.now() - fixtureBegan), timeoutMs }));
+    process.exit(1);
+  }, timeoutMs);
+  run().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => clearTimeout(timer));
+}
 module.exports = { run };
