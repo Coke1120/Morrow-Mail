@@ -4,7 +4,8 @@ This is the proposed implementation for [#521](https://github.com/Coke1120/Morro
 built on the durable Local Folders foundation in [#524](https://github.com/Coke1120/Morrow-Mail/pull/524).
 It is not a published release. No import runs merely by opening the dialog.
 
-Choose **Local Folders → Import MBOX…**, then **Choose files…**. Review the files,
+Choose the **Import MBOX…** icon button beside **Local Folders** in the account
+list, then **Choose files…**. Review the files,
 destination and source format before **Import**. Create a destination in the
 dialog or use an existing local folder. Multiple files go to that one destination;
 repeat with another destination for separate folders. There is no CLI/bot importer.

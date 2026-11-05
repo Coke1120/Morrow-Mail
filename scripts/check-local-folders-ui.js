@@ -25,6 +25,7 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
     switch (channel) {
       case "mail:listAccounts": return envelope(connected ? [remote] : []);
       case "mail:localFolders": return envelope(store.account());
+      case "mail:mboxJobs": return envelope([]);
       case "mail:listFromCache": return envelope(params.accountId === L.ACCOUNT_ID ? store.list(params) : { emails: [source], total: 1, initialSyncDone: true });
       case "mail:searchLocal": return envelope(params.accountId === L.ACCOUNT_ID ? store.search(params) : [source]);
       case "mail:openEmail": return envelope({ email: store.verify(params.emailId), isThread: false, threadMessages: [] });
@@ -58,8 +59,40 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   const localButtons = window.document.querySelectorAll(`[data-account-id="${L.ACCOUNT_ID}"]`);
   assert.equal(localButtons.length, 2);
   assert.equal(window.document.querySelector(`[data-account-id="${L.ACCOUNT_ID}"][data-nest-kind]`), null, "local folders never become IMAP drag destinations");
+  const heading = window.document.querySelector(`[data-nav-key="account:${L.ACCOUNT_ID}"]`);
+  const actions = heading.parentElement.querySelector('[role="group"][aria-label="Local Folders actions"]');
+  const [create, importer] = actions.querySelectorAll("button");
+  assert.equal(heading.contains(actions), false, "actions must be siblings of the collapse button, never nested controls");
+  for (const [button, name, dialog] of [[create, "New local folder…", "confirm"], [importer, "Import MBOX…", "mbox-import"]]) {
+    assert.equal(button.type, "button"); assert.equal(button.tabIndex, 0);
+    assert.equal(button.getAttribute("aria-label"), name); assert.equal(button.title, name);
+    assert.equal(button.getAttribute("aria-haspopup"), "dialog"); assert.equal(button.getAttribute("aria-controls"), dialog);
+    assert.equal(button.textContent, ""); assert.equal(button.querySelector('svg[aria-hidden="true"]').getAttribute("viewBox"), "0 0 24 24");
+    button.focus(); button.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    assert.equal(heading.getAttribute("aria-expanded"), "true", "focusing or arrowing on an action must not collapse folders");
+  }
+  assert.equal(calls.filter(row => /manageLocalFolder|mboxPick|mboxStart/.test(row.channel)).length, 0);
+  create.focus(); create.click(); create.click();
+  assert.equal(window.document.getElementById("confirm").open, true);
+  assert.equal(window.document.getElementById("confirm-title").textContent, "New local folder");
+  assert.equal(calls.filter(row => row.channel === "mail:manageLocalFolder").length, 0, "opening or repeating the action cannot create a folder before review");
+  window.document.getElementById("confirm-cancel").click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(ui.run("state.busy"), false);
+  importer.focus(); importer.click();
+  for (let i = 0; i < 20 && !window.document.getElementById("mbox-import").open; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(window.document.getElementById("mbox-import").open, true);
+  assert.equal(calls.filter(row => /manageLocalFolder|mboxPick|mboxStart/.test(row.channel)).length, 0, "the import icon opens review without picking or importing files");
+  await new Promise(resolve => setImmediate(resolve));
+  window.document.getElementById("mbox-close").click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(window.document.getElementById("mbox-import").open, false);
+  assert.equal(window.document.activeElement, importer, "closing import restores focus to the actual icon trigger");
+  assert.equal(heading.getAttribute("aria-expanded"), "true");
+  assert.equal(ui.run("state.accountId"), remote.id, "local actions do not switch the selected mailbox");
   await ui.run(`toggleAccountFolders('${L.ACCOUNT_ID}')`);
   assert.equal(window.document.querySelector(`[data-nav-key="account:${L.ACCOUNT_ID}"]`).getAttribute("aria-expanded"), "false");
+  assert(window.document.querySelector(".local-folder-create")); assert(window.document.querySelector(".local-mbox-open"));
   await ui.run(`toggleAccountFolders('${L.ACCOUNT_ID}')`);
   await ui.run("openLocalTransfer([fixtureSource], 'copy')");
   assert.equal(window.document.getElementById("local-transfer").open, true);
@@ -151,6 +184,7 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   assert.match(window.document.getElementById("organize-menu").textContent, /Rename local folder/);
   ui.run("closeOrganizeMenu(); showFeatures()");
   const card = [...window.document.querySelectorAll(".feature-card")].find(node => node.textContent.includes("Local Folders appears"));
+  assert.match(card.textContent, /plus \(New local folder\) and Import MBOX icon buttons/);
   assert(card); assert.match(card.textContent, /64 MiB/); assert.match(card.textContent, /Gmail retains its existing 35 MiB/);
   assert.match(card.textContent, /Unicode normalization and lowercasing/);
   assert.match(card.textContent, /Restart never replays server Trash/); assert.match(card.textContent, /Use Import MBOX for supported mailbox exports/);
