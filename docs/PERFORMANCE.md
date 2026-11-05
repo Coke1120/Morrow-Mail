@@ -252,5 +252,9 @@ gap sample throughout each pass, sampled RSS, optional dbstat index bytes and
 200-row eligibility-maintenance cost. Restored-template opening is reported
 separately and includes migration/index preparation; it is not native startup.
 No wall-clock threshold gates CI. See [the decision and ownership
-limits](adr/2026-11-05-exact-search-and-body-work.md) and the paired report under
-`docs/performance/` for observations and validation gaps.
+limits](adr/2026-11-05-exact-search-and-body-work.md) and the [paired 10k/100k report](performance/2026-11-05-issue-520.md)
+with [raw samples and plans](performance/2026-11-05-issue-520.json) for observations
+and validation gaps. The synthetic 100k run reduced the 96-message pass
+maximum callback gap from 195 to 47 ms while increasing total elapsed from
+626 to 1,070 ms; broad global ranking remained near 417 ms. These are measured
+tradeoffs on this Linux host, not native latency guarantees.
