@@ -26,6 +26,9 @@ const { createAccess: createFolderAccess } = require("./folder-adapter");
 const { createJournal: createCopyJournal } = require("./copy-recovery");
 const { createService: createMailboxCopyService } = require("./cross-mailbox-copy");
 const { createAccess: createMailboxCopyAccess } = require("./cross-mailbox-access");
+const { createJournal: createMoveJournal } = require("./move-recovery");
+const { createService: createMailboxMoveService } = require("./cross-mailbox-move");
+const mailboxMovePolicy = require("./cross-mailbox-move-policy");
 const messageSummaries = require("../message-summary").createSummaryService({ readMessage: summaryMessage });
 
 const secrets = require("./secrets");
@@ -187,6 +190,14 @@ let folderAccess = null;
 let mailboxCopyJournal = null;
 let mailboxCopyService = null;
 let mailboxCopyStorageFailed = false;
+let mailboxMoveJournal = null, mailboxMoveService = null, mailboxMoveStorageFailed = false;
+const mailboxMoveWindows = new WeakMap();
+function mailboxCopyAccess() {
+  return createMailboxCopyAccess({ db, bindAccount, assertAccountCurrent,
+    owner: id => ownedFolderAccess().owner(id), publicAccount: account => accountView(account, 0),
+    googleClient: () => oauthConfig.loadGoogleClient()?.clientId || null,
+    secretFor, withMailClient, exclusive, localArchive, identityReady: id => actions.assertIdentityReady(id) });
+}
 function ownedMailboxCopies() {
   if (mailboxCopyStorageFailed) throw Object.assign(new Error("Copy recovery storage could not be verified. Copy is disabled; retain its files and restart after recovery."), { code: "copy_recovery" });
   const file = path.join(path.dirname(dataFile()), "mailbox-copy-recovery.sqlite");
@@ -198,13 +209,58 @@ function ownedMailboxCopies() {
   }
   mailboxCopyJournal.assertIntegrity();
   if (!mailboxCopyService) {
-    const access = createMailboxCopyAccess({ db, bindAccount, assertAccountCurrent,
-      owner: id => ownedFolderAccess().owner(id), publicAccount: account => accountView(account, 0),
-      googleClient: () => oauthConfig.loadGoogleClient()?.clientId || null,
-      secretFor, withMailClient, exclusive, localArchive, identityReady: id => actions.assertIdentityReady(id) });
+    const access = mailboxCopyAccess();
     mailboxCopyService = createMailboxCopyService({ access, journal: mailboxCopyJournal, gate: updateGate });
   }
   return mailboxCopyService;
+}
+function sourceMoveJournal() {
+  if (mailboxMoveStorageFailed) throw Object.assign(new Error("Move recovery needs manual recovery before source removal can continue."), { code: "move_recovery" });
+  const file = path.join(path.dirname(dataFile()), "mailbox-move-recovery.sqlite");
+  if (mailboxMoveJournal && mailboxMoveJournal.file !== file) throw new Error("Stop source Moves before changing the mail profile.");
+  if (!mailboxMoveJournal) {
+    const opened = createMoveJournal(file);
+    try { opened.recover(); mailboxMoveJournal = opened; }
+    catch (error) { opened.close(); throw error; }
+  }
+  mailboxMoveJournal.assertIntegrity(); return mailboxMoveJournal;
+}
+function ownedMailboxMoves() {
+  if (!mailboxMoveService) mailboxMoveService = createMailboxMoveService({ access: mailboxCopyAccess(), copies: ownedMailboxCopies,
+    journal: sourceMoveJournal, gate: updateGate, enabled: mailboxMovePolicy.enabled, reason: mailboxMovePolicy.reason,
+    onConfirmed(accountId, trash) {
+      broadcast("mail:emailsUpdated", { accountId, source: "crossMailboxMove", sourceTrashed: true, providerId: trash.providerId });
+      emitAccounts();
+    } });
+  return mailboxMoveService;
+}
+function mailboxMovePrincipal(event) {
+  const sender = event?.sender, frame = event?.senderFrame;
+  if (!sender || !frame || frame !== sender.mainFrame || sender.isDestroyed?.()) throw Object.assign(new Error("Review Gmail source removal in its original application window."), { code: "move_review", operationIssued: false });
+  let state = mailboxMoveWindows.get(sender);
+  if (!state) {
+    state = { generation: 0, principal: null }; mailboxMoveWindows.set(sender, state);
+    const retire = () => { if (state.principal) mailboxMoveService?.cancelOwner(state.principal); state.generation++; state.principal = null; };
+    sender.once?.("destroyed", retire);
+    sender.on?.("did-start-navigation", (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) retire(); });
+  }
+  if (!state.principal || state.principal.frame !== frame) {
+    const generation = state.generation;
+    state.principal = { frame, check() {
+      if (sender.isDestroyed?.() || sender.mainFrame !== frame || state.generation !== generation) throw Object.assign(new Error("The Move review's original window or navigation changed. No later source removal is authorized."), { code: "move_review", operationIssued: false });
+    } };
+  }
+  state.principal.check(); return state.principal;
+}
+async function crossMailboxMoveAnswer(params, event) {
+  try {
+    const principal = mailboxMovePolicy.enabled ? mailboxMovePrincipal(event) : null;
+    return ok(await ownedMailboxMoves().answer(params, principal));
+  } catch (error) {
+    if (error.code === "copy_recovery") mailboxCopyStorageFailed = true;
+    if (error.code === "move_recovery") mailboxMoveStorageFailed = true;
+    return fail(error.code || "mailbox_move", error.message);
+  }
 }
 async function crossMailboxCopyAnswer(params) {
   try { return ok(await ownedMailboxCopies().answer(params)); }
@@ -4449,6 +4505,7 @@ function answer(channel, args, event) {
   // This reviewed two-account channel validates its own captured source and
   // destination owners, rather than the single-account legacy action guard.
   if (channel === "mail:crossMailboxCopy") return crossMailboxCopyAnswer(params || {});
+  if (channel === "mail:crossMailboxMove") return crossMailboxMoveAnswer(params || {}, event);
   let assertContextCurrent;
   try { assertContextCurrent = contextMessageAdmission(channel, params); }
   catch (error) { return fail(error.code || "invalid_context", error.message); }
@@ -5111,10 +5168,14 @@ actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast,
 
 module.exports = {
   closeMailboxCopyForTest() {
-    if (mailboxCopyService?.active) throw new Error("Finish mailbox copies before closing recovery storage.");
+    if (mailboxCopyService?.active || mailboxMoveService?.active) throw new Error("Finish mailbox transfers before closing recovery storage.");
     mailboxCopyJournal?.close(); mailboxCopyJournal = null; mailboxCopyService = null; mailboxCopyStorageFailed = false;
   },
-  async stopLocalImports() { folderManager?.pause(); await mboxImporter?.stop(); mboxImporter = null; },
+  closeMailboxMoveForTest() {
+    if (mailboxMoveService?.active) throw new Error("Finish source Moves before closing recovery storage.");
+    mailboxMoveService?.pause(); mailboxMoveJournal?.close(); mailboxMoveJournal = null; mailboxMoveService = null; mailboxMoveStorageFailed = false;
+  },
+  async stopLocalImports() { folderManager?.pause(); mailboxMoveService?.pause(); await mboxImporter?.stop(); mboxImporter = null; },
   closeLocalArchiveForTest() { if (mboxImporter) throw new Error("Stop imports before closing the local archive."); localStore?.close(); localStore = null; },
   timelineAccountStamp(id) {
     const account = db.accountById(id);

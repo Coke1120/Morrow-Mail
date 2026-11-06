@@ -7,6 +7,7 @@ const publicOwner = require("../../shared/mail-context-owner");
 const { ACCOUNT_ID: LOCAL_ID } = require("./local-folders");
 const { imapListing, gmailListing } = require("./folder-adapter");
 const { persistentSelection } = require("./copy-imap-selection");
+const { createSource: createGmailMoveSource } = require("./gmail-source-move");
 const conflict = () => Object.assign(new Error("The reviewed message, folder or mailbox connection changed. Review Copy again; no source was removed."), { code: "copy_conflict", operationIssued: false });
 const unsupported = reason => Object.assign(new Error(reason), { code: "copy_unsupported", operationIssued: false });
 const positive = value => (typeof value === "number" || typeof value === "bigint" || typeof value === "string" && /^[1-9]\d{0,9}$/.test(value))
@@ -216,9 +217,9 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
     }
     return { raw: value.source, date: Number(value.internalDate), unread: value.labelIds.includes("UNREAD"), starred: value.labelIds.includes("STARRED"), labelIds: value.labelIds, providerId };
   }
-  async function withCopy(ticket, source, destination, work) {
+  async function withCopy(ticket, source, destination, work, authority = {}) {
     const ids = [...new Set([ticket.destination.accountId, ...(source.local ? [] : [source.accountId])])].sort();
-    const checked = () => check(ticket, source);
+    const checked = () => { authority.check?.(); check(ticket, source); };
     return lock(ids, async () => {
       checked();
       return connect(ticket.destination, checked, destinationTransport => {
@@ -229,7 +230,8 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
           const sourceLocator = source.local ? { localId: source.id } : { folderId: source.row.folder_path, uid: Number(source.row.uid), uidValidity: Number(source.row.uid_validity) };
           const sourceBinding = source.local ? source.binding : source.owner.binding;
           const destinationBinding = ticket.destination.binding;
-          const session = { backend: live.backend, sourceBinding, destinationBinding, folderProof: live.proof, check: checked,
+          const session = { backend: live.backend, sourceBackend: sourceTransport?.gmail && source.owner?.account.mail_transport === "gmail_api" ? "gmail" : "unsupported",
+            sourceBinding, destinationBinding, folderProof: live.proof, check: checked,
             async readSource() {
               checked(); let snapshot;
               if (source.local) {
@@ -292,6 +294,21 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
                 || live.backend === "gmail" && !saved.labelIds?.includes(live.id)) throw unsupported("Destination readback did not preserve the reviewed folder, date and read/star state. The source was retained.");
             },
           };
+          if (session.sourceBackend === "gmail") {
+            const mover = createGmailMoveSource({ api: sourceTransport.gmail.api, accountId: source.accountId, check: checked,
+              readRaw: providerId => gmailSnapshot(sourceTransport, providerId, checked, true),
+              async folder() {
+                checked(); const cached = db.folderByPath(source.accountId, source.row.folder_path);
+                if (!cached?.provider_id) throw conflict();
+                if (cached.provider_id === "__gmail_all__" && cached.well_known === "all") return {
+                  id: cached.provider_id, all: true, proof: digest(JSON.stringify(["gmail-all", cached.path, sourceBinding])) };
+                const model = await listing(sourceTransport, checked), folder = model.folders.find(row => row.id === cached.provider_id); checked();
+                if (!folder || ["TRASH", "DRAFT"].includes(folder.id) || folder.type === "user" && ![cached.path, cached.name].includes(folder.name)) throw conflict();
+                return { id: folder.id, all: false, proof: folderIdentity(model, folder) };
+              } });
+            session.reviewSourceMove = snapshot => mover.review(snapshot);
+            session.trashSource = (snapshot, sourceProof, beforeSubmit) => mover.trash(snapshot, sourceProof, beforeSubmit);
+          }
           return work(session);
         });
       });

@@ -697,6 +697,133 @@ function retireCrossMailboxReview(session, reviewId = session?.reviewId) {
   return call("mail:crossMailboxCopy", { action: "cancelReview", reviewId }).catch(() => {});
 }
 
+function retireCrossMailboxMoveReview(session, reviewId = session?.moveReviewId) {
+  if (session?.moveReviewId === reviewId) { session.moveReviewId = null; session.moveReview = null; }
+  if (!reviewId) return;
+  if (session) {
+    session.retiredMoveReviews ||= new Set();
+    if (session.retiredMoveReviews.has(reviewId)) return;
+    session.retiredMoveReviews.add(reviewId);
+  }
+  // Revocation fences future source writes. It cannot recall a Gmail POST that started.
+  return call("mail:crossMailboxMove", { action: "cancelReview", reviewId }).catch(() => {});
+}
+
+function gmailApiTransferSources(session) {
+  return !!session?.messages.length && session.messages.every(message => {
+    const account = state.accounts.find(row => row.id === message.accountId);
+    return !isLocalMail(message) && account?.platform === "imap" && account.mailTransport === "gmail_api"
+      && folderProvider(account) === "gmail" && !!message.contextOwner;
+  });
+}
+
+function crossMailboxMoveAvailable(session, folderId = $("local-transfer-folder").value) {
+  return gmailApiTransferSources(session) && session.moveCapabilities?.moveEnabled === true
+    && session.moveCapabilities.sourceGmailOnly === true && session.moveCapabilityFolder === folderId
+    && !session.moveLoading && !session.moveInvalidated;
+}
+
+function crossMailboxMoveNavigationKey() {
+  return JSON.stringify([mailboxViewKey(), state.view]);
+}
+
+function crossMailboxMoveChoiceCurrent(session, generation, folderId) {
+  return !session.stop && !session.moveInvalidated && session.moveNavigation === crossMailboxMoveNavigationKey()
+    && crossMailboxMoveAvailable(session, folderId) && transferChoiceCurrent(session, generation, folderId, "move");
+}
+
+function cancelCrossMailboxMoveIntent(session = localTransfer, reason = "Move review cancelled. Verified destination copies stay; remaining Gmail sources are retained.") {
+  if (!session || session.destination?.accountId === LOCAL_ACCOUNT_ID || session.mode !== "move") return;
+  session.moveInvalidated = reason;
+  session.stop = true;
+  retireCrossMailboxMoveReview(session);
+  if (localTransfer === session && $("local-transfer").open) $("local-transfer-status").textContent = reason;
+}
+
+function cancelCrossMailboxMoveOnNavigation() {
+  cancelCrossMailboxMoveIntent(localTransfer, "Mailbox navigation changed. Remaining Gmail Trash actions were cancelled. Verified destination copies stay; a started source write cannot be recalled.");
+}
+
+function observeCrossMailboxMoveContext() {
+  const session = localTransfer;
+  if (!session || session.mode !== "move" || session.destination?.accountId === LOCAL_ACCOUNT_ID || session.moveInvalidated) return;
+  if (!session.current() || session.moveNavigation && session.moveNavigation !== crossMailboxMoveNavigationKey()
+    || session.moveReviewId && !transferChoiceCurrent(session, session.generation, $("local-transfer-folder").value, "move")) {
+    cancelCrossMailboxMoveIntent(session, "The reviewed source, destination, folder or navigation changed. Remaining Gmail Trash actions were cancelled; verified destination copies stay.");
+  }
+}
+
+async function checkCrossMailboxMoveCapabilities(session, generation = session.generation) {
+  const folderId = $("local-transfer-folder").value, mode = session.mode;
+  session.moveCapabilities = null; session.moveCapabilityFolder = null;
+  if (session.destination?.accountId === LOCAL_ACCOUNT_ID || !folderId || !session.capabilities?.copyEnabled) { paintLocalTransferMode(); return; }
+  session.moveLoading = true; paintLocalTransferMode();
+  try {
+    const result = await call("mail:crossMailboxMove", crossMailboxTransferParams(session, "capabilities", folderId));
+    if (!transferChoiceCurrent(session, generation, folderId, mode)) return;
+    session.moveCapabilities = result?.sourceGmailOnly === true && typeof result.moveEnabled === "boolean" ? result : null;
+    session.moveCapabilityFolder = folderId;
+  } catch { /* Copy remains independent when Move capability discovery is unavailable. */ }
+  finally {
+    if (transferSessionCurrent(session, generation)) { session.moveLoading = false; paintLocalTransferMode(); }
+  }
+}
+
+async function reviewCrossMailboxGmailTrash(session, generation, folderId, copies, copyReviewId) {
+  const retained = "Verified destination copies stay. Remaining Gmail sources were retained.";
+  if (!crossMailboxMoveChoiceCurrent(session, generation, folderId)) return { detail: retained + " " + (session.moveInvalidated || "Move was stopped before source review."), error: false };
+  let review;
+  const outcomes = [];
+  try {
+    $("local-transfer-status").textContent = "Copy verified. Preparing a separate Gmail Trash review; no source Trash has been authorized.";
+    review = await call("mail:crossMailboxMove", crossMailboxTransferParams(session, "review", folderId));
+    if (!crossMailboxMoveChoiceCurrent(session, generation, folderId)) {
+      retireCrossMailboxMoveReview(session, review?.reviewId); return { detail: retained + " Move review was cancelled.", error: false };
+    }
+    const entries = Array.isArray(review?.entries) ? review.entries : [];
+    const expected = new Map(session.messages.map((message, index) => [JSON.stringify([message.accountId, message.id]), copies[index].receiptId]));
+    const seen = new Set();
+    const valid = review?.reviewId && review.reviewId !== copyReviewId && review.accountId === session.destination.accountId && review.folderId === folderId
+      && review.sourceCount === session.messages.length && entries.length === expected.size && entries.every(entry => {
+      const key = JSON.stringify([entry.accountId, entry.emailId]);
+      if (seen.has(key) || !entry.copyReceiptId || expected.get(key) !== entry.copyReceiptId) return false;
+      seen.add(key); return true;
+    });
+    if (!valid) throw new Error("The Move review did not match the exact verified Copy receipts. No source Trash was authorized.");
+    session.moveReviewId = review.reviewId; session.moveReview = review;
+    const sourceLabels = review.sourceLabels?.join(", ") || [...new Set(session.messages.map(message => accountLabel(state.accounts.find(account => account.id === message.accountId))))].join(", ");
+    const destinationLabel = review.destinationLabel || session.destination.accountId + " / " + folderId;
+    const body = `${review.sourceCount} verified destination cop${review.sourceCount === 1 ? "y is" : "ies are"} saved at ${destinationLabel}. This is a separate source action: move the reviewed Gmail originals from ${sourceLabels} to Gmail Trash across all their labels. Gmail retention can later delete Trash. The copy and source Trash are not atomic. No Undo is provided here. Cancel keeps the copies and the sources. Stop cancels later source writes; an already started Gmail request cannot be recalled. ${[...(review.notices || [])].join(" ")}`;
+    $("local-transfer-status").textContent = body;
+    const answer = await askConfirm({ title: "Move Gmail originals to Trash?", body, confirm: "Move Gmail originals to Trash", cancel: "Keep sources and copies" });
+    if (!crossMailboxMoveChoiceCurrent(session, generation, folderId) || session.moveReviewId !== review.reviewId || !answer?.ok) return { detail: retained + " Separate Gmail Trash confirmation was cancelled.", error: false };
+    if (review.expiresAt && new Date(review.expiresAt).getTime() <= Date.now()) return { detail: retained + " The separate Move review expired; no source request was started.", error: true };
+    for (const message of session.messages) {
+      if (!crossMailboxMoveChoiceCurrent(session, generation, folderId) || session.moveReviewId !== review.reviewId) break;
+      const copyReceiptId = expected.get(JSON.stringify([message.accountId, message.id]));
+      $("local-transfer-status").textContent = `Moving Gmail original ${outcomes.length + 1} of ${session.messages.length} to Trash… Verified destination copies stay.`;
+      let result;
+      try { result = await call("mail:crossMailboxMove", { action: "move", reviewId: review.reviewId, emailId: message.id, accountId: message.accountId, confirmed: true }); }
+      catch (failure) { return { detail: `${outcomes.filter(row => row.sourceTrashed).length} Gmail source Trash actions confirmed. A source result is uncertain: ${failure.message} Destination copies stay. No automatic retry or Undo is available; check Gmail before further action.`, error: true }; }
+      if (!result || !["moved", "already_moved", "source_retained", "unknown"].includes(result.status) || result.copyReceiptId !== copyReceiptId
+        || result.destination?.accountId !== session.destination.accountId || result.destination?.folderId !== folderId
+        || ["moved", "already_moved"].includes(result.status) && (!result.moveReceiptId || result.sourceTrashed !== true || result.sourceRetained !== false)
+        || result.status === "unknown" && (!result.moveReceiptId || result.sourceRetained !== null || result.sourceTrashed !== null)
+        || result.status === "source_retained" && (result.sourceRetained !== true || result.sourceTrashed !== false)) {
+        return { detail: "A Gmail source result could not be verified. Destination copies stay; source state is uncertain. No automatic retry or Undo is available. Check Gmail before further action.", error: true };
+      }
+      outcomes.push(result);
+      if (result.status === "unknown") return { detail: `${outcomes.filter(row => row.sourceTrashed).length} Gmail source Trash actions confirmed; one source outcome is uncertain. Destination copies stay. No automatic retry or Undo is available; check Gmail before further action. ${result.detail || ""}`, error: true };
+      if (result.status === "source_retained") break;
+      if (!crossMailboxMoveChoiceCurrent(session, generation, folderId)) break;
+    }
+    const moved = outcomes.filter(row => row.sourceTrashed === true).length;
+    return { detail: `${moved} Gmail originals confirmed in Trash; ${session.messages.length - moved} retained or not attempted. Verified destination copies stay. Gmail retention applies; no Undo is provided. ${session.moveInvalidated || (session.stop ? "Stopped; remaining source requests were cancelled." : outcomes.find(row => row.status === "source_retained")?.detail || "")}`, error: false };
+  } catch (failure) {
+    return { detail: retained + " Separate Gmail Trash review failed: " + failure.message, error: true };
+  } finally { retireCrossMailboxMoveReview(session, review?.reviewId); }
+}
+
 function transferSessionCurrent(session, generation = session?.generation) {
   return !!session && localTransfer === session && session.generation === generation && !session.closed
     && $("local-transfer").open && $("local-transfer").dataset.closing !== "1";
@@ -728,10 +855,14 @@ function crossMailboxTransferParams(session, action, folderId) {
 
 function changeLocalTransferChoice() {
   const session = localTransfer;
-  if (!session || session.running || session.finished) return;
+  if (!session) return;
+  retireCrossMailboxMoveReview(session);
+  if (session.running || session.finished) { cancelCrossMailboxMoveIntent(session); return; }
   session.generation++; session.reviewing = false; session.stop = false;
   retireCrossMailboxReview(session);
   session.mode = $("local-transfer-mode").value;
+  session.moveCapabilities = null; session.moveLoading = false; session.moveCapabilityFolder = null;
+  session.moveInvalidated = null; session.moveNavigation = session.mode === "move" ? crossMailboxMoveNavigationKey() : null;
   captureTransferFolderChoice(session);
   $("local-transfer-status").textContent = "";
   paintLocalTransferMode();
@@ -739,7 +870,8 @@ function changeLocalTransferChoice() {
 
 async function chooseLocalTransferAccount() {
   const session = localTransfer;
-  if (!session || session.running || session.finished) return;
+  if (!session) return;
+  if (session.running || session.finished) { cancelCrossMailboxMoveIntent(session); return; }
   changeLocalTransferChoice();
   const accountId = $("local-transfer-account").value;
   session.capabilities = null; session.loading = false;
@@ -791,6 +923,7 @@ async function chooseLocalTransferAccount() {
   } finally {
     if (transferSessionCurrent(session, generation)) { session.loading = false; paintLocalTransferMode(); }
   }
+  if (transferChoiceCurrent(session, generation, undefined, mode)) await checkCrossMailboxMoveCapabilities(session, generation);
 }
 
 function paintLocalTransferFolders() {
@@ -835,7 +968,7 @@ async function openLocalTransfer(messages, mode) {
   if (!rows.length || rows.length > 200 || rows.some(email => email.isDraft)) {
     showStatus("Choose up to 200 saved messages and finish any current local transfer first.", true); return;
   }
-  if (localTransfer) { localTransfer.closed = true; retireCrossMailboxReview(localTransfer); }
+  if (localTransfer) { cancelCrossMailboxMoveIntent(localTransfer); localTransfer.closed = true; retireCrossMailboxReview(localTransfer); retireCrossMailboxMoveReview(localTransfer); }
   try { await loadLocalFolders(); }
   catch (error) { if (generation === localTransferOpenGeneration) showStatus("Local Folders could not be opened. " + error.message, true); return; }
   if (generation !== localTransferOpenGeneration) return;
@@ -847,23 +980,26 @@ async function openLocalTransfer(messages, mode) {
     dialog.dataset.wired = "1";
     $("local-transfer-form").addEventListener("submit", event => { event.preventDefault(); commitLocalTransfer(); });
     $("local-transfer-account").addEventListener("change", chooseLocalTransferAccount);
-    $("local-transfer-folder").addEventListener("change", changeLocalTransferChoice);
+    $("local-transfer-folder").addEventListener("change", () => { changeLocalTransferChoice(); if (localTransfer && !localTransfer.running && !localTransfer.finished) checkCrossMailboxMoveCapabilities(localTransfer); });
     $("local-transfer-mode").addEventListener("change", () => {
       changeLocalTransferChoice();
       if (localTransfer?.destination.accountId === LOCAL_ACCOUNT_ID) paintLocalTransferFolders();
       else if (localTransfer?.loading) { localTransfer.loading = false; $("local-transfer-capability").textContent = "The action changed while checking support. Choose the destination mailbox again to check its current capabilities."; }
       paintLocalTransferMode();
+      if (localTransfer && !localTransfer.running && !localTransfer.finished) checkCrossMailboxMoveCapabilities(localTransfer);
     });
     $("local-transfer-cancel").addEventListener("click", () => {
       if (localTransfer?.running) {
+        cancelCrossMailboxMoveIntent(localTransfer, "Stop requested. Remaining Gmail Trash actions are cancelled; destination copies stay. A started request cannot be recalled.");
         localTransfer.stop = true; $("local-transfer-status").textContent = "Stopping after the current message. A started upload or server move cannot be recalled.";
       } else {
         localTransferOpenGeneration++;
-        if (localTransfer) { localTransfer.closed = true; localTransfer.generation++; retireCrossMailboxReview(localTransfer); }
+        if (localTransfer) { cancelCrossMailboxMoveIntent(localTransfer); localTransfer.closed = true; localTransfer.generation++; retireCrossMailboxReview(localTransfer); retireCrossMailboxMoveReview(localTransfer); }
         closeDialog("local-transfer");
       }
     });
     dialog.addEventListener("cancel", event => {
+      cancelCrossMailboxMoveIntent(localTransfer);
       if (localTransfer?.running) { event.preventDefault(); localTransfer.stop = true; $("local-transfer-status").textContent = "Stopping after the current message. A started upload or server move cannot be recalled."; }
     });
     dialog.addEventListener("close", () => {
@@ -872,6 +1008,7 @@ async function openLocalTransfer(messages, mode) {
       if (dialog.open) return;
       localTransferOpenGeneration++;
       const session = localTransfer, trigger = session?.trigger;
+      cancelCrossMailboxMoveIntent(session); retireCrossMailboxMoveReview(session);
       if (session?.running) session.stop = true;
       else { retireCrossMailboxReview(session); localTransfer = null; }
       if (trigger?.isConnected) trigger.focus();
@@ -894,11 +1031,18 @@ function paintLocalTransferMode() {
   const mode = $("local-transfer-mode").value;
   const local = session.messages.every(isLocalMail), remote = $("local-transfer-account").value !== LOCAL_ACCOUNT_ID;
   const move = $("local-transfer-mode").querySelector('[value="move"]');
-  move.disabled = remote;
-  move.textContent = remote ? "Move · Unavailable for connected destinations" : local ? "Move between local folders" : "Move · Trash server original after copying";
+  const moveAvailable = remote && crossMailboxMoveAvailable(session);
+  move.disabled = remote && !moveAvailable;
+  move.textContent = remote ? (moveAvailable ? "Move · Copy, then review Gmail Trash" : "Move · Unavailable for connected destinations") : local ? "Move between local folders" : "Move · Trash server original after copying";
+  const moveHelp = $("local-transfer-move-capability");
+  moveHelp.hidden = !remote;
+  moveHelp.textContent = remote ? (session.moveLoading ? "Checking the separately gated Gmail-source Move capability. Copy remains available." : moveAvailable
+    ? "Move first completes verified Copy, then asks separately before moving Gmail API originals to Trash across all labels. Cancel keeps copies and sources. No atomic transfer or Undo; Gmail retention applies."
+    : !gmailApiTransferSources(session) ? "Connected Move is unavailable for IMAP, Outlook, Yahoo, legacy Gmail IMAP and Local Folders sources. Copy remains available. Gmail API-source Move is prepared but remains gated pending independent Copy verification."
+      : session.moveCapabilities?.moveReason || "Gmail API-source Move is prepared but unavailable pending independent Copy verification. Copy keeps every source.") : "";
   $("local-transfer-folder-label").textContent = remote ? "Receiving folder or label" : "Local destination";
   $("local-transfer-title").textContent = "Move / Copy to other mailbox";
-  $("local-transfer-ok").textContent = mode === "move" ? "Move" : "Copy";
+  $("local-transfer-ok").textContent = mode === "move" ? (remote ? "Copy, then review Gmail Trash" : "Move") : "Copy";
   $("local-transfer-help").textContent = remote ? "Copy keeps every source message. This mailbox must support preserving and verifying the complete original message, original headers, all attachments, and read/star state. Gmail imports use the original valid Date header for sorting; Gmail may classify or group messages and add labels. IMAP needs persistent UIDPLUS or IMAP4rev2 UIDs, full readback, flags and date support. Provider behavior is not identical. Maximum 50 messages; 32 MiB per original; 256 MiB total per review. Review does not upload mail. Copy needs an internet connection."
     : local ? "Copy or move complete messages and attachments between local folders. No network connection is needed."
     : mode === "move" ? "Download and verify a complete local copy first, then move the server original to its Trash. Gmail moves the message across all labels. Server Trash may be auto-deleted by your provider. Failed or unconfirmed moves keep the local copy; check the server before retrying. IMAP needs MOVE support. Maximum 64 MiB per original message."
@@ -909,14 +1053,15 @@ function paintLocalTransferMode() {
   $("local-transfer-folder").disabled = locked || !!session.loading;
   const folder = session.capabilities?.folders.find(row => row.id === $("local-transfer-folder").value);
   $("local-transfer-ok").disabled = locked || !!session.loading || !!session.reviewing || !$("local-transfer-folder").value
-    || remote && (mode !== "copy" || !session.capabilities?.copyEnabled || !folder?.enabled);
+    || remote && (!["copy", "move"].includes(mode) || mode === "move" && !moveAvailable || !session.capabilities?.copyEnabled || !folder?.enabled);
   $("local-transfer-cancel").textContent = session.running ? "Stop after this message" : session.finished ? "Close" : "Cancel";
 }
 
 async function commitCrossMailboxTransfer(session) {
   const generation = session.generation, folderId = $("local-transfer-folder").value, mode = $("local-transfer-mode").value;
   const folder = session.capabilities?.folders.find(row => row.id === folderId);
-  if (session.loading || session.reviewing || session.finished || mode !== "copy" || !session.capabilities?.copyEnabled || !folder?.enabled) {
+  const moving = mode === "move";
+  if (session.loading || session.reviewing || session.finished || !["copy", "move"].includes(mode) || moving && !crossMailboxMoveChoiceCurrent(session, generation, folderId) || !session.capabilities?.copyEnabled || !folder?.enabled) {
     $("local-transfer-status").textContent = "Choose an enabled Copy destination. Move to a connected mailbox is unavailable."; return;
   }
   if (!transferChoiceCurrent(session, generation, folderId, mode)) {
@@ -972,11 +1117,16 @@ async function commitCrossMailboxTransfer(session) {
         detailError = `Copy stopped: ${failure.message} The destination may contain a copy. This dialog will not retry a started request.`; break;
       }
     }
-    session.running = false; retireCrossMailboxReview(session);
+    retireCrossMailboxReview(session);
+    let moveOutcome = null;
+    if (moving && results.length === session.messages.length && results.every(row => ["copied", "reused"].includes(row.status)) && !detailError) {
+      moveOutcome = await reviewCrossMailboxGmailTrash(session, generation, folderId, results, review.reviewId);
+    }
+    session.running = false;
     if (transferSessionCurrent(session, generation)) {
       const copied = results.filter(row => row.status === "copied").length, reused = results.filter(row => row.status === "reused").length;
-      const detail = `${copied} copied; ${reused} verified existing copies; ${session.messages.length - copied - reused} not confirmed or not attempted. Every source message was retained. ${detailError || (session.stop ? "Stopped after the current message." : "Copy finished.")}`;
-      $("local-transfer-status").textContent = detail; paintLocalTransferMode(); showStatus(detail, !!detailError);
+      const detail = `${copied} copied; ${reused} verified existing copies; ${session.messages.length - copied - reused} not confirmed or not attempted. ${moveOutcome?.detail || "Every source message was retained. " + (detailError || (session.stop ? "Stopped after the current message." : "Copy finished."))}`;
+      $("local-transfer-status").textContent = detail; paintLocalTransferMode(); showStatus(detail, !!detailError || !!moveOutcome?.error);
       confirmSettled().then(() => {
         if (!transferSessionCurrent(session, generation)) return;
         $("local-transfer-status").scrollIntoView({ block: "nearest" }); $("local-transfer-cancel").focus();
@@ -986,6 +1136,7 @@ async function commitCrossMailboxTransfer(session) {
     retireCrossMailboxReview(session, review?.reviewId);
     if (transferSessionCurrent(session, generation)) $("local-transfer-status").textContent = "Copy review failed. " + failure.message;
   } finally {
+    retireCrossMailboxMoveReview(session);
     if (transferSessionCurrent(session, generation)) { session.reviewing = false; paintLocalTransferMode(); }
     else if (localTransfer === session && !$("local-transfer").open && !session.running) localTransfer = null;
   }
@@ -5819,6 +5970,7 @@ function onFolderNavKey(event) {
 }
 
 function renderAccounts() {
+  observeCrossMailboxMoveContext();
   renderSettingsAccounts();
   if (state.view === "mail") refreshMailVacation();
   const nav = $("folders");
@@ -13513,6 +13665,7 @@ async function selectOutbox() {
   if (!state.accounts.length) return;
   defaultMailSearchScope(null);
   ++mailboxNavigationGen;
+  cancelCrossMailboxMoveOnNavigation();
   ++listGen;
   state.listLoading = false;
   invalidateReaderOpen();
@@ -13546,6 +13699,7 @@ async function selectAllInbox(unreadOnly, starredOnly = false) {
   if (!state.accounts.length) return;
   defaultMailSearchScope(null);
   ++mailboxNavigationGen;
+  cancelCrossMailboxMoveOnNavigation();
   const nextUnread = unreadOnly === true;
   const staying = state.allInbox && !state.query && state.allInboxStarredOnly === starredOnly;
   if (!staying) {
@@ -13577,6 +13731,7 @@ async function selectAllInbox(unreadOnly, starredOnly = false) {
 
 async function selectFolder(accountId, folderId) {
   ++mailboxNavigationGen;
+  cancelCrossMailboxMoveOnNavigation();
   invalidateReaderOpen();
   const previous = state.accountId;
   state.outbox = false;
@@ -13783,6 +13938,7 @@ function pumpBodyRefreshes() {
 function acceptBodyAccounts(accounts) {
   const previous = new Map(state.accounts.map(account => [account.id, account.bodyEpoch || 0]));
   state.accounts = Array.isArray(accounts) ? accounts : [];
+  observeCrossMailboxMoveContext();
   if (messageSummary && !summaryMatches(state.email)) {
     clearMessageSummary();
     paintMessageSummary(state.email);
@@ -13935,6 +14091,7 @@ async function openMessage(emailId, focus, full = false) {
 
 async function applySearch() {
   ++mailboxNavigationGen;
+  cancelCrossMailboxMoveOnNavigation();
   invalidateReaderOpen();
   const query = $("search-query").value.trim();
   if (query) state.outbox = false;
@@ -25036,6 +25193,7 @@ function showPrimary(view, id) {
   }
   if (view === "agent" || view === "brain") refreshAiSetupState();
   const swap = state.view !== view;
+  if (swap) cancelCrossMailboxMoveOnNavigation();
   if (view !== "agent") stopAgentPoll();
   markRail(view);
   if (view === "mail" && mailListDirty) { mailListDirty = false; scheduleReload(); }
@@ -27970,7 +28128,7 @@ function wire() {
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
   $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
-  window.addEventListener("beforeunload", () => { clearMessageSummary(); for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
+  window.addEventListener("beforeunload", () => { cancelCrossMailboxMoveIntent(localTransfer, "Window closing. Remaining Gmail Trash actions are cancelled; a started request cannot be recalled."); clearMessageSummary(); for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
   $("attachment-preview").addEventListener("close", clearAttachmentPreview);
   $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
   $("agent-peek-mail").addEventListener("click", () => {
