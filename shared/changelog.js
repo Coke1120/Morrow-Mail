@@ -7,6 +7,10 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.4": [
+      "Local Folders now has compact New local folder and Import MBOX icon buttons beside its heading, with tooltips, accessible names and visible keyboard focus.",
+      "The buttons remain separate from expand/collapse and keep the existing review, cancellation and focus-return behavior. Opening them does not create a folder or start an import.",
+    ],
     "0.4.3": [
       "Local Folders keeps complete original mail and attachments on this computer, even after an account is disconnected. Copy verifies saved bytes; Move then uses recoverable server Trash after review.",
       "Import MBOX reviews exported or stopped Thunderbird mailboxes, destination, format and duplicates. Stop, errors and restart keep committed local mail; continuing is an explicit action and original files stay unchanged.",

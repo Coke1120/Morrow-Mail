@@ -1,8 +1,8 @@
 # Import MBOX into Local Folders
 
-This is the proposed implementation for [#521](https://github.com/Coke1120/Morrow-Mail/issues/521),
-built on the durable Local Folders foundation in [#524](https://github.com/Coke1120/Morrow-Mail/pull/524).
-It is not a published release. No import runs merely by opening the dialog.
+Available since v0.4.3, this implements [#521](https://github.com/Coke1120/Morrow-Mail/issues/521)
+on the durable Local Folders foundation in [#524](https://github.com/Coke1120/Morrow-Mail/pull/524).
+No import runs merely by opening the dialog.
 
 Choose the **Import MBOX…** icon button beside **Local Folders** in the account
 list, then **Choose files…**. Review the files,
