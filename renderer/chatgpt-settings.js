@@ -397,7 +397,13 @@
   $("chatgpt-signout").addEventListener("click", () => action("host:chatgptSignOut", snapshot.activeId));
   $("chatgpt-refresh").addEventListener("click", () => action("host:chatgptStatus"));
   $("chatgpt-select").addEventListener("click", async () => {
-    if (await action("host:chatgptSelect", $("chatgpt-account").value)) choices([]);
+    const id = $("chatgpt-account").value;
+    const unchanged = id === snapshot.activeId && snapshot.connected;
+    if (await action("host:chatgptSelect", id)) {
+      if (!unchanged) choices([]);
+      // Recheck the host even if an out-of-band account change was not painted.
+      await refreshConsent();
+    }
   });
   $("chatgpt-enable").addEventListener("click", () => action("host:chatgptStart", { accountId: snapshot.activeId, enablePlan: true }));
   $("chatgpt-resume").addEventListener("click", () => action("host:chatgptResumeUsage"));

@@ -601,3 +601,17 @@ test('selecting the active ChatGPT account keeps saved permission and an active 
   assert.equal(f.consent.status().manual, true); assert.equal(lease.signal.aborted, false); lease.check(); lease.release();
   f.assertNoModelCalls();
 });
+
+test('actual Settings Select click preserves the saved model, clean draft and permission for the active account', async t => {
+  const f = fixture({ useDom: true, config: { authMode: 'chatgpt', chatgptModel: 'fixture-chat' } }); t.after(f.dispose);
+  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core'] });
+  await f.load();
+  const lease = f.consent.acquire(f.config.loadConfig()), before = f.writes;
+  assert.equal(f.ui.run('aiDirty()'), false);
+  f.get('chatgpt-account').value = 'fixture-account'; f.get('chatgpt-select').click(); await tick(); await tick();
+  assert.equal(f.component.draft().chatgptModel, 'fixture-chat');
+  assert.equal(f.ui.run('aiDirty()'), false);
+  assert.equal(f.get('ai-consent-manual').checked, true);
+  assert.equal(f.consent.status().manual, true); assert.equal(f.writes, before);
+  assert.equal(lease.signal.aborted, false); lease.check(); lease.release(); f.assertNoModelCalls();
+});

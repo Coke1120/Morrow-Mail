@@ -27,7 +27,9 @@ choices is affirmative and uses the existing owner-bound target token and three
 exact IPC channels; saving a connection, opening Settings or reading privacy details
 never grants permission. Pending/dirty controls and stale-response fencing remain.
 Re-selecting the connected active ChatGPT account changes neither consent nor its
-request epoch. Different account selection, reauthorization and sign-out retain the
+request epoch or saved model choices. The actual Settings Select click is tested
+through its production preload and host handler; a no-op does not dirty the form.
+The UI still refreshes host permission after selection. Different account selection, reauthorization and sign-out retain the
 existing revocation behavior. Explicit revoke cancels active and queued work.
 
 Synthetic tests cover historical records, independent scope upgrades, restart,
