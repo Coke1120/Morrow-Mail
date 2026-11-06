@@ -216,7 +216,11 @@ assert.ifError(sidebarAccounts.error);
 assert.strictEqual(sidebarAccounts.status, 0, "per-account sidebar expansion failed");
 
 for (const name of ["check-local-folders.js", "check-local-folders-ui.js", "check-mbox-import.js", "check-mbox-import-ui.js", "check-mbox-import-host.js"]) {
-  const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout: 30000 });
+  // MBOX runs 25 serial MIME/restart/SQLite/fsync cases. Windows reached 21
+  // healthy cases before the old 30s aggregate deadline; allow bounded I/O
+  // headroom for this process only. Per-message worker and import budgets stay.
+  const timeout = name === "check-mbox-import.js" && process.platform === "win32" ? 90000 : 30000;
+  const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout });
   assert.ifError(fixture.error);
   assert.strictEqual(fixture.status, 0, name + " failed");
 }
