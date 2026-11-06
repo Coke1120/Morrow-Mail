@@ -272,3 +272,9 @@ Synthetic checks cover case review, account isolation, capped search, forged cit
 revocation, exports and stale UI responses. Native Windows/macOS layout, live model
 quality, actual PDF pagination and real-provider behavior remain manual validation
 limits; development never uses actual user mail or live model calls.
+
+## Provider output validation
+
+Each extraction, long-message consolidation or case step has at most one validation retry. Fixed feedback distinguishes JSON formatting, schema/text limits, source-reference failures and incomplete responses. It never includes raw output, mail, offending values or schema paths. Consolidation must synthesize a new summary of at most 500 characters rather than concatenate parts. A single whole-response JSON fence is accepted for provider compatibility; duplicate keys, extra prose, extra fields, missing/forged sources and incomplete responses still fail. Portable artifact imports retain strict JSON parsing. No unsupported structured-output parameters are sent to custom providers.
+
+All attempts retain the existing call, input, output and time limits. Failed jobs preserve earlier saved timelines. A user-initiated retry revalidates and resends the reviewed mail; failures never start a new run automatically. These diagnostics identify a validation category, not the exact cause of an earlier incident.

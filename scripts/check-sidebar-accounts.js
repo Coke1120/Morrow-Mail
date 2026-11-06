@@ -161,3 +161,76 @@ test('failed save restores that account and a stale preference read cannot overw
   assert.equal(f.ui.run("state.prefs.accountExpanded['box-0']"), false);
   assert.equal(f.ui.run("state.prefs.accountExpanded['box-1']"), false);
 });
+
+test('address-first identity is shared by every provider and Local Folders; refreshed labels repaint without changing stored identity', t => {
+  const f = fixture(t);
+  f.accounts[0].name = 'Backup mailbox';
+  f.accounts[1].label = 'Personal';
+  f.accounts[2].mailTransport = 'gmail_api';
+  f.ui.run(`state.localAccount={id:'__morrow_local__',isLocal:true,name:'Local Folders',email:'Local Folders',folders:{primary:[],more:[]}};renderAccounts()`);
+  const details = ['Backup mailbox · IMAP','Personal · Yahoo','Gmail','Gmail','Outlook','Outlook'];
+  for (const [index, account] of f.accounts.entries()) {
+    const heading = f.heading(account.id);
+    assert.equal(heading.querySelector('.account-address').textContent, account.email);
+    assert.equal(heading.querySelector('.account-detail').textContent, details[index]);
+    assert.equal(heading.getAttribute('aria-description'), details[index]);
+    assert.match(heading.getAttribute('aria-label'), new RegExp(account.email.replaceAll('.', '\\.')));
+    assert.equal(heading.querySelector('.folder-twist-mark').getAttribute('aria-hidden'), 'true');
+  }
+  const local = f.heading('__morrow_local__');
+  assert.equal(local.querySelector('.account-address').textContent, 'Local Folders');
+  assert.equal(local.querySelector('.account-detail').textContent, 'On this computer');
+  assert.equal(f.window.document.querySelectorAll('.local-folder-actions button').length, 2);
+  f.accounts[0].name = 'Changed 名称';
+  f.ui.run('renderAccounts()');
+  assert.equal(f.heading('box-0').querySelector('.account-detail').textContent, 'Changed 名称 · IMAP');
+  assert.equal(f.accounts[0].email, 'box-0@example.invalid');
+});
+
+test('Gmail reserved labels get readable text while custom names, raw identities, counts and real hierarchy remain intact', async t => {
+  const f = fixture(t);
+  const gmail = f.accounts[2];
+  gmail.folders.more.push(
+    {id:'CATEGORY_SOCIAL',name:'CATEGORY_SOCIAL',providerId:'CATEGORY_SOCIAL',unreadCount:9},
+    {id:'CATEGORY_PERSONAL',name:'CATEGORY_PERSONAL',providerId:'Label_custom'},
+    {id:'YELLOW_STAR',name:'YELLOW_STAR',providerId:'YELLOW_STAR'},
+    {id:'Projects',name:'Projects'}, {id:'Projects/Client',name:'Projects/Client'},
+  );
+  const before = JSON.stringify(f.accounts);
+  f.ui.run('state.prefs.gmailOpen=true;renderAccounts()');
+  const row = id => f.window.document.querySelector(`button.folder[data-account-id="box-2"][data-folder-id="${id}"]`);
+  assert.equal(row('CATEGORY_SOCIAL').querySelector('.name').textContent, 'Social');
+  assert.equal(row('CATEGORY_SOCIAL').querySelector('.name').title, 'CATEGORY_SOCIAL');
+  assert.equal(row('CATEGORY_SOCIAL').querySelector('.count').textContent, '9');
+  assert.equal(row('CATEGORY_PERSONAL').querySelector('.name').textContent, 'CATEGORY_PERSONAL');
+  assert.equal(row('YELLOW_STAR').querySelector('.name').textContent, 'Yellow star');
+  assert.equal(row('Projects/Client').querySelector('.name').textContent, 'Client');
+  assert.equal(row('Projects/Client').querySelector('.name').title, 'Projects/Client');
+  assert.equal(row('Projects').getAttribute('aria-expanded'), 'true');
+  assert.equal(row('Projects/Client').dataset.navParent, 'folder:box-2:Projects');
+  assert.equal(row('CATEGORY_SOCIAL').getAttribute('aria-expanded'), null);
+  assert.equal(JSON.stringify(f.accounts), before, 'display mapping must not rename or rewrite account/folder records');
+  f.ui.run('globalThis.chosen=[];selectFolder=async(accountId,folderId)=>chosen.push({accountId,folderId})');
+  row('CATEGORY_SOCIAL').click(); await tick();
+  assert.deepEqual(f.json('chosen'), [{accountId:'box-2',folderId:'CATEGORY_SOCIAL'}]);
+  f.window.document.getElementById('folder-filter').value = 'CATEGORY_SOCIAL'; f.ui.run('renderAccounts()');
+  assert.ok(row('CATEGORY_SOCIAL'), 'original provider name remains searchable');
+  f.window.document.getElementById('folder-filter').value = 'Social'; f.ui.run('renderAccounts()');
+  assert.ok(row('CATEGORY_SOCIAL'), 'display name is searchable too');
+});
+
+test('metadata and unread refresh retain owner routing and custom names that resemble reserved Gmail ids', t => {
+  const f = fixture(t);const account=f.accounts[2];
+  account.folders.more.push({id:'YELLOW_STAR',name:'YELLOW_STAR',providerId:'Label_custom',unreadCount:1});
+  f.ui.run('state.prefs.gmailOpen=true;renderAccounts()');
+  const row=()=>f.window.document.querySelector('[data-account-id="box-2"][data-folder-id="YELLOW_STAR"]');
+  assert.equal(row().querySelector('.name').textContent,'YELLOW_STAR');
+  account.folders.more.at(-1).providerId='YELLOW_STAR'; f.ui.run('renderAccounts()');
+  assert.equal(row().querySelector('.name').textContent,'Yellow star');
+  const retained=row();account.folders.more.at(-1).unreadCount=7;f.ui.run('renderAccounts()');
+  assert.equal(row(),retained,'count-only refresh preserves the existing focused/drag target node');
+  assert.equal(row().querySelector('.count').textContent,'7');
+  assert.match(row().getAttribute('aria-label'),/Yellow star, 7 unread/);
+  assert.equal(row().dataset.dropId,'YELLOW_STAR');
+  assert.equal(row().dataset.dropAccount,'box-2');
+});
