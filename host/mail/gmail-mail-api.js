@@ -230,7 +230,7 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
     createLabel: name => labelsCall((credential, fetcher) => provider.createLabel(credential, name, fetcher)),
     renameLabel: (labelId, name) => labelsCall((credential, fetcher) => provider.renameLabel(credential, labelId, name, fetcher)),
     moveLabel: (labelId, destinationId) => labelsCall((credential, fetcher) => provider.moveLabel(credential, labelId, destinationId, fetcher)),
-    deleteLabel: labelId => labelsCall((credential, fetcher) => provider.deleteLabel(credential, labelId, fetcher)),
+    deleteLabel: (labelId, options) => labelsCall((credential, fetcher) => provider.deleteLabel(credential, labelId, fetcher, options)),
   };
 }
 

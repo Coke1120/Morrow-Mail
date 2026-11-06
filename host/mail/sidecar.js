@@ -635,6 +635,11 @@ async function renameProviderFolder(params) {
   const ready = await withPurpose(params, "organize");
   if (ready.error) return ready.error;
   try {
+    const listed = ready.provider === "google" ? await gmail.listLabels(ready.token.authorization) : await gmail.listMailFolders(ready.token.authorization);
+    const source = listed.find(folder => folder.id === params?.folderId);
+    if (!source || source.editable !== true || source.type === "system" || source.wellKnown) {
+      return fail("unsupported", "Choose an existing editable user folder or label in this mailbox. System folders are protected.");
+    }
     const renamed = ready.provider === "google"
       ? await gmail.renameLabel(ready.token.authorization, params && params.folderId, params && params.name)
       : await gmail.renameMailFolder(ready.token.authorization, params && params.folderId, params && params.name);
@@ -658,16 +663,9 @@ async function moveProviderFolder(params) {
 }
 
 async function deleteProviderFolder(params) {
-  const ready = await withPurpose(params, "organize");
-  if (ready.error) return ready.error;
-  try {
-    const removed = ready.provider === "google"
-      ? await gmail.deleteLabel(ready.token.authorization, params && params.folderId)
-      : await gmail.deleteMailFolder(ready.token.authorization, params && params.folderId);
-    return ok(removed);
-  } catch (error) {
-    return failFrom(error);
-  }
+  // The old endpoint had no recovery receipt or one-use reviewed identity.
+  // Never let callers bypass the recoverable folder-management flow.
+  return fail("unsupported", "Direct folder deletion is disabled. Use the reviewed recoverable folder action in Folders & labels.");
 }
 
 function messageRfc(params) {

@@ -289,9 +289,12 @@
     </dialog>
     <section id="provider-panel" class="primary-space" hidden aria-labelledby="provider-title">
       <div class="space-head motion-block"><h2 id="provider-title">Folders &amp; labels</h2></div>
-      <p class="hint">Columns work like Finder. Select a folder to show what is inside it on the right. Filter matches a name and keeps the folders above it. Right-click to rename, delete, or move. Drag a row to nest it, or drop a message on a row to add a Gmail label or move an Outlook message.</p>
-      <label for="provider-account">Mailbox</label>
-      <select id="provider-account"></select>
+      <p class="hint">Switch mailbox below to browse or create folders and labels. Gmail label deletion keeps email; Undo cancels within 30 seconds before removal. IMAP, Outlook and Yahoo folder deletion is currently unavailable.</p>
+      <div class="folder-mailbox-picker">
+        <label for="provider-account">Manage mailbox</label>
+        <select id="provider-account" aria-controls="provider-content"></select>
+        <div id="provider-mailboxes" class="folder-mailbox-cards" role="group" aria-label="Choose mailbox to manage"></div>
+      </div>
       <div class="folder-filter provider-filter">
         <label class="sr" for="provider-filter">Filter labels and folders</label>
         <input id="provider-filter" type="search" placeholder="Filter labels and folders" autocomplete="off" spellcheck="false" aria-controls="provider-content" />
@@ -1929,8 +1932,9 @@
         <h2 id="confirm-title">Confirm</h2>
         <p id="confirm-body"></p>
         <div id="confirm-field" hidden>
-          <label for="confirm-name">Name</label>
+          <label id="confirm-field-label" for="confirm-name">Name</label>
           <input id="confirm-name" type="text" maxlength="200" autocomplete="off" spellcheck="false" />
+          <p id="confirm-validation" class="hint" role="alert" hidden></p>
         </div>
         <div class="row">
           <button type="submit" class="primary" id="confirm-ok">Confirm</button>
@@ -1938,6 +1942,7 @@
         </div>
       </form>
     </dialog>
+    <aside id="folder-operation-activity" class="folder-operation-activity" aria-label="Pending folder actions" hidden></aside>
     <aside id="attachment-transfer-activity" class="attachment-task-list" data-attachment-tasks="all" aria-label="Attachment transfers" hidden></aside>
     <script src="./motion.bundle.js"></script>
     <script src="../shared/compose-policy.js"></script>

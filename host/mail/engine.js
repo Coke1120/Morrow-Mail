@@ -19,6 +19,9 @@ const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
 const localFolders = require("./local-folders");
 const { createImporter } = require("./mbox-import");
+const { createJournal: createFolderJournal } = require("./folder-recovery");
+const { createManager: createFolderManager } = require("./folder-management");
+const { createAccess: createFolderAccess } = require("./folder-adapter");
 const messageSummaries = require("../message-summary").createSummaryService({ readMessage: summaryMessage });
 
 const secrets = require("./secrets");
@@ -135,6 +138,43 @@ function dataFile() {
 
 let localStore = null;
 let mboxImporter = null;
+let folderJournal = null;
+let folderManager = null;
+function managedFolders() {
+  if (!folderManager) {
+    const access = createFolderAccess({ accountById: db.accountById, bindAccount, assertAccountCurrent,
+      generation: id => accountEpochs.get(id) || 0, revision: id => secrets.revision(id),
+      googleClient: () => oauthConfig.loadGoogleClient()?.clientId || null, secretFor, withMailClient, exclusive,
+      blocked: id => db.folderWriteBlockers(id) > 0,
+      async refreshCache(account, client, check) {
+        const result = await remote.listFolderRecords(client); check();
+        // This metadata refresh uses the same ownership fence as the write.
+        // Gmail's existing reconciler retains old cached label copies safely.
+        db.replaceFolders(account.id, result.folders, result.delimiter); check(); emitAccounts();
+      } });
+    folderManager = createFolderManager({ ...access, gate: updateGate,
+      journal(write) {
+        const file = path.join(path.dirname(dataFile()), "folder-recovery.sqlite");
+        if (folderJournal && folderJournal.file !== file) throw new Error("Stop folder actions before changing the mail profile.");
+        if (!folderJournal && (write || fs.existsSync(file))) folderJournal = createFolderJournal(file);
+        return folderJournal;
+      }, notify(accountId) { broadcast("mail:folderManagementChanged", { accountId }); } });
+  }
+  return folderManager;
+}
+
+async function folderManagementAnswer(params) {
+  try {
+    const account = db.accountById(params?.accountId);
+    if (!account || !Number.isSafeInteger(params?.expectedEpoch) || params.expectedEpoch !== (accountEpochs.get(account.id) || 0)) throw removedAccountError();
+    return ok(await managedFolders().answer(params));
+  } catch (error) {
+    // Protocol and secure-storage errors can contain provider identifiers or
+    // credential diagnostics. Only fixed manager messages cross this channel.
+    const safe = ["conflict", "unsupported", "folder_recovery", "folder_uncertain", "account_removed"].includes(error?.code);
+    return fail(safe ? error.code : "folder_management", safe ? error.message : "The mailbox folder operation could not be completed. Refresh its status before trying again; uncertain writes are never repeated automatically.");
+  }
+}
 function localArchive() {
   const file = path.join(path.dirname(dataFile()), "local-folders.sqlite");
   if (localStore?.file !== file) {
@@ -1106,7 +1146,8 @@ function gmailTokenSupplier(account) {
 function withMailClient(account, password, work, options = {}) {
   if (account.mail_transport !== "gmail_api") return remote.withClient(account, password, work, options);
   const supplier = gmailTokenSupplier(account);
-  return remote.withClient(account, password, work, { ...options, ...supplier });
+  return remote.withClient(account, password, work, { ...options, ...supplier,
+    check() { supplier.check(); options.check?.(); } });
 }
 
 // Call inside the mailbox lane, immediately before each new connection. Do not
@@ -4328,9 +4369,14 @@ function answer(channel, args, event) {
   const params = args && args.length ? args[0] : undefined;
   if (["mail:mboxPick", "mail:mboxJobs", "mail:mboxStatus", "mail:mboxStart", "mail:mboxCancel", "mail:mboxDiscard"].includes(channel)) return mboxAnswer(channel, params || {}, event);
   if (channel === "mail:transferToLocal") return transferToLocal(params || {});
+  if (channel === "mail:folderManagement") return folderManagementAnswer(params || {});
   const localTarget = channel.startsWith("mail:") && (params?.accountId === localFolders.ACCOUNT_ID || localFolders.isMessage(params?.emailId || params?.messageId)
     || (Array.isArray(params?.items) && params.items.some(item => localFolders.isMessage(item.emailId || item.id))));
   if (["mail:localFolders", "mail:manageLocalFolder", "mail:moveLocalMessage", "mail:exportLocalMessage"].includes(channel) || localTarget) return localAnswer(channel, params || {}, event);
+  if (["mail:createProviderFolder", "mail:renameProviderFolder", "mail:moveProviderFolder", "mail:moveFolder", "mail:createFolder"].includes(channel)) {
+    try { managedFolders().assertStorage(); }
+    catch { return fail("folder_recovery", "Folder recovery storage could not be verified. Folder writes are disabled; browsing remains available. Keep its files for recovery."); }
+  }
   if (sidecar.handles(channel)) return sidecar.answer(channel, args);
   if (channel === "mail:cancelAttachmentRequest") return ok(attachmentRequests.cancel(params?.requestId, event?.sender));
   if (channel === "mail:listImapSmtpPresets") return ok(presets.CARDS);
@@ -4974,7 +5020,7 @@ function noteBotSent(receipt) {
 actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast });
 
 module.exports = {
-  async stopLocalImports() { await mboxImporter?.stop(); mboxImporter = null; },
+  async stopLocalImports() { folderManager?.pause(); await mboxImporter?.stop(); mboxImporter = null; },
   closeLocalArchiveForTest() { if (mboxImporter) throw new Error("Stop imports before closing the local archive."); localStore?.close(); localStore = null; },
   timelineAccountStamp(id) {
     const account = db.accountById(id);

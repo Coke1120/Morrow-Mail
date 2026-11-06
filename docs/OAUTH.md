@@ -53,6 +53,14 @@ Passwords and OAuth tokens are stored under the service name `morrow-mail` only.
 
 Import/clear and Google mail/feature authorization share a main-process lease covering the native picker or browser wait through the final host commit. A second operation is refused with `conflict`; cancelling OAuth retains the lease until the in-flight operation settles. Invalid/cancelled imports preserve the previous client. Commits and refresh completions additionally check client identity, so an external configuration change cannot save an obsolete result. Invalid environment overrides report their actual source and do not fall back to, or blame, a healthy imported file.
 
+Folders & Labels also has a common browser and reviewed folder creation through
+the mailbox's existing Gmail API or IMAP connection (including Outlook and Yahoo).
+It needs no separate organize grant. Existing provider tools retain their own
+grant requirements. Gmail API label deletion uses a disclosed 30-second
+cancellation window; the deprecated direct provider-folder deletion endpoint is
+disabled. IMAP/Outlook/Yahoo/legacy Gmail IMAP deletion has no recoverable route
+yet and is unavailable. See the folder recovery ADR and Features for limits.
+
 ## Redirects
 
 Loopback is `http://localhost:<port>` with the port chosen when the browser opens. The path is matched exactly:

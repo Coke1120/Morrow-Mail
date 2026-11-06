@@ -129,6 +129,26 @@ Windows frame times have not been measured.
 
 `npm start` loads `renderer/` through the host IPC that already exists. It does not read `resources/ui.asar`, unless you set `MORROW_ASAR` to an `app.asar` path.
 
+## Mailbox folders and recovery
+
+Folders & Labels shows mailbox cards and a common folder browser for Gmail,
+Outlook, Yahoo and generic IMAP, using the existing mail connection. Folder
+hierarchy, server delimiters and non-selectable container parents are preserved.
+New folder and New child folder are also available from account/folder context
+menus, with a review bound to that exact mailbox. Existing Gmail and Outlook
+permissions, nesting, rename and message actions remain under Provider tools.
+
+Deleting a Gmail API user label requires typing `confirm` exactly. Messages and
+child labels remain. Undo cancels during a disclosed 30-second delay before any
+provider deletion; it cannot restore label memberships after removal. Pending
+deletions pause on restart and can be cancelled. Failed or uncertain writes are
+never repeated automatically. If recovery storage cannot be read, folder writes
+and deletion Undo are disabled while browsing remains available. IMAP, Outlook,
+Yahoo and legacy Gmail IMAP deletion stay disabled until genuine server recovery
+can be proven. No irreversible delete is substituted. Local Folders keeps its
+separate empty-folder delete without an Undo claim. These actions add no bot or
+CLI command and do not request additional provider permissions.
+
 ## What this shell does
 
 - Continue with Google stays the primary Google sign-in action and uses the bundled Desktop client when present unless explicitly overridden. New connections and Gmail OAuth reconnects collapse Other email provider; manual reconnects keep their form. All connection entrypoints reset previous form state. A legacy Gmail migration error offers Review Gmail API migration to open the matching Accounts permission section without starting migration or entering a password. Review and confirmation remain required. Personal client import is an optional advanced choice; readiness checks only local configuration.
