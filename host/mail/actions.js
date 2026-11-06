@@ -351,12 +351,18 @@ async function runRemote(action) {
   const intent = parse(action.intent_json, {});
   const source = parse(action.source_json, {});
   const account = db.accountById(action.account_id);
-  const beforeSubmit = intent.botAction ? () => {
-    const authority = botAuthorizers.get(action.id);
-    if (!authority || authority.generation !== action.generation) {
-      throw Object.assign(new Error("This bot operation no longer has live authorization."), { operationIssued: false });
+  const beforeSubmit = intent.botAction || intent.contextOwner ? () => {
+    if (intent.contextOwner) {
+      if (typeof hooks.assertContextOwner !== "function") throw Object.assign(new Error("Review this message action again."), { operationIssued: false });
+      hooks.assertContextOwner(intent.contextOwner);
     }
-    authority.check();
+    if (intent.botAction) {
+      const authority = botAuthorizers.get(action.id);
+      if (!authority || authority.generation !== action.generation) {
+        throw Object.assign(new Error("This bot operation no longer has live authorization."), { operationIssued: false });
+      }
+      authority.check();
+    }
   } : null;
   try { beforeSubmit?.(); } catch (error) { return { issued: false, error: error.message }; }
   if (isGmail(account) && intent.kind === "remove" && intent.permanent) return { issued: false, error: "Permanent Gmail deletion is unavailable. Use Move to Trash; mail already in Trash stays there." };
@@ -375,10 +381,12 @@ async function runRemote(action) {
   }
   let entered = false;
   try {
+    beforeSubmit?.();
     const value = await (hooks.withMailClient || remote.withClient)(account, password, async (client) => {
+      beforeSubmit?.();
       entered = true;
       if (intent.kind === "star") {
-        await remote.changeFlags(client, source.folderPath, source.uid, intent.starred ? ["\\Flagged"] : [], intent.starred ? [] : ["\\Flagged"], source.uidValidity, action.message_id);
+        await remote.changeFlags(client, source.folderPath, source.uid, intent.starred ? ["\\Flagged"] : [], intent.starred ? [] : ["\\Flagged"], source.uidValidity, action.message_id, { beforeSubmit });
         return { dest: null };
       }
       if (intent.kind === "read") {
@@ -529,7 +537,14 @@ function pendingOf(action) {
   };
 }
 
-function acceptAll(commands) {
+function acceptAll(commands, contextOwners) {
+  if (Array.isArray(contextOwners)) {
+    const owners = new Map(contextOwners.map(owner => [owner.emailId, owner]));
+    for (const command of commands) {
+      const owner = owners.get(command.messageId);
+      if (owner) command.intent = { ...command.intent, contextOwner: { ...owner } };
+    }
+  }
   const batchId = newId("batch");
   const pending = [];
   const outcomes = [];
@@ -682,7 +697,7 @@ function handle(channel, params) {
       intent: { kind: "read", unread: isRead ? 0 : 1 },
       stopBatch: true,
     }));
-    const data = acceptAll(commands);
+    const data = acceptAll(commands, params?.contextOwners);
     return ok(data);
   }
   if (channel === "mail:toggleStar" || channel === "mail:toggleStarBatch") {
@@ -697,7 +712,7 @@ function handle(channel, params) {
       single,
       intent: { kind: "star", starred: starred ? 1 : 0 },
       stopBatch: true,
-    })));
+    })), params?.contextOwners);
     if (channel === "mail:toggleStar") data.isStarred = !!starred;
     return ok(data);
   }
@@ -756,7 +771,7 @@ function handle(channel, params) {
     if (channel === "mail:markSpam") well = "junkemail";
     if (channel === "mail:markNotSpam") well = "inbox";
   }
-  const data = acceptAll(ids.map((messageId) => removeCommand(messageId, well, targetPath, permanent)));
+  const data = acceptAll(ids.map((messageId) => removeCommand(messageId, well, targetPath, permanent)), params?.contextOwners);
   return ok(data);
 }
 
@@ -809,6 +824,10 @@ function resume() {
   // pair. Such queued identities cannot be replayed safely after an upgrade.
   for (const accountId of db.acceptedAccountIds()) {
     for (const row of db.acceptedMailActions(accountId)) {
+      if (parse(row.intent_json, {}).contextOwner) {
+        unknown.push(applyClose(row, "not_attempted", "This reviewed message action expired when Morrow restarted. Review the message before trying again.", null));
+        continue;
+      }
       if (parse(row.intent_json, {}).botAction) {
         unknown.push(applyClose(row, "not_attempted", "This bot operation was interrupted before submission. No automatic retry was made.", null));
         continue;

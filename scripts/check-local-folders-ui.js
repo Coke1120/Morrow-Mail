@@ -15,6 +15,8 @@ test("rendered Local Folders supports frozen Copy/Move review, local navigation,
   window.HTMLElement.prototype.scrollIntoView = function () {};
   const raw = await require("../host/mail/remote").buildRaw({ from: "sender@fixture.invalid", to: "owner@fixture.invalid", subject: "Synthetic local archive ÉLODIE ПРОЕКТ", text: "Offline body", attachments: [{ filename: "owned.txt", content: "Saved bytes" }] });
   const remote = { id: "connected", email: "owner@fixture.invalid", platform: "imap", imapSmtpProfile: "custom",
+    imapUsername: "owner@fixture.invalid", authKind: "password", mailTransport: "imap", bodyEpoch: 0, bodyVersion: 0,
+    imapSmtpCustom: { imap: {host:"imap.fixture.invalid",port:993,tls:true}, smtp: {host:"smtp.fixture.invalid",port:465,tls:true} },
     folders: { primary: [{ id: "INBOX", name: "Inbox", wellKnownName: "inbox" }], more: [] } };
   const source = { id: "source", accountId: remote.id, folderId: "INBOX", subject: "Synthetic local archive", date: "2026-11-01T12:00:00Z", unread: true };
   let connected = true, serverTrashes = 0, releaseHeld;

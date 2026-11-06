@@ -6,6 +6,7 @@ const vm = require('vm');
 function renderer(extra = {}) {
   const context = vm.createContext({ window: { morrow: {} }, document: {}, console, setTimeout, clearTimeout, ...extra });
   context.window.morrowComposePolicy = require('../shared/compose-policy');
+  context.window.morrowMailContextOwner = require('../shared/mail-context-owner');
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8').replace(/boot\(\)\.catch\([^\n]+\);\s*$/, '');
   vm.runInContext(source, context);
   return { context, run: (code) => vm.runInContext(code, context) };

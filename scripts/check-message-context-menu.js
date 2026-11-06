@@ -15,7 +15,9 @@ function fixture(t) {
   window.morrow = {};
   const ui = renderer({ window, document: window.document, localStorage: window.localStorage, Event: window.Event, Node: window.Node });
   ui.run(`
-    state.accounts=['a','b'].map(id=>({id,email:id+'@fixture.invalid',createdAt:1,platform:'imap',imapSmtpProfile:'custom',
+    state.accounts=['a','b'].map(id=>({id,email:id+'@fixture.invalid',platform:'imap',imapSmtpProfile:'custom',
+      imapUsername:id+'@fixture.invalid',authKind:'password',mailTransport:'imap',bodyEpoch:1,bodyVersion:0,
+      imapSmtpCustom:{imap:{host:'imap.fixture.invalid',port:993,tls:true},smtp:{host:'smtp.fixture.invalid',port:465,tls:true}},
       folders:{primary:[{id:'INBOX',name:'Inbox',wellKnownName:'inbox'},{id:'Archive',name:'Archive',wellKnownName:'archive'},{id:'Trash',name:'Trash',wellKnownName:'deleteditems'}],more:[]}}));
     state.localAccount={id:LOCAL_ACCOUNT_ID,folders:{primary:[{id:'local-folder:archive',name:'Archive'}],more:[]}};
     state.emails=[{id:'clicked',accountId:'a',folderId:'INBOX',subject:'Synthetic clicked row',unread:true},
@@ -67,7 +69,7 @@ test("row menu captures the clicked account/message, has ordered capabilities an
   f.open(); f.ui.run("state.accountId='b'; state.selectedIds=['second']; state.email=state.emails[2]");
   f.action('Star').click(); await tick();
   assert.deepEqual(Array.from(f.ui.run('hits[1].items[0]')), ['clicked', 'a']);
-  f.open(); f.ui.run("state.accounts[0].createdAt=2"); f.action('Star').click(); await tick();
+  f.open(); f.ui.run("state.accounts[0].bodyEpoch=2"); f.action('Star').click(); await tick();
   assert.match(f.ui.run('hits.at(-1).status'), /mailbox changed/);
   assert.equal(f.ui.run("hits.filter(row=>row.action==='star').length"), 1);
 });
@@ -94,7 +96,7 @@ test("confirmation and transfer review survive navigation but reject replaced so
   const f = fixture(t);
   f.ui.run("askConfirm=()=>new Promise(resolve=>globalThis.confirmLater=resolve)");
   f.open(); f.action('Move to trash').click(); await tick();
-  f.ui.run("state.accounts[0].createdAt=7; confirmLater({ok:true})"); await tick();
+  f.ui.run("state.accounts[0].bodyEpoch=7; confirmLater({ok:true})"); await tick();
   assert.equal(f.ui.run("hits.filter(row=>row.action==='remove').length"), 0);
   assert.match(f.ui.run('hits.at(-1).status'), /mailbox changed while confirmation/);
   await f.ui.run("openLocalTransfer([state.emails[0]],'copy')");
@@ -115,4 +117,32 @@ test("confirmation and transfer review survive navigation but reject replaced so
   assert.equal(f.ui.run('hits.at(-2).params.emailId'), 'clicked');
   assert.equal(f.ui.run('hits.at(-2).params.accountId'), 'a');
   assert.equal(f.ui.run('hits.at(-2).params.mode'), 'copy');
+  assert.equal(f.ui.run('hits.at(-2).params.contextOwners[0].bodyEpoch'), 7);
+  assert.equal(f.ui.run('hits.at(-2).params.contextOwners[0].emailId'), 'clicked');
+});
+
+test("transfer keeps the captured production owner across login, server, TLS and generation changes", async t => {
+  for (const mutation of ["account.imapUsername='different@fixture.invalid'", "account.imapSmtpCustom.imap.host='other.fixture.invalid'",
+    "account.imapSmtpCustom.imap.port=1993", "account.imapSmtpCustom.imap.tls=false", "account.authKind='oauth2'", "account.bodyEpoch++"]) {
+    const f=fixture(t);
+    await f.ui.run("openLocalTransfer([state.emails[0]],'copy')");
+    f.ui.run(`call=async()=>{throw new Error('Stale transfer reached IPC')}; {const account=state.accounts[0]; ${mutation};}`);
+    await f.ui.run('commitLocalTransfer()');
+    assert.match(f.document.getElementById('local-transfer-status').textContent,/source mailbox changed/,mutation);
+    assert.equal(f.ui.run('localTransfer.messages[0].contextOwner.bodyEpoch'),1,'review cannot recapture a newer epoch');
+  }
+});
+
+test("folder and label confirmation preserve captured owner proofs", async t => {
+  for (const action of [
+    "applyPickedMove(review.rows,'imap','Archive','Archive',review.current)",
+    "applyLabelPlans({bulk:true,messages:review.rows,contextCurrent:review.current,labels:[{id:'synthetic-label',name:'Label'}],plans:[{email:review.rows[0],addLabelIds:['synthetic-label'],removeLabelIds:[]}]})",
+  ]) {
+    const f=fixture(t);
+    f.ui.run("globalThis.review=contextMessages([state.emails[0]]); state.selectedIds=[]; askConfirm=()=>new Promise(resolve=>globalThis.confirmLater=resolve); call=async()=>{throw new Error('Stale review reached IPC')}");
+    const pending=f.ui.run(action);
+    f.ui.run("state.accounts[0].imapSmtpCustom.imap.port=1993; confirmLater({ok:true})");
+    await assert.rejects(pending,/mailbox changed while confirmation/);
+    assert.equal(f.ui.run('review.rows[0].contextOwner.bodyEpoch'),1);
+  }
 });

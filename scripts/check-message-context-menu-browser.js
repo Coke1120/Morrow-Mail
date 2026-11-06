@@ -27,7 +27,9 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require("node:os").tmpd
     await page.goto(origin + "/renderer/index.html");
     await page.evaluate(() => {
       state.view = "mail"; state.accountId = "b"; state.folderId = "INBOX"; state.listSyncDone = true;
-      state.accounts = ["a", "b"].map(id => ({ id, email: id + "@fixture.invalid", createdAt: 1, platform: "imap", imapSmtpProfile: "custom",
+      state.accounts = ["a", "b"].map(id => ({ id, email: id + "@fixture.invalid", platform: "imap", imapSmtpProfile: "custom",
+        imapUsername: id + "@fixture.invalid", authKind: "password", mailTransport: "imap", bodyEpoch: 1, bodyVersion: 0,
+        imapSmtpCustom: { imap: {host:"imap.fixture.invalid",port:993,tls:true}, smtp: {host:"smtp.fixture.invalid",port:465,tls:true} },
         folders: { primary: [{ id: "INBOX", name: "Inbox", wellKnownName: "inbox" }, { id: "Archive", name: "Archive", wellKnownName: "archive" }, { id: "Trash", name: "Trash", wellKnownName: "deleteditems" }], more: [] } }));
       state.localAccount = { id: LOCAL_ACCOUNT_ID, name: "Local Folders", folders: { primary: [{ id: "local-folder:archive", name: "Archive" }], more: [] } };
       state.emails = [{ id: "clicked", accountId: "a", folderId: "INBOX", subject: "Synthetic clicked message", from: "sender@fixture.invalid", unread: true },

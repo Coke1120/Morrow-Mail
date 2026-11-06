@@ -626,9 +626,9 @@ function localFolderPath(folder, folders, visited = new Set()) {
 }
 
 async function openLocalTransfer(messages, mode) {
-  const rows = messages.map(email => ({ id: email.id, accountId: email.accountId, subject: email.subject || "(no subject)", folderId: email.folderId, isDraft: !!email.isDraft }));
-  const proofs = new Map(rows.filter(row => !isLocalMail(row)).map(row => [row.accountId, contextAccountProof(row.accountId)]));
-  const current = () => [...proofs].every(([id, proof]) => proof && contextAccountProof(id) === proof);
+  const rows = messages.map(email => ({ id: email.id, accountId: email.accountId, subject: email.subject || "(no subject)", folderId: email.folderId,
+    isDraft: !!email.isDraft, contextOwner: capturedContextOwner(email) }));
+  const current = () => rows.every(row => isLocalMail(row) || row.contextOwner && contextAccountProof(row.accountId) === row.contextOwner.connection);
   if (!rows.length || rows.length > 200 || rows.some(email => email.isDraft) || localTransfer?.running) {
     showStatus("Choose up to 200 saved messages and finish any current local transfer first.", true); return;
   }
@@ -720,9 +720,9 @@ async function commitLocalTransfer() {
     if (!session.current()) { error = "The source mailbox changed. Remaining messages were not transferred."; break; }
     $("local-transfer-status").textContent = `${mode === "move" ? "Moving" : "Copying"} ${results.length + 1} of ${session.messages.length}…`;
     try {
-      const result = await call(isLocalMail(message) ? "mail:moveLocalMessage" : "mail:transferToLocal", {
+      const result = await call(isLocalMail(message) ? "mail:moveLocalMessage" : "mail:transferToLocal", contextOwnedParams({
         emailId: message.id, accountId: message.accountId, folderId, mode,
-      });
+      }, [message]));
       results.push(result);
       if (result?.status === "remote_failed" || result?.status === "remote_unknown") { error = result.detail; break; }
     } catch (failure) { error = failure.message; break; }
@@ -11505,7 +11505,7 @@ async function applyLabelPlans(snapshot) {
   }
   if (!calls.length) return;
   if (snapshot.contextCurrent && !snapshot.contextCurrent()) throw new Error("The mailbox changed while confirmation was open. Review these labels again.");
-  const outcome = await runBulk(calls);
+  const outcome = await runBulk(contextOwnedCalls(calls, messages));
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => String(row.id)));
   for (const plan of plans) {
     if (!completed.has(String(plan.email.id))) continue;
@@ -11711,14 +11711,32 @@ function appendMenuAction(menu, label, run, disabledReason = "") {
 
 function contextAccountProof(accountId) {
   const account = accountId === LOCAL_ACCOUNT_ID ? state.localAccount : state.accounts.find(row => row.id === accountId);
-  return account ? JSON.stringify([account.id, account.createdAt, account.email, account.username, account.platform,
-    account.imapSmtpProfile, account.mailTransport, account.imapHost, account.imapPort]) : "";
+  return window.morrowMailContextOwner?.connection(account) || "";
+}
+
+function capturedContextOwner(email) {
+  if (isLocalMail(email)) return null;
+  // An existing review is never rebound to a newer account snapshot.
+  if (email.contextOwner) return { ...email.contextOwner };
+  return window.morrowMailContextOwner?.capture(state.accounts.find(row => row.id === email.accountId), email) || null;
+}
+
+function contextOwnedParams(params, messages) {
+  if (!messages.some(row => row.contextOwner)) return params;
+  if (messages.some(row => !row.contextOwner)) throw new Error("Review connected mailboxes separately from Local Folders.");
+  return { ...params, contextOwners: messages.map(row => ({ ...row.contextOwner })) };
+}
+
+function contextOwnedCalls(calls, messages) {
+  return calls.map(spec => {
+    const ids = operationIds(spec);
+    return { ...spec, params: contextOwnedParams(spec.params, messages.filter(row => ids.includes(String(row.id)))) };
+  });
 }
 
 function contextMessages(messages) {
-  const rows = messages.map(row => ({ ...row, members: undefined }));
-  const proofs = new Map(rows.map(row => [row.accountId, contextAccountProof(row.accountId)]));
-  const current = () => [...proofs].every(([id, proof]) => proof && contextAccountProof(id) === proof);
+  const rows = messages.map(row => ({ ...row, members: undefined, contextOwner: capturedContextOwner(row) }));
+  const current = () => rows.every(row => isLocalMail(row) || row.contextOwner && contextAccountProof(row.accountId) === row.contextOwner.connection);
   const run = action => () => guard(async () => {
     if (!current()) throw new Error("The mailbox changed. Close this menu and review the message again.");
     return action(rows, current);
@@ -11766,7 +11784,7 @@ async function contextRemoval(messages, kind, current) {
   // Trash command cannot acquire deleteBatch's permanent-delete semantics.
   const calls = messages.map(row => ({ channel: kind === "trash" ? "mail:delete" : "mail:archive",
     params: { emailId: row.id, accountId: row.accountId, ...(kind === "trash" ? { moveToTrashOnly: true } : {}) } }));
-  queueBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", calls, messages, kind);
+  queueBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", contextOwnedCalls(calls, messages), messages, kind);
 }
 
 function openOrganizeMenu(email, x, y, origin) {
@@ -12027,7 +12045,7 @@ async function bulkSetRead(isRead, messages = selectedMessages()) {
     eachStarRow(email, (row) => { row.unread = !isRead; row.isRead = !!isRead; });
   }
   renderList();
-  const outcome = await runBulk(bulkFlagCalls(messages, isRead ? "read" : "unread"));
+  const outcome = await runBulk(contextOwnedCalls(bulkFlagCalls(messages, isRead ? "read" : "unread"), messages));
   const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
   for (const email of messages) {
     if (completed.has(email.id)) continue;
@@ -12045,7 +12063,7 @@ async function bulkStar(isStarred, messages = selectedMessages()) {
   if (!messages.length || refusePaused(messages)) return;
   const previous = new Map(messages.map((email) => [email.id, !!email.isStarred]));
   paintStars(messages, isStarred);
-  const outcome = await runBulk(bulkFlagCalls(messages, isStarred ? "star" : "unstar"));
+  const outcome = await runBulk(contextOwnedCalls(bulkFlagCalls(messages, isStarred ? "star" : "unstar"), messages));
   const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
   for (const email of messages) {
     if (completed.has(email.id)) continue;
@@ -12093,7 +12111,7 @@ async function applyBulkMove(messages, target, targetName, current) {
   const gated = confirmedCalls(action, answer, planned, detail);
   if (!gated.length) return;
   if (current && !current()) throw new Error("The mailbox changed while confirmation was open. Review this move again.");
-  const outcome = await runBulk(gated, action === "add-label" ? undefined : beginRemovalRequest(rows, "move", name));
+  const outcome = await runBulk(contextOwnedCalls(gated, rows), action === "add-label" ? undefined : beginRemovalRequest(rows, "move", name));
   const acted = [];
   for (const spec of gated) {
     if (spec.params && Array.isArray(spec.params.items)) {

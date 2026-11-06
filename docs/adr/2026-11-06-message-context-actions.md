@@ -6,6 +6,19 @@ reviews keep those explicit IDs and account identities across navigation and
 confirmation. They do not expand conversations. Replacing a source account retires
 the review. Right-click does not change the selected/open message or mark it read.
 
+The review captures the production account view's `imapUsername`, `authKind`,
+transport/profile, custom IMAP host/port/TLS and `bodyEpoch`. The global
+`bodyVersion` body-cache counter is deliberately excluded. Each server operation
+carries its captured account, message, source folder and owner proof through all
+confirmation and picker steps. The host checks these against its current account
+and cached message before credentials or optimistic action admission. Transfer
+and provider requests retain the check through credential waits; queued actions
+check again before reading credentials and submitting STORE/MOVE. Unsubmitted
+reviewed actions expire on restart: process-local owner epochs cannot reauthorize
+an earlier review. Already-publishing actions keep their uncertain-outcome handling.
+The metadata guard is additive for legacy callers; every new remote row-menu and
+transfer path supplies it. Local-only filing uses the existing fixed local store.
+
 “Move to trash” uses explicit nonpermanent removal requests with
 `moveToTrashOnly: true`. The host rejects already-Trash sources before accepting a
 request and prevents a stale `deleteBatch` Trash hint from requesting permanent
