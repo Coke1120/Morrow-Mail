@@ -13,7 +13,7 @@
       "Unchanged AI data permissions survive updates. Thread Timeline and cross-thread Case remain separate opt-ins; new or expanded data uses still require approval.",
       "Suggested replies move into Write with AI. Its prompt supports multiple lines and vertical resizing; Enter inserts a line and Ctrl/Command+Enter generates. Selecting a suggestion does not generate or send.",
       "Compose's native right-click menu offers available spelling corrections and editing actions without AI. Suggestions depend on the platform and dictionaries; this is not grammar checking.",
-      "Timeline reports safe stage-specific validation errors, accepts a single complete JSON fence and keeps bounded retries and saved history. The reported incident's actual cause remains unproven.",
+      "Timeline gives clearer errors for invalid or incomplete AI replies, keeps retries bounded and preserves earlier saved timelines when generation fails.",
       "Mail-row menus add read, star and safe Trash actions plus a combined Copy/Move dialog for Local Folders. Remote mailbox Copy/Move is still developing and disabled in this proposal.",
       "Date and Time are separate mail-list columns. Right-click a header or use Columns to hide or show Time; saved layouts, device timezone and full-timestamp sorting are preserved.",
     ],
