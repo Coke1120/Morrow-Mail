@@ -190,3 +190,69 @@ test("Move review capacity includes in-flight destination reviews before credent
   const pending = Array.from({ length: LIMITS.reviews }, () => f.review().catch(error => error));
   await assert.rejects(f.review(), /Close an earlier/); held.release(); await Promise.all(pending); assert.equal(f.state.trashes, 0);
 });
+
+test("process exit preserves pre-submit uncertainty and expires unsubmitted authority without replay", async t => {
+  const f = fixture(t); await f.copy(); f.state.rejectTrash = true; await f.move(await f.review());
+  const record = f.ml.list()[0], before = f.state.trashes;
+  for (const phase of ["prepared", "source_unknown"]) {
+    const file = f.moveFile + ".crash-" + phase;
+    const child = spawnSync(process.execPath, ["-e", "const j=require('./host/mail/move-recovery').createJournal(process.argv[1]);j.insert(JSON.parse(process.argv[2]));process.exit(23);",
+      file, JSON.stringify({ ...record, phase })], { cwd: path.resolve(__dirname, ".."), timeout: 10000 });
+    assert.equal(child.status, 23, child.stderr?.toString());
+    const journal = moveJournal(file);
+    try {
+      journal.recover(); assert.equal(journal.list()[0].phase, phase === "prepared" ? "not_trashed" : "source_unknown");
+      const restarted = moves({ journal, enabled: true, copies: () => assert.fail("restart cannot invoke provider work without a new review") });
+      await assert.rejects(restarted.answer({ action: "move", reviewId: "old-review", confirmed: true, emailId: "message", accountId: "source" }, f.owner), /separate Gmail Move review/);
+    } finally { journal.close(); }
+  }
+  assert.equal(f.state.trashes, before); assert.equal(f.state.uploads, 1);
+});
+
+test("native SQLITE_FULL rolls back intent and poisons the same recovery handle", async t => {
+  const f = fixture(t); await f.copy(); f.state.rejectTrash = true; await f.move(await f.review());
+  const record = f.ml.list()[0], file = f.moveFile + ".full"; let native;
+  function TinyDatabase(path) { native = new Database(path); return native; }
+  const journal = moveJournal(file, { database: TinyDatabase });
+  try {
+    native.pragma("max_page_count = " + native.pragma("page_count", { simple: true }));
+    assert.throws(() => journal.insert({ ...record, detail: "x".repeat(12000) }), /storage could not be verified/);
+    assert.throws(() => journal.find(record.sourceKey), /storage could not be verified/, "failed native write cannot be cached as healthy");
+  } finally { journal.close(); }
+  const reopened = moveJournal(file);
+  try { assert.equal(reopened.list().length, 0, "failed SQLite transaction left no misleading prepared intent"); } finally { reopened.close(); }
+  assert.equal(f.state.trashes, 1); assert.equal(f.state.uploads, 1);
+});
+
+test("Move receipt quota retains every source-removal record instead of allowing replay", async t => {
+  const f = fixture(t); await f.copy(); f.state.rejectTrash = true; await f.move(await f.review());
+  const sample = f.ml.list()[0], file = f.moveFile + ".quota", journal = moveJournal(file);
+  try {
+    const sql = new Database(file), insert = sql.prepare("INSERT INTO mailbox_moves VALUES(?,?,?,?,?,?)");
+    try {
+      sql.transaction(() => { for (let index = 0; index < 1000; index++) {
+        const row = { ...sample, id: "fixture-" + index, sourceKey: digest("source-" + index) }, body = JSON.stringify(row);
+        insert.run(row.id, row.sourceKey, row.phase, row.updatedAt, body, digest(body));
+      } })();
+    } finally { sql.close(); }
+    assert.throws(() => journal.insert({ ...sample, id: "overflow", sourceKey: digest("overflow") }), /storage is full/);
+    assert.equal(journal.list().length, 1000); assert.equal(f.state.trashes, 1);
+  } finally { journal.close(); }
+});
+
+test("constructor pragma/schema failures close the native SQLite handle before cleanup", t => {
+  const f = fixture(t);
+  for (const failure of ["pragma", "schema"]) {
+    let native;
+    function BrokenDatabase(file) {
+      native = new Database(file);
+      if (failure === "pragma") {
+        const pragma = native.pragma.bind(native);
+        native.pragma = (...args) => { if (args[0] === "synchronous = EXTRA") throw new Error("synthetic fsync configuration failure"); return pragma(...args); };
+      } else native.exec = () => { throw new Error("synthetic schema failure"); };
+      return native;
+    }
+    assert.throws(() => moveJournal(f.moveFile + ".constructor-" + failure, { database: BrokenDatabase }), /storage could not be verified/);
+    assert.equal(native.open, false); assert.equal(f.state.trashes, 0);
+  }
+});

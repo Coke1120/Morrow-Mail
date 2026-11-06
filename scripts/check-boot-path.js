@@ -221,7 +221,10 @@ for (const name of ["check-cross-mailbox-copy.js", "check-cross-mailbox-protocol
   // MBOX runs 25 serial MIME/restart/SQLite/fsync cases. Windows reached 21
   // healthy cases before the old 30s aggregate deadline; allow bounded I/O
   // headroom for this process only. Per-message worker and import budgets stay.
-  const timeout = name === "check-mbox-import.js" && process.platform === "win32" ? 90000 : 30000;
+  // Source Move also runs 14 separate engine/SQLite lifecycle processes. Keep
+  // each child and every provider deadline intact while allowing serial fsync
+  // overhead on Windows for the complete aggregate fixture.
+  const timeout = ["check-mbox-import.js", "check-cross-mailbox-move-engine.js"].includes(name) && process.platform === "win32" ? 90000 : 30000;
   const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout });
   assert.ifError(fixture.error);
   assert.strictEqual(fixture.status, 0, name + " failed");
