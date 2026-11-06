@@ -1,5 +1,15 @@
 const fs = require("fs");
 const path = require("path");
+const PROJECT_URL = "https://github.com/Coke1120/Morrow-Mail";
+const LICENSE_URL = "https://www.apache.org/licenses/LICENSE-2.0";
+
+function isStartupExternalUrl(url) {
+  return url === PROJECT_URL || url === LICENSE_URL;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+}
 
 // Shown when the mailbox cannot be opened. The Dock process must not stay up
 // with zero windows. Mail files are left where they are.
@@ -33,7 +43,7 @@ function logoMarkup() {
   }
 }
 
-function startupStatusHtml() {
+function startupStatusHtml(version = require("../package.json").version) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -60,7 +70,11 @@ function startupStatusHtml() {
   .brand { display: flex; flex-direction: column; align-items: center; gap: 10px; }
   .logo { width: 56px; height: 56px; display: block; }
   .brand-name { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
-  .tagline { margin: 8px 0 0; max-width: 36em; color: #5d756c; font-size: 14px; }
+  .version { margin: 6px 0 0; font-size: 13px; }
+  .project-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 18px; margin-top: 12px; font-size: 13px; }
+  .project-links a { color: #193c34; text-underline-offset: 3px; padding: 4px 0; }
+  .project-links a:focus-visible { outline: 2px solid #193c34; outline-offset: 4px; border-radius: 2px; }
+  .tagline { margin: 8px 0 0; max-width: 36em; color: #4e675e; font-size: 14px; }
   .status { margin-top: 18px; display: flex; flex-direction: column; align-items: center; }
   /* Same ring as renderer .page-busy-spin. This page is a data URL and cannot import app.css. */
   .page-busy-spin {
@@ -80,13 +94,18 @@ function startupStatusHtml() {
 </style>
 </head>
 <body>
-<main aria-busy="true">
+<main>
   <div class="brand">
     ${logoMarkup()}
     <p class="brand-name">Morrow Mail</p>
   </div>
+  <p class="version">Version ${escapeHtml(version)}</p>
+  <nav class="project-links" aria-label="Morrow Mail source and license">
+    <a href="${PROJECT_URL}" target="_blank" rel="noreferrer">GitHub</a>
+    <a href="${LICENSE_URL}" target="_blank" rel="noreferrer">Apache License 2.0</a>
+  </nav>
   <p class="tagline">The Open Source Email Client with BYOK AI Assistant.</p>
-  <div class="status" role="status">
+  <div class="status" role="status" aria-busy="true">
     <span class="page-busy-spin" aria-hidden="true"></span>
     <h1>Opening your mailbox</h1>
     <p id="startup-index-progress">A large mailbox can take a moment. Your mail stays on this computer.</p>
@@ -132,4 +151,4 @@ function startupProgressScript(progress) {
   return `(() => { const node = document.getElementById("startup-index-progress"); if (node) { node.hidden = false; node.textContent = ${JSON.stringify(texts[progress.phase])}; } })();`;
 }
 
-module.exports = { startupFailureDialog, startupStatusHtml, startupIndexProgressScript, startupProgressScript };
+module.exports = { startupFailureDialog, startupStatusHtml, startupIndexProgressScript, startupProgressScript, isStartupExternalUrl };

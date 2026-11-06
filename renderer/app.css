@@ -538,7 +538,11 @@ textarea:focus-visible {
   font-size: 13px;
 }
 
-.about-links a {
+.project-invitation { font-size: 13px; line-height: 1.5; }
+.project-invitation a { white-space: nowrap; }
+
+.about-links a,
+.project-invitation a {
   color: var(--accent-ink);
   font-weight: 650;
   text-decoration: underline;
@@ -546,7 +550,9 @@ textarea:focus-visible {
 }
 
 .about-links a:hover,
-.about-links a:focus-visible { color: var(--ink); }
+.about-links a:focus-visible,
+.project-invitation a:hover,
+.project-invitation a:focus-visible { color: var(--ink); }
 
 #prefs {
   display: grid;
