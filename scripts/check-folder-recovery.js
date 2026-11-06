@@ -167,6 +167,8 @@ test("timer storage failure settles without an unhandled rejection or provider w
   f.setTime(GRACE_MS); await f.runTimers(); assert.equal(f.writes, 0);
   f.journal.read = read; assert.equal(f.journal.read(result.id).phase, "pending");
   assert.equal(f.timers.size, 0);
+  const recovered = f.manager.operations("a")[0]; assert.equal(recovered.phase, "paused"); assert.equal(recovered.canUndo, true);
+  assert.equal((await f.manager.answer({ action: "undo", accountId: "a", operationId: result.id })).phase, "cancelled");
 });
 
 test("an unreadable recovery journal preserves browsing while disabling every folder write", async t => {

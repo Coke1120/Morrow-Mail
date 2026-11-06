@@ -52,7 +52,14 @@ function createManager({ journal, owner, withAccount, notify = () => {}, gate = 
   }
   function operations(accountId) {
     const current = currentOwner(accountId);
-    return (store()?.list(accountId) || []).filter(operation => operation.owner === current.binding).map(publicOperation);
+    const journal = store();
+    return (journal?.list(accountId) || []).filter(operation => operation.owner === current.binding).map(operation => {
+      // A transient storage failure may have prevented saving the timer's
+      // paused outcome. Once storage is readable again, expose cancellation
+      // of that orphaned intent; never reconstruct or rearm its timer.
+      if (operation.phase === "pending" && !pending.has(operation.id)) operation = journal.update(operation.id, "pending", { phase: "paused", reason: "timer_not_active", updatedAt: now() });
+      return publicOperation(operation);
+    });
   }
   function requireOwner(ticket, client) {
     client.check();
