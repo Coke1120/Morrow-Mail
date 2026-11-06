@@ -3,10 +3,13 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.morrowMailColumns = api;
 })(typeof window === "object" ? window : globalThis, function () {
-  const defaults = ["date", "recipient", "sender", "subject"];
+  const defaults = ["date", "time", "recipient", "sender", "subject"];
   function normalize(value) {
     const order = [];
     for (const key of Array.isArray(value) ? value : []) if (defaults.includes(key) && !order.includes(key)) order.push(key);
+    // Older layouts have no Time column. Keep their relative order and put the
+    // new column beside Date; an explicitly saved Time position wins.
+    if (order.includes("date") && !order.includes("time")) order.splice(order.indexOf("date") + 1, 0, "time");
     return order.concat(defaults.filter(key => !order.includes(key)));
   }
   function move(order, source, target, after = false) {

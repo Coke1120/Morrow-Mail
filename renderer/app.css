@@ -6078,7 +6078,7 @@ html[data-window="translate"] #reader .translate-column h2 {
 #messages #message-list .gutter { position: absolute; left: 0; width: 10px; }
 #messages #message-list .row-main { display: grid; grid-template-columns: var(--mail-columns); align-items: center; gap: 4px 10px; padding-right: 0; }
 #messages #message-list .row-main > * { min-width: 0; }
-#messages #message-list .when { display: block; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+#messages #message-list .when { display: block; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 #messages #message-list .recipient, #messages #message-list .from { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
 #messages #message-list .snippet { grid-column: 1 / -1; }
 #messages.compact-list #message-list button.message { padding-top: 3px; padding-bottom: 3px; }
