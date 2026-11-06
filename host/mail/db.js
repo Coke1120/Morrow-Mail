@@ -2639,6 +2639,11 @@ function gmailMigrationBlockers(accountId) {
     + all("SELECT id FROM scheduled_sends WHERE account_id = ? AND status = 'sending'", [accountId]).length;
 }
 
+function folderWriteBlockers(accountId) {
+  return gmailMigrationBlockers(accountId)
+    + get("SELECT COUNT(*) n FROM messages WHERE account_id = ? AND draft_pending = 1", [accountId]).n;
+}
+
 function enableGmail(accountId) {
   return transaction(() => {
     assertAccountPresent(accountId);
@@ -2985,7 +2990,7 @@ module.exports = {
   timelineMessage: id => get(`SELECT ${metadataColumns("messages")} FROM messages WHERE id = ?`, [id]),
   timelineThread: (accountId, threadId) => all(`SELECT ${metadataColumns("messages")} FROM messages WHERE account_id = ? AND thread_id = ? ORDER BY list_sort_ts ASC, id ASC LIMIT 1001`, [accountId, threadId]),
   notificationState,
-  enableGmail, setMailTransport, gmailMigrationBlockers, gmailMap, gmailLabelMemberships, rememberGmail, gmailAlias, bindGmailAlias,
+  enableGmail, setMailTransport, gmailMigrationBlockers, folderWriteBlockers, gmailMap, gmailLabelMemberships, rememberGmail, gmailAlias, bindGmailAlias,
   gmailLegacy, applyGmailMessage, gmailCopies, pruneGmailCopies, gmailSyncState, gmailVerifyPage, gmailReplyBackfillPage,
   open,
   close,

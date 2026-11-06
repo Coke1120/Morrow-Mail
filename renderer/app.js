@@ -484,13 +484,16 @@ async function manageLocalFolder(action, folder) {
   showStatus(action === "delete" ? "Empty local folder deleted." : "Local folder saved.");
 }
 
-function openLocalMessageMenu(messages, x, y) {
+function openLocalMessageMenu(messages, x, y, origin) {
+  messages = messages.map(row => ({ ...row }));
   const menu = ensureOrganizeMenu(); menu.replaceChildren(); menu.setAttribute("aria-label", "Local messages");
-  appendMenuAction(menu, "Copy to local folder…", () => openLocalTransfer(messages, "copy"));
-  appendMenuAction(menu, "Move to local folder…", () => openLocalTransfer(messages, "move"));
-  appendMenuAction(menu, "Move to local Trash", () => guard(() => trashLocalMessages(messages)));
+  appendMenuAction(menu, "Move to folder…", () => openLocalTransfer(messages, "move"));
+  appendMenuAction(menu, "Move / Copy to other mailbox…", () => openLocalTransfer(messages, "copy"));
+  appendMenuAction(menu, "Labels…", null, "Local Folders uses folders, not Gmail labels.");
+  appendMessageFlagActions(menu, messages);
+  appendMenuAction(menu, "Move to trash", () => guard(() => trashLocalMessages(messages)), contextTrashReason(messages));
   if (messages.length === 1) appendMenuAction(menu, "Save original EML…", () => guard(() => exportLocalMessage(messages[0])));
-  placeMenu(menu, x, y);
+  placeMenu(menu, x, y, origin);
 }
 
 let mboxReview = null;
@@ -624,15 +627,18 @@ function localFolderPath(folder, folders, visited = new Set()) {
 }
 
 async function openLocalTransfer(messages, mode) {
-  const rows = messages.map(email => ({ id: email.id, accountId: email.accountId, subject: email.subject || "(no subject)", folderId: email.folderId, isDraft: !!email.isDraft }));
+  const rows = messages.map(email => ({ id: email.id, accountId: email.accountId, subject: email.subject || "(no subject)", folderId: email.folderId,
+    isDraft: !!email.isDraft, contextOwner: capturedContextOwner(email) }));
+  const current = () => rows.every(row => isLocalMail(row) || row.contextOwner && contextAccountProof(row.accountId) === row.contextOwner.connection);
   if (!rows.length || rows.length > 200 || rows.some(email => email.isDraft) || localTransfer?.running) {
     showStatus("Choose up to 200 saved messages and finish any current local transfer first.", true); return;
   }
   try { await loadLocalFolders(); }
   catch (error) { showStatus("Local Folders could not be opened. " + error.message, true); return; }
+  if (!current()) { showStatus("The source mailbox changed. Review these messages again before transferring.", true); return; }
   const dialog = $("local-transfer");
   if (dialog.open && dialog.dataset.closing === "1") releaseClosingDialog(dialog);
-  localTransfer = { messages: rows, mode, running: false, stop: false, trigger: document.activeElement };
+  localTransfer = { messages: rows, mode, current, running: false, stop: false, trigger: document.activeElement };
   if (!dialog.dataset.wired) {
     dialog.dataset.wired = "1";
     $("local-transfer-form").addEventListener("submit", event => { event.preventDefault(); commitLocalTransfer(); });
@@ -654,7 +660,16 @@ async function openLocalTransfer(messages, mode) {
       trigger?.focus?.();
     });
   }
-  $("local-transfer-source").textContent = rows.length === 1 ? rows[0].subject : `${rows.length} selected messages. Hidden selections are included.`;
+  $("local-transfer-source").textContent = rows.length === 1 ? rows[0].subject + " · " + (isLocalMail(rows[0]) ? "Local Folders" : accountLabel(state.accounts.find(account => account.id === rows[0].accountId))) : selectionScopeCopy(rows, rows) + " Hidden selections are included.";
+  const localOption = option(LOCAL_ACCOUNT_ID, "Local Folders · On this computer");
+  const remoteOptions = state.accounts.map(account => {
+    const destination = option(account.id, accountLabel(account) + " · Unavailable: copying into connected mailboxes is not supported");
+    destination.disabled = true;
+    return destination;
+  });
+  $("local-transfer-account").replaceChildren(localOption, ...remoteOptions);
+  $("local-transfer-account").value = LOCAL_ACCOUNT_ID;
+  $("local-transfer-account").disabled = false;
   const local = rows.every(isLocalMail);
   const folders = foldersOf(state.localAccount);
   $("local-transfer-folder").replaceChildren(...folders.filter(folder => !local || mode === "copy" || !rows.every(row => row.folderId === folder.id))
@@ -673,7 +688,7 @@ async function openLocalTransfer(messages, mode) {
 function paintLocalTransferMode() {
   const mode = $("local-transfer-mode").value;
   const local = localTransfer?.messages.every(isLocalMail);
-  $("local-transfer-title").textContent = (mode === "move" ? "Move" : "Copy") + " to Local Folders";
+  $("local-transfer-title").textContent = "Move / Copy to other mailbox";
   $("local-transfer-ok").textContent = mode === "move" ? "Move" : "Copy";
   $("local-transfer-help").textContent = local ? "Copy or move complete messages and attachments between local folders. No network connection is needed."
     : mode === "move" ? "Download and verify a complete local copy first, then move the server original to its Trash. Gmail moves the message across all labels. Server Trash may be auto-deleted by your provider. Failed or unconfirmed moves keep the local copy; check the server before retrying. IMAP needs MOVE support. Maximum 64 MiB per original message."
@@ -683,6 +698,14 @@ function paintLocalTransferMode() {
 async function commitLocalTransfer() {
   const session = localTransfer;
   if (!session || session.running) return;
+  if (!session.current()) {
+    $("local-transfer-status").textContent = "The source mailbox changed. Close this dialog and review the messages again.";
+    return;
+  }
+  if ($("local-transfer-account").value !== LOCAL_ACCOUNT_ID) {
+    $("local-transfer-status").textContent = "This destination is unavailable. Choose Local Folders to save messages on this computer.";
+    return;
+  }
   const folderId = $("local-transfer-folder").value;
   if (!folderId) return;
   const mode = $("local-transfer-mode").value;
@@ -690,15 +713,17 @@ async function commitLocalTransfer() {
   $("local-transfer-ok").disabled = true;
   $("local-transfer-folder").disabled = true;
   $("local-transfer-mode").disabled = true;
+  $("local-transfer-account").disabled = true;
   $("local-transfer-cancel").textContent = "Stop after this message";
   const results = []; let error = "";
   for (const message of session.messages) {
     if (session.stop) break;
+    if (!session.current()) { error = "The source mailbox changed. Remaining messages were not transferred."; break; }
     $("local-transfer-status").textContent = `${mode === "move" ? "Moving" : "Copying"} ${results.length + 1} of ${session.messages.length}…`;
     try {
-      const result = await call(isLocalMail(message) ? "mail:moveLocalMessage" : "mail:transferToLocal", {
+      const result = await call(isLocalMail(message) ? "mail:moveLocalMessage" : "mail:transferToLocal", contextOwnedParams({
         emailId: message.id, accountId: message.accountId, folderId, mode,
-      });
+      }, [message]));
       results.push(result);
       if (result?.status === "remote_failed" || result?.status === "remote_unknown") { error = result.detail; break; }
     } catch (failure) { error = failure.message; break; }
@@ -3040,7 +3065,10 @@ function paintConfirm(copy) {
   field.hidden = !copy.needsName;
   input.value = copy.needsName ? (copy.name || "") : "";
   input.placeholder = copy.needsName ? (copy.placeholder || "") : "";
+  $("confirm-field-label").textContent = copy.fieldLabel || "Name";
+  $("confirm-validation").hidden = true;
   $("confirm-ok").textContent = copy.confirm || "Confirm";
+  $("confirm-ok").disabled = copy.exactValue !== undefined && input.value !== copy.exactValue;
   $("confirm-cancel").textContent = copy.cancel || "Cancel";
 }
 
@@ -3102,7 +3130,14 @@ function finishConfirm(result) {
 
 function submitConfirm() {
   if (!confirmResult) return;
-  const name = $("confirm-name").value.trim();
+  const rawName = $("confirm-name").value;
+  const name = confirmCopy?.exactValue !== undefined ? rawName : rawName.trim();
+  if (confirmCopy?.exactValue !== undefined && name !== confirmCopy.exactValue) {
+    $("confirm-validation").textContent = 'Type "' + confirmCopy.exactValue + '" exactly to continue.';
+    $("confirm-validation").hidden = false;
+    $("confirm-name").focus();
+    return;
+  }
   if (confirmCopy && confirmCopy.needsName && !confirmCopy.allowEmpty && !name) {
     $("confirm-body").textContent = "Enter a name.";
     $("confirm-name").focus();
@@ -5130,7 +5165,8 @@ function folderRootDrop(kind, accountId) {
 }
 
 function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
-  const nest = folderCanNest(kind, folder);
+  const blocked = folderManagementRecoveryBlocked(state.accounts.find(account => account.id === accountId));
+  const nest = blocked ? { ok: false, reason: blocked } : folderCanNest(kind, folder);
   node.dataset.nestKind = kind;
   node.dataset.nestId = String((folder && folder.id) || "");
   node.dataset.nestAccount = accountId || "";
@@ -5599,9 +5635,9 @@ function renderAccounts() {
       event.stopPropagation();
       openAccountLabelMenu(account, event.clientX, event.clientY);
     });
-    if (account.isLocal) heading.addEventListener("keydown", event => {
+    heading.addEventListener("keydown", event => {
       if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-      event.preventDefault(); const rect = heading.getBoundingClientRect(); openLocalFolderMenu(null, rect.left, rect.bottom);
+      event.preventDefault(); const rect = heading.getBoundingClientRect(); openAccountLabelMenu(account, rect.left, rect.bottom);
     });
     if (account.isLocal) {
       const row = document.createElement("div");
@@ -5717,9 +5753,12 @@ function renderAccounts() {
         folderNavKey = button.dataset.navKey || "";
         selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
       });
-      if (account.isLocal) button.addEventListener("keydown", event => {
+      button.addEventListener("keydown", event => {
         if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-        event.preventDefault(); const rect = button.getBoundingClientRect(); openLocalFolderMenu(folder, rect.left, rect.bottom);
+        if (virtual) return;
+        event.preventDefault(); const rect = button.getBoundingClientRect();
+        if (account.isLocal) openLocalFolderMenu(folder, rect.left, rect.bottom);
+        else openImapFolderMenu(folder, account, rect.left, rect.bottom);
       });
       if (folder.hasChild) {
         line.appendChild(folder.filtering ? folderTwistMark(folder.expanded !== false) : folderTwist(folder, account.id, labelText));
@@ -5763,6 +5802,398 @@ function fillAccountOptions(select, rows, selected, emptyLabel = "No mailbox") {
 
 let providerPageKey = "";
 let providerPageAccountId = "";
+
+// Reviews belong to an exact mailbox incarnation and navigation visit. A context
+// menu may target an unselected account, but switching the active view retires it.
+const folderManagementViews = new Map();
+let folderManagementSerial = 0;
+let folderOperationTimer = null;
+let folderOperationPolling = false;
+
+function folderManagementIdentity(account) {
+  return JSON.stringify([accountFolderKey(account), account?.platform, account?.email, account?.imapSmtpProfile,
+    account?.provider, account?.authKind, account?.mailTransport]);
+}
+
+function folderManagementRecoveryBlocked(account) {
+  const view = folderManagementViews.get(account?.id);
+  return view?.identity === folderManagementIdentity(account) && view.data?.recoveryAvailable === false
+    ? view.data.recoveryError || "Durable folder recovery is unavailable. Folder changes are disabled; browsing remains available." : "";
+}
+
+function requireFolderManagementRecovery(account) {
+  const blocked = folderManagementRecoveryBlocked(account);
+  if (blocked) throw new Error(blocked);
+}
+
+function syncProviderToolRecovery(account) {
+  const block = $("provider-folders");
+  if (!block || account?.id !== state.accountId) return;
+  const blocked = folderManagementRecoveryBlocked(account);
+  for (const control of block.querySelectorAll(".provider-create input, .provider-create select, .provider-create button")) control.disabled = !!blocked;
+  const payload = providerPayloadFor(account);
+  for (const row of block.querySelectorAll(".provider-row")) {
+    const folder = payload.folders.find(item => item.id === row.dataset.dropId);
+    if (folder) applyNestDrag(row, folderProvider(account), folder, account.id, folder.name, folder.name + ".");
+  }
+  let note = block.querySelector(".provider-recovery-note");
+  if (blocked && !note) { note = document.createElement("p"); note.className = "provider-recovery-note folder-management-error"; block.prepend(note); }
+  if (note) { note.textContent = blocked; note.hidden = !blocked; }
+}
+
+function managedFolderFingerprint(folder) {
+  return folder && JSON.stringify([folder.id, folder.name, folder.parentId, folder.type, folder.wellKnown,
+    folder.selectable, folder.readOnly, [...(folder.flags || [])].sort()]);
+}
+
+function folderManagementOwner(account = selectedAccount(), folder = null) {
+  if (!isLive(account) || !state.accounts.some(item => item.id === account.id)) throw new Error("Choose a connected mailbox before managing folders.");
+  return { accountId: account.id, selectedId: state.accountId, epoch: account.bodyEpoch,
+    identity: folderManagementIdentity(account), generation: accountGen, navigation: mailboxNavigationGen,
+    folderId: folder?.id, folder: managedFolderFingerprint(folder) };
+}
+
+function folderManagementOwnerCurrent(owner) {
+  if (!owner || owner.generation !== accountGen || owner.navigation !== mailboxNavigationGen || owner.selectedId !== state.accountId) return false;
+  const account = state.accounts.find(item => item.id === owner.accountId);
+  if (!isLive(account) || owner.identity !== folderManagementIdentity(account)) return false;
+  if (!owner.folder) return true;
+  const view = folderManagementViews.get(owner.accountId);
+  return view?.identity === owner.identity && view.data?.folders.some(folder => folder.id === owner.folderId && managedFolderFingerprint(folder) === owner.folder);
+}
+
+function requireFolderManagementOwner(owner) {
+  if (!folderManagementOwnerCurrent(owner)) throw new Error("The mailbox, folder or navigation changed during this review. Check the original mailbox for any completed or pending action, then open a fresh review.");
+}
+
+async function folderManagementRequest(owner, action, values = {}) {
+  requireFolderManagementOwner(owner);
+  const result = await call("mail:folderManagement", { ...values, action, accountId: owner.accountId, expectedEpoch: owner.epoch });
+  requireFolderManagementOwner(owner);
+  return result;
+}
+
+async function loadFolderManagement(account = selectedAccount(), refresh = false) {
+  const owner = folderManagementOwner(account);
+  const previous = folderManagementViews.get(account.id);
+  if (!refresh && previous?.identity === owner.identity && previous.data) return previous.data;
+  if (!refresh && previous?.identity === owner.identity && previous.loading && previous.navigation === owner.navigation && previous.generation === owner.generation) return previous.pending;
+  const view = { identity: owner.identity, navigation: owner.navigation, generation: owner.generation,
+    serial: ++folderManagementSerial, loading: true, error: "", data: previous?.identity === owner.identity ? previous.data : null,
+    selectedId: previous?.selectedId || "", collapsed: previous?.collapsed || new Set() };
+  folderManagementViews.set(account.id, view);
+  paintFolderManagement();
+  view.pending = (async () => {
+    try {
+      const data = await folderManagementRequest(owner, "list");
+      if (!data || data.accountId !== account.id || !Array.isArray(data.folders)) throw new Error("The folder list could not be verified. Refresh before changing folders.");
+      if (folderManagementViews.get(account.id) !== view) return null;
+      view.data = data;
+      view.seenAt = Date.now();
+      return data;
+    } catch (error) {
+      if (folderManagementViews.get(account.id) === view && folderManagementOwnerCurrent(owner)) view.error = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      if (folderManagementViews.get(account.id) === view) {
+        view.loading = false;
+        if (folderManagementOwnerCurrent(owner)) paintFolderManagement();
+      }
+    }
+  })();
+  return view.pending;
+}
+
+function managedFolderFromSidebar(data, folder) {
+  if (!folder) return null;
+  const exact = data.folders.filter(item => item.id === String(folder.providerId || folder.id));
+  if (exact.length === 1 && [folder.name, folder.id].includes(exact[0].name)) return exact[0];
+  // Full paths only; matching a leaf could select a different physical folder.
+  const full = data.folders.filter(item => item.name === folder.id || data.delimiter && item.name === folder.name && item.name.includes(data.delimiter));
+  return full.length === 1 ? full[0] : null;
+}
+
+async function reviewManagedFolder(account, intent, folder = null, fromSidebar = false) {
+  const initialOwner = folderManagementOwner(account);
+  const data = await loadFolderManagement(account, true);
+  requireFolderManagementOwner(initialOwner);
+  if (data?.recoveryAvailable === false) throw new Error(data.recoveryError || "Durable folder recovery is unavailable. Browsing is available; folder changes are disabled.");
+  const exact = fromSidebar ? managedFolderFromSidebar(data, folder) : folder && data.folders.find(item => item.id === folder.id && managedFolderFingerprint(item) === managedFolderFingerprint(folder));
+  if (folder && !exact) throw new Error("The exact folder is no longer available. Refresh and review it again.");
+  if (intent === "delete" && !exact?.deletion?.enabled) throw new Error(exact?.deletion?.reason || "Recoverable deletion is unavailable for this folder.");
+  if (intent === "create" && exact && !exact.canCreate) throw new Error("This folder cannot accept subfolders.");
+  const owner = folderManagementOwner(account, exact);
+  const review = await folderManagementRequest(owner, "review", { intent, ...(exact ? { folderId: exact.id, expectedName: exact.name } : {}) });
+  if (!review || review.accountId !== owner.accountId || !review.reviewId) throw new Error("The folder review could not be verified.");
+  let submitted = false;
+  try {
+    const deleting = intent === "delete";
+    const answer = await askConfirm({ title: deleting ? "Delete Gmail label" : (data.backend === "gmail" ? "Create Gmail label" : "Create folder"),
+      body: ["Mailbox: " + (review.mailbox || account.email || account.id),
+        deleting ? "Label: " + review.name : "Inside: " + review.parentName,
+        review.disclosure, deleting ? 'Type "confirm" exactly. Undo cancels during the 30-second grace period before removal; it does not restore memberships after removal.' : "Enter the name to create at this reviewed destination."].filter(Boolean).join("\n\n"),
+      needsName: true, name: "", fieldLabel: deleting ? 'Type "confirm"' : "Name",
+      placeholder: deleting ? "confirm" : "Folder name", ...(deleting ? { exactValue: "confirm" } : {}),
+      confirm: deleting ? "Schedule label deletion" : "Create", cancel: "Cancel" });
+    requireFolderManagementOwner(owner);
+    if (!answer?.ok) return;
+    if (deleting && answer.name !== "confirm") throw new Error('Type "confirm" exactly to schedule deletion.');
+    submitted = true;
+    await folderManagementRequest(owner, intent, { reviewId: review.reviewId,
+      ...(deleting ? { confirmation: "confirm" } : { name: String(answer.name || "").trim() }) });
+    showStatus(deleting ? "Label deletion pending. Undo cancels it before removal; messages stay in Gmail." : "Folder created in " + (review.mailbox || account.email) + ".");
+    await loadFolderManagement(account, true);
+    // Refresh legacy provider tools only for the same selected mailbox visit.
+    if (folderManagementOwnerCurrent(initialOwner) && state.accountId === account.id) await loadProviderFolders(accountGen);
+  } finally {
+    if (!submitted && folderManagementOwnerCurrent(initialOwner)) {
+      try { await folderManagementRequest(initialOwner, "cancelReview", { reviewId: review.reviewId }); } catch { /* bounded host ticket expiry also retires reviews */ }
+    }
+  }
+}
+
+async function undoManagedFolder(account, operation) {
+  const owner = folderManagementOwner(account);
+  await folderManagementRequest(owner, "undo", { operationId: operation.id });
+  showStatus("Pending label deletion cancelled. No label was removed by this action.");
+  await loadFolderManagement(account, true);
+}
+
+function folderMailboxName(account) {
+  if (account?.isLocal) return "Local Folders";
+  const provider = folderProvider(account);
+  return provider === "gmail" ? "Gmail" : provider === "outlook" ? "Outlook" : account?.imapSmtpProfile === "yahoo" ? "Yahoo" : "IMAP";
+}
+
+function paintFolderMailboxChoices() {
+  const root = $("provider-mailboxes");
+  if (!root) return;
+  root.replaceChildren();
+  for (const account of state.accounts.filter(item => isLive(item))) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "folder-mailbox-card";
+    button.setAttribute("aria-pressed", account.id === state.accountId ? "true" : "false");
+    const title = document.createElement("strong"); title.textContent = account.email || account.id;
+    const detail = document.createElement("span"); detail.textContent = folderMailboxName(account) + (account.id === state.accountId ? " · Managing" : " · Switch mailbox");
+    button.append(providerMark(folderProvider(account) || "imap"), title, detail);
+    button.addEventListener("click", () => guard(() => switchFolderManagementMailbox(account.id)));
+    root.appendChild(button);
+  }
+}
+
+async function switchFolderManagementMailbox(accountId) {
+  const account = state.accounts.find(item => item.id === accountId);
+  if (!account) return;
+  if (account.id !== state.accountId) {
+    const selecting = selectFolder(account.id, foldersOf(account)[0]?.id || "INBOX");
+    const owner = folderManagementOwner(account);
+    await selecting;
+    requireFolderManagementOwner(owner);
+  }
+  paintProviderPage();
+  if (isLive(account)) await loadFolderManagement(account);
+}
+
+function folderManagementHierarchy(data) {
+  const byId = new Map(data.folders.map(item => [item.id, item]));
+  const byName = new Map();
+  for (const folder of data.folders) {
+    const rows = byName.get(folder.name) || []; rows.push(folder); byName.set(folder.name, rows);
+  }
+  return data.folders.map(folder => {
+    let parentId = folder.parentId && byId.has(folder.parentId) ? folder.parentId : "";
+    if (!parentId && data.delimiter) {
+      const path = data.backend === "gmail" ? folder.name : folder.id;
+      const index = path.lastIndexOf(data.delimiter);
+      if (index > 0) {
+        const name = path.slice(0, index);
+        const parent = data.backend === "gmail" ? (byName.get(name)?.length === 1 ? byName.get(name)[0] : null) : byId.get(name);
+        if (parent && parent.id !== folder.id) parentId = parent.id;
+      }
+    }
+    return { ...folder, parentId };
+  });
+}
+
+function paintFolderManagement() {
+  const root = $("folder-management");
+  const account = selectedAccount();
+  if (!root || !isLive(account)) { paintFolderOperations(); return; }
+  const view = folderManagementViews.get(account.id);
+  const current = view?.identity === folderManagementIdentity(account) ? view : null;
+  const focused = root.contains(document.activeElement) ? document.activeElement?.dataset.managedFolder : "";
+  root.replaceChildren();
+  root.setAttribute("aria-busy", current?.loading ? "true" : "false");
+  const heading = document.createElement("h2"); heading.textContent = "Folders and labels · " + (account.email || account.id);
+  const toolbar = document.createElement("div"); toolbar.className = "folder-management-toolbar";
+  const create = document.createElement("button"); create.type = "button"; create.className = "ghost";
+  create.textContent = current?.data?.backend === "gmail" ? "New label…" : "New folder…";
+  create.disabled = !current?.data || current.data.canCreate === false || !!current.loading || !!current.error;
+  if (current?.data?.canCreate === false) create.title = "The server namespace does not permit verified top-level creation.";
+  create.addEventListener("click", () => guard(() => reviewManagedFolder(account, "create")));
+  const refresh = document.createElement("button"); refresh.type = "button"; refresh.className = "ghost";
+  refresh.textContent = current?.loading ? "Loading…" : "Refresh folders"; refresh.disabled = !!current?.loading;
+  refresh.addEventListener("click", () => guard(() => loadFolderManagement(account, true)));
+  toolbar.append(create, refresh); root.append(heading, toolbar);
+  if (!current || current.loading) {
+    const loading = document.createElement("p"); loading.className = "hint"; loading.setAttribute("role", "status"); loading.textContent = "Loading this mailbox’s current folder capabilities…"; root.appendChild(loading);
+  }
+  if (current?.error) {
+    const error = document.createElement("p"); error.className = "folder-management-error"; error.setAttribute("role", "alert"); error.textContent = current.error; root.appendChild(error);
+  }
+  if (current?.data) {
+    const data = current.data, folders = folderManagementHierarchy(data);
+    if (data.recoveryAvailable === false) {
+      const recoveryError = document.createElement("p"); recoveryError.className = "folder-management-error";
+      recoveryError.setAttribute("role", "alert");
+      recoveryError.textContent = data.recoveryError || "Durable folder recovery is unavailable. Browsing is available; folder changes are disabled.";
+      root.appendChild(recoveryError);
+    }
+    const query = providerFilterQuery().trim().toLocaleLowerCase();
+    const keep = new Set();
+    const byId = new Map(folders.map(folder => [folder.id, folder]));
+    for (const folder of folders) if (!query || folder.name.toLocaleLowerCase().includes(query)) {
+      let item = folder;
+      while (item && !keep.has(item.id)) { keep.add(item.id); item = byId.get(item.parentId); }
+    }
+    const tree = document.createElement("ul"); tree.className = "managed-folder-tree"; tree.setAttribute("aria-label", "Folders in " + (account.email || account.id));
+    const visited = new Set();
+    function appendRows(parent, parentId, depth) {
+      for (const folder of folders.filter(item => (item.parentId || "") === parentId && keep.has(item.id))) {
+        if (visited.has(folder.id)) continue; visited.add(folder.id);
+        const item = document.createElement("li");
+        const line = document.createElement("div"); line.className = "managed-folder-row";
+        const children = folders.some(child => child.parentId === folder.id && keep.has(child.id));
+        const expanded = !!query || !current.collapsed.has(folder.id);
+        const button = document.createElement("button"); button.type = "button"; button.className = "managed-folder-name";
+        button.dataset.managedFolder = folder.id; button.dataset.parentId = folder.parentId || "";
+        button.setAttribute("aria-pressed", current.selectedId === folder.id ? "true" : "false");
+        if (children) button.setAttribute("aria-expanded", expanded ? "true" : "false");
+        button.title = folder.name;
+        button.append(children ? folderTwistMark(expanded) : strokeIcon(["M3 7h6l2 2h10v11H3z"], 15));
+        const name = document.createElement("span"); name.textContent = folder.name; button.appendChild(name);
+        if (folder.readOnly || folder.selectable === false) { const badge = document.createElement("small"); badge.textContent = folder.readOnly ? "Read only" : "Container"; button.appendChild(badge); }
+        button.addEventListener("click", () => { current.selectedId = folder.id; if (children && !query) expanded ? current.collapsed.add(folder.id) : current.collapsed.delete(folder.id); paintFolderManagement(); root.querySelectorAll("[data-managed-folder]").forEach(node => { if (node.dataset.managedFolder === folder.id) node.focus(); }); });
+        button.addEventListener("contextmenu", event => { event.preventDefault(); openManagedFolderMenu(account, folder, event.clientX, event.clientY); });
+        button.addEventListener("keydown", event => managedFolderKey(event, account, folder, current));
+        line.appendChild(button); item.appendChild(line); parent.appendChild(item);
+        if (children && expanded) { const nested = document.createElement("ul"); item.appendChild(nested); appendRows(nested, folder.id, depth + 1); }
+      }
+    }
+    appendRows(tree, "", 0); root.appendChild(tree);
+    if (!tree.children.length) { const empty = document.createElement("p"); empty.className = "hint"; empty.textContent = query ? "No matching folders or labels." : "No folders returned by this mailbox."; root.appendChild(empty); }
+    const selected = data.folders.find(folder => folder.id === current.selectedId);
+    if (selected) appendManagedFolderActions(root, account, selected, !!current.loading || !!current.error);
+    const limits = document.createElement("p"); limits.className = "hint folder-management-limits";
+    limits.textContent = data.backend === "gmail" ? "Deleting a user label keeps messages and child labels. Undo only cancels the pending removal during its 30-second grace period; original memberships cannot be restored afterward. Pending removals pause after restart and can be cancelled. Changing the connection cancels an intent that has not started; uncertain writes still need provider review." : "Folder hierarchy, server delimiters and read-only/container restrictions are preserved. Delete is disabled for IMAP, Outlook and Yahoo until genuine recovery can be verified; no irreversible deletion is substituted.";
+    root.appendChild(limits);
+  }
+  if (focused) root.querySelectorAll("[data-managed-folder]").forEach(node => { if (node.dataset.managedFolder === focused) node.focus(); });
+  syncProviderToolRecovery(account);
+  paintFolderOperations();
+}
+
+function appendManagedFolderActions(root, account, folder, busy = false) {
+  const section = document.createElement("section"); section.className = "managed-folder-actions";
+  const label = document.createElement("h3"); label.textContent = folder.name;
+  const row = document.createElement("div"); row.className = "row";
+  const matches = foldersOf(account).filter(item => !isVirtualMailbox(item) && (item.id === folder.id || item.providerId && item.providerId === folder.id));
+  const open = document.createElement("button"); open.type = "button"; open.className = "ghost"; open.textContent = "Open in Mail";
+  open.disabled = matches.length !== 1; open.title = matches.length === 1 ? "Open this exact folder in Mail" : "No unique downloaded mailbox folder matches this provider identity.";
+  const openOwner = folderManagementOwner(account, folder);
+  open.addEventListener("click", () => guard(async () => {
+    requireFolderManagementOwner(openOwner); showMail();
+    const selecting = selectFolder(account.id, matches[0].id), owner = folderManagementOwner(account);
+    await selecting; requireFolderManagementOwner(owner);
+  }));
+  const create = document.createElement("button"); create.type = "button"; create.className = "ghost"; create.textContent = "New child folder…"; create.disabled = busy || !folder.canCreate;
+  create.addEventListener("click", () => guard(() => reviewManagedFolder(account, "create", folder)));
+  const remove = document.createElement("button"); remove.type = "button"; remove.className = "ghost"; remove.textContent = "Delete…"; remove.disabled = busy || !folder.deletion?.enabled;
+  remove.title = folder.deletion?.reason || "Recoverable deletion is unavailable.";
+  remove.addEventListener("click", () => guard(() => reviewManagedFolder(account, "delete", folder)));
+  row.append(open, create, remove); section.append(label, row);
+  const reason = document.createElement("p"); reason.className = "hint"; reason.textContent = folder.deletion?.reason || "Recoverable deletion is unavailable."; section.appendChild(reason); root.appendChild(section);
+}
+
+function managedFolderKey(event, account, folder, view) {
+  if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
+    event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); openManagedFolderMenu(account, folder, rect.left, rect.bottom); return;
+  }
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault(); const root = $("folder-management");
+  const rows = [...root.querySelectorAll("[data-managed-folder]")], index = rows.indexOf(event.currentTarget);
+  if (event.key === "ArrowUp" || event.key === "ArrowDown") rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)))]?.focus();
+  else if (event.key === "Home" || event.key === "End") rows[event.key === "Home" ? 0 : rows.length - 1]?.focus();
+  else if (event.key === "ArrowRight" && event.currentTarget.getAttribute("aria-expanded") === "false" || event.key === "ArrowLeft" && event.currentTarget.getAttribute("aria-expanded") === "true") event.currentTarget.click();
+  else if (event.key === "ArrowLeft") rows.find(row => row.dataset.managedFolder === event.currentTarget.dataset.parentId)?.focus();
+  else if (event.key === "ArrowRight") rows.find(row => row.dataset.parentId === folder.id)?.focus();
+}
+
+function openManagedFolderMenu(account, folder, x, y) {
+  const owner = folderManagementOwner(account, folder), menu = ensureOrganizeMenu();
+  menu.setAttribute("aria-label", "Folder actions for " + (account.email || account.id)); menu.replaceChildren();
+  appendFolderMenuItem(menu, { label: "New child folder…", disabled: !folder.canCreate, reason: "The server does not permit a child folder here." }, () => guard(async () => { requireFolderManagementOwner(owner); await reviewManagedFolder(account, "create", folder); }));
+  appendFolderMenuItem(menu, { label: "Delete…", disabled: !folder.deletion?.enabled, reason: folder.deletion?.reason || "Recoverable deletion is unavailable." }, () => guard(async () => { requireFolderManagementOwner(owner); await reviewManagedFolder(account, "delete", folder); }));
+  placeMenu(menu, x, y);
+}
+
+function paintFolderOperations() {
+  const root = $("folder-operation-activity"); if (!root) return;
+  const focused = root.contains(document.activeElement) ? document.activeElement?.dataset.folderOperation : "";
+  root.replaceChildren();
+  let active = false, needsPoll = false;
+  for (const [accountId, view] of folderManagementViews) {
+    const account = state.accounts.find(item => item.id === accountId);
+    if (!isLive(account) || view.identity !== folderManagementIdentity(account)) continue;
+    for (const operation of view.data?.operations || []) {
+      if (!["pending", "paused", "running", "uncertain"].includes(operation.phase)) continue;
+      active = true;
+      if (operation.phase === "pending" || operation.phase === "running") needsPoll = true;
+      const line = document.createElement("div"); line.className = "folder-operation-row";
+      const text = document.createElement("p");
+      const remaining = Math.max(0, Number(operation.remainingMs || 0) - Math.max(0, Date.now() - (view.seenAt || Date.now())));
+      text.textContent = (account.email || account.id) + " · " + operation.name + ": " + (operation.phase === "pending" ? (remaining ? "Label removal in about " + Math.ceil(remaining / 1000) + "s. Email stays." : "Checking label removal status…") : operation.phase === "paused" ? "Label removal paused. No automatic retry; cancel it here." : operation.phase === "running" ? "Label removal started; cancellation is no longer guaranteed." : "Outcome uncertain. Check the provider before any retry.");
+      line.appendChild(text);
+      if (operation.canUndo && (operation.phase === "paused" || remaining > 0)) {
+        const undo = document.createElement("button"); undo.type = "button"; undo.className = "ghost"; undo.textContent = "Undo deletion"; undo.dataset.folderOperation = operation.id;
+        undo.title = "Cancel pending label removal before any provider write";
+        const owner = folderManagementOwner(account);
+        undo.addEventListener("click", () => guard(async () => { requireFolderManagementOwner(owner); undo.disabled = true; try { await undoManagedFolder(account, operation); } finally { if (undo.isConnected) undo.disabled = false; } })); line.appendChild(undo);
+      }
+      if (operation.reason) { const reason = document.createElement("p"); reason.className = "hint"; reason.textContent = operation.reason; line.appendChild(reason); }
+      root.appendChild(line);
+    }
+  }
+  root.hidden = !active;
+  if (focused) root.querySelectorAll("[data-folder-operation]").forEach(node => { if (node.dataset.folderOperation === focused) node.focus(); });
+  if (needsPoll && !folderOperationTimer) folderOperationTimer = setTimeout(() => { folderOperationTimer = null; pollFolderOperations().catch(() => {}); }, 1000);
+  if (!needsPoll && folderOperationTimer) { clearTimeout(folderOperationTimer); folderOperationTimer = null; }
+}
+
+async function pollFolderOperations() {
+  if (folderOperationPolling) return;
+  folderOperationPolling = true;
+  try {
+    for (const [accountId, view] of folderManagementViews) {
+      if (!(view.data?.operations || []).some(operation => ["pending", "running"].includes(operation.phase))) continue;
+      const account = state.accounts.find(item => item.id === accountId);
+      if (!isLive(account) || view.identity !== folderManagementIdentity(account)) continue;
+      const owner = folderManagementOwner(account);
+      try {
+        const result = await folderManagementRequest(owner, "operations");
+        if (folderManagementViews.get(accountId) === view) { view.data.operations = Array.isArray(result) ? result : result?.operations || []; view.seenAt = Date.now(); }
+      } catch { /* retain known pending/uncertain state; never repeat a provider write */ }
+    }
+  } finally { folderOperationPolling = false; paintFolderOperations(); }
+}
+
+function onFolderManagementChanged(payload) {
+  const account = state.accounts.find(item => item.id === payload?.accountId);
+  if (!isLive(account)) return;
+  // Notifications refresh metadata only. They never replay a folder write.
+  return loadFolderManagement(account, true).catch(() => {});
+}
 
 function providerFilterQuery() {
   const input = $("provider-filter");
@@ -6034,25 +6465,45 @@ function onProviderColumnKey(event) {
 function paintProviderPage() {
   const account = selectedAccount();
   fillAccountOptions($("provider-account"), state.accounts, account?.id);
+  paintFolderMailboxChoices();
   const accountId = account ? account.id : "";
   if (accountId !== providerPageAccountId) {
     providerPageAccountId = accountId;
     state.providerColumnPath = [];
   }
-  const key = JSON.stringify([account?.id, account && folderProvider(account), state.providerFolders]);
-  if (key === providerPageKey) return;
+  const key = JSON.stringify([account?.id, accountGen, mailboxNavigationGen, account && folderManagementIdentity(account), account && folderProvider(account), state.providerFolders]);
+  if (key === providerPageKey) { paintFolderManagement(); return; }
   providerPageKey = key;
   const root = $("provider-content");
   root.replaceChildren();
+  if (isLive(account)) {
+    const common = document.createElement("section");
+    common.id = "folder-management";
+    common.className = "folder-management";
+    common.setAttribute("aria-label", "Mailbox folder management");
+    root.appendChild(common);
+    paintFolderManagement();
+    const current = folderManagementViews.get(account.id);
+    if (current?.identity !== folderManagementIdentity(account) || !current.data && (!current.loading && !current.error || current.loading && (current.navigation !== mailboxNavigationGen || current.generation !== accountGen))) {
+      loadFolderManagement(account).catch(() => {});
+    }
+  }
   if (account && isLive(account) && ["gmail", "outlook"].includes(folderProvider(account))) {
-    appendProviderBlock(root, account);
-  } else {
+    const tools = document.createElement("details");
+    tools.className = "provider-tools";
+    const summary = document.createElement("summary");
+    summary.textContent = folderMailboxName(account) + " provider tools · permissions, rename, nesting and message actions";
+    tools.appendChild(summary);
+    appendProviderBlock(tools, account);
+    root.appendChild(tools);
+  } else if (!isLive(account)) {
     const note = document.createElement("p");
     note.className = "hint";
-    note.textContent = account ? "This mailbox uses IMAP folders. Open Mail to browse and organize them." : "Connect a Google or Microsoft mailbox to manage labels and folders.";
+    note.textContent = account ? "Local Folders use the New local folder and Import MBOX buttons in the account list. Their context menu supports subfolders, rename and deletion only when empty; empty-folder deletion has no Undo." : "Connect a Gmail, Outlook, Yahoo or IMAP mailbox to manage its folders and labels.";
     root.append(note);
     if (!account) root.append(connectButton());
   }
+  syncProviderToolRecovery(account);
 }
 
 function showProviderPage() {
@@ -6134,11 +6585,12 @@ function appendProviderBlock(nav, account) {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const parentId = parentSelect ? parentSelect.value : "";
-    guard(() => createProviderFolder(input.value, parentId));
+    guard(() => createProviderFolder(input.value, parentId, folderActionOwner(account)));
   });
   block.appendChild(form);
   renderProviderColumns(block);
   nav.appendChild(block);
+  syncProviderToolRecovery(account);
 }
 
 function fileSize(size) {
@@ -10921,6 +11373,8 @@ async function loadAccounts(preferredId, supplied) {
 
 const providerFolderPending = new Map();
 async function loadProviderFolders(gen) {
+  const generation = gen ?? accountGen;
+  if (generation !== accountGen) return;
   const account = selectedAccount();
   if (!isLive(account)) {
     state.providerFolders = null;
@@ -10929,16 +11383,17 @@ async function loadProviderFolders(gen) {
   }
   const requestId = account.id;
   const requestKey = accountFolderKey(account);
+  const pendingKey = JSON.stringify([requestId, requestKey, generation]);
   try {
-    if (!providerFolderPending.has(requestId)) {
-      const pending = call("mail:listProviderFolders", { accountId: requestId }).finally(() => providerFolderPending.delete(requestId));
-      providerFolderPending.set(requestId, pending);
+    if (!providerFolderPending.has(pendingKey)) {
+      const pending = call("mail:listProviderFolders", { accountId: requestId }).finally(() => providerFolderPending.delete(pendingKey));
+      providerFolderPending.set(pendingKey, pending);
     }
-    const payload = await providerFolderPending.get(requestId);
-    if (state.accountId !== requestId || accountFolderKey(selectedAccount()) !== requestKey) return;
+    const payload = await providerFolderPending.get(pendingKey);
+    if (generation !== accountGen || state.accountId !== requestId || accountFolderKey(selectedAccount()) !== requestKey) return;
     state.providerFolders = { ...(payload || {}), accountId: requestId };
   } catch (error) {
-    if (state.accountId !== requestId || accountFolderKey(selectedAccount()) !== requestKey) return;
+    if (generation !== accountGen || state.accountId !== requestId || accountFolderKey(selectedAccount()) !== requestKey) return;
     state.providerFolders = {
       accountId: requestId,
       api: false,
@@ -10965,25 +11420,52 @@ async function grantOrganize() {
   }
 }
 
-async function createProviderFolder(name, parentId) {
-  await call("mail:createProviderFolder", { accountId: state.accountId, name, parentId: parentId || "" });
+function folderActionOwner(account = selectedAccount(), folder = null) {
+  if (!account || !isLive(account) || account.id !== state.accountId) throw new Error("Choose this mailbox again before changing its folders.");
+  return { accountId: account.id, generation: accountGen, key: accountFolderKey(account),
+    folder: folder ? JSON.stringify([folder.id, folder.name, folder.type, folder.wellKnown, folder.parentId]) : null };
+}
+
+function folderActionOwnerCurrent(owner) {
+  if (!owner || owner.generation !== accountGen || owner.accountId !== state.accountId || owner.key !== accountFolderKey(selectedAccount())) return false;
+  if (!owner.folder) return true;
+  if (state.providerFolders?.accountId !== owner.accountId) return false;
+  return (state.providerFolders.folders || []).some(folder => JSON.stringify([folder.id, folder.name, folder.type, folder.wellKnown, folder.parentId]) === owner.folder);
+}
+
+function requireFolderActionOwner(owner) {
+  if (!folderActionOwnerCurrent(owner)) throw new Error("The mailbox or folder changed while this action was being reviewed. Review it again; no folder was changed.");
+}
+
+async function createProviderFolder(name, parentId, owner = folderActionOwner()) {
+  requireFolderActionOwner(owner);
+  requireFolderManagementRecovery(state.accounts.find(account => account.id === owner.accountId));
+  await call("mail:createProviderFolder", { accountId: owner.accountId, name, parentId: parentId || "" });
+  if (!folderActionOwnerCurrent(owner)) return;
   showStatus("Saved on the provider.");
   await loadProviderFolders(accountGen);
 }
 
-async function renameProviderFolder(folderId, name) {
-  await call("mail:renameProviderFolder", { accountId: state.accountId, folderId, name });
+async function renameProviderFolder(folderId, name, owner = folderActionOwner()) {
+  requireFolderActionOwner(owner);
+  requireFolderManagementRecovery(state.accounts.find(account => account.id === owner.accountId));
+  await call("mail:renameProviderFolder", { accountId: owner.accountId, folderId, name });
+  if (!folderActionOwnerCurrent(owner)) return;
   showStatus("Saved on the provider.");
   await loadProviderFolders(accountGen);
 }
 
-async function deleteProviderFolder(folderId) {
-  await call("mail:deleteProviderFolder", { accountId: state.accountId, folderId });
+async function deleteProviderFolder(folderId, owner = folderActionOwner()) {
+  requireFolderActionOwner(owner);
+  await call("mail:deleteProviderFolder", { accountId: owner.accountId, folderId });
+  if (!folderActionOwnerCurrent(owner)) return;
   showStatus("Removed on the provider.");
   await loadProviderFolders(accountGen);
 }
 
 async function confirmRenameFolder(folder, provider) {
+  const owner = folderActionOwner(selectedAccount(), folder);
+  const managementOwner = folderManagementOwner(selectedAccount());
   const name = String((folder && folder.name) || "");
   if (confirmsBefore("mail:renameProviderFolder")) {
     const answer = await askConfirm(actionConfirm("rename", { provider: provider, name: name }));
@@ -10994,19 +11476,23 @@ async function confirmRenameFolder(folder, provider) {
       showStatus("Name is unchanged.");
       return;
     }
-    await renameProviderFolder(folder.id, next);
+    requireFolderActionOwner(owner);
+    requireFolderManagementOwner(managementOwner);
+    await renameProviderFolder(folder.id, next, owner);
     return;
   }
-  await renameProviderFolder(folder.id, name);
+  await renameProviderFolder(folder.id, name, owner);
 }
 
 async function confirmDeleteFolder(folder, provider) {
+  const owner = folderActionOwner(selectedAccount(), folder);
   const name = String((folder && (folder.name || folder.id)) || "");
   if (confirmsBefore("mail:deleteProviderFolder")) {
     const answer = await askConfirm(actionConfirm("delete", { provider: provider, name: name }));
     if (!answer || !answer.ok) return;
   }
-  await deleteProviderFolder(folder.id);
+  requireFolderActionOwner(owner);
+  await deleteProviderFolder(folder.id, owner);
 }
 
 async function changeLabels(email, addLabelIds, removeLabelIds, labels) {
@@ -11058,15 +11544,24 @@ function ensureOrganizeMenu() {
   return menu;
 }
 
-function closeOrganizeMenu() {
+let organizeMenuOrigin = null;
+let organizeMenuSerial = 0;
+
+function closeOrganizeMenu(restoreFocus = false) {
   const menu = $("organize-menu");
   if (!menu) return;
+  organizeMenuSerial++;
   menu.hidden = true;
   menu.dataset.open = "";
   menu.replaceChildren();
+  const origin = organizeMenuOrigin;
+  organizeMenuOrigin = null;
+  if (restoreFocus && origin?.isConnected) origin.focus();
 }
 
-function placeMenu(menu, x, y) {
+function placeMenu(menu, x, y, origin = document.activeElement) {
+  organizeMenuOrigin = origin;
+  const serial = ++organizeMenuSerial;
   menu.hidden = false;
   menu.dataset.open = "";
   menu.style.left = "8px";
@@ -11077,10 +11572,10 @@ function placeMenu(menu, x, y) {
   menu.style.left = Math.min(Math.max(8, x), maxX) + "px";
   menu.style.top = Math.min(Math.max(8, y), maxY) + "px";
   setTimeout(() => {
-    if (menu.hidden) return;
+    if (menu.hidden || serial !== organizeMenuSerial) return;
     menu.dataset.open = "1";
-    const first = menu.querySelector("[role='menuitem']");
-    if (first) first.focus();
+    const first = menu.querySelector("[role='menuitem']:not(:disabled)");
+    if (first) first.focus({ preventScroll: true });
   }, 0);
 }
 
@@ -11503,6 +11998,7 @@ function finishLabelPick() {
     labels: session.labels,
     bulk: !!session.bulk,
     messages: session.messages.slice(),
+    contextCurrent: session.contextCurrent,
   };
   guard(async () => {
     await closeLabelPicker();
@@ -11515,6 +12011,7 @@ function finishLabelPick() {
 }
 
 async function applyLabelPlans(snapshot) {
+  if (snapshot.contextCurrent && !snapshot.contextCurrent()) throw new Error("The mailbox changed. Review these labels again.");
   const plans = snapshot.plans || [];
   const viewKey = mailboxViewKey();
   if (!snapshot.bulk && plans.length === 1) {
@@ -11534,7 +12031,8 @@ async function applyLabelPlans(snapshot) {
     if (removes) calls = confirmedCalls("remove-label", answer, calls, { removesFromView: true });
   }
   if (!calls.length) return;
-  const outcome = await runBulk(calls);
+  if (snapshot.contextCurrent && !snapshot.contextCurrent()) throw new Error("The mailbox changed while confirmation was open. Review these labels again.");
+  const outcome = await runBulk(contextOwnedCalls(calls, messages));
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => String(row.id)));
   for (const plan of plans) {
     if (!completed.has(String(plan.email.id))) continue;
@@ -11554,6 +12052,9 @@ function finishMovePick() {
   const session = moveSession;
   const target = activeMoveTarget(session);
   if (!session || !target || target.disabled) return;
+  if (session.contextCurrent && !session.contextCurrent()) {
+    showStatus("The mailbox changed. Close this dialog and review the messages again.", true); return;
+  }
   closeMovePicker();
   if (session.purpose === "message") {
     if (session.bulk && session.emails && session.emails.length) {
@@ -11561,7 +12062,7 @@ function finishMovePick() {
       const kind = session.kind;
       const id = target.id;
       const name = target.path || target.label || target.name;
-      guard(() => applyPickedMove(emails, kind, id, name));
+      guard(() => applyPickedMove(emails, kind, id, name, session.contextCurrent));
       return;
     }
     guard(() => (session.kind === "outlook"
@@ -11573,6 +12074,7 @@ function finishMovePick() {
 }
 
 async function commitFolderMove(session, target) {
+  requireFolderManagementRecovery(accountForMove(session.accountId));
   const viewKey = mailboxViewKey();
   const ownsSelection = state.accountId === session.accountId;
   const channel = session.kind === "imap" ? "mail:moveFolder" : "mail:moveProviderFolder";
@@ -11590,6 +12092,7 @@ async function commitFolderMove(session, target) {
     : { ok: true };
   const request = moveRequestAfterConfirm(channel, answer, params);
   if (!request) return;
+  requireFolderManagementRecovery(accountForMove(session.accountId));
   if (session.kind === "imap") {
     const data = await call("mail:moveFolder", request);
     if (ownsSelection && viewKey === mailboxViewKey()) {
@@ -11644,16 +12147,21 @@ function openFolderMenu(folder, provider, x, y) {
   const payload = account ? providerPayloadFor(account) : null;
   const view = providerFolderState(payload);
   for (const item of model.items) {
-    appendFolderMenuItem(menu, item, () => {
+    const blocked = folderManagementRecoveryBlocked(account);
+    const safeItem = blocked ? { ...item, disabled: true, reason: blocked } : item.id === "delete" && provider !== "gmail" ? { ...item, disabled: true, reason: "Recoverable Outlook folder deletion is not yet verified. No irreversible delete is available." } : item;
+    const owner = account ? folderManagementOwner(account) : null;
+    appendFolderMenuItem(menu, safeItem, () => {
       if (item.id === "create") {
+        if (!folderManagementOwnerCurrent(owner)) { showStatus("The mailbox changed. Open its menu again.", true); return; }
         focusProviderCreate();
         return;
       }
       if (item.id === "rename") {
-        guard(() => confirmRenameFolder(folder, provider));
+        guard(async () => { requireFolderManagementOwner(owner); await confirmRenameFolder(folder, provider); });
         return;
       }
       if (item.id === "move") {
+        if (!folderManagementOwnerCurrent(owner)) { showStatus("The mailbox changed. Open its menu again.", true); return; }
         if (!account || view.mode !== "live") {
           showStatus("That list is not available.", true);
           return;
@@ -11661,7 +12169,7 @@ function openFolderMenu(folder, provider, x, y) {
         openRelocatePicker(provider, folder, account, view.folders, "/");
         return;
       }
-      guard(() => confirmDeleteFolder(folder, provider));
+      guard(async () => { requireFolderManagementOwner(owner); await reviewManagedFolder(account, "delete", folder, true); });
     });
   }
   if (model.note) {
@@ -11678,8 +12186,10 @@ function openImapFolderMenu(folder, account, x, y) {
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", "Folder");
   menu.replaceChildren();
+  appendSidebarFolderManagement(menu, account, folder);
   for (const item of model.items) {
-    appendFolderMenuItem(menu, item, () => {
+    const blocked = folderManagementRecoveryBlocked(account);
+    appendFolderMenuItem(menu, blocked ? { ...item, disabled: true, reason: blocked } : item, () => {
       if (item.id !== "move") return;
       openRelocatePicker("imap", folder, account, storableFolders(foldersOf(account)), accountDelimiter(account));
     });
@@ -11693,10 +12203,30 @@ function openAccountLabelMenu(account, x, y) {
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", "Account");
   menu.replaceChildren();
+  appendSidebarFolderManagement(menu, account, null);
   appendMenuAction(menu, "Rename", () => {
     renameAccountLabel(account).catch((error) => showStatus(error.message, true));
   });
   placeMenu(menu, x, y);
+}
+
+function appendSidebarFolderManagement(menu, account, folder) {
+  if (!isLive(account)) return;
+  const owner = folderManagementOwner(account);
+  const blocked = folderManagementRecoveryBlocked(account);
+  const flags = folder?.flags || [];
+  const noChildren = folder?.readOnly === true || flags.some(flag => String(flag).toLowerCase() === "\\noinferiors");
+  appendFolderMenuItem(menu, { label: folder ? "New child folder…" : "New folder / label…", disabled: !!blocked || noChildren,
+    reason: blocked || "This server folder does not permit subfolders." }, () => guard(async () => {
+      requireFolderManagementOwner(owner); await reviewManagedFolder(account, "create", folder, true);
+    }));
+  if (!folder) return;
+  const known = folder.wellKnown || folder.wellKnownName || isVirtualMailbox(folder) || String(folder.id).toUpperCase() === "INBOX" || folder.readOnly || folder.selectable === false;
+  const gmail = folderProvider(account) === "gmail" && account.mailTransport === "gmail_api";
+  appendFolderMenuItem(menu, { label: gmail ? "Delete label…" : "Delete folder…", disabled: !!blocked || !gmail || !!known,
+    reason: blocked || (known ? "System, virtual and read-only folders cannot be deleted." : "Recoverable folder deletion is not yet verified for this mailbox. No irreversible delete is available.") }, () => guard(async () => {
+      requireFolderManagementOwner(owner); await reviewManagedFolder(account, "delete", folder, true);
+    }));
 }
 
 async function renameAccountLabel(account) {
@@ -11715,36 +12245,123 @@ async function renameAccountLabel(account) {
   await call("mail:setAccountLabel", { accountId: account.id, label: result.name });
 }
 
-function appendMenuAction(menu, label, run) {
+function appendMenuAction(menu, label, run, disabledReason = "") {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "menuitem";
   button.setAttribute("role", "menuitem");
   button.textContent = label;
+  button.tabIndex = -1;
+  if (disabledReason) {
+    button.disabled = true;
+    button.title = disabledReason;
+    button.setAttribute("aria-description", disabledReason);
+  }
   button.addEventListener("click", () => {
-    closeOrganizeMenu();
-    run();
+    closeOrganizeMenu(true);
+    if (run) run();
   });
   menu.appendChild(button);
+  return button;
 }
 
-function openOrganizeMenu(email, x, y) {
+function contextAccountProof(accountId) {
+  const account = accountId === LOCAL_ACCOUNT_ID ? state.localAccount : state.accounts.find(row => row.id === accountId);
+  return window.morrowMailContextOwner?.connection(account) || "";
+}
+
+function capturedContextOwner(email) {
+  if (isLocalMail(email)) return null;
+  // An existing review is never rebound to a newer account snapshot.
+  if (email.contextOwner) return { ...email.contextOwner };
+  return window.morrowMailContextOwner?.capture(state.accounts.find(row => row.id === email.accountId), email) || null;
+}
+
+function contextOwnedParams(params, messages) {
+  if (!messages.some(row => row.contextOwner)) return params;
+  if (messages.some(row => !row.contextOwner)) throw new Error("Review connected mailboxes separately from Local Folders.");
+  return { ...params, contextOwners: messages.map(row => ({ ...row.contextOwner })) };
+}
+
+function contextOwnedCalls(calls, messages) {
+  return calls.map(spec => {
+    const ids = operationIds(spec);
+    return { ...spec, params: contextOwnedParams(spec.params, messages.filter(row => ids.includes(String(row.id)))) };
+  });
+}
+
+function contextMessages(messages) {
+  const rows = messages.map(row => ({ ...row, members: undefined, contextOwner: capturedContextOwner(row) }));
+  const current = () => rows.every(row => isLocalMail(row) || row.contextOwner && contextAccountProof(row.accountId) === row.contextOwner.connection);
+  const run = action => () => guard(async () => {
+    if (!current()) throw new Error("The mailbox changed. Close this menu and review the message again.");
+    return action(rows, current);
+  });
+  return { rows, current, run };
+}
+
+function contextTrashReason(messages) {
+  const inTrash = messages.some(row => {
+    if (isLocalMail(row)) return row.folderId === "local-folder:trash";
+    const account = state.accounts.find(item => item.id === row.accountId);
+    const folder = foldersOf(account).find(item => item.id === row.folderId);
+    return ["trash", "deleteditems"].includes(String(folder?.wellKnownName || row.folderWellKnownName || row.folderId || "").toLowerCase());
+  });
+  return inTrash ? "Already in Trash. Use Move to folder to restore it. This action never deletes permanently." : "";
+}
+
+function appendMessageFlagActions(menu, messages, run = action => () => guard(() => action(messages))) {
+  const read = messages.every(row => !row.unread);
+  const starred = messages.every(row => row.isStarred);
+  appendMenuAction(menu, read ? "Mark as unread" : "Mark as read", run(rows => bulkSetRead(!read, rows)));
+  appendMenuAction(menu, starred ? "Unstar" : "Star", run(rows => bulkStar(!starred, rows)));
+}
+
+function openContextMove(rows, current, kind = "imap") {
+  openSelectionMove(kind, rows);
+  if (moveSession) moveSession.contextCurrent = current;
+}
+
+function openContextLabels(rows, current) {
+  openLabelPicker(rows, true);
+  if (labelSession) labelSession.contextCurrent = current;
+}
+
+async function contextRemoval(messages, kind, current) {
+  if (!messages.length || refusePaused(messages)) return;
+  if (messages.some(isLocalMail)) throw new Error("Select connected mailbox messages separately from Local Folders.");
+  const reason = kind === "trash" && contextTrashReason(messages);
+  if (reason) throw new Error(reason);
+  const detail = { scope: selectionScopeCopy(messages, messages) + " Only these messages are included." };
+  const answer = await askConfirm(bulkConfirmCopy(kind, messages.length, detail));
+  if (!answer?.ok) return;
+  if (!current()) throw new Error("The mailbox changed while confirmation was open. Review the message again.");
+  // Explicit IDs never expand the clicked row into a conversation, and the
+  // Trash command cannot acquire deleteBatch's permanent-delete semantics.
+  const calls = messages.map(row => ({ channel: kind === "trash" ? "mail:delete" : "mail:archive",
+    params: { emailId: row.id, accountId: row.accountId, ...(kind === "trash" ? { moveToTrashOnly: true } : {}) } }));
+  queueBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", contextOwnedCalls(calls, messages), messages, kind);
+}
+
+function openOrganizeMenu(email, x, y, origin) {
   if (!email) return;
-  if (isLocalMail(email)) { openLocalMessageMenu([email], x, y); return; }
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  if (isLocalMail(email)) { openLocalMessageMenu([email], x, y, origin); return; }
+  const context = contextMessages([email]);
+  email = context.rows[0];
+  const account = state.accounts.find((item) => item.id === email.accountId);
   const provider = folderProvider(account);
   const listed = account ? providerPayloadFor(account) : null;
   const model = organizeMenu(email, foldersOf(account), listed, provider);
   const menu = ensureOrganizeMenu();
-  menu.setAttribute("aria-label", "Move and labels");
+  menu.setAttribute("aria-label", "Message actions");
   menu.replaceChildren();
-  if (!email.isDraft) {
-    appendMenuAction(menu, "Copy to Local Folders…", () => openLocalTransfer([email], "copy"));
-    appendMenuAction(menu, "Move to Local Folders…", () => openLocalTransfer([email], "move"));
-  }
-  if (model.move.length) appendMenuAction(menu, "Move to folder…", () => openMessageMovePicker(email, "imap"));
-  if (provider === "gmail" && model.add.length) appendMenuAction(menu, "Labels…", () => openLabelPicker([email], false));
-  if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", () => openMessageMovePicker(email, "outlook"));
+  appendMenuAction(menu, "Move to folder…", context.run(openContextMove), model.move.length ? "" : "No writable folder destinations are available. Refresh this mailbox first.");
+  appendMenuAction(menu, "Move / Copy to other mailbox…", context.run(rows => openLocalTransfer(rows, "copy")), email.isDraft ? "Save and close the draft before transferring it." : "");
+  appendMenuAction(menu, "Labels…", context.run(openContextLabels), provider === "gmail" && model.add.length ? "" : provider === "gmail" ? "Refresh Gmail labels or authorize the existing Gmail label capability first." : "This mailbox uses folders. Labels are available for Gmail accounts.");
+  appendMessageFlagActions(menu, context.rows, context.run);
+  appendMenuAction(menu, "Move to trash", context.run((rows, current) => contextRemoval(rows, "trash", current)), contextTrashReason(context.rows));
+  appendMenuAction(menu, "Archive", context.run((rows, current) => contextRemoval(rows, "archive", current)));
+  if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", context.run((rows, current) => openContextMove(rows, current, "outlook")));
   if (model.note) {
     const note = document.createElement("p");
     note.className = "organize-note";
@@ -11757,7 +12374,7 @@ function openOrganizeMenu(email, x, y) {
     note.textContent = "No folders to show.";
     menu.appendChild(note);
   }
-  placeMenu(menu, x, y);
+  placeMenu(menu, x, y, origin);
 }
 
 function emailFromRow(row) {
@@ -11968,8 +12585,7 @@ async function bulkTrash(selected = selectedMessages()) {
   queueBulkRemoval("Move to Trash", gated, review.rows, "trash");
 }
 
-async function bulkSetRead(isRead) {
-  const messages = selectedMessages();
+async function bulkSetRead(isRead, messages = selectedMessages()) {
   if (!messages.length || refusePaused(messages)) return;
   const priorHold = state.unreadHold || null;
   if (typeof applyUnreadHold === "function") {
@@ -11985,7 +12601,7 @@ async function bulkSetRead(isRead) {
     eachStarRow(email, (row) => { row.unread = !isRead; row.isRead = !!isRead; });
   }
   renderList();
-  const outcome = await runBulk(bulkFlagCalls(messages, isRead ? "read" : "unread"));
+  const outcome = await runBulk(contextOwnedCalls(bulkFlagCalls(messages, isRead ? "read" : "unread"), messages));
   const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
   for (const email of messages) {
     if (completed.has(email.id)) continue;
@@ -11999,12 +12615,11 @@ async function bulkSetRead(isRead) {
   if (completed.size) await settleOpenView();
 }
 
-async function bulkStar(isStarred) {
-  const messages = selectedMessages();
+async function bulkStar(isStarred, messages = selectedMessages()) {
   if (!messages.length || refusePaused(messages)) return;
   const previous = new Map(messages.map((email) => [email.id, !!email.isStarred]));
   paintStars(messages, isStarred);
-  const outcome = await runBulk(bulkFlagCalls(messages, isStarred ? "star" : "unstar"));
+  const outcome = await runBulk(contextOwnedCalls(bulkFlagCalls(messages, isStarred ? "star" : "unstar"), messages));
   const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
   for (const email of messages) {
     if (completed.has(email.id)) continue;
@@ -12029,7 +12644,7 @@ function dropTargetName(target) {
   return folderTitle(folders, target.id);
 }
 
-async function applyBulkMove(messages, target, targetName) {
+async function applyBulkMove(messages, target, targetName, current) {
   const rows = Array.isArray(messages) ? messages.filter(Boolean) : [];
   if (!rows.length || !target) return;
   if (refusePaused(rows)) return;
@@ -12051,7 +12666,8 @@ async function applyBulkMove(messages, target, targetName) {
   }
   const gated = confirmedCalls(action, answer, planned, detail);
   if (!gated.length) return;
-  const outcome = await runBulk(gated, action === "add-label" ? undefined : beginRemovalRequest(rows, "move", name));
+  if (current && !current()) throw new Error("The mailbox changed while confirmation was open. Review this move again.");
+  const outcome = await runBulk(contextOwnedCalls(gated, rows), action === "add-label" ? undefined : beginRemovalRequest(rows, "move", name));
   const acted = [];
   for (const spec of gated) {
     if (spec.params && Array.isArray(spec.params.items)) {
@@ -12071,16 +12687,16 @@ async function applyBulkMove(messages, target, targetName) {
   });
 }
 
-async function applyPickedMove(messages, kind, destinationId, name) {
+async function applyPickedMove(messages, kind, destinationId, name, current) {
   const accountId = messages[0] && messages[0].accountId;
   const target = kind === "outlook"
     ? { kind: "outlook", id: destinationId, accountId: accountId, api: true }
     : { kind: "imap", id: destinationId, accountId: accountId };
-  await applyBulkMove(messages, target, name);
+  await applyBulkMove(messages, target, name, current);
 }
 
-function openSelectionMove(kind) {
-  const messages = selectionMoveMessages();
+function openSelectionMove(kind, captured) {
+  const messages = captured || selectionMoveMessages();
   if (!messages.length) return;
   if (messages.every(isLocalMail)) return openLocalTransfer(messages, "move");
   openMessageMovePicker(messages[0], kind);
@@ -12093,31 +12709,27 @@ function openSelectionMove(kind) {
   source.textContent = selectionScopeCopy(messages);
 }
 
-function openSelectionMenu(x, y) {
-  const messages = selectedMessages();
+function openSelectionMenu(x, y, origin) {
+  const context = contextMessages(selectedMessages());
+  const messages = context.rows;
   if (!messages.length) return;
-  if (messages.every(isLocalMail)) { openLocalMessageMenu(messages, x, y); return; }
+  if (messages.every(isLocalMail)) { openLocalMessageMenu(messages, x, y, origin); return; }
   const email = messages[0];
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const account = state.accounts.find((item) => item.id === email.accountId);
   const provider = folderProvider(account);
   const listed = account ? providerPayloadFor(account) : null;
   const model = organizeMenu(email, foldersOf(account), listed, provider);
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", "Selected messages");
   menu.replaceChildren();
-  if (messages.every(email => !email.isDraft)) {
-    appendMenuAction(menu, "Copy to Local Folders…", () => openLocalTransfer(messages, "copy"));
-    appendMenuAction(menu, "Move to Local Folders…", () => openLocalTransfer(messages, "move"));
-  }
-  const starred = messages.every((row) => row.isStarred);
-  appendMenuAction(menu, "Mark read", () => guard(() => bulkSetRead(true)));
-  appendMenuAction(menu, "Mark unread", () => guard(() => bulkSetRead(false)));
-  appendMenuAction(menu, starred ? "Unstar" : "Star", () => guard(() => bulkStar(!starred)));
-  appendMenuAction(menu, "Archive", () => guard(bulkArchive));
-  appendMenuAction(menu, "Trash", () => guard(bulkTrash));
-  if (model.move.length) appendMenuAction(menu, "Move to folder…", () => openSelectionMove("imap"));
-  if (provider === "gmail" && model.add.length) appendMenuAction(menu, "Labels…", () => openLabelPicker(messages, true));
-  if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", () => openSelectionMove("outlook"));
+  const oneAccount = messages.every(row => row.accountId === email.accountId);
+  appendMenuAction(menu, "Move to folder…", context.run(openContextMove), oneAccount && model.move.length ? "" : "Select messages in one mailbox with writable folder destinations.");
+  appendMenuAction(menu, "Move / Copy to other mailbox…", context.run(rows => openLocalTransfer(rows, "copy")), messages.some(row => row.isDraft) ? "Save and close drafts before transferring them." : "");
+  appendMenuAction(menu, "Labels…", context.run(openContextLabels), oneAccount && provider === "gmail" && model.add.length ? "" : "Select messages from one Gmail account with available labels.");
+  appendMessageFlagActions(menu, messages, context.run);
+  appendMenuAction(menu, "Move to trash", context.run((rows, current) => contextRemoval(rows, "trash", current)), contextTrashReason(messages));
+  appendMenuAction(menu, "Archive", context.run((rows, current) => contextRemoval(rows, "archive", current)));
+  if (oneAccount && model.outlook.length) appendMenuAction(menu, "Move in Outlook…", context.run((rows, current) => openContextMove(rows, current, "outlook")));
   appendMenuAction(menu, "Clear selection", () => commitSelection(clearListSelection()));
   if (model.note && !model.add.length && !model.remove.length && !model.outlook.length) {
     const note = document.createElement("p");
@@ -12125,7 +12737,7 @@ function openSelectionMenu(x, y) {
     note.textContent = model.note;
     menu.appendChild(note);
   }
-  placeMenu(menu, x, y);
+  placeMenu(menu, x, y, origin);
 }
 
 function selectionButton(id, label, paths, run) {
@@ -12249,11 +12861,20 @@ function onListContext(event) {
   const email = emailFromRow(row);
   if (!email || email.outbox) return;
   event.preventDefault();
+  const origin = row.querySelector("button.message") || row;
   if (state.selectedIds.indexOf(String(email.id)) >= 0 && state.selectedIds.length > 1) {
-    openSelectionMenu(event.clientX, event.clientY);
+    openSelectionMenu(event.clientX, event.clientY, origin);
     return;
   }
-  openOrganizeMenu(email, event.clientX, event.clientY);
+  openOrganizeMenu(email, event.clientX, event.clientY, origin);
+}
+
+function onListContextKey(event) {
+  if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
+  const row = event.target.closest?.(".message-row");
+  if (!row) return;
+  const rect = row.getBoundingClientRect();
+  onListContext({ target: event.target, clientX: rect.left + 16, clientY: rect.top + 16, preventDefault: () => event.preventDefault() });
 }
 
 function readerContextTarget(event) {
@@ -12376,6 +12997,8 @@ function clearFolderDrag() {
 function folderNestContext(payload) {
   const account = accountForMove(payload && payload.accountId);
   if (!account || !payload) return null;
+  const blocked = folderManagementRecoveryBlocked(account);
+  if (blocked) return { blocked };
   const kind = payload.kind;
   if (kind === "imap") {
     const delimiter = accountDelimiter(account);
@@ -12429,6 +13052,7 @@ function onFolderDragStart(event) {
     return;
   }
   payload.nest = folderNestContext(payload);
+  if (payload.nest?.blocked) { event.preventDefault(); showStatus(payload.nest.blocked, true); return; }
   state.dragFolder = payload;
   event.dataTransfer.setData("application/x-morrow-folder", JSON.stringify({
     kind: payload.kind,
@@ -12549,6 +13173,7 @@ function onFolderDrop(event) {
 
 function wireOrganize() {
   $("messages").addEventListener("contextmenu", onListContext);
+  $("messages").addEventListener("keydown", onListContextKey);
   $("reader").addEventListener("contextmenu", onReaderContext);
   $("messages").addEventListener("pointerdown", onMessagePointerDown, true);
   $("messages").addEventListener("dragstart", onMessageDragStart);
@@ -12567,15 +13192,25 @@ function wireOrganize() {
     closeOrganizeMenu();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
     const menu = $("organize-menu");
     if (!menu || menu.hidden) return;
-    event.preventDefault();
-    closeOrganizeMenu();
+    if (event.key === "Escape") {
+      event.preventDefault(); event.stopPropagation();
+      closeOrganizeMenu(true);
+    } else if (menu.contains(event.target) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation();
+      const items = [...menu.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+      const index = items.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+        : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    } else if (event.key === "Tab") closeOrganizeMenu();
   });
   document.addEventListener("scroll", (event) => {
     const menu = $("organize-menu");
-    if (!menu || menu.hidden) return;
+    // Native right-click can queue a scroll while it focuses the row. It
+    // predates this menu; do not let it dismiss a menu that is still opening.
+    if (!menu || menu.hidden || menu.dataset.open !== "1") return;
     if (event.target === menu || (event.target && menu.contains && menu.contains(event.target))) return;
     closeOrganizeMenu();
   }, true);
@@ -26752,10 +27387,7 @@ function wire() {
   $("rail-calendar").addEventListener("click", showCalendar);
   $("rail-folders").addEventListener("click", showProviderPage);
   $("provider-account").addEventListener("change", () => guard(async () => {
-    const account = state.accounts.find(row => row.id === $("provider-account").value);
-    if (!account) return;
-    await selectFolder(account.id, foldersOf(account)[0]?.id || "INBOX");
-    paintProviderPage();
+    await switchFolderManagementMailbox($("provider-account").value);
   }));
   $("rail-shortcuts").addEventListener("click", showFeatures);
   window.addEventListener("hashchange", applyFeaturesHash);
@@ -26900,6 +27532,7 @@ function wire() {
     };
     const applyProviderFilter = () => {
       syncProviderFilterClear();
+      paintFolderManagement();
       const block = $("provider-folders");
       if (!block) return;
       const account = selectedAccount();
@@ -27036,6 +27669,11 @@ function wire() {
   $("confirm-form").addEventListener("submit", (event) => {
     event.preventDefault();
     submitConfirm();
+  });
+  $("confirm-name").addEventListener("input", () => {
+    if (confirmCopy?.exactValue === undefined) return;
+    $("confirm-ok").disabled = $("confirm-name").value !== confirmCopy.exactValue;
+    $("confirm-validation").hidden = true;
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
   $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
@@ -27527,6 +28165,7 @@ async function boot() {
     if (!payload?.account) return;
     state.localAccount = payload.account; rememberSelection(); renderAccounts();
   });
+  api.on("mail:folderManagementChanged", onFolderManagementChanged);
   api.on("mail:accountsUpdated", () => setTimeout(() => { if ($("setup-guide").open) paintSetupGuide(); }, 0));
   api.on("nativeAgent:homeUpdated", (payload) => {
     if (!payload || typeof payload !== "object") return;

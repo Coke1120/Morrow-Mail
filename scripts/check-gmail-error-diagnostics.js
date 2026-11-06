@@ -125,11 +125,21 @@ test("transport diagnostics use static operations and never resubmit writes", as
     [api => api.deleteLabel("PRIVATE_ID"), "labels.delete"],
   ];
   for (const [work, operation] of steps) {
-    let calls = 0;
-    const api = createGmailMailApi({ accessToken: async () => "PRIVATE_TOKEN", fetchImpl: async () => { calls++; return reply(rpc("SERVICE_DISABLED")); } });
+    const calls = [];
+    const api = createGmailMailApi({ accessToken: async () => "PRIVATE_TOKEN", fetchImpl: async (_url, options) => {
+      calls.push(options.method || "GET");
+      // Deletion must first prove that this is still an editable user label.
+      // Let that read succeed so this case reaches the rejected DELETE.
+      if (operation === "labels.delete" && options.method === "GET") {
+        return reply({ labels: [{ id: "PRIVATE_ID", name: "PRIVATE_LABEL", type: "user" }] }, 200);
+      }
+      return reply(rpc("SERVICE_DISABLED"));
+    } });
     const error = await rejected(work(api));
     assert.equal(error.gmailDiagnostic.operation, operation); assert.equal(error.code, "gmail_api_disabled");
-    assert.equal(calls, 1); assert.equal(error.operationIssued, false); privateAbsent(error);
+    if (operation === "labels.delete") assert.deepEqual(calls, ["GET", "DELETE"], "one protection read and one submitted DELETE, without replay");
+    else assert.equal(calls.length, 1);
+    assert.equal(error.operationIssued, false); privateAbsent(error);
   }
   // Trash has an intentional metadata read before its single submitted write.
   for (const [work, operation] of [[api => api.trash("PRIVATE_ID"), "messages.trash"], [api => api.restoreTrash({ messageId: "PRIVATE_ID" }), "messages.untrash"]]) {
@@ -150,6 +160,17 @@ test("transport diagnostics use static operations and never resubmit writes", as
   const partial = await rejected(api.moveLabel("source", "dest"));
   assert.equal(partial.code, "partial"); assert.equal(partial.failed.length, 1); assert.equal(partial.moved.length, 0);
   assert.match(partial.message, /domainPolicy/); privateAbsent(partial); assert.equal(calls, 2);
+});
+
+test("label deletion reports a failed protection read as labels.list without submitting DELETE", async () => {
+  const calls = [];
+  const api = createGmailMailApi({ accessToken: async () => "PRIVATE_TOKEN", fetchImpl: async (_url, options) => {
+    calls.push(options.method || "GET"); return reply(rpc("SERVICE_DISABLED"));
+  } });
+  const error = await rejected(api.deleteLabel("PRIVATE_ID"));
+  assert.equal(error.gmailDiagnostic.operation, "labels.list"); assert.equal(error.code, "gmail_api_disabled");
+  assert.equal(error.operationIssued, false); assert.deepEqual(calls, ["GET"]);
+  assert.equal(calls.filter(method => method === "DELETE").length, 0); privateAbsent(error);
 });
 
 test("trusted Gmail category decides rate limits; legacy text heuristic stays", async () => {

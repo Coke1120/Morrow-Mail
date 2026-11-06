@@ -18,7 +18,11 @@ const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
 const localFolders = require("./local-folders");
+const contextOwner = require("../../shared/mail-context-owner");
 const { createImporter } = require("./mbox-import");
+const { createJournal: createFolderJournal } = require("./folder-recovery");
+const { createManager: createFolderManager } = require("./folder-management");
+const { createAccess: createFolderAccess } = require("./folder-adapter");
 const messageSummaries = require("../message-summary").createSummaryService({ readMessage: summaryMessage });
 
 const secrets = require("./secrets");
@@ -111,6 +115,45 @@ function bindAccount(account) {
   return bound;
 }
 
+function assertMessageContextOwner(owner, checkSource = true) {
+  const account = owner && db.accountById(owner.accountId);
+  const row = owner && db.messageById(owner.emailId);
+  if (!account || !row || row.account_id !== owner.accountId
+    || !Number.isSafeInteger(owner.bodyEpoch) || owner.bodyEpoch < 0
+    || owner.bodyEpoch !== (accountEpochs.get(owner.accountId) || 0)
+    || owner.connection !== contextOwner.connection(accountView(account, 0))
+    || (checkSource && row.folder_path !== owner.folderId)) throw removedAccountError();
+}
+
+const CONTEXT_MESSAGE_CHANNELS = new Set(["mail:markRead", "mail:markReadBatch", "mail:toggleStar", "mail:toggleStarBatch",
+  "mail:archive", "mail:archiveBatch", "mail:delete", "mail:deleteBatch", "mail:moveToFolder", "mail:moveToFolderBatch",
+  "mail:modifyMessageLabels", "mail:moveProviderMessage", "mail:transferToLocal"]);
+
+function contextMessageAdmission(channel, params) {
+  if (!params || !Object.prototype.hasOwnProperty.call(params, "contextOwners")) return null;
+  const invalid = () => Object.assign(new Error("This reviewed message action is invalid. Close it and review the messages again."), { code: "invalid_context", operationIssued: false });
+  const owners = params.contextOwners;
+  const targets = Array.isArray(params.items) ? params.items : params.emailId ? [params] : [];
+  if (!CONTEXT_MESSAGE_CHANNELS.has(channel) || params.threadId || params.restoreRead
+    || (["mail:delete", "mail:deleteBatch"].includes(channel) && params.moveToTrashOnly !== true) || !Array.isArray(owners)
+    || !owners.length || owners.length > 200 || owners.length !== targets.length) throw invalid();
+  const captured = owners.map(owner => {
+    if (!owner || typeof owner.accountId !== "string" || typeof owner.emailId !== "string"
+      || typeof owner.folderId !== "string" || !owner.folderId || typeof owner.connection !== "string") throw invalid();
+    return { accountId: owner.accountId, emailId: owner.emailId, folderId: owner.folderId,
+      bodyEpoch: owner.bodyEpoch, connection: owner.connection };
+  });
+  const byId = new Map(captured.map(owner => [owner.emailId, owner]));
+  if (byId.size !== captured.length) throw invalid();
+  for (const target of targets) {
+    const owner = byId.get(target.emailId || target.id);
+    if (!owner || owner.accountId !== (target.accountId || params.accountId)) throw invalid();
+  }
+  const check = () => { for (const owner of captured) assertMessageContextOwner(owner); };
+  check(); // Synchronous admission precedes credentials and optimistic journals.
+  return check;
+}
+
 function ok(data) {
   return { success: true, data };
 }
@@ -135,6 +178,50 @@ function dataFile() {
 
 let localStore = null;
 let mboxImporter = null;
+let folderJournal = null;
+let folderManager = null;
+let folderAccess = null;
+function ownedFolderAccess() {
+  if (!folderAccess) {
+    folderAccess = createFolderAccess({ accountById: db.accountById, bindAccount, assertAccountCurrent,
+      generation: id => accountEpochs.get(id) || 0, revision: id => secrets.revision(id),
+      googleClient: () => oauthConfig.loadGoogleClient()?.clientId || null, secretFor, withMailClient, exclusive,
+      blocked: id => db.folderWriteBlockers(id) > 0,
+      async refreshCache(account, client, check) {
+        const result = await remote.listFolderRecords(client); check();
+        // This metadata refresh uses the same ownership fence as the write.
+        // Gmail's existing reconciler retains old cached label copies safely.
+        db.replaceFolders(account.id, result.folders, result.delimiter); check(); emitAccounts();
+      } });
+  }
+  return folderAccess;
+}
+function managedFolders() {
+  if (!folderManager) {
+    const access = ownedFolderAccess();
+    folderManager = createFolderManager({ ...access, gate: updateGate,
+      journal(write) {
+        const file = path.join(path.dirname(dataFile()), "folder-recovery.sqlite");
+        if (folderJournal && folderJournal.file !== file) throw new Error("Stop folder actions before changing the mail profile.");
+        if (!folderJournal && (write || fs.existsSync(file))) folderJournal = createFolderJournal(file);
+        return folderJournal;
+      }, notify(accountId) { broadcast("mail:folderManagementChanged", { accountId }); } });
+  }
+  return folderManager;
+}
+
+async function folderManagementAnswer(params) {
+  try {
+    const account = db.accountById(params?.accountId);
+    if (!account || !Number.isSafeInteger(params?.expectedEpoch) || params.expectedEpoch !== (accountEpochs.get(account.id) || 0)) throw removedAccountError();
+    return ok(await managedFolders().answer(params));
+  } catch (error) {
+    // Protocol and secure-storage errors can contain provider identifiers or
+    // credential diagnostics. Only fixed manager messages cross this channel.
+    const safe = ["conflict", "unsupported", "folder_recovery", "folder_uncertain", "account_removed"].includes(error?.code);
+    return fail(safe ? error.code : "folder_management", safe ? error.message : "The mailbox folder operation could not be completed. Refresh its status before trying again; uncertain writes are never repeated automatically.");
+  }
+}
 function localArchive() {
   const file = path.join(path.dirname(dataFile()), "local-folders.sqlite");
   if (localStore?.file !== file) {
@@ -182,7 +269,7 @@ function emitLocalFolders() {
   broadcast("mail:emailsUpdated", { accountId: localFolders.ACCOUNT_ID });
 }
 
-async function transferToLocal(params) {
+async function transferToLocal(params, assertContextCurrent = () => {}) {
   if (!["copy", "move"].includes(params?.mode)) return fail("invalid", "Choose Copy or Move to Local Folders.");
   const row = db.messageById(params.emailId);
   if (!row || row.account_id !== params.accountId) return fail("email-gone", "That server message is no longer in this mailbox.");
@@ -193,7 +280,7 @@ async function transferToLocal(params) {
     const store = localArchive();
     store.folder(params.folderId);
     return await updateGate.run(() => exclusive(account.id, async () => {
-      const check = () => { snapshot.assertSnapshot(); actions.assertIdentityReady(row.id); };
+      const check = () => { assertContextCurrent(); snapshot.assertSnapshot(); actions.assertIdentityReady(row.id); };
       check();
       const gmailId = row.gmail_id || (account.mail_transport === "gmail_api" && db.gmailAlias(account.id, row.folder_path, row.uid, row.uid_validity)?.provider_id);
       const sourceKey = localFolders.digest(JSON.stringify([account.id, account.created_at, account.username,
@@ -1106,7 +1193,8 @@ function gmailTokenSupplier(account) {
 function withMailClient(account, password, work, options = {}) {
   if (account.mail_transport !== "gmail_api") return remote.withClient(account, password, work, options);
   const supplier = gmailTokenSupplier(account);
-  return remote.withClient(account, password, work, { ...options, ...supplier });
+  return remote.withClient(account, password, work, { ...options, ...supplier,
+    check() { supplier.check(); options.check?.(); } });
 }
 
 // Call inside the mailbox lane, immediately before each new connection. Do not
@@ -4326,12 +4414,20 @@ async function importGoogleOauthClientAdmitted(event) {
 function answer(channel, args, event) {
   if (!ready) return undefined;
   const params = args && args.length ? args[0] : undefined;
+  let assertContextCurrent;
+  try { assertContextCurrent = contextMessageAdmission(channel, params); }
+  catch (error) { return fail(error.code || "invalid_context", error.message); }
   if (["mail:mboxPick", "mail:mboxJobs", "mail:mboxStatus", "mail:mboxStart", "mail:mboxCancel", "mail:mboxDiscard"].includes(channel)) return mboxAnswer(channel, params || {}, event);
-  if (channel === "mail:transferToLocal") return transferToLocal(params || {});
+  if (channel === "mail:transferToLocal") return transferToLocal(params || {}, assertContextCurrent || undefined);
+  if (channel === "mail:folderManagement") return folderManagementAnswer(params || {});
   const localTarget = channel.startsWith("mail:") && (params?.accountId === localFolders.ACCOUNT_ID || localFolders.isMessage(params?.emailId || params?.messageId)
     || (Array.isArray(params?.items) && params.items.some(item => localFolders.isMessage(item.emailId || item.id))));
   if (["mail:localFolders", "mail:manageLocalFolder", "mail:moveLocalMessage", "mail:exportLocalMessage"].includes(channel) || localTarget) return localAnswer(channel, params || {}, event);
-  if (sidecar.handles(channel)) return sidecar.answer(channel, args);
+  if (["mail:createProviderFolder", "mail:renameProviderFolder", "mail:moveProviderFolder", "mail:moveFolder", "mail:createFolder"].includes(channel)) {
+    try { managedFolders().assertStorage(); }
+    catch { return fail("folder_recovery", "Folder recovery storage could not be verified. Folder writes are disabled; browsing remains available. Keep its files for recovery."); }
+  }
+  if (sidecar.handles(channel)) return sidecar.answer(channel, args, { assertContextCurrent });
   if (channel === "mail:cancelAttachmentRequest") return ok(attachmentRequests.cancel(params?.requestId, event?.sender));
   if (channel === "mail:listImapSmtpPresets") return ok(presets.CARDS);
   if (channel === "mail:discoverMail") return discoverMail(params || {});
@@ -4645,15 +4741,17 @@ function answer(channel, args, event) {
         }));
         const plan = db.planImapPathMove(records, sourceId, destinationId, delimiter);
         if (!plan.ok) return fail(plan.code || "invalid", plan.message);
-        let listed = null;
+        let listed = null, checkOwner = null;
         try {
-          await exclusive(account.id, async () => {
-            const password = await secretFor(account);
-            await withMailClient(account, password, async (client) => {
-              await remote.renameBox(client, plan.source, plan.next);
-              listed = await remote.listFolderRecords(client);
-            });
-          });
+          const access = ownedFolderAccess(), proof = access.owner(account.id);
+          await access.withAccount(account.id, async managed => {
+            checkOwner = managed.check;
+            managed.check();
+            await remote.renameBox(managed.transport, plan.source, plan.next); managed.check();
+            listed = await remote.listFolderRecords(managed.transport); managed.check();
+          }, proof);
+          // IMAP logout can also await account replacement after the callback.
+          checkOwner();
         } catch (error) {
           return fail("PROVIDER_ERROR", remote.explain(error));
         }
@@ -4697,15 +4795,17 @@ function answer(channel, args, event) {
         const delimiter = account.delimiter || "/";
         const folderPath = parent ? `${parent}${delimiter}${name}` : name;
         if (db.folderByPath(account.id, folderPath)) return fail("DUPLICATE_NAME", "A folder with that name already exists.");
+        let checkOwner = null;
         try {
-          await exclusive(account.id, async () => {
-            const password = await secretFor(account);
-            await withMailClient(account, password, async (client) => {
-              await remote.createBox(client, folderPath);
-              const listed = await remote.listFolderRecords(client);
-              db.replaceFolders(account.id, listed.folders, listed.delimiter);
-            });
-          });
+          const access = ownedFolderAccess(), proof = access.owner(account.id);
+          await access.withAccount(account.id, async managed => {
+            checkOwner = managed.check;
+            managed.check();
+            await remote.createBox(managed.transport, folderPath); managed.check();
+            const listed = await remote.listFolderRecords(managed.transport); managed.check();
+            db.replaceFolders(account.id, listed.folders, listed.delimiter); managed.check();
+          }, proof);
+          checkOwner();
         } catch (error) {
           return fail("PROVIDER_ERROR", remote.explain(error));
         }
@@ -4971,10 +5071,11 @@ function noteBotSent(receipt) {
   }
 }
 
-actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast });
+actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast,
+  assertContextOwner: owner => assertMessageContextOwner(owner, false) });
 
 module.exports = {
-  async stopLocalImports() { await mboxImporter?.stop(); mboxImporter = null; },
+  async stopLocalImports() { folderManager?.pause(); await mboxImporter?.stop(); mboxImporter = null; },
   closeLocalArchiveForTest() { if (mboxImporter) throw new Error("Stop imports before closing the local archive."); localStore?.close(); localStore = null; },
   timelineAccountStamp(id) {
     const account = db.accountById(id);

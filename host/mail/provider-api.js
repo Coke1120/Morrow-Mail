@@ -326,12 +326,19 @@ async function moveLabel(accessToken, id, destinationId, fetchImpl) {
   return { id: plan.sourceId, name: plan.nextName, renamed: moved };
 }
 
-async function deleteLabel(accessToken, id, fetchImpl) {
+async function deleteLabel(accessToken, id, fetchImpl, { expectedName } = {}) {
   const labelId = safeId(id);
   if (!labelId || GMAIL_LOCKED.has(labelId)) {
     const error = new Error("That Gmail label cannot be changed.");
     error.code = "invalid";
     throw error;
+  }
+  const label = (await listLabels(accessToken, fetchImpl)).find(row => row.id === labelId);
+  if (!label || label.type !== "user" || label.editable !== true) {
+    throw Object.assign(new Error("Only a current user label can be deleted. System labels are protected."), { code: "unsupported", operationIssued: false });
+  }
+  if (expectedName != null && label.name !== expectedName) {
+    throw Object.assign(new Error("The reviewed Gmail label changed. No label was deleted."), { code: "conflict", operationIssued: false });
   }
   await apiJson(gmailLabelUrl(labelId), accessToken, { method: "DELETE", fetchImpl });
   return { id: labelId };
@@ -649,14 +656,7 @@ async function moveMailFolder(accessToken, id, destinationId, fetchImpl) {
 }
 
 async function deleteMailFolder(accessToken, id, fetchImpl) {
-  const folderId = safeId(id);
-  if (!folderId) {
-    const error = new Error("That Outlook folder cannot be changed.");
-    error.code = "invalid";
-    throw error;
-  }
-  await apiJson(graphFolderUrl(folderId), accessToken, { method: "DELETE", fetchImpl });
-  return { id: folderId };
+  throw Object.assign(new Error("Irreversible Outlook folder deletion is disabled. Use a verified recoverable move to Trash."), { code: "unsupported", operationIssued: false });
 }
 
 async function graphSourceFolder(accessToken, source, fetchImpl) {
