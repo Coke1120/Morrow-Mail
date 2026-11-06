@@ -8224,6 +8224,7 @@ function paintSuggestions(email) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "ghost";
+    button.disabled = composeAiLocked() || !!state.draftWrite?.pending;
     button.textContent = text;
     button.addEventListener("click", () => {
       presentCompose(withSuggestion(composeSeed(email, "reply", self), text))
@@ -13985,6 +13986,7 @@ function paintComposeSuggestions() {
 }
 
 function applySuggestedReply(text) {
+  if (composeAiLocked() || state.draftWrite?.pending) return;
   const body = $("compose-body");
   const current = body && typeof body.value === "string" ? body.value : "";
   writeComposeBody(suggestedReplyBody(current, state.signatureText, text));
@@ -14804,6 +14806,7 @@ function paintComposeAi() {
   }
   const prompt = $("ai-prompt");
   if (prompt) prompt.disabled = locked || pending;
+  for (const button of $("compose-suggest-list")?.querySelectorAll?.("button") || []) button.disabled = locked || pending;
   const go = $("ai-generate");
   if (go) go.disabled = locked || pending || (mode === "reply" && !available);
   const pop = $("compose-ai-popover");
@@ -14871,11 +14874,21 @@ function toggleComposeAi() {
   else openComposeAi();
 }
 
+function onComposeAiPromptKeydown(event) {
+  if (event.key !== "Enter") return;
+  // Prompt Enter belongs to this editor, including when AI is unavailable or composing.
+  event.stopPropagation();
+  if (event.isComposing || event.keyCode === 229 || event.shiftKey || event.altKey || !(event.ctrlKey || event.metaKey)) return;
+  event.preventDefault();
+  if ($("ai-generate")?.disabled || $("ai-prompt")?.disabled) return;
+  startDraftWrite().catch((error) => showStatus(error.message, true));
+}
+
 function composeAiFocusables() {
   const pop = $("compose-ai-popover");
   if (!pop || typeof pop.querySelectorAll !== "function") return [];
   return [...pop.querySelectorAll("button, input, textarea")].filter((el) => {
-    if (!el || el.disabled || el.type === "hidden" || el.tabIndex < 0) return false;
+    if (!el || el.disabled || el.type === "hidden" || el.tabIndex < 0 || el.closest?.("[hidden]")) return false;
     return true;
   });
 }
@@ -27210,11 +27223,7 @@ function wire() {
   $("ai-cancel").addEventListener("click", () => {
     dismissComposeAi().catch((error) => showStatus(error.message, true));
   });
-  $("ai-prompt").addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
-    event.preventDefault();
-    startDraftWrite().catch((error) => showStatus(error.message, true));
-  });
+  $("ai-prompt").addEventListener("keydown", onComposeAiPromptKeydown);
   const attach = $("compose-attach");
   if (attach && typeof attach.addEventListener === "function") {
     attach.addEventListener("click", () => {
