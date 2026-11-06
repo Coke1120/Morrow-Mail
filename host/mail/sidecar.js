@@ -18,7 +18,8 @@ function connectionKey(account) {
     account.auth_kind, account.mail_transport, account.gmail_generation, account.imap_host, account.smtp_host]);
 }
 
-async function withGrantSnapshot(accounts, work) {
+async function withGrantSnapshot(accounts, work, assertContextCurrent = () => {}) {
+  assertContextCurrent();
   if (grantRequests.getStore()) return work();
   const records = new Map();
   const rows = (Array.isArray(accounts) ? accounts : [accounts]).filter(Boolean);
@@ -26,6 +27,7 @@ async function withGrantSnapshot(accounts, work) {
   const client = clientKey();
   const owners = rows.map(account => ({ account, key: connectionKey(account) }));
   const assertCurrent = () => {
+    assertContextCurrent();
     if (client !== clientKey() || owners.some(owner => {
       const current = db.accountById(owner.account.id);
       return !current || connectionKey(current) !== owner.key;
@@ -39,6 +41,7 @@ async function withGrantSnapshot(accounts, work) {
   await Promise.all(Array.from({ length: Math.min(4, keys.length) }, async () => {
     while (cursor < keys.length) {
       const key = keys[cursor++];
+      assertCurrent();
       const revision = secrets.revision(key);
       const raw = await secrets.getPasswordAsync(key);
       records.set(key, { raw, revision });
@@ -635,6 +638,11 @@ async function renameProviderFolder(params) {
   const ready = await withPurpose(params, "organize");
   if (ready.error) return ready.error;
   try {
+    const listed = ready.provider === "google" ? await gmail.listLabels(ready.token.authorization) : await gmail.listMailFolders(ready.token.authorization);
+    const source = listed.find(folder => folder.id === params?.folderId);
+    if (!source || source.editable !== true || source.type === "system" || source.wellKnown) {
+      return fail("unsupported", "Choose an existing editable user folder or label in this mailbox. System folders are protected.");
+    }
     const renamed = ready.provider === "google"
       ? await gmail.renameLabel(ready.token.authorization, params && params.folderId, params && params.name)
       : await gmail.renameMailFolder(ready.token.authorization, params && params.folderId, params && params.name);
@@ -658,16 +666,9 @@ async function moveProviderFolder(params) {
 }
 
 async function deleteProviderFolder(params) {
-  const ready = await withPurpose(params, "organize");
-  if (ready.error) return ready.error;
-  try {
-    const removed = ready.provider === "google"
-      ? await gmail.deleteLabel(ready.token.authorization, params && params.folderId)
-      : await gmail.deleteMailFolder(ready.token.authorization, params && params.folderId);
-    return ok(removed);
-  } catch (error) {
-    return failFrom(error);
-  }
+  // The old endpoint had no recovery receipt or one-use reviewed identity.
+  // Never let callers bypass the recoverable folder-management flow.
+  return fail("unsupported", "Direct folder deletion is disabled. Use the reviewed recoverable folder action in Folders & labels.");
 }
 
 function messageRfc(params) {
@@ -695,6 +696,7 @@ function providerMessageIdentity(row, ready) {
     rfcMessageId: row.rfc_message_id || "",
     sourceFolder: folder && { path: folder.path, providerId: folder.provider_id, wellKnown: folder.well_known, delimiter: ready.account.delimiter || "/" },
     check() {
+      grantRequests.getStore()?.assertCurrent();
       if (row.draft_pending || !messageStillCurrent(row, ready.account)) {
         throw Object.assign(new Error("This selected message or mailbox connection changed. Refresh before retrying."), { code: "conflict" });
       }
@@ -1446,12 +1448,12 @@ function answer(channel, args) {
 
 module.exports = {
   handles,
-  async answer(channel, args) {
+  async answer(channel, args, options = {}) {
     if (!handles(channel)) return undefined;
     if (["mail:grantOrganize", "mail:grantVacation", "mail:grantRules", "calendar:connect"].includes(channel)) return answer(channel, args);
     try {
       const rows = ["mail:oauthStatus", "calendar:status"].includes(channel) ? db.listAccountRows() : accountFrom(args?.[0]);
-      return await withGrantSnapshot(rows, () => answer(channel, args));
+      return await withGrantSnapshot(rows, () => answer(channel, args), options.assertContextCurrent || undefined);
     } catch (error) { return failFrom(error); }
   },
   providerOf,

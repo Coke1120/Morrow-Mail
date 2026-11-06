@@ -2,20 +2,26 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-// Bump this when the disclosed data categories, purposes or destinations change.
+// Historical disclosure versions are used only to verify and map legacy grants.
+// Change the affected scope version when that data use expands; app versions do not participate.
 const VERSION = 4;
+const SCOPES = Object.freeze({ core: 1, timeline: 1, case: 1, background: 1 });
+const MANUAL_SCOPES = Object.freeze(["core", "timeline", "case"]);
+const LEGACY_SCOPES = Object.freeze({ 1: ["core", "background"], 2: ["core", "background"], 3: ["core", "timeline", "background"], 4: ["core", "timeline", "case", "background"] });
+const FORMAT = "scoped-ai-use-v1";
 const DISCLOSURE = "AI can send mail sender addresses, subjects, dates, snippets and message metadata; selected message text and quoted history; draft text, signatures, selections and instructions; Brain profile, identity, categories and writing rules; Agent notes and recent conversation; and, for calendar-enabled skills and Agent questions, event titles, times and locations. It uses the context needed for translation, reply suggestions, writing, profile learning, triage, skills and answers. Attachment files are not included by these AI paths. Mail search, cached reading and ordinary mail/calendar operations do not use the AI provider. Timeline thread extraction and cross-thread case synthesis send reviewed selected message text, subjects, attachment names, sender names and addresses, mail timestamps and date provenance, optional keywords and contact emails, and Main/Background selections, without Brain, Agent notes or conversation history. Independent To/Cc headers stay local; body text and focus can still include recipient addresses; they require an explicit Generate click and never run automatically.";
 const BACKGROUND = "Separately allow automatic Brain profile refresh, triage when Agent opens, reply suggestions when a reply composition opens, and saved scheduled skills while Morrow Mail is open. These can send the same relevant context without another AI button press. Opening Brain may refresh a stale profile. With background permission off, use explicit AI actions instead.";
 const unmet = steps => `${steps[0][0].toUpperCase()}${steps[0].slice(1)}${steps.length > 1 ? ` and ${steps.slice(1).join(" and ")}` : ""}, then review this connection again.`;
 const DATA_SUMMARY = "As needed: mail sender addresses, subjects, dates, snippets and metadata; selected message text and quoted history; drafts, signatures, selections and instructions; Brain profile, identity, categories and writing rules; Agent notes and recent conversation; and calendar event titles, times and locations for calendar skills/questions. Attachment files are excluded. Timeline thread extraction and cross-thread case synthesis send reviewed selected message text, subjects, attachment names, sender names and addresses, mail timestamps and date provenance, optional keywords and contact emails, and Main/Background selections, without Brain, Agent notes or conversation history. Independent To/Cc headers stay local; body text and focus can still include recipient addresses; they require an explicit Generate click and never run automatically.";
-const PURPOSES = "Explicit AI actions: translation, reply suggestions, writing, profile learning, triage, skills, answers and selected-mail timeline extraction. Thread timelines and cross-thread case reports send reviewed message text, subjects, attachment names, sender names and addresses, mail timestamps and date provenance, optional keywords and contact emails, and Main/Background selections, without Brain, Agent notes or conversation history. Independent To/Cc headers stay local; body text and focus can still include recipient addresses; they never run automatically.";
+const PURPOSES = "Explicit AI actions: translation, reply suggestions, writing, profile learning, triage, skills and answers. Thread timelines and cross-thread case reports send reviewed message text, subjects, attachment names, sender names and addresses, mail timestamps and date provenance, optional keywords and contact emails, and Main/Background selections, without Brain, Agent notes or conversation history. Independent To/Cc headers stay local; body text and focus can still include recipient addresses; they never run automatically.";
 const BACKGROUND_SUMMARY = "Automatic Brain profile refresh (including stale profiles on opening Brain), Agent-open triage, reply suggestions on reply-compose open, and saved scheduled skills while Morrow Mail is open. May send the same relevant context without another AI button press.";
 const error = message => Object.assign(new Error(message), { code: "ai-consent-required" });
 const hash = value => crypto.createHash("sha256").update(value).digest("hex");
 
 function createConsent({ directory = () => require("./ai-config").userDataDir(), config = () => require("./ai-config").loadConfig(),
   account = () => require("./chatgpt-auth").getAuth().status(),
-  background = value => require("./chatgpt-auth").getAuth().preferences({ backgroundConsent: value }) } = {}) {
+  background = value => require("./chatgpt-auth").getAuth().preferences({ backgroundConsent: value }), scopeVersions = SCOPES } = {}) {
+  if (Object.keys(scopeVersions).length !== Object.keys(SCOPES).length || Object.keys(SCOPES).some(key => !Number.isSafeInteger(scopeVersions[key]) || scopeVersions[key] < 1)) throw new Error("Invalid AI scope versions");
   const nonce = crypto.randomUUID();
   const active = new Set();
   let epoch = 0;
@@ -30,7 +36,7 @@ function createConsent({ directory = () => require("./ai-config").userDataDir(),
     fs.writeFileSync(temporary, JSON.stringify(record, null, 2), { mode: 0o600 });
     fs.renameSync(temporary, location());
   }
-  function target(cfg = config()) {
+  function target(cfg = config(), legacyVersion = null) {
     let destination, model, registration = "", label, ready, blocker = "";
     if (cfg.authMode === "chatgpt") {
       const status = account();
@@ -58,19 +64,32 @@ function createConsent({ directory = () => require("./ai-config").userDataDir(),
     }
     const url = new URL(destination);
     const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-    return { fingerprint: hash(JSON.stringify([VERSION, cfg.authMode || "api_key", destination, model, registration, cfg.authMode === "chatgpt" ? "" : cfg.apiKey || ""])),
+    return { fingerprint: hash(JSON.stringify([legacyVersion ?? FORMAT, cfg.authMode || "api_key", destination, model, registration, cfg.authMode === "chatgpt" ? "" : cfg.apiKey || ""])),
       destination: `${url.origin}${url.pathname}${url.search ? " (with query parameters)" : ""}`, model, label, ready, blocker, local };
   }
   function state() {
     const selected = target(), record = read();
-    const manual = !blocked && selected.ready && record.version === VERSION && record.fingerprint === selected.fingerprint && record.manual === true;
-    const token = hash(JSON.stringify([nonce, epoch, selected.fingerprint, record.id]));
-    return { selected, record, manual, token };
+    const scopes = { core: false, timeline: false, case: false, background: false };
+    if (!blocked && selected.ready && record.manual === true) {
+      if (record.format === FORMAT && record.fingerprint === selected.fingerprint) {
+        for (const key of Object.keys(SCOPES)) scopes[key] = record.scopes?.[key] === scopeVersions[key];
+      } else if (!record.format && Object.hasOwn(LEGACY_SCOPES, record.version)
+          && record.fingerprint === target(config(), record.version).fingerprint) {
+        // Only known, unchanged uses survive a verified historical disclosure.
+        for (const key of LEGACY_SCOPES[record.version]) scopes[key] = scopeVersions[key] === 1;
+      }
+    }
+    scopes.timeline = scopes.core && scopes.timeline;
+    scopes.case = scopes.timeline && scopes.case;
+    scopes.background = scopes.core && scopes.background && record.background === true;
+    const manual = scopes.core;
+    const token = hash(JSON.stringify([nonce, epoch, selected.fingerprint, record.id, scopes, record.background === true]));
+    return { selected, record, manual, scopes, token };
   }
   function status() {
-    const { selected, record, manual, token } = state();
+    const { selected, record, manual, scopes, token } = state();
     const { fingerprint, ...destination } = selected;
-    return { ...destination, token, version: VERSION, manual, background: manual && record.background === true,
+    return { ...destination, token, version: VERSION, manual, scopes, background: scopes.background,
       disclosure: DISCLOSURE, backgroundDisclosure: BACKGROUND,
       dataSummary: DATA_SUMMARY, purposes: PURPOSES, backgroundSummary: BACKGROUND_SUMMARY,
       locality: selected.local ? "This endpoint is a service on this computer. It receives AI context and may forward it according to its own configuration; Morrow cannot verify that it stays local."
@@ -92,24 +111,32 @@ function createConsent({ directory = () => require("./ai-config").userDataDir(),
     const current = state();
     if (input.token !== current.token || !current.selected.ready) throw error("AI destination, account or permission changed. Review the saved connection again.");
     if (input.manual !== true || typeof input.background !== "boolean") throw error("Affirmatively allow AI data use after reviewing the disclosure.");
+    // Older first-party callers reviewed the complete version-4 disclosure.
+    // New UI callers always supply their individually selected known uses.
+    const choices = input.scopes === undefined ? MANUAL_SCOPES : input.scopes;
+    if (!Array.isArray(choices) || choices.length > 3 || new Set(choices).size !== choices.length
+        || !choices.includes("core") || choices.some(key => !MANUAL_SCOPES.includes(key))
+        || (choices.includes("case") && !choices.includes("timeline"))) throw error("Review the selected AI data uses again.");
     invalidate();
     blocked = true;
     if (config().authMode === "chatgpt") background(input.background);
-    write({ id: crypto.randomUUID(), version: VERSION, fingerprint: current.selected.fingerprint, manual: true,
+    write({ id: crypto.randomUUID(), format: FORMAT, version: VERSION, fingerprint: current.selected.fingerprint, manual: true,
+      scopes: Object.fromEntries([...choices, ...(input.background ? ["background"] : [])].map(key => [key, scopeVersions[key]])),
       background: input.background, grantedAt: new Date().toISOString() });
     blocked = false;
     return status();
   }
-  function acquire(cfg, { signal, background: automatic = false, stamp } = {}) {
+  function acquire(cfg, { signal, background: automatic = false, stamp, scope = "core" } = {}) {
     const initial = state();
-    if (!initial.manual || (automatic && initial.record.background !== true)) throw error(automatic
+    if (!initial.manual || (automatic && !initial.scopes.background)) throw error(automatic
       ? "Background AI is off. Review and separately allow it in Settings → AI → AI data permission."
       : "AI data use is off. Review the destination and allow it in Settings → AI → AI data permission. Saving a key or signing in does not grant permission.");
     if (target(cfg).fingerprint !== initial.selected.fingerprint || (stamp && stamp !== initial.token)) throw error("AI settings or permission changed. Start the action again after reviewing AI data permission.");
+    if (!MANUAL_SCOPES.includes(scope) || !initial.scopes[scope] || (automatic && scope !== "core")) throw error("Review and separately allow this Timeline or Case data use in Settings → AI → AI data permission. Existing unchanged AI uses remain allowed.");
     const controller = new AbortController();
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     const check = () => {
-      if (combined.aborted || state().token !== initial.token || !state().manual) throw error("AI request cancelled because its permission or destination changed.");
+      if (combined.aborted || state().token !== initial.token || !state().scopes[scope]) throw error("AI request cancelled because its permission or destination changed.");
     };
     check();
     active.add(controller);
@@ -126,4 +153,4 @@ function createConsent({ directory = () => require("./ai-config").userDataDir(),
 }
 
 let instance;
-module.exports = { VERSION, DISCLOSURE, BACKGROUND, createConsent, getConsent: () => instance || (instance = createConsent()) };
+module.exports = { VERSION, SCOPES, DISCLOSURE, BACKGROUND, createConsent, getConsent: () => instance || (instance = createConsent()) };

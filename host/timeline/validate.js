@@ -91,6 +91,21 @@ function checkSchema(check, value) {
   if (!check(value)) throw failure("timeline-validation", check.errors.map(error => `${error.instancePath}:${error.keyword}`));
 }
 
+function parseModelJson(input) {
+  try {
+    // Compatibility with providers that wrap their entire JSON response in a
+    // single fence. Never search prose for an embedded JSON fragment.
+    let text = typeof input === "string" ? input : new TextDecoder("utf-8", { fatal: true }).decode(input);
+    if (Buffer.byteLength(text) > MAX_BYTES) throw failure("timeline-size");
+    text = text.trim();
+    const fence = /^```(?:json)?\r?\n([\s\S]*)\r?\n```$/i.exec(text);
+    if (fence) text = fence[1];
+    return parseJson(text);
+  } catch (error) {
+    throw Object.assign(failure(error.code || "timeline-validation"), { validationCategory: "parse" });
+  }
+}
+
 function validateDocument(document) {
   const check = documentChecks.get(document?.schema_version);
   if (!check) throw failure("timeline-version");
@@ -141,5 +156,5 @@ function validateCandidates(value, tokens) {
   return value.events;
 }
 
-module.exports = { schema, MAX_BYTES, failure, parseJson, validateDocument, validateCandidates, validateCaseReport,
+module.exports = { schema, MAX_BYTES, failure, parseJson, parseModelJson, validateDocument, validateCandidates, validateCaseReport,
   validateMetadata: value => checkSchema(metadataCheck, { ...value, summary: "Pending", open_actions: [], unclear: [] }) };

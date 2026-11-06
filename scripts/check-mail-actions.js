@@ -58,6 +58,7 @@ async function run() {
     db.replaceFolders("act", [
       { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
       { path: "Archive", name: "Archive", wellKnown: "archive" },
+      { path: "Trash", name: "Trash", wellKnown: "deleteditems" },
     ]);
     for (const [channel, params] of [
       ["mail:delete", {emailId:"act-local", accountId:"other"}],
@@ -70,6 +71,29 @@ async function run() {
       assert.equal(db.messageById("act-local").folder_path, "INBOX");
       assert.equal(db.mailActionsForMessage("act-local").length, before, "no partial batch acceptance");
     }
+    // Simulate a message entering Trash after the row menu/confirmation opened.
+    db.insertMessage({ id: "act-trash", accountId: "act", folderPath: "Trash", uid: 0, uidValidity: 0,
+      date: new Date().toISOString(), listSortTs: Date.now(), unread: true });
+    for (const [channel, params] of [
+      ["mail:delete", { emailId: "act-trash", accountId: "act", moveToTrashOnly: true }],
+      ["mail:deleteBatch", { folderWellKnownName: "trash", moveToTrashOnly: true,
+        items: [{emailId:"act-local",accountId:"act"}, {emailId:"act-trash",accountId:"act"}] }],
+    ]) {
+      const before = db.mailActionsForMessage("act-local").length;
+      const denied = await engine.answer(channel, [params]);
+      assert.equal(denied.success, false, "Move to Trash must reject an already-Trash source");
+      assert.equal(denied.error.code, "already-trash");
+      assert.equal(db.mailActionsForMessage("act-local").length, before, "no partial batch acceptance");
+      assert.equal(db.mailActionsForMessage("act-trash").length, 0, "no permanent or same-folder move");
+      assert.equal(db.messageById("act-local").folder_path, "INBOX");
+      assert.equal(db.messageById("act-trash").folder_path, "Trash");
+    }
+    const trashed = await engine.answer("mail:deleteBatch", [{ items:[{emailId:"act-local",accountId:"act"}], folderWellKnownName:"trash", moveToTrashOnly:true }]);
+    assert.equal(trashed.success, true);
+    assert.equal(db.messageById("act-local").folder_path, "Trash", "a stale Trash hint cannot choose permanent deletion");
+    assert.equal(JSON.parse(db.mailActionsForMessage("act-local").at(-1).intent_json).permanent, false);
+    await engine.answer("mail:undoRemoval", [{ opIds: trashed.data.opIds }]);
+    assert.equal(db.messageById("act-local").folder_path, "INBOX");
     const moved = await engine.answer("mail:archive", [{ emailId: "act-local", accountId: "act" }]);
     assert.equal(moved.success, true);
     assert.equal(moved.data.opIds.length, 1);

@@ -1,6 +1,6 @@
 # Morrow Mail
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/Website-hwl--hk.com-193c34)](https://hwl-hk.com/en/morrow-mail)
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsors-Coke1120-ea4aaa)](https://github.com/sponsors/Coke1120)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-coke1120-FFDD00)](https://buymeacoffee.com/coke1120)
@@ -124,4 +124,16 @@ npm run check
 
 The package name is `morrow-mail`; the app is Electron (`host/`, `renderer/`, `shared/`). Project guidance is in [AGENTS.md](AGENTS.md) and `.agents/skills/`. The old SwiftUI, WinUI, and Rust snapshot in [`legacy.zip`](legacy.zip) is archival only; see [LEGACY.md](LEGACY.md).
 
-Source: [Coke1120/Morrow-Mail](https://github.com/Coke1120/Morrow-Mail). Downloads: [Releases](https://github.com/Coke1120/Morrow-Mail/releases). License: [MIT](LICENSE). Copyright (c) 2026 Leo Ho / HWL-HK. [Code of Conduct](CODE_OF_CONDUCT.md).
+Source: [Coke1120/Morrow-Mail](https://github.com/Coke1120/Morrow-Mail). Downloads: [Releases](https://github.com/Coke1120/Morrow-Mail/releases). License: [Apache License 2.0](LICENSE). Copyright (c) 2026 Leo Ho / HWL-HK. [Code of Conduct](CODE_OF_CONDUCT.md).
+
+The opening screen, What's new, and About & updates show the installed version,
+GitHub source and license links. What's new appears once for each app version;
+About & updates remains available from the sidebar.
+
+Earlier releases and previously MIT-licensed portions retain their MIT terms and
+notices in [LICENSE-MIT](LICENSE-MIT). Dependencies, bundled libraries, fonts and
+other third-party material keep their own licenses; see [NOTICE](NOTICE) and
+[third-party notices](THIRD_PARTY_NOTICES.md).
+
+Commercial use is welcome. For tailor-made services, contact
+[leo@hwl-hk.com](mailto:leo@hwl-hk.com).

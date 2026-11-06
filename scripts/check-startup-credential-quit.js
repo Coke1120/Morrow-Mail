@@ -52,12 +52,12 @@ function deferred() {
         startupStatusHtml: () => "<html>synthetic startup</html>", initMail: () => engine.init(),
         presentBootFailure: async () => { calls.errors++; }, scheduledQuitTime: () => "synthetic time",
         requestQuitChoice(prompt) { calls.prompt++; assert.equal(prompt.count, 1); return choice.promise; },
-        app: { on: (name, callback) => events.set(name, callback), quit() { calls.quit++; events.get("before-quit")(event()); },
+        app: { getVersion: () => "0.4.3", on: (name, callback) => events.set(name, callback), quit() { calls.quit++; events.get("before-quit")(event()); },
           exit() { throw new Error("Unexpected synthetic exit"); } },
         quitScheduled,
         BrowserWindow: class {
           constructor() { this.listeners = new Map(); this.destroyed = false; window = this;
-            this.webContents = { executeJavaScript: async () => {} }; }
+            this.webContents = { setWindowOpenHandler() {}, on() {}, executeJavaScript: async () => {} }; }
           on(name, callback) { this.listeners.set(name, callback); }
           loadURL() { return Promise.resolve(); }
           show() {}
