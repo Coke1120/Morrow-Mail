@@ -102,6 +102,7 @@ const INVOKE = [
   "mail:mboxDiscard",
   "mail:manageLocalFolder",
   "mail:transferToLocal",
+  "mail:crossMailboxCopy",
   "mail:moveLocalMessage",
   "mail:exportLocalMessage",
   "mail:getComposeContext",

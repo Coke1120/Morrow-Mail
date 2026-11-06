@@ -23,6 +23,9 @@ const { createImporter } = require("./mbox-import");
 const { createJournal: createFolderJournal } = require("./folder-recovery");
 const { createManager: createFolderManager } = require("./folder-management");
 const { createAccess: createFolderAccess } = require("./folder-adapter");
+const { createJournal: createCopyJournal } = require("./copy-recovery");
+const { createService: createMailboxCopyService } = require("./cross-mailbox-copy");
+const { createAccess: createMailboxCopyAccess } = require("./cross-mailbox-access");
 const messageSummaries = require("../message-summary").createSummaryService({ readMessage: summaryMessage });
 
 const secrets = require("./secrets");
@@ -181,6 +184,27 @@ let mboxImporter = null;
 let folderJournal = null;
 let folderManager = null;
 let folderAccess = null;
+let mailboxCopyJournal = null;
+let mailboxCopyService = null;
+function ownedMailboxCopies() {
+  const file = path.join(path.dirname(dataFile()), "mailbox-copy-recovery.sqlite");
+  if (mailboxCopyJournal && mailboxCopyJournal.file !== file) throw new Error("Finish mailbox copies before changing the mail profile.");
+  if (!mailboxCopyJournal) {
+    mailboxCopyJournal = createCopyJournal(file);
+    mailboxCopyJournal.recover();
+  }
+  if (!mailboxCopyService) {
+    const access = createMailboxCopyAccess({ db, bindAccount, assertAccountCurrent,
+      owner: id => ownedFolderAccess().owner(id), publicAccount: account => accountView(account, 0),
+      secretFor, withMailClient, exclusive, localArchive, identityReady: id => actions.assertIdentityReady(id) });
+    mailboxCopyService = createMailboxCopyService({ access, journal: mailboxCopyJournal, gate: updateGate });
+  }
+  return mailboxCopyService;
+}
+async function crossMailboxCopyAnswer(params) {
+  try { return ok(await ownedMailboxCopies().answer(params)); }
+  catch (error) { return fail(error.code || "mailbox_copy", error.message); }
+}
 function ownedFolderAccess() {
   if (!folderAccess) {
     folderAccess = createFolderAccess({ accountById: db.accountById, bindAccount, assertAccountCurrent,
@@ -4414,6 +4438,9 @@ async function importGoogleOauthClientAdmitted(event) {
 function answer(channel, args, event) {
   if (!ready) return undefined;
   const params = args && args.length ? args[0] : undefined;
+  // This reviewed two-account channel validates its own captured source and
+  // destination owners, rather than the single-account legacy action guard.
+  if (channel === "mail:crossMailboxCopy") return crossMailboxCopyAnswer(params || {});
   let assertContextCurrent;
   try { assertContextCurrent = contextMessageAdmission(channel, params); }
   catch (error) { return fail(error.code || "invalid_context", error.message); }
@@ -5075,6 +5102,10 @@ actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast,
   assertContextOwner: owner => assertMessageContextOwner(owner, false) });
 
 module.exports = {
+  closeMailboxCopyForTest() {
+    if (mailboxCopyService?.active) throw new Error("Finish mailbox copies before closing recovery storage.");
+    mailboxCopyJournal?.close(); mailboxCopyJournal = null; mailboxCopyService = null;
+  },
   async stopLocalImports() { folderManager?.pause(); await mboxImporter?.stop(); mboxImporter = null; },
   closeLocalArchiveForTest() { if (mboxImporter) throw new Error("Stop imports before closing the local archive."); localStore?.close(); localStore = null; },
   timelineAccountStamp(id) {

@@ -149,6 +149,13 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
     if (!source.length) throw invalid("Gmail returned an empty MIME message.");
     return { ...result, source };
   }
+  async function importMessage(source, labels, { beforeSubmit } = {}) {
+    // Official mailbox import, never drafts.create or messages.send. Existing
+    // gmail.modify covers this endpoint; no scope or delivery grant is added.
+    return writeResult(await request("/messages/import", { operation: "messages.import", method: "POST",
+      body: { ...rawMessage(source), labelIds: labelIds(labels) },
+      query: { internalDateSource: "dateHeader", processForCalendar: false, neverMarkSpam: false, deleted: false }, beforeSubmit }));
+  }
   async function attachment(messageId, attachmentId, { signal: readSignal } = {}) {
     const result = await request(`/messages/${id(messageId)}/attachments/${id(attachmentId)}`, { operation: "attachments.get", signal: readSignal });
     return decode(result.data);
@@ -220,7 +227,7 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
       throw error;
     }
   }
-  return { profile: () => request("/profile", { operation: "profile.get" }), listMessages, getMessage, raw, attachment, history, listDrafts, getDraft, saveDraft, discardDraft, send,
+  return { profile: () => request("/profile", { operation: "profile.get" }), listMessages, getMessage, raw, importMessage, attachment, history, listDrafts, getDraft, saveDraft, discardDraft, send,
     getLabel: labelId => request(`/labels/${id(labelId)}`, { operation: "labels.get" }),
     modifyLabels, trash, restoreTrash,
     markRead: (messageId, read, options) => modifyLabels(messageId, read ? [] : ["UNREAD"], read ? ["UNREAD"] : [], options),
