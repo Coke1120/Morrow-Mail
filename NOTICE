@@ -1,0 +1,21 @@
+Morrow Mail
+Copyright (c) 2026 Leo Ho / HWL-HK
+
+Morrow Mail is distributed under the Apache License, Version 2.0.
+The full license is in LICENSE.
+
+Previously MIT-licensed Morrow Mail code retains its copyright and
+permission notice in LICENSE-MIT. This change does not withdraw rights
+already granted under MIT or change the license of earlier releases.
+
+Third-party components retain their own copyrights and license terms.
+THIRD_PARTY_NOTICES.md includes notices for libraries bundled into the
+renderer. Runtime npm dependencies retain their license files inside
+node_modules. Electron's LICENSE.electron.txt and LICENSES.chromium.html
+are also copied into the packaged resources/licenses directory, including
+on macOS where electron-builder removes the top-level distribution copies.
+PDF character maps and fonts retain the license files in
+renderer/vendor/pdfjs/cmaps and standard_fonts.
+
+Development-only agent skills and the legacy.zip archive are not part of
+the packaged app and are not relicensed by the project's LICENSE.
