@@ -22,6 +22,7 @@ const root = path.join(__dirname, '..'), output = process.env.MORROW_UI_OUTPUT |
     await page.route('**/*', route => route.request().url().startsWith(`http://127.0.0.1:${server.address().port}/`) ? route.continue() : (external.push(route.request().url().split('?')[0]), route.abort()));
     await page.addInitScript(() => {
       window.fixtureCalls = []; window.fixtureSuggestionMode = 'success'; window.fixtureAllowAI = false;
+      window.fixturePreviewAttempts = 0; window.fixturePromptEnterBubbles = 0;
       window.morrow = { on() {}, invoke: async (channel, payload) => {
         fixtureCalls.push({ channel, payload });
         if (channel === 'aiDraftWrite:replySuggestions') {
@@ -36,18 +37,35 @@ const root = path.join(__dirname, '..'), output = process.env.MORROW_UI_OUTPUT |
     });
     await page.goto(`http://127.0.0.1:${server.address().port}/renderer/index.html`);
     await page.evaluate(() => {
+      const originalRequestSendPreview = requestSendPreview;
+      requestSendPreview = (...args) => { fixturePreviewAttempts++; return originalRequestSendPreview(...args); };
       wire();
+      document.addEventListener('keydown', event => {
+        if (event.target.id === 'ai-prompt' && event.key === 'Enter') fixturePromptEnterBubbles++;
+      });
       state.accounts = [{ id: 'fixture', email: 'owner@fixture.invalid', platform: 'imap', imapSmtpProfile: 'custom', folders: { primary: [], more: [] } }];
       state.accountId = 'fixture'; state.prefs.aiReply = true; state.signatureText = 'Fictional Signature';
       state.composeQuote = { kind: 'reply', email: { subject: 'Fictional notes', from: 'sender@fixture.invalid', textBody: 'Please review fictional notes.' }, text: 'Fictional quoted mail.' };
       state.composeIdentity = { accountId: 'fixture', fromAddress: 'owner@fixture.invalid' }; state.composeMeta = { accountId: 'fixture', kind: 'reply' };
       document.querySelector('#compose').showModal();
+      document.querySelector('#compose-to').value = 'recipient@fixture.invalid';
       document.querySelector('#compose-subject').value = 'Re: Fictional notes';
       writeComposeBody('Existing draft\n\nFictional Signature'); setAiMode('reply');
-      // Keep the test on the actual popup controls without unrelated send setup.
+      // Retain actual shortcut/Send Preview handlers; all mail and AI are synthetic.
       syncComposeActions = () => {}; paintComposeNote = () => {};
       openComposeAi();
     });
+    const assertPromptIsolated = async label => {
+      assert.equal(await page.evaluate(() => fixturePreviewAttempts), 0, label + ': no Send Preview attempt');
+      assert.equal(await page.locator('#compose-preview').evaluate(el => el.open), false, label + ': preview remains closed');
+      assert.equal(await page.evaluate(() => fixturePromptEnterBubbles), 0, label + ': Enter stays in prompt');
+      assert.equal(await page.evaluate(() => fixtureCalls.some(x => /mail:(send|scheduleSend)/.test(x.channel))), false, label + ': no send or schedule');
+    };
+    const dispatchPromptEnter = options => page.locator('#ai-prompt').evaluate((el, options) => {
+      const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options });
+      el.dispatchEvent(event);
+      return event.defaultPrevented;
+    }, options);
     assert.equal(await page.locator('#ai-prompt').evaluate(el => el.tagName), 'TEXTAREA');
     assert.equal(await page.locator('#compose-suggestions').evaluate(el => el.closest('#compose-ai-popover') !== null), true);
     const resizeBefore = await page.locator('#ai-prompt').boundingBox();
@@ -65,19 +83,40 @@ const root = path.join(__dirname, '..'), output = process.env.MORROW_UI_OUTPUT |
     await page.locator('#ai-prompt').press('End'); await page.locator('#ai-prompt').press('Enter'); await page.locator('#ai-prompt').press('b');
     assert.match(await page.locator('#ai-prompt').inputValue(), /second line\nb$/);
     assert.equal(await page.evaluate(() => fixtureCalls.filter(x => x.channel === 'aiDraftWrite:start').length), 0);
-    await page.evaluate(() => document.querySelector('#ai-prompt').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true, bubbles: true, cancelable: true })));
+    await assertPromptIsolated('plain Enter');
+    for (const modifier of ['ctrlKey', 'metaKey']) for (const ime of [{ isComposing: true }, { keyCode: 229 }]) {
+      assert.equal(await dispatchPromptEnter({ [modifier]: true, ...ime }), false);
+      await assertPromptIsolated(modifier + ' IME ' + JSON.stringify(ime));
+    }
     assert.equal(await page.evaluate(() => fixtureCalls.filter(x => x.channel === 'aiDraftWrite:start').length), 0);
-    await page.locator('#ai-prompt').press('Control+Enter');
-    await page.locator('#ai-write-error').waitFor({ state: 'visible' });
-    assert.match(await page.locator('#ai-write-error').textContent(), /permission/);
-    assert.equal(await page.evaluate(() => fixtureCalls.filter(x => x.channel === 'aiDraftWrite:start').length), 1);
+    for (const [index, key] of ['Control+Enter', 'Meta+Enter'].entries()) {
+      await page.locator('#ai-prompt').press(key);
+      await page.locator('#ai-write-error').waitFor({ state: 'visible' });
+      assert.match(await page.locator('#ai-write-error').textContent(), /permission/);
+      assert.equal(await page.evaluate(() => fixtureCalls.filter(x => x.channel === 'aiDraftWrite:start').length), index + 1);
+      await assertPromptIsolated(key);
+    }
     const last = await page.evaluate(() => fixtureCalls.find(x => x.channel === 'aiDraftWrite:start').payload.body);
     assert.match(last.user_prompt, /Keep my tone\nand second line\nb/);
     assert.equal(last.mode, 'reply');
+    for (const control of ['ai-generate', 'ai-prompt']) {
+      await page.locator('#' + control).evaluate(el => { el.disabled = true; });
+      for (const modifier of ['ctrlKey', 'metaKey']) {
+        assert.equal(await dispatchPromptEnter({ [modifier]: true }), true, control + ' disabled still owns shortcut');
+        await assertPromptIsolated(control + ' disabled ' + modifier);
+      }
+      assert.equal(await page.evaluate(() => fixtureCalls.filter(x => x.channel === 'aiDraftWrite:start').length), 2);
+      await page.locator('#' + control).evaluate(el => { el.disabled = false; });
+    }
     await page.evaluate(() => { fixtureAllowAI = true; });
     await page.locator('#ai-generate').click();
     assert.equal(await page.locator('#ai-prompt').isDisabled(), true);
     assert.equal(await page.locator('#compose-suggest-list button').first().isDisabled(), true);
+    for (const modifier of ['ctrlKey', 'metaKey']) {
+      assert.equal(await dispatchPromptEnter({ [modifier]: true }), true);
+      await assertPromptIsolated('AI writing pending ' + modifier);
+    }
+    assert.equal(await page.evaluate(() => fixtureCalls.filter(x => x.channel === 'aiDraftWrite:start').length), 3);
     const before = await page.locator('#compose-body').inputValue();
     await page.evaluate(() => applySuggestedReply('MUST NOT APPLY'));
     assert.equal(await page.locator('#compose-body').inputValue(), before);
@@ -109,7 +148,7 @@ const root = path.join(__dirname, '..'), output = process.env.MORROW_UI_OUTPUT |
     assert.equal(await page.locator('#compose-ai-popover').isHidden(), true);
     assert.equal(await page.evaluate(() => document.activeElement.id), 'compose-ai-open');
     assert.equal(await page.locator('#compose').evaluate(el => el.open), true);
-    assert.equal(await page.evaluate(() => fixtureCalls.some(x => /mail:(send|scheduleSend)/.test(x.channel))), false);
+    await assertPromptIsolated('all popup interactions');
     await page.evaluate(() => { document.querySelector('#compose').close(); showFeatures(); });
     assert.match(await page.locator('#features-panel').textContent(), /prompt supports multiple lines and vertical resizing/);
     assert.deepEqual(errors, []); assert.deepEqual(external, []);

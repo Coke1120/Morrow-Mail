@@ -14875,9 +14875,12 @@ function toggleComposeAi() {
 }
 
 function onComposeAiPromptKeydown(event) {
-  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229 || event.shiftKey || event.altKey || !(event.ctrlKey || event.metaKey)) return;
-  if ($("ai-generate")?.disabled || $("ai-prompt")?.disabled) return;
+  if (event.key !== "Enter") return;
+  // Prompt Enter belongs to this editor, including when AI is unavailable or composing.
+  event.stopPropagation();
+  if (event.isComposing || event.keyCode === 229 || event.shiftKey || event.altKey || !(event.ctrlKey || event.metaKey)) return;
   event.preventDefault();
+  if ($("ai-generate")?.disabled || $("ai-prompt")?.disabled) return;
   startDraftWrite().catch((error) => showStatus(error.message, true));
 }
 
