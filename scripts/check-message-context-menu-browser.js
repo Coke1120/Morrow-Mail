@@ -261,7 +261,7 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require("node:os").tmpd
     await page.screenshot({ path: path.join(output, "features.png") });
     const crossHelp = page.locator(".feature-card").filter({ has: page.getByRole("heading", { name: "Cross-mailbox Copy", exact: true }) });
     await crossHelp.scrollIntoViewIfNeeded();
-    assert.match(await crossHelp.textContent(), /Phase 1 supports Copy only.*50 messages and 32 MiB/);
+    assert.match(await crossHelp.textContent(), /Copy retains every source message.*separate reviewed Gmail Move.*50 messages and 32 MiB/);
     assert.match(await page.locator("#cli-unavailable").textContent(), /cross-mailbox Copy\/Move.*no bot or CLI command/);
     await page.screenshot({path:path.join(output,"cross-mailbox-features.png")});
     assert.deepEqual(errors, []);
